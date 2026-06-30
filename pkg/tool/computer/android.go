@@ -16,7 +16,7 @@ import (
 // tool layer.
 var errNotConnected = errors.New("computer: not connected; call connect first")
 
-// rpcCaller is the subset of dpClient that AndroidBackend uses. *dpClient
+// rpcCaller is the subset of deviceClient that AndroidBackend uses. *deviceClient
 // satisfies it; tests pass a fake. Defined here (not wsclient.go) because
 // the backend is its only consumer.
 type rpcCaller interface {
@@ -32,10 +32,10 @@ type rpcCaller interface {
 type dialer func(ctx context.Context, host string, port int, password string) (rpcCaller, error)
 
 // Compile-time check that the production client satisfies the seam.
-var _ rpcCaller = (*dpClient)(nil)
+var _ rpcCaller = (*deviceClient)(nil)
 
 // regDial is the production connection source for the reversed architecture:
-// instead of dialing out, it looks up an already-established *dpClient in the
+// instead of dialing out, it looks up an already-established *deviceClient in the
 // registry by the host the model passed to connect(host). The registry is
 // populated by the daemon's WS server (wsserver.go). port/password are
 // ignored (kept in the signature for dialer-type compatibility).
@@ -57,13 +57,13 @@ func (b *AndroidBackend) regDial(_ context.Context, host string, _ int, _ string
 //
 // Lock ordering invariant: AndroidBackend.mu is NEVER held while acquiring
 // the registry RLock (regDial takes only the registry RLock, never b.mu), and
-// AndroidBackend.mu is ALWAYS acquired before any dpClient.mu. The dpClient
-// read loop never acquires AndroidBackend.mu. No dpClient method calls back
+// AndroidBackend.mu is ALWAYS acquired before any deviceClient.mu. The deviceClient
+// read loop never acquires AndroidBackend.mu. No deviceClient method calls back
 // into the backend, so the total order has no cycle and the design cannot
 // deadlock.
 type AndroidBackend struct {
 	mu       sync.Mutex
-	client   rpcCaller // nil == not connected; *dpClient in prod, fake in tests
+	client   rpcCaller // nil == not connected; *deviceClient in prod, fake in tests
 	dial     dialer
 	registry *ConnectionRegistry // nil in TUI mode/tests → regDial returns "daemon not running"
 	host     string              // last connected host (diagnostics only)

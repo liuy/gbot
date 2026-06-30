@@ -79,7 +79,7 @@ func dialAcceptConn(t *testing.T, url string) *websocket.Conn {
 // makeAcceptConnServer starts an httptest WS server that upgrades any conn
 // and returns the accepted *websocket.Conn on a channel so the test can wrap
 // it in a *deviceClient and Register it. The server holds the conn open
-// (without reading — the dpClient readLoop owns reads after Register) by
+// (without reading — the deviceClient readLoop owns reads after Register) by
 // blocking on a per-conn channel until test cleanup.
 func makeAcceptConnServer(t *testing.T) (string, chan *websocket.Conn) {
 	t.Helper()
@@ -97,7 +97,7 @@ func makeAcceptConnServer(t *testing.T) (string, chan *websocket.Conn) {
 		default:
 		}
 		// Block until cleanup so the httptest handler does not return and
-		// tear the conn down. Do NOT read — the dpClient readLoop owns reads.
+		// tear the conn down. Do NOT read — the deviceClient readLoop owns reads.
 		<-release
 	}))
 	t.Cleanup(server.Close)
@@ -184,7 +184,7 @@ func TestConnectionRegistry_Close(t *testing.T) {
 	t.Parallel()
 	url, accepted := makeAcceptConnServer(t)
 	reg := NewConnectionRegistry()
-	registered := make([]*dpClient, 0, 2)
+	registered := make([]*deviceClient, 0, 2)
 	for i := 0; i < 2; i++ {
 		go dialAcceptConn(t, url)
 		select {

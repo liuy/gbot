@@ -12,28 +12,28 @@ import (
 // port and the connect action's port default. The GBot app dials this port.
 const DefaultWSPort = 8765
 
-// ConnectionRegistry holds dpClients built from server-accepted WebSockets,
+// ConnectionRegistry holds deviceClients built from server-accepted WebSockets,
 // keyed by the peer's source IP. The daemon's upgrade handler populates it;
 // AndroidBackend.Connect (via regDial) reads from it. nil registry == TUI
 // mode (no server) and Connect returns a clear "daemon not running" error.
 type ConnectionRegistry struct {
 	mu      sync.RWMutex
-	clients map[string]*dpClient // host (RemoteIP host portion) → client
+	clients map[string]*deviceClient // host (RemoteIP host portion) → client
 }
 
 // NewConnectionRegistry returns an empty registry.
 func NewConnectionRegistry() *ConnectionRegistry {
-	return &ConnectionRegistry{clients: make(map[string]*dpClient)}
+	return &ConnectionRegistry{clients: make(map[string]*deviceClient)}
 }
 
-// Register wraps an accepted *websocket.Conn in a *dpClient (starting its
+// Register wraps an accepted *websocket.Conn in a *deviceClient (starting its
 // readLoop), stores it under host (replacing any prior conn for that host —
 // the old one is closed), and returns the new client. Closing the old client
 // happens outside the registry lock: old.close() only touches its own
-// dpClient.mu, so there is no lock-ordering conflict with the registry lock.
-func (r *ConnectionRegistry) Register(host string, ws *websocket.Conn) *dpClient {
-	c := newDPClientFromConn(ws)
-	var old *dpClient
+// deviceClient.mu, so there is no lock-ordering conflict with the registry lock.
+func (r *ConnectionRegistry) Register(host string, ws *websocket.Conn) *deviceClient {
+	c := newDeviceClientFromConn(ws)
+	var old *deviceClient
 	r.mu.Lock()
 	old = r.clients[host]
 	r.clients[host] = c
@@ -48,7 +48,7 @@ func (r *ConnectionRegistry) Register(host string, ws *websocket.Conn) *dpClient
 // — removal happens implicitly when Register overwrites the slot, and a dead
 // client (readLoop terminated, IsClosed()==true) is left in place for
 // regDial to detect and reject until the next inbound conn replaces it.
-func (r *ConnectionRegistry) Get(host string) (*dpClient, bool) {
+func (r *ConnectionRegistry) Get(host string) (*deviceClient, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	c, ok := r.clients[host]
@@ -59,7 +59,7 @@ func (r *ConnectionRegistry) Get(host string) (*dpClient, bool) {
 func (r *ConnectionRegistry) Close() {
 	r.mu.Lock()
 	clients := r.clients
-	r.clients = make(map[string]*dpClient)
+	r.clients = make(map[string]*deviceClient)
 	r.mu.Unlock()
 	for _, c := range clients {
 		_ = c.close()
@@ -78,7 +78,7 @@ func hostOnly(addr string) string {
 }
 
 // StartWSServer starts the daemon's inbound WebSocket listener. Each upgraded
-// connection is wrapped in a *dpClient and stored in reg under its source IP
+// connection is wrapped in a *deviceClient and stored in reg under its source IP
 // host portion. Mirrors cmd/gbot/main.go startPprofServer's net.Listen-then-
 // go pattern (synchronous bind failure, async serve). The returned
 // *http.Server's Close stops the listener.

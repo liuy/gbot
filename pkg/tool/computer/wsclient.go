@@ -35,10 +35,10 @@ type rpcResponse struct {
 // terminates (peer close / read error / explicit close).
 var errConnectionClosed = errors.New("computer: connection closed")
 
-// dpClient owns one WebSocket connection to the GBot app and matches
+// deviceClient owns one WebSocket connection to the GBot app and matches
 // requests to responses by id. Mirrors mcp-server/src/android-client.ts
 // AndroidClient minus the EventEmitter surface — we use ctx + pending chans.
-type dpClient struct {
+type deviceClient struct {
 	mu      sync.Mutex // guards pending map
 	writeMu sync.Mutex // serializes all ws writes (shared across engines)
 	ws      *websocket.Conn
@@ -47,9 +47,9 @@ type dpClient struct {
 	closed  atomic.Bool
 }
 
-// newDPClient constructs an unconnected client for the given target.
+// newDeviceClient constructs an unconnected client for the given target.
 // authToken is sent as Authorization: Bearer <token> when non-empty.
-func newDPClient(host string, port int, authToken string) (*dpClient, error) {
+func newDeviceClient(host string, port int, authToken string) (*deviceClient, error) {
 	header := http.Header{}
 	if authToken != "" {
 		header.Set("Authorization", "Bearer "+authToken)
@@ -59,16 +59,16 @@ func newDPClient(host string, port int, authToken string) (*dpClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("computer: dial %s: %w", url, err)
 	}
-	return newDPClientFromConn(ws), nil
+	return newDeviceClientFromConn(ws), nil
 }
 
-// newDPClientFromConn wraps an already-established *websocket.Conn (whether
-// obtained by Dialing out or by a server-side Upgrade) in a *dpClient and
-// starts its read loop. Extracted from newDPClient so the WS server's
+// newDeviceClientFromConn wraps an already-established *websocket.Conn (whether
+// obtained by Dialing out or by a server-side Upgrade) in a *deviceClient and
+// starts its read loop. Extracted from newDeviceClient so the WS server's
 // registry can wrap an accepted conn the same way the dialer wraps a dialed
 // one — the request/response matching is connection-direction-agnostic.
-func newDPClientFromConn(ws *websocket.Conn) *dpClient {
-	c := &dpClient{
+func newDeviceClientFromConn(ws *websocket.Conn) *deviceClient {
+	c := &deviceClient{
 		ws:      ws,
 		pending: make(map[string]chan rpcResponse),
 	}
@@ -77,18 +77,18 @@ func newDPClientFromConn(ws *websocket.Conn) *dpClient {
 }
 
 // connect is a hook mirroring the AndroidClient.connect() lifecycle. The
-// production newDPClient dials inline (so the call site gets a synchronous
+// production newDeviceClient dials inline (so the call site gets a synchronous
 // failure), so connect is a no-op kept for API symmetry with the plan's
 // dialer seam. It exists so a future lazy-connect implementation can swap in
 // without changing callers.
-func (c *dpClient) connect(_ context.Context) error { return nil }
+func (c *deviceClient) connect(_ context.Context) error { return nil }
 
 // readLoop runs in a background goroutine, reading one text message per loop,
 // decoding rpcResponse, and fulfilling the matching pending request. On read
 // error or close frame it marks the client closed and fails all pending with
 // errConnectionClosed. The reader never reaches back into AndroidBackend —
 // it only flips its own closed flag (AndroidBackend.ensureConnected polls it).
-func (c *dpClient) readLoop() {
+func (c *deviceClient) readLoop() {
 	for {
 		_, data, err := c.ws.ReadMessage()
 		if err != nil {
@@ -119,7 +119,7 @@ func (c *dpClient) readLoop() {
 
 // shutdown marks the client closed and fails every pending request with
 // errConnectionClosed. Called exactly once by the read loop on terminal error.
-func (c *dpClient) shutdown(_ error) {
+func (c *deviceClient) shutdown(_ error) {
 	if !c.closed.CompareAndSwap(false, true) {
 		return
 	}
@@ -137,7 +137,7 @@ func (c *dpClient) shutdown(_ error) {
 
 // call sends one command, blocks until the matching response arrives or ctx
 // is canceled, and translates the GBot app's success=false into a Go error.
-func (c *dpClient) call(ctx context.Context, command string, params map[string]any) (json.RawMessage, error) {
+func (c *deviceClient) call(ctx context.Context, command string, params map[string]any) (json.RawMessage, error) {
 	// ID format mirrors the GBot app's `req_<n>_<ts>` convention (UnixMilli).
 	id := fmt.Sprintf("req_%d_%d", c.counter.Add(1), time.Now().UnixMilli())
 	ch := make(chan rpcResponse, 1)
@@ -184,11 +184,11 @@ func (c *dpClient) call(ctx context.Context, command string, params map[string]a
 // guarantee, so callers stream chunks back-to-back between receive_file_begin
 // and receive_file_end.
 //
-// CONCURRENCY: the registry *dpClient is SHARED across engines, so call() and
+// CONCURRENCY: the registry *deviceClient is SHARED across engines, so call() and
 // sendBinary can be invoked from different goroutines. writeMu serializes
 // every ws write (both WriteJSON in call and WriteMessage here) so gorilla's
 // single internal writer is never raced. c.mu still guards the closed check.
-func (c *dpClient) sendBinary(data []byte) error {
+func (c *deviceClient) sendBinary(data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Load() {
@@ -206,12 +206,12 @@ func (c *dpClient) sendBinary(data []byte) error {
 // IsClosed reports whether the read loop has terminated (peer close, read
 // error, or explicit close()). AndroidBackend.ensureConnected polls it so an
 // async drop is detected without the read loop reaching back into the backend.
-func (c *dpClient) IsClosed() bool { return c.closed.Load() }
+func (c *deviceClient) IsClosed() bool { return c.closed.Load() }
 
 // close idempotently closes the underlying WebSocket. Marking closed first
 // prevents the read loop from racing to fail pending requests we are about to
 // drain.
-func (c *dpClient) close() error {
+func (c *deviceClient) close() error {
 	if c.closed.CompareAndSwap(false, true) {
 		_ = c.ws.Close()
 	}

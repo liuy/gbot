@@ -48,16 +48,16 @@ func startWSServer(t *testing.T, respFn func(req rpcRequest) rpcResponse) string
 	return "ws" + strings.TrimPrefix(server.URL, "http")
 }
 
-func TestDPClient_Call_RequestEnvelope(t *testing.T) {
+func TestDeviceClient_Call_RequestEnvelope(t *testing.T) {
 	t.Parallel()
 	var captured rpcRequest
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		captured = req
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 
@@ -77,14 +77,14 @@ func TestDPClient_Call_RequestEnvelope(t *testing.T) {
 	}
 }
 
-func TestDPClient_Call_SuccessFalseReturnsError(t *testing.T) {
+func TestDeviceClient_Call_SuccessFalseReturnsError(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: false, Error: "device busy"}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 
@@ -102,16 +102,16 @@ func TestDPClient_Call_SuccessFalseReturnsError(t *testing.T) {
 	}
 }
 
-func TestDPClient_Call_CtxCancel(t *testing.T) {
+func TestDeviceClient_Call_CtxCancel(t *testing.T) {
 	t.Parallel()
 	// Server that never replies — the call must return ctx.Err().
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		// Block forever; the connection close on cleanup ends the handler.
 		select {}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 
@@ -126,14 +126,14 @@ func TestDPClient_Call_CtxCancel(t *testing.T) {
 	}
 }
 
-func TestDPClient_IsClosed_AfterClose(t *testing.T) {
+func TestDeviceClient_IsClosed_AfterClose(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	if c.IsClosed() {
 		t.Fatal("IsClosed = true on a fresh client, want false")
@@ -146,7 +146,7 @@ func TestDPClient_IsClosed_AfterClose(t *testing.T) {
 	}
 }
 
-func TestDPClient_AuthHeader(t *testing.T) {
+func TestDeviceClient_AuthHeader(t *testing.T) {
 	t.Parallel()
 	var gotAuth string
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -160,9 +160,9 @@ func TestDPClient_AuthHeader(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "secret-token")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "secret-token")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	if gotAuth != "Bearer secret-token" {
@@ -170,7 +170,7 @@ func TestDPClient_AuthHeader(t *testing.T) {
 	}
 }
 
-func TestDPClient_AuthHeader_EmptyToken(t *testing.T) {
+func TestDeviceClient_AuthHeader_EmptyToken(t *testing.T) {
 	t.Parallel()
 	var gotAuth string
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -184,9 +184,9 @@ func TestDPClient_AuthHeader_EmptyToken(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	if gotAuth != "" {
@@ -397,9 +397,9 @@ func portFromURL(wsURL string) int {
 	return 0
 }
 
-// connClose closes the dpClient, wrapped so the test body doesn't use a bare
+// connClose closes the deviceClient, wrapped so the test body doesn't use a bare
 // `_ = c.close()` that the weak-test scanner would flag.
-func connClose(c *dpClient) {
+func connClose(c *deviceClient) {
 	_ = c.close()
 }
 
@@ -413,14 +413,14 @@ func errorsIsDeadline(err error) bool {
 	return strings.Contains(s, "deadline exceeded") || strings.Contains(s, "context canceled")
 }
 
-func TestDPClient_Connect_NoOp(t *testing.T) {
+func TestDeviceClient_Connect_NoOp(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	// connect is a no-op kept for API symmetry; it must return nil.
@@ -429,14 +429,14 @@ func TestDPClient_Connect_NoOp(t *testing.T) {
 	}
 }
 
-func TestDPClient_Call_SuccessFalseNoError(t *testing.T) {
+func TestDeviceClient_Call_SuccessFalseNoError(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: false} // no Error string
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -450,14 +450,14 @@ func TestDPClient_Call_SuccessFalseNoError(t *testing.T) {
 	}
 }
 
-func TestDPClient_Call_AfterClose(t *testing.T) {
+func TestDeviceClient_Call_AfterClose(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -468,7 +468,7 @@ func TestDPClient_Call_AfterClose(t *testing.T) {
 	}
 }
 
-func TestDPClient_SendBinary_WritesBinaryFrame(t *testing.T) {
+func TestDeviceClient_SendBinary_WritesBinaryFrame(t *testing.T) {
 	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	received := make(chan []byte, 8)
@@ -497,9 +497,9 @@ func TestDPClient_SendBinary_WritesBinaryFrame(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 
@@ -522,14 +522,14 @@ func TestDPClient_SendBinary_WritesBinaryFrame(t *testing.T) {
 	}
 }
 
-func TestDPClient_SendBinary_AfterClose(t *testing.T) {
+func TestDeviceClient_SendBinary_AfterClose(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	connClose(c)
 	if err := c.sendBinary([]byte{1, 2, 3}); err == nil {
@@ -561,7 +561,7 @@ func TestDecodeDeviceInfo_MalformedJSON(t *testing.T) {
 	}
 }
 
-func TestDPClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {
+func TestDeviceClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {
 	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -597,9 +597,9 @@ func TestDPClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -609,7 +609,7 @@ func TestDPClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {
 	}
 }
 
-func TestDPClient_Shutdown_FailsPendingRequests(t *testing.T) {
+func TestDeviceClient_Shutdown_FailsPendingRequests(t *testing.T) {
 	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	// Server reads the request then closes the connection abruptly — the
@@ -628,9 +628,9 @@ func TestDPClient_Shutdown_FailsPendingRequests(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -641,14 +641,14 @@ func TestDPClient_Shutdown_FailsPendingRequests(t *testing.T) {
 	}
 }
 
-func TestDPClient_Close_Idempotent(t *testing.T) {
+func TestDeviceClient_Close_Idempotent(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
 	if err != nil {
-		t.Fatalf("newDPClient: %v", err)
+		t.Fatalf("newDeviceClient: %v", err)
 	}
 	if err := c.close(); err != nil {
 		t.Fatalf("first close: %v", err)
