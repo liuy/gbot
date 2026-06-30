@@ -14,7 +14,7 @@ import (
 var errNotConnected = errors.New("computer: not connected; call connect first")
 
 // rpcCaller is the subset of dpClient that AndroidBackend uses. *dpClient
-// satisfies it; tests pass a fake. Defined here (not droidpilot.go) because
+// satisfies it; tests pass a fake. Defined here (not wsclient.go) because
 // the backend is its only consumer.
 type rpcCaller interface {
 	call(ctx context.Context, command string, params map[string]any) (json.RawMessage, error)
@@ -44,7 +44,7 @@ func wsDial(ctx context.Context, host string, port int, password string) (rpcCal
 	return c, nil
 }
 
-// AndroidBackend drives a DroidPilot Android app over a long-lived WebSocket.
+// AndroidBackend drives a GBot Android app over a long-lived WebSocket.
 // It starts disconnected; the model must call Connect before any action.
 // refs from the last Screen() are held in refs and resolved by
 // ClickElement/OpenMenuElement to the element's bounds center.
@@ -168,7 +168,7 @@ func (b *AndroidBackend) ensureConnected(_ context.Context) error {
 func (b *AndroidBackend) Close() error { return b.Disconnect() }
 
 // Screen fetches the UI tree, assigns refs, and returns the numbered list.
-// maxDepth ≤0 defaults to 15 (DroidPilot's own default); see coerceMaxDepth.
+// maxDepth ≤0 defaults to 15 (the GBot app's own default); see coerceMaxDepth.
 func (b *AndroidBackend) Screen(ctx context.Context, maxDepth int) (*ScreenResult, error) {
 	if err := b.ensureConnected(ctx); err != nil {
 		return nil, err
@@ -235,7 +235,7 @@ func (b *AndroidBackend) OpenMenuElement(ctx context.Context, ref int) error {
 }
 
 // Type sets text on the focused field. Mode "replace" (default) uses
-// DroidPilot's set_text (ACTION_SET_TEXT); "append" uses type_text which
+// the GBot app's set_text (ACTION_SET_TEXT); "append" uses type_text which
 // appends to existing content via the focused EditText. set_text fails on
 // custom Views that don't implement ACTION_SET_TEXT — append (type_text)
 // works in those cases because it dispatches key events instead.
@@ -291,7 +291,7 @@ func (b *AndroidBackend) DeviceInfo(ctx context.Context) (*DeviceInfo, error) {
 	return decodeDeviceInfo(data)
 }
 
-// OpenApp launches an installed app by package name via DroidPilot's
+// OpenApp launches an installed app by package name via the GBot app's
 // open_app command. Package-name presence is validated in dispatch BEFORE
 // ensureConnected (fail-fast, no wire traffic), so the backend does not
 // re-check.

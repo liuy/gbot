@@ -3,9 +3,9 @@ package computer
 // computerPrompt returns the system-prompt text teaching the model the
 // connect-first lifecycle and ref-based interaction model.
 func computerPrompt() string {
-	return `# Computer tool — Android device control via DroidPilot
+	return `# Computer tool — Android device control via GBot
 
-You drive a remote Android device through the Computer tool, which talks to the DroidPilot app over a WebSocket.
+You drive a remote Android device through the Computer tool, which talks to the GBot app over a WebSocket.
 
 ## Lifecycle
 

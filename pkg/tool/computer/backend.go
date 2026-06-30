@@ -1,6 +1,6 @@
 // Package computer implements the Computer tool: a platform-agnostic
 // perception/action surface (Backend) plus an Android backend that drives a
-// DroidPilot app over WebSocket JSON-RPC.
+// GBot app over WebSocket JSON-RPC.
 package computer
 
 import "context"
@@ -9,7 +9,7 @@ import "context"
 // number and the device-reported bounds. Refs are 1-based and assigned by
 // Screen in tree order.
 //
-// JSON tags preserve DroidPilot's Kotlin property names verbatim — Gson
+// JSON tags preserve the GBot app's Kotlin property names verbatim — Gson
 // serializes a Kotlin data class using its property names, and the `is`-prefixed
 // booleans must be tagged explicitly because Go's default lower-casing would
 // turn `Clickable` into "clickable" (the Kotlin field is "isClickable").
@@ -31,7 +31,7 @@ type ElementRef struct {
 }
 
 // Bounds is an absolute screen rectangle in pixels. left<right, top<bottom.
-// The JSON tags mirror DroidPilot's nested bounds object
+// The JSON tags mirror the GBot app's nested bounds object
 // {"left":...,"top":...,"right":...,"bottom":...}.
 type Bounds struct {
 	Left   int `json:"left"`
@@ -62,7 +62,7 @@ type ScreenResult struct {
 	Tree          *UINode
 }
 
-// UINode mirrors DroidPilot's get_ui_tree node (Models.kt:UINode). Used for
+// UINode mirrors the GBot app's get_ui_tree node (app/android/.../model/Models.kt:UINode).
 // the tree render only; refs live in ScreenResult.Elements.
 type UINode struct {
 	ClassName          string   `json:"className"`
@@ -89,7 +89,7 @@ type Screenshot struct {
 	Height   int
 }
 
-// DeviceInfo is the DeviceInfo() return (mirrors DroidPilot get_device_info).
+// DeviceInfo is the DeviceInfo() return (mirrors the GBot app's get_device_info).
 type DeviceInfo struct {
 	Manufacturer string
 	Model        string

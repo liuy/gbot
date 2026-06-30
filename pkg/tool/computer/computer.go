@@ -58,7 +58,7 @@ var destructiveActions = map[string]bool{
 	ActionOpenApp:         true,
 }
 
-// validScrollDirections is the exact set DroidPilot's scroll command accepts.
+// validScrollDirections is the exact set the GBot app's scroll command accepts.
 var validScrollDirections = map[string]bool{
 	"up": true, "down": true, "left": true, "right": true,
 }
@@ -74,7 +74,7 @@ func New(b *AndroidBackend) tool.Tool {
 		Description_: func(input json.RawMessage) (string, error) {
 			in, err := parseInput(input)
 			if err != nil {
-				return "Computer tool: control an Android device via DroidPilot.", nil
+				return "Computer tool: control an Android device via GBot.", nil
 			}
 			return summarizeAction(in), nil
 		},

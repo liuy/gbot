@@ -58,10 +58,10 @@ func parseCoordinate(raw json.RawMessage) (x, y int, ok bool) {
 }
 
 // coerceMaxDepth returns maxDepth as-is when >0, else 15. There is no upper
-// ceiling — DroidPilot applies none, and adding one would diverge from the
+// ceiling — the GBot app applies none, and adding one would diverge from the
 // device (a caller asking for depth 100 gets depth 100, matching Kotlin).
 //
-// This intentionally diverges from DroidPilot's Kotlin `params?.get("maxDepth")
+// This intentionally diverges from the GBot app's Kotlin `params?.get("maxDepth")
 // ?.asInt ?: 15`, which only fires when the key is absent (a caller-supplied 0
 // or negative passes straight through and collapses the tree to root-only via
 // buildUITree's `depth < maxDepth` guard). A model emitting max_depth:0 means

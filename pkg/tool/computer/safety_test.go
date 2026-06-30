@@ -89,7 +89,7 @@ func TestValidAndroidKey_CaseInsensitiveAndTrimmed(t *testing.T) {
 
 func TestAndroidKeys_ExactSet(t *testing.T) {
 	t.Parallel()
-	// The map must contain exactly these 10 keys — mirroring the DroidPilot
+	// The map must contain exactly these 10 keys — mirroring the GBot app's
 	// press_key allowlist. Adding or removing one is a divergence.
 	wantCount := 10
 	if len(androidKeys) != wantCount {

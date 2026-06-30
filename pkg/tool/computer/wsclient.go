@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// rpcRequest is the DroidPilot command envelope. Mirrors
+// rpcRequest is the GBot app's command envelope. Mirrors
 // mcp-server/src/android-client.ts CommandRequest.
 type rpcRequest struct {
 	ID      string         `json:"id"`
@@ -21,7 +21,7 @@ type rpcRequest struct {
 	Params  map[string]any `json:"params,omitempty"`
 }
 
-// rpcResponse is the DroidPilot reply envelope. Mirrors
+// rpcResponse is the GBot app's reply envelope. Mirrors
 // mcp-server/src/android-client.ts CommandResponse. Data is raw so each
 // command decodes its own shape.
 type rpcResponse struct {
@@ -35,7 +35,7 @@ type rpcResponse struct {
 // terminates (peer close / read error / explicit close).
 var errConnectionClosed = errors.New("computer: connection closed")
 
-// dpClient owns one WebSocket connection to the DroidPilot app and matches
+// dpClient owns one WebSocket connection to the GBot app and matches
 // requests to responses by id. Mirrors mcp-server/src/android-client.ts
 // AndroidClient minus the EventEmitter surface — we use ctx + pending chans.
 type dpClient struct {
@@ -126,9 +126,9 @@ func (c *dpClient) shutdown(_ error) {
 }
 
 // call sends one command, blocks until the matching response arrives or ctx
-// is canceled, and translates DroidPilot success=false into a Go error.
+// is canceled, and translates the GBot app's success=false into a Go error.
 func (c *dpClient) call(ctx context.Context, command string, params map[string]any) (json.RawMessage, error) {
-	// ID format mirrors DroidPilot's `req_<n>_<ts>` convention (UnixMilli).
+	// ID format mirrors the GBot app's `req_<n>_<ts>` convention (UnixMilli).
 	id := fmt.Sprintf("req_%d_%d", c.counter.Add(1), time.Now().UnixMilli())
 	ch := make(chan rpcResponse, 1)
 
@@ -181,7 +181,7 @@ func (c *dpClient) close() error {
 	return nil
 }
 
-// decodeScreenResult decodes DroidPilot's get_ui_tree data blob. The data is
+// decodeScreenResult decodes the GBot app's get_ui_tree data blob. The data is
 // `{"tree": <UINode>}` and carries NO top-level screen size — get_ui_tree
 // does not report one — so the returned ScreenResult has Width=0/Height=0.
 // renderScreenResult renders "screen size unknown" when both are 0.
@@ -198,7 +198,7 @@ func decodeScreenResult(data json.RawMessage) (*ScreenResult, error) {
 	return &ScreenResult{Tree: raw.Tree}, nil
 }
 
-// decodeScreenshot decodes DroidPilot's screenshot data blob. Maps
+// decodeScreenshot decodes the GBot app's screenshot data blob. Maps
 // image→DataB64, "image/"+format→MIMEType (empty format defaults to jpeg),
 // width/height→Width/Height.
 func decodeScreenshot(data json.RawMessage) (*Screenshot, error) {
@@ -221,7 +221,7 @@ func decodeScreenshot(data json.RawMessage) (*Screenshot, error) {
 	return &Screenshot{DataB64: raw.Image, MIMEType: mime, Width: raw.Width, Height: raw.Height}, nil
 }
 
-// decodeDeviceInfo decodes DroidPilot's get_device_info data blob. Each of
+// decodeDeviceInfo decodes the GBot app's get_device_info data blob. Each of
 // the 8 fields maps explicitly; none are dropped.
 func decodeDeviceInfo(data json.RawMessage) (*DeviceInfo, error) {
 	if len(data) == 0 {
