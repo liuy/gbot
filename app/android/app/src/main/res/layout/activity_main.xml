@@ -78,68 +78,33 @@
 
                 </LinearLayout>
 
-                <!-- Server host and Connections -->
+                <!-- Server host (shows connected host:port) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
-                    android:orientation="horizontal"
-                    android:baselineAligned="false">
+                    android:orientation="vertical">
 
-                    <LinearLayout
-                        android:layout_width="0dp"
+                    <TextView
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="3"
-                        android:orientation="vertical">
+                        android:text="@string/label_gbot_host"
+                        android:textAllCaps="true"
+                        android:letterSpacing="0.08"
+                        android:textColor="@color/text_muted"
+                        android:textSize="12sp" />
 
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_gbot_host"
-                            android:textAllCaps="true"
-                            android:letterSpacing="0.08"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:id="@+id/tvIpAddress"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/placeholder_ip"
-                            android:textColor="@color/text_white"
-                            android:textSize="13sp"
-                            android:fontFamily="monospace"
-                            android:maxLines="1"
-                            android:ellipsize="middle" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
+                    <TextView
+                        android:id="@+id/tvIpAddress"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:gravity="center"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_connections"
-                            android:textAllCaps="true"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:id="@+id/tvConnections"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/default_connections"
-                            android:textColor="@color/text_white"
-                            android:textSize="14sp"
-                            android:fontFamily="monospace" />
-                    </LinearLayout>
-
+                        android:layout_marginTop="2dp"
+                        android:text="@string/placeholder_ip"
+                        android:textColor="@color/text_white"
+                        android:textSize="13sp"
+                        android:fontFamily="monospace"
+                        android:maxLines="1"
+                        android:ellipsize="middle" />
                 </LinearLayout>
 
                 <!-- Config group: gbot host + port -->

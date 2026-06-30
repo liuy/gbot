@@ -50,7 +50,7 @@ class MainActivityTest {
 	@Test
 	fun onCreate_setsDisconnectedStatus_andConnectButtonLabel() {
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
-		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
+		assertThat(binding.tvIpAddress.text.toString()).isEqualTo("--")
 		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
 	}
 
@@ -125,23 +125,23 @@ class MainActivityTest {
 		binding.btnToggleServer.performClick()
 
 		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
-		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
+		assertThat(binding.tvIpAddress.text.toString()).isEqualTo("--")
 		assertThat(binding.serverConfigGroup.visibility).isEqualTo(View.VISIBLE)
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
 		assertThat(binding.tvLog.text.toString()).contains("Disconnected")
 	}
 
 	@Test
-	fun connSink_connected_setsConnectedStatus() {
+	fun connSink_connected_setsConnectedStatusAndHost() {
 		setAccessibilityRunning()
 		binding.etServer.setText("127.0.0.1")
 		binding.etPort.setText(freePort().toString())
 		binding.btnToggleServer.performClick()
 
 		// Simulate the foreground service reporting an established connection.
-		ConnectionForegroundService.connSink?.invoke(1)
+		ConnectionForegroundService.connSink?.invoke(1, "127.0.0.1:8765")
 
-		assertThat(binding.tvConnections.text.toString()).isEqualTo("1")
+		assertThat(binding.tvIpAddress.text.toString()).isEqualTo("127.0.0.1:8765")
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Connected")
 	}
 
@@ -151,12 +151,11 @@ class MainActivityTest {
 		binding.etServer.setText("127.0.0.1")
 		binding.etPort.setText(freePort().toString())
 		binding.btnToggleServer.performClick()
-		ConnectionForegroundService.connSink?.invoke(1)
+		ConnectionForegroundService.connSink?.invoke(1, "127.0.0.1:8765")
 
 		// Drop the connection — must go back to WAITING (still running).
-		ConnectionForegroundService.connSink?.invoke(0)
+		ConnectionForegroundService.connSink?.invoke(0, "127.0.0.1:8765")
 
-		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
 	}
 

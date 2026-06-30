@@ -223,8 +223,7 @@ class GbotWebSocketClient(
     }
 
     private fun handleFileEnd(request: CommandRequest) {
-        val session = synchronized(transfersLock) { transfer }
-        synchronized(transfersLock) { transfer = null }
+        val session = synchronized(transfersLock) { val s = transfer; transfer = null; s }
         val out = session?.output
         if (out == null) {
             return sendError(request.id, "receive_file_end without an active transfer")

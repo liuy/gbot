@@ -40,7 +40,9 @@ class ConnectionForegroundService : Service() {
         const val EXTRA_PORT = "extra_port" // gbot server port, default 8765
 
         var logSink: ((String) -> Unit)? = null
-        var connSink: ((Int) -> Unit)? = null // 1 connected, 0 disconnected
+        // connectionState: 0 = disconnected, 1 = connected. host:port are the
+        // dial target (passed back so the UI can show what it's wired to).
+        var connSink: ((connected: Int, hostPort: String) -> Unit)? = null
     }
 
     private var wsClient: GbotWebSocketClient? = null
@@ -89,6 +91,7 @@ class ConnectionForegroundService : Service() {
     // until the peer drops, on any failure back off and retry. backoff is
     // 1→2→4→…→60 (cap 60), reset to 1 on a successful connect.
     private suspend fun connectLoop(host: String, port: Int) {
+        val hostPort = "$host:$port"
         var backoff = 1
         while (active) {
             var client: GbotWebSocketClient? = null
@@ -97,7 +100,7 @@ class ConnectionForegroundService : Service() {
                 client = GbotWebSocketClient(
                     uri,
                     onLog = { msg -> logSink?.invoke(msg) },
-                    onConnectionChange = { count -> connSink?.invoke(count) }
+                    onConnectionChange = { connected -> connSink?.invoke(connected, hostPort) }
                 )
                 client.setContext(applicationContext)
                 wsClient = client
@@ -115,6 +118,7 @@ class ConnectionForegroundService : Service() {
                     // built-in "await peer close", so a latch counted down in
                     // onClose drives it (GbotWebSocketClient.awaitClose).
                     client.awaitClose()
+                    connSink?.invoke(0, hostPort)
                 }
             } catch (ce: CancellationException) {
                 throw ce

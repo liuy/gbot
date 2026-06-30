@@ -73,10 +73,10 @@ class MainActivity : AppCompatActivity() {
         ConnectionForegroundService.logSink = { msg ->
             runOnUiThread { appendLog(msg) }
         }
-        ConnectionForegroundService.connSink = { count ->
+        ConnectionForegroundService.connSink = { connected, hostPort ->
             runOnUiThread {
-                binding.tvConnections.text = count.toString()
-                if (count > 0 && isServerRunning) {
+                if (connected > 0 && isServerRunning) {
+                    binding.tvIpAddress.text = hostPort
                     updateStatus(StatusState.CONNECTED)
                 } else if (isServerRunning) {
                     updateStatus(StatusState.WAITING)
@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             binding.btnToggleServer.text = getString(R.string.btn_connect)
             updateStatus(StatusState.DISCONNECTED)
-            binding.tvConnections.text = "0"
+            binding.tvIpAddress.text = getString(R.string.placeholder_ip)
             binding.serverConfigGroup.visibility = View.VISIBLE
         }
     }
