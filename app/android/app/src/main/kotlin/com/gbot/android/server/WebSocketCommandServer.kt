@@ -1,10 +1,12 @@
 package com.gbot.android.server
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
-import androidx.core.content.FileProvider
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonSyntaxException
@@ -15,7 +17,7 @@ import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
 import java.io.File
-import java.io.FileOutputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
@@ -34,6 +36,19 @@ class WebSocketCommandServer(
 
     companion object {
         private const val TAG = "WSCommandServer"
+
+        // The MIME type drives the install intent (APK) and the MediaStore row; getting
+        // it wrong makes the package installer reject the file silently.
+        fun mimeTypeFor(name: String): String {
+            val lower = name.substringAfterLast('.', "").lowercase()
+            return when (lower) {
+                "apk" -> "application/vnd.android.package-archive"
+                "txt" -> "text/plain"
+                "jpg", "jpeg" -> "image/jpeg"
+                "png" -> "image/png"
+                else -> "application/octet-stream"
+            }
+        }
     }
 
     private val gson = Gson()
@@ -43,14 +58,31 @@ class WebSocketCommandServer(
     // Per-connection in-flight file transfer. Server-owned (not a conn
     // attachment) so the test FakeWebSocket, which no-ops attachment ops, can
     // still exercise begin/end/binary without modification.
+    //
+    // contentUri is the MediaStore row created at begin; installFromUri fires
+    // the installer at it instead of FileProvider. path is kept for the log
+    // line and the ack JSON (the on-wire protocol reports the basename).
     private data class FileTransferSession(
-        var output: FileOutputStream? = null,
+        var output: OutputStream? = null,
+        var contentUri: Uri? = null,
         var path: String = "",
         var expectedSize: Long = 0L,
         var bytesWritten: Long = 0L
     )
     private val transfers = mutableMapOf<WebSocket, FileTransferSession>()
     private val transfersLock = Any()
+
+    // The MediaStore-backed stream opener. Defaulted to the production MediaStore
+    // implementation below; overridable by tests because Robolectric cannot
+    // round-trip openOutputStream on the synthetic media provider.
+    internal var openDownloadStream: (name: String, size: Long) -> DownloadSink? =
+        { name, size -> openMediaStoreDownload(name, size) }
+
+    // Test-only capture of opened streams keyed by file name. Unused in production.
+    internal val downloads = mutableMapOf<String, OutputStream>()
+
+    // Holds the writable stream and the installable uri returned by a MediaStore insert.
+    internal data class DownloadSink(val output: OutputStream, val uri: Uri)
 
     // Optional: authentication token
     var authToken: String? = null
@@ -90,7 +122,7 @@ class WebSocketCommandServer(
         val remoteAddr = conn.remoteSocketAddress?.toString() ?: "unknown"
         Log.i(TAG, "Client disconnected: $remoteAddr")
         onLog("Client disconnected: $remoteAddr")
-        // A dropped connection mid-transfer must free its FileOutputStream.
+        // A dropped connection mid-transfer must free its output stream.
         val session = synchronized(transfersLock) { transfers.remove(conn) }
         session?.output?.close()
         synchronized(connectedClients) {
@@ -215,14 +247,16 @@ class WebSocketCommandServer(
         if (name.isEmpty() || name.contains("..")) {
             return sendError(conn, request.id, "invalid path: $relPath")
         }
-        val baseDir = appContext.getExternalFilesDir(null)
-            ?: return sendError(conn, request.id, "external files dir unavailable")
-        val target = File(baseDir, name)
         try {
-            val out = FileOutputStream(target)
+            val sink = openDownloadStream(name, size)
+                ?: return sendError(conn, request.id, "open output: MediaStore insert failed")
             synchronized(transfersLock) {
                 transfers[conn] = FileTransferSession(
-                    output = out, path = name, expectedSize = size, bytesWritten = 0L
+                    output = sink.output,
+                    contentUri = sink.uri,
+                    path = name,
+                    expectedSize = size,
+                    bytesWritten = 0L
                 )
             }
         } catch (e: Exception) {
@@ -245,9 +279,12 @@ class WebSocketCommandServer(
             return sendError(conn, request.id,
                 "size mismatch: wrote ${session.bytesWritten}, expected ${session.expectedSize}")
         }
-        val file = File(appContext.getExternalFilesDir(null), session.path)
         val isApk = session.path.endsWith(".apk", ignoreCase = true)
-        if (isApk) installApk(file)
+        if (isApk) {
+            val uri = session.contentUri
+                ?: return sendError(conn, request.id, "install failed: missing content uri")
+            installFromUri(uri)
+        }
         onLog("<< receive_file_end: ${session.path} (${session.bytesWritten} bytes)${if (isApk) " + install" else ""}")
         conn.send(gson.toJson(CommandResponse.success(request.id, JsonObject().apply {
             addProperty("bytes", session.bytesWritten)
@@ -255,9 +292,24 @@ class WebSocketCommandServer(
         })))
     }
 
-    private fun installApk(file: File) {
-        val authority = "${appContext.packageName}.fileprovider"
-        val uri = FileProvider.getUriForFile(appContext, authority, file)
+    // MediaStore.Downloads publishes the file under the public Downloads/gbot
+    // directory so it shows in the user's file manager. RELATIVE_PATH places the
+    // row; openOutputStream returns the streaming sink that binary frames write to.
+    private fun openMediaStoreDownload(name: String, size: Long): DownloadSink? {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeTypeFor(name))
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/gbot")
+            if (size > 0) put(MediaStore.MediaColumns.SIZE, size)
+        }
+        val uri = appContext.contentResolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+        ) ?: return null
+        val output = appContext.contentResolver.openOutputStream(uri, "w") ?: return null
+        return DownloadSink(output, uri)
+    }
+
+    private fun installFromUri(uri: Uri) {
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

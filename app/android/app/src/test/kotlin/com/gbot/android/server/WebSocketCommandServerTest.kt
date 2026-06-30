@@ -12,7 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import java.io.File
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 @RunWith(RobolectricTestRunner::class)
@@ -171,6 +171,7 @@ class WebSocketCommandServerTest {
 
 	@Test
 	fun onMessage_receiveFileBegin_opensOutputAndAcks() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 
@@ -180,10 +181,13 @@ class WebSocketCommandServerTest {
 		val ack = conn.sent.last()
 		assertThat(ack).contains(""""success":true""")
 		assertThat(ack).contains(""""path":"x.apk"""")
+		// Downloads collection (not the app-private external files dir) must hold the bytes.
+		assertThat(server.downloads["x.apk"]).isNotNull()
 	}
 
 	@Test
 	fun onMessage_binaryFrame_writesToOutput() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 		server.onMessage(conn, """{"id":"b2","command":"receive_file_begin","params":{"path":"x.bin","size":5}}""")
@@ -194,13 +198,19 @@ class WebSocketCommandServerTest {
 		server.onMessage(conn, """{"id":"e2","command":"receive_file_end","params":{}}""")
 		awaitSentCount(conn, 2)
 
-		val file = File(RuntimeEnvironment.getApplication().getExternalFilesDir(null), "x.bin")
-		val content = file.readBytes().decodeToString()
+		// Robolectric cannot round-trip MediaStore.openOutputStream (the framework's
+		// ContentProvider authority check rejects the synthetic media provider), so the
+		// stream source is injected; here we assert the streamed bytes landed in Downloads.
+		val content = server.downloads["x.bin"]?.toString()
 		assertThat(content).isEqualTo("hello")
+		val endAck = conn.sent.last()
+		assertThat(endAck).contains(""""success":true""")
+		assertThat(endAck).contains(""""bytes":5""")
 	}
 
 	@Test
 	fun onMessage_receiveFileEnd_sizeMismatch_sendsError() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 		server.onMessage(conn, """{"id":"b3","command":"receive_file_begin","params":{"path":"m.bin","size":100}}""")
@@ -214,6 +224,7 @@ class WebSocketCommandServerTest {
 
 	@Test
 	fun onMessage_receiveFileEnd_apk_firesInstallIntent() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 		server.onMessage(conn, """{"id":"b4","command":"receive_file_begin","params":{"path":"y.apk","size":5}}""")
@@ -226,10 +237,13 @@ class WebSocketCommandServerTest {
 		assertThat(intent).isNotNull()
 		assertThat(intent.action).isEqualTo(Intent.ACTION_VIEW)
 		assertThat(intent.type).isEqualTo("application/vnd.android.package-archive")
+		// APK now installs from the MediaStore content uri, not a FileProvider file uri.
+		assertThat(intent.data?.scheme).isEqualTo("content")
 	}
 
 	@Test
 	fun onMessage_receiveFileEnd_nonApk_noInstallIntent() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 		server.onMessage(conn, """{"id":"b5","command":"receive_file_begin","params":{"path":"z.txt","size":3}}""")
@@ -266,6 +280,7 @@ class WebSocketCommandServerTest {
 
 	@Test
 	fun onClose_midTransfer_removesSession() {
+		injectInMemoryDownloadStream()
 		val conn = FakeWebSocket()
 		server.onOpen(conn, FakeHandshake())
 		server.onMessage(conn, """{"id":"b8","command":"receive_file_begin","params":{"path":"c.bin","size":4}}""")
@@ -283,11 +298,51 @@ class WebSocketCommandServerTest {
 	}
 
 	@Test
+	fun onMessage_receiveFileBegin_mediaStoreInsertFails_sendsError() {
+		// Simulate contentResolver.insert returning null (e.g. download volume
+		// unmounted). The begin handler must surface an error instead of
+		// registering a transfer with a null stream.
+		server.openDownloadStream = { _, _ -> null }
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+
+		server.onMessage(conn, """{"id":"b9","command":"receive_file_begin","params":{"path":"d.bin","size":4}}""")
+		awaitSent(conn)
+
+		assertThat(conn.sent.last()).contains("MediaStore insert failed")
+	}
+
+	@Test
+	fun mimeTypeFor_mapsExtensionsCorrectly() {
+		assertThat(WebSocketCommandServer.mimeTypeFor("app.apk")).isEqualTo("application/vnd.android.package-archive")
+		assertThat(WebSocketCommandServer.mimeTypeFor("APP.APK")).isEqualTo("application/vnd.android.package-archive")
+		assertThat(WebSocketCommandServer.mimeTypeFor("note.txt")).isEqualTo("text/plain")
+		assertThat(WebSocketCommandServer.mimeTypeFor("photo.jpg")).isEqualTo("image/jpeg")
+		assertThat(WebSocketCommandServer.mimeTypeFor("photo.jpeg")).isEqualTo("image/jpeg")
+		assertThat(WebSocketCommandServer.mimeTypeFor("icon.png")).isEqualTo("image/png")
+		assertThat(WebSocketCommandServer.mimeTypeFor("data.bin")).isEqualTo("application/octet-stream")
+		assertThat(WebSocketCommandServer.mimeTypeFor("noext")).isEqualTo("application/octet-stream")
+	}
+
+	@Test
 	fun onStart_setsTimeoutAndLogs() {
 		server.onStart()
 
 		assertThat(logs.any { it.startsWith("Server started on port") }).isTrue()
 		assertThat(server.connectionLostTimeout).isEqualTo(60)
+	}
+
+	private fun injectInMemoryDownloadStream() {
+		// Robolectric's ShadowMediaProvider inserts a MediaStore row but openOutputStream
+		// throws FileNotFoundException on the synthetic media authority, so the server's
+		// stream source is replaced with an in-memory sink. Production keeps the real
+		// MediaStore opener as the default. A synthetic content uri is returned so the
+		// APK install intent still carries a content:// scheme.
+		server.downloads.clear()
+		server.openDownloadStream = { name, _ ->
+			val stream = ByteArrayOutputStream().also { server.downloads[name] = it }
+			WebSocketCommandServer.DownloadSink(stream, android.net.Uri.parse("content://media/external/downloads/$name"))
+		}
 	}
 
 	private fun awaitSent(conn: FakeWebSocket, timeoutMs: Long = 3000) {
