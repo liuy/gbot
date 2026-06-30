@@ -27,23 +27,25 @@ type rpcCaller interface {
 }
 
 // dialer builds a connected rpcCaller for the given target. Production uses
-// wsDial; tests pass a fake that returns a fake rpcCaller without touching
-// the network.
+// the registry-backed regDial method; tests pass a fake that returns a fake
+// rpcCaller without touching the network.
 type dialer func(ctx context.Context, host string, port int, password string) (rpcCaller, error)
 
 // Compile-time check that the production client satisfies the seam.
 var _ rpcCaller = (*dpClient)(nil)
 
-// wsDial is the production dialer — construct a *dpClient (which dials inline
-// and starts the read loop) and return it.
-func wsDial(ctx context.Context, host string, port int, password string) (rpcCaller, error) {
-	c, err := newDPClient(host, port, password)
-	if err != nil {
-		return nil, err
+// regDial is the production connection source for the reversed architecture:
+// instead of dialing out, it looks up an already-established *dpClient in the
+// registry by the host the model passed to connect(host). The registry is
+// populated by the daemon's WS server (wsserver.go). port/password are
+// ignored (kept in the signature for dialer-type compatibility).
+func (b *AndroidBackend) regDial(_ context.Context, host string, _ int, _ string) (rpcCaller, error) {
+	if b.registry == nil {
+		return nil, errors.New("computer: daemon not running; start gbot with -d")
 	}
-	if err := c.connect(ctx); err != nil {
-		_ = c.close()
-		return nil, err
+	c, ok := b.registry.Get(host)
+	if !ok || c.IsClosed() {
+		return nil, fmt.Errorf("computer: no device connected from %s; ensure the GBot app is running and dialed this host", host)
 	}
 	return c, nil
 }
@@ -53,29 +55,46 @@ func wsDial(ctx context.Context, host string, port int, password string) (rpcCal
 // refs from the last Screen() are held in refs and resolved by
 // ClickElement/OpenMenuElement to the element's bounds center.
 //
-// Lock ordering invariant: AndroidBackend.mu is ALWAYS acquired before any
-// dpClient.mu. The dpClient read loop never acquires AndroidBackend.mu. The
-// only code touching both locks is Connect/Disconnect/ensureConnected, all of
-// which acquire b.mu first and then call client.close()/IsClosed() (which may
-// touch dpClient.mu). No dpClient method calls back into the backend, so the
-// total order has no cycle and the two-lock design cannot deadlock.
+// Lock ordering invariant: AndroidBackend.mu is NEVER held while acquiring
+// the registry RLock (regDial takes only the registry RLock, never b.mu), and
+// AndroidBackend.mu is ALWAYS acquired before any dpClient.mu. The dpClient
+// read loop never acquires AndroidBackend.mu. No dpClient method calls back
+// into the backend, so the total order has no cycle and the design cannot
+// deadlock.
 type AndroidBackend struct {
 	mu       sync.Mutex
 	client   rpcCaller // nil == not connected; *dpClient in prod, fake in tests
 	dial     dialer
-	host     string // last connected host (diagnostics only)
-	port     int    // last connected port
-	password string // retained so a manual reconnect needs no re-prompt
+	registry *ConnectionRegistry // nil in TUI mode/tests → regDial returns "daemon not running"
+	host     string              // last connected host (diagnostics only)
+	port     int                 // last connected port
+	password string              // retained so a manual reconnect needs no re-prompt
 	refs     *refRegistry
 }
 
-// NewAndroidBackend returns a disconnected backend. The tool is always
+// NewAndroidBackend returns a disconnected backend wired to the registry
+// path with a nil registry: Connect (via regDial) returns "daemon not
+// running". This is the constructor for unit tests that don't exercise
+// connect; production uses NewAndroidBackendWithRegistry. The tool is always
 // registered, so construction must never touch the network.
 func NewAndroidBackend() *AndroidBackend {
-	return &AndroidBackend{
-		dial: wsDial,
+	b := &AndroidBackend{
 		refs: newRefRegistry(),
 	}
+	b.dial = b.regDial
+	return b
+}
+
+// NewAndroidBackendWithRegistry returns a disconnected backend whose regDial
+// resolves connect(host) against reg. reg may be nil (TUI mode / sub-agent
+// contexts with no daemon) — regDial then returns "daemon not running".
+func NewAndroidBackendWithRegistry(reg *ConnectionRegistry) *AndroidBackend {
+	b := &AndroidBackend{
+		registry: reg,
+		refs:     newRefRegistry(),
+	}
+	b.dial = b.regDial
+	return b
 }
 
 // newAndroidBackendForTest constructs a backend with an injectable dialer so
@@ -94,13 +113,15 @@ func (b *AndroidBackend) IsConnected() bool {
 	return b.client != nil && !b.client.IsClosed()
 }
 
-// Connect dials ws://host:port (via b.dial) with an optional Bearer token.
-// The dial runs BEFORE b.mu is taken so a slow dial does not block in-flight
-// actions on the current connection. On dial success the old client (if any)
-// is swapped out under b.mu and then closed outside b.mu; on dial failure the
-// old connection is left untouched. So Connect leaves the backend either on
-// the new device or still on the old one — never half-open and never
-// accidentally disconnected.
+// Connect resolves an already-established client (via b.dial — regDial in
+// production) for the given host. The dial runs BEFORE b.mu is taken so a
+// slow lookup does not block in-flight actions on the current connection. On
+// dial success the old client POINTER is swapped out under b.mu but NOT
+// closed — registry-owned conns outlive one backend's connect cycle and stay
+// live in the registry for their source host. On dial failure the old
+// connection is left untouched. So Connect leaves the backend either on the
+// new device or still on the old one — never half-open and never accidentally
+// disconnected.
 func (b *AndroidBackend) Connect(ctx context.Context, host string, port int, password string) error {
 	// Already connected to the same device — skip the dial and return immediately.
 	if b.IsConnected() && b.host == host && b.port == port {
@@ -114,33 +135,25 @@ func (b *AndroidBackend) Connect(ctx context.Context, host string, port int, pas
 	}
 
 	b.mu.Lock()
-	old := b.client
 	b.client = newClient
 	b.host = host
 	b.port = port
 	b.password = password
 	b.refs.clear()
 	b.mu.Unlock()
-
-	// Close the old client outside b.mu (its close() acquires only dpClient.mu).
-	if old != nil {
-		_ = old.close()
-	}
+	// Do NOT close the old client: registry-owned (reversed arch). The old
+	// client stays live in the registry for its source host.
 	return nil
 }
 
-// Disconnect closes the current connection if any and clears the ref
-// registry. Idempotent: returns nil when already disconnected.
+// Disconnect forgets the current client without closing it; the registry owns
+// the conn lifetime. Clears the ref registry. Idempotent: returns nil when
+// already disconnected.
 func (b *AndroidBackend) Disconnect() error {
 	b.mu.Lock()
-	old := b.client
 	b.client = nil
 	b.refs.clear()
 	b.mu.Unlock()
-
-	if old != nil {
-		_ = old.close()
-	}
 	return nil
 }
 
@@ -148,8 +161,10 @@ func (b *AndroidBackend) Disconnect() error {
 // returns errNotConnected when no client is set OR when the current client's
 // read loop has terminated (async peer-close/read-error detected via
 // IsClosed). It never dials — Connect is the only place a connection opens.
-// On detecting a dead client it nils b.client + clears refs so the next
-// action reports a clean "not connected" state.
+// On detecting a dead client it nils b.client + clears refs (but does NOT
+// close it — the registry owns the conn; the dead conn stays in the map and
+// is overwritten by the next inbound Register) so the next action reports a
+// clean "not connected" state.
 func (b *AndroidBackend) ensureConnected(_ context.Context) error {
 	b.mu.Lock()
 	if b.client == nil {
@@ -157,11 +172,9 @@ func (b *AndroidBackend) ensureConnected(_ context.Context) error {
 		return errNotConnected
 	}
 	if b.client.IsClosed() {
-		old := b.client
 		b.client = nil
 		b.refs.clear()
 		b.mu.Unlock()
-		_ = old.close()
 		return errNotConnected
 	}
 	b.mu.Unlock()

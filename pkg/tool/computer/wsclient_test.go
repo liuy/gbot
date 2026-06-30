@@ -413,33 +413,6 @@ func errorsIsDeadline(err error) bool {
 	return strings.Contains(s, "deadline exceeded") || strings.Contains(s, "context canceled")
 }
 
-func TestWsDial_Success(t *testing.T) {
-	t.Parallel()
-	url := startWSServer(t, func(req rpcRequest) rpcResponse {
-		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
-	})
-	ctx := context.Background()
-	caller, err := wsDial(ctx, hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("wsDial: %v", err)
-	}
-	defer rpcClose(caller)
-	if caller.IsClosed() {
-		t.Error("wsDial caller IsClosed = true, want false")
-	}
-}
-
-func TestWsDial_DialFailure(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	// Dial a port that is not listening — newDPClient must return an error
-	// and wsDial propagates it.
-	_, err := wsDial(ctx, "127.0.0.1", 1, "")
-	if err == nil {
-		t.Fatal("wsDial on closed port returned nil, want error")
-	}
-}
-
 func TestDPClient_Connect_NoOp(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
@@ -586,12 +559,6 @@ func TestDecodeDeviceInfo_MalformedJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("decodeDeviceInfo returned nil for malformed JSON, want error")
 	}
-}
-
-// rpcClose closes an rpcCaller, wrapped to avoid a bare `_ =` that the
-// weak-test scanner flags.
-func rpcClose(c rpcCaller) {
-	_ = c.close()
 }
 
 func TestDPClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {

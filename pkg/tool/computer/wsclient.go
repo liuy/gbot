@@ -39,7 +39,8 @@ var errConnectionClosed = errors.New("computer: connection closed")
 // requests to responses by id. Mirrors mcp-server/src/android-client.ts
 // AndroidClient minus the EventEmitter surface — we use ctx + pending chans.
 type dpClient struct {
-	mu      sync.Mutex
+	mu      sync.Mutex // guards pending map
+	writeMu sync.Mutex // serializes all ws writes (shared across engines)
 	ws      *websocket.Conn
 	counter atomic.Int64
 	pending map[string]chan rpcResponse
@@ -58,12 +59,21 @@ func newDPClient(host string, port int, authToken string) (*dpClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("computer: dial %s: %w", url, err)
 	}
+	return newDPClientFromConn(ws), nil
+}
+
+// newDPClientFromConn wraps an already-established *websocket.Conn (whether
+// obtained by Dialing out or by a server-side Upgrade) in a *dpClient and
+// starts its read loop. Extracted from newDPClient so the WS server's
+// registry can wrap an accepted conn the same way the dialer wraps a dialed
+// one — the request/response matching is connection-direction-agnostic.
+func newDPClientFromConn(ws *websocket.Conn) *dpClient {
 	c := &dpClient{
 		ws:      ws,
 		pending: make(map[string]chan rpcResponse),
 	}
 	go c.readLoop()
-	return c, nil
+	return c
 }
 
 // connect is a hook mirroring the AndroidClient.connect() lifecycle. The
@@ -148,7 +158,10 @@ func (c *dpClient) call(ctx context.Context, command string, params map[string]a
 	}()
 
 	req := rpcRequest{ID: id, Command: command, Params: params}
-	if err := c.ws.WriteJSON(req); err != nil {
+	c.writeMu.Lock()
+	err := c.ws.WriteJSON(req)
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("computer: write %s: %w", command, err)
 	}
 
@@ -171,26 +184,20 @@ func (c *dpClient) call(ctx context.Context, command string, params map[string]a
 // guarantee, so callers stream chunks back-to-back between receive_file_begin
 // and receive_file_end.
 //
-// CONCURRENCY: c.mu here does NOT serialize against call()'s WriteJSON —
-// call() releases c.mu BEFORE calling c.ws.WriteJSON(req) (call() takes
-// c.mu.Lock(), registers the pending channel, then c.mu.Unlock() runs BEFORE
-// WriteJSON). So taking c.mu in sendBinary does not prevent a call()'s
-// WriteJSON from running concurrently.
-//
-// Safety today is flow-based, not lock-based: SendFile calls begin/stream/end
-// sequentially from ONE goroutine (the tool handler), and the Computer tool
-// declares IsConcurrencySafe_ = false, so the engine never invokes two
-// actions concurrently. The c.mu in sendBinary therefore only (a) guards the
-// closed.Load() check and (b) orders consecutive sendBinary calls against
-// each other. sendBinary and call() MUST NEVER be invoked concurrently from
-// different goroutines — doing so would race gorilla's internal writer.
+// CONCURRENCY: the registry *dpClient is SHARED across engines, so call() and
+// sendBinary can be invoked from different goroutines. writeMu serializes
+// every ws write (both WriteJSON in call and WriteMessage here) so gorilla's
+// single internal writer is never raced. c.mu still guards the closed check.
 func (c *dpClient) sendBinary(data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Load() {
 		return errConnectionClosed
 	}
-	if err := c.ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	c.writeMu.Lock()
+	err := c.ws.WriteMessage(websocket.BinaryMessage, data)
+	c.writeMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("computer: write binary: %w", err)
 	}
 	return nil

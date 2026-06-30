@@ -77,11 +77,14 @@ func dialAcceptConn(t *testing.T, url string) *websocket.Conn {
 
 // makeAcceptConnServer starts an httptest WS server that upgrades any conn
 // and returns the accepted *websocket.Conn on a channel so the test can wrap
-// it in a *deviceClient and Register it. The server keeps the conn open for
-// the test's lifetime.
+// it in a *deviceClient and Register it. The server holds the conn open
+// (without reading — the dpClient readLoop owns reads after Register) by
+// blocking on a per-conn channel until test cleanup.
 func makeAcceptConnServer(t *testing.T) (string, chan *websocket.Conn) {
 	t.Helper()
 	accepted := make(chan *websocket.Conn, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -92,12 +95,9 @@ func makeAcceptConnServer(t *testing.T) (string, chan *websocket.Conn) {
 		case accepted <- conn:
 		default:
 		}
-		// Hold the conn open until the test closes it; read-loop-ish block.
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
-		}
+		// Block until cleanup so the httptest handler does not return and
+		// tear the conn down. Do NOT read — the dpClient readLoop owns reads.
+		<-release
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -165,21 +165,18 @@ func TestConnectionRegistry_Close(t *testing.T) {
 	t.Parallel()
 	url, accepted := makeAcceptConnServer(t)
 	reg := NewConnectionRegistry()
+	registered := make([]*dpClient, 0, 2)
 	for i := 0; i < 2; i++ {
 		go dialAcceptConn(t, url)
 		select {
 		case ws := <-accepted:
-			reg.Register(hostKey(i), ws)
+			registered = append(registered, reg.Register(hostKey(i), ws))
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for accepted conn %d", i)
 		}
 	}
 	reg.Close()
-	for i := 0; i < 2; i++ {
-		c, ok := reg.Get(hostKey(i))
-		if !ok {
-			t.Fatalf("Get(%q) ok = false after Close", hostKey(i))
-		}
+	for i, c := range registered {
 		if !c.IsClosed() {
 			t.Errorf("client %d IsClosed = false after Close, want true", i)
 		}
