@@ -13,29 +13,35 @@ import com.google.gson.JsonSyntaxException
 import com.gbot.android.model.CommandRequest
 import com.gbot.android.model.CommandResponse
 import com.gbot.android.service.MobileAccessibilityService
-import org.java_websocket.WebSocket
-import org.java_websocket.handshake.ClientHandshake
-import org.java_websocket.server.WebSocketServer
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
 import java.io.File
 import java.io.OutputStream
-import java.net.InetSocketAddress
+import java.net.URI
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
-class WebSocketCommandServer(
-    appContext: Context,
-    port: Int,
+/**
+ * GbotWebSocketClient is the device-side WebSocket CLIENT: it dials the gbot
+ * daemon (ws://host:8765/ws) and stays connected for the lifetime of the
+ * foreground service. The reconnect loop lives in ConnectionForegroundService;
+ * this class only owns one connection's command/response protocol.
+ *
+ * The on-wire protocol is identical to the old server: gbot sends a
+ * CommandRequest, this client dispatches it (file ops inline, UI ops via the
+ * accessibility service) and replies with a CommandResponse. send_file streams
+ * binary frames bracketed by receive_file_begin/end; the MediaStore write +
+ * APK install logic is preserved verbatim from the server implementation.
+ */
+class GbotWebSocketClient(
+    private val serverUri: URI,
     private val onLog: (String) -> Unit,
     private val onConnectionChange: (Int) -> Unit
-) : WebSocketServer(InetSocketAddress(port)) {
-
-    // applicationContext avoids leaking an Activity passed in by the caller.
-    private val appContext = appContext.applicationContext
+) : WebSocketClient(serverUri) {
 
     companion object {
-        private const val TAG = "WSCommandServer"
+        private const val TAG = "GbotWSClient"
 
         // The MIME type drives the install intent (APK) and the MediaStore row; getting
         // it wrong makes the package installer reject the file silently.
@@ -53,15 +59,18 @@ class WebSocketCommandServer(
 
     private val gson = Gson()
     private val executor = Executors.newFixedThreadPool(4)
-    private val connectedClients = mutableSetOf<WebSocket>()
 
-    // Per-connection in-flight file transfer. Server-owned (not a conn
-    // attachment) so the test FakeWebSocket, which no-ops attachment ops, can
-    // still exercise begin/end/binary without modification.
-    //
-    // contentUri is the MediaStore row created at begin; installFromUri fires
-    // the installer at it instead of FileProvider. path is kept for the log
-    // line and the ack JSON (the on-wire protocol reports the basename).
+    // MediaStore writes need an application context; the foreground service
+    // sets this before connect. Throw clearly if unset — the service always
+    // sets it, so a null here is a programmer error, not a runtime condition.
+    private var appContext: Context? = null
+
+    fun setContext(ctx: Context) {
+        appContext = ctx.applicationContext
+    }
+
+    // Single in-flight file transfer. In the client direction there is only one
+    // connection (this), so the transfer is keyed on `this` rather than a conn.
     private data class FileTransferSession(
         var output: OutputStream? = null,
         var contentUri: Uri? = null,
@@ -69,82 +78,60 @@ class WebSocketCommandServer(
         var expectedSize: Long = 0L,
         var bytesWritten: Long = 0L
     )
-    private val transfers = mutableMapOf<WebSocket, FileTransferSession>()
+    private var transfer: FileTransferSession? = null
     private val transfersLock = Any()
 
-    // The MediaStore-backed stream opener. Defaulted to the production MediaStore
-    // implementation below; overridable by tests because Robolectric cannot
-    // round-trip openOutputStream on the synthetic media provider.
     internal var openDownloadStream: (name: String, size: Long) -> DownloadSink? =
         { name, size -> openMediaStoreDownload(name, size) }
-
-    // Test-only capture of opened streams keyed by file name. Unused in production.
     internal val downloads = mutableMapOf<String, OutputStream>()
-
-    // Holds the writable stream and the installable uri returned by a MediaStore insert.
     internal data class DownloadSink(val output: OutputStream, val uri: Uri)
 
-    // Optional: authentication token
-    var authToken: String? = null
-
-    // Latch released by onStart (success) or onError (bind failure). startSync
-    // blocks on it so the caller learns synchronously whether the socket bound.
-    private val startLatch = CountDownLatch(1)
-    @Volatile private var startError: Throwable? = null
-
     init {
-        // Allow rebinding a port left in TIME_WAIT by a previous crashed instance.
         isReuseAddr = true
     }
 
-    override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
-        val remoteAddr = conn.remoteSocketAddress?.toString() ?: "unknown"
-        Log.i(TAG, "Client connected: $remoteAddr")
-        onLog("Client connected: $remoteAddr")
+    private val closeLatch = CountDownLatch(1)
 
-        // Check auth token if set
-        if (authToken != null) {
-            val providedToken = handshake.getFieldValue("Authorization")
-            if (providedToken != "Bearer $authToken") {
-                conn.close(4001, "Unauthorized")
-                onLog("Client rejected (bad token): $remoteAddr")
-                return
-            }
-        }
-
-        synchronized(connectedClients) {
-            connectedClients.add(conn)
-        }
-        onConnectionChange(connectedClients.size)
+    /**
+     * awaitClose blocks the caller until onClose fires. The reconnect loop in
+     * ConnectionForegroundService calls this to wait for a peer-initiated close
+     * WITHOUT sending a close frame (closeBlocking() would initiate one).
+     */
+    fun awaitClose() {
+        closeLatch.await()
     }
 
-    override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
-        val remoteAddr = conn.remoteSocketAddress?.toString() ?: "unknown"
-        Log.i(TAG, "Client disconnected: $remoteAddr")
-        onLog("Client disconnected: $remoteAddr")
+    override fun onOpen(handshakedata: ServerHandshake?) {
+        Log.i(TAG, "Connected to gbot at $serverUri")
+        onLog("Connected to gbot at $serverUri")
+        onConnectionChange(1)
+    }
+
+    override fun onClose(code: Int, reason: String?, remote: Boolean) {
+        Log.i(TAG, "Disconnected from gbot: $reason")
+        onLog("Disconnected from gbot: $reason")
         // A dropped connection mid-transfer must free its output stream.
-        val session = synchronized(transfersLock) { transfers.remove(conn) }
+        val session = synchronized(transfersLock) { transfer }
         session?.output?.close()
-        synchronized(connectedClients) {
-            connectedClients.remove(conn)
-        }
-        onConnectionChange(connectedClients.size)
+        synchronized(transfersLock) { transfer = null }
+        onConnectionChange(0)
+        closeLatch.countDown()
     }
 
-    override fun onMessage(conn: WebSocket, message: String) {
+    override fun onMessage(message: String) {
         executor.submit {
             try {
                 val request = gson.fromJson(message, CommandRequest::class.java)
                 if (request.command == null) {
-                    sendError(conn, null, "Missing 'command' field")
+                    sendError(null, "Missing 'command' field")
                     return@submit
                 }
 
                 // File transfer commands bypass the accessibility service — they
                 // are file-system ops, not UI automation.
                 when (request.command) {
-                    "receive_file_begin" -> { handleFileBegin(conn, request); return@submit }
-                    "receive_file_end" -> { handleFileEnd(conn, request); return@submit }
+                    "receive_file_begin" -> { handleFileBegin(request); return@submit }
+                    "receive_file_end" -> { handleFileEnd(request); return@submit }
                 }
 
                 onLog(">> ${request.command}" +
@@ -152,61 +139,27 @@ class WebSocketCommandServer(
 
                 val service = MobileAccessibilityService.instance
                 if (service == null) {
-                    sendError(conn, request.id, "Accessibility service is not running. Enable it in Settings.")
+                    sendError(request.id, "Accessibility service is not running. Enable it in Settings.")
                     return@submit
                 }
 
                 val response = service.handleCommand(request)
-                // Stamp the request ID onto the response
                 val finalResponse = response.copy(id = request.id)
                 val json = gson.toJson(finalResponse)
-                conn.send(json)
+                send(json)
 
-                val preview = if (json.length > 200) json.take(200) + "..." else json
                 onLog("<< ${request.command}: ${if (finalResponse.success) "OK" else "ERR"}")
 
             } catch (e: JsonSyntaxException) {
-                sendError(conn, null, "Invalid JSON: ${e.message}")
+                sendError(null, "Invalid JSON: ${e.message}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing message", e)
-                sendError(conn, null, "Internal error: ${e.message}")
+                sendError(null, "Internal error: ${e.message}")
             }
         }
     }
 
-    override fun onError(conn: WebSocket?, ex: Exception) {
-        Log.e(TAG, "WebSocket error", ex)
-        onLog("Error: ${ex.message}")
-        // Capture the first error and release the latch so startSync can fail.
-        if (startLatch.count > 0) {
-            startError = ex
-            startLatch.countDown()
-        }
-    }
-
-    override fun onStart() {
-        Log.i(TAG, "WebSocket server started on port ${this.port}")
-        onLog("Server started on port ${this.port}")
-        connectionLostTimeout = 60
-        startLatch.countDown()
-    }
-
-    /**
-     * Starts the server synchronously: calls start() and blocks until onStart
-     * (bind succeeded) or onError (bind failed), up to [timeoutMs]. Throws on
-     * failure so the caller's try/catch can roll back UI state.
-     */
-    fun startSync(timeoutMs: Long = 3000L) {
-        start()
-        if (!startLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-            throw java.net.BindException("Server start timed out after ${timeoutMs}ms")
-        }
-        startError?.let { throw it }
-    }
-
-    fun getConnectionCount(): Int = synchronized(connectedClients) { connectedClients.size }
-
-    override fun onMessage(conn: WebSocket, bytes: ByteBuffer) {
+    override fun onMessage(bytes: ByteBuffer) {
         // Copy the ByteBuffer BEFORE entering the synchronized block: org.java_websocket
         // reuses/pools buffers, so we must materialize the bytes before the frame
         // returns. Doing the copy outside the lock keeps the critical section short.
@@ -214,17 +167,13 @@ class WebSocketCommandServer(
         bytes.get(copy)
 
         // The write + counter mutation MUST be inside synchronized(transfersLock):
-        // the library dispatches binary frames for ONE connection across MULTIPLE
-        // executor threads (the server's thread pool), so two frames for the same
-        // conn can run onMessage concurrently. Mutating session.output and
+        // the library can dispatch binary frames across multiple executor threads,
+        // so two frames can run onMessage concurrently. Mutating session.output and
         // session.bytesWritten outside the lock would be a data race (torn writes,
-        // lost counter increments). The session reference is also read under the
-        // same lock so we don't observe a half-removed entry during onClose.
+        // lost counter increments).
         synchronized(transfersLock) {
-            val session = transfers[conn]
+            val session = transfer
             if (session == null) {
-                // Binary frame with no active transfer — drop silently (no ack
-                // channel for binary frames). Log so a stray frame is diagnosable.
                 onLog("!! binary frame with no active transfer (${copy.size} bytes)")
                 return
             }
@@ -237,21 +186,26 @@ class WebSocketCommandServer(
         }
     }
 
-    private fun handleFileBegin(conn: WebSocket, request: CommandRequest) {
+    override fun onError(ex: Exception) {
+        Log.e(TAG, "WebSocket error", ex)
+        onLog("Error: ${ex.message}")
+    }
+
+    private fun handleFileBegin(request: CommandRequest) {
         val relPath = request.params?.get("path")?.asString
-            ?: return sendError(conn, request.id, "receive_file_begin requires 'path'")
+            ?: return sendError(request.id, "receive_file_begin requires 'path'")
         val size = request.params.get("size")?.asLong ?: 0L
         // Sanitize: basename only, reject traversal. The model never sends a
         // device path (Go sends filepath.Base), so any '/' or '..' is malformed.
         val name = File(relPath).name
         if (name.isEmpty() || name.contains("..")) {
-            return sendError(conn, request.id, "invalid path: $relPath")
+            return sendError(request.id, "invalid path: $relPath")
         }
         try {
             val sink = openDownloadStream(name, size)
-                ?: return sendError(conn, request.id, "open output: MediaStore insert failed")
+                ?: return sendError(request.id, "open output: MediaStore insert failed")
             synchronized(transfersLock) {
-                transfers[conn] = FileTransferSession(
+                transfer = FileTransferSession(
                     output = sink.output,
                     contentUri = sink.uri,
                     path = name,
@@ -260,33 +214,34 @@ class WebSocketCommandServer(
                 )
             }
         } catch (e: Exception) {
-            return sendError(conn, request.id, "open output: ${e.message}")
+            return sendError(request.id, "open output: ${e.message}")
         }
         onLog(">> receive_file_begin: $name ($size bytes)")
-        conn.send(gson.toJson(CommandResponse.success(request.id, JsonObject().apply {
+        send(gson.toJson(CommandResponse.success(request.id, JsonObject().apply {
             addProperty("path", name)
         })))
     }
 
-    private fun handleFileEnd(conn: WebSocket, request: CommandRequest) {
-        val session = synchronized(transfersLock) { transfers.remove(conn) }
+    private fun handleFileEnd(request: CommandRequest) {
+        val session = synchronized(transfersLock) { transfer }
+        synchronized(transfersLock) { transfer = null }
         val out = session?.output
         if (out == null) {
-            return sendError(conn, request.id, "receive_file_end without an active transfer")
+            return sendError(request.id, "receive_file_end without an active transfer")
         }
         out.close()
         if (session.expectedSize > 0 && session.bytesWritten != session.expectedSize) {
-            return sendError(conn, request.id,
+            return sendError(request.id,
                 "size mismatch: wrote ${session.bytesWritten}, expected ${session.expectedSize}")
         }
         val isApk = session.path.endsWith(".apk", ignoreCase = true)
         if (isApk) {
             val uri = session.contentUri
-                ?: return sendError(conn, request.id, "install failed: missing content uri")
+                ?: return sendError(request.id, "install failed: missing content uri")
             installFromUri(uri)
         }
         onLog("<< receive_file_end: ${session.path} (${session.bytesWritten} bytes)${if (isApk) " + install" else ""}")
-        conn.send(gson.toJson(CommandResponse.success(request.id, JsonObject().apply {
+        send(gson.toJson(CommandResponse.success(request.id, JsonObject().apply {
             addProperty("bytes", session.bytesWritten)
             addProperty("installed", isApk)
         })))
@@ -296,38 +251,41 @@ class WebSocketCommandServer(
     // directory so it shows in the user's file manager. RELATIVE_PATH places the
     // row; openOutputStream returns the streaming sink that binary frames write to.
     private fun openMediaStoreDownload(name: String, size: Long): DownloadSink? {
+        val ctx = appContext
+            ?: throw IllegalStateException("appContext not set; call setContext() before connect")
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeTypeFor(name))
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/gbot")
             if (size > 0) put(MediaStore.MediaColumns.SIZE, size)
         }
-        val uri = appContext.contentResolver.insert(
+        val uri = ctx.contentResolver.insert(
             MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
         ) ?: return null
-        val output = appContext.contentResolver.openOutputStream(uri, "w") ?: return null
+        val output = ctx.contentResolver.openOutputStream(uri, "w") ?: return null
         return DownloadSink(output, uri)
     }
 
     private fun installFromUri(uri: Uri) {
+        val ctx = appContext ?: return
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        appContext.startActivity(intent)
+        ctx.startActivity(intent)
     }
 
-    private fun sendError(conn: WebSocket, id: String?, message: String) {
+    private fun sendError(id: String?, message: String) {
         val response = CommandResponse.error(id, message)
-        conn.send(gson.toJson(response))
+        send(gson.toJson(response))
         onLog("<< ERROR: $message")
     }
 
     fun shutdown() {
         try {
             executor.shutdownNow()
-            stop(1000)
+            close()
         } catch (e: Exception) {
             Log.e(TAG, "Error shutting down", e)
         }

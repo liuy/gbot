@@ -15,7 +15,6 @@ import com.google.gson.JsonObject
 import com.gbot.android.model.CommandRequest
 import com.gbot.android.model.CommandResponse
 import com.gbot.android.model.UINode
-import com.gbot.android.server.WebSocketCommandServer
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch

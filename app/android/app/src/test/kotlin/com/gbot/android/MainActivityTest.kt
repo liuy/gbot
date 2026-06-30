@@ -6,8 +6,6 @@ import com.google.common.truth.Truth.assertThat
 import com.gbot.android.databinding.ActivityMainBinding
 import com.gbot.android.service.ConnectionForegroundService
 import com.gbot.android.service.MobileAccessibilityService
-import com.gbot.android.tunnel.SshTunnelConfig
-import com.gbot.android.tunnel.SshTunnelState
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -28,8 +26,6 @@ class MainActivityTest {
 	@Before
 	fun setup() {
 		activity = Robolectric.buildActivity(MainActivity::class.java).create().resume().get()
-		// MainActivity holds its own inflated binding; read it reflectively. Binding.bind(decorView)
-		// fails because the root ScrollView is nested under the framework DecorView, not the decor itself.
 		val field = MainActivity::class.java.getDeclaredField("binding")
 		field.isAccessible = true
 		@Suppress("UNCHECKED_CAST")
@@ -39,7 +35,6 @@ class MainActivityTest {
 	@After
 	fun teardown() {
 		builtService?.onDestroy()
-		// MainActivity.onDestroy stops the server if running; ensure no static state leaks out.
 	}
 
 	private fun setAccessibilityRunning() {
@@ -53,81 +48,15 @@ class MainActivityTest {
 	// --- onCreate ---
 
 	@Test
-	fun onCreate_setsDisconnectedStatus_andDefaultPort() {
+	fun onCreate_setsDisconnectedStatus_andConnectButtonLabel() {
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
 		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
 	}
 
 	@Test
-	fun onCreate_loadsSshConfig_defaultsIntoFields() {
-		assertThat(binding.etServer.text.toString()).isEmpty()
-		assertThat(binding.etSshPort.text.toString()).isEqualTo("22")
-		assertThat(binding.etSshUser.text.toString()).isEmpty()
-		assertThat(binding.etRemotePort.text.toString()).isEqualTo("8765")
-		assertThat(binding.etLocalPort.text.toString()).isEqualTo("8765")
-	}
-
-	@Test
-	fun onCreate_wifiTabSelected_sshGroupGone() {
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.VISIBLE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
-	}
-
-	// --- tabs ---
-
-	@Test
-	fun clickSshTab_switchesVisibility_andCurrentMode() {
-		binding.tabSsh.performClick()
-
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.VISIBLE)
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
-		// Empty SSH host routes to the disconnected string.
-		assertThat(binding.tvIpAddress.text.toString()).isEqualTo("Disconnected")
-	}
-
-	@Test
-	fun clickWifiTab_afterSsh_restoresWifiGroup() {
-		binding.tabSsh.performClick()
-		binding.tabWifi.performClick()
-
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.VISIBLE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
-	}
-
-	// --- SSH field persistence ---
-
-	@Test
-	fun sshFields_persistOnFocusChange() {
-		binding.tabSsh.performClick()
-		binding.etServer.setText("myhost")
-		binding.etSshUser.setText("myuser")
-
-		binding.etServer.onFocusChangeListener.onFocusChange(binding.etServer, false)
-
-		val cfg = SshTunnelConfig.load(activity)
-		assertThat(cfg.host).isEqualTo("myhost")
-		assertThat(cfg.user).isEqualTo("myuser")
-	}
-
-	@Test
-	fun readSshConfigFromFields_invalidPortString_fallsBackToDefault() {
-		binding.tabSsh.performClick()
-		binding.etSshPort.setText("abc")
-
-		binding.etSshPort.onFocusChangeListener.onFocusChange(binding.etSshPort, false)
-
-		assertThat(SshTunnelConfig.load(activity).port).isEqualTo(22)
-	}
-
-	@Test
-	fun readSshConfigFromFields_invalidRemotePort_fallsBackToDefault() {
-		binding.tabSsh.performClick()
-		binding.etRemotePort.setText("nope")
-
-		binding.etRemotePort.onFocusChangeListener.onFocusChange(binding.etRemotePort, false)
-
-		assertThat(SshTunnelConfig.load(activity).remotePort).isEqualTo(8765)
+	fun onCreate_showsServerConfigGroup() {
+		assertThat(binding.serverConfigGroup.visibility).isEqualTo(View.VISIBLE)
 	}
 
 	// --- accessibility status ---
@@ -155,148 +84,80 @@ class MainActivityTest {
 		binding.btnToggleServer.performClick()
 
 		assertThat(binding.tvLog.text.toString()).contains("Accessibility service is not enabled!")
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
 	}
 
 	@Test
-	fun startServer_wifiMode_startsServerAndForegroundService() {
+	fun startServer_emptyHost_logsError_doesNotStart() {
 		setAccessibilityRunning()
-		val localPort = freePort()
-		binding.etPort.setText(localPort.toString())
+		// Host left empty — must not start.
+		binding.btnToggleServer.performClick()
+
+		assertThat(binding.tvLog.text.toString()).contains("gbot server host")
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
+	}
+
+	@Test
+	fun startServer_withHost_startsForegroundServiceWithHostAndPort() {
+		setAccessibilityRunning()
+		val port = freePort()
+		binding.etServer.setText("192.168.1.10")
+		binding.etPort.setText(port.toString())
 
 		binding.btnToggleServer.performClick()
 
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Stop Server")
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Disconnect")
 		val serviceIntent = shadowOf(activity).nextStartedService
 		assertThat(serviceIntent.component!!.className).isEqualTo(ConnectionForegroundService::class.java.name)
-		assertThat(serviceIntent.getIntExtra(ConnectionForegroundService.EXTRA_PORT, -1)).isEqualTo(localPort)
-		assertThat(serviceIntent.getBooleanExtra(ConnectionForegroundService.EXTRA_USE_SSH, true)).isFalse()
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(serviceIntent.getStringExtra(ConnectionForegroundService.EXTRA_HOST)).isEqualTo("192.168.1.10")
+		assertThat(serviceIntent.getIntExtra(ConnectionForegroundService.EXTRA_PORT, -1)).isEqualTo(port)
+		assertThat(binding.serverConfigGroup.visibility).isEqualTo(View.GONE)
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
-	}
-
-	@Test
-	fun startServer_sshMode_invalidConfig_logsError() {
-		setAccessibilityRunning()
-		binding.tabSsh.performClick()
-		// Fields left empty -> invalid config.
-		binding.btnToggleServer.performClick()
-
-		assertThat(binding.tvLog.text.toString()).contains("Please fill Server, User, and Password")
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
 	}
 
 	@Test
 	fun stopServer_afterStart_resetsUi() {
 		setAccessibilityRunning()
-		val localPort = freePort()
-		binding.etPort.setText(localPort.toString())
+		binding.etServer.setText("127.0.0.1")
+		binding.etPort.setText(freePort().toString())
 		binding.btnToggleServer.performClick()
 
 		binding.btnToggleServer.performClick()
 
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Connect")
 		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.VISIBLE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(binding.serverConfigGroup.visibility).isEqualTo(View.VISIBLE)
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
-		assertThat(binding.tvLog.text.toString()).contains("Server stopped")
+		assertThat(binding.tvLog.text.toString()).contains("Disconnected")
 	}
 
 	@Test
-	fun switchTab_whileServerRunning_keepsConfigGroupsHidden() {
+	fun connSink_connected_setsConnectedStatus() {
 		setAccessibilityRunning()
+		binding.etServer.setText("127.0.0.1")
 		binding.etPort.setText(freePort().toString())
 		binding.btnToggleServer.performClick()
-		// Sanity: both groups hidden after start (WiFi mode).
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
 
-		// Switch to SSH tab while running — groups must STAY hidden.
-		binding.tabSsh.performClick()
+		// Simulate the foreground service reporting an established connection.
+		ConnectionForegroundService.connSink?.invoke(1)
 
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(binding.tvConnections.text.toString()).isEqualTo("1")
+		assertThat(binding.tvStatus.text.toString()).isEqualTo("Connected")
 	}
 
 	@Test
-	fun switchTab_afterStop_showsActiveConfigGroup() {
+	fun connSink_disconnected_setsWaitingStatus() {
 		setAccessibilityRunning()
+		binding.etServer.setText("127.0.0.1")
 		binding.etPort.setText(freePort().toString())
 		binding.btnToggleServer.performClick()
-		binding.btnToggleServer.performClick()
+		ConnectionForegroundService.connSink?.invoke(1)
 
-		// After stop, switch to SSH — SSH group should show.
-		binding.tabSsh.performClick()
+		// Drop the connection — must go back to WAITING (still running).
+		ConnectionForegroundService.connSink?.invoke(0)
 
-		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.VISIBLE)
-		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
-	}
-
-	@Test
-	fun startServer_portBusy_doesNotSetRunning_andStaysStartState() {
-		setAccessibilityRunning()
-		// Pre-occupy the port with an unrelated server so the real server's bind fails.
-		val busyPort = freePort()
-		val occupant = java.net.ServerSocket(busyPort)
-		binding.etPort.setText(busyPort.toString())
-
-		binding.btnToggleServer.performClick()
-
-		// Bind failure must leave the UI in the "not running" state — the user should
-		// see Start Server, not a misleading Stop Server with a dead socket behind it.
-		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
-		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
-		assertThat(binding.tvLog.text.toString()).contains("Failed to start server")
-
-		occupant.close()
-	}
-
-	// --- handleTunnelState (private, reflective) ---
-
-	private fun invokeHandleTunnelState(state: SshTunnelState) {
-		MainActivity::class.java.getDeclaredMethod("handleTunnelState", SshTunnelState::class.java)
-			.apply { isAccessible = true }
-			.invoke(activity, state)
-	}
-
-	@Test
-	fun handleTunnelState_connected_setsWaitingWhenNoConnections() {
-		invokeHandleTunnelState(SshTunnelState.Connected)
-
-		assertThat(binding.tvLog.text.toString()).contains("SSH tunnel connected")
-		// Connected arm sets WAITING when connections == 0 (no WebSocket client yet).
+		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
-	}
-
-	@Test
-	fun handleTunnelState_connecting_setsWaiting() {
-		invokeHandleTunnelState(SshTunnelState.Connecting)
-
-		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
-	}
-
-	@Test
-	fun handleTunnelState_reconnecting_setsWaiting() {
-		invokeHandleTunnelState(SshTunnelState.Reconnecting(5))
-
-		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
-	}
-
-	@Test
-	fun handleTunnelState_stopped_logs() {
-		invokeHandleTunnelState(SshTunnelState.Stopped)
-
-		assertThat(binding.tvLog.text.toString()).contains("SSH tunnel disconnected")
-	}
-
-	@Test
-	fun handleTunnelState_idle_noChange() {
-		val before = binding.tvLog.text.toString()
-		invokeHandleTunnelState(SshTunnelState.Idle)
-
-		assertThat(binding.tvLog.text.toString()).isEqualTo(before)
 	}
 
 	// --- appendLog (private, reflective) ---
@@ -311,26 +172,7 @@ class MainActivityTest {
 		assertThat(binding.tvLog.text.length).isEqualTo(5000)
 	}
 
-	// --- getDeviceIpAddress / updateIPAddress ---
-
-	@Test
-	fun getDeviceIpAddress_returnsNull_whenNoWifi() {
-		val ip = MainActivity::class.java.getDeclaredMethod("getDeviceIpAddress")
-			.apply { isAccessible = true }
-			.invoke(activity) as String?
-
-		// Robolectric's WifiManager reports ipAddress == 0, which the code maps to null.
-		assertThat(ip).isNull()
-	}
-
-	@Test
-	fun updateIPAddress_wifiMode_showsNotConnectedWhenNoIp() {
-		// WiFi is the default mode; onResume -> updateIPAddress with a null device IP.
-		assertThat(binding.tvIpAddress.text.toString()).isEqualTo("Not connected to WiFi")
-	}
-
 	private fun freePort(): Int {
-		// Bind and immediately release so the OS assigns a free port for the server to bind.
 		return java.net.ServerSocket(0).use { it.localPort }
 	}
 }

@@ -52,38 +52,6 @@
                 android:orientation="vertical"
                 android:padding="20dp">
 
-                <!-- Tab bar -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:padding="4dp">
-
-                    <TextView
-                        android:id="@+id/tabWifi"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_weight="1"
-                        android:gravity="center"
-                        android:text="@string/tab_wifi"
-                        android:textColor="@color/text_white"
-                        android:textSize="14sp"
-                        android:background="@drawable/tab_indicator"
-                        android:paddingHorizontal="32dp" />
-
-                    <TextView
-                        android:id="@+id/tabSsh"
-                        android:layout_width="0dp"
-                        android:layout_height="40dp"
-                        android:layout_weight="1"
-                        android:gravity="center"
-                        android:text="@string/tab_ssh_tunnel"
-                        android:textColor="@color/text_light"
-                        android:textSize="14sp"
-                        android:background="@drawable/tab_indicator"
-                        android:paddingHorizontal="32dp" />
-                </LinearLayout>
-
                 <!-- Status section -->
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -107,9 +75,10 @@
                         android:textColor="@color/text_white"
                         android:textSize="18sp"
                         android:textStyle="bold" />
+
                 </LinearLayout>
 
-                <!-- Device IP and Connections -->
+                <!-- Server host and Connections -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -126,7 +95,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/label_device_ip"
+                            android:text="@string/label_gbot_host"
                             android:textAllCaps="true"
                             android:letterSpacing="0.08"
                             android:textColor="@color/text_muted"
@@ -170,65 +139,28 @@
                             android:textSize="14sp"
                             android:fontFamily="monospace" />
                     </LinearLayout>
+
                 </LinearLayout>
 
-                <!-- Port field (WiFi mode) -->
+                <!-- Config group: gbot host + port -->
                 <LinearLayout
-                    android:id="@+id/wifiConfigGroup"
+                    android:id="@+id/serverConfigGroup"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:orientation="vertical">
 
-                    <TextView
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:text="@string/label_port"
-                        android:textAllCaps="true"
-                        android:letterSpacing="0.08"
-                        android:textColor="@color/text_muted"
-                        android:textSize="12sp"
-                        android:gravity="start"
-                        android:labelFor="@+id/etPort" />
-
-                    <EditText
-                        android:id="@+id/etPort"
-                        android:layout_width="120dp"
-                        android:layout_height="48dp"
-                        android:background="@drawable/edit_text_bg_glass"
-                        android:gravity="center"
-                        android:inputType="number"
-                        android:maxLength="5"
-                        android:padding="8dp"
-                        android:text="@string/default_port"
-                        android:textColor="@color/text_white"
-                        android:textSize="16sp"
-                        android:fontFamily="monospace"
-                        android:importantForAutofill="no" />
-                </LinearLayout>
-
-                <!-- SSH config group (hidden by default) -->
-                <LinearLayout
-                    android:id="@+id/sshConfigGroup"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:orientation="vertical"
-                    android:visibility="gone">
-
-                    <!-- Server -->
+                    <!-- GBot Host -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
                         android:gravity="center_vertical"
                         android:orientation="horizontal">
 
                         <TextView
                             android:layout_width="100dp"
                             android:layout_height="wrap_content"
-                            android:text="@string/label_server"
+                            android:text="@string/label_gbot_host"
                             android:textAllCaps="true"
                             android:letterSpacing="0.08"
                             android:textColor="@color/text_muted"
@@ -250,7 +182,7 @@
                             android:importantForAutofill="no" />
                     </LinearLayout>
 
-                    <!-- SSH Port -->
+                    <!-- Port -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -261,155 +193,27 @@
                         <TextView
                             android:layout_width="100dp"
                             android:layout_height="wrap_content"
-                            android:text="@string/label_ssh_port"
+                            android:text="@string/label_port"
                             android:textAllCaps="true"
                             android:letterSpacing="0.08"
                             android:textColor="@color/text_muted"
                             android:textSize="12sp"
-                            android:gravity="start" />
+                            android:gravity="start"
+                            android:labelFor="@+id/etPort" />
 
                         <EditText
-                            android:id="@+id/etSshPort"
-                            android:layout_width="0dp"
+                            android:id="@+id/etPort"
+                            android:layout_width="120dp"
                             android:layout_height="48dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
                             android:background="@drawable/edit_text_bg_glass"
+                            android:gravity="center"
                             android:inputType="number"
-                            android:padding="8dp"
-                            android:text="@string/default_ssh_port"
-                            android:textColor="@color/text_white"
-                            android:textSize="16sp"
-                            android:importantForAutofill="no" />
-                    </LinearLayout>
-
-                    <!-- User -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:layout_width="100dp"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_ssh_user"
-                            android:textAllCaps="true"
-                            android:letterSpacing="0.08"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp"
-                            android:gravity="start" />
-
-                        <EditText
-                            android:id="@+id/etSshUser"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/edit_text_bg_glass"
-                            android:inputType="text"
-                            android:padding="8dp"
-                            android:textColor="@color/text_white"
-                            android:textSize="16sp"
-                            android:importantForAutofill="no" />
-                    </LinearLayout>
-
-                    <!-- Password -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:layout_width="100dp"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_ssh_password"
-                            android:textAllCaps="true"
-                            android:letterSpacing="0.08"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp"
-                            android:gravity="start" />
-
-                        <EditText
-                            android:id="@+id/etSshPassword"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/edit_text_bg_glass"
-                            android:inputType="textPassword"
-                            android:padding="8dp"
-                            android:textColor="@color/text_white"
-                            android:textSize="16sp"
-                            android:importantForAutofill="no" />
-                    </LinearLayout>
-
-                    <!-- Remote Port -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:layout_width="100dp"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_remote_port"
-                            android:textAllCaps="true"
-                            android:letterSpacing="0.08"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp"
-                            android:gravity="start" />
-
-                        <EditText
-                            android:id="@+id/etRemotePort"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/edit_text_bg_glass"
-                            android:inputType="number"
+                            android:maxLength="5"
                             android:padding="8dp"
                             android:text="@string/default_port"
                             android:textColor="@color/text_white"
                             android:textSize="16sp"
-                            android:importantForAutofill="no" />
-                    </LinearLayout>
-
-                    <!-- Local Port -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            android:layout_width="100dp"
-                            android:layout_height="wrap_content"
-                            android:text="@string/label_local_port"
-                            android:textAllCaps="true"
-                            android:letterSpacing="0.08"
-                            android:textColor="@color/text_muted"
-                            android:textSize="12sp"
-                            android:gravity="start" />
-
-                        <EditText
-                            android:id="@+id/etLocalPort"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/edit_text_bg_glass"
-                            android:inputType="number"
-                            android:padding="8dp"
-                            android:text="@string/default_port"
-                            android:textColor="@color/text_white"
-                            android:textSize="16sp"
+                            android:fontFamily="monospace"
                             android:importantForAutofill="no" />
                     </LinearLayout>
                 </LinearLayout>
@@ -454,6 +258,7 @@
                         android:text="@string/accessibility_status_off"
                         android:textColor="@color/text_white"
                         android:textSize="14sp" />
+
                 </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
@@ -467,7 +272,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Start/Stop Button -->
+        <!-- Connect/Disconnect Button -->
         <Button
             android:id="@+id/btnToggleServer"
             android:layout_width="wrap_content"
@@ -477,7 +282,7 @@
             android:paddingStart="64dp"
             android:paddingEnd="64dp"
             android:background="@drawable/btn_gradient"
-            android:text="@string/btn_start_server"
+            android:text="@string/btn_connect"
             android:textColor="@color/text_white"
             android:textSize="16sp"
             android:textStyle="bold" />

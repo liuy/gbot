@@ -4,7 +4,6 @@ import android.app.NotificationManager
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
-import com.gbot.android.tunnel.SshTunnelState
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -22,14 +21,16 @@ class ConnectionForegroundServiceTest {
 
 	@Before
 	fun setup() {
+		ConnectionForegroundService.logSink = null
+		ConnectionForegroundService.connSink = null
 		service = Robolectric.buildService(ConnectionForegroundService::class.java).create().get()
 	}
 
 	@After
 	fun teardown() {
-		// logSink/stateSink are static vars; clear them so they don't leak into other test classes.
+		// logSink/connSink are static vars; clear them so they don't leak into other test classes.
 		ConnectionForegroundService.logSink = null
-		ConnectionForegroundService.stateSink = null
+		ConnectionForegroundService.connSink = null
 		service.onDestroy()
 	}
 
@@ -50,8 +51,9 @@ class ConnectionForegroundServiceTest {
 	}
 
 	@Test
-	fun onStartCommand_wifiMode_startsForegroundAndReturnsSticky() {
+	fun onStartCommand_startsForegroundWithHostAndPort_returnsSticky() {
 		val intent = Intent(ApplicationProvider.getApplicationContext(), ConnectionForegroundService::class.java)
+			.putExtra(ConnectionForegroundService.EXTRA_HOST, "192.168.1.5")
 			.putExtra(ConnectionForegroundService.EXTRA_PORT, 9999)
 
 		val result = service.onStartCommand(intent, 0, 0)
@@ -66,45 +68,51 @@ class ConnectionForegroundServiceTest {
 	}
 
 	@Test
-	fun onStartCommand_sshMode_emitsConnectingAndErrorLog() {
-		ConnectionForegroundService.logSink = null
-		ConnectionForegroundService.stateSink = null
-		val logs = mutableListOf<String>()
-		val states = mutableListOf<SshTunnelState>()
-		ConnectionForegroundService.logSink = { logs.add(it) }
-		ConnectionForegroundService.stateSink = { states.add(it) }
-
+	fun onStartCommand_defaultPortIs8765_whenExtraMissing() {
+		// onStartCommand must still start the client loop against the default port.
 		val intent = Intent(ApplicationProvider.getApplicationContext(), ConnectionForegroundService::class.java)
-			.putExtra(ConnectionForegroundService.EXTRA_USE_SSH, true)
+			.putExtra(ConnectionForegroundService.EXTRA_HOST, "127.0.0.1")
 
-		service.onStartCommand(intent, 0, 0)
+		val result = service.onStartCommand(intent, 0, 0)
 
-		// Empty SSH host fails fast; poll up to 2s for the Connecting state + error log.
-		val start = System.currentTimeMillis()
-		while (System.currentTimeMillis() - start < 2000 &&
-			(!states.contains(SshTunnelState.Connecting) || logs.none { it.startsWith("SSH error:") })
-		) {
-			Thread.sleep(20)
-		}
-		assertThat(states).contains(SshTunnelState.Connecting)
-		assertThat(logs.any { it.startsWith("SSH error:") }).isTrue()
+		assertThat(result).isEqualTo(android.app.Service.START_STICKY)
 	}
 
 	@Test
-	fun onDestroy_afterSshStart_emitsStoppedWithoutThrowing() {
-		val states = mutableListOf<SshTunnelState>()
-		ConnectionForegroundService.stateSink = { states.add(it) }
+	fun onStartCommand_emitsConnectAttemptToLogSink() {
+		val logs = mutableListOf<String>()
+		ConnectionForegroundService.logSink = { logs.add(it) }
 
+		// Dial a port nothing is listening on so the connect fails fast and logs.
 		val intent = Intent(ApplicationProvider.getApplicationContext(), ConnectionForegroundService::class.java)
-			.putExtra(ConnectionForegroundService.EXTRA_USE_SSH, true)
+			.putExtra(ConnectionForegroundService.EXTRA_HOST, "127.0.0.1")
+			.putExtra(ConnectionForegroundService.EXTRA_PORT, freeUnusedPort())
 		service.onStartCommand(intent, 0, 0)
 
-		service.onDestroy()
-
+		// Poll up to 3s for a connect-failed/refused log line.
 		val start = System.currentTimeMillis()
-		while (System.currentTimeMillis() - start < 2000 && !states.contains(SshTunnelState.Stopped)) {
+		while (System.currentTimeMillis() - start < 3000 &&
+			logs.none { it.contains("Connect") }
+		) {
 			Thread.sleep(20)
 		}
-		assertThat(states).contains(SshTunnelState.Stopped)
+		assertThat(logs.any { it.contains("Connect") }).isTrue()
+	}
+
+	@Test
+	fun onDestroy_stopsClientLoopWithoutThrowing() {
+		val intent = Intent(ApplicationProvider.getApplicationContext(), ConnectionForegroundService::class.java)
+			.putExtra(ConnectionForegroundService.EXTRA_HOST, "127.0.0.1")
+			.putExtra(ConnectionForegroundService.EXTRA_PORT, freeUnusedPort())
+		service.onStartCommand(intent, 0, 0)
+
+		// Must not throw even with an in-flight connect loop.
+		service.onDestroy()
+	}
+
+	private fun freeUnusedPort(): Int {
+		// Bind and immediately release so the OS assigns a free port that no WS
+		// server listens on, forcing the client connect to fail/refuse.
+		return java.net.ServerSocket(0).use { it.localPort }
 	}
 }
