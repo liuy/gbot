@@ -171,6 +171,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
+            // Clear any leftover server instance (crash recovery / stopped-but-not-niled).
+            wsServer?.shutdown()
+
             wsServer = WebSocketCommandServer(
                 port = port,
                 onLog = { message -> runOnUiThread { appendLog(message) } },
@@ -185,7 +188,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             )
-            wsServer?.start()
+            wsServer?.startSync()
 
             ConnectionForegroundService.logSink = { msg ->
                 runOnUiThread { appendLog(msg) }
@@ -207,6 +210,8 @@ class MainActivity : AppCompatActivity() {
             }
 
         } catch (e: Exception) {
+            wsServer?.shutdown()
+            wsServer = null
             appendLog("Failed to start server: ${e.message}")
         }
     }

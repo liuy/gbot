@@ -10,7 +10,9 @@ import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class WebSocketCommandServer(
     port: Int,
@@ -28,6 +30,16 @@ class WebSocketCommandServer(
 
     // Optional: authentication token
     var authToken: String? = null
+
+    // Latch released by onStart (success) or onError (bind failure). startSync
+    // blocks on it so the caller learns synchronously whether the socket bound.
+    private val startLatch = CountDownLatch(1)
+    @Volatile private var startError: Throwable? = null
+
+    init {
+        // Allow rebinding a port left in TIME_WAIT by a previous crashed instance.
+        isReuseAddr = true
+    }
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         val remoteAddr = conn.remoteSocketAddress?.toString() ?: "unknown"
@@ -99,12 +111,31 @@ class WebSocketCommandServer(
     override fun onError(conn: WebSocket?, ex: Exception) {
         Log.e(TAG, "WebSocket error", ex)
         onLog("Error: ${ex.message}")
+        // Capture the first error and release the latch so startSync can fail.
+        if (startLatch.count > 0) {
+            startError = ex
+            startLatch.countDown()
+        }
     }
 
     override fun onStart() {
         Log.i(TAG, "WebSocket server started on port ${this.port}")
         onLog("Server started on port ${this.port}")
         connectionLostTimeout = 60
+        startLatch.countDown()
+    }
+
+    /**
+     * Starts the server synchronously: calls start() and blocks until onStart
+     * (bind succeeded) or onError (bind failed), up to [timeoutMs]. Throws on
+     * failure so the caller's try/catch can roll back UI state.
+     */
+    fun startSync(timeoutMs: Long = 3000L) {
+        start()
+        if (!startLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            throw java.net.BindException("Server start timed out after ${timeoutMs}ms")
+        }
+        startError?.let { throw it }
     }
 
     fun getConnectionCount(): Int = synchronized(connectedClients) { connectedClients.size }

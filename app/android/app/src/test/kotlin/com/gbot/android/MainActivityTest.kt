@@ -234,6 +234,25 @@ class MainActivityTest {
 		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
 	}
 
+	@Test
+	fun startServer_portBusy_doesNotSetRunning_andStaysStartState() {
+		setAccessibilityRunning()
+		// Pre-occupy the port with an unrelated server so the real server's bind fails.
+		val busyPort = freePort()
+		val occupant = java.net.ServerSocket(busyPort)
+		binding.etPort.setText(busyPort.toString())
+
+		binding.btnToggleServer.performClick()
+
+		// Bind failure must leave the UI in the "not running" state — the user should
+		// see Start Server, not a misleading Stop Server with a dead socket behind it.
+		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
+		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
+		assertThat(binding.tvLog.text.toString()).contains("Failed to start server")
+
+		occupant.close()
+	}
+
 	// --- handleTunnelState (private, reflective) ---
 
 	private fun invokeHandleTunnelState(state: SshTunnelState) {
