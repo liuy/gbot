@@ -13,7 +13,7 @@ export default function CodeBlock({
 }: CodeProps) {
   if (inline) {
     return (
-      <code className="rounded bg-card px-1.5 py-0.5 font-mono text-[13px] text-blue">
+      <code className="rounded bg-card px-1.5 py-0.5 font-mono text-sm text-blue">
         {children}
       </code>
     )
@@ -22,7 +22,7 @@ export default function CodeBlock({
   const text = String(children ?? '').replace(/\n$/, '')
 
   return (
-    <pre className="overflow-x-auto px-3 py-1.5 font-mono text-[13px] leading-relaxed text-t2">
+    <pre className="overflow-x-auto px-3 py-1.5 font-mono text-sm leading-relaxed text-t2">
       <code>{text}</code>
     </pre>
   )

@@ -517,7 +517,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 	var env struct {
 		Type     string `json:"type"`
 		Messages []struct {
-			Role   string `json:"role"`
+			Role   string                       `json:"role"`
 			Blocks []map[string]json.RawMessage `json:"blocks"`
 		} `json:"messages"`
 	}
@@ -596,7 +596,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 
 	var env struct {
 		Messages []struct {
-			Role   string `json:"role"`
+			Role   string                       `json:"role"`
 			Blocks []map[string]json.RawMessage `json:"blocks"`
 		} `json:"messages"`
 	}

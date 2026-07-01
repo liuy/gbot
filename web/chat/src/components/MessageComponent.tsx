@@ -21,9 +21,9 @@ export default function MessageComponent({
       <div className="grid grid-cols-[auto_1fr_auto] gap-x-2">
         <div className={isUser ? 'invisible' : avatarG}>G</div>
 
-        <div className={isUser ? 'text-right' : ''}>
+        <div>
           {isUser ? (
-            <div className="text-t1 text-[15px]">
+            <div className="ml-auto w-fit text-left text-t1 text-[15px]">
               {message.textChunks.map((c) => c.text).join('')}
             </div>
           ) : (

@@ -96,3 +96,62 @@ body {
   background: rgba(120, 180, 255, 0.15);
   border-radius: 3px;
 }
+
+/* Markdown body — scoped styles for tables and blockquotes */
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.875rem;
+}
+.md-body th, .md-body td {
+  border: 1px solid var(--color-hairline);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md-body th {
+  background: rgba(120, 180, 255, 0.05);
+  font-weight: 600;
+}
+.md-body tr:nth-child(even) {
+  background: rgba(120, 180, 255, 0.02);
+}
+.md-body blockquote {
+  border-left: 3px solid var(--color-blue);
+  padding-left: 12px;
+  margin: 0.5em 0;
+  color: var(--color-t2);
+}
+.md-body p { margin: 0.3em 0; }
+.md-body ul { list-style-type: disc; padding-left: 1.5em; margin: 0.3em 0; }
+.md-body ol { list-style-type: decimal; padding-left: 1.5em; margin: 0.3em 0; }
+.md-body li { margin: 0.15em 0; }
+.md-body h1, .md-body h2, .md-body h3 { font-weight: 600; margin: 0.5em 0 0.2em; }
+.md-body h1 { font-size: 1.25em; }
+.md-body h2 { font-size: 1.15em; }
+.md-body h3 { font-size: 1.05em; }
+.md-body a { color: var(--color-blue); text-decoration: underline; }
+.md-body hr { border: none; border-top: 1px solid var(--color-hairline); margin: 0.8em 0; }
+/* Inline code — inline <code> not inside <pre> */
+.md-body code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  display: inline;
+}
+.md-body pre code {
+  font-size: inherit;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+}
+.md-body :not(pre) > code {
+  background: color-mix(in srgb, var(--color-blue) 12%, transparent);
+  color: var(--color-blue);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+.md-body pre {
+  overflow-x: auto;
+  margin: 0.5em 0;
+}

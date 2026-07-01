@@ -33,6 +33,7 @@ debug: build-debug
 test:
 	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
 	go test ./test/ -count=1 -timeout 120s
+	cd web/chat && npm test
 	@echo ""
 	@echo "Coverage:"
 	@go tool cover -func=coverage.out

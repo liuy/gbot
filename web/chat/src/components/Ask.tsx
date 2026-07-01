@@ -30,7 +30,7 @@ export default function Ask({ ask }: { ask: AskData }) {
       </div>
       {label && <div className="mb-1 text-t2 text-sm">{label}</div>}
       {command && (
-        <pre className="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-black/30 px-3 py-2 font-mono text-[12px] text-t1">
+        <pre className="mb-3 overflow-x-auto whitespace-pre-wrap rounded bg-black/30 px-3 py-2 font-mono text-sm text-t1">
           {command}
         </pre>
       )}

@@ -4,7 +4,7 @@ import rehypeHighlight from 'rehype-highlight'
 
 export default function Markdown({ children }: { children: string }) {
   return (
-    <div className="text-t1 text-[15px] leading-relaxed">
+    <div className="md-body text-t1 text-[15px] leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
