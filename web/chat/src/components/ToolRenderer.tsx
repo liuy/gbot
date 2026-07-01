@@ -72,9 +72,9 @@ export default function ToolRenderer({ tool }: { tool: ToolEntry }) {
         >
           <path d="M4.5 3L7.5 6L4.5 9" />
         </svg>
-        <span className="font-mono text-[12px] text-blue align-middle">{tool.name}</span>
-        {summary && <span className="text-[13px] text-t2 font-light break-all align-middle"> {summary}</span>}
-        <span className={'font-mono text-[10px] align-middle ' + durColor}> {durStr}</span>
+        <span className="font-mono text-sm text-blue align-middle">{tool.name}</span>
+        {summary && <span className="text-sm text-t2 font-light break-all align-middle"> {summary}</span>}
+        <span className={'font-mono text-xs align-middle ' + durColor}> {durStr}</span>
       </span>
       {expanded && tool.displayOutput && hasDiff && <DiffOutput text={tool.displayOutput} />}
       {expanded && tool.displayOutput && !hasDiff && (
