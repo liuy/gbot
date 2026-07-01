@@ -17,9 +17,9 @@ export default function MessageComponent({
   const isUser = message.role === 'user'
 
   return (
-    <div className="px-5">
-      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-2">
-        <div className={isUser ? 'invisible' : avatarG}>G</div>
+    <div className="px-1.5">
+      <div className="grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5">
+        <div className={isUser ? '' : avatarG}>{!isUser && 'G'}</div>
 
         <div className="min-w-0">
           {isUser ? (
@@ -50,7 +50,7 @@ export default function MessageComponent({
           )}
         </div>
 
-        <div className={isUser ? avatarU : 'invisible'}>U</div>
+        <div className={isUser ? avatarU : ''}>{isUser && 'U'}</div>
       </div>
     </div>
   )

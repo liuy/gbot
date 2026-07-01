@@ -1,5 +1,16 @@
 import { type ReactNode, useState, type ReactElement } from 'react'
 
+function fallbackCopy(text: string) {
+	const ta = document.createElement('textarea')
+	ta.value = text
+	ta.style.position = 'fixed'
+	ta.style.opacity = '0'
+	document.body.appendChild(ta)
+	ta.select()
+	try { document.execCommand('copy') } catch {}
+	document.body.removeChild(ta)
+}
+
 export function PreWithCopy({ children }: { children?: ReactNode }) {
 	const [copied, setCopied] = useState(false)
 
@@ -8,7 +19,11 @@ export function PreWithCopy({ children }: { children?: ReactNode }) {
 	const code = typeof text === 'string' ? text.replace(/\n$/, '') : String(text ?? '')
 
 	const copy = () => {
-		navigator.clipboard?.writeText(code)
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(code).catch(() => fallbackCopy(code))
+		} else {
+			fallbackCopy(code)
+		}
 		setCopied(true)
 		setTimeout(() => setCopied(false), 1500)
 	}
@@ -17,7 +32,7 @@ export function PreWithCopy({ children }: { children?: ReactNode }) {
 		<pre className="group relative overflow-x-auto">
 			<button
 				onClick={copy}
-				className="absolute right-2 top-2 z-10 text-t3 transition-opacity hover:text-t1 opacity-40"
+				className="absolute right-2 top-2 z-10 text-t2"
 			>
 				{copied ? (
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

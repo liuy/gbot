@@ -21,7 +21,7 @@ const baseMsg: ChatMessage = {
 describe('MessageComponent layout', () => {
 	it('assistant content div has min-w-0 to allow inner overflow scroll', () => {
 		const { container } = render(<MessageComponent message={baseMsg} />)
-		const grid = container.querySelector('.grid')
+		const grid = container.querySelector('[class*="grid"]')
 		expect(grid).toBeTruthy()
 		const contentDiv = grid!.children[1] as HTMLElement
 		expect(contentDiv.className).toContain('min-w-0')
@@ -30,7 +30,7 @@ describe('MessageComponent layout', () => {
 	it('user content div has min-w-0 to allow inner overflow scroll', () => {
 		const userMsg = { ...baseMsg, id: 'u1', role: 'user' as const }
 		const { container } = render(<MessageComponent message={userMsg} />)
-		const grid = container.querySelector('.grid')
+		const grid = container.querySelector('[class*="grid"]')
 		expect(grid).toBeTruthy()
 		const contentDiv = grid!.children[1] as HTMLElement
 		expect(contentDiv.className).toContain('min-w-0')
