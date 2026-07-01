@@ -126,7 +126,7 @@ func logEngineEvent(event Event) {
 	case types.EventToolEnd:
 		if event.ToolResult != nil {
 			outputLen := len(event.ToolResult.DisplayOutput)
-			slog.Info("engine:tool_end", "id", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError, "outputLen", outputLen, "timing", event.ToolResult.Timing)
+			slog.Info("engine:tool_end", "id", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError, "outputLen", outputLen)
 		}
 
 	case types.EventUsage:

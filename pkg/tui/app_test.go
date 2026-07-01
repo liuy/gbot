@@ -1240,7 +1240,7 @@ func TestReplState_PendingToolDone_UnknownID(t *testing.T) {
 	s := NewReplState()
 	s.StartQuery()
 	// No tool was started with this ID
-	s.PendingToolDone("nonexistent", "output", false, 0, tool.SearchReadKind{})
+	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{})
 	// Should not panic, no tool updated
 }
 
@@ -2210,7 +2210,7 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
-	app.repl.PendingToolDone("t1", "contents", false, 0, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", "contents", false, tool.SearchReadKind{})
 
 	app.repl.FinishStream(nil)
 
@@ -3462,7 +3462,6 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "stdout line\n",
-		Timing:        200 * time.Millisecond,
 	})
 	a := model.(*App)
 	tcv := a.repl.pendingTool["t1"]
@@ -3485,7 +3484,6 @@ func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "nonexistent",
 		DisplayOutput: "output",
-		Timing:        0,
 	})
 	if model == nil {
 		t.Error("Update should return non-nil model for unknown tool")
@@ -3504,7 +3502,6 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "output",
-		Timing:        50 * time.Millisecond,
 	})
 	a := model.(*App)
 	tcv := a.repl.pendingTool["t1"]
@@ -3690,7 +3687,7 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	// Tool with long output
 	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`, tool.SearchReadKind{})
 	longOutput := strings.Repeat("output line\n", 50)
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
@@ -3740,7 +3737,7 @@ func TestApp_View_ToolOutputCollapsed(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	// 10 lines of output — should collapse to 3 lines + hint
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 	app.markViewportDirty()
 
 	v := app.View()
@@ -3769,7 +3766,7 @@ func TestApp_View_ToolOutputExpanded(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 	app.markViewportDirty()
 
 	v := app.View()
@@ -3794,7 +3791,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
 	app.status.usage.InputTokens = 10
@@ -3896,7 +3893,7 @@ func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
 	// Tool with long output (takes many lines)
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := strings.Repeat("tool output line\n", 20)
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 
 	// Assistant text AFTER the tool — this must be visible
 	app.repl.AppendTextItem()
@@ -3930,7 +3927,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
-	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
+	app.repl.PendingToolDone("t1", longOutput, false, tool.SearchReadKind{})
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
 	app.status.usage.InputTokens = 10
@@ -5834,7 +5831,6 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 	app.updateRepl(toolOutputDeltaMsg{
 		ToolUseID:     "sub_grep1",
 		DisplayOutput: "file1.go:10: TODO fix\nfile2.go:20: TODO refactor",
-		Timing:        50 * time.Millisecond,
 		Agent:         agent,
 	})
 
@@ -5850,7 +5846,6 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 		ToolUseID: "sub_grep1",
 		Output:    "2 matches found",
 		IsError:   false,
-		Timing:    100 * time.Millisecond,
 		Agent:     agent,
 	})
 
@@ -5868,7 +5863,7 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 	}
 
 	// --- Step 5: Main agent tool ends ---
-	app.repl.PendingToolDone("call_agent1", "agent result", false, 500*time.Millisecond, tool.SearchReadKind{})
+	app.repl.PendingToolDone("call_agent1", "agent result", false, tool.SearchReadKind{})
 
 	// --- Step 6: Render and verify nesting ---
 	msgs := app.repl.Messages()
@@ -5956,7 +5951,6 @@ func TestApp_UpdateRepl_SubAgentNestedRendering(t *testing.T) {
 	app.updateRepl(toolOutputDeltaMsg{
 		ToolUseID:     "sub_grep1",
 		DisplayOutput: "file1.go:10: TODO fix\nfile2.go:20: TODO refactor",
-		Timing:        50 * time.Millisecond,
 		Agent:         agent,
 	})
 
@@ -5965,12 +5959,11 @@ func TestApp_UpdateRepl_SubAgentNestedRendering(t *testing.T) {
 		ToolUseID: "sub_grep1",
 		Output:    "2 matches found",
 		IsError:   false,
-		Timing:    100 * time.Millisecond,
 		Agent:     agent,
 	})
 
 	// --- Step 5: Main agent tool ends ---
-	app.repl.PendingToolDone("call_agent1", "agent result", false, 500*time.Millisecond, tool.SearchReadKind{})
+	app.repl.PendingToolDone("call_agent1", "agent result", false, tool.SearchReadKind{})
 
 	// --- Step 6: Render and verify indentation ---
 	msgs := app.repl.Messages()
@@ -6124,7 +6117,7 @@ func TestApp_UpdateRepl_SubAgentTextIndentation(t *testing.T) {
 	app.updateRepl(textDeltaMsg{Text: "Here is my analysis of the codebase.", Agent: agent})
 
 	// End the agent
-	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond, tool.SearchReadKind{})
+	app.repl.PendingToolDone("call_agent1", "", false, tool.SearchReadKind{})
 
 	// Render and check indentation
 	msgs := app.repl.Messages()
@@ -6231,7 +6224,7 @@ func TestApp_UpdateRepl_SubAgentTextCollapsedWhenNotExpanded(t *testing.T) {
 	// Send enough text to trigger collapse (5+ lines worth)
 	longText := "Line one of the analysis.\nLine two of the analysis.\nLine three of the analysis.\nLine four of the analysis.\nLine five of the analysis.\nLine six of the analysis."
 	app.updateRepl(textDeltaMsg{Text: longText, Agent: agent})
-	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond, tool.SearchReadKind{})
+	app.repl.PendingToolDone("call_agent1", "", false, tool.SearchReadKind{})
 
 	msgs := app.repl.Messages()
 	// expand=false → should show collapse hint
@@ -6262,7 +6255,7 @@ func TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded(t *testing.T) {
 	longThinking := "Thinking line one.\nThinking line two.\nThinking line three.\nThinking line four.\nThinking line five.\nThinking line six."
 	app.updateRepl(thinkingDeltaMsg{Text: longThinking, Agent: agent})
 	app.updateRepl(thinkingEndMsg{Duration: 500 * time.Millisecond, Agent: agent})
-	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond, tool.SearchReadKind{})
+	app.repl.PendingToolDone("call_agent1", "", false, tool.SearchReadKind{})
 
 	msgs := app.repl.Messages()
 	// expand=false → thinking content should be collapsed
@@ -8482,7 +8475,6 @@ func TestApp_UpdateRepl_SubAgentToolEndSearchRead(t *testing.T) {
 		ToolUseID: "sub_bash1",
 		Output:    "file1\nfile2",
 		IsError:   false,
-		Timing:    50 * time.Millisecond,
 		Agent:     agent,
 		IsList:    true,
 	})
@@ -9462,12 +9454,11 @@ func TestApp_SubAgentToolEnd_PreservesPerceivedTime(t *testing.T) {
 		// Simulate a 90s Write: advance virtual time 90s, system timing is 1ms.
 		time.Sleep(90 * time.Second)
 
-		// Write ends with tiny system timing — perceived time should win
+		// Write ends — perceived time should win
 		app.updateRepl(toolEndMsg{
 			ToolUseID: "sub_write1",
 			Output:    "ok",
 			IsError:   false,
-			Timing:    1 * time.Millisecond,
 			Agent:     agent,
 		})
 

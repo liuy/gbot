@@ -348,7 +348,7 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool
 }
 
 // PendingToolDone updates a tool call with its result.
-func (s *ReplState) PendingToolDone(id, output string, isError bool, _ time.Duration, srk tool.SearchReadKind) {
+func (s *ReplState) PendingToolDone(id, output string, isError bool, srk tool.SearchReadKind) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[id]
@@ -408,7 +408,7 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string, srk tool.SearchR
 }
 
 // PendingToolOutput updates a streaming tool's output lines in real time.
-func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
+func (s *ReplState) PendingToolOutput(id, output string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[id]
@@ -416,11 +416,8 @@ func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 		return
 	}
 
-	// Track elapsed time (use perceived time for responsiveness)
 	if start, ok := s.pendingToolStart[id]; ok {
-		if perceived := time.Since(start); perceived > timing {
-			tcv.Elapsed = perceived
-		}
+		tcv.Elapsed = time.Since(start)
 	}
 
 	// Accumulate output lines (each event carries all current lines)
@@ -1048,16 +1045,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				for i := len(parent.Blocks) - 1; i >= 0; i-- {
 					if parent.Blocks[i].Type == BlockTool && parent.Blocks[i].ToolCall.ID == m.ToolUseID {
 						parent.Blocks[i].ToolCall.Output = m.DisplayOutput
-						if m.Timing > parent.Blocks[i].ToolCall.Elapsed {
-							parent.Blocks[i].ToolCall.Elapsed = m.Timing
-						}
 						break
 					}
 				}
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
+			a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput)
 		}
 		return true, a.readEvents()
 
@@ -1085,7 +1079,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
+			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
 			// Virtual tools (bash shortcut, /compact) drive their own stream
 			// lifecycle — no engine queryEndMsg follows — so FinishStream to
 			// stop streaming/spinner here, detected by ID prefix.

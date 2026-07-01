@@ -72,7 +72,6 @@ export type QueryEvent = {
     output: unknown
     display_output?: string
     is_error?: boolean
-    timing?: number // NANOSECONDS — divide by 1e9 before formatting
     is_search?: boolean
     is_read?: boolean
     is_list?: boolean

@@ -34,7 +34,7 @@ export function formatTokenCount(n: number): string {
   return (n / (1024 * 1024 * 1024)).toFixed(1) + 'G'
 }
 
-// Formats a duration given a nanosecond value from the wire (timing, thinking.duration).
+// Formats a duration given a nanosecond value (toolOutput prefix-parse, thinking.duration).
 export function formatDurationNs(nanos: number): string {
   if (!nanos || nanos <= 0) return '0s'
   return formatDuration(nanos / 1e9)
@@ -45,4 +45,27 @@ export function formatDurationNs(nanos: number): string {
 export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+}
+
+// Extracts the [Tool spent Xs] prefix that pkg/engine/runTools.go:prependDuration
+// adds to tool_result Output JSON. Returns the duration in nanoseconds, or 0 if
+// no prefix is present. Mirrors renderToolOutput in pkg/connector/webchat/connector.go.
+export function parseDurationFromOutput(output: unknown): number {
+	if (typeof output !== 'string') return 0
+	let s = output
+	try {
+		const decoded = JSON.parse(s)
+		if (typeof decoded === 'string') s = decoded
+	} catch {
+		// Not JSON — try the raw string (defensive; should not normally happen).
+	}
+	const prefix = '[Tool spent '
+	if (!s.startsWith(prefix)) return 0
+	const closeBracket = s.indexOf(']', prefix.length)
+	if (closeBracket < 0) return 0
+	const inner = s.slice(prefix.length, closeBracket)
+	const numPart = inner.replace(/s$/, '')
+	const sec = parseFloat(numPart)
+	if (isNaN(sec)) return 0
+	return sec * 1e9
 }

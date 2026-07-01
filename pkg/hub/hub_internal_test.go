@@ -29,7 +29,7 @@ func TestLogEngineEvent_AllBranches(t *testing.T) {
 		{"tool_output_delta_nil", Event{Type: types.EventToolOutputDelta}},
 		{"tool_output_delta_with_result", Event{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "line1\nline2\nline3"}}},
 		{"tool_end_nil", Event{Type: types.EventToolEnd}},
-		{"tool_end_with_result", Event{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "done", IsError: false, Timing: 100 * time.Millisecond}}},
+		{"tool_end_with_result", Event{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "done", IsError: false}}},
 		{"tool_end_error", Event{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "err", IsError: true}}},
 
 		// Usage

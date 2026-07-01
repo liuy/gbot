@@ -143,11 +143,11 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 			}
 		case toolOutputDeltaMsg:
 			if m.Agent == nil {
-				repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
+				repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput)
 			}
 		case toolEndMsg:
 			if m.Agent == nil {
-				repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing,
+				repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError,
 					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
 			}
 		case thinkingStartMsg:

@@ -491,7 +491,6 @@ type ToolResultEvent struct {
 	Output        json.RawMessage `json:"output"`
 	DisplayOutput string          `json:"display_output,omitempty"` // human-readable result for TUI
 	IsError       bool            `json:"is_error,omitempty"`
-	Timing        time.Duration   `json:"timing,omitempty"`
 	IsBackground  bool            `json:"is_background,omitempty"` // true = fork agent launched async
 	IsSearch      bool            `json:"is_search,omitempty"`     // search/read/list classification for TUI
 	IsRead        bool            `json:"is_read,omitempty"`

@@ -63,7 +63,6 @@ type toolParamDeltaMsg struct {
 type toolOutputDeltaMsg struct {
 	ToolUseID     string           // tool use ID
 	DisplayOutput string           // accumulated output lines
-	Timing        time.Duration    // elapsed time since tool start
 	Agent         *types.AgentMeta // non-nil when from a sub-agent
 }
 
@@ -73,7 +72,6 @@ type toolEndMsg struct {
 	ToolUseID string
 	Output    string // pretty-printed JSON
 	IsError   bool
-	Timing    time.Duration    // elapsed time
 	Agent     *types.AgentMeta // non-nil when from a sub-agent
 	IsSearch  bool             // search/read/list classification
 	IsRead    bool

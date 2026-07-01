@@ -863,7 +863,6 @@ func TestToolResultEventJSON(t *testing.T) {
 		ToolUseID: "tu-1",
 		Output:    json.RawMessage(`"ok"`),
 		IsError:   false,
-		Timing:    150 * time.Millisecond,
 	}
 
 	data, err := json.Marshal(evt)

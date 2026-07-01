@@ -437,7 +437,6 @@ func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "t1",
 			DisplayOutput: "line1\nline2",
-			Timing:        500 * time.Millisecond,
 		},
 	})
 	m, ok := msg.(toolOutputDeltaMsg)
@@ -450,9 +449,6 @@ func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T
 	if m.DisplayOutput != "line1\nline2" {
 		t.Errorf("DisplayOutput = %q, want %q", m.DisplayOutput, "line1\nline2")
 	}
-	if m.Timing != 500*time.Millisecond {
-		t.Errorf("Timing = %v, want 500ms", m.Timing)
-	}
 }
 
 func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
@@ -462,7 +458,6 @@ func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "t1",
 			DisplayOutput: "",
-			Timing:        0,
 		},
 	})
 	if msg != nil {
@@ -1069,7 +1064,7 @@ func BenchmarkTUIHandler_MixedEvents(b *testing.B) {
 		{Type: types.EventTextDelta, Text: "继续"},
 		{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}},
 		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Read", Summary: "main.go"}},
-		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1", DisplayOutput: "package main", Timing: time.Millisecond}},
+		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1", DisplayOutput: "package main"}},
 		{Type: types.EventTextDelta, Text: "result: "},
 		{Type: types.EventTextDelta, Text: "done"},
 		{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "hmm"}},

@@ -221,7 +221,6 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				ToolUseID: evt.ToolResult.ToolUseID,
 				Output:    evt.ToolResult.DisplayOutput,
 				IsError:   evt.ToolResult.IsError,
-				Timing:    evt.ToolResult.Timing,
 				Agent:     evt.Agent,
 				IsSearch:  evt.ToolResult.IsSearch,
 				IsRead:    evt.ToolResult.IsRead,
@@ -291,7 +290,6 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			return toolOutputDeltaMsg{
 				ToolUseID:     evt.ToolResult.ToolUseID,
 				DisplayOutput: evt.ToolResult.DisplayOutput,
-				Timing:        evt.ToolResult.Timing,
 				Agent:         evt.Agent,
 			}
 		}

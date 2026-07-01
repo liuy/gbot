@@ -878,7 +878,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     tt.ID,
 					DisplayOutput: display,
-					Timing:        time.Since(start),
 				},
 			})
 		}
@@ -942,7 +941,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			ToolUseID:     tt.ID,
 			Output:        outputJSON,
 			DisplayOutput: displayOutput,
-			Timing:        elapsed,
 			IsBackground:  isBackgroundResult(result.Data),
 			IsSearch:      srk.IsSearch,
 			IsRead:        srk.IsRead,
@@ -1020,7 +1018,6 @@ func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err 
 			Output:        errJSON,
 			DisplayOutput: displayErr,
 			IsError:       true,
-			Timing:        elapsed,
 		},
 	})
 	tt.Err = err

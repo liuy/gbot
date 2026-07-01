@@ -198,7 +198,7 @@ func TestPendingToolDone_UpdatesBlock(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
-	s.PendingToolDone("t1", "file1.txt\nfile2.txt", false, 100*time.Millisecond, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "file1.txt\nfile2.txt", false, tool.SearchReadKind{})
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -218,7 +218,7 @@ func TestPendingToolDone_MissingID_Noop(t *testing.T) {
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// Different ID — should not crash or change existing tool
-	s.PendingToolDone("nonexistent", "output", false, time.Second, tool.SearchReadKind{})
+	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{})
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
 	if blk.ToolCall.Done {
@@ -232,7 +232,7 @@ func TestPendingToolDone_PerceivesHigherElapsed(t *testing.T) {
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// Wait a tiny bit so perceived > reported elapsed
 	time.Sleep(5 * time.Millisecond) // REAL-TIME: needed to test perceived elapsed time measurement
-	s.PendingToolDone("t1", "ok", false, 1*time.Nanosecond, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "ok", false, tool.SearchReadKind{})
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -255,7 +255,7 @@ func TestPendingToolDone_AccumulatesSubAgentToolCount(t *testing.T) {
 	tcv.AgentType = "Explore"
 	s.updateToolBlock("agent1", tcv)
 	// ToolCount from Blocks should be accumulated
-	s.PendingToolDone("agent1", "done", false, time.Second, tool.SearchReadKind{})
+	s.PendingToolDone("agent1", "done", false, tool.SearchReadKind{})
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -316,7 +316,7 @@ func TestPendingToolOutput_UpdatesOutputAndDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
-	s.PendingToolOutput("t1", "line1\nline2", 50*time.Millisecond)
+	s.PendingToolOutput("t1", "line1\nline2")
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -335,7 +335,7 @@ func TestPendingToolOutput_StreamingThenToolEnd(t *testing.T) {
 	s.PendingToolStarted("t1", "Bash", "make check", "{}", tool.SearchReadKind{})
 
 	// Streaming output arrives — tool is still running
-	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config", 2*time.Second)
+	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config")
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
 	if blk.ToolCall.Done {
@@ -346,14 +346,14 @@ func TestPendingToolOutput_StreamingThenToolEnd(t *testing.T) {
 	}
 
 	// More streaming output
-	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", 5*time.Second)
+	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine")
 	blk = msgs[0].Blocks[0]
 	if blk.ToolCall.Done {
 		t.Error("tool should still be running after second streaming update")
 	}
 
 	// tool_end — now it's done
-	s.PendingToolDone("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", false, 30*time.Second, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", false, tool.SearchReadKind{})
 	blk = msgs[0].Blocks[0]
 	if !blk.ToolCall.Done {
 		t.Error("tool should be done after tool_end")
@@ -364,7 +364,7 @@ func TestPendingToolOutput_MissingID_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	// Should not panic
-	s.PendingToolOutput("nonexistent", "output", time.Second)
+	s.PendingToolOutput("nonexistent", "output")
 }
 
 // ---------------------------------------------------------------------------
@@ -724,7 +724,7 @@ func TestUpdateToolBlock_NotFound_ReturnsFalse(t *testing.T) {
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// PendingToolDone with nonexistent ID → updateToolBlock returns false,
 	// but PendingToolDone itself just returns (no-op)
-	s.PendingToolDone("nonexistent", "output", false, time.Second, tool.SearchReadKind{})
+	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{})
 
 	// Verify t1 is unchanged
 	msgs := s.Messages()
@@ -746,8 +746,8 @@ func TestMultipleToolsInQuery(t *testing.T) {
 	s.PendingToolStarted("t1", "Read", "main.go", "{}", tool.SearchReadKind{})
 	s.PendingToolStarted("t2", "Grep", "TODO", "{}", tool.SearchReadKind{})
 
-	s.PendingToolDone("t1", "package main...", false, 10*time.Millisecond, tool.SearchReadKind{})
-	s.PendingToolDone("t2", "3 matches found", false, 20*time.Millisecond, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "package main...", false, tool.SearchReadKind{})
+	s.PendingToolDone("t2", "3 matches found", false, tool.SearchReadKind{})
 
 	msgs := s.Messages()
 	if len(msgs[0].Blocks) != 3 {
@@ -1078,7 +1078,7 @@ func TestUpdateRunningToolElapsed_UpdatesRunningBlocks(t *testing.T) {
 	// Backdate tool-2 start to simulate a 100ms tool.
 	s.pendingToolStart["tool-2"] = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Mark tool-2 as done — PendingToolDone now uses perceived time.
-	s.PendingToolDone("tool-2", "done", false, 0, tool.SearchReadKind{})
+	s.PendingToolDone("tool-2", "done", false, tool.SearchReadKind{})
 
 	s.UpdateRunningToolElapsed()
 

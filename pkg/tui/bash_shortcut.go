@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
@@ -46,14 +45,12 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 
 	workingDir := a.projectDir
 	return func() tea.Msg {
-		start := time.Now()
 		inputJSON, err := json.Marshal(bash.Input{Command: command})
 		if err != nil {
 			return toolEndMsg{
 				ToolUseID: toolID,
 				Output:    fmt.Sprintf("marshal bash input: %v", err),
 				IsError:   true,
-				Timing:    time.Since(start),
 			}
 		}
 
@@ -69,7 +66,6 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 				case a.tuiHandler.appCh <- toolOutputDeltaMsg{
 					ToolUseID:     toolID,
 					DisplayOutput: accumulated,
-					Timing:        time.Since(start),
 				}:
 				default:
 				}
@@ -77,7 +73,6 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 		}
 
 		result, execErr := bash.Execute(context.Background(), inputJSON, tctx)
-		elapsed := time.Since(start)
 
 		var output string
 		isError := false
@@ -120,7 +115,6 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 			ToolUseID: toolID,
 			Output:    output,
 			IsError:   isError,
-			Timing:    elapsed,
 		}
 	}
 }

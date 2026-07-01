@@ -37,11 +37,13 @@ describe('MessageComponent layout', () => {
 	})
 })
 
-describe('ChatInterface scroll container', () => {
-	// Read the source file to verify the scroll container has overflow-x-hidden
-	// preventing horizontal scrollbar on the main chat area.
-	it('scroll container has overflow-x-hidden', () => {
+describe('ChatInterface tool duration', () => {
+	// TUI uses perceived wall-clock time (time.Since(startedAt)) for streaming
+	// tool duration, NOT [Tool spent Xs] prefix. Web must match — tool_end
+	// handler should set timingNs from Date.now() - startedAt.
+	it('tool_end uses wall-clock time, not prefix parsing', () => {
 		const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
-		expect(src).toContain('overflow-x-hidden')
+		expect(src).toContain('Date.now() - tool.startedAt')
+		expect(src).not.toContain('parseDurationFromOutput')
 	})
 })

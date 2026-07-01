@@ -53,22 +53,18 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 	ctx := context.Background()
 
 	asyncCmd := func() tea.Msg {
-		start := time.Now()
 		result, err := eng.ManualCompact(ctx, customInstructions)
-		elapsed := time.Since(start)
 
 		if err != nil {
 			return toolEndMsg{
 				ToolUseID: toolID,
 				Output:    fmt.Sprintf("Compact failed: %v", err),
 				IsError:   true,
-				Timing:    elapsed,
 			}
 		}
 		return toolEndMsg{
 			ToolUseID: toolID,
 			Output:    engine.FormatCompactOutput(result),
-			Timing:    elapsed,
 		}
 	}
 

@@ -355,7 +355,7 @@ export default function ChatInterface() {
         const tool = findTool(cur.tools, tr.tool_use_id)
         if (tool) {
           tool.state = tr.is_error ? 'error' : 'done'
-          if (tr.timing) tool.timingNs = tr.timing
+          tool.timingNs = (Date.now() - tool.startedAt) * 1e6
           tool.displayOutput = tr.display_output ?? ''
           if (tr.is_search !== undefined) tool.isSearch = tr.is_search
           if (tr.is_read !== undefined) tool.isRead = tr.is_read

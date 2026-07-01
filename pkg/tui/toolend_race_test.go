@@ -2,7 +2,6 @@ package tui
 
 import (
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -54,13 +53,11 @@ func TestToolEnd_MatchesByID_NotByPosition(t *testing.T) {
 	_, _ = app.updateRepl(toolEndMsg{
 		ToolUseID: bashID,
 		Output:    "Bash result: bg-1 started",
-		Timing:    100 * time.Millisecond,
 		Agent:     agent,
 	})
 	_, _ = app.updateRepl(toolEndMsg{
 		ToolUseID: agentSubID,
 		Output:    "Agent result: 42 lines",
-		Timing:    300 * time.Millisecond,
 		Agent:     agent,
 	})
 
