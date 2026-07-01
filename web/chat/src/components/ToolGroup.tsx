@@ -25,26 +25,25 @@ export default function ToolGroup({
   const anyRunning = tools.some((t) => t.state === 'running')
 
   return (
-    <div className="my-1">
+    <div>
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-2 text-left"
+        className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
       >
+        <span className="text-[10px] leading-none align-middle inline-block w-4 text-center align-middle">
+          {anyRunning
+            ? <span className="text-white heartbeat">●</span>
+            : <span className="text-green">●</span>}
+        </span>
         <Chevron expanded={expanded} />
-        <span
-          className={
-            'inline-block h-2 w-2 rounded-full ' +
-            (anyRunning ? 'bg-blue pulse-blue' : 'bg-t3')
-          }
-        />
-        <span className="text-t2 text-sm">{summary}</span>
+        <span className="font-mono text-sm text-blue align-middle">{summary}</span>
         {!anyRunning && totalNs > 0 && (
-          <span className="text-t3 text-xs">· {formatDurationNs(totalNs)}</span>
+          <span className="font-mono text-xs align-middle"> {formatDurationNs(totalNs)}</span>
         )}
       </button>
       {expanded && (
-        <div className="ml-4 border-l border-hairline pl-3">
+        <div className="ml-[20px]">
           {tools.map((t) => (
             <ToolRenderer key={t.id} tool={t} />
           ))}
@@ -69,6 +68,7 @@ function summarize(tools: ToolEntry[]): string {
 }
 
 function nounFor(t: ToolEntry): string {
+  if (t.isWeb) return 'Web'
   if (t.isSearch) return 'Search'
   if (t.isRead) return 'Read'
   if (t.isList) return 'List'
@@ -79,7 +79,9 @@ function nounFor(t: ToolEntry): string {
 function Chevron({ expanded }: { expanded: boolean }) {
   return (
     <svg
-      className={'h-3 w-3 text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
+      className={'inline-block align-middle text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
+      width="12"
+      height="12"
       viewBox="0 0 12 12"
       fill="none"
       stroke="currentColor"

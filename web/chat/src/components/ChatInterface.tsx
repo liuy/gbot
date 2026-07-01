@@ -30,6 +30,18 @@ function nextId(prefix: string): string {
   return `${prefix}-${msgIdCounter}`
 }
 
+// Mirrors TUI classifyToolName (pkg/tui/app.go:783). History messages don't
+// carry is_search/is_read streaming flags, so we infer from tool name.
+function classifyToolName(name: string): { isSearch: boolean; isRead: boolean; isList: boolean; isLsp: boolean; isWeb: boolean } {
+  switch (name) {
+    case 'Read': return { isRead: true, isSearch: false, isList: false, isLsp: false, isWeb: false }
+    case 'Grep': case 'Glob': return { isSearch: true, isRead: false, isList: false, isLsp: false, isWeb: false }
+    case 'Lsp': return { isLsp: true, isSearch: false, isRead: false, isList: false, isWeb: false }
+    case 'Web': return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false }
+    default: return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
+  }
+}
+
 // Module-level so messages survive ChatInterface unmount on tab switch.
 const persistedMessages: ChatMessage[] = []
 
@@ -151,7 +163,7 @@ export default function ChatInterface() {
       const textChunks: TextEntry[] = []
       const thinking: ThinkingEntry[] = []
       const tools: ToolEntry[] = []
-      let nextEventIndex: number
+      let nextEventIndex = 0
       if (h.blocks && h.blocks.length > 0) {
         // Authoritative ordered path: assign one shared eventIndex counter
         // across text/thinking/tool so interleavedItems() sorts them into the
@@ -171,15 +183,17 @@ export default function ChatInterface() {
             })
           } else if (b.kind === 'tool') {
             const t = b.tool!
+            const srk = classifyToolName(t.name)
             tools.push({
               id: t.id,
               eventIndex: eventIndex++,
               name: t.name,
               summary: t.summary ?? '',
-              isSearch: false,
-              isRead: false,
-              isList: false,
-              isLsp: false,
+              isSearch: srk.isSearch,
+              isRead: srk.isRead,
+              isList: srk.isList,
+              isLsp: srk.isLsp,
+              isWeb: srk.isWeb,
               state: (t.isError ? 'error' : 'done') as 'error' | 'done',
               timingNs: t.durationNs ?? 0,
               displayOutput: t.displayOutput ?? '',
@@ -188,33 +202,8 @@ export default function ChatInterface() {
           }
         }
         nextEventIndex = eventIndex
-      } else {
-        // Legacy fallback (older backend without blocks): cannot preserve
-        // interleave order, but keep prior behavior so it does not regress.
-        textChunks.push(...(h.text ? [{ eventIndex: 0, text: h.text }] : []))
-        thinking.push(...(h.thinking ?? []).map((t, i) => ({
-          eventIndex: i,
-          text: t.text,
-          durationNs: t.durationNs,
-          active: false,
-          startedAt: 0,
-        })))
-        tools.push(...(h.tools ?? []).map((t, i) => ({
-          id: t.id,
-          eventIndex: i,
-          name: t.name,
-          summary: t.summary ?? '',
-          isSearch: false,
-          isRead: false,
-          isList: false,
-          isLsp: false,
-          state: (t.isError ? 'error' : 'done') as 'error' | 'done',
-          timingNs: t.durationNs ?? 0,
-          displayOutput: t.displayOutput ?? '',
-          startedAt: 0,
-        })))
-        nextEventIndex = (h.thinking?.length ?? 0) + (h.tools?.length ?? 0) + (h.text ? 1 : 0)
       }
+
       const m: ChatMessage = {
         id: h.id || nextId(h.role === 'user' ? 'u' : 'a'),
         role: h.role,
@@ -323,6 +312,7 @@ export default function ChatInterface() {
           isRead: !!tu.is_read,
           isList: !!tu.is_list,
           isLsp: !!tu.is_lsp,
+          isWeb: tu.name === 'Web',
           state: 'running',
           timingNs: 0,
           displayOutput: '',

@@ -7,6 +7,7 @@ export type ToolEntry = {
   isRead: boolean
   isList: boolean
   isLsp: boolean
+  isWeb: boolean
   state: 'running' | 'done' | 'error'
   timingNs: number
   displayOutput: string
