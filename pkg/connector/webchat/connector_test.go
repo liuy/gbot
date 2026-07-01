@@ -533,7 +533,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 		}
 		for _, b := range msg.Blocks {
 			var kind string
-			json.Unmarshal(b["kind"], &kind)
+			_ = json.Unmarshal(b["kind"], &kind)
 			if kind == "tool" {
 				toolBlock = b
 				break
@@ -608,7 +608,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	for _, msg := range env.Messages {
 		for _, b := range msg.Blocks {
 			var kind string
-			json.Unmarshal(b["kind"], &kind)
+			_ = json.Unmarshal(b["kind"], &kind)
 			if kind == "thinking" {
 				thinkingBlock = b
 				break
