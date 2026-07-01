@@ -126,6 +126,7 @@ export default function ChatInterface() {
     // Merge consecutive assistant messages into one (like TUI engineMessagesToViews).
     const merged: HistoryChatMsg[] = []
     for (const h of histMsgs) {
+      // Skip user messages that are pure tool_result carriers (no visible text).
       if (h.role === 'user' && (!h.text || h.text.trim() === '')) continue
       const last = merged[merged.length - 1]
       if (last && last.role === 'assistant' && h.role === 'assistant') {
