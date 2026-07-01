@@ -43,8 +43,8 @@ export default function ToolRenderer({ tool }: { tool: ToolEntry }) {
     !!tool.displayOutput &&
     /^\s*\d+\s[+\-]/m.test(stripAnsi(tool.displayOutput))
 
-  const dot = running ? '◌' : '●'
-  const dotColor = running ? 'text-blue' : isError ? 'text-red' : 'text-green'
+  const dot = '●'
+  const dotColor = isError ? 'text-red' : 'text-green'
   const summary = tool.summary ? `(${tool.summary})` : ''
   const durStr = isError ? `FAIL · ${dur}` : dur
   const durColor = isError ? 'text-red' : running ? 'text-blue' : 'text-t3'
@@ -58,7 +58,9 @@ export default function ToolRenderer({ tool }: { tool: ToolEntry }) {
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v) }}
         className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
       >
-        <span className={'text-sm align-middle ' + dotColor}>{dot}</span>
+        {running
+          ? <span className="text-[10px] align-middle text-white animate-pulse">{dot}</span>
+          : <span className={'text-[10px] align-middle ' + dotColor}>{dot}</span>}
         <svg
           className={'inline-block align-middle text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
           width="12"

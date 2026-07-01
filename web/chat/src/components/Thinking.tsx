@@ -32,7 +32,7 @@ export default function Thinking({
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v) }}
         className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
       >
-        <span className="text-amber text-sm align-middle">✦</span>
+        <span className="text-amber text-base align-middle">✦</span>
         <svg
           className={'inline-block align-middle text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
           width="12"
