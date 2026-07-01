@@ -59,8 +59,8 @@ export default function ToolRenderer({ tool }: { tool: ToolEntry }) {
         className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
       >
         {running
-          ? <span className="text-[10px] align-middle text-white animate-pulse">{dot}</span>
-          : <span className={'text-[10px] align-middle ' + dotColor}>{dot}</span>}
+          ? <span className="text-[10px] leading-none align-middle inline-block w-4 text-center text-white animate-pulse">{dot}</span>
+          : <span className={'text-[10px] leading-none align-middle inline-block w-4 text-center ' + dotColor}>{dot}</span>}
         <svg
           className={'inline-block align-middle text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
           width="12"

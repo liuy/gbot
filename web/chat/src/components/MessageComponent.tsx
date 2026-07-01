@@ -19,6 +19,7 @@ export default function MessageComponent({
   return (
     <div className="px-1.5">
       <div className="grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5">
+
         <div className={isUser ? '' : avatarG}>{!isUser && 'G'}</div>
 
         <div className="min-w-0">
@@ -27,7 +28,7 @@ export default function MessageComponent({
               {message.textChunks.map((c) => c.text).join('')}
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-3">
               {interleavedItems(message).map((item, i) => {
                 switch (item.kind) {
                   case 'thinking':
