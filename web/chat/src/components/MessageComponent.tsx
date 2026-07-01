@@ -18,7 +18,7 @@ export default function MessageComponent({
           <div className="text-t1 text-[15px]">
             {userText}
           </div>
-          <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-t2/50 to-t3/40 text-[8px] text-t1">U</div>
+          <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-cyan-600 text-[8px] font-semibold text-white">U</div>
         </div>
       </div>
     )
@@ -30,7 +30,7 @@ export default function MessageComponent({
     <div className="px-5">
       <div className="flex gap-2">
         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue to-purple-500 text-[8px] font-semibold text-white">G</div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 space-y-1">
           {items.map((item, i) => {
             switch (item.kind) {
               case 'thinking':

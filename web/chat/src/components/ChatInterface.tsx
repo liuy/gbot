@@ -425,11 +425,13 @@ export default function ChatInterface() {
   return (
     <div className="flex h-full flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl py-4">
+        <div className="mx-auto max-w-3xl py-4">
+          <div className="space-y-4">
           {messagesRef.current.map((m) => (
             <MessageComponent key={m.id} message={m} />
           ))}
           {ask && <Ask ask={ask} />}
+          </div>
           <div ref={bottomRef} />
         </div>
       </div>
