@@ -233,7 +233,7 @@ func TestStartWSServer_RouteByRemoteIP(t *testing.T) {
 	reg := NewConnectionRegistry()
 	port := freePort(t)
 	addr := "127.0.0.1:" + itoa(port)
-	srv, err := StartWSServer(reg, addr)
+	srv, err := StartWSServer(reg, addr, http.NewServeMux())
 	if err != nil {
 		t.Fatalf("StartWSServer: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestStartWSServer_BindFailure(t *testing.T) {
 	t.Parallel()
 	reg := NewConnectionRegistry()
 	// Port 1 is unprivileged → bind denied.
-	_, err := StartWSServer(reg, "127.0.0.1:1")
+	_, err := StartWSServer(reg, "127.0.0.1:1", http.NewServeMux())
 	if err == nil {
 		t.Fatal("StartWSServer on port 1 returned nil error, want bind failure")
 	}

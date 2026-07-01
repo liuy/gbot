@@ -406,9 +406,9 @@ const (
 // When non-nil on a QueryEvent, the event comes from a child engine
 // spawned by the Agent tool, not from the main engine.
 type AgentMeta struct {
-	ParentToolUseID string // parent Agent tool call ID (e.g. "call_abc123")
-	AgentType       string // "General", "Explore", "Planner", etc.
-	Depth           int    // nesting depth: 0 = direct child, 1 = grandchild
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	AgentType       string `json:"agent_type,omitempty"`
+	Depth           int    `json:"depth,omitempty"`
 }
 
 // QueryEvent represents an event emitted during the query loop.
@@ -422,9 +422,9 @@ type QueryEvent struct {
 	Message      *Message           `json:"message,omitempty"`
 	PartialInput *PartialInputEvent `json:"partial_input,omitempty"`
 	Usage        *UsageEvent        `json:"usage_event,omitempty"`
-	Agent        *AgentMeta         // non-nil = sub-agent event
+	Agent        *AgentMeta         `json:"agent,omitempty"`
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
-	Ask          *AskEvent          // non-nil when Type == EventAsk
+	Ask          *AskEvent          `json:"ask,omitempty"`
 	RetryAttempt *RetryAttemptEvent `json:"retry_attempt,omitempty"`
 	Error        error              `json:"-"`
 }

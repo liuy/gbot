@@ -25,6 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/connector/webchat"
 	"github.com/liuy/gbot/pkg/connector/wechat"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
@@ -258,14 +259,19 @@ func main() {
 	// is built so an inbound device conn can register before the model calls
 	// connect. TUI mode leaves wsRegistry nil — the Computer tool then
 	// surfaces "daemon not running" on connect, same inert behavior as today.
+	// wsMux is hoisted to the outer scope so the webchat connector can mount
+	// its routes on the same mux later (after app/engine exist). The HTTP
+	// server starts listening immediately; chat routes are added in Step B.
 	var wsRegistry *computer.ConnectionRegistry
+	var wsMux *http.ServeMux
 	if daemonMode {
 		wsRegistry = computer.NewConnectionRegistry()
 		wsAddr := ":8765"
 		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
 			wsAddr = env
 		}
-		if _, err := computer.StartWSServer(wsRegistry, wsAddr); err != nil {
+		wsMux = http.NewServeMux()
+		if _, err := computer.StartWSServer(wsRegistry, wsAddr, wsMux); err != nil {
 			fmt.Fprintf(os.Stderr, "ws server: %v\n", err)
 			os.Exit(1)
 		}
@@ -563,6 +569,25 @@ func main() {
 	}
 	app.SetStore(store, sessionID, projectDir)
 	app.SetEngineFactory(engineFactory)
+
+	// Webchat wiring (Step B): now that app/engine exist, build the webchat
+	// connector and mount its routes on wsMux. The connector captures the
+	// main engine pointer and subscribes to that engine's hub — it always
+	// drives the main engine regardless of TUI active-engine state, which is
+	// correct: webchat is not a meaningful target for read-only WeChat
+	// engines. Routes are added to the same *http.ServeMux the already-running
+	// *http.Server uses (Go's ServeMux is safe for concurrent register+read).
+	if daemonMode && wsMux != nil {
+		mainEng := app.Engine()
+		if mainEng != nil {
+			if mainHub, ok := mainEng.Dispatcher().(*hub.Hub); ok && mainHub != nil {
+				wc := webchat.New(mainEng, mainHub)
+				webchat.RegisterStaticRoutes(wsMux)
+				webchat.RegisterChatWS(wsMux, wc)
+				slog.Info("webchat: mounted on ws mux", "engine", mainEng.EngineID())
+			}
+		}
+	}
 
 	// Estimate initial context usage
 	initialTokens := types.EstimateTokens(systemPrompt)

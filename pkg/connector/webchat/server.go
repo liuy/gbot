@@ -1,0 +1,260 @@
+package webchat
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/types"
+)
+
+var chatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+// RegisterChatWS mounts the chat WebSocket endpoint at /ws/chat on mux. The
+// handler upgrades the connection, emits connect_status, then runs a readLoop
+// (inbound: message / ask_response / stop) and a writeLoop (outbound:
+// events streamed from the connector's channels).
+func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
+	mux.HandleFunc("/ws/chat", func(w http.ResponseWriter, r *http.Request) {
+		ws, err := chatUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			http.Error(w, "upgrade failed", http.StatusInternalServerError)
+			return
+		}
+		serveChatWS(ws, c)
+	})
+}
+
+// serveChatWS drives one WS connection to completion.
+func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
+	// Single-client model: a new connection replaces any prior one. The prior
+	// writeLoop notices activeWS no longer points at it and exits.
+	c.activeWS.Store(ws)
+
+	// connect_status — sent synchronously before the loops start so the client
+	// always sees it first.
+	connectMsg, _ := json.Marshal(struct {
+		Type      string `json:"type"`
+		Connected bool   `json:"connected"`
+	}{Type: "connect_status", Connected: true})
+	_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+
+	// Send conversation history so the client renders the prior transcript
+	// on reconnect / page refresh — same as TUI's SwitchSession path.
+	if histMsg := c.buildHistoryMessage(); histMsg != nil {
+		_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+	}
+
+	done := make(chan struct{})
+	var once sync.Once
+	closeDone := func() { once.Do(func() { close(done) }) }
+
+	// readLoop owns the connection's read side and drives query/ask/stop
+	// dispatch. It exits on read error (client disconnect) and signals done.
+	go func() {
+		defer closeDone()
+		c.readLoop(ws)
+	}()
+
+	// writeLoop owns the write side, draining eventCh and criticalCh. It exits
+	// when done is closed (reader stopped) or on write error.
+	go func() {
+		defer closeDone()
+		c.writeLoop(ws, done)
+	}()
+
+	// Block until both loops finish, then clean up engine-facing state.
+	<-done
+	c.cleanupConn()
+}
+
+// readLoop processes inbound JSON messages until the connection closes.
+func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
+	for {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		// Peek type first, then unmarshal into the right shape. Using a single
+		// struct with duplicate json tags would silently drop fields.
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) != nil {
+			continue
+		}
+		switch head.Type {
+		case "message":
+			var msg struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.handleMessageInbound(ws, msg.Text)
+			}
+		case "ask_response":
+			var msg struct {
+				ID       string `json:"id"`
+				Decision string `json:"decision"`
+				Text     string `json:"text"`
+				Aborted  bool   `json:"aborted"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.handleAskResponse(msg.ID, msg.Decision, msg.Text, msg.Aborted)
+			}
+		case "stop":
+			c.handleStop()
+		}
+	}
+}
+
+// handleMessageInbound dispatches a user message to the engine via queryFn,
+// unless a query is already active.
+func (c *WebChatConnector) handleMessageInbound(ws *websocket.Conn, text string) {
+	if c.isBusyFn != nil && c.isBusyFn() {
+		errMsg, _ := json.Marshal(struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}{Type: "error", Message: "query already active"})
+		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.setQueryCancel(cancel)
+	go func() {
+		defer c.setQueryCancel(nil)
+		c.queryFn(ctx, text, "")
+	}()
+}
+
+// handleAskResponse looks up a pending ask by id and writes the response to
+// its ResponseCh. Permission asks carry decision; input asks carry text or
+// aborted.
+func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted bool) {
+	c.pendingMu.Lock()
+	ask := c.pendingAsks[id]
+	delete(c.pendingAsks, id)
+	c.pendingMu.Unlock()
+	if ask == nil || ask.ResponseCh == nil {
+		return
+	}
+	var resp types.AskResponse
+	if ask.Kind == types.AskPermission {
+		resp = types.AskResponse{Decision: types.UserDecision(decision)}
+	} else {
+		resp = types.AskResponse{Text: text, Aborted: aborted}
+	}
+	select {
+	case ask.ResponseCh <- resp:
+	default:
+	}
+}
+
+// handleStop cancels the active query context (if any). Do NOT call
+// engine.Abort — context cancellation propagates through queryFn's ctx.
+func (c *WebChatConnector) handleStop() {
+	c.queryCancelMu.Lock()
+	cancel := c.queryCancel
+	c.queryCancel = nil
+	c.queryCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (c *WebChatConnector) setQueryCancel(cancel context.CancelFunc) {
+	c.queryCancelMu.Lock()
+	c.queryCancel = cancel
+	c.queryCancelMu.Unlock()
+}
+
+// writeLoop drains criticalCh (priority) and eventCh, writing each message to
+// the WS connection. Exits when done is closed or on write error.
+func (c *WebChatConnector) writeLoop(ws *websocket.Conn, done <-chan struct{}) {
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+	for {
+		// Always drain criticalCh first (priority): a non-blocking sweep
+		// before blocking on either channel guarantees critical messages
+		// flush ahead of streaming deltas.
+		select {
+		case <-done:
+			return
+		case msg, ok := <-c.criticalCh:
+			if !ok {
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+			continue
+		case <-pingTicker.C:
+			if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+			continue
+		default:
+		}
+		// Block on either channel; criticalCh is checked first.
+		select {
+		case <-done:
+			return
+		case msg, ok := <-c.criticalCh:
+			if !ok {
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case msg, ok := <-c.eventCh:
+			if !ok {
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// cleanupConn aborts any pending asks (so the engine doesn't deadlock waiting
+// on a disconnected client), cancels the active query, and clears activeWS.
+// Mirrors TUI's deny-on-disconnect behavior (pkg/tui/handler.go:122).
+func (c *WebChatConnector) cleanupConn() {
+	c.pendingMu.Lock()
+	asks := c.pendingAsks
+	c.pendingAsks = make(map[string]*types.AskEvent)
+	c.pendingMu.Unlock()
+	for _, ask := range asks {
+		if ask.ResponseCh != nil {
+			select {
+			case ask.ResponseCh <- types.AskResponse{Aborted: true}:
+			default:
+			}
+		}
+	}
+	c.handleStop()
+	c.activeWS.Store(nil)
+	// Drain channels so a blocked Handle (if any) is released.
+	c.drainChannels()
+	slog.Debug("webchat: connection cleaned up", "pending_asks", len(asks))
+}
+
+// drainChannels empties both channels without blocking so a producer that
+// raced ahead of cleanup is not wedged.
+func (c *WebChatConnector) drainChannels() {
+	for {
+		select {
+		case <-c.eventCh:
+		default:
+			return
+		}
+	}
+}

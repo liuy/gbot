@@ -78,17 +78,10 @@ func hostOnly(addr string) string {
 	return host
 }
 
-// StartWSServer starts the daemon's inbound WebSocket listener. Each upgraded
-// connection is wrapped in a *deviceClient and stored in reg under its source IP
-// host portion. Mirrors cmd/gbot/main.go startPprofServer's net.Listen-then-
-// go pattern (synchronous bind failure, async serve). The returned
-// *http.Server's Close stops the listener.
-func StartWSServer(reg *ConnectionRegistry, addr string) (*http.Server, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	mux := http.NewServeMux()
+// RegisterDeviceWS registers the /ws device-control endpoint on mux.
+// Extracted from StartWSServer so the daemon can mount device + chat routes
+// on a single shared mux.
+func RegisterDeviceWS(mux *http.ServeMux, reg *ConnectionRegistry) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		ws, err := upgrader.Upgrade(w, r, nil)
@@ -98,6 +91,23 @@ func StartWSServer(reg *ConnectionRegistry, addr string) (*http.Server, error) {
 		}
 		reg.Register(hostOnly(r.RemoteAddr), ws)
 	})
+}
+
+// StartWSServer starts the daemon's inbound WebSocket listener. Each upgraded
+// connection is wrapped in a *deviceClient and stored in reg under its source IP
+// host portion. Mirrors cmd/gbot/main.go startPprofServer's net.Listen-then-
+// go pattern (synchronous bind failure, async serve). The returned
+// *http.Server's Close stops the listener.
+//
+// mux is the shared ServeMux the daemon mounts all HTTP/WS routes on; device
+// routes are registered via RegisterDeviceWS so a caller can also add chat
+// routes (and an SPA) to the same mux before/after this call.
+func StartWSServer(reg *ConnectionRegistry, addr string, mux *http.ServeMux) (*http.Server, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	RegisterDeviceWS(mux, reg)
 	srv := &http.Server{Handler: mux}
 	go func() {
 		// Serve always returns a non-nil error; ErrServerClosed is the expected

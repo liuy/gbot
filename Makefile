@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check
+.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -14,9 +14,8 @@ DEBUG_GCFLAGS := -gcflags="all=-N -l"
 all: build
 	./$(BINARY)
 
-# build compiles both the optimized gbot and the dlv-friendly gbot-debug.
-# Use `make build-debug` for just the debug binary.
-build:
+# build compiles frontend (web/chat) + backend (Go binary).
+build: web-build
 	go build -o $(BINARY) $(CMD)
 
 build-debug:
@@ -85,3 +84,9 @@ install: build
 # Android app checks (lint + test)
 app-check:
 	$(MAKE) -C app/android check
+
+# web-build regenerates the React SPA embedded into the Go binary.
+# Assets are checked into pkg/connector/webchat/assets/ so go build works
+# without Node. Run this after changing web/chat source.
+web-build:
+	cd web/chat && npm install && npm run build
