@@ -5,7 +5,7 @@ import Thinking from './Thinking'
 import ToolRenderer from './ToolRenderer'
 import ProgressBar from './ProgressBar'
 
-const avatarCls = "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-semibold text-white"
+const avatarCls = "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
 const avatarU = `${avatarCls} bg-gradient-to-br from-teal-500 to-cyan-600`
 const avatarG = `${avatarCls} bg-gradient-to-br from-blue to-purple-500`
 
@@ -18,10 +18,10 @@ export default function MessageComponent({
 
   return (
     <div className="px-5">
-      <div className="grid grid-cols-[auto_1fr_auto] gap-x-2">
+      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-2">
         <div className={isUser ? 'invisible' : avatarG}>G</div>
 
-        <div>
+        <div className="min-w-0">
           {isUser ? (
             <div className="ml-auto w-fit text-left text-t1 text-[15px]">
               {message.textChunks.map((c) => c.text).join('')}

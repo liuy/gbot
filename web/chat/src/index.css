@@ -111,7 +111,6 @@ body {
 /* Markdown body — scoped styles for tables and blockquotes */
 .md-body table {
   border-collapse: collapse;
-  width: 100%;
   margin: 0.5em 0;
   font-size: 0.875rem;
 }
@@ -119,6 +118,7 @@ body {
   border: 1px solid var(--color-hairline);
   padding: 4px 8px;
   text-align: left;
+  white-space: nowrap;
 }
 .md-body th {
   background: rgba(120, 180, 255, 0.05);
@@ -163,6 +163,7 @@ body {
   font-size: 0.875rem;
 }
 .md-body pre {
+  max-width: 100%;
   overflow-x: auto;
   margin: 0.5em 0;
 }

@@ -1,10 +1,38 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
-import Markdown from './Markdown'
+import Markdown, { ensureTableBlankLine } from './Markdown'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
 const css = readFileSync(resolve(__dirname, '../index.css'), 'utf-8')
+
+describe('ensureTableBlankLine', () => {
+	it('keeps header and separator adjacent (table at start)', () => {
+		const input = '| H1 | H2 |\n|---|---|\n| a | b |'
+		const out = ensureTableBlankLine(input)
+		expect(out).toContain('| H1 | H2 |\n|---|---|')
+	})
+
+	it('inserts blank line before table when preceded by text', () => {
+		const input = 'Some text\n| H1 | H2 |\n|---|---|\n| a | b |'
+		const out = ensureTableBlankLine(input)
+		expect(out).toContain('Some text\n\n| H1 | H2 |')
+		expect(out).toContain('| H1 | H2 |\n|---|---|')
+	})
+
+	it('does not add extra blank line when one already exists', () => {
+		const input = 'Some text\n\n| H1 | H2 |\n|---|---|\n| a | b |'
+		const out = ensureTableBlankLine(input)
+		expect(out).not.toContain('\n\n\n|')
+		expect(out).toContain('| H1 | H2 |\n|---|---|')
+	})
+
+	it('does not break code blocks containing pipe characters', () => {
+		const input = '```\necho "| a | b |"\n```\nText after.'
+		const out = ensureTableBlankLine(input)
+		expect(out).toBe(input)
+	})
+})
 
 describe('Markdown', () => {
 	it('wraps content in md-body scope for CSS targeting', () => {
@@ -97,5 +125,17 @@ describe('Markdown CSS rules', () => {
 	it('has .md-body pre overflow-x auto', () => {
 		expect(css).toContain('.md-body pre')
 		expect(css).toContain('overflow-x: auto')
+		expect(css).toContain('max-width: 100%')
+	})
+
+	it('has .md-body td white-space nowrap for horizontal scroll', () => {
+		expect(css).toContain('white-space: nowrap')
+	})
+
+	it('table does not have width 100% (should shrink to content)', () => {
+		const tableIdx = css.indexOf('.md-body table')
+		expect(tableIdx).toBeGreaterThanOrEqual(0)
+		const tableRule = css.slice(tableIdx, tableIdx + 200)
+		expect(tableRule).not.toContain('width: 100%')
 	})
 })
