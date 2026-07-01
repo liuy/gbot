@@ -25,9 +25,14 @@ export type HistoryBlockTool = {
   durationNs?: number
 }
 
+export type HistoryBlockThinking = {
+  text: string
+  durationNs?: number
+}
+
 export type HistoryBlock =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string; durationNs?: number }
+  | { kind: 'thinking'; thinking: HistoryBlockThinking }
   | { kind: 'tool'; tool: HistoryBlockTool }
 
 export type HistoryChatMsg = {

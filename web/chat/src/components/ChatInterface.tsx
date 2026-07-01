@@ -160,10 +160,11 @@ export default function ChatInterface() {
           if (b.kind === 'text') {
             textChunks.push({ eventIndex: eventIndex++, text: b.text })
           } else if (b.kind === 'thinking') {
+            const th = b.thinking!
             thinking.push({
               eventIndex: eventIndex++,
-              text: b.text,
-              durationNs: b.durationNs ?? 0,
+              text: th.text,
+              durationNs: th.durationNs ?? 0,
               active: false,
               startedAt: 0,
             })

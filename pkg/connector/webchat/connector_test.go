@@ -568,3 +568,70 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 		t.Errorf("nested tool.Name = %q, want \"Bash\"", toolData.Name)
 	}
 }
+
+// TestBuildHistoryMessage_ThinkingBlockJSONWireFormat verifies the JSON wire
+// format of a thinking block from the frontend's perspective.
+// { "kind":"thinking", "thinking": { "text":"..." } }
+// NOT as { "kind":"thinking", "text":"..." }.
+func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
+	c := newTestConnector(t)
+	c.messagesFn = func() []types.Message {
+		return []types.Message{
+			{
+				ID:        "asst1",
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(1001, 0),
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeThinking, Thinking: "deep thought"},
+				},
+			},
+		}
+	}
+	c.toolsFn = func() map[string]tool.Tool { return nil }
+
+	payload := c.buildHistoryMessage()
+	if payload == nil {
+		t.Fatal("buildHistoryMessage returned nil")
+	}
+
+	var env struct {
+		Messages []struct {
+			Role   string `json:"role"`
+			Blocks []map[string]json.RawMessage `json:"blocks"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var thinkingBlock map[string]json.RawMessage
+	for _, msg := range env.Messages {
+		for _, b := range msg.Blocks {
+			var kind string
+			json.Unmarshal(b["kind"], &kind)
+			if kind == "thinking" {
+				thinkingBlock = b
+				break
+			}
+		}
+	}
+	if thinkingBlock == nil {
+		t.Fatal("no thinking block found in history payload")
+	}
+
+	// The thinking data MUST be nested under "thinking" key.
+	thinkingRaw, hasThinking := thinkingBlock["thinking"]
+	if !hasThinking {
+		t.Fatal("thinking block has no \"thinking\" key — frontend expects b.thinking.text")
+	}
+
+	var thinkingData struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(thinkingRaw, &thinkingData); err != nil {
+		t.Fatalf("unmarshal nested thinking: %v", err)
+	}
+	if thinkingData.Text != "deep thought" {
+		t.Errorf("nested thinking.Text = %q, want \"deep thought\"", thinkingData.Text)
+	}
+}
