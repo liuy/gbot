@@ -67,6 +67,17 @@ body {
   animation: pulse 2.4s ease-in-out infinite;
 }
 
+@keyframes heartbeat {
+  0%, 100% { opacity: 0; transform: scale(0.3); }
+  50% { opacity: 1; transform: scale(1.4); }
+}
+
+.heartbeat {
+  display: inline-block;
+  transform-origin: center;
+  animation: heartbeat 1.2s ease-in-out infinite;
+}
+
 @keyframes blink-green {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }

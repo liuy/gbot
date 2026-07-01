@@ -31,17 +31,7 @@ export default function ProgressBar({
   return (
     <div className="mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap text-xs text-t3">
       {streaming && (
-        <svg className="spin h-3 w-3 shrink-0 text-blue" viewBox="0 0 12 12">
-          <circle
-            cx="6"
-            cy="6"
-            r="4.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeDasharray="14 14"
-          />
-        </svg>
+        <span className="inline-block text-[12px] text-blue heartbeat">●</span>
       )}
       <span>{formatDurationNs(elapsedSec * 1e9)}</span>
       <span>· ↑{formatTokenCount(inputTokens)}</span>
