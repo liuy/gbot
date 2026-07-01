@@ -66,7 +66,7 @@ export default function ChatInterface() {
       el.scrollHeight - el.scrollTop - el.clientHeight < 120
     if (nearBottom) {
       requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       })
     }
   }

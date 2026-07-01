@@ -29,9 +29,9 @@ export default function ProgressBar({
   }
 
   return (
-    <div className="mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap text-xs text-t3">
+    <div className="mt-2 flex items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3">
       {streaming && (
-        <span className="inline-block text-[12px] text-blue heartbeat">●</span>
+        <span className="inline-block overflow-hidden text-[12px] text-blue heartbeat">●</span>
       )}
       <span>{formatDurationNs(elapsedSec * 1e9)}</span>
       <span>· ↑{formatTokenCount(inputTokens)}</span>
