@@ -17,7 +17,7 @@ export function PreWithCopy({ children }: { children?: ReactNode }) {
 		<pre className="group relative overflow-x-auto">
 			<button
 				onClick={copy}
-				className="absolute right-2 top-2 z-10 text-t3 opacity-0 transition-opacity hover:text-t1 group-hover:opacity-100"
+				className="absolute right-2 top-2 z-10 text-t3 transition-opacity hover:text-t1 opacity-40"
 			>
 				{copied ? (
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

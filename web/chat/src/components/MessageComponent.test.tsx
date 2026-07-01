@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import MessageComponent from './MessageComponent'
 import type { ChatMessage } from '../model'
 
@@ -32,5 +34,14 @@ describe('MessageComponent layout', () => {
 		expect(grid).toBeTruthy()
 		const contentDiv = grid!.children[1] as HTMLElement
 		expect(contentDiv.className).toContain('min-w-0')
+	})
+})
+
+describe('ChatInterface scroll container', () => {
+	// Read the source file to verify the scroll container has overflow-x-hidden
+	// preventing horizontal scrollbar on the main chat area.
+	it('scroll container has overflow-x-hidden', () => {
+		const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
+		expect(src).toContain('overflow-x-hidden')
 	})
 })
