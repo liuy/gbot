@@ -24,6 +24,7 @@ class ChatFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         webView = view.findViewById(R.id.webView)
+        webView?.overScrollMode = View.OVER_SCROLL_NEVER
         webView?.settings?.apply {
             javaScriptEnabled = true
             domStorageEnabled = true

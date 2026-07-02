@@ -22,9 +22,14 @@
   --color-line2: rgba(120, 180, 255, 0.04);
 }
 
+html {
+  background: #04060c;
+}
+
 html, body, #root {
-  height: 100%;
+  height: 100dvh;
   margin: 0;
+  overscroll-behavior: none;
 }
 
 body {
