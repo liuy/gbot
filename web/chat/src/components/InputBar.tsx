@@ -1,29 +1,44 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { useWebSocket } from '../websocket'
 
-export default function InputBar({
-	streaming,
-	queuedText,
-	onSend,
-	onStop,
-	onCancelQueued,
-}: {
+export interface InputBarHandle {
+	setInputText: (text: string) => void
+}
+
+const InputBar = forwardRef<InputBarHandle, {
 	streaming: boolean
 	queuedText: string | null
 	onSend: (text: string) => void
 	onStop: () => void
 	onCancelQueued: () => void
-}) {
+}>(function InputBar({
+	streaming,
+	queuedText,
+	onSend,
+	onStop,
+	onCancelQueued,
+}, ref) {
 	const { connected } = useWebSocket()
-	const [value, setValue] = useState('')
 	const taRef = useRef<HTMLTextAreaElement>(null)
+	// Force re-render on keystroke so canSend stays reactive without a
+	// controlled value (which would leak restored text into textContent).
+	const [, setTick] = useState(0)
+
+	useImperativeHandle(ref, () => ({
+		setInputText: (text: string) => {
+			if (taRef.current) {
+				taRef.current.value = text
+				taRef.current.focus()
+			}
+		},
+	}), [])
 
 	const onSubmit = (e: React.FormEvent) => {
 		e.preventDefault()
-		const text = value.trim()
+		const text = (taRef.current?.value ?? '').trim()
 		if (!text || !connected) return
 		onSend(text)
-		setValue('')
+		if (taRef.current) taRef.current.value = ''
 	}
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
@@ -33,11 +48,11 @@ export default function InputBar({
 		}
 	}
 
-	const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		setValue(e.target.value)
+	const onInput = () => {
+		setTick((t) => (t + 1) & 0x7fffffff)
 	}
 
-	const canSend = value.trim().length > 0 && connected
+	const canSend = (taRef.current?.value ?? '').trim().length > 0 && connected
 
 	return (
 		<div className="sticky bottom-0 z-10 px-5 pb-3 pt-1">
@@ -73,13 +88,12 @@ export default function InputBar({
 							className="flex-1 flex justify-center min-h-[20px] cursor-text"
 							onClick={() => taRef.current?.focus()}
 						>
-							<textarea
-								ref={taRef}
-								rows={1}
-								value={value}
-								onChange={onInput}
-								onKeyDown={onKeyDown}
-								placeholder="Sup?"
+						<textarea
+							ref={taRef}
+							rows={1}
+							onInput={onInput}
+							onKeyDown={onKeyDown}
+							placeholder="Sup?"
 								disabled={!connected}
 								className="bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light text-center disabled:opacity-40"
 							style={{
@@ -107,4 +121,6 @@ export default function InputBar({
 			</form>
 		</div>
 	)
-}
+})
+
+export default InputBar

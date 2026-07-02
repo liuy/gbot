@@ -2,13 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-// TDD tests for loadHistory deduplication and edge cases.
-// Bug: isInitial was determined by messagesRef.current.length === 0,
-// but persistedMessages is module-level and survives unmount — so
-// reconnect always took the pagination branch (prepend) instead of
-// initial (replace), causing the latest 10 messages to be prepended
-// again and again.
-describe('loadHistory deduplication (TDD)', () => {
+// Tests for loadHistory deduplication and edge cases.
+// persistedMessages is module-level and survives unmount, so reconnect
+// must reset pagination state via expectingInitialRef (ref, not React
+// state, because connect_status and history arrive in the same batch).
+describe('loadHistory deduplication', () => {
 	const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
 
 	it('initial load replaces messages (not appends)', () => {

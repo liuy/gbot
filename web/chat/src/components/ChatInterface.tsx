@@ -3,7 +3,7 @@ import { useWebSocket } from '../websocket'
 import type { ServerMessage, QueryEvent, HistoryChatMsg } from '../types'
 import { newAssistantMessage, type ChatMessage, type Block } from '../model'
 import MessageComponent from './MessageComponent'
-import InputBar from './InputBar'
+import InputBar, { type InputBarHandle } from './InputBar'
 import Ask from './Ask'
 import Header from './Header'
 
@@ -138,6 +138,7 @@ export default function ChatInterface() {
 	const [queuedText, setQueuedText] = useState<string | null>(null)
 	const streamingRef = useRef(false)
 	const [streaming, setStreaming] = useState(false)
+	const abortedRef = useRef(false)
 	const [nextCursor, setNextCursor] = useState(persistedNextCursor)
 	const [hasMore, setHasMore] = useState(persistedHasMore)
 	const loadingMoreRef = useRef(false)
@@ -146,6 +147,7 @@ export default function ChatInterface() {
 	const scrollRef = useRef<HTMLDivElement | null>(null)
 	const topSentinelRef = useRef<HTMLDivElement | null>(null)
 	const bottomRef = useRef<HTMLDivElement | null>(null)
+	const inputRef = useRef<InputBarHandle>(null)
 
 	const scrollToBottom = () => {
 		const el = scrollRef.current
@@ -246,7 +248,41 @@ export default function ChatInterface() {
 				return
 			}
 			case 'query_end': {
-				updateStreamingAssistant((m) => ({ ...m, status: 'done' as const }))
+				const wasAborted = abortedRef.current
+				abortedRef.current = false
+
+				if (wasAborted) {
+					// Check if assistant produced meaningful content
+					const list = messagesRef.current
+					const last = list[list.length - 1]
+					const hasContent = last && last.role === 'assistant' &&
+						last.blocks.some(b => (b.kind === 'text' && b.text.trim()) || b.kind === 'tool')
+
+					if (hasContent) {
+						// Partial response — mark as interrupted
+						updateStreamingAssistant((m) => ({
+							...m,
+							status: 'done' as const,
+							error: '[Request interrupted by user]',
+						}))
+					} else {
+						// No meaningful response — rewind: remove empty assistant msg + restore input
+						if (last && last.role === 'assistant') {
+							list.pop()
+						}
+						// Find the user message text to restore
+						const userMsg = [...list].reverse().find(m => m.role === 'user')
+						if (userMsg) {
+							const textBlock = userMsg.blocks.find(b => b.kind === 'text') as any
+							if (textBlock?.text) {
+								list.pop()
+								inputRef.current?.setInputText(textBlock.text)
+							}
+						}
+					}
+				} else {
+					updateStreamingAssistant((m) => ({ ...m, status: 'done' as const }))
+				}
 				streamingRef.current = false
 				setStreaming(false)
 				setQueuedText(null)
@@ -413,6 +449,22 @@ export default function ChatInterface() {
 			}
 			case 'retry_attempt':
 				return
+			case 'attachment': {
+				if (queuedText) {
+					messagesRef.current.push({
+						id: nextId('u'),
+						role: 'user',
+						blocks: [{ kind: 'text', id: nextId('txt'), text: queuedText }],
+						usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+						error: '',
+						status: 'done',
+						startedAt: Date.now(),
+					})
+					setQueuedText(null)
+					forceRender()
+				}
+				return
+			}
 			default:
 				return
 		}
@@ -479,6 +531,12 @@ export default function ChatInterface() {
 	}, [hasMore, nextCursor, send])
 
 	const onSend = (text: string) => {
+		if (streamingRef.current) {
+			setQueuedText(text)
+			send({ type: 'message', text })
+			forceRender()
+			return
+		}
 		messagesRef.current.push({
 			id: nextId('u'),
 			role: 'user',
@@ -488,14 +546,12 @@ export default function ChatInterface() {
 			status: 'done',
 			startedAt: Date.now(),
 		})
-		if (streamingRef.current) {
-			setQueuedText(text)
-		}
 		send({ type: 'message', text })
 		forceRender()
 	}
 
 	const onStop = () => {
+		abortedRef.current = true
 		send({ type: 'stop' })
 	}
 
@@ -517,6 +573,7 @@ export default function ChatInterface() {
 				<div ref={bottomRef} />
 			</div>
 			<InputBar
+				ref={inputRef}
 				streaming={streaming}
 				queuedText={queuedText}
 				onSend={onSend}
