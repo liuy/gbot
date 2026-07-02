@@ -185,17 +185,27 @@ export default function ChatInterface() {
 
 	const loadHistory = (msg: Extract<ServerMessage, { type: 'history' }>) => {
 		const histMsgs = msg.messages
-		const isInitial = messagesRef.current.length === 0
 		const newMsgs = mapHistoryToChatMessages(histMsgs)
 
+		// Initial page (cursor was empty) replaces all messages.
+		// Pagination page (cursor non-empty) prepends older messages.
+		const isInitial = !nextCursor && !loadingMoreRef.current
+
 		if (isInitial) {
-			messagesRef.current.push(...newMsgs)
+			messagesRef.current.splice(0, messagesRef.current.length, ...newMsgs)
 		} else {
+			// Deduplicate: skip messages already in the list (by id).
+			const existingIds = new Set(messagesRef.current.map((m) => m.id))
+			const deduped = newMsgs.filter((m) => !existingIds.has(m.id))
+			if (deduped.length === 0) {
+				loadingMoreRef.current = false
+				return
+			}
 			// Pagination: prepend older messages.
 			const el = scrollRef.current
 			const prevScrollHeight = el?.scrollHeight ?? 0
 			const prevScrollTop = el?.scrollTop ?? 0
-			messagesRef.current.unshift(...newMsgs)
+			messagesRef.current.unshift(...deduped)
 			forceRender()
 			requestAnimationFrame(() => {
 				if (el) {
