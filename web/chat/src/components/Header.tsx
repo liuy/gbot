@@ -87,12 +87,15 @@ export default function Header() {
 		<header className="sticky top-0 z-30 glass">
 			<div className="flex items-center gap-2.5 px-4 h-11 max-w-2xl mx-auto">
 				<span
-					className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green pulse' : 'bg-red'}`}
-				/>
-				<span className="text-t1 font-semibold tracking-tight text-[14px]">GBot</span>
+					className={`font-semibold tracking-tight text-[14px] transition-colors ${
+						connected
+							? 'text-blue pulse'
+							: 'text-t3'
+					}`}
+				>GBot</span>
 
 				<Dropdown
-					trigger={<span className="mono text-[11px] text-blue group-hover:text-t1 transition-colors">glm-5.2</span>}
+					trigger={<span className="mono text-[11px] text-t2 group-hover:text-t1 transition-colors">glm-5.2</span>}
 					options={[
 						{ label: 'glm-5.2', active: true },
 						{ label: 'glm-4.6' },
