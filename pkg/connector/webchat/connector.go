@@ -27,6 +27,12 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// handlerBufSize is the outbound channel buffer, matching TUI's appCh
+// (pkg/tui/handler.go: handlerBufSize = 1024). A single large buffer plus
+// blocking send means messages are never dropped; a slow client briefly
+// back-pressures the engine loop (acceptable for correctness).
+const handlerBufSize = 1024
+
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
 // wire protocol (Phase 0), and drives queries from inbound WS messages.
@@ -44,11 +50,11 @@ type WebChatConnector struct {
 	pendingMu   sync.Mutex
 	askCounter  atomic.Int64
 
-	// Two channels selected by criticality. criticalCh is blocking (must
-	// deliver: Ask, Error, QueryEnd, ConnectorUserMessage); eventCh is
-	// drop-oldest acceptable (streaming deltas).
-	eventCh    chan []byte
-	criticalCh chan []byte
+	// Single buffered channel for all outbound messages, mirroring TUI's
+	// appCh (pkg/tui/handler.go: handlerBufSize = 1024). Blocking send —
+	// the hub calls Handle synchronously, so a full channel at most briefly
+	// delays the engine loop, which is acceptable for correctness (no drops).
+	msgCh chan []byte
 
 	// The single active WS connection. The connector supports one client at a
 	// time; a new connection replaces the prior one.
@@ -77,8 +83,7 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 		engine:      eng,
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
-		eventCh:     make(chan []byte, 256),
-		criticalCh:  make(chan []byte, 16),
+		msgCh:       make(chan []byte, handlerBufSize),
 	}
 	c.queryFn = func(ctx context.Context, userMessage, _ string) {
 		eng.Query(ctx, userMessage, eng.SystemPrompt())
@@ -112,14 +117,13 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 func (c *WebChatConnector) Start(ctx context.Context) error { return nil }
 
 // Stop unsubscribes from the hub, aborts any pending asks, cancels any active
-// query, and closes the channels so the writeLoop exits.
+// query, and closes the channel so the writeLoop exits.
 func (c *WebChatConnector) Stop() {
 	if c.unsubscribe != nil {
 		c.unsubscribe()
 	}
 	c.cleanupConn()
-	close(c.eventCh)
-	close(c.criticalCh)
+	close(c.msgCh)
 }
 
 // Send is an interface no-op: webchat has no outbound platform. Nobody calls
@@ -127,17 +131,18 @@ func (c *WebChatConnector) Stop() {
 // connector.Connector contract.
 func (c *WebChatConnector) Send(userID, text string) error { return nil }
 
-// Handle implements hub.EventHandler. It classifies the event by Type and
-// routes it to the appropriate channel: criticalCh for must-deliver events
-// (Ask, Error, QueryEnd, ConnectorUserMessage) and eventCh for streaming
-// deltas (drop-oldest on full).
+// Handle implements hub.EventHandler. Every event is marshalled to its wire
+// payload and pushed onto msgCh with a blocking send (no drops). The hub
+// calls Handle synchronously, so a slow client briefly back-pressures the
+// engine loop, which is the desired correctness tradeoff — same model TUI
+// uses with its 1024-buffer appCh.
 func (c *WebChatConnector) Handle(event hub.Event) {
 	switch event.Type {
 	case types.EventAsk:
 		c.handleAsk(event)
 		return
 	case types.EventError:
-		c.sendCritical(buildErrorMessage(event.Error))
+		c.msgCh <- buildErrorMessage(event.Error)
 		return
 	}
 
@@ -149,19 +154,12 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
-
-	switch event.Type {
-	case types.EventQueryEnd, types.EventConnectorUserMessage:
-		// Must deliver — never drop a query_done or echoed user message.
-		c.sendCritical(payload)
-	default:
-		c.sendEvent(payload)
-	}
+	c.msgCh <- payload
 }
 
 // handleAsk stores the AskEvent under a fresh id, builds the askOutbound
 // struct (NOT marshalling *types.AskEvent directly — its fields have no json
-// tags), and emits it on criticalCh.
+// tags), and emits it on msgCh.
 func (c *WebChatConnector) handleAsk(event hub.Event) {
 	if event.Ask == nil {
 		return
@@ -192,44 +190,7 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 		slog.Warn("webchat: marshal ask failed", "id", id, "error", err)
 		return
 	}
-	c.sendCritical(payload)
-}
-
-// sendCritical blocks on criticalCh — must-deliver events.
-func (c *WebChatConnector) sendCritical(payload []byte) {
-	select {
-	case c.criticalCh <- payload:
-	default:
-		// criticalCh full: drop oldest, then retry. This is the same
-		// drop-oldest semantics as the streaming channel, applied as a last
-		// resort so a backed-up client does not wedge the engine loop.
-		select {
-		case <-c.criticalCh:
-		default:
-		}
-		select {
-		case c.criticalCh <- payload:
-		default:
-		}
-	}
-}
-
-// sendEvent pushes to eventCh with drop-oldest on full. Streaming deltas can
-// be dropped without breaking the conversation; the engine keeps going.
-func (c *WebChatConnector) sendEvent(payload []byte) {
-	select {
-	case c.eventCh <- payload:
-	default:
-		select {
-		case <-c.eventCh:
-		default:
-		}
-		select {
-		case c.eventCh <- payload:
-		default:
-		}
-		slog.Warn("webchat: eventCh full, dropped oldest streaming delta")
-	}
+	c.msgCh <- payload
 }
 
 // buildHistoryMessage returns a JSON "history" message containing the engine's

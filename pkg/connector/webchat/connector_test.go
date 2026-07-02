@@ -2,7 +2,9 @@ package webchat
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 )
 
 // readOne pops a single message from the channel with a timeout, failing the
-// test if no message arrives in time. Streaming deltas land in eventCh.
+// test if no message arrives in time. All outbound messages land in msgCh.
 func readOne(t *testing.T, ch <-chan []byte) []byte {
 	t.Helper()
 	select {
@@ -29,7 +31,7 @@ func readOne(t *testing.T, ch <-chan []byte) []byte {
 func TestHandle_QueryStart(t *testing.T) {
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
-	msg := readOne(t, c.eventCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -53,7 +55,7 @@ func TestHandle_QueryStart(t *testing.T) {
 func TestHandle_TextDelta(t *testing.T) {
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hello"})
-	msg := readOne(t, c.eventCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -78,7 +80,7 @@ func TestHandle_ThinkingEnd_Nanoseconds(t *testing.T) {
 		Type:     types.EventThinkingEnd,
 		Thinking: &types.ThinkingEvent{Duration: 350 * time.Millisecond},
 	})
-	msg := readOne(t, c.eventCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Event struct {
@@ -105,7 +107,7 @@ func TestHandle_AgentSnakeCase(t *testing.T) {
 		Agent:   &types.AgentMeta{ParentToolUseID: "call_1", AgentType: "Explore", Depth: 0},
 		ToolUse: &types.ToolUseEvent{ID: "tu_1", Name: "Grep", Input: json.RawMessage(`{}`)},
 	})
-	msg := readOne(t, c.eventCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Event struct {
@@ -145,7 +147,7 @@ func TestHandle_AskBuildsOutbound(t *testing.T) {
 			Message:  "Allow Bash?",
 		},
 	})
-	msg := readOne(t, c.criticalCh)
+	msg := readOne(t, c.msgCh)
 
 	var got struct {
 		Type     string          `json:"type"`
@@ -178,12 +180,12 @@ func TestHandle_AskBuildsOutbound(t *testing.T) {
 	}
 }
 
-// TestHandle_ErrorCriticalChannel verifies EventError lands in criticalCh
+// TestHandle_Error verifies EventError lands in msgCh
 // (blocking, must deliver) with the message field set.
-func TestHandle_ErrorCriticalChannel(t *testing.T) {
+func TestHandle_Error(t *testing.T) {
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventError, Error: assertErr("boom")})
-	msg := readOne(t, c.criticalCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Type    string `json:"type"`
@@ -200,12 +202,12 @@ func TestHandle_ErrorCriticalChannel(t *testing.T) {
 	}
 }
 
-// TestHandle_QueryEndCritical verifies QueryEnd lands in criticalCh so the
+// TestHandle_QueryEnd verifies QueryEnd lands in msgCh so the
 // "query done" signal is never dropped behind streaming deltas.
-func TestHandle_QueryEndCritical(t *testing.T) {
+func TestHandle_QueryEnd(t *testing.T) {
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	msg := readOne(t, c.criticalCh)
+	msg := readOne(t, c.msgCh)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -224,6 +226,78 @@ func TestHandle_QueryEndCritical(t *testing.T) {
 	}
 }
 
+// TestMsgCh_NeverDrops verifies that msgCh blocks when full and never silently
+// drops a message, even under concurrent senders exceeding buffer capacity.
+func TestMsgCh_NeverDrops(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Start reader BEFORE filling so sends don't deadlock.
+	const fillCount = handlerBufSize // 1024 to fill buffer
+	const extraCount = 50            // beyond buffer, requires blocking
+	const total = fillCount + extraCount
+	var mu sync.Mutex
+	received := make(map[string]bool)
+	readerDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case msg := <-c.msgCh:
+				mu.Lock()
+				received[string(msg)] = true
+				mu.Unlock()
+			case <-readerDone:
+				return
+			}
+		}
+	}()
+
+	// Send 1024+50 messages from a single goroutine. The first 1024 fill the
+	// buffer; the next 50 block until the reader drains. If sendCritical had
+	// drop logic, these 50 would be silently discarded.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < total; i++ {
+			c.msgCh <- []byte(fmt.Sprintf("msg-%d", i))
+		}
+	}()
+
+	sentDone := make(chan struct{})
+	go func() { wg.Wait(); close(sentDone) }()
+	select {
+	case <-sentDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("msgCh blocked >10s — messages stuck or dropped")
+	}
+
+	// Wait for reader to drain all messages.
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= total {
+			break
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-time.After(5 * time.Second):
+			t.Fatalf("reader only got %d/%d messages", n, total)
+		}
+	}
+	close(readerDone)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Verify the 50 "extra" messages (beyond buffer capacity) were delivered.
+	for i := fillCount; i < total; i++ {
+		key := fmt.Sprintf("msg-%d", i)
+		if !received[key] {
+			t.Errorf("message %q was dropped (beyond buffer)", key)
+		}
+	}
+}
+
 // TestHandle_PendingAskStoredResponseCh verifies the engine's Ask.ResponseCh
 // is reachable from the connector so a later ask_response inbound can unblock
 // the engine.
@@ -238,7 +312,7 @@ func TestHandle_PendingAskStoredResponseCh(t *testing.T) {
 			ResponseCh: ch,
 		},
 	})
-	_ = readOne(t, c.criticalCh)
+	_ = readOne(t, c.msgCh)
 	if id := c.firstPendingAskIDTest(t); id != "1" {
 		t.Fatalf("firstPendingAskIDTest = %q, want \"1\"", id)
 	}
@@ -257,7 +331,7 @@ func TestSendAskResponse_UnblocksEngine(t *testing.T) {
 			ResponseCh: ch,
 		},
 	})
-	_ = readOne(t, c.criticalCh)
+	_ = readOne(t, c.msgCh)
 
 	c.respondToAskTest(t, "1", types.AskResponse{Decision: types.DecisionAllow})
 
@@ -280,8 +354,8 @@ func TestCleanupConn_AbortsPendingAsks(t *testing.T) {
 	ch2 := make(chan types.AskResponse, 1)
 	c.Handle(types.QueryEvent{Type: types.EventAsk, Ask: &types.AskEvent{Kind: types.AskPermission, ToolName: "Bash", ResponseCh: ch1}})
 	c.Handle(types.QueryEvent{Type: types.EventAsk, Ask: &types.AskEvent{Kind: types.AskInput, Prompt: "pwd:", ResponseCh: ch2}})
-	_ = readOne(t, c.criticalCh)
-	_ = readOne(t, c.criticalCh)
+	_ = readOne(t, c.msgCh)
+	_ = readOne(t, c.msgCh)
 
 	c.cleanupConn()
 
@@ -302,10 +376,10 @@ func TestCleanupConn_AbortsPendingAsks(t *testing.T) {
 func TestNew_SubscribesToHub(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
-	// Dispatch through the hub directly: must reach our eventCh, proving New
+	// Dispatch through the hub directly: must reach our msgCh, proving New
 	// registered the handler.
 	h.Dispatch(types.QueryEvent{Type: types.EventTextStart, Text: "via-hub"})
-	msg := readOne(t, c.eventCh)
+	msg := readOne(t, c.msgCh)
 	var env struct {
 		Event struct {
 			Text string `json:"text"`

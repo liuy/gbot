@@ -33,8 +33,7 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 		engine:      nil,
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
-		eventCh:     make(chan []byte, 256),
-		criticalCh:  make(chan []byte, 16),
+		msgCh:       make(chan []byte, handlerBufSize),
 	}
 	c.queryFn = func(_ context.Context, _, _ string) {} // tests override
 	c.isBusyFn = func() bool { return false }

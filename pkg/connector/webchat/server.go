@@ -17,7 +17,7 @@ var chatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { re
 // RegisterChatWS mounts the chat WebSocket endpoint at /ws/chat on mux. The
 // handler upgrades the connection, emits connect_status, then runs a readLoop
 // (inbound: message / ask_response / stop) and a writeLoop (outbound:
-// events streamed from the connector's channels).
+// events streamed from the connector's channel).
 func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 	mux.HandleFunc("/ws/chat", func(w http.ResponseWriter, r *http.Request) {
 		ws, err := chatUpgrader.Upgrade(w, r, nil)
@@ -60,8 +60,8 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 		c.readLoop(ws)
 	}()
 
-	// writeLoop owns the write side, draining eventCh and criticalCh. It exits
-	// when done is closed (reader stopped) or on write error.
+	// writeLoop owns the write side, draining msgCh. It exits when done is
+	// closed (reader stopped) or on write error.
 	go func() {
 		defer closeDone()
 		c.writeLoop(ws, done)
@@ -171,45 +171,16 @@ func (c *WebChatConnector) setQueryCancel(cancel context.CancelFunc) {
 	c.queryCancelMu.Unlock()
 }
 
-// writeLoop drains criticalCh (priority) and eventCh, writing each message to
-// the WS connection. Exits when done is closed or on write error.
+// writeLoop drains msgCh, writing each message to the WS connection. Exits
+// when done is closed, the channel is closed, or on write error.
 func (c *WebChatConnector) writeLoop(ws *websocket.Conn, done <-chan struct{}) {
 	pingTicker := time.NewTicker(30 * time.Second)
 	defer pingTicker.Stop()
 	for {
-		// Always drain criticalCh first (priority): a non-blocking sweep
-		// before blocking on either channel guarantees critical messages
-		// flush ahead of streaming deltas.
 		select {
 		case <-done:
 			return
-		case msg, ok := <-c.criticalCh:
-			if !ok {
-				return
-			}
-			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
-				return
-			}
-			continue
-		case <-pingTicker.C:
-			if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-			continue
-		default:
-		}
-		// Block on either channel; criticalCh is checked first.
-		select {
-		case <-done:
-			return
-		case msg, ok := <-c.criticalCh:
-			if !ok {
-				return
-			}
-			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
-				return
-			}
-		case msg, ok := <-c.eventCh:
+		case msg, ok := <-c.msgCh:
 			if !ok {
 				return
 			}
@@ -242,17 +213,17 @@ func (c *WebChatConnector) cleanupConn() {
 	}
 	c.handleStop()
 	c.activeWS.Store(nil)
-	// Drain channels so a blocked Handle (if any) is released.
-	c.drainChannels()
+	// Drain msgCh so a blocked Handle (if any) is released.
+	c.drainMsgCh()
 	slog.Debug("webchat: connection cleaned up", "pending_asks", len(asks))
 }
 
-// drainChannels empties both channels without blocking so a producer that
-// raced ahead of cleanup is not wedged.
-func (c *WebChatConnector) drainChannels() {
+// drainMsgCh empties msgCh without blocking so a producer that raced
+// ahead of cleanup is not wedged.
+func (c *WebChatConnector) drainMsgCh() {
 	for {
 		select {
-		case <-c.eventCh:
+		case <-c.msgCh:
 		default:
 			return
 		}
