@@ -645,7 +645,7 @@ func (s *ReplState) FinishStream(err error) {
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
 			Role:   "system",
-			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("Error: %v", err)}},
+			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("%s: %v", errorPrefix(err), err)}},
 		})
 	}
 }

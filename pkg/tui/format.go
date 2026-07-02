@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"errors"
+
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -19,6 +22,17 @@ func animateTokenValue(displayed, target int) int {
 		displayed = target
 	}
 	return displayed
+}
+
+// errorPrefix returns a context-specific prefix for error display.
+// APIError gets "API Error" so users immediately know the source;
+// everything else gets the generic "Error".
+func errorPrefix(err error) string {
+	var apiErr *llm.APIError
+	if errors.As(err, &apiErr) {
+		return "API Error"
+	}
+	return "Error"
 }
 
 // formatRetryError maps a RetryErrorType to a user-friendly message.

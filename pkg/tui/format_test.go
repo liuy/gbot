@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -163,5 +166,44 @@ func TestFormatRetryError_EmptyType(t *testing.T) {
 	got := formatRetryError("")
 	if got != "Request timed out. Check your internet connection" {
 		t.Errorf("formatRetryError(empty) = %q, want timeout message", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// errorPrefix
+// ---------------------------------------------------------------------------
+
+func TestErrorPrefix_APIError(t *testing.T) {
+	t.Parallel()
+	err := &llm.APIError{Message: "rate limited", Status: 429}
+	got := errorPrefix(err)
+	if got != "API Error" {
+		t.Errorf("errorPrefix(APIError) = %q, want %q", got, "API Error")
+	}
+}
+
+func TestErrorPrefix_WrappedAPIError(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("stream request: %w", &llm.APIError{Message: "overloaded"})
+	got := errorPrefix(err)
+	if got != "API Error" {
+		t.Errorf("errorPrefix(wrapped APIError) = %q, want %q", got, "API Error")
+	}
+}
+
+func TestErrorPrefix_GenericError(t *testing.T) {
+	t.Parallel()
+	err := errors.New("internal error: panic")
+	got := errorPrefix(err)
+	if got != "Error" {
+		t.Errorf("errorPrefix(generic) = %q, want %q", got, "Error")
+	}
+}
+
+func TestErrorPrefix_NilError(t *testing.T) {
+	t.Parallel()
+	got := errorPrefix(nil)
+	if got != "Error" {
+		t.Errorf("errorPrefix(nil) = %q, want %q", got, "Error")
 	}
 }
