@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -95,7 +96,7 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 				Text string `json:"text"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				c.handleMessageInbound(ws, msg.Text)
+				c.handleMessageInbound(msg.Text)
 			}
 		case "ask_response":
 			var msg struct {
@@ -128,23 +129,25 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 	}
 }
 
-// handleMessageInbound dispatches a user message to the engine via queryFn,
-// unless a query is already active.
-func (c *WebChatConnector) handleMessageInbound(ws *websocket.Conn, text string) {
+// handleMessageInbound dispatches a user message to the engine via queryFn.
+// If a query is already active, the message is enqueued via
+// engine.EnqueueAttachment (same path as TUI's handleEnqueueMessage) —
+// the engine drains it automatically after the current query finishes.
+func (c *WebChatConnector) handleMessageInbound(text string) {
 	if c.isBusyFn != nil && c.isBusyFn() {
-		errMsg, _ := json.Marshal(struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		}{Type: "error", Message: "query already active"})
-		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
+		if c.enqueueFn != nil {
+			c.enqueueFn(types.QueuedItem{
+				Value:     text,
+				Mode:      types.ItemModePrompt,
+				UUID:      uuid.NewString(),
+				Priority:  types.PriorityNext,
+				Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+				Timestamp: time.Now(),
+			})
+		}
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c.setQueryCancel(cancel)
-	go func() {
-		defer c.setQueryCancel(nil)
-		c.queryFn(ctx, text, "")
-	}()
+	go c.queryFn(context.Background(), text, "")
 }
 
 // handleAskResponse looks up a pending ask by id and writes the response to
@@ -170,22 +173,13 @@ func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted 
 	}
 }
 
-// handleStop cancels the active query context (if any). Do NOT call
-// engine.Abort — context cancellation propagates through queryFn's ctx.
+// handleStop aborts the active query. Calls engine.Abort directly —
+// same path as TUI's ESC handler. This cancels the engine's internal
+// activeCancel which propagates to the LLM stream and all tool contexts.
 func (c *WebChatConnector) handleStop() {
-	c.queryCancelMu.Lock()
-	cancel := c.queryCancel
-	c.queryCancel = nil
-	c.queryCancelMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if c.abortFn != nil {
+		c.abortFn()
 	}
-}
-
-func (c *WebChatConnector) setQueryCancel(cancel context.CancelFunc) {
-	c.queryCancelMu.Lock()
-	c.queryCancel = cancel
-	c.queryCancelMu.Unlock()
 }
 
 // writeLoop drains msgCh, writing each message to the WS connection. Exits

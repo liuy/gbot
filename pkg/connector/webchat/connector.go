@@ -60,18 +60,16 @@ type WebChatConnector struct {
 	// time; a new connection replaces the prior one.
 	activeWS atomic.Pointer[websocket.Conn]
 
-	// Active query cancel, set when a "message" inbound dispatches a query.
-	queryCancel   context.CancelFunc
-	queryCancelMu sync.Mutex
-
 	// Testable seams (same pattern as WeChat connector.go). queryFn defaults
 	// to eng.Query; tests override to record dispatches. isBusyFn defaults to
 	// eng.IsBusy. messagesFn/toolsFn default to eng.Messages/eng.Tools and are
 	// overridden by tests to exercise buildHistoryMessage without a real engine.
-	queryFn    func(ctx context.Context, userMessage, systemPrompt string)
-	isBusyFn   func() bool
-	messagesFn func() []types.Message
-	toolsFn    func() map[string]tool.Tool
+	queryFn     func(ctx context.Context, userMessage, systemPrompt string)
+	isBusyFn    func() bool
+	messagesFn  func() []types.Message
+	toolsFn     func() map[string]tool.Tool
+	enqueueFn   func(item types.QueuedItem)
+	abortFn     func()
 }
 
 // New builds a WebChatConnector bound to the given engine and hub. The
@@ -105,6 +103,12 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 			return nil
 		}
 		return c.engine.Tools()
+	}
+	c.enqueueFn = func(item types.QueuedItem) {
+		c.engine.EnqueueAttachment(item)
+	}
+	c.abortFn = func() {
+		c.engine.Abort()
 	}
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)

@@ -82,10 +82,3 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 		t.Fatalf("respondToAskTest: ResponseCh blocked")
 	}
 }
-
-// queryCancelActiveTest reports whether a query cancel is currently stored.
-func (c *WebChatConnector) queryCancelActiveTest() bool {
-	c.queryCancelMu.Lock()
-	defer c.queryCancelMu.Unlock()
-	return c.queryCancel != nil
-}

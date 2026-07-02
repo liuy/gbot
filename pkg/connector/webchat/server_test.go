@@ -104,44 +104,45 @@ func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 	}
 }
 
-// TestRegisterChatWS_MessageWhileBusyReturnsError verifies that sending a
-// second message while a query is active returns an error envelope instead of
-// dispatching another query.
-func TestRegisterChatWS_MessageWhileBusyReturnsError(t *testing.T) {
+// TestHandleMessageInbound_BusyEnqueues verifies that when isBusyFn returns
+// true, the message is enqueued via enqueueFn (not dispatched via queryFn).
+func TestHandleMessageInbound_BusyEnqueues(t *testing.T) {
 	c := newTestConnector(t)
 	dispatched := 0
 	c.queryFn = func(context.Context, string, string) { dispatched++ }
-	c.isBusyFn = func() bool { return true } // always busy
+	c.isBusyFn = func() bool { return true }
+	var enqueued *types.QueuedItem
+	c.enqueueFn = func(item types.QueuedItem) { enqueued = &item }
 
-	mux := http.NewServeMux()
-	RegisterChatWS(mux, c)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	c.handleMessageInbound("queued text")
 
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-
-	out, _ := json.Marshal(map[string]any{"type": "message", "text": "second"})
-	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	data := readWSMessage(t, ws)
-	var env struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if env.Type != "error" {
-		t.Errorf("type = %q, want \"error\"", env.Type)
-	}
-	if !strings.Contains(env.Message, "active") && !strings.Contains(env.Message, "busy") {
-		t.Errorf("message = %q, want it to contain \"active\" or \"busy\"", env.Message)
-	}
 	if dispatched != 0 {
-		t.Errorf("queryFn dispatched %d time(s), want 0 (busy gate)", dispatched)
+		t.Errorf("queryFn dispatched %d time(s), want 0", dispatched)
+	}
+	if enqueued == nil {
+		t.Fatal("enqueueFn not called")
+	}
+	if enqueued.Value != "queued text" {
+		t.Errorf("enqueued Value = %q, want \"queued text\"", enqueued.Value)
+	}
+	if enqueued.Priority != types.PriorityNext {
+		t.Errorf("enqueued Priority = %v, want PriorityNext", enqueued.Priority)
+	}
+	if enqueued.Origin == nil || enqueued.Origin.Kind != types.OriginHuman {
+		t.Errorf("enqueued Origin = %+v, want OriginHuman", enqueued.Origin)
+	}
+}
+
+// TestHandleStop_CallsAbortFn verifies handleStop invokes abortFn.
+func TestHandleStop_CallsAbortFn(t *testing.T) {
+	c := newTestConnector(t)
+	aborted := false
+	c.abortFn = func() { aborted = true }
+
+	c.handleStop()
+
+	if !aborted {
+		t.Fatal("abortFn not called by handleStop")
 	}
 }
 
@@ -198,47 +199,6 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("engine ResponseCh never received the decision")
-	}
-}
-
-// TestRegisterChatWS_StopCancelsQuery verifies the stop inbound message
-// cancels the active query via the stored CancelFunc.
-func TestRegisterChatWS_StopCancelsQuery(t *testing.T) {
-	c := newTestConnector(t)
-	cancelled := make(chan struct{})
-	c.queryFn = func(ctx context.Context, _, _ string) {
-		<-ctx.Done()
-		close(cancelled)
-	}
-	c.isBusyFn = func() bool { return false }
-
-	mux := http.NewServeMux()
-	RegisterChatWS(mux, c)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-
-	msgOut, _ := json.Marshal(map[string]any{"type": "message", "text": "long"})
-	if err := ws.WriteMessage(websocket.TextMessage, msgOut); err != nil {
-		t.Fatalf("write message: %v", err)
-	}
-	// Wait for the query to be dispatched and the cancel to be stored.
-	if !waitFor(2*time.Second, func() bool { return c.queryCancelActiveTest() }) {
-		t.Fatal("queryCancel not stored after message dispatch")
-	}
-
-	stopOut, _ := json.Marshal(map[string]any{"type": "stop"})
-	if err := ws.WriteMessage(websocket.TextMessage, stopOut); err != nil {
-		t.Fatalf("write stop: %v", err)
-	}
-
-	select {
-	case <-cancelled:
-		// pass
-	case <-time.After(time.Second):
-		t.Fatal("query context not cancelled by stop message")
 	}
 }
 
