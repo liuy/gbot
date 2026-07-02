@@ -13,13 +13,15 @@ function DiffOutput({ text }: { text: string }) {
 	const plain = stripAnsi(text)
 	const lines = plain.split('\n')
 	return (
-	  <div className="ml-[20px] font-mono text-sm leading-relaxed">
-	    {lines.map((line, i) => {
-	      const marker = isDiffLine(line)
-	      if (marker === '+') return <div key={i} className="bg-green/15 text-green/90 whitespace-pre-wrap break-all">{line}</div>
-	      if (marker === '-') return <div key={i} className="bg-red/15 text-red/90 whitespace-pre-wrap break-all">{line}</div>
-	      return <div key={i} className="text-t2 whitespace-pre-wrap break-all">{line}</div>
-	    })}
+	  <div className="ml-[20px] font-mono text-sm leading-relaxed overflow-x-auto">
+	    <div className="inline-block min-w-full">
+	      {lines.map((line, i) => {
+	        const marker = isDiffLine(line)
+	        if (marker === '+') return <div key={i} className="bg-green/15 text-green/90 whitespace-pre">{line}</div>
+	        if (marker === '-') return <div key={i} className="bg-red/15 text-red/90 whitespace-pre">{line}</div>
+	        return <div key={i} className="text-t2 whitespace-pre">{line}</div>
+	      })}
+	    </div>
 	  </div>
 	)
 }
@@ -80,7 +82,7 @@ function ToolRendererBase({ tool }: { tool: ToolBlock }) {
 	    </span>
 	    {expanded && tool.displayOutput && hasDiff && <DiffOutput text={tool.displayOutput} />}
 	    {expanded && tool.displayOutput && !hasDiff && (
-	      <pre className="ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre-wrap break-all">
+	      <pre className="ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre overflow-x-auto">
 	        {stripAnsi(tool.displayOutput)}
       </pre>
     )}
