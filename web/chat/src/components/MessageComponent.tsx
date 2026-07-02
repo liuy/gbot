@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import type { ChatMessage, Block } from '../model'
 import Markdown from './Markdown'
 import Thinking from './Thinking'
@@ -55,12 +55,13 @@ function renderGrouped(blocks: Block[]) {
 	return out
 }
 
-export default function MessageComponent({
+function MessageComponentBase({
   message,
 }: {
   message: ChatMessage
 }) {
   const isUser = message.role === 'user'
+  const groups = useMemo(() => renderGrouped(message.blocks), [message.blocks])
 
   return (
     <div className="px-1.5">
@@ -75,7 +76,7 @@ export default function MessageComponent({
             </div>
           ) : (
             <div className="space-y-3">
-              {renderGrouped(message.blocks)}
+              {groups}
               {message.error && (
                 <div className="rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red">
                   {message.error}
@@ -98,3 +99,5 @@ export default function MessageComponent({
     </div>
   )
 }
+
+export default memo(MessageComponentBase)

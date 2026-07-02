@@ -14,7 +14,7 @@ export type ServerMessage =
       agent_type?: string
     }
   | { type: 'error'; message: string }
-  | { type: 'history'; messages: HistoryChatMsg[] }
+  | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
 
 export type HistoryBlockTool = {
   id: string

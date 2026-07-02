@@ -44,8 +44,10 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
 
 	// Send conversation history so the client renders the prior transcript
-	// on reconnect / page refresh — same as TUI's SwitchSession path.
-	if histMsg := c.buildHistoryMessage(); histMsg != nil {
+	// on reconnect / page refresh — same as TUI's SwitchSession path. Only
+	// the latest page is sent; the client requests older pages via
+	// history_request once mounted (load-more on scroll-up).
+	if histMsg := c.buildHistoryMessage("", 10); histMsg != nil {
 		_ = ws.WriteMessage(websocket.TextMessage, histMsg)
 	}
 
@@ -107,6 +109,21 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			}
 		case "stop":
 			c.handleStop()
+		case "history_request":
+			// Client requests an older page of history. Route the response
+			// through msgCh (NOT a direct ws.WriteMessage) because gorilla
+			// websocket does not support concurrent writers — writeLoop owns
+			// the write side. Blocking send matches Handle's contract; the
+			// 1024 buffer makes a stall practically unreachable.
+			var msg struct {
+				Cursor string `json:"cursor"`
+				Limit  int    `json:"limit"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				if histMsg := c.buildHistoryMessage(msg.Cursor, msg.Limit); histMsg != nil {
+					c.msgCh <- histMsg
+				}
+			}
 		}
 	}
 }

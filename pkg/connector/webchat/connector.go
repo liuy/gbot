@@ -193,11 +193,19 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 	c.msgCh <- payload
 }
 
-// buildHistoryMessage returns a JSON "history" message containing the engine's
-// current conversation, or nil if there are no messages. Tool summaries and
+// buildHistoryMessage returns a JSON "history" message containing a PAGINATED
+// slice of the engine's conversation, or nil if there are no messages at all.
+//
+// cursor is an opaque token encoding how many messages from the END have
+// already been delivered in prior pages ("0"/"" → deliver the most recent
+// page). limit defaults to 10 when <= 0. The payload carries nextCursor and
+// hasMore so the frontend can request further pages via history_request.
+//
+// The full history is still computed (needed to resolve tool_result
+// cross-references); only the serialized payload shrinks. Tool summaries and
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
-func (c *WebChatConnector) buildHistoryMessage() []byte {
+func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte {
 	if c.messagesFn == nil {
 		return nil
 	}
@@ -278,10 +286,38 @@ func (c *WebChatConnector) buildHistoryMessage() []byte {
 	if len(out) == 0 {
 		return nil
 	}
+
+	// Pagination: cursor is the count of messages from the END already
+	// delivered in prior pages. Cursor ""/0 → deliver the most recent page.
+	// The slice is taken from the END so a growing conversation (new messages
+	// appended at the back) never shifts already-delivered page offsets.
+	total := len(out)
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := 0
+	if cursor != "" {
+		if n, err := strconv.Atoi(cursor); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	end := max(
+		// exclusive upper bound
+		total-offset, 0)
+	start := max(end-limit, 0)
+	page := out[start:end]
+	hasMore := start > 0
+	nextCursor := ""
+	if hasMore {
+		nextCursor = strconv.Itoa(offset + (end - start))
+	}
+
 	payload, _ := json.Marshal(struct {
-		Type     string           `json:"type"`
-		Messages []historyChatMsg `json:"messages"`
-	}{Type: "history", Messages: out})
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore})
 	return payload
 }
 

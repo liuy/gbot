@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { Block } from '../model'
 import { formatDurationNs, stripAnsi } from '../utils'
 
@@ -24,7 +24,7 @@ function DiffOutput({ text }: { text: string }) {
 	)
 }
 
-export default function ToolRenderer({ tool }: { tool: ToolBlock }) {
+function ToolRendererBase({ tool }: { tool: ToolBlock }) {
 	const [expanded, setExpanded] = useState(false)
 	const [, setTick] = useState(0)
 	useEffect(() => {
@@ -82,8 +82,10 @@ export default function ToolRenderer({ tool }: { tool: ToolBlock }) {
 	    {expanded && tool.displayOutput && !hasDiff && (
 	      <pre className="ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre-wrap break-all">
 	        {stripAnsi(tool.displayOutput)}
-	      </pre>
-	    )}
-	  </div>
-	)
+      </pre>
+    )}
+  </div>
+  )
 }
+
+export default memo(ToolRendererBase)

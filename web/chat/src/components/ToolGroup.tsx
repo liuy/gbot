@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { Block } from '../model'
 import ToolRenderer from './ToolRenderer'
 import { formatDurationNs } from '../utils'
@@ -8,7 +8,7 @@ type ToolBlock = Extract<Block, { kind: 'tool' }>
 // Groups consecutive tools into a two-level collapse. Level 1: a header with
 // chevron + summary ("2 Searches, 1 Read, 1 LSP") + total duration. Level 2:
 // each child tool, indented and default-collapsed.
-export default function ToolGroup({
+export default memo(function ToolGroup({
 	tools,
 }: {
 	tools: ToolBlock[]
@@ -53,7 +53,7 @@ export default function ToolGroup({
 	    )}
 	  </div>
 	)
-}
+})
 
 // Noun short form: "2 Searches, 1 Read, 1 LSP". Pluralize with -s when >1.
 function summarize(tools: ToolBlock[]): string {

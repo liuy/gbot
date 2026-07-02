@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -79,19 +80,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
   }, [wsUrl])
 
-  const subscribe = (listener: Listener) => {
+  const subscribe = useCallback((listener: Listener) => {
     listenersRef.current.add(listener)
     return () => {
       listenersRef.current.delete(listener)
     }
-  }
+  }, [])
 
-  const send = (payload: object) => {
+  const send = useCallback((payload: object) => {
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload))
     }
-  }
+  }, [])
 
   return (
     <WebSocketContext.Provider value={{ subscribe, send, connected }}>

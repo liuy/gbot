@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -11,7 +12,7 @@ export function ensureTableBlankLine(md: string): string {
   return md.replace(/([^\n|])\n(\|[^\n]+\n\|[-| ]+\|)/g, '$1\n\n$2')
 }
 
-export default function Markdown({ children }: { children: string }) {
+function MarkdownBase({ children }: { children: string }) {
   return (
     <div className="md-body text-t1 text-[15px] leading-relaxed">
       <ReactMarkdown
@@ -24,3 +25,5 @@ export default function Markdown({ children }: { children: string }) {
     </div>
   )
 }
+
+export default memo(MarkdownBase)

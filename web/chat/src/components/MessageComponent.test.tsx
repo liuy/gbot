@@ -94,7 +94,7 @@ describe('ChatInterface tool duration', () => {
 	// handler should set timingNs from Date.now() - startedAt.
 	it('tool_end uses wall-clock time, not prefix parsing', () => {
 		const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
-		expect(src).toContain('Date.now() - block.startedAt')
+		expect(src).toContain('Date.now() - b.startedAt')
 		expect(src).not.toContain('parseDurationFromOutput')
 	})
 })
@@ -147,8 +147,8 @@ describe('CSS design tokens (frozen)', () => {
 })
 
 describe('App layout (frozen)', () => {
-	it('App root has overflow-x-hidden to prevent horizontal scrollbar', () => {
-		const src = readFileSync(resolve(__dirname, '../App.tsx'), 'utf-8')
+	it('ChatInterface has overflow-x-hidden to prevent horizontal scrollbar', () => {
+		const src = readFileSync(resolve(__dirname, '../components/ChatInterface.tsx'), 'utf-8')
 		expect(src).toContain('overflow-x-hidden')
 		expect(src).toContain('overflow-y-auto')
 	})

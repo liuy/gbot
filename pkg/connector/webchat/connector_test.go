@@ -427,19 +427,27 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	}
 	c.toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage()
+	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
 	var env struct {
-		Type     string           `json:"type"`
-		Messages []historyChatMsg `json:"messages"`
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
 	}
 	if err := json.Unmarshal(payload, &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if env.Type != "history" {
 		t.Errorf("type = %q, want \"history\"", env.Type)
+	}
+	if env.NextCursor != "" {
+		t.Errorf("nextCursor = %q, want \"\" (only 1 message)", env.NextCursor)
+	}
+	if env.HasMore {
+		t.Error("hasMore = true, want false (only 1 message)")
 	}
 	// First message is the user tool_result carrier; buildHistoryMessage keeps
 	// it in the list. Find the assistant message.
@@ -523,7 +531,7 @@ func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 	}
 	c.toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage()
+	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -580,7 +588,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 	}
 	c.toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage()
+	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -661,7 +669,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	}
 	c.toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage()
+	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -705,5 +713,133 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	}
 	if thinkingData.Text != "deep thought" {
 		t.Errorf("nested thinking.Text = %q, want \"deep thought\"", thinkingData.Text)
+	}
+}
+
+// TestBuildHistoryMessage_Pagination verifies cursor-based pagination:
+// first page returns the latest `limit` messages with nextCursor/hasMore;
+// subsequent pages return older messages until all are delivered.
+func TestBuildHistoryMessage_Pagination(t *testing.T) {
+	c := newTestConnector(t)
+	// 25 assistant messages
+	c.messagesFn = func() []types.Message {
+		msgs := make([]types.Message, 25)
+		for i := range 25 {
+			msgs[i] = types.Message{
+				ID:        fmt.Sprintf("msg-%d", i),
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(int64(1000+i), 0),
+				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("content-%d", i))},
+			}
+		}
+		return msgs
+	}
+	c.toolsFn = func() map[string]tool.Tool { return nil }
+
+	// Page 1: latest 10 (msg-24 … msg-15)
+	payload := c.buildHistoryMessage("", 10)
+	if payload == nil {
+		t.Fatal("page 1 returned nil")
+	}
+	var p1 struct {
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(payload, &p1); err != nil {
+		t.Fatalf("page 1 unmarshal: %v", err)
+	}
+	if len(p1.Messages) != 10 {
+		t.Fatalf("page 1 messages = %d, want 10", len(p1.Messages))
+	}
+	if p1.Messages[0].Text != "content-15" {
+		t.Errorf("page 1 first text = %q, want \"content-15\" (oldest in page)", p1.Messages[0].Text)
+	}
+	if p1.Messages[9].Text != "content-24" {
+		t.Errorf("page 1 last text = %q, want \"content-24\" (newest in page)", p1.Messages[9].Text)
+	}
+	if !p1.HasMore {
+		t.Error("page 1 hasMore = false, want true")
+	}
+	if p1.NextCursor != "10" {
+		t.Errorf("page 1 nextCursor = %q, want \"10\"", p1.NextCursor)
+	}
+
+	// Page 2: next 10 (msg-14 … msg-5)
+	payload = c.buildHistoryMessage("10", 10)
+	if payload == nil {
+		t.Fatal("page 2 returned nil")
+	}
+	var p2 struct {
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(payload, &p2); err != nil {
+		t.Fatalf("page 2 unmarshal: %v", err)
+	}
+	if len(p2.Messages) != 10 {
+		t.Fatalf("page 2 messages = %d, want 10", len(p2.Messages))
+	}
+	if p2.Messages[0].Text != "content-5" {
+		t.Errorf("page 2 first text = %q, want \"content-5\"", p2.Messages[0].Text)
+	}
+	if p2.Messages[9].Text != "content-14" {
+		t.Errorf("page 2 last text = %q, want \"content-14\"", p2.Messages[9].Text)
+	}
+	if !p2.HasMore {
+		t.Error("page 2 hasMore = false, want true")
+	}
+	if p2.NextCursor != "20" {
+		t.Errorf("page 2 nextCursor = %q, want \"20\"", p2.NextCursor)
+	}
+
+	// Page 3: last 5 (msg-4 … msg-0)
+	payload = c.buildHistoryMessage("20", 10)
+	if payload == nil {
+		t.Fatal("page 3 returned nil")
+	}
+	var p3 struct {
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(payload, &p3); err != nil {
+		t.Fatalf("page 3 unmarshal: %v", err)
+	}
+	if len(p3.Messages) != 5 {
+		t.Fatalf("page 3 messages = %d, want 5", len(p3.Messages))
+	}
+	if p3.Messages[0].Text != "content-0" {
+		t.Errorf("page 3 first text = %q, want \"content-0\"", p3.Messages[0].Text)
+	}
+	if p3.Messages[4].Text != "content-4" {
+		t.Errorf("page 3 last text = %q, want \"content-4\"", p3.Messages[4].Text)
+	}
+	if p3.HasMore {
+		t.Error("page 3 hasMore = true, want false")
+	}
+	if p3.NextCursor != "" {
+		t.Errorf("page 3 nextCursor = %q, want \"\"", p3.NextCursor)
+	}
+
+	// Cursor beyond total: empty page
+	payload = c.buildHistoryMessage("30", 10)
+	if payload == nil {
+		t.Fatal("page beyond total returned nil")
+	}
+	var p4 struct {
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(payload, &p4); err != nil {
+		t.Fatalf("page 4 unmarshal: %v", err)
+	}
+	if len(p4.Messages) != 0 {
+		t.Fatalf("page 4 messages = %d, want 0 (empty)", len(p4.Messages))
+	}
+	if p4.HasMore {
+		t.Error("page 4 hasMore = true, want false")
 	}
 }

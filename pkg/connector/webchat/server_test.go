@@ -3,6 +3,7 @@ package webchat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,5 +239,84 @@ func TestRegisterChatWS_StopCancelsQuery(t *testing.T) {
 		// pass
 	case <-time.After(time.Second):
 		t.Fatal("query context not cancelled by stop message")
+	}
+}
+
+// TestRegisterChatWS_HistoryRequest verifies the history_request inbound
+// handler returns the correct page of older messages via the WS.
+func TestRegisterChatWS_HistoryRequest(t *testing.T) {
+	c := newTestConnector(t)
+	c.messagesFn = func() []types.Message {
+		msgs := make([]types.Message, 25)
+		for i := range 25 {
+			msgs[i] = types.Message{
+				ID:        fmt.Sprintf("msg-%d", i),
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(int64(1000+i), 0),
+				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("content-%d", i))},
+			}
+		}
+		return msgs
+	}
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws) // drain connect_status
+
+	// Initial history page: latest 10 messages
+	initData := readWSMessage(t, ws)
+	var initEnv struct {
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(initData, &initEnv); err != nil {
+		t.Fatalf("unmarshal initial history: %v", err)
+	}
+	if initEnv.Type != "history" {
+		t.Errorf("initial type = %q, want \"history\"", initEnv.Type)
+	}
+	if len(initEnv.Messages) != 10 {
+		t.Errorf("initial messages = %d, want 10", len(initEnv.Messages))
+	}
+	if !initEnv.HasMore {
+		t.Error("initial hasMore = false, want true")
+	}
+	if initEnv.NextCursor != "10" {
+		t.Errorf("initial nextCursor = %q, want \"10\"", initEnv.NextCursor)
+	}
+
+	// Request next page
+	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "10", "limit": 10})
+	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("write history_request: %v", err)
+	}
+
+	p2Data := readWSMessage(t, ws)
+	var p2Env struct {
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(p2Data, &p2Env); err != nil {
+		t.Fatalf("unmarshal page 2: %v", err)
+	}
+	if p2Env.Type != "history" {
+		t.Errorf("page 2 type = %q, want \"history\"", p2Env.Type)
+	}
+	if len(p2Env.Messages) != 10 {
+		t.Errorf("page 2 messages = %d, want 10", len(p2Env.Messages))
+	}
+	if !p2Env.HasMore {
+		t.Error("page 2 hasMore = false, want true")
+	}
+	if p2Env.NextCursor != "20" {
+		t.Errorf("page 2 nextCursor = %q, want \"20\"", p2Env.NextCursor)
 	}
 }
