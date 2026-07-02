@@ -84,7 +84,7 @@ export default function Header() {
 	const { connected } = useWebSocket()
 
 	return (
-		<header className="sticky top-0 z-30 glass">
+		<header className="sticky top-0 z-30 card-bg">
 			<div className="flex items-center gap-2.5 px-4 h-11 max-w-2xl mx-auto">
 				<span
 					className={`font-semibold tracking-tight text-[14px] transition-colors ${

@@ -102,17 +102,17 @@ describe('ChatInterface tool duration', () => {
 describe('CSS design tokens (frozen)', () => {
 	const css = readFileSync(resolve(__dirname, '../index.css'), 'utf-8')
 
-	it('glass alpha is 0.15 (not 0.3)', () => {
-		expect(css).toContain('rgba(6, 8, 15, 0.15)')
-		expect(css).not.toContain('rgba(6, 8, 15, 0.3)')
+	it('glass alpha is 0.3', () => {
+		expect(css).toContain('rgba(6, 8, 15, 0.3)')
+		expect(css).not.toContain('rgba(6, 8, 15, 0.15)')
 	})
 
 	it('glass-header alpha is 0.1', () => {
 		expect(css).toContain('rgba(6, 8, 15, 0.1)')
 	})
 
-	it('card-bg alpha is 0.3', () => {
-		expect(css).toContain('rgba(12, 16, 24, 0.3)')
+	it('card-bg alpha is 0.5', () => {
+		expect(css).toContain('rgba(12, 16, 24, 0.5)')
 	})
 
 	it('violet color is #9D5CFF (not Tailwind purple-500)', () => {
@@ -141,8 +141,8 @@ describe('CSS design tokens (frozen)', () => {
 		expect(css).toContain('width: 0')
 	})
 
-	it('body uses gradient background', () => {
-		expect(css).toContain('linear-gradient(180deg, rgba(4,6,12,0.98)')
+	it('body uses radial-gradient ambient background', () => {
+		expect(css).toContain('radial-gradient(ellipse 800px 600px at 50% -5%')
 	})
 })
 
