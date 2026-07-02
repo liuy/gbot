@@ -275,11 +275,11 @@ func TestDefaultConfig_ReasonableDefaults(t *testing.T) {
 	if cfg.MinTokensToInit != 10000 {
 		t.Errorf("MinTokensToInit = %d, want 10000", cfg.MinTokensToInit)
 	}
-	if cfg.MinTokensBetweenUpdate != 5000 {
-		t.Errorf("MinTokensBetweenUpdate = %d, want 5000", cfg.MinTokensBetweenUpdate)
+	if cfg.MinTokensBetweenUpdate != 50000 {
+		t.Errorf("MinTokensBetweenUpdate = %d, want 50000", cfg.MinTokensBetweenUpdate)
 	}
-	if cfg.ToolCallsBetweenUpdates != 3 {
-		t.Errorf("ToolCallsBetweenUpdates = %d, want 3", cfg.ToolCallsBetweenUpdates)
+	if cfg.ToolCallsBetweenUpdates != 50 {
+		t.Errorf("ToolCallsBetweenUpdates = %d, want 50", cfg.ToolCallsBetweenUpdates)
 	}
 	if cfg.MaxSectionTokens != 2000 {
 		t.Errorf("MaxSectionTokens = %d, want 2000", cfg.MaxSectionTokens)

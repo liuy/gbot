@@ -44,7 +44,7 @@ func TestShouldExtract_InitAtThreshold_NaturalBreak(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
 	}
 	// At MinTokensToInit + tokenGrowth >= MinTokensBetweenUpdate + natural break → true
-	if !sm.ShouldExtract(10000, msgs) {
+	if !sm.ShouldExtract(60000, msgs) {
 		t.Error("should return true at init threshold with natural break")
 	}
 }
@@ -77,8 +77,8 @@ func TestShouldExtract_InitAtThreshold_ToolCallThresholdMet(t *testing.T) {
 		}},
 	}
 	// Manually set tool calls to meet threshold
-	sm.toolCallsSinceUpdate = 3
-	if !sm.ShouldExtract(10000, msgs) {
+	sm.toolCallsSinceUpdate = 50
+	if !sm.ShouldExtract(60000, msgs) {
 		t.Error("should return true: tool call threshold met")
 	}
 }
@@ -118,9 +118,69 @@ func TestShouldExtract_AfterInit_TokenGrowthSufficient_NaturalBreak(t *testing.T
 	sm.toolCallsSinceUpdate = 0
 	sm.mu.Unlock()
 
-	// Token growth 5001 >= 5000 + natural break → true
-	if !sm.ShouldExtract(15001, msgs) {
+	// Token growth 50001 >= 50000 + natural break → true
+	if !sm.ShouldExtract(60001, msgs) {
 		t.Error("should return true: token growth + natural break")
+	}
+}
+
+func TestShouldExtract_MinIntervalBlocksExtraction(t *testing.T) {
+	setTempHome(t)
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
+	}
+
+	// Initialize
+	sm.ShouldExtract(60000, msgs)
+	sm.mu.Lock()
+	sm.lastTokenCount = 60000
+	sm.toolCallsSinceUpdate = 0
+	sm.mu.Unlock()
+
+	// Set last extraction to 5 minutes ago — within MinIntervalMs (10 min)
+	sm.mu.Lock()
+	sm.lastExtractionTime = time.Now().Add(-5 * time.Minute) // REAL-TIME
+	sm.mu.Unlock()
+
+	// Token growth met + natural break, but too soon → false
+	if sm.ShouldExtract(120000, msgs) {
+		t.Error("should return false: min interval not met (5min < 10min)")
+	}
+
+	// Set last extraction to 11 minutes ago — past MinIntervalMs
+	sm.mu.Lock()
+	sm.lastExtractionTime = time.Now().Add(-11 * time.Minute) // REAL-TIME
+	sm.mu.Unlock()
+
+	// Now it should fire
+	if !sm.ShouldExtract(120000, msgs) {
+		t.Error("should return true: min interval met (11min > 10min)")
+	}
+}
+
+func TestShouldExtract_MinIntervalZeroSkipsCheck(t *testing.T) {
+	setTempHome(t)
+	cfg := DefaultConfig()
+	cfg.MinIntervalMs = 0
+	sm := New(cfg, t.TempDir(), "main", nil, slog.Default())
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
+	}
+
+	// Initialize and set last extraction to 1 second ago
+	sm.ShouldExtract(60000, msgs)
+	sm.mu.Lock()
+	sm.lastTokenCount = 60000
+	sm.toolCallsSinceUpdate = 0
+	sm.lastExtractionTime = time.Now().Add(-1 * time.Second) // REAL-TIME
+	sm.mu.Unlock()
+
+	// MinIntervalMs=0 disables the check → should fire
+	if !sm.ShouldExtract(120000, msgs) {
+		t.Error("should return true: MinIntervalMs=0 disables interval check")
 	}
 }
 

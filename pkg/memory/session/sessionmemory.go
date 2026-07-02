@@ -52,6 +52,9 @@ type SessionMemory struct {
 
 	// extractDone is closed when extraction completes. Nil when not extracting.
 	extractDone chan struct{}
+
+	// lastExtractionTime tracks when the last extraction completed.
+	lastExtractionTime time.Time
 }
 
 // New creates a new SessionMemory. engineID keys the per-engine notes file
@@ -84,6 +87,13 @@ func (sm *SessionMemory) ShouldExtract(currentTokens int, messages []types.Messa
 			return false
 		}
 		sm.initialized = true
+	}
+
+	// Minimum interval gate — prevent rapid-fire extraction
+	if sm.config.MinIntervalMs > 0 && !sm.lastExtractionTime.IsZero() {
+		if time.Since(sm.lastExtractionTime) < time.Duration(sm.config.MinIntervalMs)*time.Millisecond {
+			return false
+		}
 	}
 
 	// Token threshold ALWAYS required — TS: hasMetUpdateThreshold
@@ -174,6 +184,7 @@ func (sm *SessionMemory) Extract(ctx context.Context, messages []types.Message, 
 	sm.mu.Lock()
 	sm.lastTokenCount = currentTokens
 	sm.toolCallsSinceUpdate = 0
+	sm.lastExtractionTime = time.Now()
 	sm.mu.Unlock()
 
 	sm.logger.Info("sessionmemory: extraction completed",
@@ -257,6 +268,7 @@ func (sm *SessionMemory) Reset() {
 	sm.extracting = false
 	sm.extractionStart = time.Time{}
 	sm.toolCallsSinceUpdate = 0
+	sm.lastExtractionTime = time.Time{}
 	sm.mu.Unlock()
 }
 

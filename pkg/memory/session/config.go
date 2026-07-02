@@ -39,6 +39,10 @@ type Config struct {
 	// ExtractionStaleMs is the time after which a stuck extraction is considered stale.
 	// TS: EXTRACTION_STALE_THRESHOLD_MS (default: 60000 = 1 min).
 	ExtractionStaleMs int
+
+	// MinIntervalMs is the minimum time between extractions, regardless of
+	// token/tool thresholds. Prevents rapid-fire extraction during intense sessions.
+	MinIntervalMs int
 }
 
 // DefaultConfig returns the default session memory configuration.
@@ -46,11 +50,12 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		MinTokensToInit:         10000,
-		MinTokensBetweenUpdate:  5000,
-		ToolCallsBetweenUpdates: 3,
+		MinTokensBetweenUpdate:  50000,
+		ToolCallsBetweenUpdates: 50,
 		MaxSectionTokens:        2000,
 		MaxTotalTokens:          12000,
 		ExtractionTimeoutMs:     15000,
 		ExtractionStaleMs:       60000,
+		MinIntervalMs:           600000, // 10 minutes
 	}
 }
