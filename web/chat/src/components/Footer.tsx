@@ -8,7 +8,7 @@ export default function Footer({
   onChange: (t: Tab) => void
 }) {
   return (
-    <footer className="glass flex justify-around border-t border-hairline">
+    <footer className="sticky bottom-0 z-20 glass border-t border-hairline">
       <TabButton
         label="Chat"
         active={tab === 'chat'}

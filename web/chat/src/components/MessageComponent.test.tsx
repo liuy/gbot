@@ -16,6 +16,16 @@ const baseMsg: ChatMessage = {
 }
 
 describe('MessageComponent layout', () => {
+	it('uses grid 3-col layout: [avatar | content | avatar]', () => {
+		const { container } = render(<MessageComponent message={baseMsg} />)
+		const grid = container.querySelector('[class*="grid"]')
+		expect(grid).toBeTruthy()
+		expect(grid!.className).toContain('grid-cols-[1.25rem_1fr_1.25rem]')
+		expect(grid!.className).toContain('gap-x-1.5')
+		// 3 children: left avatar, content, right avatar
+		expect(grid!.children.length).toBe(3)
+	})
+
 	it('assistant content div has min-w-0 to allow inner overflow scroll', () => {
 		const { container } = render(<MessageComponent message={baseMsg} />)
 		const grid = container.querySelector('[class*="grid"]')
@@ -32,6 +42,50 @@ describe('MessageComponent layout', () => {
 		const contentDiv = grid!.children[1] as HTMLElement
 		expect(contentDiv.className).toContain('min-w-0')
 	})
+
+	it('G avatar: rounded-md + blue→violet gradient + font-bold', () => {
+		const { container } = render(<MessageComponent message={baseMsg} />)
+		const leftAvatar = container.querySelector('[class*="grid"]')!.children[0] as HTMLElement
+		expect(leftAvatar.className).toContain('rounded-md')
+		expect(leftAvatar.className).toContain('from-blue')
+		expect(leftAvatar.className).toContain('to-violet')
+		expect(leftAvatar.className).toContain('font-bold')
+		expect(leftAvatar.textContent).toBe('G')
+	})
+
+	it('U avatar: rounded-md + t2→t3 gradient + SVG person icon (not letter)', () => {
+		const userMsg = { ...baseMsg, id: 'u1', role: 'user' as const }
+		const { container } = render(<MessageComponent message={userMsg} />)
+		const rightAvatar = container.querySelector('[class*="grid"]')!.children[2] as HTMLElement
+		expect(rightAvatar.className).toContain('rounded-md')
+		expect(rightAvatar.className).toContain('from-t2')
+		expect(rightAvatar.className).toContain('to-t3')
+		// SVG person icon, not letter "U"
+		expect(rightAvatar.querySelector('svg')).toBeTruthy()
+		expect(rightAvatar.textContent).not.toContain('U')
+	})
+
+	it('assistant right column is empty (no leaked avatar)', () => {
+		const { container } = render(<MessageComponent message={baseMsg} />)
+		const rightCol = container.querySelector('[class*="grid"]')!.children[2] as HTMLElement
+		expect(rightCol.className).toBe('')
+		expect(rightCol.children.length).toBe(0)
+	})
+
+	it('user left column is empty (no leaked avatar)', () => {
+		const userMsg = { ...baseMsg, id: 'u1', role: 'user' as const }
+		const { container } = render(<MessageComponent message={userMsg} />)
+		const leftCol = container.querySelector('[class*="grid"]')!.children[0] as HTMLElement
+		expect(leftCol.className).toBe('')
+		expect(leftCol.children.length).toBe(0)
+	})
+
+	it('G avatar font size is 11px (not 9px)', () => {
+		const { container } = render(<MessageComponent message={baseMsg} />)
+		const avatar = container.querySelector('[class*="grid"]')!.children[0] as HTMLElement
+		expect(avatar.className).toContain('text-[11px]')
+		expect(avatar.className).not.toContain('text-[9px]')
+	})
 })
 
 describe('ChatInterface tool duration', () => {
@@ -42,6 +96,61 @@ describe('ChatInterface tool duration', () => {
 		const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
 		expect(src).toContain('Date.now() - block.startedAt')
 		expect(src).not.toContain('parseDurationFromOutput')
+	})
+})
+
+describe('CSS design tokens (frozen)', () => {
+	const css = readFileSync(resolve(__dirname, '../index.css'), 'utf-8')
+
+	it('glass alpha is 0.15 (not 0.3)', () => {
+		expect(css).toContain('rgba(6, 8, 15, 0.15)')
+		expect(css).not.toContain('rgba(6, 8, 15, 0.3)')
+	})
+
+	it('glass-header alpha is 0.1', () => {
+		expect(css).toContain('rgba(6, 8, 15, 0.1)')
+	})
+
+	it('card-bg alpha is 0.3', () => {
+		expect(css).toContain('rgba(12, 16, 24, 0.3)')
+	})
+
+	it('violet color is #9D5CFF (not Tailwind purple-500)', () => {
+		expect(css).toContain('--color-violet: #9D5CFF')
+	})
+
+	it('ink/ink2/ink3 colors defined', () => {
+		expect(css).toContain('--color-ink: #06080F')
+		expect(css).toContain('--color-ink2: #0C1018')
+		expect(css).toContain('--color-ink3: #121826')
+	})
+
+	it('glass has -webkit-backdrop-filter for Android WebView', () => {
+		expect(css).toContain('-webkit-backdrop-filter: blur(16px) saturate(1.2)')
+	})
+
+	it('glass-solid has blur(20px) saturate(1.4)', () => {
+		expect(css).toContain('blur(20px) saturate(1.4)')
+	})
+
+	it('glow-blue has alpha 0.5', () => {
+		expect(css).toContain('rgba(0,180,255,0.5)')
+	})
+
+	it('vertical scrollbar is hidden (width: 0)', () => {
+		expect(css).toContain('width: 0')
+	})
+
+	it('body uses gradient background', () => {
+		expect(css).toContain('linear-gradient(180deg, rgba(4,6,12,0.98)')
+	})
+})
+
+describe('App layout (frozen)', () => {
+	it('App root has overflow-x-hidden to prevent horizontal scrollbar', () => {
+		const src = readFileSync(resolve(__dirname, '../App.tsx'), 'utf-8')
+		expect(src).toContain('overflow-x-hidden')
+		expect(src).toContain('overflow-y-auto')
 	})
 })
 

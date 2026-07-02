@@ -4,8 +4,11 @@
 @theme {
   --color-primary: #00B4FF;
   --color-bg: rgb(4 6 12);
+  --color-ink: #06080F;
+  --color-ink2: #0C1018;
+  --color-ink3: #121826;
   --color-card: rgba(12, 16, 24, 0.5);
-  --color-glass: rgba(6, 8, 15, 0.3);
+  --color-glass: rgba(6, 8, 15, 0.15);
   --color-glass-solid: rgba(12, 16, 24, 0.92);
   --color-t1: #E8ECF4;
   --color-t2: #8A93A6;
@@ -14,7 +17,9 @@
   --color-red: #FF5C5C;
   --color-blue: #00B4FF;
   --color-amber: #FFB547;
+  --color-violet: #9D5CFF;
   --color-hairline: rgba(120, 180, 255, 0.08);
+  --color-line2: rgba(120, 180, 255, 0.04);
 }
 
 html, body, #root {
@@ -29,25 +34,34 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.card-bg {
-  background: rgba(12, 16, 24, 0.5);
-  backdrop-filter: blur(4px);
-}
-
 .glass {
-  background: rgba(6, 8, 15, 0.3);
+  background: rgba(6, 8, 15, 0.15);
   backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .glass-solid {
-  background: rgba(12, 16, 24, 0.92);
-  backdrop-filter: blur(16px);
+  background: rgba(12, 16, 24, 0.85);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 
 .glass-header {
-  background: rgba(6, 8, 15, 0.2);
-  backdrop-filter: blur(20px) saturate(1.4);
+  background: rgba(6, 8, 15, 0.1);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
+
+.card-bg {
+  background: rgba(12, 16, 24, 0.3);
+  backdrop-filter: blur(4px);
+}
+
+.glow-blue { box-shadow: 0 0 20px -6px rgba(0,180,255,0.5); }
+.fade-top { background: linear-gradient(to bottom, #06080F 60%, rgba(6,8,15,0)); }
+.truncate-sm { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-enter { animation: modalIn 0.18s ease-out; }
+@keyframes modalIn { from {opacity:0; transform:translateY(6px) scale(0.98);} to {opacity:1; transform:none;} }
 
 @keyframes pulse-blue {
   0%, 100% { opacity: 1; }
@@ -97,8 +111,8 @@ body {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 0;
+  height: 3px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

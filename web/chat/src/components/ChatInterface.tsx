@@ -5,6 +5,7 @@ import { newAssistantMessage, type ChatMessage, type Block } from '../model'
 import MessageComponent from './MessageComponent'
 import InputBar from './InputBar'
 import Ask from './Ask'
+import Header from './Header'
 
 type AskData = {
   id: string
@@ -412,17 +413,16 @@ export default function ChatInterface() {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="mx-auto max-w-3xl py-4">
-          <div className="space-y-4">
+    <>
+      <Header />
+      <div className="mx-auto max-w-2xl py-4">
+        <div className="space-y-7">
           {messagesRef.current.map((m) => (
             <MessageComponent key={m.id} message={m} />
           ))}
           {ask && <Ask ask={ask} />}
-          </div>
-          <div ref={bottomRef} />
         </div>
+        <div ref={bottomRef} />
       </div>
       <InputBar
         streaming={streaming}
@@ -431,6 +431,6 @@ export default function ChatInterface() {
         onStop={onStop}
         onCancelQueued={onCancelQueued}
       />
-    </div>
+    </>
   )
 }

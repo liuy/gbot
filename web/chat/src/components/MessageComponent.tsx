@@ -6,9 +6,8 @@ import ToolRenderer from './ToolRenderer'
 import ToolGroup from './ToolGroup'
 import ProgressBar from './ProgressBar'
 
-const avatarCls = "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
-const avatarU = `${avatarCls} bg-gradient-to-br from-teal-500 to-cyan-600`
-const avatarG = `${avatarCls} bg-gradient-to-br from-blue to-purple-500`
+const avatarG = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white"
+const avatarU = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-t2 to-t3"
 
 function isCollapsibleTool(b: Block): boolean {
 	return b.kind === 'tool' && (b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb)
@@ -87,7 +86,14 @@ export default function MessageComponent({
           )}
         </div>
 
-        <div className={isUser ? avatarU : ''}>{isUser && 'U'}</div>
+        <div className={isUser ? avatarU : ''}>
+          {isUser && (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 21v-1a8 8 0 0116 0v1" />
+            </svg>
+          )}
+        </div>
       </div>
     </div>
   )
