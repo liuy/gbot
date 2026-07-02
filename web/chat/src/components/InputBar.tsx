@@ -21,7 +21,7 @@ export default function InputBar({
 	const onSubmit = (e: React.FormEvent) => {
 		e.preventDefault()
 		const text = value.trim()
-		if (!text || streaming || !connected) return
+		if (!text || !connected) return
 		onSend(text)
 		setValue('')
 	}
@@ -37,7 +37,7 @@ export default function InputBar({
 		setValue(e.target.value)
 	}
 
-	const canSend = value.trim().length > 0 && !streaming && connected
+	const canSend = value.trim().length > 0 && connected
 
 	return (
 		<div className="sticky bottom-0 z-10 px-5 pb-3 pt-1">

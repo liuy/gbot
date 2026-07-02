@@ -479,10 +479,6 @@ export default function ChatInterface() {
 	}, [hasMore, nextCursor, send])
 
 	const onSend = (text: string) => {
-		if (streamingRef.current) {
-			setQueuedText(text)
-			return
-		}
 		messagesRef.current.push({
 			id: nextId('u'),
 			role: 'user',
@@ -492,6 +488,9 @@ export default function ChatInterface() {
 			status: 'done',
 			startedAt: Date.now(),
 		})
+		if (streamingRef.current) {
+			setQueuedText(text)
+		}
 		send({ type: 'message', text })
 		forceRender()
 	}
