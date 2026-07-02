@@ -255,13 +255,11 @@ func TestMsgCh_NeverDrops(t *testing.T) {
 	// buffer; the next 50 block until the reader drains. If sendCritical had
 	// drop logic, these 50 would be silently discarded.
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < total; i++ {
-			c.msgCh <- []byte(fmt.Sprintf("msg-%d", i))
+	wg.Go(func() {
+		for i := range total {
+			c.msgCh <- fmt.Appendf(nil, "msg-%d", i)
 		}
-	}()
+	})
 
 	sentDone := make(chan struct{})
 	go func() { wg.Wait(); close(sentDone) }()

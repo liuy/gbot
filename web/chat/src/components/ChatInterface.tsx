@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWebSocket } from '../websocket'
 import type { ServerMessage, QueryEvent, HistoryChatMsg } from '../types'
-import {
-  newAssistantMessage,
-  type ChatMessage,
-  type ToolEntry,
-  type TextEntry,
-  type ThinkingEntry,
-} from '../model'
+import { newAssistantMessage, type ChatMessage, type Block } from '../model'
 import MessageComponent from './MessageComponent'
 import InputBar from './InputBar'
 import Ask from './Ask'
@@ -40,6 +34,20 @@ function classifyToolName(name: string): { isSearch: boolean; isRead: boolean; i
     case 'Web': return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false }
     default: return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
   }
+}
+
+function findBlockById(msg: ChatMessage, id: string): Block | undefined {
+  for (let i = msg.blocks.length - 1; i >= 0; i--) {
+    if (msg.blocks[i].id === id) return msg.blocks[i]
+  }
+  return undefined
+}
+
+function findLastBlock(msg: ChatMessage, kind: Block['kind']): Block | undefined {
+  for (let i = msg.blocks.length - 1; i >= 0; i--) {
+    if (msg.blocks[i].kind === kind) return msg.blocks[i]
+  }
+  return undefined
 }
 
 // Module-level so messages survive ChatInterface unmount on tab switch.
@@ -144,8 +152,6 @@ export default function ChatInterface() {
       if (last && last.role === 'assistant' && h.role === 'assistant') {
         // Merge into last assistant
         last.text += h.text ?? ''
-        last.thinking = [...(last.thinking ?? []), ...(h.thinking ?? [])]
-        last.tools = [...(last.tools ?? []), ...(h.tools ?? [])]
         last.blocks = [...(last.blocks ?? []), ...(h.blocks ?? [])]
         if (h.usage) {
           last.usage = {
@@ -160,22 +166,29 @@ export default function ChatInterface() {
       }
     }
     for (const h of merged) {
-      const textChunks: TextEntry[] = []
-      const thinking: ThinkingEntry[] = []
-      const tools: ToolEntry[] = []
-      let nextEventIndex = 0
+      const m: ChatMessage = {
+        id: h.id || nextId(h.role === 'user' ? 'u' : 'a'),
+        role: h.role,
+        blocks: [],
+        usage: {
+          inputTokens: h.usage?.inputTokens ?? 0,
+          outputTokens: h.usage?.outputTokens ?? 0,
+          cacheRead: h.usage?.cacheRead ?? 0,
+          cacheCreation: h.usage?.cacheCreation ?? 0,
+        },
+        error: h.error ?? '',
+        status: h.status ?? 'done',
+        startedAt: h.startedAt ?? Date.now(),
+      }
       if (h.blocks && h.blocks.length > 0) {
-        // Authoritative ordered path: assign one shared eventIndex counter
-        // across text/thinking/tool so interleavedItems() sorts them into the
-        // original Content[] order.
-        let eventIndex = 0
         for (const b of h.blocks) {
           if (b.kind === 'text') {
-            textChunks.push({ eventIndex: eventIndex++, text: b.text })
+            m.blocks.push({ kind: 'text', id: nextId('txt'), text: b.text })
           } else if (b.kind === 'thinking') {
             const th = b.thinking!
-            thinking.push({
-              eventIndex: eventIndex++,
+            m.blocks.push({
+              kind: 'thinking',
+              id: nextId('th'),
               text: th.text,
               durationNs: th.durationNs ?? 0,
               active: false,
@@ -184,9 +197,9 @@ export default function ChatInterface() {
           } else if (b.kind === 'tool') {
             const t = b.tool!
             const srk = classifyToolName(t.name)
-            tools.push({
+            m.blocks.push({
+              kind: 'tool',
               id: t.id,
-              eventIndex: eventIndex++,
               name: t.name,
               summary: t.summary ?? '',
               isSearch: srk.isSearch,
@@ -201,25 +214,12 @@ export default function ChatInterface() {
             })
           }
         }
-        nextEventIndex = eventIndex
-      }
-
-      const m: ChatMessage = {
-        id: h.id || nextId(h.role === 'user' ? 'u' : 'a'),
-        role: h.role,
-        textChunks,
-        thinking,
-        tools,
-        nextEventIndex,
-        usage: {
-          inputTokens: h.usage?.inputTokens ?? 0,
-          outputTokens: h.usage?.outputTokens ?? 0,
-          cacheRead: h.usage?.cacheRead ?? 0,
-          cacheCreation: h.usage?.cacheCreation ?? 0,
-        },
-        error: h.error ?? '',
-        status: h.status ?? 'done',
-        startedAt: h.startedAt ?? Date.now(),
+      } else {
+        // User messages carry text; assistant legacy messages may have text
+        // without blocks. Push a single text block so they render.
+        if (h.text) {
+          m.blocks.push({ kind: 'text', id: nextId('txt'), text: h.text })
+        }
       }
       messagesRef.current.push(m)
     }
@@ -250,8 +250,9 @@ export default function ChatInterface() {
       }
       case 'thinking_start': {
         const cur = ensureAssistant()
-        cur.thinking.push({
-          eventIndex: cur.nextEventIndex++,
+        cur.blocks.push({
+          kind: 'thinking',
+          id: nextId('th'),
           text: '',
           durationNs: 0,
           active: true,
@@ -262,20 +263,20 @@ export default function ChatInterface() {
       }
       case 'thinking_delta': {
         const cur = ensureAssistant()
-        const t = cur.thinking[cur.thinking.length - 1]
-        if (t && e.thinking?.text) {
-          t.text += e.thinking.text
+        const last = findLastBlock(cur, 'thinking')
+        if (last && last.kind === 'thinking' && e.thinking?.text) {
+          last.text += e.thinking.text
         }
         forceRender()
         return
       }
       case 'thinking_end': {
         const cur = ensureAssistant()
-        const t = cur.thinking[cur.thinking.length - 1]
-        if (t) {
-          t.active = false
+        const last = findLastBlock(cur, 'thinking')
+        if (last && last.kind === 'thinking') {
+          last.active = false
           if (e.thinking?.duration) {
-            t.durationNs = e.thinking.duration
+            last.durationNs = e.thinking.duration
           }
         }
         forceRender()
@@ -283,14 +284,15 @@ export default function ChatInterface() {
       }
       case 'text_start': {
         const cur = ensureAssistant()
-        cur.textChunks.push({ eventIndex: cur.nextEventIndex++, text: '' })
+        cur.blocks.push({ kind: 'text', id: nextId('txt'), text: '' })
         forceRender()
         return
       }
       case 'text_delta': {
         const cur = ensureAssistant()
-        if (e.text && cur.textChunks.length > 0) {
-          cur.textChunks[cur.textChunks.length - 1].text += e.text
+        const last = findLastBlock(cur, 'text')
+        if (last && last.kind === 'text' && e.text) {
+          last.text += e.text
         }
         forceRender()
         return
@@ -303,9 +305,9 @@ export default function ChatInterface() {
         if (!e.tool_use) return
         const tu = e.tool_use
         const cur = ensureAssistant()
-        cur.tools.push({
+        cur.blocks.push({
+          kind: 'tool',
           id: tu.id,
-          eventIndex: cur.nextEventIndex++,
           name: tu.name,
           summary: '',
           isSearch: !!tu.is_search,
@@ -324,9 +326,9 @@ export default function ChatInterface() {
       case 'tool_param_delta': {
         if (!e.partial_input) return
         const cur = ensureAssistant()
-        const tool = findTool(cur.tools, e.partial_input.id)
-        if (tool && e.partial_input.summary) {
-          tool.summary = e.partial_input.summary
+        const block = findBlockById(cur, e.partial_input.id)
+        if (block && block.kind === 'tool' && e.partial_input.summary) {
+          block.summary = e.partial_input.summary
         }
         forceRender()
         return
@@ -342,15 +344,15 @@ export default function ChatInterface() {
         if (!e.tool_result) return
         const tr = e.tool_result
         const cur = ensureAssistant()
-        const tool = findTool(cur.tools, tr.tool_use_id)
-        if (tool) {
-          tool.state = tr.is_error ? 'error' : 'done'
-          tool.timingNs = (Date.now() - tool.startedAt) * 1e6
-          tool.displayOutput = tr.display_output ?? ''
-          if (tr.is_search !== undefined) tool.isSearch = tr.is_search
-          if (tr.is_read !== undefined) tool.isRead = tr.is_read
-          if (tr.is_list !== undefined) tool.isList = tr.is_list
-          if (tr.is_lsp !== undefined) tool.isLsp = tr.is_lsp
+        const block = findBlockById(cur, tr.tool_use_id)
+        if (block && block.kind === 'tool') {
+          block.state = tr.is_error ? 'error' : 'done'
+          block.timingNs = (Date.now() - block.startedAt) * 1e6
+          block.displayOutput = tr.display_output ?? ''
+          if (tr.is_search !== undefined) block.isSearch = tr.is_search
+          if (tr.is_read !== undefined) block.isRead = tr.is_read
+          if (tr.is_list !== undefined) block.isList = tr.is_list
+          if (tr.is_lsp !== undefined) block.isLsp = tr.is_lsp
         }
         forceRender()
         return
@@ -391,10 +393,7 @@ export default function ChatInterface() {
     messagesRef.current.push({
       id: nextId('u'),
       role: 'user',
-      textChunks: [{ eventIndex: 0, text }],
-      thinking: [],
-      tools: [],
-      nextEventIndex: 0,
+      blocks: [{ kind: 'text', id: nextId('txt'), text }],
       usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
       error: '',
       status: 'done',
@@ -434,11 +433,4 @@ export default function ChatInterface() {
       />
     </div>
   )
-}
-
-function findTool(tools: ToolEntry[], id: string): ToolEntry | undefined {
-  for (let i = tools.length - 1; i >= 0; i--) {
-    if (tools[i].id === id) return tools[i]
-  }
-  return undefined
 }

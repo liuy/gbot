@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
-import type { ChatMessage, InterleavedItem, ToolEntry } from '../model'
-import { interleavedItems } from '../model'
+import type { ChatMessage, Block } from '../model'
 import Markdown from './Markdown'
 import Thinking from './Thinking'
 import ToolRenderer from './ToolRenderer'
@@ -11,16 +10,16 @@ const avatarCls = "flex h-5 w-5 shrink-0 items-center justify-center rounded-ful
 const avatarU = `${avatarCls} bg-gradient-to-br from-teal-500 to-cyan-600`
 const avatarG = `${avatarCls} bg-gradient-to-br from-blue to-purple-500`
 
-function isCollapsible(t: ToolEntry): boolean {
-	return t.isSearch || t.isRead || t.isList || t.isLsp || t.isWeb
+function isCollapsibleTool(b: Block): boolean {
+	return b.kind === 'tool' && (b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb)
 }
 
-// Renders interleaved items, grouping consecutive collapsible tools into a
+// Renders blocks in order, grouping consecutive collapsible tool blocks into a
 // <ToolGroup>. Non-empty text and non-collapsible tools flush the buffer;
 // thinking does not break a group (matches TUI detectToolGroups).
-function renderGrouped(items: InterleavedItem[]) {
+function renderGrouped(blocks: Block[]) {
 	const out: ReactNode[] = []
-	let buffer: ToolEntry[] = []
+	let buffer: Extract<Block, { kind: 'tool' }>[] = []
 	let key = 0
 
 	const flush = () => {
@@ -33,23 +32,23 @@ function renderGrouped(items: InterleavedItem[]) {
 		buffer = []
 	}
 
-	for (const item of items) {
-		switch (item.kind) {
+	for (const b of blocks) {
+		switch (b.kind) {
 			case 'thinking':
-				out.push(<Thinking key={`t-${key++}`} entry={item.entry} />)
+				out.push(<Thinking key={b.id} entry={b} />)
 				break
 			case 'tool':
-				if (isCollapsible(item.entry)) {
-					buffer.push(item.entry)
+				if (isCollapsibleTool(b)) {
+					buffer.push(b)
 				} else {
 					flush()
-					out.push(<ToolRenderer key={item.entry.id} tool={item.entry} />)
+					out.push(<ToolRenderer key={b.id} tool={b} />)
 				}
 				break
 			case 'text':
-				if (!item.entry.text) break
+				if (!b.text) break
 				flush()
-				out.push(<Markdown key={`txt-${key++}`}>{item.entry.text}</Markdown>)
+				out.push(<Markdown key={`txt-${key++}`}>{b.text}</Markdown>)
 				break
 		}
 	}
@@ -73,11 +72,11 @@ export default function MessageComponent({
         <div className="min-w-0">
           {isUser ? (
             <div className="ml-auto w-fit text-left text-t1 text-[15px]">
-              {message.textChunks.map((c) => c.text).join('')}
+              {message.blocks.flatMap(b => b.kind === 'text' ? [b.text] : []).join('')}
             </div>
           ) : (
             <div className="space-y-3">
-              {renderGrouped(interleavedItems(message))}
+              {renderGrouped(message.blocks)}
               {message.error && (
                 <div className="rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red">
                   {message.error}
