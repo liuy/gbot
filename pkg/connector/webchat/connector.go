@@ -11,6 +11,7 @@ package webchat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +27,18 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
+
+// queryEventWithAbort embeds QueryEvent and adds an "aborted" boolean for the
+// query_end wire payload. The engine's terminal Error is `json:"-"` so it
+// never crosses the WS boundary; this is the only channel for the frontend to
+// learn the query was user-interrupted (mirrors TUI's
+// errors.AsType[*engine.AbortError] check at pkg/tui/repl.go:1134). For
+// non-abort events Aborted is false and omitempty drops the key, so the wire
+// shape is byte-identical to marshalling QueryEvent directly.
+type queryEventWithAbort struct {
+	types.QueryEvent
+	Aborted bool `json:"aborted,omitempty"`
+}
 
 // handlerBufSize is the outbound channel buffer, matching TUI's appCh
 // (pkg/tui/handler.go: handlerBufSize = 1024). A single large buffer plus
@@ -64,12 +77,12 @@ type WebChatConnector struct {
 	// to eng.Query; tests override to record dispatches. isBusyFn defaults to
 	// eng.IsBusy. messagesFn/toolsFn default to eng.Messages/eng.Tools and are
 	// overridden by tests to exercise buildHistoryMessage without a real engine.
-	queryFn     func(ctx context.Context, userMessage, systemPrompt string)
-	isBusyFn    func() bool
-	messagesFn  func() []types.Message
-	toolsFn     func() map[string]tool.Tool
-	enqueueFn   func(item types.QueuedItem)
-	abortFn     func()
+	queryFn    func(ctx context.Context, userMessage, systemPrompt string)
+	isBusyFn   func() bool
+	messagesFn func() []types.Message
+	toolsFn    func() map[string]tool.Tool
+	enqueueFn  func(item types.QueuedItem)
+	abortFn    func()
 }
 
 // New builds a WebChatConnector bound to the given engine and hub. The
@@ -150,10 +163,16 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		return
 	}
 
+	aborted := false
+	if event.Type == types.EventQueryEnd && event.Error != nil {
+		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
+			aborted = true
+		}
+	}
 	payload, err := json.Marshal(struct {
-		Type  string           `json:"type"`
-		Event types.QueryEvent `json:"event"`
-	}{Type: "event", Event: event})
+		Type  string              `json:"type"`
+		Event queryEventWithAbort `json:"event"`
+	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted}})
 	if err != nil {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return

@@ -108,6 +108,7 @@ export type QueryEvent = {
     retry_in_ms: number
     error: string
   }
+  aborted?: boolean
 }
 
 export type AskDecision = 'allow' | 'deny' | 'allow_always'

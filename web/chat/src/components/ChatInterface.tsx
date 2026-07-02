@@ -138,7 +138,6 @@ export default function ChatInterface() {
 	const [queuedText, setQueuedText] = useState<string | null>(null)
 	const streamingRef = useRef(false)
 	const [streaming, setStreaming] = useState(false)
-	const abortedRef = useRef(false)
 	const [nextCursor, setNextCursor] = useState(persistedNextCursor)
 	const [hasMore, setHasMore] = useState(persistedHasMore)
 	const loadingMoreRef = useRef(false)
@@ -248,8 +247,7 @@ export default function ChatInterface() {
 				return
 			}
 			case 'query_end': {
-				const wasAborted = abortedRef.current
-				abortedRef.current = false
+				const wasAborted = !!e.aborted
 
 				if (wasAborted) {
 					// Check if assistant produced meaningful content
@@ -551,7 +549,6 @@ export default function ChatInterface() {
 	}
 
 	const onStop = () => {
-		abortedRef.current = true
 		send({ type: 'stop' })
 	}
 

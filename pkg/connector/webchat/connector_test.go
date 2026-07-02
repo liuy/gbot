@@ -1,6 +1,7 @@
 package webchat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -223,6 +225,93 @@ func TestHandle_QueryEnd(t *testing.T) {
 	}
 	if env.Event.Type != "query_end" {
 		t.Errorf("event.type = %q, want \"query_end\"", env.Event.Type)
+	}
+}
+
+// TestHandle_QueryEnd_AbortedFlag verifies the server serializes the abort
+// signal into the WS query_end payload: when the engine's terminal Error is
+// *engine.AbortError, the event JSON must include "aborted":true (the Error
+// field itself is `json:"-"` so this is the only channel). For nil error or
+// a non-abort error, the key must be absent so the frontend treats it as a
+// normal completion.
+func TestHandle_QueryEnd_AbortedFlag(t *testing.T) {
+	// Build a real context.Canceled so AbortError.Unwrap resolves like in prod.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	abortErr := &engine.AbortError{Phase: "streaming", Err: ctx.Err()}
+
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+	msg := readOne(t, c.msgCh)
+
+	var env struct {
+		Event struct {
+			Type    string `json:"type"`
+			Aborted bool   `json:"aborted"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(msg, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Event.Type != "query_end" {
+		t.Errorf("event.type = %q, want \"query_end\"", env.Event.Type)
+	}
+	if !env.Event.Aborted {
+		t.Error("event.aborted = false, want true (engine emitted AbortError)")
+	}
+
+	// Raw JSON must contain the literal "aborted":true — a struct field that
+	// silently fails to marshal would still leave env.Event.Aborted==true via
+	// a stale default; asserting on the bytes catches that.
+	if !strings.Contains(string(msg), `"aborted":true`) {
+		t.Errorf("wire payload missing \"aborted\":true; got: %s", string(msg))
+	}
+}
+
+// TestHandle_QueryEnd_NoAbortedOnNilError verifies that a normal query_end
+// (no AbortError) does NOT set the aborted flag, so the frontend proceeds with
+// the non-abort completion path.
+func TestHandle_QueryEnd_NoAbortedOnNilError(t *testing.T) {
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	msg := readOne(t, c.msgCh)
+
+	var env struct {
+		Event struct {
+			Aborted bool `json:"aborted"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(msg, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Event.Aborted {
+		t.Error("event.aborted = true, want false (nil error → normal completion)")
+	}
+	// omitempty must drop the key entirely so a normal query_end is
+	// byte-identical to the pre-abort-detection wire shape.
+	if strings.Contains(string(msg), `"aborted"`) {
+		t.Errorf("wire payload should omit aborted key on nil error; got: %s", string(msg))
+	}
+}
+
+// TestHandle_QueryEnd_NoAbortedOnNonAbortError verifies a non-Abort terminal
+// error (e.g. an API failure) does not set aborted — only *engine.AbortError
+// counts as a user interrupt.
+func TestHandle_QueryEnd_NoAbortedOnNonAbortError(t *testing.T) {
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: assertErr("api 500")})
+	msg := readOne(t, c.msgCh)
+
+	var env struct {
+		Event struct {
+			Aborted bool `json:"aborted"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(msg, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Event.Aborted {
+		t.Error("event.aborted = true, want false (non-abort error must not look like an interrupt)")
 	}
 }
 

@@ -103,8 +103,8 @@ describe('webchat integration: send + abort', () => {
 		// User clicks STOP
 		clickStop()
 
-		// Engine ends query
-		serverSends([{ type: 'thinking_end' }, { type: 'query_end' }])
+		// Engine ends query — server serializes AbortError as aborted:true
+		serverSends([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
 
 		// User message should be gone
 		expect(screen.queryByText('test query')).toBeNull()
@@ -128,7 +128,7 @@ describe('webchat integration: send + abort', () => {
 
 		clickStop()
 
-		serverSends([{ type: 'text_end' }, { type: 'query_end' }])
+		serverSends([{ type: 'text_end' }, { type: 'query_end', aborted: true }])
 
 		// User message should still be visible
 		expect(screen.getByText('another query')).toBeTruthy()
@@ -145,7 +145,7 @@ describe('webchat integration: send + abort', () => {
 		send('repeat me')
 		serverSends([{ type: 'query_start' }, { type: 'thinking_start' }])
 		clickStop()
-		serverSends([{ type: 'thinking_end' }, { type: 'query_end' }])
+		serverSends([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
 
 		expect(screen.queryByText('repeat me')).toBeNull()
 
@@ -153,7 +153,7 @@ describe('webchat integration: send + abort', () => {
 		send('repeat me')
 		serverSends([{ type: 'query_start' }, { type: 'thinking_start' }])
 		clickStop()
-		serverSends([{ type: 'thinking_end' }, { type: 'query_end' }])
+		serverSends([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
 
 		// Input must have the correct text, not stale content
 		const textarea = document.querySelector('textarea') as HTMLTextAreaElement
