@@ -24,7 +24,6 @@ export default function InputBar({
 		if (!text || streaming || !connected) return
 		onSend(text)
 		setValue('')
-		if (taRef.current) taRef.current.style.height = 'auto'
 	}
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
@@ -36,9 +35,6 @@ export default function InputBar({
 
 	const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		setValue(e.target.value)
-		const ta = e.target
-		ta.style.height = 'auto'
-		ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
 	}
 
 	const canSend = value.trim().length > 0 && !streaming && connected
@@ -73,16 +69,28 @@ export default function InputBar({
 							</button>
 						)}
 
-						<textarea
-							ref={taRef}
-							rows={1}
-							value={value}
-							onChange={onInput}
-							onKeyDown={onKeyDown}
-							placeholder="Message GBot"
-							disabled={!connected}
-							className="flex-1 bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light disabled:opacity-40"
-						/>
+						<div
+							className="flex-1 flex justify-center min-h-[20px] cursor-text"
+							onClick={() => taRef.current?.focus()}
+						>
+							<textarea
+								ref={taRef}
+								rows={1}
+								value={value}
+								onChange={onInput}
+								onKeyDown={onKeyDown}
+								placeholder="Sup?"
+								disabled={!connected}
+								className="bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light text-center disabled:opacity-40"
+							style={{
+								fieldSizing: 'content',
+								width: 'fit-content',
+								maxWidth: '100%',
+								maxHeight: '120px',
+								overflow: 'hidden',
+							} as React.CSSProperties}
+							/>
+						</div>
 
 						<button
 							type="submit"
@@ -90,7 +98,7 @@ export default function InputBar({
 							className="flex-shrink-0 text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30"
 							aria-label="Send"
 						>
-							<svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+							<svg className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
 								<path d="M3 10l14-7-7 14-2-5-5-2z" />
 							</svg>
 						</button>

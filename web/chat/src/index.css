@@ -109,17 +109,21 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
-/* Scrollbar styling */
+/* Scrollbar — completely hidden, touch scroll only */
 ::-webkit-scrollbar {
   width: 0;
-  height: 3px;
+  height: 0;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(120, 180, 255, 0.15);
-  border-radius: 3px;
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: none;
 }
 
 /* Markdown body — scoped styles for tables and blockquotes */
