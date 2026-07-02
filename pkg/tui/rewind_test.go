@@ -15,6 +15,7 @@ import (
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // testTime is a fixed timestamp for deterministic tests.
@@ -30,7 +31,7 @@ func TestMessagesAfterAreOnlySynthetic_Empty(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 	}
-	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected true: no messages after user message")
 	}
 }
@@ -42,7 +43,7 @@ func TestMessagesAfterAreOnlySynthetic_OnlyThinking(t *testing.T) {
 			{Type: types.ContentTypeThinking, Thinking: "thinking..."},
 		}},
 	}
-	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected true: only thinking blocks after user message")
 	}
 }
@@ -57,7 +58,7 @@ func TestMessagesAfterAreOnlySynthetic_InterruptMsg(t *testing.T) {
 	// Interrupt message is synthetic (matches types.InterruptMessage),
 	// so it should be skipped → returns true (no meaningful content after).
 	// Source: TS isSyntheticMessage checks SYNTHETIC_MESSAGES set.
-	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected true: interrupt message is synthetic (non-meaningful)")
 	}
 }
@@ -69,7 +70,7 @@ func TestMessagesAfterAreOnlySynthetic_AssistantText(t *testing.T) {
 			types.NewTextBlock("Hello! How can I help?"),
 		}},
 	}
-	if messagesAfterAreOnlySynthetic(msgs, 0) {
+	if utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected false: assistant has non-empty text")
 	}
 }
@@ -81,7 +82,7 @@ func TestMessagesAfterAreOnlySynthetic_ToolUse(t *testing.T) {
 			types.NewToolUseBlock("tu_1", "Read", nil),
 		}},
 	}
-	if messagesAfterAreOnlySynthetic(msgs, 0) {
+	if utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected false: assistant has tool_use block")
 	}
 }
@@ -94,7 +95,7 @@ func TestMessagesAfterAreOnlySynthetic_AnotherUser(t *testing.T) {
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("another")}},
 	}
-	if messagesAfterAreOnlySynthetic(msgs, 0) {
+	if utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected false: another user message with text is meaningful")
 	}
 }
@@ -110,7 +111,7 @@ func TestMessagesAfterAreOnlySynthetic_Mixed(t *testing.T) {
 			types.NewTextBlock(""), // empty text
 		}},
 	}
-	if !messagesAfterAreOnlySynthetic(msgs1, 0) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs1, 0) {
 		t.Error("expected true: only thinking + empty text")
 	}
 
@@ -124,7 +125,7 @@ func TestMessagesAfterAreOnlySynthetic_Mixed(t *testing.T) {
 			types.NewTextBlock("actual response"),
 		}},
 	}
-	if messagesAfterAreOnlySynthetic(msgs2, 0) {
+	if utils.MessagesAfterAreOnlySynthetic(msgs2, 0) {
 		t.Error("expected false: has non-empty text after thinking")
 	}
 }
@@ -141,12 +142,12 @@ func TestMessagesAfterAreOnlySynthetic_ToolResultUser(t *testing.T) {
 		}},
 	}
 	// The tool_use at index 1 makes it non-synthetic → false
-	if messagesAfterAreOnlySynthetic(msgs, 0) {
+	if utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected false: assistant has tool_use before tool_result user msg")
 	}
 
 	// But checking from after the tool_use: only tool_result user → synthetic
-	if !messagesAfterAreOnlySynthetic(msgs, 2) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs, 2) {
 		t.Error("expected true: only tool_result user message after index 2")
 	}
 }
@@ -157,13 +158,13 @@ func TestLastSelectableUserMessageIndex(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}},
 	}
-	if got := lastSelectableUserMessageIndex(msgs); got != 2 {
+	if got := utils.LastSelectableUserMessageIndex(msgs); got != 2 {
 		t.Errorf("expected index 2, got %d", got)
 	}
-	if got := lastSelectableUserMessageIndex(msgs[:1]); got != 0 {
+	if got := utils.LastSelectableUserMessageIndex(msgs[:1]); got != 0 {
 		t.Errorf("expected index 0, got %d", got)
 	}
-	if got := lastSelectableUserMessageIndex(nil); got != -1 {
+	if got := utils.LastSelectableUserMessageIndex(nil); got != -1 {
 		t.Errorf("expected -1 for nil, got %d", got)
 	}
 
@@ -173,7 +174,7 @@ func TestLastSelectableUserMessageIndex(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewToolUseBlock("tu1", "Read", json.RawMessage(`{}`))}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewToolResultBlock("tu1", json.RawMessage(`"data"`), false)}},
 	}
-	if got := lastSelectableUserMessageIndex(toolResultMsgs); got != 0 {
+	if got := utils.LastSelectableUserMessageIndex(toolResultMsgs); got != 0 {
 		t.Errorf("expected index 0 (skip tool_result msg), got %d", got)
 	}
 
@@ -182,7 +183,7 @@ func TestLastSelectableUserMessageIndex(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("user query")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(types.InterruptMessage)}},
 	}
-	if got := lastSelectableUserMessageIndex(syntheticMsgs); got != 0 {
+	if got := utils.LastSelectableUserMessageIndex(syntheticMsgs); got != 0 {
 		t.Errorf("expected index 0 (skip synthetic msg), got %d", got)
 	}
 }
@@ -194,7 +195,7 @@ func TestFirstTextBlockContent(t *testing.T) {
 			types.NewTextBlock("hello world"),
 		},
 	}
-	if got := firstTextBlockContent(msg); got != "hello world" {
+	if got := utils.FirstTextBlockContent(msg); got != "hello world" {
 		t.Errorf("expected 'hello world', got %q", got)
 	}
 
@@ -202,7 +203,7 @@ func TestFirstTextBlockContent(t *testing.T) {
 		Role:    types.RoleUser,
 		Content: []types.ContentBlock{types.NewToolResultBlock("tu_1", nil, false)},
 	}
-	if got := firstTextBlockContent(emptyMsg); got != "" {
+	if got := utils.FirstTextBlockContent(emptyMsg); got != "" {
 		t.Errorf("expected empty string for no text block, got %q", got)
 	}
 }
@@ -217,7 +218,7 @@ func TestIsSelectableUserMessage_FlagMeta(t *testing.T) {
 		},
 		Flags: types.FlagMeta,
 	}
-	if isSelectableUserMessage(metaMsg) {
+	if utils.IsSelectableUserMessage(metaMsg) {
 		t.Error("expected FlagMeta message to be filtered out of rewind selection")
 	}
 
@@ -228,7 +229,7 @@ func TestIsSelectableUserMessage_FlagMeta(t *testing.T) {
 			types.NewTextBlock("你好呀"),
 		},
 	}
-	if !isSelectableUserMessage(normalMsg) {
+	if !utils.IsSelectableUserMessage(normalMsg) {
 		t.Error("expected normal user message to be selectable")
 	}
 }
@@ -241,7 +242,7 @@ func TestIsSelectableUserMessage_MessageTypeAttachment(t *testing.T) {
 			types.NewTextBlock("<system-reminder>\njob done\n</system-reminder>"),
 		},
 	}
-	if isSelectableUserMessage(attMsg) {
+	if utils.IsSelectableUserMessage(attMsg) {
 		t.Error("expected MessageTypeAttachment message to be filtered out of rewind selection")
 	}
 }
@@ -269,9 +270,9 @@ func TestIsSelectableUserMessage_NonUserTags(t *testing.T) {
 				Role:    types.RoleUser,
 				Content: []types.ContentBlock{types.NewTextBlock(tc.text)},
 			}
-			got := isSelectableUserMessage(msg)
+			got := utils.IsSelectableUserMessage(msg)
 			if got != tc.want {
-				t.Errorf("isSelectableUserMessage(%q) = %v, want %v", tc.text, got, tc.want)
+				t.Errorf("utils.IsSelectableUserMessage(%q) = %v, want %v", tc.text, got, tc.want)
 			}
 		})
 	}
@@ -286,7 +287,7 @@ func TestLastSelectableUserMessageIndex_SkipsMetaMessages(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("You are a ruthless senior engineer...")}, Flags: types.FlagMeta},
 	}
 	// Should select index 2 (the user's actual input), skipping meta messages
-	if got := lastSelectableUserMessageIndex(msgs); got != 2 {
+	if got := utils.LastSelectableUserMessageIndex(msgs); got != 2 {
 		t.Errorf("expected index 2, got %d", got)
 	}
 }
@@ -544,7 +545,7 @@ func TestMessagesAfterAreOnlySynthetic_ToolResultUserOnly(t *testing.T) {
 			types.NewToolResultBlock("tu_1", nil, false),
 		}},
 	}
-	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+	if !utils.MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Error("expected true: tool-result-only user message is synthetic")
 	}
 }
@@ -557,7 +558,7 @@ func TestHasNonToolResultContent_AllToolResults(t *testing.T) {
 			types.NewToolResultBlock("tu_2", nil, false),
 		},
 	}
-	if hasNonToolResultContent(msg) {
+	if utils.HasNonToolResultContent(msg) {
 		t.Error("expected false: all blocks are tool_result")
 	}
 }
@@ -570,7 +571,7 @@ func TestHasNonToolResultContent_HasText(t *testing.T) {
 			types.NewTextBlock("hello"),
 		},
 	}
-	if !hasNonToolResultContent(msg) {
+	if !utils.HasNonToolResultContent(msg) {
 		t.Error("expected true: has text block alongside tool_result")
 	}
 }
@@ -786,7 +787,7 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 		tm := &short.TranscriptMessage{
 			UUID:    fmt.Sprintf("uuid-%d", i),
 			Type:    string(msg.Role),
-			Content: fmt.Sprintf(`[{"type":"text","text":"%s"}]`, firstTextBlockContent(msg)),
+			Content: fmt.Sprintf(`[{"type":"text","text":"%s"}]`, utils.FirstTextBlockContent(msg)),
 		}
 		if err := store.AppendMessage(sessionID, tm); err != nil {
 			t.Fatalf("AppendMessage %d: %v", i, err)
@@ -1236,7 +1237,7 @@ func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse(t *testing.T) {
 	// because index 2 is a tool_result user message (not selectable).
 	// messagesAfterAreOnlySynthetic scans from index 1 onward: finds
 	// tool_use at index 1 → should return false.
-	got := messagesAfterAreOnlySynthetic(msgs, 0)
+	got := utils.MessagesAfterAreOnlySynthetic(msgs, 0)
 	if got {
 		t.Error("messagesAfterAreOnlySynthetic = true for multi-turn with tool_use, want false — " +
 			"abort should not trigger auto-rewind when prior turns produced meaningful output")
@@ -1253,7 +1254,7 @@ func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse(t *testing.T) {
 //	assistant(synthetic: [interrupted])  ← index 3
 //
 // Auto-rewind should rewind to index 2 (only "task 2" + interrupt),
-// preserving "task 1" + "done". messagesAfterAreOnlySynthetic(msgs, 2)
+// preserving "task 1" + "done". utils.MessagesAfterAreOnlySynthetic(msgs, 2)
 // must return true (only synthetic after the last user message).
 func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse_SecondUserMessage(t *testing.T) {
 	t.Parallel()
@@ -1266,7 +1267,7 @@ func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse_SecondUserMessage(t 
 		}},
 	}
 	// lastUserIdx = 2 ("task 2"). After it: only interrupt synthetic → true.
-	got := messagesAfterAreOnlySynthetic(msgs, 2)
+	got := utils.MessagesAfterAreOnlySynthetic(msgs, 2)
 	if !got {
 		t.Error("messagesAfterAreOnlySynthetic = false for pure interrupt after last user msg, want true")
 	}

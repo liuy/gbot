@@ -129,25 +129,23 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 	}
 }
 
-// handleMessageInbound dispatches a user message to the engine via queryFn.
-// If a query is already active, the message is enqueued via
-// engine.EnqueueAttachment (same path as TUI's handleEnqueueMessage) —
-// the engine drains it automatically after the current query finishes.
+// handleMessageInbound dispatches a user message to the engine. If a query
+// is already active, the message is enqueued via engine.EnqueueAttachment
+// (same path as TUI's handleEnqueueMessage) — the engine drains it
+// automatically after the current query finishes.
 func (c *WebChatConnector) handleMessageInbound(text string) {
-	if c.isBusyFn != nil && c.isBusyFn() {
-		if c.enqueueFn != nil {
-			c.enqueueFn(types.QueuedItem{
-				Value:     text,
-				Mode:      types.ItemModePrompt,
-				UUID:      uuid.NewString(),
-				Priority:  types.PriorityNext,
-				Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
-				Timestamp: time.Now(),
-			})
-		}
+	if c.engine.IsBusy() {
+		c.engine.EnqueueAttachment(types.QueuedItem{
+			Value:     text,
+			Mode:      types.ItemModePrompt,
+			UUID:      uuid.NewString(),
+			Priority:  types.PriorityNext,
+			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+			Timestamp: time.Now(),
+		})
 		return
 	}
-	go c.queryFn(context.Background(), text, "")
+	go c.engine.Query(context.Background(), text, c.engine.SystemPrompt())
 }
 
 // handleAskResponse looks up a pending ask by id and writes the response to
@@ -177,9 +175,7 @@ func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted 
 // same path as TUI's ESC handler. This cancels the engine's internal
 // activeCancel which propagates to the LLM stream and all tool contexts.
 func (c *WebChatConnector) handleStop() {
-	if c.abortFn != nil {
-		c.abortFn()
-	}
+	c.engine.Abort()
 }
 
 // writeLoop drains msgCh, writing each message to the WS connection. Exits

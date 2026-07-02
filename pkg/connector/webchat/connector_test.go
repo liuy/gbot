@@ -315,6 +315,140 @@ func TestHandle_QueryEnd_NoAbortedOnNonAbortError(t *testing.T) {
 	}
 }
 
+// TestHandle_QueryEnd_AutoRewind verifies that when an abort produces no
+// meaningful assistant content (only synthetic interrupt text or nothing),
+// the connector rewinds the engine to the last user message. When there IS
+// partial content (real text or a tool_use), the rewind must NOT happen.
+func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	abortErr := &engine.AbortError{Phase: "streaming", Err: ctx.Err()}
+
+	t.Run("rewinds_when_no_content", func(t *testing.T) {
+		c := newTestConnector(t)
+		mock := c.mock()
+		mock.messagesFn = func() []types.Message {
+			return []types.Message{
+				{
+					ID:        "user1",
+					Role:      types.RoleUser,
+					Timestamp: time.Unix(1000, 0),
+					Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}},
+				},
+				{
+					ID:        "asst1",
+					Role:      types.RoleAssistant,
+					Timestamp: time.Unix(1001, 0),
+					Content: []types.ContentBlock{
+						{Type: types.ContentTypeText, Text: types.InterruptMessage},
+					},
+				},
+			}
+		}
+
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+		_ = readOne(t, c.msgCh) // drain query_end
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.rewindCalls) != 1 {
+			t.Fatalf("rewindCalls len = %d, want 1", len(mock.rewindCalls))
+		}
+		if mock.rewindCalls[0] != 0 {
+			t.Errorf("rewindCalls[0] = %d, want 0 (last user message index)", mock.rewindCalls[0])
+		}
+	})
+
+	t.Run("does_not_rewind_when_partial_text", func(t *testing.T) {
+		c := newTestConnector(t)
+		mock := c.mock()
+		mock.messagesFn = func() []types.Message {
+			return []types.Message{
+				{
+					ID:        "user1",
+					Role:      types.RoleUser,
+					Timestamp: time.Unix(1000, 0),
+					Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}},
+				},
+				{
+					ID:        "asst1",
+					Role:      types.RoleAssistant,
+					Timestamp: time.Unix(1001, 0),
+					Content: []types.ContentBlock{
+						{Type: types.ContentTypeText, Text: "partial response"},
+						{Type: types.ContentTypeText, Text: types.InterruptMessage},
+					},
+				},
+			}
+		}
+
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+		_ = readOne(t, c.msgCh) // drain query_end
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.rewindCalls) != 0 {
+			t.Errorf("rewindCalls len = %d, want 0 (partial content present)", len(mock.rewindCalls))
+		}
+	})
+
+	t.Run("does_not_rewind_when_tool_use", func(t *testing.T) {
+		c := newTestConnector(t)
+		mock := c.mock()
+		mock.messagesFn = func() []types.Message {
+			return []types.Message{
+				{
+					ID:        "user1",
+					Role:      types.RoleUser,
+					Timestamp: time.Unix(1000, 0),
+					Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}},
+				},
+				{
+					ID:        "asst1",
+					Role:      types.RoleAssistant,
+					Timestamp: time.Unix(1001, 0),
+					Content: []types.ContentBlock{
+						{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{}`)},
+					},
+				},
+			}
+		}
+
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+		_ = readOne(t, c.msgCh) // drain query_end
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.rewindCalls) != 0 {
+			t.Errorf("rewindCalls len = %d, want 0 (tool_use present)", len(mock.rewindCalls))
+		}
+	})
+
+	t.Run("no_rewind_when_no_user_message", func(t *testing.T) {
+		c := newTestConnector(t)
+		mock := c.mock()
+		mock.messagesFn = func() []types.Message {
+			return []types.Message{
+				{
+					ID:        "asst1",
+					Role:      types.RoleAssistant,
+					Timestamp: time.Unix(1001, 0),
+					Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: types.InterruptMessage}},
+				},
+			}
+		}
+
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+		_ = readOne(t, c.msgCh) // drain query_end
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.rewindCalls) != 0 {
+			t.Errorf("rewindCalls len = %d, want 0 (no user message to rewind to)", len(mock.rewindCalls))
+		}
+	})
+}
+
 // TestMsgCh_NeverDrops verifies that msgCh blocks when full and never silently
 // drops a message, even under concurrent senders exceeding buffer capacity.
 func TestMsgCh_NeverDrops(t *testing.T) {
@@ -491,7 +625,7 @@ func (e assertErr) Error() string { return string(e) }
 // eventIndex values so interleavedItems() renders blocks in true event order.
 func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	c := newTestConnector(t)
-	c.messagesFn = func() []types.Message {
+	c.mock().messagesFn = func() []types.Message {
 		return []types.Message{
 			{
 				ID:        "user1",
@@ -514,7 +648,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 			},
 		}
 	}
-	c.toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
@@ -605,7 +739,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 // slot in the frontend) but are still concatenated into the legacy Text field.
 func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 	c := newTestConnector(t)
-	c.messagesFn = func() []types.Message {
+	c.mock().messagesFn = func() []types.Message {
 		return []types.Message{
 			{
 				ID:        "asst2",
@@ -618,7 +752,7 @@ func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 			},
 		}
 	}
-	c.toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
@@ -655,7 +789,7 @@ func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 // If this shape changes, the frontend's b.tool!.name access breaks.
 func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 	c := newTestConnector(t)
-	c.messagesFn = func() []types.Message {
+	c.mock().messagesFn = func() []types.Message {
 		return []types.Message{
 			{
 				ID:        "user1",
@@ -675,7 +809,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 			},
 		}
 	}
-	c.toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
@@ -744,7 +878,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 // NOT as { "kind":"thinking", "text":"..." }.
 func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	c := newTestConnector(t)
-	c.messagesFn = func() []types.Message {
+	c.mock().messagesFn = func() []types.Message {
 		return []types.Message{
 			{
 				ID:        "asst1",
@@ -756,7 +890,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 			},
 		}
 	}
-	c.toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	payload := c.buildHistoryMessage("", 10)
 	if payload == nil {
@@ -811,7 +945,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	c := newTestConnector(t)
 	// 25 assistant messages
-	c.messagesFn = func() []types.Message {
+	c.mock().messagesFn = func() []types.Message {
 		msgs := make([]types.Message, 25)
 		for i := range 25 {
 			msgs[i] = types.Message{
@@ -823,7 +957,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 		}
 		return msgs
 	}
-	c.toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	// Page 1: latest 10 (msg-24 … msg-15)
 	payload := c.buildHistoryMessage("", 10)

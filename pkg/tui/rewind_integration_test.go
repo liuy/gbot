@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -345,11 +346,11 @@ func TestIntegration_Rewind_PersistenceRoundtrip(t *testing.T) {
 	if len(engMsgs) != 2 {
 		t.Fatalf("expected 2 engine messages after rewind, got %d", len(engMsgs))
 	}
-	if firstTextBlockContent(engMsgs[0]) != "turn 1" {
-		t.Errorf("first message should be 'turn 1', got %q", firstTextBlockContent(engMsgs[0]))
+	if utils.FirstTextBlockContent(engMsgs[0]) != "turn 1" {
+		t.Errorf("first message should be 'turn 1', got %q", utils.FirstTextBlockContent(engMsgs[0]))
 	}
-	if firstTextBlockContent(engMsgs[1]) != "response 1" {
-		t.Errorf("second message should be 'response 1', got %q", firstTextBlockContent(engMsgs[1]))
+	if utils.FirstTextBlockContent(engMsgs[1]) != "response 1" {
+		t.Errorf("second message should be 'response 1', got %q", utils.FirstTextBlockContent(engMsgs[1]))
 	}
 
 	// Store should retain all 6 messages (append-only — no truncation)
@@ -1212,9 +1213,9 @@ func TestIntegration_Rewind_AbortDuringToolUse(t *testing.T) {
 	var selectableIndices []int
 	var selectableTexts []string
 	for i, msg := range msgs {
-		if isSelectableUserMessage(msg) {
+		if utils.IsSelectableUserMessage(msg) {
 			selectableIndices = append(selectableIndices, i)
-			selectableTexts = append(selectableTexts, firstTextBlockContent(msg))
+			selectableTexts = append(selectableTexts, utils.FirstTextBlockContent(msg))
 		}
 	}
 
@@ -1297,7 +1298,7 @@ func TestIntegration_Rewind_Stage18AbortWithToolUse(t *testing.T) {
 	msgs := a.engine.Messages()
 	var found bool
 	for _, msg := range msgs {
-		if isSelectableUserMessage(msg) && firstTextBlockContent(msg) == "read main.go" {
+		if utils.IsSelectableUserMessage(msg) && utils.FirstTextBlockContent(msg) == "read main.go" {
 			found = true
 		}
 	}
@@ -1368,8 +1369,8 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 	if len(engMsgs) != 2 {
 		t.Fatalf("expected 2 engine messages after rewind, got %d", len(engMsgs))
 	}
-	if firstTextBlockContent(engMsgs[0]) != "turn 1" {
-		t.Errorf("first msg = %q, want 'turn 1'", firstTextBlockContent(engMsgs[0]))
+	if utils.FirstTextBlockContent(engMsgs[0]) != "turn 1" {
+		t.Errorf("first msg = %q, want 'turn 1'", utils.FirstTextBlockContent(engMsgs[0]))
 	}
 
 	// Verify engine captured fork point (observable via persist)
@@ -1653,16 +1654,16 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 	if engMsgs2[0].Role != types.RoleSystem {
 		t.Errorf("Phase 4: first msg role = %q, want system", engMsgs2[0].Role)
 	}
-	if firstTextBlockContent(engMsgs2[1]) != "what about generics?" {
-		t.Errorf("Phase 4: second msg = %q, want 'what about generics?'", firstTextBlockContent(engMsgs2[1]))
+	if utils.FirstTextBlockContent(engMsgs2[1]) != "what about generics?" {
+		t.Errorf("Phase 4: second msg = %q, want 'what about generics?'", utils.FirstTextBlockContent(engMsgs2[1]))
 	}
-	if firstTextBlockContent(engMsgs2[2]) != "type parameters" {
-		t.Errorf("Phase 4: third msg = %q, want 'type parameters'", firstTextBlockContent(engMsgs2[2]))
+	if utils.FirstTextBlockContent(engMsgs2[2]) != "type parameters" {
+		t.Errorf("Phase 4: third msg = %q, want 'type parameters'", utils.FirstTextBlockContent(engMsgs2[2]))
 	}
 
 	// Pre-boundary and dead branch messages not in engine
 	for _, msg := range engMsgs2 {
-		text := firstTextBlockContent(msg)
+		text := utils.FirstTextBlockContent(msg)
 		for _, dead := range []string{"what is Go?", "explain goroutines", "lightweight threads"} {
 			if text == dead {
 				t.Errorf("Phase 4: pre-boundary content %q should not be in engine messages", text)
@@ -1712,8 +1713,8 @@ func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
 		if msg.Role != types.RoleUser {
 			continue
 		}
-		selectable := isSelectableUserMessage(msg)
-		text := firstTextBlockContent(msg)
+		selectable := utils.IsSelectableUserMessage(msg)
+		text := utils.FirstTextBlockContent(msg)
 		switch text {
 		case "hello", "goodbye":
 			if !selectable {
@@ -1753,8 +1754,8 @@ func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
 		if msg.Role != types.RoleUser {
 			continue
 		}
-		selectable := isSelectableUserMessage(msg)
-		text := firstTextBlockContent(msg)
+		selectable := utils.IsSelectableUserMessage(msg)
+		text := utils.FirstTextBlockContent(msg)
 		switch text {
 		case "hello", "goodbye":
 			if !selectable {

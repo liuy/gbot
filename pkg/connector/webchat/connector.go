@@ -26,6 +26,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // queryEventWithAbort embeds QueryEvent and adds an "aborted" boolean for the
@@ -46,11 +47,50 @@ type queryEventWithAbort struct {
 // back-pressures the engine loop (acceptable for correctness).
 const handlerBufSize = 1024
 
+// engineClient is the subset of engine.Engine methods the connector uses.
+// Defined as an interface so tests can substitute a mock without polluting
+// production code with test-only seam fields.
+type engineClient interface {
+	Query(ctx context.Context, userMessage, systemPrompt string)
+	IsBusy() bool
+	Messages() []types.Message
+	Tools() map[string]tool.Tool
+	EnqueueAttachment(item types.QueuedItem)
+	Abort()
+	RewindTo(idx int) error
+	SystemPrompt() string
+}
+
+// engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
+// mismatch is RewindTo: the engine returns (*RewindResult, error) but the
+// connector only cares whether it succeeded, so the adapter discards the result.
+type engineAdapter struct {
+	eng *engine.Engine
+}
+
+var _ engineClient = (*engineAdapter)(nil)
+
+func (a *engineAdapter) Query(ctx context.Context, userMessage, systemPrompt string) {
+	a.eng.Query(ctx, userMessage, systemPrompt)
+}
+func (a *engineAdapter) IsBusy() bool                { return a.eng.IsBusy() }
+func (a *engineAdapter) Messages() []types.Message   { return a.eng.Messages() }
+func (a *engineAdapter) Tools() map[string]tool.Tool { return a.eng.Tools() }
+func (a *engineAdapter) EnqueueAttachment(item types.QueuedItem) {
+	a.eng.EnqueueAttachment(item)
+}
+func (a *engineAdapter) Abort()               { a.eng.Abort() }
+func (a *engineAdapter) SystemPrompt() string { return a.eng.SystemPrompt() }
+func (a *engineAdapter) RewindTo(idx int) error {
+	_, err := a.eng.RewindTo(idx)
+	return err
+}
+
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
 // wire protocol (Phase 0), and drives queries from inbound WS messages.
 type WebChatConnector struct {
-	engine *engine.Engine
+	engine engineClient
 	hub    *hub.Hub
 
 	unsubscribe func()
@@ -72,17 +112,6 @@ type WebChatConnector struct {
 	// The single active WS connection. The connector supports one client at a
 	// time; a new connection replaces the prior one.
 	activeWS atomic.Pointer[websocket.Conn]
-
-	// Testable seams (same pattern as WeChat connector.go). queryFn defaults
-	// to eng.Query; tests override to record dispatches. isBusyFn defaults to
-	// eng.IsBusy. messagesFn/toolsFn default to eng.Messages/eng.Tools and are
-	// overridden by tests to exercise buildHistoryMessage without a real engine.
-	queryFn    func(ctx context.Context, userMessage, systemPrompt string)
-	isBusyFn   func() bool
-	messagesFn func() []types.Message
-	toolsFn    func() map[string]tool.Tool
-	enqueueFn  func(item types.QueuedItem)
-	abortFn    func()
 }
 
 // New builds a WebChatConnector bound to the given engine and hub. The
@@ -91,37 +120,10 @@ type WebChatConnector struct {
 // stored and called by Stop.
 func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 	c := &WebChatConnector{
-		engine:      eng,
+		engine:      &engineAdapter{eng: eng},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
 		msgCh:       make(chan []byte, handlerBufSize),
-	}
-	c.queryFn = func(ctx context.Context, userMessage, _ string) {
-		eng.Query(ctx, userMessage, eng.SystemPrompt())
-	}
-	c.isBusyFn = func() bool {
-		if c.engine == nil {
-			return false
-		}
-		return c.engine.IsBusy()
-	}
-	c.messagesFn = func() []types.Message {
-		if c.engine == nil {
-			return nil
-		}
-		return c.engine.Messages()
-	}
-	c.toolsFn = func() map[string]tool.Tool {
-		if c.engine == nil {
-			return nil
-		}
-		return c.engine.Tools()
-	}
-	c.enqueueFn = func(item types.QueuedItem) {
-		c.engine.EnqueueAttachment(item)
-	}
-	c.abortFn = func() {
-		c.engine.Abort()
 	}
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
@@ -167,6 +169,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	if event.Type == types.EventQueryEnd && event.Error != nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
+			c.autoRewindOnAbort()
 		}
 	}
 	payload, err := json.Marshal(struct {
@@ -178,6 +181,25 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		return
 	}
 	c.msgCh <- payload
+}
+
+// autoRewindOnAbort mirrors TUI's tryAutoRewind (pkg/tui/rewind.go): when the
+// user aborts and the assistant produced no meaningful content after the last
+// user message, rewind the engine back to that user message so a retry starts
+// clean. Unlike the TUI, the webchat connector has no input bar to restore —
+// the frontend handles that client-side via the aborted flag — so this only
+// cleans the engine-side conversation history.
+func (c *WebChatConnector) autoRewindOnAbort() {
+	msgs := c.engine.Messages()
+	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
+	if lastUserIdx < 0 {
+		return
+	}
+	if utils.MessagesAfterAreOnlySynthetic(msgs, lastUserIdx) {
+		if err := c.engine.RewindTo(lastUserIdx); err != nil {
+			slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
+		}
+	}
 }
 
 // handleAsk stores the AskEvent under a fresh id, builds the askOutbound
@@ -229,17 +251,11 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
 func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte {
-	if c.messagesFn == nil {
-		return nil
-	}
-	msgs := c.messagesFn()
+	msgs := c.engine.Messages()
 	if len(msgs) == 0 {
 		return nil
 	}
-	var tools map[string]tool.Tool
-	if c.toolsFn != nil {
-		tools = c.toolsFn()
-	}
+	tools := c.engine.Tools()
 
 	// First pass: collect all tool_results keyed by tool_use_id (same as TUI).
 	toolResults := make(map[string]types.ContentBlock)

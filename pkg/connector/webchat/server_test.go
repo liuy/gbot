@@ -1,13 +1,11 @@
 package webchat
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -71,14 +69,9 @@ func TestRegisterChatWS_ConnectStatus(t *testing.T) {
 // user's text.
 func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 	c := newTestConnector(t)
-	var mu sync.Mutex
-	var gotText string
-	c.queryFn = func(_ context.Context, msg, _ string) {
-		mu.Lock()
-		gotText = msg
-		mu.Unlock()
-	}
-	c.isBusyFn = func() bool { return false }
+	mock := c.mock()
+	mock.isBusyFn = func() bool { return false }
+	mock.systemPromptFn = func() string { return "test-system-prompt" }
 
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -93,14 +86,20 @@ func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	var snapshot string
+	var gotUser, gotSysPrompt string
 	if !waitFor(time.Second, func() bool {
-		mu.Lock()
-		snapshot = gotText
-		mu.Unlock()
-		return snapshot == "hello there"
+		mock.mu.Lock()
+		for _, qc := range mock.queryCalls {
+			gotUser = qc.userMessage
+			gotSysPrompt = qc.systemPrompt
+		}
+		mock.mu.Unlock()
+		return gotUser == "hello there"
 	}) {
-		t.Fatalf("queryFn received text = %q, want \"hello there\"", snapshot)
+		t.Fatalf("query received text = %q, want \"hello there\"", gotUser)
+	}
+	if gotSysPrompt != "test-system-prompt" {
+		t.Errorf("systemPrompt = %q, want \"test-system-prompt\"", gotSysPrompt)
 	}
 }
 
@@ -108,41 +107,42 @@ func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 // true, the message is enqueued via enqueueFn (not dispatched via queryFn).
 func TestHandleMessageInbound_BusyEnqueues(t *testing.T) {
 	c := newTestConnector(t)
-	dispatched := 0
-	c.queryFn = func(context.Context, string, string) { dispatched++ }
-	c.isBusyFn = func() bool { return true }
-	var enqueued *types.QueuedItem
-	c.enqueueFn = func(item types.QueuedItem) { enqueued = &item }
+	mock := c.mock()
+	mock.isBusyFn = func() bool { return true }
 
 	c.handleMessageInbound("queued text")
 
-	if dispatched != 0 {
-		t.Errorf("queryFn dispatched %d time(s), want 0", dispatched)
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.queryCalls) != 0 {
+		t.Errorf("query dispatched %d time(s), want 0", len(mock.queryCalls))
 	}
-	if enqueued == nil {
-		t.Fatal("enqueueFn not called")
+	if len(mock.enqueueCalls) != 1 {
+		t.Fatalf("enqueueCalls len = %d, want 1", len(mock.enqueueCalls))
 	}
-	if enqueued.Value != "queued text" {
-		t.Errorf("enqueued Value = %q, want \"queued text\"", enqueued.Value)
+	item := mock.enqueueCalls[0]
+	if item.Value != "queued text" {
+		t.Errorf("enqueued Value = %q, want \"queued text\"", item.Value)
 	}
-	if enqueued.Priority != types.PriorityNext {
-		t.Errorf("enqueued Priority = %v, want PriorityNext", enqueued.Priority)
+	if item.Priority != types.PriorityNext {
+		t.Errorf("enqueued Priority = %v, want PriorityNext", item.Priority)
 	}
-	if enqueued.Origin == nil || enqueued.Origin.Kind != types.OriginHuman {
-		t.Errorf("enqueued Origin = %+v, want OriginHuman", enqueued.Origin)
+	if item.Origin == nil || item.Origin.Kind != types.OriginHuman {
+		t.Errorf("enqueued Origin = %+v, want OriginHuman", item.Origin)
 	}
 }
 
 // TestHandleStop_CallsAbortFn verifies handleStop invokes abortFn.
 func TestHandleStop_CallsAbortFn(t *testing.T) {
 	c := newTestConnector(t)
-	aborted := false
-	c.abortFn = func() { aborted = true }
+	mock := c.mock()
 
 	c.handleStop()
 
-	if !aborted {
-		t.Fatal("abortFn not called by handleStop")
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if mock.abortCount != 1 {
+		t.Fatalf("abortCount = %d, want 1", mock.abortCount)
 	}
 }
 
@@ -206,7 +206,8 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 // handler returns the correct page of older messages via the WS.
 func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	c := newTestConnector(t)
-	c.messagesFn = func() []types.Message {
+	mock := c.mock()
+	mock.messagesFn = func() []types.Message {
 		msgs := make([]types.Message, 25)
 		for i := range 25 {
 			msgs[i] = types.Message{

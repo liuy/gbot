@@ -2,10 +2,12 @@ package webchat
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -23,20 +25,110 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 	return cond()
 }
 
-// newTestConnectorWithHub builds a WebChatConnector with engine=nil and the
-// given hub (for hub-routed dispatch tests). The test seams queryFn/isBusyFn
-// are left as the engine-bound defaults but with engine=nil they are inert;
-// tests override them.
+// mockEngine implements engineClient for tests. Each method delegates to a
+// configurable function field; tests set only the fields they need. The mu
+// guards the recorded slices so concurrent goroutines (Query runs in its own
+// goroutine) can safely append.
+type mockEngine struct {
+	mu sync.Mutex
+
+	queryFn        func(ctx context.Context, userMessage, systemPrompt string)
+	isBusyFn       func() bool
+	messagesFn     func() []types.Message
+	toolsFn        func() map[string]tool.Tool
+	enqueueFn      func(item types.QueuedItem)
+	abortFn        func()
+	rewindToFn     func(idx int) error
+	systemPromptFn func() string
+
+	// Recorded calls for assertions.
+	queryCalls   []queryCall
+	enqueueCalls []types.QueuedItem
+	abortCount   int
+	rewindCalls  []int
+}
+
+type queryCall struct {
+	userMessage  string
+	systemPrompt string
+}
+
+func (m *mockEngine) Query(ctx context.Context, userMessage, systemPrompt string) {
+	m.mu.Lock()
+	m.queryCalls = append(m.queryCalls, queryCall{userMessage, systemPrompt})
+	m.mu.Unlock()
+	if m.queryFn != nil {
+		m.queryFn(ctx, userMessage, systemPrompt)
+	}
+}
+
+func (m *mockEngine) IsBusy() bool {
+	if m.isBusyFn != nil {
+		return m.isBusyFn()
+	}
+	return false
+}
+
+func (m *mockEngine) Messages() []types.Message {
+	if m.messagesFn != nil {
+		return m.messagesFn()
+	}
+	return nil
+}
+
+func (m *mockEngine) Tools() map[string]tool.Tool {
+	if m.toolsFn != nil {
+		return m.toolsFn()
+	}
+	return nil
+}
+
+func (m *mockEngine) EnqueueAttachment(item types.QueuedItem) {
+	m.mu.Lock()
+	m.enqueueCalls = append(m.enqueueCalls, item)
+	m.mu.Unlock()
+	if m.enqueueFn != nil {
+		m.enqueueFn(item)
+	}
+}
+
+func (m *mockEngine) Abort() {
+	m.mu.Lock()
+	m.abortCount++
+	m.mu.Unlock()
+	if m.abortFn != nil {
+		m.abortFn()
+	}
+}
+
+func (m *mockEngine) RewindTo(idx int) error {
+	m.mu.Lock()
+	m.rewindCalls = append(m.rewindCalls, idx)
+	m.mu.Unlock()
+	if m.rewindToFn != nil {
+		return m.rewindToFn(idx)
+	}
+	return nil
+}
+
+func (m *mockEngine) SystemPrompt() string {
+	if m.systemPromptFn != nil {
+		return m.systemPromptFn()
+	}
+	return ""
+}
+
+// newTestConnectorWithHub builds a WebChatConnector with a mockEngine and the
+// given hub (for hub-routed dispatch tests). Tests configure the mock's
+// function fields to control behavior.
 func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 	t.Helper()
 	c := &WebChatConnector{
-		engine:      nil,
+		engine:      &mockEngine{},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
 		msgCh:       make(chan []byte, handlerBufSize),
 	}
-	c.queryFn = func(_ context.Context, _, _ string) {} // tests override
-	c.isBusyFn = func() bool { return false }
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
 	}
@@ -48,6 +140,12 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 func newTestConnector(t *testing.T) *WebChatConnector {
 	t.Helper()
 	return newTestConnectorWithHub(t, hub.NewHub())
+}
+
+// mock returns the connector's mockEngine. Panics if the engine is not a
+// *mockEngine (i.e., the connector was not created via newTestConnector*).
+func (c *WebChatConnector) mock() *mockEngine {
+	return c.engine.(*mockEngine)
 }
 
 // firstPendingAskIDTest returns the id of the first stored pending ask.
