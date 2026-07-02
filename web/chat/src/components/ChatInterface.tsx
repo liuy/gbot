@@ -141,6 +141,7 @@ export default function ChatInterface() {
 	const [nextCursor, setNextCursor] = useState(persistedNextCursor)
 	const [hasMore, setHasMore] = useState(persistedHasMore)
 	const loadingMoreRef = useRef(false)
+	const expectingInitialRef = useRef(true)
 
 	const scrollRef = useRef<HTMLDivElement | null>(null)
 	const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -188,10 +189,13 @@ export default function ChatInterface() {
 		const newMsgs = mapHistoryToChatMessages(histMsgs)
 
 		// Initial page (cursor was empty) replaces all messages.
-		// Pagination page (cursor non-empty) prepends older messages.
-		const isInitial = !nextCursor && !loadingMoreRef.current
+		// Use ref, not React state, because connect_status and history
+		// arrive in the same synchronous batch — setNextCursor('') won't
+		// have committed by the time loadHistory runs.
+		const isInitial = expectingInitialRef.current
 
 		if (isInitial) {
+			expectingInitialRef.current = false
 			messagesRef.current.splice(0, messagesRef.current.length, ...newMsgs)
 		} else {
 			// Deduplicate: skip messages already in the list (by id).
@@ -224,6 +228,11 @@ export default function ChatInterface() {
 			requestAnimationFrame(() => {
 				bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
 			})
+			// Prefetch next page immediately so scroll-up is instant
+			if (msg.hasMore && msg.nextCursor) {
+				loadingMoreRef.current = true
+				send({ type: 'history_request', cursor: msg.nextCursor, limit: 10 })
+			}
 		}
 	}
 
@@ -413,6 +422,12 @@ export default function ChatInterface() {
 		const unsubscribe = subscribe((msg: ServerMessage) => {
 			switch (msg.type) {
 				case 'connect_status':
+					expectingInitialRef.current = true
+					persistedNextCursor = ''
+					persistedHasMore = false
+					setNextCursor('')
+					setHasMore(false)
+					loadingMoreRef.current = false
 					return
 				case 'history':
 					loadHistory(msg)
@@ -457,7 +472,7 @@ export default function ChatInterface() {
 					send({ type: 'history_request', cursor: nextCursor, limit: 10 })
 				}
 			},
-			{ root, threshold: 0 }
+			{ root, rootMargin: '400px 0px 0px 0px', threshold: 0 }
 		)
 		obs.observe(el)
 		return () => obs.disconnect()

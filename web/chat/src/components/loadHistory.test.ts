@@ -40,10 +40,33 @@ describe('loadHistory deduplication (TDD)', () => {
 	})
 
 	it('loadingMoreRef prevents concurrent history_request', () => {
-		// IntersectionObserver sets loadingMoreRef=true before sending
-		// request, and loadHistory resets it to false after receiving.
-		// This prevents duplicate requests during rapid scroll.
 		expect(src).toContain('loadingMoreRef.current = true')
 		expect(src).toContain('loadingMoreRef.current = false')
+	})
+
+	it('prefetches second page after initial load', () => {
+		expect(src).toContain('Prefetch next page')
+		expect(src).toContain('msg.hasMore && msg.nextCursor')
+	})
+
+	it('IntersectionObserver uses rootMargin for early trigger', () => {
+		expect(src).toContain("rootMargin: '400px")
+	})
+
+	it('resets pagination state on WS reconnect (connect_status)', () => {
+		const idx = src.indexOf("case 'connect_status'")
+		const block = src.slice(idx, idx + 200)
+		expect(block).toContain('persistedNextCursor')
+		expect(block).toContain('persistedHasMore')
+	})
+
+	it('isInitial uses ref, not React state (connect_status + history batch race)', () => {
+		// connect_status and history arrive in the same synchronous batch.
+		// setNextCursor('') won't have committed when loadHistory runs.
+		// Must use a ref (expectingInitialRef) instead of nextCursor state.
+		expect(src).toContain('expectingInitialRef')
+		expect(src).toContain('expectingInitialRef.current = true')
+		expect(src).toContain('expectingInitialRef.current')
+		expect(src).toContain('isInitial = expectingInitialRef.current')
 	})
 })
