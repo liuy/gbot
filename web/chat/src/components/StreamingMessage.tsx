@@ -1,13 +1,11 @@
 import type { ReactNode, RefObject } from 'react'
 import type { ChatMessage, Block } from '../model'
-import { isCollapsibleTool } from './MessageComponent'
+import { isCollapsibleTool, avatarG } from './MessageComponent'
 import StreamingText from './StreamingText'
 import Thinking from './Thinking'
 import ToolRenderer from './ToolRenderer'
 import ToolGroup from './ToolGroup'
 import ProgressBar from './ProgressBar'
-
-const avatarG = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white'
 
 // Renders the streaming assistant message. text/thinking blocks write to DOM
 // sinks (refs); tool blocks render normally via React. Mirrors MessageComponent's
@@ -40,7 +38,7 @@ export default function StreamingMessage({
 	for (const b of message.blocks) {
 		switch (b.kind) {
 			case 'thinking':
-				out.push(<Thinking key={b.id} entry={b} textRef={thinkingRef} forceExpanded />)
+				out.push(<Thinking key={b.id} entry={b} textRef={thinkingRef} />)
 				break
 			case 'tool':
 				if (isCollapsibleTool(b)) {

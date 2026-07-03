@@ -6,7 +6,7 @@ import ToolRenderer from './ToolRenderer'
 import ToolGroup from './ToolGroup'
 import ProgressBar from './ProgressBar'
 
-const avatarG = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white"
+export const avatarG = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white"
 const avatarU = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-t2 to-t3"
 
 export function isCollapsibleTool(b: Block): boolean {

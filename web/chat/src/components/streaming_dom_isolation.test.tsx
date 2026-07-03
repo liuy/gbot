@@ -128,7 +128,7 @@ describe('streaming DOM isolation', () => {
 			{ type: 'thinking_delta', thinking: { text: 'about stuff' } },
 		])
 
-		// forceExpanded keeps the body visible during streaming.
+		// active thinking auto-expands, body visible
 		expect(screen.getByText('reasoning about stuff')).toBeTruthy()
 	})
 
@@ -227,7 +227,7 @@ describe('streaming DOM isolation', () => {
 			{ type: 'text_delta', text: 'answer' },
 		])
 
-		// During streaming, Thinking is forceExpanded so its body is visible.
+		// Active thinking auto-expands, body visible
 		expect(screen.getByText('deep thought')).toBeTruthy()
 		expect(screen.getByText('answer')).toBeTruthy()
 	})
