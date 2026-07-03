@@ -128,13 +128,17 @@ describe('webchat integration: send + abort', () => {
 
 		clickStop()
 
-		serverSends([{ type: 'text_end' }, { type: 'query_end', aborted: true }])
+		serverSends([
+			{ type: 'text_end' },
+			{ type: 'text_delta', text: '[Request interrupted by user]' },
+			{ type: 'query_end', aborted: true },
+		])
 
 		// User message should still be visible
 		expect(screen.getByText('another query')).toBeTruthy()
 		// Should show partial response + interrupt marker
-		expect(screen.getByText('partial')).toBeTruthy()
-		expect(screen.getByText('[Request interrupted by user]')).toBeTruthy()
+		expect(screen.getByText(/partial/)).toBeTruthy()
+		expect(screen.getByText(/\[Request interrupted by user\]/)).toBeTruthy()
 	})
 
 	it('repeated send + abort restores correct text', async () => {

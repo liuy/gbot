@@ -257,11 +257,9 @@ export default function ChatInterface() {
 						last.blocks.some(b => (b.kind === 'text' && b.text.trim()) || b.kind === 'tool')
 
 					if (hasContent) {
-						// Partial response — mark as interrupted
 						updateStreamingAssistant((m) => ({
 							...m,
 							status: 'done' as const,
-							error: '[Request interrupted by user]',
 						}))
 					} else {
 						// No meaningful response — rewind: remove empty assistant msg + restore input
@@ -347,11 +345,16 @@ export default function ChatInterface() {
 				if (!e.text) return
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
+					let found = false
 					for (let i = blocks.length - 1; i >= 0; i--) {
 						if (blocks[i].kind === 'text') {
 							blocks[i] = { ...blocks[i], text: (blocks[i] as any).text + e.text } as Block
+							found = true
 							break
 						}
+					}
+					if (!found) {
+						blocks.push({ kind: 'text', id: nextId('txt'), text: e.text! })
 					}
 					return { ...m, blocks }
 				})

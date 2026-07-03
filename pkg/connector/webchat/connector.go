@@ -169,6 +169,16 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	if event.Type == types.EventQueryEnd && event.Error != nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
+			if !c.shouldAutoRewind() {
+				interruptPayload, _ := json.Marshal(struct {
+					Type  string           `json:"type"`
+					Event types.QueryEvent `json:"event"`
+				}{Type: "event", Event: types.QueryEvent{
+					Type: types.EventTextDelta,
+					Text: types.InterruptMessage,
+				}})
+				c.msgCh <- interruptPayload
+			}
 			c.autoRewindOnAbort()
 		}
 	}
@@ -183,22 +193,28 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	c.msgCh <- payload
 }
 
-// autoRewindOnAbort mirrors TUI's tryAutoRewind (pkg/tui/rewind.go): when the
-// user aborts and the assistant produced no meaningful content after the last
-// user message, rewind the engine back to that user message so a retry starts
-// clean. Unlike the TUI, the webchat connector has no input bar to restore —
-// the frontend handles that client-side via the aborted flag — so this only
-// cleans the engine-side conversation history.
+// shouldAutoRewind checks whether autoRewindOnAbort would rewind.
+func (c *WebChatConnector) shouldAutoRewind() bool {
+	msgs := c.engine.Messages()
+	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
+	if lastUserIdx < 0 {
+		return true
+	}
+	return utils.MessagesAfterAreOnlySynthetic(msgs, lastUserIdx)
+}
+
+// autoRewindOnAbort mirrors TUI's tryAutoRewind.
 func (c *WebChatConnector) autoRewindOnAbort() {
+	if !c.shouldAutoRewind() {
+		return
+	}
 	msgs := c.engine.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
 		return
 	}
-	if utils.MessagesAfterAreOnlySynthetic(msgs, lastUserIdx) {
-		if err := c.engine.RewindTo(lastUserIdx); err != nil {
-			slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
-		}
+	if err := c.engine.RewindTo(lastUserIdx); err != nil {
+		slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
 	}
 }
 
