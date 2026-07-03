@@ -168,7 +168,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	}
 
 	aborted := false
-	if event.Type == types.EventQueryEnd && event.Error != nil {
+	if event.Type == types.EventQueryEnd && event.Error != nil && event.Agent == nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
 			if !c.shouldAutoRewind() {
