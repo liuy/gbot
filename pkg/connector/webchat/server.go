@@ -110,6 +110,13 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			}
 		case "stop":
 			c.handleStop()
+		case "cancel_queued":
+			var msg struct {
+				UUID string `json:"uuid"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.engine.RemoveAttachment(msg.UUID)
+			}
 		case "history_request":
 			// Client requests an older page of history. Route the response
 			// through msgCh (NOT a direct ws.WriteMessage) because gorilla
@@ -135,14 +142,21 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 // automatically after the current query finishes.
 func (c *WebChatConnector) handleMessageInbound(text string) {
 	if c.engine.IsBusy() {
+		attachUUID := uuid.NewString()
 		c.engine.EnqueueAttachment(types.QueuedItem{
 			Value:     text,
 			Mode:      types.ItemModePrompt,
-			UUID:      uuid.NewString(),
+			UUID:      attachUUID,
 			Priority:  types.PriorityNext,
 			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 			Timestamp: time.Now(),
 		})
+		// Send queued UUID back to client so it can cancel later.
+		resp, _ := json.Marshal(struct {
+			Type string `json:"type"`
+			UUID string `json:"uuid"`
+		}{Type: "queued", UUID: attachUUID})
+		c.msgCh <- resp
 		return
 	}
 	go c.engine.Query(context.Background(), text, c.engine.SystemPrompt())

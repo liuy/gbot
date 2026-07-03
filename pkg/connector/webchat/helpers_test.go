@@ -101,6 +101,10 @@ func (m *mockEngine) Abort() {
 	}
 }
 
+func (m *mockEngine) RemoveAttachment(uuid string) bool {
+	return true
+}
+
 func (m *mockEngine) RewindTo(idx int) error {
 	m.mu.Lock()
 	m.rewindCalls = append(m.rewindCalls, idx)

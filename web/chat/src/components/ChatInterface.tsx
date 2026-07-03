@@ -138,6 +138,7 @@ export default function ChatInterface() {
 	const [queuedText, setQueuedText] = useState<string | null>(null)
 	const streamingRef = useRef(false)
 	const [streaming, setStreaming] = useState(false)
+	const queuedUuidRef = useRef<string | null>(null)
 	const [nextCursor, setNextCursor] = useState(persistedNextCursor)
 	const [hasMore, setHasMore] = useState(persistedHasMore)
 	const loadingMoreRef = useRef(false)
@@ -462,6 +463,7 @@ export default function ChatInterface() {
 						startedAt: Date.now(),
 					})
 					setQueuedText(null)
+					queuedUuidRef.current = null
 					forceRender()
 				}
 				return
@@ -481,6 +483,9 @@ export default function ChatInterface() {
 					setNextCursor('')
 					setHasMore(false)
 					loadingMoreRef.current = false
+					return
+				case 'queued':
+					queuedUuidRef.current = (msg as any).uuid
 					return
 				case 'history':
 					loadHistory(msg)
@@ -556,6 +561,10 @@ export default function ChatInterface() {
 	}
 
 	const onCancelQueued = () => {
+		if (queuedUuidRef.current) {
+			send({ type: 'cancel_queued', uuid: queuedUuidRef.current })
+			queuedUuidRef.current = null
+		}
 		setQueuedText(null)
 	}
 

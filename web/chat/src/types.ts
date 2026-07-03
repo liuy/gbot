@@ -1,5 +1,6 @@
 export type ServerMessage =
   | { type: 'connect_status'; connected: boolean }
+  | { type: 'queued'; uuid: string }
   | { type: 'event'; event: QueryEvent }
   | {
       type: 'ask'

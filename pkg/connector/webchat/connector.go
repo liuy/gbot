@@ -58,6 +58,7 @@ type engineClient interface {
 	EnqueueAttachment(item types.QueuedItem)
 	Abort()
 	RewindTo(idx int) error
+	RemoveAttachment(uuid string) bool
 	SystemPrompt() string
 }
 
@@ -79,8 +80,9 @@ func (a *engineAdapter) Tools() map[string]tool.Tool { return a.eng.Tools() }
 func (a *engineAdapter) EnqueueAttachment(item types.QueuedItem) {
 	a.eng.EnqueueAttachment(item)
 }
-func (a *engineAdapter) Abort()               { a.eng.Abort() }
-func (a *engineAdapter) SystemPrompt() string { return a.eng.SystemPrompt() }
+func (a *engineAdapter) Abort()                            { a.eng.Abort() }
+func (a *engineAdapter) RemoveAttachment(uuid string) bool { return a.eng.RemoveAttachment(uuid) }
+func (a *engineAdapter) SystemPrompt() string              { return a.eng.SystemPrompt() }
 func (a *engineAdapter) RewindTo(idx int) error {
 	_, err := a.eng.RewindTo(idx)
 	return err
