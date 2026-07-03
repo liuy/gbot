@@ -1,5 +1,6 @@
 export type Block =
 	| { kind: 'text'; id: string; text: string }
+	| { kind: 'user'; id: string; text: string }  // TUI BlockUser — queued msg visual marker
 	| { kind: 'thinking'; id: string; text: string; durationNs: number; active: boolean; startedAt: number }
 	| {
 			kind: 'tool'

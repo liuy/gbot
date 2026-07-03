@@ -1,6 +1,7 @@
 export type ServerMessage =
   | { type: 'connect_status'; connected: boolean }
   | { type: 'queued'; uuid: string }
+  | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }
   | {
       type: 'ask'

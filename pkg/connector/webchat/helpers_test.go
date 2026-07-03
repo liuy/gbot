@@ -42,10 +42,12 @@ type mockEngine struct {
 	systemPromptFn func() string
 
 	// Recorded calls for assertions.
-	queryCalls   []queryCall
-	enqueueCalls []types.QueuedItem
-	abortCount   int
-	rewindCalls  []int
+	queryCalls         []queryCall
+	enqueueCalls       []types.QueuedItem
+	abortCount         int
+	rewindCalls        []int
+	removeAttachment   []string
+	removeAttachmentFn func(uuid string) bool
 }
 
 type queryCall struct {
@@ -102,6 +104,12 @@ func (m *mockEngine) Abort() {
 }
 
 func (m *mockEngine) RemoveAttachment(uuid string) bool {
+	m.mu.Lock()
+	m.removeAttachment = append(m.removeAttachment, uuid)
+	m.mu.Unlock()
+	if m.removeAttachmentFn != nil {
+		return m.removeAttachmentFn(uuid)
+	}
 	return true
 }
 

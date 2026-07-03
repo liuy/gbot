@@ -49,6 +49,11 @@ function renderGrouped(blocks: Block[]) {
 				flush()
 				out.push(<Markdown key={`txt-${key++}`}>{b.text}</Markdown>)
 				break
+			case 'user':
+				if (!b.text) break
+				flush()
+				out.push(<div key={`usr-${key++}`} className="text-[13px] text-t2 italic ml-2 my-1">{b.text}</div>)
+				break
 		}
 	}
 	flush()
@@ -72,7 +77,7 @@ function MessageComponentBase({
         <div className="min-w-0">
           {isUser ? (
             <div className="ml-auto w-fit text-left text-t1 text-[15px]">
-              {message.blocks.flatMap(b => b.kind === 'text' ? [b.text] : []).join('')}
+              {message.blocks.flatMap(b => (b.kind === 'text' || b.kind === 'user') ? [b.text] : []).join('')}
             </div>
           ) : (
             <div className="space-y-3">

@@ -20,4 +20,11 @@ describe('queued message send during streaming', () => {
 		expect(onSendBlock).toBeTruthy()
 		expect(onSendBlock![0]).toContain("send({ type: 'message'")
 	})
+
+	it('ChatInterface.onSend during streaming pushes to queuedMsgs array', () => {
+		const onSendBlock = chatSrc.match(/const onSend[\s\S]*?\n\t}/)
+		expect(onSendBlock).toBeTruthy()
+		expect(onSendBlock![0]).toMatch(/setQueuedMsgs\(\(prev\) => \[\.\.\.prev,/)
+		expect(onSendBlock![0]).toContain("send({ type: 'message'")
+	})
 })

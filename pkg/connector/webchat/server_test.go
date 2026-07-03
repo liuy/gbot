@@ -202,6 +202,87 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRegisterChatWS_CancelQueuedBatch verifies that a cancel_queued inbound
+// message with a UUID array invokes engine.RemoveAttachment once per UUID in
+// order. Replaces the prior single-UUID contract — webchat now sends the
+// full queued UUID list for batch cancellation (TUI popAllQueuedToInput parity).
+func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
+	c := newTestConnector(t)
+	mock := c.mock()
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws) // drain connect_status
+
+	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "u-2"}})
+	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
+		t.Fatalf("write cancel_queued: %v", err)
+	}
+
+	if !waitFor(time.Second, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return len(mock.removeAttachment) >= 2
+	}) {
+		mock.mu.Lock()
+		t.Fatalf("removeAttachment calls = %v, want 2", mock.removeAttachment)
+		mock.mu.Unlock()
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.removeAttachment) != 2 {
+		t.Fatalf("removeAttachment calls = %v, want exactly 2", mock.removeAttachment)
+	}
+	if mock.removeAttachment[0] != "u-1" || mock.removeAttachment[1] != "u-2" {
+		t.Errorf("removeAttachment = %v, want [u-1 u-2]", mock.removeAttachment)
+	}
+}
+
+// TestRegisterChatWS_CancelQueuedBatch_FiltersEmpty verifies that empty
+// strings inside the uuids array are skipped — defensive belt matching
+// Engine.RemoveAttachment's own empty-uuid guard.
+func TestRegisterChatWS_CancelQueuedBatch_FiltersEmpty(t *testing.T) {
+	c := newTestConnector(t)
+	mock := c.mock()
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws) // drain connect_status
+
+	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "", "u-2"}})
+	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
+		t.Fatalf("write cancel_queued: %v", err)
+	}
+
+	if !waitFor(time.Second, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return len(mock.removeAttachment) >= 2
+	}) {
+		mock.mu.Lock()
+		t.Fatalf("removeAttachment calls = %v, want 2 (empty filtered)", mock.removeAttachment)
+		mock.mu.Unlock()
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.removeAttachment) != 2 {
+		t.Fatalf("removeAttachment calls = %v, want exactly 2", mock.removeAttachment)
+	}
+	if mock.removeAttachment[0] != "u-1" || mock.removeAttachment[1] != "u-2" {
+		t.Errorf("removeAttachment = %v, want [u-1 u-2] (empty filtered)", mock.removeAttachment)
+	}
+}
+
 // TestRegisterChatWS_HistoryRequest verifies the history_request inbound
 // handler returns the correct page of older messages via the WS.
 func TestRegisterChatWS_HistoryRequest(t *testing.T) {

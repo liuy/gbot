@@ -3,17 +3,18 @@ import { useWebSocket } from '../websocket'
 
 export interface InputBarHandle {
 	setInputText: (text: string) => void
+	appendQueuedText: (text: string) => void
 }
 
 const InputBar = forwardRef<InputBarHandle, {
 	streaming: boolean
-	queuedText: string | null
+	queuedMsgs: { uuid: string; text: string }[]
 	onSend: (text: string) => void
 	onStop: () => void
 	onCancelQueued: () => void
 }>(function InputBar({
 	streaming,
-	queuedText,
+	queuedMsgs,
 	onSend,
 	onStop,
 	onCancelQueued,
@@ -31,6 +32,13 @@ const InputBar = forwardRef<InputBarHandle, {
 				taRef.current.focus()
 			}
 		},
+		appendQueuedText: (text: string) => {
+			if (!taRef.current || !text) return
+			const existing = taRef.current.value
+			taRef.current.value = existing === '' ? text : text + '\n' + existing
+			taRef.current.focus()
+			setTick((t) => (t + 1) & 0x7fffffff)
+		},
 	}), [])
 
 	const onSubmit = (e: React.FormEvent) => {
@@ -45,6 +53,14 @@ const InputBar = forwardRef<InputBarHandle, {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault()
 			onSubmit(e as unknown as React.FormEvent)
+			return
+		}
+		// Up key pops all queued messages back to input (TUI popAllQueuedToInput
+		// parity). The streaming guard prevents the key from eating normal
+		// multiline navigation outside a streaming turn.
+		if (streaming && e.key === 'ArrowUp' && queuedMsgs.length > 0) {
+			e.preventDefault()
+			onCancelQueued()
 		}
 	}
 
@@ -56,8 +72,9 @@ const InputBar = forwardRef<InputBarHandle, {
 
 	return (
 		<div className="sticky bottom-0 z-10 px-5 pb-3 pt-1">
-			{streaming && queuedText !== null && (
+			{streaming && queuedMsgs.map((m, i) => (
 				<div
+					key={m.uuid || `pending-${i}`}
 					className="mb-2 mx-auto bg-ink2/80 backdrop-blur border border-hairline rounded-full px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer"
 					onClick={onCancelQueued}
 				>
@@ -65,10 +82,13 @@ const InputBar = forwardRef<InputBarHandle, {
 						<circle cx="12" cy="12" r="10" />
 						<path d="M12 8v4M12 16h.01" />
 					</svg>
-					<span className="text-[12px] text-t2 font-light italic truncate max-w-[240px]">{queuedText}</span>
-					<span className="text-[10px] text-t3 mono ml-1">Tap to CANCEL</span>
+					<span className="text-[12px] text-t2 font-light italic truncate max-w-[240px]">{m.text}</span>
+					{i === 0 && queuedMsgs.length > 1 && (
+						<span className="text-[10px] text-t3 mono ml-1">+{queuedMsgs.length - 1} more</span>
+					)}
+					<span className="text-[10px] text-t3 mono ml-1">{queuedMsgs.length > 1 ? 'Tap to CANCEL all' : 'Tap to CANCEL'}</span>
 				</div>
-			)}
+			))}
 
 			<form onSubmit={onSubmit}>
 				<div className="card-bg rounded-xl border border-hairline glow-blue">
@@ -94,8 +114,8 @@ const InputBar = forwardRef<InputBarHandle, {
 							onInput={onInput}
 							onKeyDown={onKeyDown}
 							placeholder="Sup?"
-								disabled={!connected}
-								className="bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light text-center disabled:opacity-40"
+							disabled={!connected}
+							className="bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light text-center disabled:opacity-40"
 							style={{
 								fieldSizing: 'content',
 								width: 'fit-content',
@@ -103,7 +123,7 @@ const InputBar = forwardRef<InputBarHandle, {
 								maxHeight: '120px',
 								overflow: 'hidden',
 							} as React.CSSProperties}
-							/>
+						/>
 						</div>
 
 						<button

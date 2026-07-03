@@ -135,10 +135,10 @@ export default function ChatInterface() {
 	const forceRender = () => setTick((t) => (t + 1) & 0x7fffffff)
 
 	const [ask, setAsk] = useState<AskData | null>(null)
-	const [queuedText, setQueuedText] = useState<string | null>(null)
+	const [queuedMsgs, setQueuedMsgs] = useState<{ uuid: string; text: string }[]>([])
 	const streamingRef = useRef(false)
 	const [streaming, setStreaming] = useState(false)
-	const queuedUuidRef = useRef<string | null>(null)
+	const pendingCancelRef = useRef<{ uuid: string; text: string }[] | null>(null)
 	const [nextCursor, setNextCursor] = useState(persistedNextCursor)
 	const [hasMore, setHasMore] = useState(persistedHasMore)
 	const loadingMoreRef = useRef(false)
@@ -182,7 +182,7 @@ export default function ChatInterface() {
 		}
 		streamingRef.current = false
 		setStreaming(false)
-		setQueuedText(null)
+		setQueuedMsgs([])
 		forceRender()
 	}
 
@@ -247,6 +247,16 @@ export default function ChatInterface() {
 				forceRender()
 				return
 			}
+			case 'turn_start': {
+				// processAttachments path emits turn_start without query_start.
+				// Push an assistant message if none exists yet.
+				if (streamingRef.current) return
+				messagesRef.current.push(newAssistantMessage(nextId('a')))
+				streamingRef.current = true
+				setStreaming(true)
+				forceRender()
+				return
+			}
 			case 'query_end': {
 				const wasAborted = !!e.aborted
 
@@ -280,13 +290,13 @@ export default function ChatInterface() {
 				} else {
 					updateStreamingAssistant((m) => ({ ...m, status: 'done' as const }))
 				}
-				streamingRef.current = false
-				setStreaming(false)
-				setQueuedText(null)
-				forceRender()
-				return
-			}
-			case 'thinking_start': {
+			streamingRef.current = false
+			setStreaming(false)
+			setQueuedMsgs([])
+			forceRender()
+			return
+		}
+		case 'thinking_start': {
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: [...m.blocks, {
@@ -452,20 +462,36 @@ export default function ChatInterface() {
 			case 'retry_attempt':
 				return
 			case 'attachment': {
-				if (queuedText) {
+				// TUI parity: repl.go:1364 — mid-turn drain appends
+				// BlockUser inside the current assistant message's blocks.
+				// Streaming assistant must remain the last message so
+				// text_delta/thinking_delta handlers can find it.
+				const att = (e as any).message?.attachment
+				if (!att) return
+				const text: string = att.prompt ?? ''
+				const sourceUUID: string = att.source_uuid ?? ''
+				if (!text) return
+				if (streamingRef.current) {
+					// Mid-turn: append user block to current assistant
+					updateStreamingAssistant((m) => ({
+						...m,
+						blocks: [...m.blocks, { kind: 'user', id: nextId('u'), text }],
+					}))
+				} else {
+					// Between queries (idle): push as standalone user message
 					messagesRef.current.push({
 						id: nextId('u'),
 						role: 'user',
-						blocks: [{ kind: 'text', id: nextId('txt'), text: queuedText }],
+						blocks: [{ kind: 'text', id: nextId('txt'), text }],
 						usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
 						error: '',
 						status: 'done',
 						startedAt: Date.now(),
 					})
-					setQueuedText(null)
-					queuedUuidRef.current = null
-					forceRender()
 				}
+				if (sourceUUID === '') return
+				setQueuedMsgs((prev) => prev.filter((m) => m.uuid !== sourceUUID))
+				forceRender()
 				return
 			}
 			default:
@@ -484,9 +510,40 @@ export default function ChatInterface() {
 					setHasMore(false)
 					loadingMoreRef.current = false
 					return
-				case 'queued':
-					queuedUuidRef.current = (msg as any).uuid
-					return
+			case 'queued': {
+				// FIFO stamping: msgCh is a single ordered channel, so the Nth
+				// 'queued' reply corresponds to the Nth unstamped entry in the
+				// array. Find the first entry with uuid === '' and stamp it.
+				const uuid = (msg as any).uuid as string
+				setQueuedMsgs((prev) => {
+					const next = [...prev]
+					for (let i = 0; i < next.length; i++) {
+						if (next[i].uuid === '') {
+							next[i] = { ...next[i], uuid }
+							return next
+						}
+					}
+					return prev
+				})
+				return
+			}
+			case 'cancel_result': {
+				const removed = new Set((msg as any).removed as string[])
+				const snapshot = pendingCancelRef.current
+				pendingCancelRef.current = null
+				if (snapshot) {
+					// TUI parity: only restore text for UUIDs that were successfully
+					// removed. Drained items (not in removed) were already processed
+					// by the engine and would duplicate if restored to input.
+					const toRestore = snapshot.filter((m) => removed.has(m.uuid))
+					if (toRestore.length > 0) {
+						const joined = toRestore.map((m) => m.text).join('\n')
+						inputRef.current?.appendQueuedText(joined)
+					}
+				}
+				setQueuedMsgs([])
+				return
+			}
 				case 'history':
 					loadHistory(msg)
 					return
@@ -538,9 +595,8 @@ export default function ChatInterface() {
 
 	const onSend = (text: string) => {
 		if (streamingRef.current) {
-			setQueuedText(text)
+			setQueuedMsgs((prev) => [...prev, { uuid: '', text }])
 			send({ type: 'message', text })
-			forceRender()
 			return
 		}
 		messagesRef.current.push({
@@ -561,11 +617,19 @@ export default function ChatInterface() {
 	}
 
 	const onCancelQueued = () => {
-		if (queuedUuidRef.current) {
-			send({ type: 'cancel_queued', uuid: queuedUuidRef.current })
-			queuedUuidRef.current = null
+		if (queuedMsgs.length === 0) return
+		const uuids = queuedMsgs.map((m) => m.uuid).filter((u) => u !== '')
+		// Save snapshot — cancel_result arrives async, queuedMsgs may change
+		pendingCancelRef.current = queuedMsgs
+		if (uuids.length > 0) {
+			send({ type: 'cancel_queued', uuids })
+		} else {
+			// No UUIDs stamped yet (all optimistic) — restore all text immediately
+			const joined = queuedMsgs.map((m) => m.text).join('\n')
+			inputRef.current?.appendQueuedText(joined)
+			setQueuedMsgs([])
+			pendingCancelRef.current = null
 		}
-		setQueuedText(null)
 	}
 
 	return (
@@ -584,7 +648,7 @@ export default function ChatInterface() {
 			<InputBar
 				ref={inputRef}
 				streaming={streaming}
-				queuedText={queuedText}
+				queuedMsgs={queuedMsgs}
 				onSend={onSend}
 				onStop={onStop}
 				onCancelQueued={onCancelQueued}

@@ -40,3 +40,4 @@ vendor/
 web/chat/node_modules/
 prototype/
 web/chat/tsconfig.tsbuildinfo
+node_modules/

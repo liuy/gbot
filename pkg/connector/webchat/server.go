@@ -112,10 +112,20 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			c.handleStop()
 		case "cancel_queued":
 			var msg struct {
-				UUID string `json:"uuid"`
+				UUIDs []string `json:"uuids"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				c.engine.RemoveAttachment(msg.UUID)
+				var removed []string
+				for _, id := range msg.UUIDs {
+					if id != "" && c.engine.RemoveAttachment(id) {
+						removed = append(removed, id)
+					}
+				}
+				resp, _ := json.Marshal(struct {
+					Type    string   `json:"type"`
+					Removed []string `json:"removed"`
+				}{Type: "cancel_result", Removed: removed})
+				c.msgCh <- resp
 			}
 		case "history_request":
 			// Client requests an older page of history. Route the response
