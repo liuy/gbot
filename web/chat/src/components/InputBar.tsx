@@ -1,4 +1,4 @@
-import { useRef, useState, useImperativeHandle, forwardRef } from 'react'
+import { useRef, useState, useImperativeHandle, forwardRef, memo } from 'react'
 import { useWebSocket } from '../websocket'
 
 export interface InputBarHandle {
@@ -143,4 +143,4 @@ const InputBar = forwardRef<InputBarHandle, {
 	)
 })
 
-export default InputBar
+export default memo(InputBar)

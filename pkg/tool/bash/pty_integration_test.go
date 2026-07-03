@@ -62,12 +62,13 @@ func TestPTYIntegration_CarriageReturn(t *testing.T) {
 // pipeline handles npm's ANSI spinner (ESC[1G ESC[0K) correctly.
 // Input matches real npm output captured from PTY hex dump.
 // Expected output:
-//   up to date, audited 273 packages in 1s
-//   (blank line)
-//   122 packages are looking for funding
-//   (blank line)
-//   found 0 vulnerabilities
-//   Done!
+//
+//	up to date, audited 273 packages in 1s
+//	(blank line)
+//	122 packages are looking for funding
+//	(blank line)
+//	found 0 vulnerabilities
+//	Done!
 func TestPTYIntegration_NpmSpinner(t *testing.T) {
 	if !isPTYAvailable() {
 		t.Skip("PTY not available")

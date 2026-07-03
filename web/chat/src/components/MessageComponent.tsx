@@ -9,7 +9,7 @@ import ProgressBar from './ProgressBar'
 const avatarG = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white"
 const avatarU = "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-t2 to-t3"
 
-function isCollapsibleTool(b: Block): boolean {
+export function isCollapsibleTool(b: Block): boolean {
 	return b.kind === 'tool' && (b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb)
 }
 

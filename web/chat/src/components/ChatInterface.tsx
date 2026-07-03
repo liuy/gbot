@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from '../websocket'
 import type { ServerMessage, QueryEvent, HistoryChatMsg } from '../types'
 import { newAssistantMessage, type ChatMessage, type Block } from '../model'
 import MessageComponent from './MessageComponent'
+import StreamingMessage from './StreamingMessage'
 import InputBar, { type InputBarHandle } from './InputBar'
 import Ask from './Ask'
 import Header from './Header'
@@ -132,7 +133,26 @@ export default function ChatInterface() {
 	const { subscribe, send } = useWebSocket()
 	const messagesRef = useRef<ChatMessage[]>(persistedMessages)
 	const [, setTick] = useState(0)
-	const forceRender = () => setTick((t) => (t + 1) & 0x7fffffff)
+	// Stabilized via useCallback so every useCallback below (and every
+	// structural-event handler) closes over the SAME forceRender reference.
+	// If this were a fresh function each render, those callbacks would
+	// recapture a new ref and break the InputBar React.memo.
+	const forceRender = useCallback(() => setTick((t) => (t + 1) & 0x7fffffff), [])
+
+	// DOM sink for the currently-streaming text block. Null when not streaming
+	// or when streaming but no text block exists yet.
+	const streamTextRef = useRef<HTMLDivElement | null>(null)
+	// DOM sink for the currently-streaming thinking block body (the <p> element
+	// inside Thinking.tsx). Type matches the JSX tag in Thinking.tsx (<p>),
+	// which is HTMLParagraphElement — NOT HTMLDivElement.
+	const streamThinkingRef = useRef<HTMLParagraphElement | null>(null)
+	// Accumulators mirror what's in messagesRef but are the source of truth for
+	// DOM writes during streaming. Cleared on query_start, drained on query_end.
+	const streamTextAccum = useRef('')
+	const streamThinkingAccum = useRef('')
+	// Tracks whether a StreamingText sink is currently mounted, so we know when
+	// to swap it in/out without relying on React state.
+	const streamSinkMounted = useRef(false)
 
 	const [ask, setAsk] = useState<AskData | null>(null)
 	const [queuedMsgs, setQueuedMsgs] = useState<{ uuid: string; text: string }[]>([])
@@ -183,6 +203,9 @@ export default function ChatInterface() {
 		streamingRef.current = false
 		setStreaming(false)
 		setQueuedMsgs([])
+		streamSinkMounted.current = false
+		streamTextRef.current = null
+		streamThinkingRef.current = null
 		forceRender()
 	}
 
@@ -241,6 +264,11 @@ export default function ChatInterface() {
 	const handleEvent = (e: QueryEvent) => {
 		switch (e.type) {
 			case 'query_start': {
+				streamTextAccum.current = ''
+				streamThinkingAccum.current = ''
+				streamSinkMounted.current = false
+				streamTextRef.current = null
+				streamThinkingRef.current = null
 				messagesRef.current.push(newAssistantMessage(nextId('a')))
 				streamingRef.current = true
 				setStreaming(true)
@@ -251,6 +279,11 @@ export default function ChatInterface() {
 				// processAttachments path emits turn_start without query_start.
 				// Push an assistant message if none exists yet.
 				if (streamingRef.current) return
+				streamTextAccum.current = ''
+				streamThinkingAccum.current = ''
+				streamSinkMounted.current = false
+				streamTextRef.current = null
+				streamThinkingRef.current = null
 				messagesRef.current.push(newAssistantMessage(nextId('a')))
 				streamingRef.current = true
 				setStreaming(true)
@@ -293,10 +326,14 @@ export default function ChatInterface() {
 			streamingRef.current = false
 			setStreaming(false)
 			setQueuedMsgs([])
+			streamSinkMounted.current = false
+			streamTextRef.current = null
+			streamThinkingRef.current = null
 			forceRender()
 			return
 		}
 		case 'thinking_start': {
+				streamThinkingAccum.current = ''
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: [...m.blocks, {
@@ -313,6 +350,7 @@ export default function ChatInterface() {
 			}
 			case 'thinking_delta': {
 				if (!e.thinking?.text) return
+				streamThinkingAccum.current += e.thinking.text
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
 					for (let i = blocks.length - 1; i >= 0; i--) {
@@ -323,7 +361,9 @@ export default function ChatInterface() {
 					}
 					return { ...m, blocks }
 				})
-				forceRender()
+				if (streamThinkingRef.current) {
+					streamThinkingRef.current.textContent = streamThinkingAccum.current
+				}
 				return
 			}
 			case 'thinking_end': {
@@ -345,6 +385,8 @@ export default function ChatInterface() {
 				return
 			}
 			case 'text_start': {
+				streamTextAccum.current = ''
+				streamSinkMounted.current = true
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: [...m.blocks, { kind: 'text', id: nextId('txt'), text: '' }],
@@ -354,6 +396,7 @@ export default function ChatInterface() {
 			}
 			case 'text_delta': {
 				if (!e.text) return
+				streamTextAccum.current += e.text
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
 					let found = false
@@ -369,11 +412,26 @@ export default function ChatInterface() {
 					}
 					return { ...m, blocks }
 				})
-				forceRender()
+				if (streamTextRef.current) {
+					streamTextRef.current.textContent = streamTextAccum.current
+					scrollToBottom()
+				} else {
+					// Sink not yet mounted. Two arrival patterns reach here:
+					//  (1) text_start fired and scheduled a forceRender, but React
+					//      hasn't committed the sink yet (streamSinkMounted is true).
+					//  (2) text_delta arrived with NO preceding text_start — real-world
+					//      case covered by attachment_streaming.test.tsx and
+					//      attachment_idle.test.tsx, where the engine emits text_delta
+					//      directly after query_start / turn_start without a text_start.
+					// Either way: flip the flag, force ONE render to mount StreamingText,
+					// and let flushRef on mount drain streamTextAccum (including this
+					// delta). Subsequent deltas find the ref live and write directly.
+					streamSinkMounted.current = true
+					forceRender()
+				}
 				return
 			}
 			case 'text_end': {
-				forceRender()
 				return
 			}
 			case 'tool_start': {
@@ -593,7 +651,7 @@ export default function ChatInterface() {
 		return () => obs.disconnect()
 	}, [hasMore, nextCursor, send])
 
-	const onSend = (text: string) => {
+	const onSend = useCallback((text: string) => {
 		if (streamingRef.current) {
 			setQueuedMsgs((prev) => [...prev, { uuid: '', text }])
 			send({ type: 'message', text })
@@ -610,13 +668,13 @@ export default function ChatInterface() {
 		})
 		send({ type: 'message', text })
 		forceRender()
-	}
+	}, [send, forceRender])
 
-	const onStop = () => {
+	const onStop = useCallback(() => {
 		send({ type: 'stop' })
-	}
+	}, [send])
 
-	const onCancelQueued = () => {
+	const onCancelQueued = useCallback(() => {
 		if (queuedMsgs.length === 0) return
 		const uuids = queuedMsgs.map((m) => m.uuid).filter((u) => u !== '')
 		// Save snapshot — cancel_result arrives async, queuedMsgs may change
@@ -630,7 +688,17 @@ export default function ChatInterface() {
 			setQueuedMsgs([])
 			pendingCancelRef.current = null
 		}
-	}
+	}, [queuedMsgs, send])
+
+	// Drains streamTextAccum into the sink on mount. Needed because text_start
+	// (or the text_delta else-branch) schedules a forceRender to mount the sink,
+	// but between scheduling and React's commit, deltas may arrive and append to
+	// streamTextAccum without a live DOM target. flushRef on mount drains them.
+	const flushTextRef = useCallback(() => {
+		if (streamTextRef.current) {
+			streamTextRef.current.textContent = streamTextAccum.current
+		}
+	}, [])
 
 	return (
 		<div ref={scrollRef} className="overflow-y-auto overflow-x-hidden" style={{ height: '100dvh' }}>
@@ -638,9 +706,24 @@ export default function ChatInterface() {
 			<div className="mx-auto max-w-2xl py-4">
 				<div ref={topSentinelRef} style={{ height: 1 }} />
 				<div className="space-y-7">
-					{messagesRef.current.map((m) => (
-						<MessageComponent key={m.id} message={m} />
-					))}
+					{messagesRef.current.map((m, i) => {
+						const isStreamingMsg =
+							streamingRef.current &&
+							i === messagesRef.current.length - 1 &&
+							m.role === 'assistant' &&
+							m.status === 'streaming'
+						return isStreamingMsg ? (
+							<StreamingMessage
+								key={m.id}
+								message={m}
+								textRef={streamTextRef}
+								thinkingRef={streamThinkingRef}
+								flushTextRef={flushTextRef}
+							/>
+						) : (
+							<MessageComponent key={m.id} message={m} />
+						)
+					})}
 					{ask && <Ask ask={ask} />}
 				</div>
 				<div ref={bottomRef} />

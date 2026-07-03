@@ -6,8 +6,12 @@ type ThinkingBlock = Extract<Block, { kind: 'thinking' }>
 
 export default function Thinking({
 	entry,
+	textRef,
+	forceExpanded,
 }: {
 	entry: ThinkingBlock
+	textRef?: React.RefObject<HTMLParagraphElement | null>
+	forceExpanded?: boolean
 }) {
 	const [expanded, setExpanded] = useState(false)
 	const [, setTick] = useState(0)
@@ -16,6 +20,15 @@ export default function Thinking({
 	  const id = setInterval(() => setTick((t) => t + 1), 200)
 	  return () => clearInterval(id)
 	}, [entry.active])
+
+	// forceExpanded keeps the body visible for the entire streaming duration so
+	// streamThinkingRef stays attached to a mounted <p>. Toggling collapsed
+	// would unmount the <p>, nulling the ref and dropping thinking deltas.
+	const showBody = forceExpanded || expanded
+	const onClick = forceExpanded ? () => {} : () => setExpanded((v) => !v)
+	const onKeyDown = forceExpanded
+		? () => {}
+		: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v) }
 
 	const seconds = entry.active
 	  ? (Date.now() - entry.startedAt) / 1000
@@ -29,14 +42,14 @@ export default function Thinking({
 	  <div>
 	    <span
 	      role="button"
-	      tabIndex={0}
-	      onClick={() => setExpanded((v) => !v)}
-	      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v) }}
+	      tabIndex={forceExpanded ? -1 : 0}
+	      onClick={onClick}
+	      onKeyDown={onKeyDown}
 	      className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
 	    >
 	      <span className="text-amber text-sm leading-none align-middle inline-block w-4 text-center">✦</span>
 	      <svg
-	        className={'inline-block align-middle text-t3 transition-transform ' + (expanded ? 'rotate-90' : '')}
+	        className={'inline-block align-middle text-t3 transition-transform ' + (showBody ? 'rotate-90' : '')}
 	        width="12"
 	        height="12"
 	        viewBox="0 0 12 12"
@@ -48,8 +61,8 @@ export default function Thinking({
 	      </svg>
 	      <span className="text-amber text-sm align-middle">{label}</span>
 	    </span>
-	    {expanded && entry.text && (
-	      <p className="ml-5 text-t2 text-sm italic whitespace-pre-wrap">
+	    {showBody && (entry.text || forceExpanded) && (
+	      <p ref={textRef} className="ml-5 text-t2 text-sm italic whitespace-pre-wrap">
 	        {entry.text}
 	      </p>
 	    )}

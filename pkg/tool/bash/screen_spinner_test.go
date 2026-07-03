@@ -9,8 +9,10 @@ import (
 
 // npm spinner uses ANSI cursor-move + erase-line, NOT \r.
 // Sequence per frame: <char> ESC[1G ESC[0K
-//   ESC[1G = move cursor to column 1
-//   ESC[0K = erase from cursor to end of line
+//
+//	ESC[1G = move cursor to column 1
+//	ESC[0K = erase from cursor to end of line
+//
 // Screen must treat this as a line replacement (like \r), so that
 // ReplaceLastLine fires and downstream sees only the latest frame.
 func TestScreen_NpmSpinner_ESC1G_ESC0K_TriggersReplace(t *testing.T) {
