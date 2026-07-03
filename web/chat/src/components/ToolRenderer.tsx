@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Block } from '../model'
 import { formatDurationNs, stripAnsi } from '../utils'
 import Markdown from './Markdown'
@@ -33,6 +33,33 @@ function DiffOutput({ text }: { text: string }) {
 function ToolRendererBase({ tool }: { tool: ToolBlock }) {
 	const [expanded, setExpanded] = useState(false)
 	const [, setTick] = useState(0)
+	const prevRunningRef = useRef(tool.state === 'running')
+	const userCollapsedRef = useRef(false)
+
+	// TUI parity: running agent tools show live progress. Auto-expand when
+	// children first arrive, auto-collapse on done — unless user manually
+	// collapsed during running.
+	useEffect(() => {
+		if (tool.state === 'running' && tool.children.length > 0 && !expanded && !userCollapsedRef.current) {
+			setExpanded(true)
+		}
+		if (prevRunningRef.current && tool.state !== 'running') {
+			setExpanded(false)
+		}
+		prevRunningRef.current = tool.state === 'running'
+	}, [tool.state, tool.children.length, expanded])
+
+	const toggleExpanded = () => {
+		if (!expanded && tool.state === 'running') {
+			userCollapsedRef.current = false
+		} else if (!expanded) {
+			userCollapsedRef.current = false
+		} else {
+			userCollapsedRef.current = true
+		}
+		setExpanded((v) => !v)
+	}
+
 	useEffect(() => {
 	  if (tool.state !== 'running') return
 	  const id = setInterval(() => setTick((t) => t + 1), 200)
@@ -62,8 +89,8 @@ function ToolRendererBase({ tool }: { tool: ToolBlock }) {
 	    <span
 	      role="button"
 	      tabIndex={0}
-	      onClick={() => setExpanded((v) => !v)}
-	      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v) }}
+	      onClick={toggleExpanded}
+	      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleExpanded() }}
 	      className="inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle"
 	    >
 	      {running

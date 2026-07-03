@@ -166,23 +166,11 @@ describe('sub-agent nesting: depth >= 2 (nested Agent)', () => {
 			tool_use: { id: 'read-1', name: 'Read', is_read: true },
 			agent: { parent_tool_use_id: 'agent-2', agent_type: 'Explore', depth: 2 },
 		}})
-		dispatchToClient({ type: 'event', event: { type: 'query_end' } })
-
-		// Top-level: only ONE Agent header (agent-1). agent-2 + Read are nested.
-		const topAgents = screen.getAllByText(/Agent/)
-		expect(topAgents.length).toBe(1)
-
-		// Expand agent-1 — reveals the nested agent-2 header.
-		const agent1Header = expandToolByName(/Agent/)
-		// After expansion there are now TWO Agent headers (agent-1 + agent-2).
-		const afterExpand = screen.getAllByText(/Agent/)
-		expect(afterExpand.length).toBe(2)
-
-		// Click the nested agent-2 header (the second one).
-		fireEvent.click(afterExpand[1])
-
-		// Now Read is visible.
+		// agent-1 and agent-2 both running with children → auto-expanded.
+		// Read is nested under agent-2, visible due to auto-expand cascade.
 		expect(screen.getByText(/Read/)).toBeTruthy()
+
+		dispatchToClient({ type: 'event', event: { type: 'query_end' } })
 	})
 })
 
@@ -199,5 +187,28 @@ describe('sub-agent nesting: empty children render no container', () => {
 		// children.length > 0. Verify no element with that signature exists.
 		const containers = document.querySelectorAll('.border-l.border-t3\\/30.pl-2')
 		expect(containers.length).toBe(0)
+	})
+})
+
+describe('sub-agent nesting: auto-expand on running, auto-collapse on done', () => {
+	it('Agent tool auto-expands while running, collapses when done', () => {
+		renderChat()
+		dispatchToClient({ type: 'event', event: { type: 'query_start' } })
+
+		// Agent tool_start (running)
+		dispatchToClient({ type: 'event', event: { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent', input: {} } } })
+
+		// Sub-agent text (creates children)
+		const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explore', depth: 1 }
+		dispatchToClient({ type: 'event', event: { type: 'text_delta', text: 'exploring...', agent } })
+
+		// Running + children → auto-expanded → text visible
+		expect(screen.getByText('exploring...')).toBeTruthy()
+
+		// Agent tool_end → done → auto-collapse
+		dispatchToClient({ type: 'event', event: { type: 'tool_end', tool_result: { tool_use_id: 'agent-1', is_error: false } } })
+
+		// After done: children collapsed, text not visible
+		expect(screen.queryByText('exploring...')).toBeNull()
 	})
 })

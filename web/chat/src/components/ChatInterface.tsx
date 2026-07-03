@@ -581,10 +581,10 @@ export default function ChatInterface() {
 						}],
 					}))
 					return
-				}
-				updateStreamingAssistant((m) => ({
-					...m,
-					blocks: [...m.blocks, {
+			}
+			updateStreamingAssistant((m) => ({
+				...m,
+				blocks: [...m.blocks, {
 						kind: 'tool',
 						id: tu.id,
 						name: tu.name,
