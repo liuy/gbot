@@ -167,6 +167,7 @@ function mkTool(over: Partial<Extract<Block, { kind: 'tool' }>> & Pick<Extract<B
 		timingNs: 0,
 		displayOutput: '',
 		startedAt: 0,
+		children: [],
 		...over,
 	}
 }

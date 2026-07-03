@@ -16,6 +16,7 @@ export type Block =
 			timingNs: number
 			displayOutput: string
 			startedAt: number
+			children: Block[]
 	  }
 
 export type ChatMessage = {

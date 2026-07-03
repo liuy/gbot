@@ -1,6 +1,10 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useState, type ReactNode } from 'react'
 import type { Block } from '../model'
 import { formatDurationNs, stripAnsi } from '../utils'
+import Markdown from './Markdown'
+import Thinking from './Thinking'
+import ToolGroup from './ToolGroup'
+import { isCollapsibleTool } from './MessageComponent'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -81,13 +85,64 @@ function ToolRendererBase({ tool }: { tool: ToolBlock }) {
 	      <span className={'font-mono text-xs align-middle ' + durColor}> {durStr}</span>
 	    </span>
 	    {expanded && tool.displayOutput && hasDiff && <DiffOutput text={tool.displayOutput} />}
-	    {expanded && tool.displayOutput && !hasDiff && (
-	      <pre className="ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre overflow-x-auto">
-	        {stripAnsi(tool.displayOutput)}
+    {expanded && tool.displayOutput && !hasDiff && (
+      <pre className="ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre overflow-x-auto">
+        {stripAnsi(tool.displayOutput)}
       </pre>
+    )}
+    {expanded && tool.children.length > 0 && (
+      <div className="ml-[20px] mt-1 space-y-1 border-l border-t3/30 pl-2">
+        {renderChildBlocks(tool.children)}
+      </div>
     )}
   </div>
   )
 }
 
-export default memo(ToolRendererBase)
+// Mirrors MessageComponent.renderGrouped but for nested children. Reuses
+// the same grouping logic (consecutive collapsible tools collapse into
+// ToolGroup; non-collapsible tools, text, thinking render standalone).
+function renderChildBlocks(blocks: Block[]): ReactNode[] {
+  const out: ReactNode[] = []
+  let buffer: ToolBlock[] = []
+  let key = 0
+  const flush = () => {
+    if (buffer.length === 0) return
+    if (buffer.length >= 2) {
+      out.push(<ToolGroup key={`cgrp-${key++}`} tools={buffer} />)
+    } else {
+      out.push(<ToolRenderer key={buffer[0].id} tool={buffer[0]} />)
+    }
+    buffer = []
+  }
+  for (const b of blocks) {
+    switch (b.kind) {
+      case 'thinking':
+        out.push(<Thinking key={b.id} entry={b} />)
+        break
+      case 'tool':
+        if (isCollapsibleTool(b)) {
+          buffer.push(b)
+        } else {
+          flush()
+          out.push(<ToolRenderer key={b.id} tool={b} />)
+        }
+        break
+      case 'text':
+        if (!b.text) break
+        flush()
+        out.push(<Markdown key={`ctxt-${key++}`}>{b.text}</Markdown>)
+        break
+      case 'user':
+        if (!b.text) break
+        flush()
+        out.push(<div key={`cusr-${key++}`} className="text-[13px] text-t2 italic ml-2 my-1">{b.text}</div>)
+        break
+    }
+  }
+  flush()
+  return out
+}
+
+const ToolRenderer = memo(ToolRendererBase)
+export default ToolRenderer

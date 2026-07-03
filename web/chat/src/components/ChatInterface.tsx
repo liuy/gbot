@@ -8,6 +8,8 @@ import InputBar, { type InputBarHandle } from './InputBar'
 import Ask from './Ask'
 import Header from './Header'
 
+type ToolBlock = Extract<Block, { kind: 'tool' }>
+
 type AskData = {
 	id: string
 	kind: 'permission' | 'input'
@@ -24,6 +26,34 @@ let msgIdCounter = 0
 function nextId(prefix: string): string {
 	msgIdCounter += 1
 	return `${prefix}-${msgIdCounter}`
+}
+
+// Mirrors TUI findToolViewInBlocks (pkg/tui/repl.go:174) but returns a NEW
+// blocks array (immutable update) instead of a live reference. Searches the
+// whole tree depth-first: top-level first, then children. Returns the same
+// array reference when nothing changed (so React .map short-circuits cleanly).
+function mapToolBlockByID(
+	blocks: Block[],
+	id: string,
+	fn: (t: ToolBlock) => ToolBlock,
+): Block[] {
+	let changed = false
+	const out = blocks.map((b) => {
+		if (b.kind !== 'tool') return b
+		if (b.id === id) {
+			changed = true
+			return fn(b)
+		}
+		if (b.children.length > 0) {
+			const newChildren = mapToolBlockByID(b.children, id, fn)
+			if (newChildren !== b.children) {
+				changed = true
+				return { ...b, children: newChildren }
+			}
+		}
+		return b
+	})
+	return changed ? out : blocks
 }
 
 // Mirrors TUI classifyToolName (pkg/tui/app.go:783). History messages don't
@@ -109,6 +139,7 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
 						timingNs: t.durationNs ?? 0,
 						displayOutput: t.displayOutput ?? '',
 						startedAt: 0,
+						children: [],
 					})
 				}
 			}
@@ -189,6 +220,21 @@ export default function ChatInterface() {
 		const last = list[idx]
 		if (!last || last.role !== 'assistant' || last.status !== 'streaming') return
 		list[idx] = fn(last)
+	}
+
+	// Routes a sub-agent event into the parent tool block via mapToolBlockByID.
+	// Sub-agent text/thinking/tool events update parent.children through React
+	// state (forceRender), NOT the DOM-sink path — those sinks are top-level
+	// streaming only.
+	const updateParentToolBlock = (
+		parentID: string,
+		fn: (tool: ToolBlock) => ToolBlock,
+	) => {
+		updateStreamingAssistant((m) => ({
+			...m,
+			blocks: mapToolBlockByID(m.blocks, parentID, fn),
+		}))
+		forceRender()
 	}
 
 	const appendError = (text: string) => {
@@ -276,6 +322,10 @@ export default function ChatInterface() {
 				return
 			}
 			case 'turn_start': {
+				// Sub-engine turnStart (processAttachments → runTurns inside a
+				// sub-agent): do NOT push a new assistant message. Sub-agent
+				// text/thinking events route to the parent tool via agent metadata.
+				if (e.agent) return
 				// processAttachments path emits turn_start without query_start.
 				// Push an assistant message if none exists yet.
 				if (streamingRef.current) return
@@ -291,6 +341,10 @@ export default function ChatInterface() {
 				return
 			}
 			case 'query_end': {
+				// Sub-agent queryEnd: do NOT finish the main query stream.
+				// Only the main engine's queryEnd (no agent metadata) marks
+				// the top-level assistant done.
+				if (e.agent) return
 				const wasAborted = !!e.aborted
 
 				if (wasAborted) {
@@ -332,7 +386,22 @@ export default function ChatInterface() {
 			forceRender()
 			return
 		}
-		case 'thinking_start': {
+			case 'thinking_start': {
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					updateParentToolBlock(parentID, (parent) => ({
+						...parent,
+						children: [...parent.children, {
+							kind: 'thinking',
+							id: nextId('th'),
+							text: '',
+							durationNs: 0,
+							active: true,
+							startedAt: Date.now(),
+						}],
+					}))
+					return
+				}
 				streamThinkingAccum.current = ''
 				updateStreamingAssistant((m) => ({
 					...m,
@@ -350,6 +419,22 @@ export default function ChatInterface() {
 			}
 			case 'thinking_delta': {
 				if (!e.thinking?.text) return
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					const text = e.thinking.text
+					updateParentToolBlock(parentID, (parent) => {
+						const children = [...parent.children]
+						for (let i = children.length - 1; i >= 0; i--) {
+							const c = children[i]
+							if (c.kind === 'thinking' && c.active) {
+								children[i] = { ...c, text: c.text + text }
+								break
+							}
+						}
+						return { ...parent, children }
+					})
+					return
+				}
 				streamThinkingAccum.current += e.thinking.text
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
@@ -367,6 +452,26 @@ export default function ChatInterface() {
 				return
 			}
 			case 'thinking_end': {
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					const duration = e.thinking?.duration
+					updateParentToolBlock(parentID, (parent) => {
+						const children = [...parent.children]
+						for (let i = children.length - 1; i >= 0; i--) {
+							const c = children[i]
+							if (c.kind === 'thinking' && c.active) {
+								children[i] = {
+									...c,
+									active: false,
+									durationNs: duration ?? c.durationNs,
+								}
+								break
+							}
+						}
+						return { ...parent, children }
+					})
+					return
+				}
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
 					for (let i = blocks.length - 1; i >= 0; i--) {
@@ -385,6 +490,9 @@ export default function ChatInterface() {
 				return
 			}
 			case 'text_start': {
+				// Sub-agent text_start is a no-op: text_delta creates the block
+				// lazily inside the parent tool. Matches TUI textStartMsg.
+				if (e.agent) return
 				streamTextAccum.current = ''
 				streamSinkMounted.current = true
 				updateStreamingAssistant((m) => ({
@@ -396,6 +504,20 @@ export default function ChatInterface() {
 			}
 			case 'text_delta': {
 				if (!e.text) return
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					const text = e.text
+					updateParentToolBlock(parentID, (parent) => {
+						const last = parent.children[parent.children.length - 1]
+						if (last && last.kind === 'text') {
+							const children = parent.children.slice()
+							children[children.length - 1] = { ...last, text: last.text + text }
+							return { ...parent, children }
+						}
+						return { ...parent, children: [...parent.children, { kind: 'text', id: nextId('txt'), text }] }
+					})
+					return
+				}
 				streamTextAccum.current += e.text
 				updateStreamingAssistant((m) => {
 					const blocks = [...m.blocks]
@@ -437,6 +559,29 @@ export default function ChatInterface() {
 			case 'tool_start': {
 				if (!e.tool_use) return
 				const tu = e.tool_use
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					updateParentToolBlock(parentID, (parent) => ({
+						...parent,
+						children: [...parent.children, {
+							kind: 'tool',
+							id: tu.id,
+							name: tu.name,
+							summary: '',
+							isSearch: !!tu.is_search,
+							isRead: !!tu.is_read,
+							isList: !!tu.is_list,
+							isLsp: !!tu.is_lsp,
+							isWeb: tu.name === 'Web',
+							state: 'running',
+							timingNs: 0,
+							displayOutput: '',
+							startedAt: Date.now(),
+							children: [],
+						}],
+					}))
+					return
+				}
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: [...m.blocks, {
@@ -453,6 +598,7 @@ export default function ChatInterface() {
 						timingNs: 0,
 						displayOutput: '',
 						startedAt: Date.now(),
+						children: [],
 					}],
 				}))
 				forceRender()
@@ -462,6 +608,14 @@ export default function ChatInterface() {
 				if (!e.partial_input || !e.partial_input.summary) return
 				const targetId = e.partial_input.id
 				const summary = e.partial_input.summary
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					updateParentToolBlock(parentID, (parent) => ({
+						...parent,
+						children: mapToolBlockByID(parent.children, targetId, (t) => ({ ...t, summary })),
+					}))
+					return
+				}
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: m.blocks.map((b) =>
@@ -478,11 +632,40 @@ export default function ChatInterface() {
 				return
 			}
 			case 'tool_output_delta': {
+				// TUI repl.go:1046-1057 — best-effort: update trailing tool's
+				// output in parent.children. Most tools don't stream output
+				// deltas, so this is rarely hit.
+				if (e.agent && e.tool_result) {
+					const parentID = e.agent.parent_tool_use_id
+					const targetId = e.tool_result.tool_use_id
+					const output = e.tool_result.display_output ?? ''
+					updateParentToolBlock(parentID, (parent) => ({
+						...parent,
+						children: mapToolBlockByID(parent.children, targetId, (t) => ({ ...t, displayOutput: output })),
+					}))
+				}
 				return
 			}
 			case 'tool_end': {
 				if (!e.tool_result) return
 				const tr = e.tool_result
+				if (e.agent) {
+					const parentID = e.agent.parent_tool_use_id
+					updateParentToolBlock(parentID, (parent) => ({
+						...parent,
+						children: mapToolBlockByID(parent.children, tr.tool_use_id, (t) => ({
+							...t,
+							state: tr.is_error ? 'error' as const : 'done' as const,
+							timingNs: (Date.now() - t.startedAt) * 1e6,
+							displayOutput: tr.display_output ?? '',
+							isSearch: tr.is_search ?? t.isSearch,
+							isRead: tr.is_read ?? t.isRead,
+							isList: tr.is_list ?? t.isList,
+							isLsp: tr.is_lsp ?? t.isLsp,
+						})),
+					}))
+					return
+				}
 				updateStreamingAssistant((m) => ({
 					...m,
 					blocks: m.blocks.map((b) => {
@@ -504,6 +687,9 @@ export default function ChatInterface() {
 			}
 			case 'usage': {
 				if (!e.usage_event) return
+				// Sub-agent usage is reported via the parent Agent tool's
+				// result, not merged into the top-level assistant's usage.
+				if (e.agent) return
 				const u = e.usage_event
 				updateStreamingAssistant((m) => ({
 					...m,
