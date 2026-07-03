@@ -56,8 +56,19 @@ The load-bearing section: ordered steps that make the change. Order them so exis
 ### Critical Files
 The 3-5 files most critical for implementation, each as `path — one-line reason`.
 
+### Test Design
+
+This section is the ground truth for all downstream agents. Tests verify **behavior** (what), not **implementation** (how). A correct implementation should pass; a buggy one should fail.
+
+For each test case:
+- **Input source**: where to get real data — never guess. Use `xxd`/`script -qc` for terminal output, `curl` for API responses, log samples for event sequences. If the input cannot be captured from a real source, state how to construct a realistic synthetic one and why.
+- **Expected output**: describe the correct behavior's key characteristics (e.g. "must contain X", "must not contain Y", "blank lines preserved between sections"). Not byte-for-byte unless the format is exact.
+- **Behavior vs implementation**: tests must pass for ANY correct implementation, not just the one in the plan. Do NOT assert on internal function calls, private state, or specific code paths — assert on observable output.
+- **Edge cases**: list boundary conditions that must be covered (empty input, multi-byte chars, concurrent access, partial chunks).
+
 ### Verification
-How to prove it works end-to-end. Include at least one check that exercises the NEW behavior. Give exact commands.
+
+How to prove it works end-to-end. Include at least one check that exercises the NEW behavior. Give exact commands. This is separate from Test Design — it's the manual smoke test after all automated tests pass.
 
 ### Assumptions
 Only decisions you made that the user might want to override. Never park decisions the implementer must make — those belong in Approach.

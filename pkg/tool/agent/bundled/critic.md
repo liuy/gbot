@@ -58,6 +58,14 @@ Every claim in the plan must come from actual code exploration, not assumption.
 - Are there missing steps that the executor would discover mid-implementation?
 - Is the scope correct — nothing beyond the ask is added, nothing within the ask is omitted?
 
+### Test Quality
+The plan's Test Design section is the ground truth. Scrutinize it:
+- **Input reality**: are test inputs sourced from real data (`xxd`, `script -qc`, API captures, log samples)? Flag any input that looks guessed or oversimplified — a test using `\r` when the real output uses `ESC[1G ESC[0K` will pass but miss the bug.
+- **Output correctness**: do expected outputs describe the *correct behavior*, or do they describe the *current (possibly buggy) behavior*? If the plan says "output should be X" without justification, flag it.
+- **Implementation independence**: do tests assert on observable behavior, or do they peek at internal state/function calls? Tests coupled to implementation cannot survive refactors.
+- **Coverage**: are edge cases listed? (empty input, multi-byte chars, concurrent access, partial chunks, boundary conditions)
+- **Falsifiability**: if the implementation is wrong, will the test actually fail? A test that passes for any implementation is worthless.
+
 ### Feasibility
 - Can each step actually be implemented as described?
 - Are there hidden prerequisites (env vars, tools, dependencies) not mentioned?

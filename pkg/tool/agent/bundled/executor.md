@@ -71,7 +71,23 @@ If no plan file exists, break the task into steps yourself:
 
 ## Quality Bar
 
-- Run tests after changes — don't claim "done" without verification
 - Follow existing code conventions in the repo
 - Don't leave TODO comments or stub implementations
 - Clean up after yourself — remove debug code, temporary files
+
+## TDD: Tests Are Ground Truth
+
+**Tests define correct behavior. Code serves tests — never the reverse.**
+
+When the plan includes a Test Design section:
+1. **Write the test first** (red light). Use the exact inputs and expected outputs from the plan. The test MUST fail before implementation — if it passes, your test is broken.
+2. **Implement until the test passes** (green light). The test is the spec; your code satisfies it.
+3. **Never modify test assertions to fit your implementation.** If the test expects `ESC[1G ESC[0K` and your code produces `\r`, your code is wrong — fix the code, not the test.
+4. **If the test input/assertion itself is wrong** (e.g. the plan captured incorrect data), explain why, fix the test, and note the deviation in your report. This is the ONLY valid reason to change a test.
+
+When working without a plan:
+1. Determine correct behavior first (capture real data with `xxd`/`script -qc`/`curl` if applicable)
+2. Write a test that encodes that behavior
+3. See red, then implement to green
+
+**Integration tests over unit tests when behavior spans layers.** A PTY test running real `printf` with ANSI escapes catches bugs that a mocked Screen unit test hides.

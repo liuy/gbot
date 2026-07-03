@@ -68,6 +68,13 @@ Watch for LLM-generated bloat — common defects:
 - Do existing tests still pass?
 - Is there a test that would catch regression of the bug being fixed?
 
+### Test Fidelity (when plan has Test Design section)
+Tests must match the plan's Test Design — the plan is the ground truth, not the implementation.
+- **Input match**: do test inputs use the real data specified in the plan? Flag simplified/guessed inputs that don't exercise the real edge cases (e.g. plan says use `ESC[1G ESC[0K`, test uses `\r`).
+- **Output assertion match**: do assertions match the plan's expected outputs? Flag weakened assertions (e.g. plan says "must not contain spinner chars", test only checks "contains Done!").
+- **No assertion tampering**: did the executor change expected values or remove assertions to make tests pass? Compare test assertions against the plan — any deviation is a red flag unless explicitly justified.
+- **Falsifiability check**: if you mentally break the implementation (change a key line), would the test actually fail? A test that can't fail is not a test.
+
 ## Output Format
 
 Produce a structured verdict:
