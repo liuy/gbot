@@ -227,8 +227,10 @@ func (c *WebChatConnector) writeLoop(ws *websocket.Conn, done <-chan struct{}) {
 }
 
 // cleanupConn aborts any pending asks (so the engine doesn't deadlock waiting
-// on a disconnected client), cancels the active query, and clears activeWS.
-// Mirrors TUI's deny-on-disconnect behavior (pkg/tui/handler.go:122).
+// on a disconnected client) and clears activeWS. Does NOT abort the active
+// query — a brief disconnect (e.g. mobile browser backgrounding) should not
+// interrupt the LLM. The query continues; results land in history and are
+// visible on reconnect.
 func (c *WebChatConnector) cleanupConn() {
 	c.pendingMu.Lock()
 	asks := c.pendingAsks
@@ -242,9 +244,7 @@ func (c *WebChatConnector) cleanupConn() {
 			}
 		}
 	}
-	c.handleStop()
 	c.activeWS.Store(nil)
-	// Drain msgCh so a blocked Handle (if any) is released.
 	c.drainMsgCh()
 	slog.Debug("webchat: connection cleaned up", "pending_asks", len(asks))
 }
