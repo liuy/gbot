@@ -58,6 +58,70 @@ func TestPTYIntegration_CarriageReturn(t *testing.T) {
 	}
 }
 
+// TestPTYIntegration_NpmSpinner verifies the full PTY→Screen→StreamingOutput
+// pipeline handles npm's ANSI spinner (ESC[1G ESC[0K) correctly.
+// Input matches real npm output captured from PTY hex dump.
+// Expected output:
+//   up to date, audited 273 packages in 1s
+//   (blank line)
+//   122 packages are looking for funding
+//   (blank line)
+//   found 0 vulnerabilities
+//   Done!
+func TestPTYIntegration_NpmSpinner(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	s := NewStreamingOutput(nil)
+	screen := newChainScreen(s)
+
+	// Real npm output pattern from hex dump:
+	//   spinner frames erased by ESC[1G ESC[0K
+	//   ⠸ESC[1GESC[0K\r\n    ← spinner frame written, erased, then CRLF
+	//   up to date...\r\n
+	//   ⠸ESC[1GESC[0K\r\n    ← blank line (spinner char written, erased, CRLF with no further content)
+	//   ⠸ESC[1GESC[0K122 packages...\r\n
+	//   ⠸ESC[1GESC[0K\r\n    ← blank line
+	//   ⠸ESC[1GESC[0Kfound 0 vulnerabilities\r\n
+	//   Done!
+	cmd := `printf '.\e[1G\e[0K\r\nup to date, audited 273 packages in 1s\r\n.\e[1G\e[0K\r\n.\e[1G\e[0K122 packages are looking for funding\r\n.\e[1G\e[0K\r\n.\e[1G\e[0Kfound 0 vulnerabilities\r\nDone!'`
+	exitCode, _, err := runPTYCommand(context.Background(), cmd, "", os.Environ(), screen, 10*time.Second, nil)
+	if err != nil {
+		t.Fatalf("runPTYCommand() error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+
+	finalLines := s.Lines()
+	joined := strings.Join(finalLines, "\n")
+
+	// No Braille spinner chars in output
+	for _, ch := range []string{"⠙", "⠹", "⠸"} {
+		if strings.Contains(joined, ch) {
+			t.Errorf("output contains spinner char %q: %q", ch, joined)
+		}
+	}
+	// No ANSI escapes
+	if strings.Contains(joined, "\x1b") {
+		t.Errorf("output contains raw ANSI: %q", joined)
+	}
+	// All real content preserved
+	for _, want := range []string{"up to date", "122 packages", "found 0 vulnerabilities", "Done!"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("output missing %q: %q", want, joined)
+		}
+	}
+	// Blank lines between sections preserved (as in real npm output)
+	if !strings.Contains(joined, "1s\n\n12") {
+		t.Errorf("missing blank line before '122 packages': %q", joined)
+	}
+	if !strings.Contains(joined, "ng\n\nfo") {
+		t.Errorf("missing blank line before 'found': %q", joined)
+	}
+}
+
 func TestPTYIntegration_AnsiColor(t *testing.T) {
 	if !isPTYAvailable() {
 		t.Skip("PTY not available")

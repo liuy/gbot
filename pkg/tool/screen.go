@@ -39,8 +39,10 @@ type Screen struct {
 	onEvent     func(ScreenEvent)
 	line        strings.Builder // current line being built
 	lineEmitted bool            // true after current line was emitted at least once
-	inEscape    bool            // true when mid-escape-sequence across Write() calls
-	escapeBuf   []byte          // accumulates incomplete escape bytes
+	crPending   bool            // true when handleCR was triggered by ESC[1G (not \r), cleared by content
+	lineErased  bool            // true when line content was erased by ESC[0K
+	inEscape    bool
+	escapeBuf   []byte
 }
 
 // NewScreen creates a Screen that calls onEvent for each line event.
@@ -95,6 +97,7 @@ func (s *Screen) Write(p []byte) {
 
 		case r == '\t' || r >= 0x20:
 			// Printable character (including multi-byte UTF-8)
+			s.lineErased = false
 			s.line.WriteRune(r)
 			i += size
 
@@ -128,9 +131,14 @@ func (s *Screen) handleLF() {
 			kind = ScreenReplace
 		}
 		s.emit(kind, s.line.String())
+	} else if s.lineErased {
+		// Line was erased by ESC[0K. \n advances past the empty line.
+		s.emit(ScreenAppend, "")
 	}
 	s.line.Reset()
 	s.lineEmitted = false
+	s.crPending = false
+	s.lineErased = false
 }
 
 // emit sends a ScreenEvent to the onEvent callback.
@@ -196,8 +204,24 @@ func (s *Screen) parseCSI(p []byte) int {
 			s.line.WriteByte(p[j])
 		}
 		s.line.WriteByte(p[start])
+	} else if finalByte == 'G' || finalByte == 'd' {
+		// Cursor horizontal absolute (CHA) or vertical line position.
+		// npm spinner uses ESC[1G to move to column 1 before writing the
+		// next frame — treat as carriage return equivalent so the current
+		// line is emitted as a Replace event.
+		s.handleCR()
+		s.crPending = true
+	} else if finalByte == 'K' && s.crPending {
+		// Erase in line after ESC[1G — the spinner frame was emitted but
+		// is now erased. Track it so handleLF can create a blank line.
+		// Also reset lineEmitted so subsequent content is Append, not Replace.
+		if s.lineEmitted {
+			s.emit(ScreenReplace, "")
+		}
+		s.lineEmitted = false
+		s.lineErased = true
 	}
-	// All other CSI sequences (cursor movement, clearing, etc.) are discarded.
+	// All other CSI sequences are discarded.
 
 	return start + 1
 }

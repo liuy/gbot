@@ -271,11 +271,37 @@ func (s *StreamingOutput) FinalUpdate() {
 
 // ReplaceLastLine replaces the last line in lastLines (and lines if memory mode).
 // Used by Screen's Replace events to update progress bars in-place.
+// When line is empty (ESC[0K clearing spinner/progress), removes the last line.
 // After spill: only updates lastLines (file is append-only).
 // Thread-safe.
 func (s *StreamingOutput) ReplaceLastLine(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Empty replace = line erase (e.g. ESC[0K clearing spinner after ESC[1G).
+	if line == "" {
+		if s.spilled {
+			if len(s.lastLines) > 0 {
+				s.lastLines = s.lastLines[:len(s.lastLines)-1]
+			}
+		} else {
+			if len(s.lines) > 0 {
+				s.lines = s.lines[:len(s.lines)-1]
+			}
+			if len(s.lastLines) > 0 {
+				s.lastLines = s.lastLines[:len(s.lastLines)-1]
+			}
+		}
+		if s.onProgress != nil {
+			s.onProgress(StreamingUpdate{
+				Lines:        slices.Clone(s.lastLines),
+				TotalLines:   s.totalLines,
+				TotalBytes:   s.totalBytes,
+				IsIncomplete: true,
+			})
+		}
+		return
+	}
 
 	if s.spilled {
 		// After spill: only update lastLines (file is append-only)
