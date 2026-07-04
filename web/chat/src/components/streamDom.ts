@@ -48,7 +48,7 @@ function findPrevToolSibling(before: Node | null, parent: HTMLElement): HTMLElem
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
-  div.className = 'md-body text-t1 text-[15px] leading-relaxed whitespace-pre-wrap'
+  div.className = 'md-body md-text text-t1 text-[15px] leading-relaxed'
   insertBefore(parent, div, before ?? null)
   return div
 }
