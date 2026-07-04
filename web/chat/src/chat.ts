@@ -358,14 +358,21 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const conn = getConnection()
 
+  let isNearBottom = true
+  let lastScrollHeight = 0
+  root.addEventListener('scroll', () => {
+    const near = root.scrollHeight - root.scrollTop - root.clientHeight < 120
+    if (near !== isNearBottom) isNearBottom = near
+  }, { passive: true })
   const scrollToBottom = () => {
-    const nearBottom =
-      root.scrollHeight - root.scrollTop - root.clientHeight < 120
-    if (nearBottom) {
-      requestAnimationFrame(() => {
-        bottomSentinel.scrollIntoView({ behavior: 'auto' })
-      })
-    }
+    if (!isNearBottom) return
+    const sh = root.scrollHeight
+    if (sh === lastScrollHeight) return
+    lastScrollHeight = sh
+    requestAnimationFrame(() => {
+      if (!isNearBottom) return
+      bottomSentinel.scrollIntoView({ behavior: 'auto' })
+    })
   }
 
   const progressAnchor = (): Node | null => progressHandles?.root ?? null
