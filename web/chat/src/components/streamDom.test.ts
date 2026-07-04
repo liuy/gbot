@@ -117,7 +117,7 @@ describe('setToolSummary', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')
     setToolSummary(h, 'ls -la')
-    expect(h.summaryEl.textContent).toBe(' ls -la')
+    expect(h.summaryEl.textContent).toBe(' (ls -la)')
   })
 
   it('leaves summary span empty for empty input', () => {
