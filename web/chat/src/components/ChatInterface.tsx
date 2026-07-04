@@ -622,7 +622,9 @@ export default function ChatInterface() {
 					container.push(block)
 					pendingToolByID.current.set(tu.id, block)
 					if (domContainer) {
-						const handles = appendToolBlock(domContainer, tu.name)
+						const srk = classifyToolName(tu.name)
+					const collapsible = srk.isSearch || srk.isRead || srk.isList || srk.isLsp || srk.isWeb
+					const handles = appendToolBlock(domContainer, tu.name, undefined, collapsible)
 						toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID, pendingBlock: block })
 					}
 					return
@@ -631,7 +633,9 @@ export default function ChatInterface() {
 				pendingBlocks.current.push(block)
 				pendingToolByID.current.set(tu.id, block)
 				if (streamContainerRef.current) {
-					const handles = appendToolBlock(streamContainerRef.current, tu.name, progressAnchor())
+					const srk = classifyToolName(tu.name)
+				const collapsible = srk.isSearch || srk.isRead || srk.isList || srk.isLsp || srk.isWeb
+				const handles = appendToolBlock(streamContainerRef.current, tu.name, progressAnchor(), collapsible)
 					toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID: null, pendingBlock: block })
 				}
 				return

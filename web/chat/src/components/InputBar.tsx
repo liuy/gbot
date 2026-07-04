@@ -115,7 +115,7 @@ const InputBar = forwardRef<InputBarHandle, {
 							onKeyDown={onKeyDown}
 							placeholder="Sup?"
 							disabled={!connected}
-							className="bg-transparent text-[14px] text-t1 placeholder-t3 resize-none outline-none font-light text-center disabled:opacity-40"
+							className="bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40"
 							style={{
 								fieldSizing: 'content',
 								width: 'fit-content',

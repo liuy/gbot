@@ -125,9 +125,10 @@ export function finishThinking(
   p.classList.add('hidden')
 }
 
-export function appendToolBlock(parent: HTMLElement, name: string, before?: Node | null): ToolDomHandles {
+export function appendToolBlock(parent: HTMLElement, name: string, before?: Node | null, collapsible = false): ToolDomHandles {
   const root = document.createElement('div')
   root.dataset.toolRoot = '1'
+  if (collapsible) root.dataset.collapsible = '1'
 
   const header = document.createElement('span')
   header.role = 'button'
@@ -176,6 +177,29 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   childrenContainer.className = 'ml-[20px] mt-1 space-y-1 border-l border-t3/30 pl-2 hidden'
   childrenContainer.dataset.toolChildren = '1'
   root.appendChild(childrenContainer)
+
+  // Collapsible tool grouping: if previous sibling is a group, append.
+  // If previous sibling is also a standalone collapsible tool, create group.
+  if (collapsible) {
+    const sibling = before ? ((before as HTMLElement).previousElementSibling as HTMLElement | null) : (parent.lastElementChild as HTMLElement | null)
+    if (sibling?.dataset.toolGroup) {
+      sibling.appendChild(root)
+      const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
+      header.addEventListener('click', () => toggleToolExpanded(handles))
+      return handles
+    }
+    if (sibling?.dataset.collapsible === '1') {
+      const group = document.createElement('div')
+      group.dataset.toolGroup = '1'
+      group.className = 'space-y-1'
+      parent.replaceChild(group, sibling)
+      group.appendChild(sibling)
+      group.appendChild(root)
+      const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
+      header.addEventListener('click', () => toggleToolExpanded(handles))
+      return handles
+    }
+  }
 
   insertBefore(parent, root, before ?? null)
 
