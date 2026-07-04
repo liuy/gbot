@@ -308,6 +308,9 @@ export default function ChatInterface() {
 	}
 
 	const handleEvent = (e: QueryEvent) => {
+		const ctx = e.agent ? `agent:${e.agent.parent_tool_use_id}` : 'main'
+		const tid = e.tool_use?.id ?? e.tool_result?.tool_use_id ?? ''
+		console.log(`[webchat] ${e.type} ctx=${ctx}${tid ? ` tool=${tid}` : ''} streaming=${streamingRef.current}`)
 		switch (e.type) {
 			case 'query_start': {
 				streamTextAccum.current = ''

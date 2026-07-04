@@ -167,6 +167,20 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		return
 	}
 
+	switch event.Type {
+	case types.EventQueryStart, types.EventQueryEnd, types.EventTurnStart, types.EventTurnEnd:
+		slog.Info("webchat:event", "type", event.Type,
+			"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
+	case types.EventToolStart:
+		slog.Info("webchat:event", "type", event.Type,
+			"toolID", event.ToolUse.ID, "name", event.ToolUse.Name,
+			"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
+	case types.EventToolEnd:
+		slog.Info("webchat:event", "type", event.Type,
+			"toolID", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError,
+			"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
+	}
+
 	aborted := false
 	if event.Type == types.EventQueryEnd && event.Error != nil && event.Agent == nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
@@ -582,4 +596,18 @@ type askOutbound struct {
 	Prompt     string          `json:"prompt,omitempty"`
 	Masked     bool            `json:"masked,omitempty"`
 	AgentType  string          `json:"agent_type,omitempty"`
+}
+
+func agentTypeLog(m *types.AgentMeta) string {
+	if m == nil {
+		return ""
+	}
+	return m.AgentType
+}
+
+func parentIDLog(m *types.AgentMeta) string {
+	if m == nil {
+		return ""
+	}
+	return m.ParentToolUseID
 }
