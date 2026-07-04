@@ -964,11 +964,9 @@ func (a *App) commitPendingMessagesCmd() tea.Cmd {
 // No EnterAltScreen — terminal native scrollback handles scrolling,
 // matching TS behavior where Ink writes content and the terminal scrolls.
 func (a *App) Init() tea.Cmd {
-	// Start the event reader on launch so connector messages (e.g. WeChat)
-	// dispatched before the first user query are picked up. Without this,
-	// events pile up in appCh with no reader when the active engine is a
-	// connector engine and no local query has been submitted yet.
-	return tea.Batch(a.readEvents(), tea.ClearScreen, tea.Println(renderLogo()))
+	// readEvents must start immediately so connector messages don't pile up.
+	// Logo is rendered in View() when no messages exist yet — no race.
+	return a.readEvents()
 }
 
 // Update handles bubbletea messages.
@@ -1200,9 +1198,9 @@ func (a *App) View() string {
 		a.scrollTotal = 0
 		a.userScrolled = false
 		if a.repl.committedCount == 0 {
-			// Initial state — show welcome
+			// Initial state — show logo + welcome
 			welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
-			contentStr = welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
+			contentStr = renderLogo() + welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
 		}
 	}
 
