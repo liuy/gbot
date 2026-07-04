@@ -266,53 +266,31 @@ function renderCommittedMessageDOM(
 
   const { outer, content } = buildShell('assistant')
 
-  // Group consecutive collapsible tools (mirrors renderGrouped in MessageComponent).
-  const flush = (buffer: ToolBlock[]) => {
-    if (buffer.length === 0) return
-    for (const tb of buffer) {
-      const collapsible = isCollapsibleToolName(tb.name)
-      const handles = appendToolBlock(content, tb.name, undefined, collapsible)
-      if (tb.summary) setToolSummary(handles, tb.summary)
-      finishTool(handles, {
-        isError: tb.state === 'error',
-        durationNs: tb.timingNs,
-        output: tb.displayOutput,
-      })
-    }
-    buffer.length = 0
-  }
-
-  const buffer: ToolBlock[] = []
+  // Sequential append — findPrevToolSibling in streamDom handles cross-thinking grouping.
+  // Same code path as streaming, no buffer, no rebuild.
   for (const b of m.blocks) {
     if (b.kind === 'thinking') {
       const { p, labelEl } = appendThinkingBlock(content, 0)
       if (b.text) writeThinkingText(p, b.text)
       finishThinking(p, labelEl, b.durationNs)
     } else if (b.kind === 'tool') {
-      if (isCollapsibleToolBlock(b)) {
-        buffer.push(b)
-      } else {
-        flush(buffer)
-        const handles = appendToolBlock(content, b.name)
-        if (b.summary) setToolSummary(handles, b.summary)
-        finishTool(handles, {
-          isError: b.state === 'error',
-          durationNs: b.timingNs,
-          output: b.displayOutput,
-        })
-      }
+      const collapsible = isCollapsibleToolName(b.name) || isCollapsibleToolBlock(b)
+      const handles = appendToolBlock(content, b.name, undefined, collapsible)
+      if (b.summary) setToolSummary(handles, b.summary)
+      finishTool(handles, {
+        isError: b.state === 'error',
+        durationNs: b.timingNs,
+        output: b.displayOutput,
+      })
     } else if (b.kind === 'text') {
       if (!b.text) continue
-      flush(buffer)
       const div = appendTextBlock(content)
       div.innerHTML = renderMarkdown(b.text)
     } else if (b.kind === 'user') {
       if (!b.text) continue
-      flush(buffer)
       appendUserBlock(content, b.text)
     }
   }
-  flush(buffer)
 
   if (m.error) {
     const err = document.createElement('div')
