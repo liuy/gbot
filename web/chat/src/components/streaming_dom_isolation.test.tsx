@@ -100,6 +100,38 @@ describe('streaming DOM isolation', () => {
 		expect(profilerCount).toBe(mountCount)
 	})
 
+	it('text_delta content survives a subsequent tool_start (no React remount)', () => {
+		renderChat()
+		dispatchToClient({ type: 'connect_status', connected: true })
+
+		serverSends([
+			{ type: 'query_start' },
+			{ type: 'text_start' },
+			{ type: 'text_delta', text: 'keep me' },
+			{ type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: {} } },
+		])
+
+		expect(screen.getByText('keep me')).toBeTruthy()
+	})
+
+	it('tool_start does NOT trigger a React commit on the chat subtree', () => {
+		renderChatWithProfiler()
+		dispatchToClient({ type: 'connect_status', connected: true })
+
+		serverSends([
+			{ type: 'query_start' },
+			{ type: 'text_start' },
+			{ type: 'text_delta', text: 'x' },
+		])
+		const mountCount = profilerCount
+		serverSends([
+			{ type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: {} } },
+			{ type: 'tool_param_delta', partial_input: { id: 't1', name: 'Bash', summary: 'ls' } },
+			{ type: 'tool_end', tool_result: { tool_use_id: 't1', display_output: 'done' } },
+		])
+		expect(profilerCount).toBe(mountCount)
+	})
+
 	it('query_end commits markdown-formatted text', () => {
 		renderChat()
 		dispatchToClient({ type: 'connect_status', connected: true })

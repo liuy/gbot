@@ -94,7 +94,7 @@ describe('ChatInterface tool duration', () => {
 	// handler should set timingNs from Date.now() - startedAt.
 	it('tool_end uses wall-clock time, not prefix parsing', () => {
 		const src = readFileSync(resolve(__dirname, './ChatInterface.tsx'), 'utf-8')
-		expect(src).toContain('Date.now() - b.startedAt')
+		expect(src).toMatch(/Date\.now\(\)\s*-\s*\w+\.startedAt/)
 		expect(src).not.toContain('parseDurationFromOutput')
 	})
 })

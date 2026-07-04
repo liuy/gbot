@@ -7,6 +7,27 @@ import StreamingMessage from './StreamingMessage'
 import InputBar, { type InputBarHandle } from './InputBar'
 import Ask from './Ask'
 import Header from './Header'
+import {
+	type ToolDomHandles,
+	type ProgressDomHandles,
+	appendTextBlock,
+	appendThinkingBlock,
+	appendUserBlock,
+	appendToolBlock,
+	appendToolChildrenContainer,
+	appendProgressBar,
+	setToolSummary,
+	setToolOutput,
+	setProgressBarUsage,
+	refreshProgressBar,
+	refreshToolDuration,
+	refreshThinkingLabel,
+	writeThinkingText,
+	finishThinking,
+	finishTool,
+	expandToolChildrenForRunning,
+	collapseToolChildrenOnDone,
+} from './streamDom'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -26,34 +47,6 @@ let msgIdCounter = 0
 function nextId(prefix: string): string {
 	msgIdCounter += 1
 	return `${prefix}-${msgIdCounter}`
-}
-
-// Mirrors TUI findToolViewInBlocks (pkg/tui/repl.go:174) but returns a NEW
-// blocks array (immutable update) instead of a live reference. Searches the
-// whole tree depth-first: top-level first, then children. Returns the same
-// array reference when nothing changed (so React .map short-circuits cleanly).
-function mapToolBlockByID(
-	blocks: Block[],
-	id: string,
-	fn: (t: ToolBlock) => ToolBlock,
-): Block[] {
-	let changed = false
-	const out = blocks.map((b) => {
-		if (b.kind !== 'tool') return b
-		if (b.id === id) {
-			changed = true
-			return fn(b)
-		}
-		if (b.children.length > 0) {
-			const newChildren = mapToolBlockByID(b.children, id, fn)
-			if (newChildren !== b.children) {
-				changed = true
-				return { ...b, children: newChildren }
-			}
-		}
-		return b
-	})
-	return changed ? out : blocks
 }
 
 // Mirrors TUI classifyToolName (pkg/tui/app.go:783). History messages don't
@@ -160,6 +153,20 @@ const persistedMessages: ChatMessage[] = []
 let persistedNextCursor = ''
 let persistedHasMore = false
 
+interface ToolEntry {
+	handles: ToolDomHandles
+	startedAt: number
+	parentID: string | null
+	pendingBlock: ToolBlock
+}
+
+interface ThinkingEntry {
+	p: HTMLParagraphElement
+	labelEl: HTMLSpanElement
+	startedAt: number
+	pendingBlock: Extract<Block, { kind: 'thinking' }>
+}
+
 export default function ChatInterface() {
 	const { subscribe, send } = useWebSocket()
 	const messagesRef = useRef<ChatMessage[]>(persistedMessages)
@@ -170,20 +177,31 @@ export default function ChatInterface() {
 	// recapture a new ref and break the InputBar React.memo.
 	const forceRender = useCallback(() => setTick((t) => (t + 1) & 0x7fffffff), [])
 
-	// DOM sink for the currently-streaming text block. Null when not streaming
-	// or when streaming but no text block exists yet.
-	const streamTextRef = useRef<HTMLDivElement | null>(null)
-	// DOM sink for the currently-streaming thinking block body (the <p> element
-	// inside Thinking.tsx). Type matches the JSX tag in Thinking.tsx (<p>),
-	// which is HTMLParagraphElement — NOT HTMLDivElement.
-	const streamThinkingRef = useRef<HTMLParagraphElement | null>(null)
-	// Accumulators mirror what's in messagesRef but are the source of truth for
-	// DOM writes during streaming. Cleared on query_start, drained on query_end.
-	const streamTextAccum = useRef('')
-	const streamThinkingAccum = useRef('')
-	// Tracks whether a StreamingText sink is currently mounted, so we know when
-	// to swap it in/out without relying on React state.
-	const streamSinkMounted = useRef(false)
+	// Streaming container ref: the inner <div className="space-y-3"> in
+	// StreamingMessage. All streamDom appends target this node directly.
+	const streamContainerRef = useRef<HTMLDivElement | null>(null)
+	const streamStartedAt = useRef(0)
+
+	// All the streaming bookkeeping refs. Cleared on query_end.
+	const toolEntries = useRef<Map<string, ToolEntry>>(new Map())
+	const streamAccum = useRef<{ text: string; thinking: string }>({ text: '', thinking: '' })
+	const currentTextDiv = useRef<HTMLDivElement | null>(null)
+	const currentThinking = useRef<ThinkingEntry | null>(null)
+	const progressHandles = useRef<ProgressDomHandles | null>(null)
+	const progressUsage = useRef<{ inputTokens: number; outputTokens: number }>({ inputTokens: 0, outputTokens: 0 })
+	const refreshIntervalRef = useRef<number | null>(null)
+
+	// pendingBlocks mirror: parallel Block tree kept in sync with streamDom
+	// during streaming. query_end commits a slice of this array to the
+	// assistant message, then MessageComponent renders the final state.
+	const pendingBlocks = useRef<Block[]>([])
+	const pendingToolByID = useRef<Map<string, ToolBlock>>(new Map())
+	// Index of the last text block at top-level, so text_delta knows where
+	// to mutate. Lazily created in text_delta when no text block exists yet.
+	const currentPendingText = useRef<{ block: { kind: 'text'; id: string; text: string } } | null>(null)
+	// Per-parent lazy sinks for sub-agent text/thinking during streaming.
+	const currentSubAgentTextDiv = useRef<Map<string, HTMLDivElement>>(new Map())
+	const currentSubAgentThinking = useRef<Map<string, ThinkingEntry>>(new Map())
 
 	const [ask, setAsk] = useState<AskData | null>(null)
 	const [queuedMsgs, setQueuedMsgs] = useState<{ uuid: string; text: string }[]>([])
@@ -212,31 +230,6 @@ export default function ChatInterface() {
 		}
 	}
 
-	// Immutable update helper: replaces the last streaming assistant message
-	// with a new object derived from the old one.
-	const updateStreamingAssistant = (fn: (m: ChatMessage) => ChatMessage) => {
-		const list = messagesRef.current
-		const idx = list.length - 1
-		const last = list[idx]
-		if (!last || last.role !== 'assistant' || last.status !== 'streaming') return
-		list[idx] = fn(last)
-	}
-
-	// Routes a sub-agent event into the parent tool block via mapToolBlockByID.
-	// Sub-agent text/thinking/tool events update parent.children through React
-	// state (forceRender), NOT the DOM-sink path — those sinks are top-level
-	// streaming only.
-	const updateParentToolBlock = (
-		parentID: string,
-		fn: (tool: ToolBlock) => ToolBlock,
-	) => {
-		updateStreamingAssistant((m) => ({
-			...m,
-			blocks: mapToolBlockByID(m.blocks, parentID, fn),
-		}))
-		forceRender()
-	}
-
 	const appendError = (text: string) => {
 		const list = messagesRef.current
 		const idx = list.length - 1
@@ -249,9 +242,7 @@ export default function ChatInterface() {
 		streamingRef.current = false
 		setStreaming(false)
 		setQueuedMsgs([])
-		streamSinkMounted.current = false
-		streamTextRef.current = null
-		streamThinkingRef.current = null
+		cleanupStreamingRefs()
 		forceRender()
 	}
 
@@ -307,37 +298,119 @@ export default function ChatInterface() {
 		}
 	}
 
+	// Finalize any tools that never got a tool_end. Walks recursively so
+	// sub-agent tools at any nesting depth are covered. Mutates state in
+	// place. Called from query_end right before committing pendingBlocks.
+	function finalizeRunningBlocks(blocks: Block[]) {
+		for (const b of blocks) {
+			if (b.kind === 'tool') {
+				if (b.state === 'running') {
+					b.state = 'done'
+					if (!b.timingNs) b.timingNs = (Date.now() - b.startedAt) * 1e6
+				}
+				if (b.children.length > 0) finalizeRunningBlocks(b.children)
+			}
+		}
+	}
+
+	// Drop all streaming refs and tear down the refresh timer. Called at
+	// query_end (both abort and normal) and on appendError.
+	const cleanupStreamingRefs = () => {
+		if (refreshIntervalRef.current !== null) {
+			clearInterval(refreshIntervalRef.current)
+			refreshIntervalRef.current = null
+		}
+		streamContainerRef.current = null
+		toolEntries.current.clear()
+		streamAccum.current = { text: '', thinking: '' }
+		currentTextDiv.current = null
+		currentThinking.current = null
+		progressHandles.current = null
+		progressUsage.current = { inputTokens: 0, outputTokens: 0 }
+		pendingBlocks.current = []
+		pendingToolByID.current.clear()
+		currentPendingText.current = null
+		currentSubAgentTextDiv.current.clear()
+		currentSubAgentThinking.current.clear()
+	}
+
+	// DOM anchor for keeping the progress bar pinned to the bottom of the
+	// streaming container. New blocks insertBefore this anchor.
+	const progressAnchor = (): Node | null => progressHandles.current?.root ?? null
+
+	// Build a new tool block with the same shape used in the old streaming
+	// handlers and loadHistory. Pure construction — no side effects.
+	function buildToolBlock(tu: { id: string; name: string; is_search?: boolean; is_read?: boolean; is_list?: boolean; is_lsp?: boolean }): ToolBlock {
+		return {
+			kind: 'tool',
+			id: tu.id,
+			name: tu.name,
+			summary: '',
+			isSearch: !!tu.is_search,
+			isRead: !!tu.is_read,
+			isList: !!tu.is_list,
+			isLsp: !!tu.is_lsp,
+			isWeb: tu.name === 'Web',
+			state: 'running',
+			timingNs: 0,
+			displayOutput: '',
+			startedAt: Date.now(),
+			children: [],
+		}
+	}
+
+	// Returns the `children` array to push sub-agent blocks into. Recurses
+	// via pendingToolByID so depth ≥ 2 nests naturally (agent-2 → agent-1).
+	function pendingChildrenFor(parentID: string): Block[] | null {
+		const parent = pendingToolByID.current.get(parentID)
+		if (!parent) return null
+		return parent.children
+	}
+
+	// Returns the DOM container for sub-agent events: lazily creates the
+	// children container if not yet present.
+	function subAgentContainer(parentID: string): HTMLElement | null {
+		const entry = toolEntries.current.get(parentID)
+		if (!entry) return null
+		return appendToolChildrenContainer(entry.handles)
+	}
+
+	// Auto-expand a parent tool when a sub-agent event first lands. Matches
+	// ToolRenderer.tsx auto-expand-on-children behavior for running agent tools.
+	function maybeAutoExpandParent(parentID: string) {
+		const entry = toolEntries.current.get(parentID)
+		if (!entry) return
+		// Only expand running parents (collapsed-on-done wins otherwise).
+		if (entry.pendingBlock.state === 'running') {
+			expandToolChildrenForRunning(entry.handles)
+		}
+	}
+
 	const handleEvent = (e: QueryEvent) => {
 		const ctx = e.agent ? `agent:${e.agent.parent_tool_use_id}` : 'main'
 		const tid = e.tool_use?.id ?? e.tool_result?.tool_use_id ?? ''
 		console.log(`[webchat] ${e.type} ctx=${ctx}${tid ? ` tool=${tid}` : ''} streaming=${streamingRef.current}`)
 		switch (e.type) {
 			case 'query_start': {
-				streamTextAccum.current = ''
-				streamThinkingAccum.current = ''
-				streamSinkMounted.current = false
-				streamTextRef.current = null
-				streamThinkingRef.current = null
+				if (e.agent) return
+				cleanupStreamingRefs()
+				streamAccum.current = { text: '', thinking: '' }
 				messagesRef.current.push(newAssistantMessage(nextId('a')))
+				streamStartedAt.current = Date.now()
 				streamingRef.current = true
 				setStreaming(true)
 				forceRender()
 				return
 			}
 			case 'turn_start': {
-				// Sub-engine turnStart (processAttachments → runTurns inside a
-				// sub-agent): do NOT push a new assistant message. Sub-agent
-				// text/thinking events route to the parent tool via agent metadata.
+				// Sub-engine turnStart: do NOT push a new assistant message.
 				if (e.agent) return
 				// processAttachments path emits turn_start without query_start.
-				// Push an assistant message if none exists yet.
 				if (streamingRef.current) return
-				streamTextAccum.current = ''
-				streamThinkingAccum.current = ''
-				streamSinkMounted.current = false
-				streamTextRef.current = null
-				streamThinkingRef.current = null
+				cleanupStreamingRefs()
+				streamAccum.current = { text: '', thinking: '' }
 				messagesRef.current.push(newAssistantMessage(nextId('a')))
+				streamStartedAt.current = Date.now()
 				streamingRef.current = true
 				setStreaming(true)
 				forceRender()
@@ -345,29 +418,41 @@ export default function ChatInterface() {
 			}
 			case 'query_end': {
 				// Sub-agent queryEnd: do NOT finish the main query stream.
-				// Only the main engine's queryEnd (no agent metadata) marks
-				// the top-level assistant done.
 				if (e.agent) return
 				const wasAborted = !!e.aborted
 
+				// Finalize any tools that never received tool_end (e.g., stream
+				// cut off mid-tool). Their state flips running→done so the
+				// post-query_end MessageComponent render matches ToolRenderer's
+				// collapsed-by-default UX for finished tools.
+				finalizeRunningBlocks(pendingBlocks.current)
+
 				if (wasAborted) {
-					// Check if assistant produced meaningful content
 					const list = messagesRef.current
 					const last = list[list.length - 1]
-					const hasContent = last && last.role === 'assistant' &&
-						last.blocks.some(b => (b.kind === 'text' && b.text.trim()) || b.kind === 'tool')
+					// pendingBlocks is the in-flight source of truth (last.blocks
+					// stays empty until query_end in this architecture).
+					const hasContent = !!last && last.role === 'assistant' &&
+						pendingBlocks.current.some(b =>
+							(b.kind === 'text' && b.text.trim()) ||
+							b.kind === 'tool' ||
+							b.kind === 'user',
+						)
 
 					if (hasContent) {
-						updateStreamingAssistant((m) => ({
-							...m,
-							status: 'done' as const,
-						}))
+						// COMMIT path: interrupt marker text already landed in
+						// pendingBlocks via text_delta before query_end.
+						if (last && last.role === 'assistant') {
+							last.blocks = pendingBlocks.current.slice()
+							last.status = 'done'
+						}
 					} else {
-						// No meaningful response — rewind: remove empty assistant msg + restore input
+						// REWIND path: no meaningful content. Pop empty assistant
+						// message and restore the user's input text. Matches TUI
+						// tryAutoRewind (input.SetValue).
 						if (last && last.role === 'assistant') {
 							list.pop()
 						}
-						// Find the user message text to restore
 						const userMsg = [...list].reverse().find(m => m.role === 'user')
 						if (userMsg) {
 							const textBlock = userMsg.blocks.find(b => b.kind === 'text') as any
@@ -378,181 +463,146 @@ export default function ChatInterface() {
 						}
 					}
 				} else {
-					updateStreamingAssistant((m) => ({ ...m, status: 'done' as const }))
+					// Normal completion: commit pendingBlocks to the assistant message.
+					const list = messagesRef.current
+					const last = list[list.length - 1]
+					if (last && last.role === 'assistant') {
+						last.blocks = pendingBlocks.current.slice()
+						last.status = 'done'
+					}
 				}
-			streamingRef.current = false
-			setStreaming(false)
-			setQueuedMsgs([])
-			streamSinkMounted.current = false
-			streamTextRef.current = null
-			streamThinkingRef.current = null
-			forceRender()
-			return
-		}
+
+				streamingRef.current = false
+				setStreaming(false)
+				setQueuedMsgs([])
+				cleanupStreamingRefs()
+				forceRender()
+				return
+			}
 			case 'thinking_start': {
 				if (e.agent) {
 					const parentID = e.agent.parent_tool_use_id
-					updateParentToolBlock(parentID, (parent) => ({
-						...parent,
-						children: [...parent.children, {
-							kind: 'thinking',
-							id: nextId('th'),
-							text: '',
-							durationNs: 0,
-							active: true,
-							startedAt: Date.now(),
-						}],
-					}))
+					const container = pendingChildrenFor(parentID)
+					if (!container) return
+					maybeAutoExpandParent(parentID)
+					const domContainer = subAgentContainer(parentID)
+					const entry: ThinkingEntry = createThinkingEntry()
+					container.push(entry.pendingBlock)
+					// Sub-agent thinking tracked per-parent.
+					currentSubAgentThinking.current.set(parentID, entry)
+					if (domContainer) {
+						domContainer.appendChild(entry.p.parentElement!)
+					}
 					return
 				}
-				streamThinkingAccum.current = ''
-				updateStreamingAssistant((m) => ({
-					...m,
-					blocks: [...m.blocks, {
-						kind: 'thinking',
-						id: nextId('th'),
-						text: '',
-						durationNs: 0,
-						active: true,
-						startedAt: Date.now(),
-					}],
-				}))
-				forceRender()
+				streamAccum.current.thinking = ''
+				const entry = createThinkingEntry()
+				pendingBlocks.current.push(entry.pendingBlock)
+				currentThinking.current = entry
+				if (streamContainerRef.current) {
+					const anchor = progressAnchor()
+					if (anchor) streamContainerRef.current.insertBefore(entry.p.parentElement!, anchor)
+					else streamContainerRef.current.appendChild(entry.p.parentElement!)
+				}
 				return
 			}
 			case 'thinking_delta': {
 				if (!e.thinking?.text) return
 				if (e.agent) {
 					const parentID = e.agent.parent_tool_use_id
-					const text = e.thinking.text
-					updateParentToolBlock(parentID, (parent) => {
-						const children = [...parent.children]
-						for (let i = children.length - 1; i >= 0; i--) {
-							const c = children[i]
-							if (c.kind === 'thinking' && c.active) {
-								children[i] = { ...c, text: c.text + text }
-								break
-							}
-						}
-						return { ...parent, children }
-					})
+					const entry = currentSubAgentThinking.current.get(parentID)
+					if (!entry) {
+						// Lazily create the thinking block (text_start is a no-op for sub-agents).
+						const container = pendingChildrenFor(parentID)
+						const domContainer = subAgentContainer(parentID)
+						if (!container || !domContainer) return
+						maybeAutoExpandParent(parentID)
+						const newEntry = createThinkingEntry()
+						container.push(newEntry.pendingBlock)
+						currentSubAgentThinking.current.set(parentID, newEntry)
+						newEntry.pendingBlock.text += e.thinking.text
+						writeThinkingText(newEntry.p, newEntry.pendingBlock.text)
+						domContainer.appendChild(newEntry.p.parentElement!)
+						return
+					}
+					entry.pendingBlock.text += e.thinking.text
+					writeThinkingText(entry.p, entry.pendingBlock.text)
 					return
 				}
-				streamThinkingAccum.current += e.thinking.text
-				updateStreamingAssistant((m) => {
-					const blocks = [...m.blocks]
-					for (let i = blocks.length - 1; i >= 0; i--) {
-						if (blocks[i].kind === 'thinking') {
-							blocks[i] = { ...blocks[i], text: (blocks[i] as any).text + e.thinking!.text } as Block
-							break
-						}
-					}
-					return { ...m, blocks }
-				})
-				if (streamThinkingRef.current) {
-					streamThinkingRef.current.textContent = streamThinkingAccum.current
-				}
+				if (!currentThinking.current) return
+				streamAccum.current.thinking += e.thinking.text
+				currentThinking.current.pendingBlock.text += e.thinking.text
+				writeThinkingText(currentThinking.current.p, streamAccum.current.thinking)
 				return
 			}
 			case 'thinking_end': {
 				if (e.agent) {
 					const parentID = e.agent.parent_tool_use_id
-					const duration = e.thinking?.duration
-					updateParentToolBlock(parentID, (parent) => {
-						const children = [...parent.children]
-						for (let i = children.length - 1; i >= 0; i--) {
-							const c = children[i]
-							if (c.kind === 'thinking' && c.active) {
-								children[i] = {
-									...c,
-									active: false,
-									durationNs: duration ?? c.durationNs,
-								}
-								break
-							}
-						}
-						return { ...parent, children }
-					})
+					const entry = currentSubAgentThinking.current.get(parentID)
+					if (!entry) return
+					entry.pendingBlock.active = false
+					entry.pendingBlock.durationNs = e.thinking?.duration ?? entry.pendingBlock.durationNs
+					finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
+					currentSubAgentThinking.current.delete(parentID)
 					return
 				}
-				updateStreamingAssistant((m) => {
-					const blocks = [...m.blocks]
-					for (let i = blocks.length - 1; i >= 0; i--) {
-						if (blocks[i].kind === 'thinking') {
-							blocks[i] = {
-								...blocks[i],
-								active: false,
-								durationNs: e.thinking?.duration ?? (blocks[i] as any).durationNs,
-							} as Block
-							break
-						}
-					}
-					return { ...m, blocks }
-				})
-				forceRender()
+				if (!currentThinking.current) return
+				const entry = currentThinking.current
+				entry.pendingBlock.active = false
+				entry.pendingBlock.durationNs = e.thinking?.duration ?? entry.pendingBlock.durationNs
+				finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
+				currentThinking.current = null
 				return
 			}
 			case 'text_start': {
 				// Sub-agent text_start is a no-op: text_delta creates the block
 				// lazily inside the parent tool. Matches TUI textStartMsg.
 				if (e.agent) return
-				streamTextAccum.current = ''
-				streamSinkMounted.current = true
-				updateStreamingAssistant((m) => ({
-					...m,
-					blocks: [...m.blocks, { kind: 'text', id: nextId('txt'), text: '' }],
-				}))
-				forceRender()
+				streamAccum.current.text = ''
+				// Always create a fresh text block on text_start (matches the
+				// old streaming handler which pushed a new block per text_start).
+				startNewTextBlock()
 				return
 			}
 			case 'text_delta': {
 				if (!e.text) return
 				if (e.agent) {
 					const parentID = e.agent.parent_tool_use_id
-					const text = e.text
-					updateParentToolBlock(parentID, (parent) => {
-						const last = parent.children[parent.children.length - 1]
-						if (last && last.kind === 'text') {
-							const children = parent.children.slice()
-							children[children.length - 1] = { ...last, text: last.text + text }
-							return { ...parent, children }
+					const container = pendingChildrenFor(parentID)
+					if (!container) return // unknown parent: silently dropped
+					maybeAutoExpandParent(parentID)
+					const domContainer = subAgentContainer(parentID)
+					const last = container[container.length - 1]
+					if (last && last.kind === 'text') {
+						(last as any).text += e.text
+					} else {
+						const newBlock = { kind: 'text' as const, id: nextId('txt'), text: e.text }
+						container.push(newBlock)
+						if (domContainer) {
+							const div = appendTextBlock(domContainer)
+							div.textContent = e.text
+							currentSubAgentTextDiv.current.set(parentID, div)
 						}
-						return { ...parent, children: [...parent.children, { kind: 'text', id: nextId('txt'), text }] }
-					})
+						return
+					}
+					if (domContainer) {
+						let div = currentSubAgentTextDiv.current.get(parentID)
+						if (!div) {
+							div = appendTextBlock(domContainer)
+							currentSubAgentTextDiv.current.set(parentID, div)
+						}
+						div.textContent = (last as any).text
+					}
 					return
 				}
-				streamTextAccum.current += e.text
-				updateStreamingAssistant((m) => {
-					const blocks = [...m.blocks]
-					let found = false
-					for (let i = blocks.length - 1; i >= 0; i--) {
-						if (blocks[i].kind === 'text') {
-							blocks[i] = { ...blocks[i], text: (blocks[i] as any).text + e.text } as Block
-							found = true
-							break
-						}
-					}
-					if (!found) {
-						blocks.push({ kind: 'text', id: nextId('txt'), text: e.text! })
-					}
-					return { ...m, blocks }
-				})
-				if (streamTextRef.current) {
-					streamTextRef.current.textContent = streamTextAccum.current
+				streamAccum.current.text += e.text
+				if (!currentTextDiv.current || !currentPendingText.current) {
+					startNewTextBlock()
+				}
+				if (currentTextDiv.current) {
+					currentTextDiv.current.textContent = streamAccum.current.text
+					if (currentPendingText.current) currentPendingText.current.block.text = streamAccum.current.text
 					scrollToBottom()
-				} else {
-					// Sink not yet mounted. Two arrival patterns reach here:
-					//  (1) text_start fired and scheduled a forceRender, but React
-					//      hasn't committed the sink yet (streamSinkMounted is true).
-					//  (2) text_delta arrived with NO preceding text_start — real-world
-					//      case covered by attachment_streaming.test.tsx and
-					//      attachment_idle.test.tsx, where the engine emits text_delta
-					//      directly after query_start / turn_start without a text_start.
-					// Either way: flip the flag, force ONE render to mount StreamingText,
-					// and let flushRef on mount drain streamTextAccum (including this
-					// delta). Subsequent deltas find the ref live and write directly.
-					streamSinkMounted.current = true
-					forceRender()
 				}
 				return
 			}
@@ -564,128 +614,76 @@ export default function ChatInterface() {
 				const tu = e.tool_use
 				if (e.agent) {
 					const parentID = e.agent.parent_tool_use_id
-					updateParentToolBlock(parentID, (parent) => ({
-						...parent,
-						children: [...parent.children, {
-							kind: 'tool',
-							id: tu.id,
-							name: tu.name,
-							summary: '',
-							isSearch: !!tu.is_search,
-							isRead: !!tu.is_read,
-							isList: !!tu.is_list,
-							isLsp: !!tu.is_lsp,
-							isWeb: tu.name === 'Web',
-							state: 'running',
-							timingNs: 0,
-							displayOutput: '',
-							startedAt: Date.now(),
-							children: [],
-						}],
-					}))
+					const container = pendingChildrenFor(parentID)
+					if (!container) return // unknown parent: silently dropped
+					maybeAutoExpandParent(parentID)
+					const domContainer = subAgentContainer(parentID)
+					const block = buildToolBlock(tu)
+					container.push(block)
+					pendingToolByID.current.set(tu.id, block)
+					if (domContainer) {
+						const handles = appendToolBlock(domContainer, tu.name)
+						toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID, pendingBlock: block })
+					}
 					return
-			}
-			updateStreamingAssistant((m) => ({
-				...m,
-				blocks: [...m.blocks, {
-						kind: 'tool',
-						id: tu.id,
-						name: tu.name,
-						summary: '',
-						isSearch: !!tu.is_search,
-						isRead: !!tu.is_read,
-						isList: !!tu.is_list,
-						isLsp: !!tu.is_lsp,
-						isWeb: tu.name === 'Web',
-						state: 'running',
-						timingNs: 0,
-						displayOutput: '',
-						startedAt: Date.now(),
-						children: [],
-					}],
-				}))
-				forceRender()
+				}
+				const block = buildToolBlock(tu)
+				pendingBlocks.current.push(block)
+				pendingToolByID.current.set(tu.id, block)
+				if (streamContainerRef.current) {
+					const handles = appendToolBlock(streamContainerRef.current, tu.name, progressAnchor())
+					toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID: null, pendingBlock: block })
+				}
 				return
 			}
 			case 'tool_param_delta': {
 				if (!e.partial_input || !e.partial_input.summary) return
 				const targetId = e.partial_input.id
 				const summary = e.partial_input.summary
-				if (e.agent) {
-					const parentID = e.agent.parent_tool_use_id
-					updateParentToolBlock(parentID, (parent) => ({
-						...parent,
-						children: mapToolBlockByID(parent.children, targetId, (t) => ({ ...t, summary })),
-					}))
-					return
-				}
-				updateStreamingAssistant((m) => ({
-					...m,
-					blocks: m.blocks.map((b) =>
-						b.id === targetId && b.kind === 'tool'
-							? { ...b, summary }
-							: b
-					),
-				}))
-				forceRender()
+				const entry = toolEntries.current.get(targetId)
+				if (entry) setToolSummary(entry.handles, summary)
+				const pending = pendingToolByID.current.get(targetId)
+				if (pending) pending.summary = summary
 				return
 			}
 			case 'tool_run': {
-				forceRender()
-				return
+				return // no-op
 			}
 			case 'tool_output_delta': {
-				// TUI repl.go:1046-1057 — best-effort: update trailing tool's
-				// output in parent.children. Most tools don't stream output
-				// deltas, so this is rarely hit.
 				if (e.agent && e.tool_result) {
-					const parentID = e.agent.parent_tool_use_id
 					const targetId = e.tool_result.tool_use_id
 					const output = e.tool_result.display_output ?? ''
-					updateParentToolBlock(parentID, (parent) => ({
-						...parent,
-						children: mapToolBlockByID(parent.children, targetId, (t) => ({ ...t, displayOutput: output })),
-					}))
+					const entry = toolEntries.current.get(targetId)
+					if (entry) setToolOutput(entry.handles, output)
+					const pending = pendingToolByID.current.get(targetId)
+					if (pending) pending.displayOutput = output
 				}
 				return
 			}
 			case 'tool_end': {
 				if (!e.tool_result) return
 				const tr = e.tool_result
-				if (e.agent) {
-					const parentID = e.agent.parent_tool_use_id
-					updateParentToolBlock(parentID, (parent) => ({
-						...parent,
-						children: mapToolBlockByID(parent.children, tr.tool_use_id, (t) => ({
-							...t,
-							state: tr.is_error ? 'error' as const : 'done' as const,
-							timingNs: (Date.now() - t.startedAt) * 1e6,
-							displayOutput: tr.display_output ?? '',
-							isSearch: tr.is_search ?? t.isSearch,
-							isRead: tr.is_read ?? t.isRead,
-							isList: tr.is_list ?? t.isList,
-							isLsp: tr.is_lsp ?? t.isLsp,
-						})),
-					}))
-					return
+				const entry = toolEntries.current.get(tr.tool_use_id)
+				const durationNs = entry ? (Date.now() - entry.startedAt) * 1e6 : 0
+				const output = tr.display_output ?? ''
+				const pending = pendingToolByID.current.get(tr.tool_use_id)
+				if (entry) {
+					finishTool(entry.handles, { isError: !!tr.is_error, durationNs, output })
 				}
-				updateStreamingAssistant((m) => ({
-					...m,
-					blocks: m.blocks.map((b) => {
-						if (b.id !== tr.tool_use_id || b.kind !== 'tool') return b
-						return {
-							...b,
-							state: tr.is_error ? 'error' as const : 'done' as const,
-							timingNs: (Date.now() - b.startedAt) * 1e6,
-							displayOutput: tr.display_output ?? '',
-							isSearch: tr.is_search ?? b.isSearch,
-							isRead: tr.is_read ?? b.isRead,
-							isList: tr.is_list ?? b.isList,
-							isLsp: tr.is_lsp ?? b.isLsp,
-						}
-					}),
-				}))
-				forceRender()
+				if (pending) {
+					pending.state = tr.is_error ? 'error' : 'done'
+					pending.timingNs = durationNs
+					pending.displayOutput = output
+					if (tr.is_search !== undefined) pending.isSearch = tr.is_search
+					if (tr.is_read !== undefined) pending.isRead = tr.is_read
+					if (tr.is_list !== undefined) pending.isList = tr.is_list
+					if (tr.is_lsp !== undefined) pending.isLsp = tr.is_lsp
+				}
+				// TUI parity: agent tools auto-collapse on done (state transition running→done).
+				if (entry && entry.pendingBlock.children.length > 0 && entry.pendingBlock.state !== 'running') {
+					collapseToolChildrenOnDone(entry.handles)
+				}
+				toolEntries.current.delete(tr.tool_use_id)
 				return
 			}
 			case 'usage': {
@@ -694,16 +692,30 @@ export default function ChatInterface() {
 				// result, not merged into the top-level assistant's usage.
 				if (e.agent) return
 				const u = e.usage_event
-				updateStreamingAssistant((m) => ({
-					...m,
-					usage: {
+				progressUsage.current = {
+					inputTokens: u.input_tokens,
+					outputTokens: u.output_tokens,
+				}
+				if (progressHandles.current) {
+					setProgressBarUsage(progressHandles.current, {
 						inputTokens: u.input_tokens,
 						outputTokens: u.output_tokens,
 						cacheRead: u.cache_read_input_tokens ?? 0,
 						cacheCreation: u.cache_creation_input_tokens ?? 0,
-					},
-				}))
-				forceRender()
+					})
+				}
+				// Mirror into the in-flight assistant message's usage so the
+				// post-query_end MessageComponent render shows the right tally.
+				const list = messagesRef.current
+				const last = list[list.length - 1]
+				if (last && last.role === 'assistant' && last.status === 'streaming') {
+					last.usage = {
+						inputTokens: u.input_tokens,
+						outputTokens: u.output_tokens,
+						cacheRead: u.cache_read_input_tokens ?? 0,
+						cacheCreation: u.cache_creation_input_tokens ?? 0,
+					}
+				}
 				return
 			}
 			case 'retry_attempt':
@@ -711,19 +723,17 @@ export default function ChatInterface() {
 			case 'attachment': {
 				// TUI parity: repl.go:1364 — mid-turn drain appends
 				// BlockUser inside the current assistant message's blocks.
-				// Streaming assistant must remain the last message so
-				// text_delta/thinking_delta handlers can find it.
 				const att = (e as any).message?.attachment
 				if (!att) return
 				const text: string = att.prompt ?? ''
 				const sourceUUID: string = att.source_uuid ?? ''
 				if (!text) return
 				if (streamingRef.current) {
-					// Mid-turn: append user block to current assistant
-					updateStreamingAssistant((m) => ({
-						...m,
-						blocks: [...m.blocks, { kind: 'user', id: nextId('u'), text }],
-					}))
+					// Mid-turn: append user block to streaming DOM + pendingBlocks.
+					pendingBlocks.current.push({ kind: 'user', id: nextId('u'), text })
+					if (streamContainerRef.current) {
+						appendUserBlock(streamContainerRef.current, text, progressAnchor())
+					}
 				} else {
 					// Between queries (idle): push as standalone user message
 					messagesRef.current.push({
@@ -735,14 +745,50 @@ export default function ChatInterface() {
 						status: 'done',
 						startedAt: Date.now(),
 					})
+					forceRender()
 				}
 				if (sourceUUID === '') return
 				setQueuedMsgs((prev) => prev.filter((m) => m.uuid !== sourceUUID))
-				forceRender()
 				return
 			}
 			default:
 				return
+		}
+	}
+
+	// Builds a ThinkingEntry (DOM + pendingBlock) but does NOT attach it to
+	// the streaming container. The caller appends `entry.p.parentElement`
+	// (the wrap div containing header + <p>) into the chosen container.
+	function createThinkingEntry(): ThinkingEntry {
+		const startedAt = Date.now()
+		const temp = document.createElement('div')
+		const { p, labelEl } = appendThinkingBlock(temp, startedAt)
+		const wrap = temp.firstChild as HTMLElement
+		// Detach wrap from temp so the caller chooses where to append it.
+		// Event listeners on the header survive detachment.
+		temp.removeChild(wrap)
+		const pendingBlock: Extract<Block, { kind: 'thinking' }> = {
+			kind: 'thinking',
+			id: nextId('th'),
+			text: '',
+			durationNs: 0,
+			active: true,
+			startedAt,
+		}
+		return { p, labelEl, startedAt, pendingBlock }
+	}
+
+	// Lazily creates a new top-level text block (DOM + pending). Called from
+	// text_start (always fresh) and from text_delta when no sink is mounted
+	// (text_delta arrived without a preceding text_start — covered by
+	// attachment_streaming.test.tsx and attachment_idle.test.tsx).
+	function startNewTextBlock() {
+		const block = { kind: 'text' as const, id: nextId('txt'), text: streamAccum.current.text }
+		pendingBlocks.current.push(block)
+		currentPendingText.current = { block }
+		if (streamContainerRef.current) {
+			currentTextDiv.current = appendTextBlock(streamContainerRef.current, progressAnchor())
+			currentTextDiv.current.textContent = streamAccum.current.text
 		}
 	}
 
@@ -818,6 +864,55 @@ export default function ChatInterface() {
 		return unsubscribe
 	}, [subscribe])
 
+	// Mount-effect: when streaming flips on, StreamingMessage mounts and
+	// streamContainerRef.current becomes non-null. Drain any deltas that
+	// arrived before commit, attach the progress bar, and start the
+	// 200ms refresh interval. Cleared on cleanupStreamingRefs at query_end.
+	useEffect(() => {
+		if (!streaming) return
+		if (!streamContainerRef.current) return
+		// Drain late deltas: if text arrived before this mount committed,
+		// spin up the sink now and populate it.
+		if (streamAccum.current.text && !currentTextDiv.current) {
+			startNewTextBlock()
+		} else if (currentTextDiv.current) {
+			currentTextDiv.current.textContent = streamAccum.current.text
+		}
+		// Append the progress bar (last child by default — no anchor).
+		if (!progressHandles.current) {
+			progressHandles.current = appendProgressBar(streamContainerRef.current)
+		}
+		// 200ms refresh interval: live elapsed/rate/duration for tools + thinking.
+		const id = window.setInterval(() => {
+			toolEntries.current.forEach((entry) => {
+				if (entry.pendingBlock.state === 'running') {
+					refreshToolDuration(entry.handles, entry.startedAt)
+				}
+			})
+			if (currentThinking.current) {
+				refreshThinkingLabel(currentThinking.current.labelEl, currentThinking.current.startedAt)
+			}
+			currentSubAgentThinking.current.forEach((entry) => {
+				if (entry.pendingBlock.active) {
+					refreshThinkingLabel(entry.labelEl, entry.startedAt)
+				}
+			})
+			if (progressHandles.current) {
+				refreshProgressBar(
+					progressHandles.current,
+					streamStartedAt.current,
+					pendingBlocks.current.filter(b => b.kind === 'tool').length,
+					progressUsage.current.outputTokens,
+				)
+			}
+		}, 200)
+		refreshIntervalRef.current = id
+		return () => {
+			clearInterval(id)
+			refreshIntervalRef.current = null
+		}
+	}, [streaming])
+
 	useEffect(() => {
 		scrollToBottom()
 	})
@@ -879,16 +974,6 @@ export default function ChatInterface() {
 		}
 	}, [queuedMsgs, send])
 
-	// Drains streamTextAccum into the sink on mount. Needed because text_start
-	// (or the text_delta else-branch) schedules a forceRender to mount the sink,
-	// but between scheduling and React's commit, deltas may arrive and append to
-	// streamTextAccum without a live DOM target. flushRef on mount drains them.
-	const flushTextRef = useCallback(() => {
-		if (streamTextRef.current) {
-			streamTextRef.current.textContent = streamTextAccum.current
-		}
-	}, [])
-
 	return (
 		<div ref={scrollRef} className="overflow-y-auto overflow-x-hidden" style={{ height: '100dvh' }}>
 			<Header />
@@ -904,10 +989,7 @@ export default function ChatInterface() {
 						return isStreamingMsg ? (
 							<StreamingMessage
 								key={m.id}
-								message={m}
-								textRef={streamTextRef}
-								thinkingRef={streamThinkingRef}
-								flushTextRef={flushTextRef}
+								ref={streamContainerRef}
 							/>
 						) : (
 							<MessageComponent key={m.id} message={m} />

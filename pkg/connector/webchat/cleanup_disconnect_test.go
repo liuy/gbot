@@ -36,5 +36,5 @@ func TestCleanupConn_DoesNotAbortActiveQuery(t *testing.T) {
 	// Cleanup: cancel the query to let the goroutine exit
 	c.mock().abortFn = func() {}
 	c.engine.Abort()
-	time.Sleep(50 * time.Millisecond)
+	waitFor(time.Second, func() bool { return c.mock().abortCount >= 2 })
 }

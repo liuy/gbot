@@ -208,7 +208,31 @@ describe('sub-agent nesting: auto-expand on running, auto-collapse on done', () 
 		// Agent tool_end → done → auto-collapse
 		dispatchToClient({ type: 'event', event: { type: 'tool_end', tool_result: { tool_use_id: 'agent-1', is_error: false } } })
 
-		// After done: children collapsed, text not visible
-		expect(screen.queryByText('exploring...')).toBeNull()
+		// After done: children collapsed — the children container now carries
+		// the Tailwind `hidden` class. The streaming DOM uses CSS-hidden
+		// children (data-tool-children), not React unmount, so queryByText
+		// would still match the text — instead assert the collapse via the
+		// observable class on the children container.
+		const agentHeader = screen.getAllByRole('button').filter((el) => /Agent/.test(el.textContent ?? ''))[0]
+		const agentRoot = agentHeader.closest('[data-tool-root]') as HTMLElement
+		const childrenContainer = agentRoot.querySelector('[data-tool-children]') as HTMLElement
+		expect(childrenContainer.classList.contains('hidden')).toBe(true)
+	})
+
+	it('sub-agent tool_start appends into parent tool children container, not top-level', () => {
+		renderChat()
+		dispatchToClient({ type: 'event', event: { type: 'query_start' } })
+		dispatchToClient({ type: 'event', event: { type: 'text_delta', text: 'top text' } })
+		dispatchToClient({ type: 'event', event: { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent', input: {} } } })
+		dispatchToClient({ type: 'event', event: { type: 'tool_start', tool_use: { id: 'grep-1', name: 'Grep' }, agent: AGENT_META } })
+		dispatchToClient({ type: 'event', event: { type: 'query_end' } })
+
+		// Top-level has 'top text', no flat Grep
+		expect(screen.getByText('top text')).toBeTruthy()
+		// Grep NOT flat at top-level (Agent collapsed by default after query_end).
+		expect(screen.queryByText(/Grep/)).toBeNull()
+		// Expand Agent — Grep visible inside.
+		expandToolByName(/Agent/)
+		expect(screen.getByText(/Grep/)).toBeTruthy()
 	})
 })
