@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import type { Block } from '../model'
 import ToolRenderer from './ToolRenderer'
-import { formatDurationNs } from '../utils'
+import { formatDurationNs, summarize } from '../utils'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -54,29 +54,6 @@ export default memo(function ToolGroup({
 	  </div>
 	)
 })
-
-// Noun short form: "2 Searches, 1 Read, 1 LSP". Pluralize with -s when >1.
-function summarize(tools: ToolBlock[]): string {
-	const counts = new Map<string, number>()
-	for (const t of tools) {
-	  const noun = nounFor(t)
-	  counts.set(noun, (counts.get(noun) ?? 0) + 1)
-	}
-	const parts: string[] = []
-	for (const [noun, count] of counts) {
-	  parts.push(count > 1 ? `${count} ${noun}s` : `${count} ${noun}`)
-	}
-	return parts.join(', ')
-}
-
-function nounFor(t: ToolBlock): string {
-	if (t.isWeb) return 'Web'
-	if (t.isSearch) return 'Search'
-	if (t.isRead) return 'Read'
-	if (t.isList) return 'List'
-	if (t.isLsp) return 'LSP'
-	return t.name
-}
 
 function Chevron({ expanded }: { expanded: boolean }) {
 	return (

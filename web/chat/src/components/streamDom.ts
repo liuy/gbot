@@ -6,7 +6,7 @@
 // can pin the progress bar to the bottom of the streaming container by
 // passing `progressHandles.current?.root ?? null` as the anchor.
 
-import { formatDurationNs, formatTokenCount, stripAnsi } from '../utils'
+import { formatDurationNs, formatTokenCount, stripAnsi, summarize } from '../utils'
 
 export interface ToolDomHandles {
   root: HTMLDivElement
@@ -33,6 +33,19 @@ function insertBefore(parent: HTMLElement, child: Node, before: Node | null) {
   else parent.appendChild(child)
 }
 
+// Walk backward through siblings, skipping thinking blocks (wrap divs with
+// data-thinking). Matches renderGrouped in MessageComponent where thinking
+// does NOT break a group of consecutive collapsible tools.
+function findPrevToolSibling(before: Node | null, parent: HTMLElement): HTMLElement | null {
+  let el: HTMLElement | null = before
+    ? ((before as HTMLElement).previousElementSibling as HTMLElement | null)
+    : (parent.lastElementChild as HTMLElement | null)
+  while (el && el.dataset.thinking) {
+    el = el.previousElementSibling as HTMLElement | null
+  }
+  return el
+}
+
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
   div.className = 'md-body text-t1 text-[15px] leading-relaxed whitespace-pre-wrap'
@@ -54,9 +67,10 @@ export function appendThinkingBlock(
   before?: Node | null,
 ): { p: HTMLParagraphElement; labelEl: HTMLSpanElement } {
   const wrap = document.createElement('div')
+  wrap.dataset.thinking = '1'
 
   const header = document.createElement('span')
-  header.role = 'button'
+  header.setAttribute('role', 'button')
   header.tabIndex = 0
   header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
 
@@ -65,17 +79,8 @@ export function appendThinkingBlock(
   glyph.textContent = '✦'
   header.appendChild(glyph)
 
-  const chevron = document.createElement('svg')
-  chevron.setAttribute('class', 'inline-block align-middle text-t3 transition-transform rotate-90')
-  chevron.setAttribute('width', '12')
-  chevron.setAttribute('height', '12')
-  chevron.setAttribute('viewBox', '0 0 12 12')
-  chevron.setAttribute('fill', 'none')
-  chevron.setAttribute('stroke', 'currentColor')
-  chevron.setAttribute('stroke-width', '1.5')
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-  path.setAttribute('d', 'M4.5 3L7.5 6L4.5 9')
-  chevron.appendChild(path)
+  const chevron = document.createElement('span')
+  chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform rotate-90" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
   header.appendChild(chevron)
 
   const labelEl = document.createElement('span')
@@ -97,10 +102,9 @@ export function appendThinkingBlock(
   // Auto-expand on creation (matches Thinking.tsx active → expanded).
   header.addEventListener('click', () => {
     const collapsed = p.classList.toggle('hidden')
-    chevron.setAttribute(
-      'class',
-      'inline-block align-middle text-t3 transition-transform ' + (collapsed ? '' : 'rotate-90'),
-    )
+    const svg = chevron.querySelector('svg')
+    if (svg) svg.setAttribute('class',
+      'inline-block align-middle text-t3 transition-transform ' + (collapsed ? '' : 'rotate-90'))
   })
 
   return { p, labelEl }
@@ -125,13 +129,106 @@ export function finishThinking(
   p.classList.add('hidden')
 }
 
+function createGroupContainer(): HTMLElement {
+  const group = document.createElement('div')
+  group.dataset.toolGroup = '1'
+
+  // Header: button with dot + chevron + summary + duration (mirrors ToolGroup.tsx)
+  const header = document.createElement('span')
+  header.dataset.groupHeader = '1'
+  header.setAttribute('role', 'button')
+  header.tabIndex = 0
+  header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
+
+  // Dot: white+heartbeat while running, green when done
+  const dot = document.createElement('span')
+  dot.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center align-middle'
+  dot.dataset.groupDot = '1'
+  dot.innerHTML = '<span class="text-white heartbeat">●</span>'
+  header.appendChild(dot)
+
+  // Chevron SVG (same as ToolGroup.tsx)
+  const chevron = document.createElement('span')
+  chevron.dataset.groupChevron = '1'
+  chevron.innerHTML = '<svg class="inline-block align-middle text-t3" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
+  header.appendChild(chevron)
+
+  // Summary text: "2 Searches, 1 Read"
+  const summary = document.createElement('span')
+  summary.dataset.groupSummary = '1'
+  summary.className = 'font-mono text-sm text-blue align-middle'
+  header.appendChild(summary)
+
+  // Duration: shown when all done
+  const duration = document.createElement('span')
+  duration.dataset.groupDuration = '1'
+  duration.className = 'font-mono text-xs align-middle'
+  header.appendChild(duration)
+
+  group.appendChild(header)
+
+  // Tools container: default collapsed
+  const toolsContainer = document.createElement('div')
+  toolsContainer.dataset.groupTools = '1'
+  toolsContainer.className = 'ml-[20px]'
+  toolsContainer.style.display = 'none'
+  group.appendChild(toolsContainer)
+
+  // Toggle expand/collapse on click
+  header.addEventListener('click', () => {
+    const visible = toolsContainer.style.display !== 'none'
+    toolsContainer.style.display = visible ? 'none' : ''
+    const svg = chevron.querySelector('svg')
+    if (svg) svg.style.transform = visible ? '' : 'rotate(90deg)'
+  })
+
+  return group
+}
+
+// Requires group created by createGroupContainer() (needs [data-group-tools]).
+function updateGroupSummary(group: HTMLElement): void {
+  const toolsContainer = group.querySelector('[data-group-tools]')
+  if (!toolsContainer) return
+  const tools = toolsContainer.querySelectorAll('[data-tool-root]')
+  const summary = group.querySelector('[data-group-summary]')
+  const durationEl = group.querySelector('[data-group-duration]') as HTMLElement
+  const dot = group.querySelector('[data-group-dot]') as HTMLElement
+  if (!summary) return
+
+  const names = Array.from(tools).map(t => {
+    return (t as HTMLElement).dataset.toolName || ''
+  })
+  summary.textContent = summarize(names.map(n => ({ name: n })))
+
+  // Dot: white+heartbeat if any running, green if all done
+  const running = toolsContainer.querySelectorAll('.heartbeat').length
+  if (dot) {
+    dot.innerHTML = running > 0
+      ? '<span class="text-white heartbeat">●</span>'
+      : '<span class="text-green">●</span>'
+  }
+
+  // Duration: only when all done and timing available
+  if (durationEl) {
+    if (running === 0) {
+      const totalNs = Array.from(tools).reduce((sum, t) => {
+        return sum + (parseInt((t as HTMLElement).dataset.toolTimingNs || '0', 10) || 0)
+      }, 0)
+      durationEl.textContent = totalNs > 0 ? ` ${formatDurationNs(totalNs)}` : ''
+    } else {
+      durationEl.textContent = ''
+    }
+  }
+}
+
 export function appendToolBlock(parent: HTMLElement, name: string, before?: Node | null, collapsible = false): ToolDomHandles {
   const root = document.createElement('div')
   root.dataset.toolRoot = '1'
+  root.dataset.toolName = name
   if (collapsible) root.dataset.collapsible = '1'
 
   const header = document.createElement('span')
-  header.role = 'button'
+  header.setAttribute('role', 'button')
   header.tabIndex = 0
   header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
 
@@ -140,17 +237,8 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   dot.textContent = '●'
   header.appendChild(dot)
 
-  const chevron = document.createElement('svg')
-  chevron.setAttribute('class', 'inline-block align-middle text-t3 transition-transform')
-  chevron.setAttribute('width', '12')
-  chevron.setAttribute('height', '12')
-  chevron.setAttribute('viewBox', '0 0 12 12')
-  chevron.setAttribute('fill', 'none')
-  chevron.setAttribute('stroke', 'currentColor')
-  chevron.setAttribute('stroke-width', '1.5')
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-  path.setAttribute('d', 'M4.5 3L7.5 6L4.5 9')
-  chevron.appendChild(path)
+  const chevron = document.createElement('span')
+  chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
   header.appendChild(chevron)
 
   const nameEl = document.createElement('span')
@@ -181,20 +269,23 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   // Collapsible tool grouping: if previous sibling is a group, append.
   // If previous sibling is also a standalone collapsible tool, create group.
   if (collapsible) {
-    const sibling = before ? ((before as HTMLElement).previousElementSibling as HTMLElement | null) : (parent.lastElementChild as HTMLElement | null)
+    const sibling = findPrevToolSibling(before ?? null, parent)
     if (sibling?.dataset.toolGroup) {
-      sibling.appendChild(root)
+      const toolsContainer = sibling.querySelector('[data-group-tools]') as HTMLElement
+      if (toolsContainer) toolsContainer.appendChild(root)
+      else sibling.appendChild(root)
+      updateGroupSummary(sibling as HTMLElement)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
     }
     if (sibling?.dataset.collapsible === '1') {
-      const group = document.createElement('div')
-      group.dataset.toolGroup = '1'
-      group.className = 'space-y-1'
+      const group = createGroupContainer()
       parent.replaceChild(group, sibling)
-      group.appendChild(sibling)
-      group.appendChild(root)
+      const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
+      toolsContainer.appendChild(sibling)
+      toolsContainer.appendChild(root)
+      updateGroupSummary(group)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
@@ -243,39 +334,28 @@ export function finishTool(
 
 export function toggleToolExpanded(handles: ToolDomHandles): void {
   const collapsed = !handles.body.classList.contains('hidden')
-  // Collapse = hide body + children; expand = show both.
   if (collapsed) {
     handles.body.classList.add('hidden')
     handles.childrenContainer.classList.add('hidden')
-    handles.header.querySelector('svg')?.setAttribute(
-      'class',
-      'inline-block align-middle text-t3 transition-transform',
-    )
   } else {
     handles.body.classList.remove('hidden')
     handles.childrenContainer.classList.remove('hidden')
-    handles.header.querySelector('svg')?.setAttribute(
-      'class',
-      'inline-block align-middle text-t3 transition-transform rotate-90',
-    )
   }
+  const svg = handles.header.querySelector('svg')
+  if (svg) svg.setAttribute('class',
+    'inline-block align-middle text-t3 transition-transform' + (collapsed ? '' : ' rotate-90'))
 }
 
 export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
-  // TUI parity: running agent tools auto-expand while children exist.
   handles.childrenContainer.classList.remove('hidden')
-  handles.header.querySelector('svg')?.setAttribute(
-    'class',
-    'inline-block align-middle text-t3 transition-transform rotate-90',
-  )
+  const svg = handles.header.querySelector('svg')
+  if (svg) svg.setAttribute('class', 'inline-block align-middle text-t3 transition-transform rotate-90')
 }
 
 export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
   handles.childrenContainer.classList.add('hidden')
-  handles.header.querySelector('svg')?.setAttribute(
-    'class',
-    'inline-block align-middle text-t3 transition-transform',
-  )
+  const svg = handles.header.querySelector('svg')
+  if (svg) svg.setAttribute('class', 'inline-block align-middle text-t3 transition-transform')
 }
 
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {

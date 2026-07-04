@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from '../websocket'
 import type { ServerMessage, QueryEvent, HistoryChatMsg } from '../types'
 import { newAssistantMessage, type ChatMessage, type Block } from '../model'
+import { isCollapsibleToolName } from '../utils'
 import MessageComponent from './MessageComponent'
 import StreamingMessage from './StreamingMessage'
 import InputBar, { type InputBarHandle } from './InputBar'
@@ -621,9 +622,8 @@ export default function ChatInterface() {
 					const block = buildToolBlock(tu)
 					container.push(block)
 					pendingToolByID.current.set(tu.id, block)
-					if (domContainer) {
-						const srk = classifyToolName(tu.name)
-					const collapsible = srk.isSearch || srk.isRead || srk.isList || srk.isLsp || srk.isWeb
+				if (domContainer) {
+					const collapsible = isCollapsibleToolName(tu.name)
 					const handles = appendToolBlock(domContainer, tu.name, undefined, collapsible)
 						toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID, pendingBlock: block })
 					}
@@ -632,9 +632,8 @@ export default function ChatInterface() {
 				const block = buildToolBlock(tu)
 				pendingBlocks.current.push(block)
 				pendingToolByID.current.set(tu.id, block)
-				if (streamContainerRef.current) {
-					const srk = classifyToolName(tu.name)
-				const collapsible = srk.isSearch || srk.isRead || srk.isList || srk.isLsp || srk.isWeb
+			if (streamContainerRef.current) {
+				const collapsible = isCollapsibleToolName(tu.name)
 				const handles = appendToolBlock(streamContainerRef.current, tu.name, progressAnchor(), collapsible)
 					toolEntries.current.set(tu.id, { handles, startedAt: block.startedAt, parentID: null, pendingBlock: block })
 				}

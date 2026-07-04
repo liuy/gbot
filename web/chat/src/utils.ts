@@ -69,3 +69,43 @@ export function parseDurationFromOutput(output: unknown): number {
 	if (isNaN(sec)) return 0
 	return sec * 1e9
 }
+
+// Whether a tool is collapsible (groups with adjacent collapsible tools).
+// Shared by streamDom.ts (streaming) and MessageComponent.tsx (committed).
+// KEEP IN SYNC with the rules below — both call sites must agree.
+export function isCollapsibleToolName(name: string): boolean {
+  return name === 'Grep' || name === 'Glob' || name === 'Read' || name === 'Lsp' || name === 'LSP' || name === 'Web'
+}
+
+// Noun for tool group summary: "Search" for Grep/Glob, "Read" for Read, etc.
+// isList flag: Bash tools with is_list:true (ls/tree/du) display as "List".
+export function nounFor(name: string, isList = false): string {
+	if (isList) return 'List'
+	if (name === 'Grep' || name === 'Glob') return 'Search'
+	if (name === 'Read') return 'Read'
+	if (name === 'Lsp' || name === 'LSP') return 'LSP'
+	if (name === 'Web') return 'Web'
+	return name
+}
+
+// Pluralize: "Search"→"Searches", "Read"→"Reads", "LSP"→"LSPs".
+// Shared by ToolGroup.tsx and streamDom.ts.
+export function pluralize(noun: string, count: number): string {
+	if (count <= 1) return `${count} ${noun}`
+	if (noun.endsWith('ch') || noun.endsWith('s')) return `${count} ${noun}es`
+	return `${count} ${noun}s`
+}
+
+// Group summary: "2 Searches, 1 Read, 1 LSP". Shared by ToolGroup.tsx and streamDom.ts.
+export function summarize(tools: { name: string; isList?: boolean }[]): string {
+	const counts = new Map<string, number>()
+	for (const t of tools) {
+		const noun = nounFor(t.name, t.isList)
+		counts.set(noun, (counts.get(noun) ?? 0) + 1)
+	}
+	const parts: string[] = []
+	for (const [noun, count] of counts) {
+		parts.push(pluralize(noun, count))
+	}
+	return parts.join(', ')
+}
