@@ -97,7 +97,7 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('STOP')
   })
 
-  it('text_delta accumulates as plain text, markdown after query_end', () => {
+  it('text_delta accumulates and renders markdown incrementally', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('q')
@@ -109,11 +109,6 @@ describe('chat integration', () => {
       { type: 'text_delta', text: 'ld**' },
     ])
     const mdBody = document.querySelector('.md-body') as HTMLElement
-    // During streaming: plain text
-    expect(mdBody.querySelector('strong')).toBeNull()
-    expect(mdBody.textContent).toContain('**bold**')
-    // After query_end: markdown rendered
-    dispatchEvents([{ type: 'query_end' }])
     expect(mdBody.querySelector('strong')?.textContent).toBe('bold')
   })
 

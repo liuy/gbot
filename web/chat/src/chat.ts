@@ -496,7 +496,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     currentPendingText = { block }
     if (streamContainer) {
       currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
-      currentTextDiv.textContent = streamAccum.text
+      currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
     }
   }
 
@@ -506,7 +506,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (streamAccum.text && !currentTextDiv) {
       startNewTextBlock()
     } else if (currentTextDiv) {
-      currentTextDiv.textContent = streamAccum.text
+      currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
     }
     if (!progressHandles) {
       progressHandles = appendProgressBar(streamContainer)
@@ -729,10 +729,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             }
           }
         } else {
-          // Normal completion: render markdown on the text block, then keep DOM.
-          if (currentTextDiv && currentPendingText) {
-            currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
-          }
+          // Normal completion: DOM stays as-is (markdown already rendered during streaming).
           const last = messages[messages.length - 1]
           if (last && last.role === 'assistant') {
             last.blocks = pendingBlocks.slice()
@@ -869,7 +866,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           startNewTextBlock()
         }
         if (currentTextDiv) {
-          currentTextDiv.textContent = streamAccum.text
+          currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
           if (currentPendingText)
             currentPendingText.block.text = streamAccum.text
           scrollToBottom()

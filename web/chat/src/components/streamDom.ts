@@ -140,11 +140,11 @@ function createGroupContainer(): HTMLElement {
   header.tabIndex = 0
   header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
 
-  // Dot: white+heartbeat while running, green when done
+  // Dot: same class as individual tool dot (text-white heartbeat while running)
   const dot = document.createElement('span')
-  dot.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center align-middle'
+  dot.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center text-white heartbeat'
   dot.dataset.groupDot = '1'
-  dot.innerHTML = '<span class="text-white heartbeat">●</span>'
+  dot.textContent = '●'
   header.appendChild(dot)
 
   // Chevron SVG (same as ToolGroup.tsx)
@@ -162,7 +162,7 @@ function createGroupContainer(): HTMLElement {
   // Duration: shown when all done
   const duration = document.createElement('span')
   duration.dataset.groupDuration = '1'
-  duration.className = 'font-mono text-xs align-middle'
+  duration.className = 'font-mono text-xs align-middle text-t3'
   header.appendChild(duration)
 
   group.appendChild(header)
@@ -200,17 +200,21 @@ function updateGroupSummary(group: HTMLElement): void {
   })
   summary.textContent = summarize(names.map(n => ({ name: n })))
 
-  // Dot: white+heartbeat if any running, green if all done
-  const running = toolsContainer.querySelectorAll('.heartbeat').length
+  // Dot: white+heartbeat if any tool still running, green when all done
+  const runningTools = toolsContainer.querySelectorAll('[data-tool-root] .heartbeat').length
   if (dot) {
-    dot.innerHTML = running > 0
-      ? '<span class="text-white heartbeat">●</span>'
-      : '<span class="text-green">●</span>'
+    if (runningTools > 0) {
+      dot.classList.add('text-white', 'heartbeat')
+      dot.classList.remove('text-green')
+    } else {
+      dot.classList.remove('text-white', 'heartbeat')
+      dot.classList.add('text-green')
+    }
   }
 
   // Duration: only when all done and timing available
   if (durationEl) {
-    if (running === 0) {
+    if (runningTools === 0) {
       const totalNs = Array.from(tools).reduce((sum, t) => {
         return sum + (parseInt((t as HTMLElement).dataset.toolTimingNs || '0', 10) || 0)
       }, 0)
@@ -306,8 +310,7 @@ export function appendToolChildrenContainer(handles: ToolDomHandles): HTMLDivEle
 }
 
 export function setToolSummary(handles: ToolDomHandles, summary: string): void {
-  // Match ToolRenderer.tsx:99 conditional rendering — prefix with a space when non-empty.
-  handles.summaryEl.textContent = summary ? ` ${summary}` : ''
+  handles.summaryEl.textContent = summary ? ` (${summary})` : ''
 }
 
 export function setToolOutput(handles: ToolDomHandles, output: string): void {
@@ -326,10 +329,14 @@ export function finishTool(
   const { isError, durationNs, output } = opts
   handles.dot.classList.remove('heartbeat', 'text-white')
   handles.dot.classList.add(isError ? 'text-red' : 'text-green')
+  handles.root.dataset.toolTimingNs = String(durationNs)
   const dur = formatDurationNs(durationNs)
   handles.durEl.textContent = ' ' + (isError ? `FAIL · ${dur}` : dur)
   handles.durEl.className = 'font-mono text-xs align-middle ' + (isError ? 'text-red' : 'text-t3')
   if (output) setToolOutput(handles, output)
+  // If tool is inside a group, update group dot/summary/duration.
+  const group = handles.root.closest('[data-tool-group]') as HTMLElement | null
+  if (group) updateGroupSummary(group)
 }
 
 export function toggleToolExpanded(handles: ToolDomHandles): void {

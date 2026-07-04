@@ -177,7 +177,7 @@ describe('streaming DOM isolation', () => {
     expect(document.body.textContent).toContain('say')
   })
 
-  it('text_delta shows plain text during streaming, markdown after query_end', () => {
+  it('markdown renders inline during text_delta (**bold** → <strong>)', () => {
     mount()
     setTextarea('q')
     pressEnter()
@@ -187,11 +187,6 @@ describe('streaming DOM isolation', () => {
       { type: 'text_delta', text: '**bold**' },
     ])
     const mdBody = document.querySelector('.md-body') as HTMLElement
-    // During streaming: plain text (no markdown rendering)
-    expect(mdBody.querySelector('strong')).toBeNull()
-    expect(mdBody.textContent).toContain('**bold**')
-    // After query_end: markdown rendered
-    events([{ type: 'query_end' }])
     expect(mdBody.querySelector('strong')?.textContent).toBe('bold')
   })
 

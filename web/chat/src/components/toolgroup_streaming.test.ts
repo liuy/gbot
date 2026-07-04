@@ -88,7 +88,7 @@ describe('ToolGroup streaming rendering', () => {
 
 		const group = container.querySelector('[data-tool-group]') as HTMLElement
 		const dot = group.querySelector('[data-group-dot]')
-		expect(dot!.querySelector('.heartbeat')).toBeTruthy()
+		expect(dot!.classList.contains('heartbeat')).toBe(true)
 		expect(dot!.textContent).toBe('●')
 	})
 })
