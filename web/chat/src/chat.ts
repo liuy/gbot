@@ -316,7 +316,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let streamStartedAt = 0
   let streaming = false
   const toolEntries = new Map<string, ToolEntry>()
-  let streamAccum = { text: '', thinking: '' }
   let currentTextDiv: HTMLDivElement | null = null
   let currentPendingText: { block: { kind: 'text'; id: string; text: string } } | null = null
   let currentThinking: ThinkingEntry | null = null
@@ -384,7 +383,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     streamContainer = null
     toolEntries.clear()
-    streamAccum = { text: '', thinking: '' }
     currentTextDiv = null
     currentThinking = null
     progressHandles = null
@@ -475,23 +473,36 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const block = {
       kind: 'text' as const,
       id: nextId('txt'),
-      text: streamAccum.text,
+      text: '',
     }
     pendingBlocks.push(block)
     currentPendingText = { block }
     if (streamContainer) {
       currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
-      currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
+      currentTextDiv.innerHTML = renderMarkdown('')
     }
   }
 
   function setupStreaming() {
     if (!streamContainer) return
-    // Drain late deltas: text arrived before the sink was mounted.
-    if (streamAccum.text && !currentTextDiv) {
-      startNewTextBlock()
-    } else if (currentTextDiv) {
-      currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
+    // Late text deltas (text_delta before streamContainer mounted) wrote
+    // directly into currentPendingText.block.text. Mount the DOM sink and
+    // re-derive innerHTML from block.text so nothing is lost.
+    if (currentPendingText && !currentTextDiv) {
+      currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
+      currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+    } else if (currentTextDiv && currentPendingText) {
+      currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+    }
+    // Late thinking deltas wrote into currentThinking.pendingBlock.text.
+    // thinking_start only attaches the <p> when streamContainer is non-null;
+    // if it arrived earlier the entry existed but its <p> was never mounted.
+    // Mount it now so the reasoning text is visible.
+    if (currentThinking) {
+      const anchor = progressAnchor()
+      if (anchor) streamContainer.insertBefore(currentThinking.p.parentElement!, anchor)
+      else streamContainer.appendChild(currentThinking.p.parentElement!)
+      writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
     }
     if (!progressHandles) {
       progressHandles = appendProgressBar(streamContainer)
@@ -635,7 +646,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'query_start': {
         if (e.agent) return
         cleanupStreamingRefs()
-        streamAccum = { text: '', thinking: '' }
         const { outer, content } = buildShell('assistant')
         const m: MessageState = {
           ...newAssistantMessage(nextId('a')),
@@ -655,7 +665,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (e.agent) return
         if (streaming) return
         cleanupStreamingRefs()
-        streamAccum = { text: '', thinking: '' }
         const { outer, content } = buildShell('assistant')
         const m: MessageState = {
           ...newAssistantMessage(nextId('a')),
@@ -744,7 +753,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           }
           return
         }
-        streamAccum.thinking = ''
         const entry = createThinkingEntry()
         pendingBlocks.push(entry.pendingBlock)
         currentThinking = entry
@@ -779,9 +787,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           return
         }
         if (!currentThinking) return
-        streamAccum.thinking += e.thinking.text
         currentThinking.pendingBlock.text += e.thinking.text
-        writeThinkingText(currentThinking.p, streamAccum.thinking)
+        writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
         scrollToBottom()
         return
       }
@@ -808,7 +815,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
       case 'text_start': {
         if (e.agent) return
-        streamAccum.text = ''
         startNewTextBlock()
         return
       }
@@ -847,15 +853,20 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           }
           return
         }
-        streamAccum.text += e.text
-        if (!currentTextDiv || !currentPendingText) {
+        if (!currentPendingText) {
           startNewTextBlock()
         }
-        if (currentTextDiv) {
-          currentTextDiv.innerHTML = renderMarkdown(streamAccum.text)
-          if (currentPendingText)
-            currentPendingText.block.text = streamAccum.text
-          scrollToBottom()
+        if (currentPendingText) {
+          currentPendingText.block.text += e.text
+          if (currentTextDiv) {
+            currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+            scrollToBottom()
+          } else if (streamContainer) {
+            // Late delta: sink not yet mounted. Mount inline now.
+            currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
+            currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+            scrollToBottom()
+          }
         }
         return
       }
