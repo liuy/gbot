@@ -165,8 +165,10 @@ type ContentBlock struct {
 	// Anthropic API requires "thinking" field (not "text") for thinking blocks.
 	Thinking string `json:"thinking,omitempty"`
 	// ThinkingDurationNs records wall-clock thinking time in nanoseconds.
-	// Set on thinking_end, used by webchat/TUI history rendering. Not sent to LLM.
-	ThinkingDurationNs int64 `json:"-"`
+	// Persisted to DB for history rendering; not part of Anthropic's API
+	// schema so it's naturally stripped when ContentBlock is marshalled
+	// into LLM payloads (only type+thinking fields are sent).
+	ThinkingDurationNs int64 `json:"thinkingDurationNs,omitempty"`
 
 	// Tool use fields (type == "tool_use")
 	ID    string          `json:"id,omitempty"`
