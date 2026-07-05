@@ -248,4 +248,12 @@ describe('appendProgressBar', () => {
     // cache: cacheRead=4096, total=20407 → 20%
     expect(h.cacheEl.textContent).toContain('20%')
   })
+
+  it('finalizeProgressBar cache percent uses floor, not round', () => {
+    // TUI uses integer division (floor). cacheRead=999/total=1000 → 99%, not 100%.
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    finalizeProgressBar(h, { inputTokens: 1, outputTokens: 0, cacheRead: 999, cacheCreation: 0 }, 1000, 0)
+    expect(h.cacheEl.textContent).toBe('99% cached')
+  })
 })

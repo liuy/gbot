@@ -487,7 +487,7 @@ export function finalizeProgressBar(
   if (usage.cacheRead > 0 || usage.cacheCreation > 0) {
     const total = totalInput
     if (total > 0 && usage.cacheRead > 0) {
-      const pct = Math.round(usage.cacheRead * 100 / total)
+      const pct = Math.floor(usage.cacheRead * 100 / total)
       h.cacheEl.textContent = pct + '% cached'
     } else if (usage.cacheCreation > 0) {
       h.cacheEl.textContent = formatTokenCount(usage.cacheCreation) + ' warmed'
