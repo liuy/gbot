@@ -133,6 +133,10 @@ export function finishThinking(
   if (glyph) glyph.classList.remove('heartbeat')
   // Auto-collapse on finish (matches Thinking.tsx active→inactive → setExpanded(false)).
   p.classList.add('hidden')
+  // Sync chevron: collapsed = no rotation, expanded = rotate-90.
+  const chevron = labelEl.parentElement?.querySelector('svg')
+  if (chevron) chevron.setAttribute('class',
+    'inline-block align-middle text-t3 transition-transform')
 }
 
 function createGroupContainer(): HTMLElement {
@@ -373,7 +377,7 @@ export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
 
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {
   const root = document.createElement('div')
-  root.className = 'mt-2 flex items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
+  root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
 
   const dotEl = document.createElement('span')
   dotEl.className = 'inline-block overflow-hidden text-[12px] text-blue heartbeat'
@@ -389,7 +393,8 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.appendChild(outEl)
 
   const tokensSuffix = document.createElement('span')
-  tokensSuffix.textContent = 'tokens'
+  tokensSuffix.textContent = ''
+  tokensSuffix.style.display = 'none'
   root.appendChild(tokensSuffix)
 
   const sep1 = document.createElement('span')
@@ -461,6 +466,7 @@ export function refreshProgressBar(
   h.toolCountEl.textContent = toolCount === 1 ? '1 tool' : toolCount + ' tools'
   const sep = h.root.querySelector('.sep-tools') as HTMLElement | null
   if (sep) sep.style.display = toolCount > 0 ? '' : 'none'
+  h.toolCountEl.style.display = toolCount > 0 ? '' : 'none'
 }
 
 export function finalizeProgressBar(
@@ -484,6 +490,7 @@ export function finalizeProgressBar(
   if (sepTools) sepTools.style.display = toolCount > 0 ? '' : 'none'
   // Cache line matching TUI AppendStatsLine.
   const sepCache = h.root.querySelector('.sep-cache') as HTMLElement | null
+  if (sepCache) sepCache.style.display = ''
   if (usage.cacheRead > 0 || usage.cacheCreation > 0) {
     const total = totalInput
     if (total > 0 && usage.cacheRead > 0) {

@@ -256,4 +256,46 @@ describe('appendProgressBar', () => {
     finalizeProgressBar(h, { inputTokens: 1, outputTokens: 0, cacheRead: 999, cacheCreation: 0 }, 1000, 0)
     expect(h.cacheEl.textContent).toBe('99% cached')
   })
+
+  it('finalizeProgressBar produces correct stats line format', () => {
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    setProgressBarUsage(h, { inputTokens: 155996, outputTokens: 227, cacheRead: 28672, cacheCreation: 0 })
+    finalizeProgressBar(h, { inputTokens: 293, outputTokens: 96, cacheRead: 184640, cacheCreation: 0 }, 63800, 8, 12000)
+    const parts: string[] = []
+    h.root.childNodes.forEach((n) => {
+      const el = n as HTMLElement
+      if (el.style && el.style.display === 'none') return
+      const t = (el.textContent ?? '').trim()
+      if (t) parts.push(t)
+    })
+    const line = parts.join(' ')
+    // Format: ● ↑180.6k ↓96 · 1.5 t/s · 99% cached · 8 tools · 1m 3s
+    const dot = '\\u00B7'  // ·
+    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' \\d+% cached ' + dot + ' 8 tools ' + dot + ' 1m 3s$'))
+    console.log('FINAL:', JSON.stringify(line))
+    expect(line).not.toMatch(/^·|·$/)
+    expect(line).not.toMatch(/ · · /)
+  })
+
+  it('streaming stats line has no cache info', () => {
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    setProgressBarUsage(h, { inputTokens: 155996, outputTokens: 227, cacheRead: 28672, cacheCreation: 0 })
+    refreshProgressBar(h, Date.now() - 56000, 8, 494)
+    const parts: string[] = []
+    h.root.childNodes.forEach((n) => {
+      const el = n as HTMLElement
+      if (el.style && el.style.display === 'none') return
+      const t = (el.textContent ?? '').trim()
+      if (t) parts.push(t)
+    })
+    const line = parts.join(' ')
+    // Format: ● ↑180.3k ↓227 · 8.8 t/s · 8 tools · 56s
+    const dot = '\\u00B7'
+    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' 8 tools ' + dot + ' \\d+s$'))
+    expect(line).not.toContain('cached')
+    expect(line).not.toContain('warmed')
+    expect(line).not.toMatch(/ · · /)
+  })
 })
