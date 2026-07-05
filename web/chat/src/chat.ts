@@ -77,12 +77,6 @@ export interface ChatHandles {
   cleanup: () => void
 }
 
-let msgIdCounter = 0
-function nextId(prefix: string): string {
-  msgIdCounter += 1
-  return `${prefix}-${msgIdCounter}`
-}
-
 function classifyToolName(name: string): {
   isSearch: boolean
   isRead: boolean
@@ -128,7 +122,7 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   const result: ChatMessage[] = []
   for (const h of merged) {
     const m: ChatMessage = {
-      id: h.id || nextId(h.role === 'user' ? 'u' : 'a'),
+      id: h.id || '',
       role: h.role,
       blocks: [],
       usage: {
@@ -144,12 +138,12 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
     if (h.blocks && h.blocks.length > 0) {
       for (const b of h.blocks) {
         if (b.kind === 'text') {
-          m.blocks.push({ kind: 'text', id: nextId('txt'), text: b.text })
+          m.blocks.push({ kind: 'text', id: '', text: b.text })
         } else if (b.kind === 'thinking') {
           const th = b.thinking!
           m.blocks.push({
             kind: 'thinking',
-            id: nextId('th'),
+            id: '',
             text: th.text,
             durationNs: th.durationNs ?? 0,
             active: false,
@@ -178,7 +172,7 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
       }
     } else {
       if (h.text) {
-        m.blocks.push({ kind: 'text', id: nextId('txt'), text: h.text })
+        m.blocks.push({ kind: 'text', id: '', text: h.text })
       }
     }
     result.push(m)
@@ -378,6 +372,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     })
   }
 
+  // Single observer: any DOM mutation in the messages container triggers scroll.
+  // Replaces scattered scrollToBottom() calls in handleEvent — covers streaming
+  // text, thinking, tools, sub-agents, and history load.
+  const scrollObserver = new MutationObserver(() => scrollToBottom())
+  scrollObserver.observe(messagesContainer, { childList: true, subtree: true, characterData: true })
+
   const progressAnchor = (): Node | null => progressHandles?.root ?? null
 
   const cleanupStreamingRefs = () => {
@@ -466,7 +466,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     temp.removeChild(wrap)
     const pendingBlock: Extract<Block, { kind: 'thinking' }> = {
       kind: 'thinking',
-      id: nextId('th'),
+      id: '',
       text: '',
       durationNs: 0,
       active: true,
@@ -478,7 +478,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   function startNewTextBlock() {
     const block = {
       kind: 'text' as const,
-      id: nextId('txt'),
+      id: '',
       text: '',
     }
     pendingBlocks.push(block)
@@ -558,7 +558,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       err.textContent = text
       content.appendChild(err)
       const m: MessageState = {
-        id: nextId('a'),
+        id: '',
         role: 'assistant',
         blocks: [],
         usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
@@ -604,17 +604,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         messagesContainer.appendChild(outer)
       }
     } else {
-      const existingIds = new Set(messages.map((m) => m.id))
-      const deduped = newMsgs.filter((m) => !existingIds.has(m.id))
-      if (deduped.length === 0) {
-        loadingMore = false
-        return
-      }
       // Pagination: prepend older messages.
       const prevScrollHeight = root.scrollHeight
       const prevScrollTop = root.scrollTop
       const before = messagesContainer.firstChild
-      for (const chat of deduped) {
+      for (const chat of newMsgs) {
         const { outer, content } = renderCommittedMessageDOM(chat)
         const m: MessageState = {
           id: chat.id,
@@ -656,7 +650,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         cleanupStreamingRefs()
         const { outer, content } = buildShell('assistant')
         const m: MessageState = {
-          ...newAssistantMessage(nextId('a')),
+          ...newAssistantMessage(''),
           domRoot: outer,
           contentDiv: content,
         }
@@ -675,7 +669,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         cleanupStreamingRefs()
         const { outer, content } = buildShell('assistant')
         const m: MessageState = {
-          ...newAssistantMessage(nextId('a')),
+          ...newAssistantMessage(''),
           domRoot: outer,
           contentDiv: content,
         }
@@ -805,7 +799,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         currentThinking.pendingBlock.text += e.thinking.text
         tokenRate.add(e.thinking.text)
         writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
-        scrollToBottom()
         return
       }
       case 'thinking_end': {
@@ -849,7 +842,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           } else {
             const newBlock = {
               kind: 'text' as const,
-              id: nextId('txt'),
+              id: '',
               text: e.text,
             }
             container.push(newBlock)
@@ -878,12 +871,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           tokenRate.add(e.text)
           if (currentTextDiv) {
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
-            scrollToBottom()
           } else if (streamContainer) {
             // Late delta: sink not yet mounted. Mount inline now.
             currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
-            scrollToBottom()
           }
         }
         return
@@ -1034,7 +1025,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const sourceUUID: string = att.source_uuid ?? ''
         if (!text) return
         if (streaming) {
-          pendingBlocks.push({ kind: 'user', id: nextId('u'), text })
+          pendingBlocks.push({ kind: 'user', id: '', text })
           if (streamContainer) {
             appendUserBlock(streamContainer, text, progressAnchor())
           }
@@ -1044,9 +1035,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           span.textContent = text
           content.appendChild(span)
           const m: MessageState = {
-            id: nextId('u'),
+            id: '',
             role: 'user',
-            blocks: [{ kind: 'text', id: nextId('txt'), text }],
+            blocks: [{ kind: 'text', id: '', text }],
             usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
             error: '',
             status: 'done',
@@ -1079,9 +1070,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     span.textContent = text
     content.appendChild(span)
     const m: MessageState = {
-      id: nextId('u'),
+      id: '',
       role: 'user',
-      blocks: [{ kind: 'text', id: nextId('txt'), text }],
+      blocks: [{ kind: 'text', id: '', text }],
       usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
       error: '',
       status: 'done',
@@ -1092,7 +1083,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     messages.push(m)
     messagesContainer.appendChild(outer)
     conn.send({ type: 'message', text })
-    scrollToBottom()
   }
 
   const onStop = () => {
