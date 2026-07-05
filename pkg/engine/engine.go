@@ -2215,6 +2215,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 					cb.Thinking = currentText.String()
 					currentText.Reset()
 					elapsed := time.Since(thinkingStart)
+					cb.ThinkingDurationNs = elapsed.Nanoseconds()
 					e.emitEvent(types.QueryEvent{
 						Type: types.EventThinkingEnd,
 						Thinking: &types.ThinkingEvent{

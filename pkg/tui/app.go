@@ -574,8 +574,9 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 						current.Blocks = append(current.Blocks, ContentBlock{
 							Type: BlockThinking,
 							Thinking: ThinkingView{
-								Text: block.Thinking,
-								Done: true,
+								Text:     block.Thinking,
+								Duration: time.Duration(block.ThinkingDurationNs),
+								Done:     true,
 							},
 						})
 					}

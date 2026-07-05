@@ -315,7 +315,10 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 				}
 			case types.ContentTypeThinking:
 				if strings.TrimSpace(cb.Thinking) != "" {
-					thinkingEntry := historyThinkingEntry{Text: cb.Thinking}
+					thinkingEntry := historyThinkingEntry{
+						Text:       cb.Thinking,
+						DurationNs: cb.ThinkingDurationNs,
+					}
 					hm.Thinking = append(hm.Thinking, thinkingEntry)
 					hm.Blocks = append(hm.Blocks, historyBlock{Kind: "thinking", Thinking: &thinkingEntry})
 				}

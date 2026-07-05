@@ -5224,3 +5224,63 @@ func TestEngineDefaultModalitiesStripsImage(t *testing.T) {
 		t.Error("user message missing the \"[image]\" text placeholder that StripMediaFromMessages substitutes for stripped image blocks")
 	}
 }
+
+// TestQuery_ThinkingDurationPersisted verifies that thinking block duration
+// is written into the ContentBlock after thinking_end, so it survives history
+// persistence (used by webchat/TUI history load to show "Thought for Xs").
+func TestQuery_ThinkingDurationPersisted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: "pondering..."}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 1}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	eng.Query(ctx, "hi", "")
+	ec.WaitForResult()
+
+	msgs := eng.Messages()
+	if len(msgs) < 2 {
+		t.Fatalf("need at least 2 messages, got %d", len(msgs))
+	}
+	var assistant *types.Message
+	for i := range msgs {
+		if msgs[i].Role == types.RoleAssistant {
+			assistant = &msgs[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant message in history")
+	}
+	var thinking *types.ContentBlock
+	for i := range assistant.Content {
+		if assistant.Content[i].Type == types.ContentTypeThinking {
+			thinking = &assistant.Content[i]
+			break
+		}
+	}
+	if thinking == nil {
+		t.Fatal("no thinking block in assistant message")
+	}
+	if thinking.ThinkingDurationNs == 0 {
+		t.Errorf("ThinkingDurationNs = 0, want > 0 (duration should be persisted on thinking_end)")
+	}
+}
