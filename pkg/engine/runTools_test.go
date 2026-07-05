@@ -2271,3 +2271,68 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 		t.Errorf("shared.go count = %d, want 2", sharedCount)
 	}
 }
+
+// stuckTool blocks forever on an empty channel, ignoring ctx cancel.
+// Used to test that ExecuteAll respects rootCtx cancellation.
+type stuckTool struct {
+	name string
+	done chan struct{} // blocks forever — never closed
+}
+
+func (t *stuckTool) Name() string                                { return t.name }
+func (t *stuckTool) Aliases() []string                           { return nil }
+func (t *stuckTool) Description(json.RawMessage) (string, error) { return "stuck", nil }
+func (t *stuckTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *stuckTool) Call(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+	<-t.done // blocks forever — never returns
+	return nil, nil
+}
+func (t *stuckTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *stuckTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *stuckTool) IsDestructive(json.RawMessage) bool        { return true }
+func (t *stuckTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *stuckTool) IsEnabled() bool                           { return true }
+func (t *stuckTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *stuckTool) Prompt() string                            { return "" }
+func (t *stuckTool) RenderResult(any) string                   { return "" }
+func (t *stuckTool) NewResultType() any                        { return nil }
+func (t *stuckTool) MaxResultSize() int                        { return 50000 }
+
+// TestExecuteAll_BlocksOnStuckTool_AfterCtxCancel verifies that ExecuteAll
+// does NOT block waiting for a stuck tool after rootCtx is cancelled.
+//
+// The old code did `<-ch` even after `<-rootCtx.Done()`, so a stuck
+// tool blocked the engine indefinitely.
+func TestExecuteAll_BlocksOnStuckTool_AfterCtxCancel(t *testing.T) {
+	t.Parallel()
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	toolMap := map[string]tool.Tool{"stuck": &stuckTool{name: "stuck"}}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, rootCtx)
+
+	signal := make(chan struct{})
+	go func() {
+		defer close(signal)
+		_ = e.ExecuteAll([]types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "t1", Name: "stuck", Input: json.RawMessage(`{}`)},
+		})
+	}()
+
+	// Wait for tool goroutine to enter Call.
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: let tool enter blocked state
+
+	// Cancel rootCtx — ExecuteAll should return promptly, not block on stuck tool.
+	rootCancel()
+
+	select {
+	case <-signal:
+		// ExecuteAll returned — good, context cancel worked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecuteAll did not return after rootCtx cancel — stuck tool blocked engine")
+	}
+}

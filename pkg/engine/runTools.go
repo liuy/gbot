@@ -439,7 +439,20 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 		select {
 		case <-ch:
 		case <-e.rootCtx.Done():
-			<-ch
+			// Tool context cancelled. Most tools complete immediately (abort
+			// check in executeTool fires synchronously). But some tools may
+			// ignore ctx cancel (e.g. blocked on unresponsive child process).
+			// Yield a few times to let the goroutine reach close(tt.done);
+			// if still blocked after that, skip rather than blocking forever.
+			select {
+			case <-ch:
+			default:
+				// Tool goroutine hasn't scheduled yet, try briefly.
+				select {
+				case <-ch:
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
 		}
 	}
 
