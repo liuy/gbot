@@ -773,7 +773,7 @@ func TestOpenAISSE_IdleTimeout(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	slowBody := &slowReader{data: []byte(sseData), delay: 100 * time.Millisecond}
-	body := &timeoutReader{reader: slowBody, timeout: p.idleTimeout}
+	body := &timeoutReader{reader: slowBody, timeout: p.idleTimeout, ctx: context.Background()}
 
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)

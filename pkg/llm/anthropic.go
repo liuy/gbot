@@ -235,7 +235,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		var body io.Reader = httpResp.Body
 		var td TimeoutDisabler
 		if p.idleTimeout > 0 {
-			tr := &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+			tr := &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout, ctx: ctx}
 			body = tr
 			td = tr
 			defer td.SetTimeoutDisabled(false)

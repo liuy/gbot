@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync/atomic"
@@ -17,13 +18,14 @@ const DefaultSSETimeout = 90 * time.Second
 // Each Read() call has a deadline — if no data arrives within the
 // timeout, Read returns an error instead of blocking indefinitely.
 //
-// When disabled is true (tool input phase), timeout is skipped — the LLM
-// is actively generating tool parameters and may go quiet for extended
-// periods without being stuck.
+// When disabled is true (tool input phase), the idle timeout is skipped
+// but the context cancel path still works — Abort() via ctx.Done()
+// unblocks Read immediately.
 type timeoutReader struct {
 	reader   io.Reader
 	timeout  time.Duration
 	disabled atomic.Bool
+	ctx      context.Context
 }
 
 // TimeoutDisabler allows callers to temporarily disable the idle timeout.
@@ -44,14 +46,20 @@ type readResult struct {
 }
 
 func (r *timeoutReader) Read(p []byte) (int, error) {
-	if r.disabled.Load() {
-		return r.reader.Read(p)
-	}
 	done := make(chan readResult, 1)
 	go func() {
 		n, err := r.reader.Read(p)
 		done <- readResult{n, err}
 	}()
+
+	if r.disabled.Load() {
+		select {
+		case res := <-done:
+			return res.n, res.err
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
+		}
+	}
 	t := time.NewTimer(r.timeout)
 	defer t.Stop()
 	select {
@@ -59,5 +67,7 @@ func (r *timeoutReader) Read(p []byte) (int, error) {
 		return res.n, res.err
 	case <-t.C:
 		return 0, errors.New("SSE idle timeout: no data received")
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
 	}
 }
