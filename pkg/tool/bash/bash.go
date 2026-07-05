@@ -130,10 +130,14 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			}
 			return isDestructiveCommand(in.Command)
 		},
-		IsConcurrencySafe_: func(input json.RawMessage) bool {
-			// LLM already sequences dependent Bash commands; allow parallel
-			// execution so independent reads/writes don't block each other.
-			return true
+		IsConcurrencySafe_: func(json.RawMessage) bool {
+			// Serial execution for safety. Parallel Bash commands (e.g. 8x
+			// npx vitest run from a single LLM response) deadlock on shared
+			// file locks (node_modules/.vitest). Unlike Edit/Write which
+			// only serialize per-file, Bash operates on shared global state
+			// (node_modules, build artifacts, lock files) where conflict
+			// detection is impractical.
+			return false
 		},
 		IsSearchOrRead_:    IsSearchOrRead,
 		InterruptBehavior_: tool.InterruptCancel,
