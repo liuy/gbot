@@ -782,6 +782,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         streamAccum.thinking += e.thinking.text
         currentThinking.pendingBlock.text += e.thinking.text
         writeThinkingText(currentThinking.p, streamAccum.thinking)
+        scrollToBottom()
         return
       }
       case 'thinking_end': {
