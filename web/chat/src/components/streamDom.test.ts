@@ -12,6 +12,7 @@ import {
   appendProgressBar,
   setProgressBarUsage,
   refreshProgressBar,
+  finalizeProgressBar,
 } from './streamDom'
 
 function newParent(): HTMLElement {
@@ -190,7 +191,6 @@ describe('appendProgressBar', () => {
     expect(h.inEl.textContent).toBe('↑0')
     expect(h.outEl.textContent).toBe('↓0')
     expect(h.rateEl.textContent).toBe('0.0 t/s')
-    expect(h.toolCountEl.textContent).toBe('0 tools')
   })
 
   it('setProgressBarUsage updates token counts', () => {
@@ -199,6 +199,18 @@ describe('appendProgressBar', () => {
     setProgressBarUsage(h, { inputTokens: 1234, outputTokens: 5678, cacheRead: 0, cacheCreation: 0 })
     expect(h.inEl.textContent).toBe('↑1.2k')
     expect(h.outEl.textContent).toBe('↓5.5k')
+  })
+
+  it('setProgressBarUsage hides cache during streaming', () => {
+    // Streaming progress line should NOT show cache info — TUI only shows
+    // cache in AppendStatsLine (finalized). Verify sep-cache is hidden.
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    setProgressBarUsage(h, { inputTokens: 1000, outputTokens: 500, cacheRead: 800, cacheCreation: 0 })
+    // Even with cacheRead>0, cacheEl must be empty during streaming.
+    expect(h.cacheEl.textContent).toBe('')
+    const sep = h.root.querySelector('.sep-cache') as HTMLElement | null
+    expect(sep?.style.display).toBe('none')
   })
 
   it('refreshProgressBar updates elapsed, rate, tool count without NaN', () => {
@@ -218,5 +230,22 @@ describe('appendProgressBar', () => {
     const h = appendProgressBar(parent)
     refreshProgressBar(h, Date.now(), 0, 0)
     expect(h.rateEl.textContent).toBe('0.0 t/s')
+  })
+
+  it('finalizeProgressBar stops heartbeat and shows final stats', () => {
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    setProgressBarUsage(h, { inputTokens: 16311, outputTokens: 1854, cacheRead: 4096, cacheCreation: 0 })
+    refreshProgressBar(h, Date.now() - 12000, 7, 1854)
+    finalizeProgressBar(h, { inputTokens: 16311, outputTokens: 1854, cacheRead: 4096, cacheCreation: 0 }, 12000, 7)
+    // Heartbeat stopped
+    expect(h.dotEl.classList.contains('heartbeat')).toBe(false)
+    // totalInput = 16311+4096+0 = 20407 ≈ 19.9k, output = 1854 ≈ 1.8k
+    expect(h.inEl.textContent).toContain('19')
+    expect(h.outEl.textContent).toContain('1.8')
+    expect(h.rateEl.textContent).toContain('t/s')
+    expect(h.toolCountEl.textContent).toContain('7 tools')
+    // cache: cacheRead=4096, total=20407 → 20%
+    expect(h.cacheEl.textContent).toContain('20%')
   })
 })

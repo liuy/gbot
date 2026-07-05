@@ -19,6 +19,7 @@ import {
   setToolOutput,
   setProgressBarUsage,
   refreshProgressBar,
+  finalizeProgressBar,
   refreshToolDuration,
   refreshThinkingLabel,
   writeThinkingText,
@@ -34,6 +35,7 @@ import {
 } from './inputBar'
 import { createAsk } from './ask'
 import { getConnection } from './ws'
+import { TokenRate } from './tokenRate'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -319,8 +321,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let currentTextDiv: HTMLDivElement | null = null
   let currentPendingText: { block: { kind: 'text'; id: string; text: string } } | null = null
   let currentThinking: ThinkingEntry | null = null
+  let accumulatedThinkingMs = 0
+  const tokenRate = new TokenRate()
   let progressHandles: ProgressDomHandles | null = null
-  let progressUsage = { inputTokens: 0, outputTokens: 0 }
+  let progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
   let refreshInterval: number | null = null
   const pendingBlocks: Block[] = []
   const pendingToolByID = new Map<string, ToolBlock>()
@@ -385,8 +389,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     toolEntries.clear()
     currentTextDiv = null
     currentThinking = null
+    accumulatedThinkingMs = 0
+    tokenRate.reset()
     progressHandles = null
-    progressUsage = { inputTokens: 0, outputTokens: 0 }
+    progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
     pendingBlocks.length = 0
     pendingToolByID.clear()
     currentPendingText = null
@@ -522,12 +528,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
       })
       if (progressHandles) {
+        const r = tokenRate.rate()
         refreshProgressBar(
           progressHandles,
           streamStartedAt,
           pendingBlocks.filter((b) => b.kind === 'tool').length,
           progressUsage.outputTokens,
         )
+        progressHandles.rateEl.textContent = r > 0 ? r.toFixed(1) + ' t/s' : '0.0 t/s'
       }
     }, 200)
   }
@@ -735,6 +743,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         inputBar.setStreaming(false)
         queuedMsgs = []
         inputBar.setQueuedMsgs([])
+        // Finalize progress bar to static stats before cleanup nulls its refs.
+        if (progressHandles) {
+          const streamMs = tokenRate.streamDurationMs()
+          finalizeProgressBar(progressHandles, progressUsage,
+            streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
+            pendingBlocks.filter((b) => b.kind === 'tool').length, accumulatedThinkingMs)
+        }
         cleanupStreamingRefs()
         return
       }
@@ -788,6 +803,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (!currentThinking) return
         currentThinking.pendingBlock.text += e.thinking.text
+        tokenRate.add(e.thinking.text)
         writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
         scrollToBottom()
         return
@@ -809,6 +825,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         entry.pendingBlock.active = false
         entry.pendingBlock.durationNs =
           e.thinking?.duration ?? entry.pendingBlock.durationNs
+        accumulatedThinkingMs += Math.round(entry.pendingBlock.durationNs / 1e6)
         finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
         currentThinking = null
         return
@@ -858,6 +875,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (currentPendingText) {
           currentPendingText.block.text += e.text
+          tokenRate.add(e.text)
           if (currentTextDiv) {
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
             scrollToBottom()
@@ -983,10 +1001,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!e.usage_event) return
         if (e.agent) return
         const u = e.usage_event
-        progressUsage = {
-          inputTokens: u.input_tokens,
-          outputTokens: u.output_tokens,
-        }
+        // engine emits per-turn deltas; accumulate across the whole query.
+        progressUsage.inputTokens += u.input_tokens
+        progressUsage.outputTokens += u.output_tokens
+        progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
+        progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
         if (progressHandles) {
           setProgressBarUsage(progressHandles, {
             inputTokens: u.input_tokens,

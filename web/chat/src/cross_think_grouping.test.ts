@@ -52,7 +52,7 @@ function blockTypes(container: Element | null): string[] {
     if (el.dataset.toolGroup) return 'group'
     if (el.dataset.toolRoot) return 'tool'
     if (el.classList.contains('md-body')) return 'text'
-    if (el.querySelector('.heartbeat') || el.className.includes('progress')) return 'progress'
+    if (el.dataset.progress || el.querySelector('.heartbeat') || el.className.includes('progress')) return 'progress'
     return 'other'
   }).filter(t => t !== 'progress')
 }
