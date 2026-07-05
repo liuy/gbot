@@ -134,11 +134,7 @@ var convertibleExtensions = map[string]bool{
 	".epub":  true,
 	".ipynb": true,
 	".csv":   true,
-	".html":  true,
-	".htm":   true,
 	".zip":   true,
-	".xml":   true,
-	".rss":   true,
 }
 
 // Input is the file read tool input schema.

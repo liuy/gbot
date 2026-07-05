@@ -1489,26 +1489,6 @@ func TestExecute_DocxConversion_Offset(t *testing.T) {
 	}
 }
 
-func TestExecute_HtmlConversion(t *testing.T) {
-	t.Parallel()
-	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_blog.html")
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	result, err := fileread.Execute(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	output, ok := result.Data.(fileread.TextOutput)
-	if !ok {
-		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
-	}
-	if len(output.Content) == 0 {
-		t.Error("Content is empty, expected converted markdown")
-	}
-	if strings.Contains(output.Content, "<script") || strings.Contains(output.Content, "<nav") {
-		t.Error("expected HTML noise (script/nav tags) to be stripped")
-	}
-}
-
 func TestExecute_ZipConversion(t *testing.T) {
 	t.Parallel()
 	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_files.zip")
@@ -1556,26 +1536,6 @@ func TestExecute_DocumentOutputBounded(t *testing.T) {
 		t.Errorf("converted document output ~%d tokens exceeds MaxFileReadTokens %d (%d chars) — "+
 			"executeDocument must bound its output like executeTextFile does",
 			tokens, fileread.MaxFileReadTokens, len(output.Content))
-	}
-}
-
-func TestExecute_RssXmlConversion(t *testing.T) {
-	t.Parallel()
-	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_rss.xml")
-	input := json.RawMessage(`{"file_path":"` + fp + `","limit":10}`)
-	result, err := fileread.Execute(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	output, ok := result.Data.(fileread.TextOutput)
-	if !ok {
-		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
-	}
-	if len(output.Content) == 0 {
-		t.Error("Content is empty, expected converted markdown")
-	}
-	if strings.Contains(output.Content, "<?xml") {
-		t.Error("expected XML declaration to be stripped in conversion")
 	}
 }
 
