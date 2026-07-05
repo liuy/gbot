@@ -357,9 +357,46 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   let isNearBottom = true
   let lastScrollHeight = 0
+
+  // Scroll-to-bottom floating button — blue glow + circular progress ring.
+  const scrollBtn = document.createElement('button')
+  scrollBtn.className =
+    'fixed bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full opacity-0 pointer-events-none transition-all duration-200'
+  scrollBtn.style.cssText = 'background:transparent;'
+  // SVG: outer ring (progress) + inner arrow
+  scrollBtn.innerHTML =
+    '<svg width="44" height="44" viewBox="0 0 44 44">' +
+    '<circle class="scroll-ring" cx="22" cy="22" r="18" fill="none" stroke="rgba(0,180,255,0.15)" stroke-width="2"/>' +
+    '<circle class="scroll-progress" cx="22" cy="22" r="18" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.15s ease-out"/>' +
+    '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>'
+  root.appendChild(scrollBtn)
+  scrollBtn.addEventListener('click', () => {
+    root.scrollTo({ top: root.scrollHeight, behavior: 'smooth' })
+  })
+
+  const scrollArc = scrollBtn.querySelector('.scroll-progress') as SVGCircleElement
+  const circumference = 2 * Math.PI * 18 // r=18
+
   root.addEventListener('scroll', () => {
-    const near = root.scrollHeight - root.scrollTop - root.clientHeight < 120
+    const maxScroll = root.scrollHeight - root.clientHeight
+    const distFromBottom = maxScroll - root.scrollTop
+    const near = distFromBottom < 120
     if (near !== isNearBottom) isNearBottom = near
+    // Show/hide
+    scrollBtn.style.opacity = isNearBottom ? '0' : '1'
+    scrollBtn.style.pointerEvents = isNearBottom ? 'none' : 'auto'
+    // Glow when visible
+    if (!isNearBottom) {
+      scrollBtn.style.boxShadow = '0 0 20px -4px rgba(0,180,255,0.45)'
+    } else {
+      scrollBtn.style.boxShadow = 'none'
+    }
+    // Progress ring: 0 at bottom, full at top
+    if (maxScroll > 0) {
+      const progress = Math.min(distFromBottom / maxScroll, 1)
+      scrollArc.setAttribute('stroke-dashoffset', String(circumference * (1 - progress)))
+    }
   }, { passive: true })
   const scrollToBottom = () => {
     if (!isNearBottom) return
