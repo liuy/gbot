@@ -75,7 +75,7 @@ export function appendThinkingBlock(
   header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
 
   const glyph = document.createElement('span')
-  glyph.className = 'text-amber text-sm leading-none align-middle inline-block w-4 text-center'
+  glyph.className = 'text-amber text-sm leading-none align-middle inline-block w-4 text-center heartbeat'
   glyph.textContent = '✦'
   header.appendChild(glyph)
 
@@ -125,6 +125,9 @@ export function finishThinking(
   durationNs: number,
 ): void {
   labelEl.textContent = `Thought for ${formatDurationNs(durationNs)}`
+  // Stop the heartbeat animation on the glyph.
+  const glyph = labelEl.parentElement?.querySelector('.heartbeat')
+  if (glyph) glyph.classList.remove('heartbeat')
   // Auto-collapse on finish (matches Thinking.tsx active→inactive → setExpanded(false)).
   p.classList.add('hidden')
 }
