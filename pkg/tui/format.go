@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
@@ -25,12 +26,15 @@ func animateTokenValue(displayed, target int) int {
 }
 
 // errorPrefix returns a context-specific prefix for error display.
-// APIError gets "API Error" so users immediately know the source;
-// everything else gets the generic "Error".
+// APIError with a status gets "API error <status>"; APIError without one
+// gets "API error"; everything else gets the generic "Error".
 func errorPrefix(err error) string {
 	var apiErr *llm.APIError
 	if errors.As(err, &apiErr) {
-		return "API Error"
+		if apiErr.Status > 0 {
+		return fmt.Sprintf("API Error %d", apiErr.Status)
+	}
+	return "API Error"
 	}
 	return "Error"
 }

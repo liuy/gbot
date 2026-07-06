@@ -177,17 +177,26 @@ func TestErrorPrefix_APIError(t *testing.T) {
 	t.Parallel()
 	err := &llm.APIError{Message: "rate limited", Status: 429}
 	got := errorPrefix(err)
+	if got != "API Error 429" {
+		t.Errorf("errorPrefix(APIError) = %q, want %q", got, "API Error 429")
+	}
+}
+
+func TestErrorPrefix_APIError_NoStatus(t *testing.T) {
+	t.Parallel()
+	err := &llm.APIError{Message: "overloaded"}
+	got := errorPrefix(err)
 	if got != "API Error" {
-		t.Errorf("errorPrefix(APIError) = %q, want %q", got, "API Error")
+		t.Errorf("errorPrefix(APIError no status) = %q, want %q", got, "API Error")
 	}
 }
 
 func TestErrorPrefix_WrappedAPIError(t *testing.T) {
 	t.Parallel()
-	err := fmt.Errorf("stream request: %w", &llm.APIError{Message: "overloaded"})
+	err := fmt.Errorf("stream request: %w", &llm.APIError{Message: "overloaded", Status: 503})
 	got := errorPrefix(err)
-	if got != "API Error" {
-		t.Errorf("errorPrefix(wrapped APIError) = %q, want %q", got, "API Error")
+	if got != "API Error 503" {
+		t.Errorf("errorPrefix(wrapped APIError) = %q, want %q", got, "API Error 503")
 	}
 }
 
