@@ -426,3 +426,110 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 		t.Fatalf("buffer should be empty after turn_end even on write failure, got %d", len(c.currentTurnBuf))
 	}
 }
+
+// TestTakeover_DoesNotClearBuffer verifies that takeover replay does NOT
+// clear currentTurnBuf. The buffer must persist across multiple takeovers
+// (reconnects) until turn_end/query_end clears it.
+//
+// Scenario: sub-agent (Reviewer) running inside Agent tool. User
+// reconnects multiple times during sub-agent execution. Each reconnect
+// must see the full sub-agent content (including tool results). After
+// sub-agent query_end, reconnect must see the tool result summary via
+// history replay.
+func TestTakeover_DoesNotClearBuffer(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+	})
+	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub-agent text", Agent: agent})
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolStart,
+		ToolUse:    &types.ToolUseEvent{ID: "tu2", Name: "Grep"},
+		Agent:      agent,
+	})
+	c.Handle(types.QueryEvent{
+		Type:         types.EventToolEnd,
+		ToolResult:   &types.ToolResultEvent{ToolUseID: "tu2", DisplayOutput: "grep result"},
+		Agent:        agent,
+	})
+
+	if len(c.currentTurnBuf) != 6 {
+		t.Fatalf("buffer should have 6 frames, got %d", len(c.currentTurnBuf))
+	}
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/chat"
+
+	// ── First takeover ──
+	ws1, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("ws1 dial: %v", err)
+	}
+	defer ws1.Close()
+	_ = readWSMessage(t, ws1) // connect_status
+
+	if len(c.currentTurnBuf) != 6 {
+		t.Fatalf("buffer should still have 6 frames after first takeover, got %d", len(c.currentTurnBuf))
+	}
+
+	// Verify ws1 received the grep result during replay.
+	ws1GotResult := false
+	for i := 0; i < 6; i++ {
+		msg := readWSMessage(t, ws1)
+		if strings.Contains(string(msg), "grep result") {
+			ws1GotResult = true
+		}
+	}
+	if !ws1GotResult {
+		t.Error("ws1 did not receive grep result in first replay")
+	}
+
+	// More sub-agent events arrive after first takeover.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
+
+	if len(c.currentTurnBuf) != 7 {
+		t.Fatalf("buffer should have 7 frames after new event, got %d", len(c.currentTurnBuf))
+	}
+
+	// ── Second takeover ──
+	ws1.Close()
+	time.Sleep(100 * time.Millisecond) // REAL-TIME
+
+	ws2, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("ws2 dial: %v", err)
+	}
+	defer ws2.Close()
+	_ = readWSMessage(t, ws2) // connect_status
+
+	if len(c.currentTurnBuf) != 7 {
+		t.Fatalf("buffer should still have 7 frames after second takeover, got %d — repeated reconnects must not shrink buffer", len(c.currentTurnBuf))
+	}
+
+	// Verify ws2 received ALL 7 frames including grep result + more text.
+	ws2GotResult := false
+	ws2GotMoreText := false
+	for i := 0; i < 7; i++ {
+		msg := readWSMessage(t, ws2)
+		if strings.Contains(string(msg), "grep result") {
+			ws2GotResult = true
+		}
+		if strings.Contains(string(msg), "more text") {
+			ws2GotMoreText = true
+		}
+	}
+	if !ws2GotResult {
+		t.Error("ws2 did not receive grep result in second replay")
+	}
+	if !ws2GotMoreText {
+		t.Error("ws2 did not receive 'more text' in second replay")
+	}
+}

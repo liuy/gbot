@@ -74,7 +74,6 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	if replayed > 0 {
 		slog.Info("webchat:takeover replay", "frames", replayed)
 	}
-	c.currentTurnBuf = nil // clear buffer; new conn will accumulate fresh
 
 	c.activeWS.Store(ws) // 5. new connection becomes the sink
 	c.writeMu.Unlock()
