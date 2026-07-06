@@ -246,3 +246,46 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 		t.Fatalf("buffer should be empty after turn_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", len(c.currentTurnBuf))
 	}
 }
+
+// TestSubAgentTurnEnd_DoesNotClearBuffer verifies that a sub-agent's
+// turn_end does NOT clear currentTurnBuf. Sub-agent turns are nested
+// inside a parent Agent tool call — clearing the buffer on sub-agent
+// turn_end would wipe the parent's setup events (turn_start, tool_start)
+// that are still needed for takeover replay.
+//
+// Without this fix, a reconnect during sub-agent execution produces a
+// replay buffer with only sub-agent events (no parent setup), so the
+// client can't render the sub-agent's output inside the parent tool.
+func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Main agent setup events — these MUST survive sub-agent turn_end.
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingStart})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd})
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+	})
+
+	// Sub-agent turn — has Agent set (parent_tool_use_id).
+	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventTurnEnd, Agent: agent})
+
+	// Buffer must still contain ALL events — sub-agent turn_end must
+	// NOT have cleared it. Main agent's turn is still in progress.
+	// Events: turn_start(main) + thinking_start + thinking_end + tool_start +
+	//         turn_start(sub) + thinking_start + thinking_end + turn_end(sub) = 8
+	if len(c.currentTurnBuf) != 8 {
+		t.Fatalf("buffer should have 8 frames after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", len(c.currentTurnBuf))
+	}
+
+	// Now main agent's turn_end arrives — THIS should clear the buffer.
+	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+	if len(c.currentTurnBuf) != 0 {
+		t.Fatalf("buffer should be empty after main agent turn_end, got %d", len(c.currentTurnBuf))
+	}
+}

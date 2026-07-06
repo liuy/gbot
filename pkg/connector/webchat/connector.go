@@ -260,7 +260,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
-	if event.Type == types.EventTurnEnd || event.Type == types.EventQueryEnd {
+	if (event.Type == types.EventTurnEnd || event.Type == types.EventQueryEnd) && event.Agent == nil {
 		_ = c.writePayloadAndClear(payload)
 	} else {
 		_ = c.writePayload(payload)
