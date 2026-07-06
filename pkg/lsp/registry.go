@@ -95,7 +95,7 @@ func (r *Registry) lspStringLocked() string {
 	var b strings.Builder
 	for i, s := range r.specs {
 		if i > 0 {
-			b.WriteString(" | ")
+			b.WriteString(", ")
 		}
 		b.WriteString(s.Name)
 		b.WriteString(" (")
@@ -366,6 +366,7 @@ func (r *Registry) HasExtension(ext string) bool {
 
 // LSPString returns a compact server listing for the # Environment section.
 // Includes language labels so the model can match lsp:true to the right file type.
+// Uses comma (not pipe) to avoid confusion with the outer Runtime separator.
 func (r *Registry) LSPString() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -375,7 +376,7 @@ func (r *Registry) LSPString() string {
 	var b strings.Builder
 	for i, s := range r.specs {
 		if i > 0 {
-			b.WriteString(" | ")
+			b.WriteString(", ")
 		}
 		b.WriteString(s.Name)
 		b.WriteString(" (")

@@ -106,7 +106,7 @@ func TestLSPString_WithServers(t *testing.T) {
 	}
 	r.mu.Unlock()
 	s := r.LSPString()
-	if s != "gopls (Go) | tsserver (TypeScript)" {
+	if s != "gopls (Go), tsserver (TypeScript)" {
 		t.Errorf("LSPString() = %q", s)
 	}
 }

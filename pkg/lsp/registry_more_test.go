@@ -242,7 +242,7 @@ func TestRegistry_LSPStringLocked(t *testing.T) {
 		{Name: "tsserver", Language: "TypeScript"},
 	}
 	s := r.lspStringLocked()
-	if s != "gopls (Go) | tsserver (TypeScript)" {
+	if s != "gopls (Go), tsserver (TypeScript)" {
 		t.Errorf("lspStringLocked = %q", s)
 	}
 }
