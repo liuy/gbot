@@ -448,14 +448,14 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub-agent text", Agent: agent})
 	c.Handle(types.QueryEvent{
-		Type:       types.EventToolStart,
-		ToolUse:    &types.ToolUseEvent{ID: "tu2", Name: "Grep"},
-		Agent:      agent,
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu2", Name: "Grep"},
+		Agent:   agent,
 	})
 	c.Handle(types.QueryEvent{
-		Type:         types.EventToolEnd,
-		ToolResult:   &types.ToolResultEvent{ToolUseID: "tu2", DisplayOutput: "grep result"},
-		Agent:        agent,
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tu2", DisplayOutput: "grep result"},
+		Agent:      agent,
 	})
 
 	if len(c.currentTurnBuf) != 6 {
@@ -482,7 +482,7 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 
 	// Verify ws1 received the grep result during replay.
 	ws1GotResult := false
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		msg := readWSMessage(t, ws1)
 		if strings.Contains(string(msg), "grep result") {
 			ws1GotResult = true
@@ -500,7 +500,7 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	}
 
 	// ── Second takeover ──
-	ws1.Close()
+	_ = ws1.Close()
 	time.Sleep(100 * time.Millisecond) // REAL-TIME
 
 	ws2, _, err := websocket.DefaultDialer.Dial(url, nil)
@@ -517,7 +517,7 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	// Verify ws2 received ALL 7 frames including grep result + more text.
 	ws2GotResult := false
 	ws2GotMoreText := false
-	for i := 0; i < 7; i++ {
+	for range 7 {
 		msg := readWSMessage(t, ws2)
 		if strings.Contains(string(msg), "grep result") {
 			ws2GotResult = true

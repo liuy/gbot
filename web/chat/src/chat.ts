@@ -304,7 +304,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const messages: MessageState[] = []
   let nextCursor = ''
   let hasMore = false
-  let expectingInitial = true
   let loadingMore = false
 
   // ── Streaming refs (cleared on query_end).
@@ -435,6 +434,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     currentPendingText = null
     currentSubAgentTextDiv.clear()
     currentSubAgentThinking.clear()
+  }
+
+  const resetAllState = () => {
+    cleanupStreamingRefs()
+    streaming = false
+    inputBar.setStreaming(false)
+    for (const m of messages) m.domRoot.remove()
+    messages.length = 0
+    nextCursor = ''
+    hasMore = false
+    loadingMore = false
   }
 
   function finalizeRunningBlocks(blocks: Block[]) {
@@ -617,50 +627,35 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   function loadHistory(msg: Extract<ServerMessage, { type: 'history' }>) {
     const newMsgs = mapHistoryToChatMessages(msg.messages)
-    const isInitial = expectingInitial
 
-    if (isInitial) {
-      expectingInitial = false
-      // Replace DOM children + state list.
-      for (const m of messages) m.domRoot.remove()
-      messages.length = 0
-      for (const chat of newMsgs) {
-        const { outer, content } = renderCommittedMessageDOM(chat)
-        const m: MessageState = {
-          id: chat.id,
-          role: chat.role,
-          blocks: chat.blocks,
-          usage: chat.usage,
-          error: chat.error,
-          status: chat.status,
-          startedAt: chat.startedAt,
-          domRoot: outer,
-          contentDiv: content,
-        }
-        messages.push(m)
-        messagesContainer.appendChild(outer)
+    const prevScrollHeight = root.scrollHeight
+    const prevScrollTop = root.scrollTop
+    const before = messagesContainer.firstChild
+    for (const chat of newMsgs) {
+      const { outer, content } = renderCommittedMessageDOM(chat)
+      const m: MessageState = {
+        id: chat.id,
+        role: chat.role,
+        blocks: chat.blocks,
+        usage: chat.usage,
+        error: chat.error,
+        status: chat.status,
+        startedAt: chat.startedAt,
+        domRoot: outer,
+        contentDiv: content,
+      }
+      messages.unshift(m)
+      messagesContainer.insertBefore(outer, before)
+    }
+    if (messages.length === newMsgs.length) {
+      requestAnimationFrame(() => {
+        bottomSentinel.scrollIntoView({ behavior: 'smooth' })
+      })
+      if (msg.hasMore && msg.nextCursor) {
+        loadingMore = true
+        conn.send({ type: 'history_request', cursor: msg.nextCursor, limit: 10 })
       }
     } else {
-      // Pagination: prepend older messages.
-      const prevScrollHeight = root.scrollHeight
-      const prevScrollTop = root.scrollTop
-      const before = messagesContainer.firstChild
-      for (const chat of newMsgs) {
-        const { outer, content } = renderCommittedMessageDOM(chat)
-        const m: MessageState = {
-          id: chat.id,
-          role: chat.role,
-          blocks: chat.blocks,
-          usage: chat.usage,
-          error: chat.error,
-          status: chat.status,
-          startedAt: chat.startedAt,
-          domRoot: outer,
-          contentDiv: content,
-        }
-        messages.unshift(m)
-        messagesContainer.insertBefore(outer, before)
-      }
       requestAnimationFrame(() => {
         const delta = root.scrollHeight - prevScrollHeight
         root.scrollTop = prevScrollTop + delta
@@ -669,15 +664,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
-    if (isInitial) {
-      requestAnimationFrame(() => {
-        bottomSentinel.scrollIntoView({ behavior: 'smooth' })
-      })
-      if (msg.hasMore && msg.nextCursor) {
-        loadingMore = true
-        conn.send({ type: 'history_request', cursor: msg.nextCursor, limit: 10 })
-      }
-    }
   }
 
   function handleEvent(e: QueryEvent) {
@@ -1169,12 +1155,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'connect_status':
         header.setStatus(msg.connected)
         inputBar.setConnected(msg.connected)
-        cleanupStreamingRefs()
-        streaming = false
-        expectingInitial = true
-        nextCursor = ''
-        hasMore = false
-        loadingMore = false
+        resetAllState()
         return
       case 'queued': {
         const uuid = msg.uuid

@@ -330,7 +330,7 @@ describe('chat integration', () => {
     expect(red?.textContent).toContain('boom')
   })
 
-  it('connect_status resets pagination (expectingInitial)', () => {
+  it('connect_status resets state for fresh history', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
@@ -352,7 +352,7 @@ describe('chat integration', () => {
       hasMore: false,
     })
     expect(document.body.textContent).toContain('old')
-    // Reconnect → expectingInitial flips back; a fresh history replaces.
+    // Reconnect → fresh history replaces old.
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
       type: 'history',
