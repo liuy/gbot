@@ -245,8 +245,8 @@ describe('appendProgressBar', () => {
     expect(h.outEl.textContent).toContain('1.8')
     expect(h.rateEl.textContent).toContain('t/s')
     expect(h.toolCountEl.textContent).toContain('7 tools')
-    // cache: cacheRead=4096, total=20407 → 20%
-    expect(h.cacheEl.textContent).toContain('20%')
+    // cache: cacheRead=4096, total=20407 → 20.1%
+    expect(h.cacheEl.textContent).toContain('20.1%')
   })
 
   it('finalizeProgressBar cache percent uses floor, not round', () => {
@@ -254,7 +254,7 @@ describe('appendProgressBar', () => {
     const parent = newParent()
     const h = appendProgressBar(parent)
     finalizeProgressBar(h, { inputTokens: 1, outputTokens: 0, cacheRead: 999, cacheCreation: 0 }, 1000, 0)
-    expect(h.cacheEl.textContent).toBe('99% cached')
+    expect(h.cacheEl.textContent).toBe('99.9% cached')
   })
 
   it('finalizeProgressBar produces correct stats line format', () => {
@@ -272,7 +272,7 @@ describe('appendProgressBar', () => {
     const line = parts.join(' ')
     // Format: ● ↑180.6k ↓96 · 1.5 t/s · 99% cached · 8 tools · 1m 3s
     const dot = '\\u00B7'  // ·
-    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' \\d+% cached ' + dot + ' 8 tools ' + dot + ' 1m 3s$'))
+    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' [\\d.]+% cached ' + dot + ' 8 tools ' + dot + ' 1m 3s$'))
     console.log('FINAL:', JSON.stringify(line))
     expect(line).not.toMatch(/^·|·$/)
     expect(line).not.toMatch(/ · · /)

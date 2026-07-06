@@ -759,8 +759,8 @@ func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usag
 		total := queryUsage.CacheReadInputTokens + queryUsage.CacheCreationInputTokens + queryUsage.InputTokens
 		if total > 0 {
 			if queryUsage.CacheReadInputTokens > 0 {
-				pct := queryUsage.CacheReadInputTokens * 100 / total
-				cachePart = fmt.Sprintf(" · %d%% cached", pct)
+				pct := float64(queryUsage.CacheReadInputTokens) * 100 / float64(total)
+				cachePart = fmt.Sprintf(" · %.1f%% cached", pct)
 			} else {
 				cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
 			}
