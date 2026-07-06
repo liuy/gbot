@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,5 +288,141 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
 	if len(c.currentTurnBuf) != 0 {
 		t.Fatalf("buffer should be empty after main agent turn_end, got %d", len(c.currentTurnBuf))
+	}
+}
+
+// TestTakeoverConcurrent_NoRaceOnBufferLen verifies that reading
+// len(c.currentTurnBuf) during takeover doesn't race with concurrent
+// Handle appends. The takeover log line reads buffer length outside
+// writeMu — race detector catches this when Handle and serveChatWS
+// run concurrently.
+//
+// Run with: go test -race -run TestTakeoverConcurrent
+func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
+	c := newTestConnector(t)
+	_ = dialAndStore(t, c)
+
+	// Concurrently pump Handle events while repeatedly dialing new WS
+	// connections (triggering takeover). If len(c.currentTurnBuf) is read
+	// outside writeMu, the race detector fires.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Writer goroutine: continuously append to buffer via Handle.
+	wg.Go(func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
+				i++
+			}
+		}
+	})
+
+	// Takeover goroutine: repeatedly dial new WS to trigger serveChatWS.
+	wg.Go(func() {
+		mux := http.NewServeMux()
+		RegisterChatWS(mux, c)
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/chat"
+		for range 20 {
+			conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+			if err != nil {
+				continue
+			}
+			time.Sleep(2 * time.Millisecond) // REAL-TIME
+			_ = conn.Close()
+		}
+	})
+
+	time.Sleep(100 * time.Millisecond) // REAL-TIME — let race window open
+	close(stop)
+	wg.Wait()
+}
+
+// TestWritePayloadAndClear_ClearsBufferWithActiveWS verifies that
+// writePayloadAndClear clears currentTurnBuf when activeWS is connected
+// and the write succeeds. The turn's events are committed to
+// engine.Messages() so replay must not include them.
+func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+
+	// Stream some events into buffer.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
+
+	if len(c.currentTurnBuf) != 2 {
+		t.Fatalf("buffer should have 2 frames, got %d", len(c.currentTurnBuf))
+	}
+
+	// turn_end arrives while connected. Buffer MUST be cleared.
+	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+
+	if len(c.currentTurnBuf) != 0 {
+		t.Fatalf("buffer should be empty after turn_end with active WS, got %d", len(c.currentTurnBuf))
+	}
+
+	// Drain delta1, delta2, then read turn_end from the WS.
+	_ = readWSMessage(t, ws)    // delta1
+	_ = readWSMessage(t, ws)    // delta2
+	msg := readWSMessage(t, ws) // turn_end
+	var env struct {
+		Event struct {
+			Type string `json:"type"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(msg, &env); err != nil {
+		t.Fatalf("unmarshal turn_end: %v", err)
+	}
+	if env.Event.Type != "turn_end" {
+		t.Errorf("turn_end event type = %q, want \"turn_end\"", env.Event.Type)
+	}
+}
+
+// TestWritePayloadAndClear_WriteFailureStillClearsBuffer verifies that
+// writePayloadAndClear clears the buffer even when the write fails
+// (e.g. broken pipe). The turn is committed regardless of delivery.
+func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
+	c := newTestConnector(t)
+	_ = dialAndStore(t, c)
+
+	// Stream events into buffer.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
+
+	if len(c.currentTurnBuf) != 2 {
+		t.Fatalf("buffer should have 2 frames, got %d", len(c.currentTurnBuf))
+	}
+
+	// Break the WS so turn_end write fails.
+	srvWS := c.activeWS.Load()
+	if srvWS == nil {
+		t.Fatal("activeWS nil")
+	}
+	_ = srvWS.UnderlyingConn().Close()
+
+	// Pump until write fails (kernel buffer drains).
+	for range 10 {
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
+	}
+	// activeWS should now be nil (writePayload marked inactive on failure).
+	if c.activeWS.Load() != nil {
+		// Keep pumping until it clears.
+		for i := 0; i < 50 && c.activeWS.Load() != nil; i++ {
+			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
+			time.Sleep(10 * time.Millisecond) // REAL-TIME
+		}
+	}
+
+	// Even though write failed, turn_end must clear the buffer.
+	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+
+	if len(c.currentTurnBuf) != 0 {
+		t.Fatalf("buffer should be empty after turn_end even on write failure, got %d", len(c.currentTurnBuf))
 	}
 }

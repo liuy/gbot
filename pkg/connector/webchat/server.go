@@ -33,22 +33,19 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 // connect_status + history + currentTurnBuf replay, (3) activate new
 // connection. The readLoop blocks until the client disconnects.
 func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
-	// Pre-construct messages outside the lock (no racing engine state).
+	// Pre-construct connect_status outside the lock (static, no engine state).
 	connectMsg, _ := json.Marshal(struct {
 		Type      string `json:"type"`
 		Connected bool   `json:"connected"`
 	}{Type: "connect_status", Connected: true})
-	var histMsg []byte
-	if msg := c.buildHistoryMessage("", 10); msg != nil {
-		histMsg = msg
-	}
-
-	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.currentTurnBuf))
 
 	// Entire takeover sequence under writeMu: invalidate old, push frames,
 	// replay buffer, then activate new conn. The engine goroutine's Handle
-	// blocks on writeMu during this window — it cannot race with the replay.
+	// blocks on writeMu during this window — it cannot race with the replay
+	// or with buildHistoryMessage's snapshot of engine.Messages().
 	c.writeMu.Lock()
+	histMsg := c.buildHistoryMessage("", 10)
+	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.currentTurnBuf))
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status
