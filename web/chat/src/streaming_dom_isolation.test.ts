@@ -203,4 +203,148 @@ describe('streaming DOM isolation', () => {
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
     expect(ta.value).toBe('preserved')
   })
+
+  it('reconnect mid-turn-2: no query_start in replay, must not duplicate (real-world)', () => {
+    // Disconnect happens during turn 2. Turn 1 completed normally
+    // (turn_end cleared buffer). On reconnect, replay has turn 2 events
+    // but NO query_start. Without query_start calling cleanupStreamingRefs(),
+    // old streaming state persists → duplication.
+    mount()
+
+    // Prior conversation history.
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'old-user', role: 'user',
+          blocks: [{ kind: 'text', text: '之前的问题' }],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 1000,
+        },
+        {
+          id: 'old-assistant', role: 'assistant',
+          blocks: [{ kind: 'text', text: '之前的回答' }],
+          usage: { inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 1001,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+
+    // ── Phase 1: new query, turn 1 completes normally ──
+    setTextarea('世界杯预测')
+    pressEnter()
+    events([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'thinking_start' },
+      { type: 'thinking_delta', thinking: { text: '搜索比赛' } },
+      { type: 'thinking_end' },
+      { type: 'tool_start', tool_use: { id: 'tu1', name: 'Web' } },
+      { type: 'tool_run', tool_use_id: 'tu1' },
+      { type: 'tool_end', tool_result: { tool_use_id: 'tu1', content: 'result1' } },
+      { type: 'turn_end' },
+    ])
+
+    // ── Phase 2: turn 2 starts, streams partially ──
+    events([
+      { type: 'turn_start' },
+      { type: 'thinking_start' },
+      { type: 'thinking_delta', thinking: { text: '分析结果' } },
+      { type: 'thinking_end' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: '巴西输了' },
+    ])
+
+    // Client rendered: turn 1 (1 think + 1 tool) + turn 2 (1 think + partial text)
+    expect(document.querySelectorAll('[data-thinking]').length).toBe(2)
+    expect(document.querySelectorAll('[data-tool-root]').length).toBe(1)
+
+    // ── Phase 3: disconnect + reconnect ──
+    // Replay has turn 2 events ONLY (turn_end cleared turn 1 from buffer).
+    // CRITICAL: replay has NO query_start — it was before turn 1.
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'old-user', role: 'user',
+          blocks: [{ kind: 'text', text: '之前的问题' }],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 1000,
+        },
+        {
+          id: 'old-assistant', role: 'assistant',
+          blocks: [{ kind: 'text', text: '之前的回答' }],
+          usage: { inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 1001,
+        },
+        {
+          id: 'new-user', role: 'user',
+          blocks: [{ kind: 'text', text: '世界杯预测' }],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 2000,
+        },
+        {
+          id: 'turn1-assistant', role: 'assistant',
+          blocks: [{ kind: 'tool', tool: { name: 'Web', summary: '搜索', output: 'result1' } }],
+          usage: { inputTokens: 200, outputTokens: 10, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 2001,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // Replay: turn 2 events ONLY — NO query_start!
+    events([
+      { type: 'turn_start' },
+      { type: 'thinking_start' },
+      { type: 'thinking_delta', thinking: { text: '分析结果' } },
+      { type: 'thinking_end' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: '巴西输了' },
+      { type: 'text_delta', text: '，挪威赢了' },
+      { type: 'text_end' },
+      { type: 'turn_end' },
+      { type: 'query_end' },
+    ])
+
+    // ── Assertions ──
+    const body = document.body.textContent || ''
+
+    // 1. Turn 2's thinking text appears exactly once (not duplicated by replay).
+    const thinkMatches = body.match(/分析结果/g) || []
+    expect(thinkMatches.length).toBe(1)
+
+    // 2. Turn 2's text appears exactly once.
+    const textMatches = body.match(/巴西输了/g) || []
+    expect(textMatches.length).toBe(1)
+
+    // 3. Turn 1's thinking was NOT committed to history (engine only
+    //    commits tool/text blocks at turn_end, not thinking). So "搜索比赛"
+    //    should NOT appear at all post-reconnect. Assert 0 to verify
+    //    thinking isn't leaking from pre-disconnect streaming state.
+    const turn1Think = body.match(/搜索比赛/g) || []
+    expect(turn1Think.length).toBe(0)
+
+    // 4. Total thinking blocks: turn 2 only (turn 1 thinking not committed
+    //    to history). Must be exactly 1.
+    const allThinking = document.querySelectorAll('[data-thinking]').length
+    expect(allThinking).toBe(1)
+
+    // 5. Total tool blocks: turn 1's tool from history = 1.
+    //    (turn 2 has no tools in this scenario)
+    const allTools = document.querySelectorAll('[data-tool-root]').length
+    expect(allTools).toBe(1)
+
+    // 6. No stuck heartbeat (all tools finalized).
+    const heartbeats = document.querySelectorAll('.heartbeat')
+    expect(heartbeats.length).toBe(0)
+
+    // 7. Turn 2's full text is visible (replay + live merged correctly).
+    expect(body).toContain('挪威赢了')
+
+    // 8. Prior history preserved.
+    expect(body).toContain('之前的回答')
+  })
 })

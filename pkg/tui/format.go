@@ -32,9 +32,9 @@ func errorPrefix(err error) string {
 	var apiErr *llm.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.Status > 0 {
-		return fmt.Sprintf("API Error %d", apiErr.Status)
-	}
-	return "API Error"
+			return fmt.Sprintf("API Error %d", apiErr.Status)
+		}
+		return "API Error"
 	}
 	return "Error"
 }

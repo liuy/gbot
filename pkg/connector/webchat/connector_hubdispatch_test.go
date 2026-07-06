@@ -3,6 +3,7 @@ package webchat
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
@@ -17,6 +18,7 @@ import (
 func TestHubDispatch_SubAgentEvent_PreservesAgentMeta(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
 
 	// Simulate what taggedDispatcher does: dispatch a sub-agent text_delta
 	// with AgentMeta set.
@@ -26,7 +28,7 @@ func TestHubDispatch_SubAgentEvent_PreservesAgentMeta(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "skill-1", AgentType: "Reviewer", Depth: 1},
 	})
 
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -62,6 +64,7 @@ func TestHubDispatch_SubAgentEvent_PreservesAgentMeta(t *testing.T) {
 func TestHubDispatch_SubAgentQueryEnd_NoDoubleInterrupt(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
 
 	// Sub-agent query_end with AbortError + agent meta
 	h.Dispatch(types.QueryEvent{
@@ -70,7 +73,7 @@ func TestHubDispatch_SubAgentQueryEnd_NoDoubleInterrupt(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "skill-1", AgentType: "Reviewer", Depth: 1},
 	})
 
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -89,10 +92,9 @@ func TestHubDispatch_SubAgentQueryEnd_NoDoubleInterrupt(t *testing.T) {
 		t.Errorf("type = %q, want query_end", env.Event.Type)
 	}
 
-	// No extra messages
-	select {
-	case extra := <-c.msgCh:
-		t.Fatalf("unexpected extra message: %s", string(extra))
-	default:
+	// No extra messages: set a short deadline, read should time out.
+	_ = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) // REAL-TIME
+	if _, _, err := ws.ReadMessage(); err == nil {
+		t.Fatalf("unexpected extra message on ws")
 	}
 }

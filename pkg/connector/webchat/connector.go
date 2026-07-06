@@ -41,12 +41,6 @@ type queryEventWithAbort struct {
 	Aborted bool `json:"aborted,omitempty"`
 }
 
-// handlerBufSize is the outbound channel buffer, matching TUI's appCh
-// (pkg/tui/handler.go: handlerBufSize = 1024). A single large buffer plus
-// blocking send means messages are never dropped; a slow client briefly
-// back-pressures the engine loop (acceptable for correctness).
-const handlerBufSize = 1024
-
 // engineClient is the subset of engine.Engine methods the connector uses.
 // Defined as an interface so tests can substitute a mock without polluting
 // production code with test-only seam fields.
@@ -105,15 +99,22 @@ type WebChatConnector struct {
 	pendingMu   sync.Mutex
 	askCounter  atomic.Int64
 
-	// Single buffered channel for all outbound messages, mirroring TUI's
-	// appCh (pkg/tui/handler.go: handlerBufSize = 1024). Blocking send —
-	// the hub calls Handle synchronously, so a full channel at most briefly
-	// delays the engine loop, which is acceptable for correctness (no drops).
-	msgCh chan []byte
-
 	// The single active WS connection. The connector supports one client at a
-	// time; a new connection replaces the prior one.
+	// time; a new connection replaces the prior one via takeover.
 	activeWS atomic.Pointer[websocket.Conn]
+
+	// writeMu serializes all writes to the active WS. gorilla websocket does
+	// not support concurrent writers; every outbound path (Handle, serveChatWS
+	// takeover, readLoop responses) goes through writePayload or its variants.
+	// It also guards currentTurnBuf (Handle appends, serveChatWS replays).
+	writeMu sync.Mutex
+
+	// currentTurnBuf holds the serialized payloads of the current turn's events
+	// that have NOT yet been committed to engine.Messages(). Cleared on
+	// turn_end / query_end (the turn is then visible via history). Replayed to
+	// a new ws during takeover so the in-flight stream is not lost.
+	// Guarded by writeMu.
+	currentTurnBuf [][]byte
 }
 
 // New builds a WebChatConnector bound to the given engine and hub. The
@@ -125,7 +126,6 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 		engine:      &engineAdapter{eng: eng},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
-		msgCh:       make(chan []byte, handlerBufSize),
 	}
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
@@ -137,14 +137,14 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 // RegisterChatWS in main.go, and the connector is request-driven.
 func (c *WebChatConnector) Start(ctx context.Context) error { return nil }
 
-// Stop unsubscribes from the hub, aborts any pending asks, cancels any active
-// query, and closes the channel so the writeLoop exits.
+// Stop unsubscribes from the hub, aborts any pending asks, and clears the
+// active WS. Does NOT abort the active query — a brief disconnect (e.g. mobile
+// browser backgrounding) should not interrupt the LLM.
 func (c *WebChatConnector) Stop() {
 	if c.unsubscribe != nil {
 		c.unsubscribe()
 	}
 	c.cleanupConn()
-	close(c.msgCh)
 }
 
 // Send is an interface no-op: webchat has no outbound platform. Nobody calls
@@ -152,18 +152,83 @@ func (c *WebChatConnector) Stop() {
 // connector.Connector contract.
 func (c *WebChatConnector) Send(userID, text string) error { return nil }
 
+// writePayload writes a text message to the active WS under writeMu with a
+// 5s deadline. On failure (slow client, dead socket), stores nil so the
+// engine is never blocked by a wedged connection. Also appends the payload to
+// currentTurnBuf (inside the lock) so takeover replay is consistent. Returns
+// the error so callers with their own bookkeeping can react.
+//
+// Buffer is appended UNCONDITIONALLY — even when activeWS is nil or write
+// fails — so that events during disconnect (tool_end, turn_end, etc.) are
+// preserved for takeover replay. Only writePayloadAndClear (turn_end/
+// query_end) resets the buffer.
+func (c *WebChatConnector) writePayload(payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.currentTurnBuf = append(c.currentTurnBuf, payload)
+	ws := c.activeWS.Load()
+	if ws == nil {
+		return nil // inactive — buffer captures event, engine keeps running
+	}
+	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		c.activeWS.Store(nil) // mark inactive
+		return err
+	}
+	return nil
+}
+
+// writePayloadAndClear writes to activeWS then clears currentTurnBuf. For
+// turn_end / query_end — the turn is now committed to engine.Messages(), so
+// the buffer is reset to avoid duplicate replay on the next takeover.
+func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	// Clear buffer unconditionally — the turn is committed to engine.Messages()
+	// so replay would duplicate. Must clear even when activeWS is nil (disconnect
+	// during turn_end) to prevent stale events from replaying after takeover.
+	bufFrames := len(c.currentTurnBuf)
+	c.currentTurnBuf = nil
+	slog.Info("webchat:turnbuf cleared", "frames", bufFrames)
+	ws := c.activeWS.Load()
+	if ws == nil {
+		return nil
+	}
+	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		c.activeWS.Store(nil)
+		return err
+	}
+	return nil
+}
+
+// writeDirect writes to activeWS without touching currentTurnBuf. For ask
+// events (must NOT be buffered) and error events (ephemeral, not replayed).
+func (c *WebChatConnector) writeDirect(payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	ws := c.activeWS.Load()
+	if ws == nil {
+		return nil
+	}
+	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		c.activeWS.Store(nil)
+		return err
+	}
+	return nil
+}
+
 // Handle implements hub.EventHandler. Every event is marshalled to its wire
-// payload and pushed onto msgCh with a blocking send (no drops). The hub
-// calls Handle synchronously, so a slow client briefly back-pressures the
-// engine loop, which is the desired correctness tradeoff — same model TUI
-// uses with its 1024-buffer appCh.
+// payload and written synchronously to the active WS via writePayload/writeDirect.
+// If no active WS or the write fails, the call is a no-op (engine keeps running).
 func (c *WebChatConnector) Handle(event hub.Event) {
 	switch event.Type {
 	case types.EventAsk:
 		c.handleAsk(event)
 		return
 	case types.EventError:
-		c.msgCh <- buildErrorMessage(event.Error)
+		_ = c.writeDirect(buildErrorMessage(event.Error))
 		return
 	}
 
@@ -182,7 +247,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 					Type: types.EventTextDelta,
 					Text: types.InterruptMessage,
 				}})
-				c.msgCh <- interruptPayload
+				_ = c.writePayload(interruptPayload)
 			}
 			c.autoRewindOnAbort()
 		}
@@ -195,7 +260,11 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
-	c.msgCh <- payload
+	if event.Type == types.EventTurnEnd || event.Type == types.EventQueryEnd {
+		_ = c.writePayloadAndClear(payload)
+	} else {
+		_ = c.writePayload(payload)
+	}
 }
 
 // shouldAutoRewind checks whether autoRewindOnAbort would rewind.
@@ -225,7 +294,7 @@ func (c *WebChatConnector) autoRewindOnAbort() {
 
 // handleAsk stores the AskEvent under a fresh id, builds the askOutbound
 // struct (NOT marshalling *types.AskEvent directly — its fields have no json
-// tags), and emits it on msgCh.
+// tags), and writes it directly to the active WS via writeDirect.
 func (c *WebChatConnector) handleAsk(event hub.Event) {
 	if event.Ask == nil {
 		return
@@ -256,7 +325,7 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 		slog.Warn("webchat: marshal ask failed", "id", id, "error", err)
 		return
 	}
-	c.msgCh <- payload
+	_ = c.writeDirect(payload)
 }
 
 // buildHistoryMessage returns a JSON "history" message containing a PAGINATED

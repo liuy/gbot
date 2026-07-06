@@ -1169,6 +1169,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'connect_status':
         header.setStatus(msg.connected)
         inputBar.setConnected(msg.connected)
+        cleanupStreamingRefs()
+        streaming = false
         expectingInitial = true
         nextCursor = ''
         hasMore = false

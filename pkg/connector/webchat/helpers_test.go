@@ -2,10 +2,14 @@ package webchat
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -139,7 +143,6 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 		engine:      &mockEngine{},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
-		msgCh:       make(chan []byte, handlerBufSize),
 	}
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
@@ -191,4 +194,19 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 	default:
 		t.Fatalf("respondToAskTest: ResponseCh blocked")
 	}
+}
+
+// dialAndStore connects a WS client to c's endpoint and drains the
+// connect_status frame that the takeover always sends first. Returns the
+// client conn with connect_status consumed, ready for Handle-event reads.
+// Tests that don't need history must set mock().messagesFn to return nil.
+func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
+	t.Helper()
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws) // drain connect_status
+	return ws
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,25 +14,13 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// readOne pops a single message from the channel with a timeout, failing the
-// test if no message arrives in time. All outbound messages land in msgCh.
-func readOne(t *testing.T, ch <-chan []byte) []byte {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for channel message")
-		panic("unreachable")
-	}
-}
-
 // TestHandle_QueryStart serializes a query_start event through Handle and
 // asserts the wire JSON wraps the QueryEvent under an "event" key.
 func TestHandle_QueryStart(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -56,8 +43,9 @@ func TestHandle_QueryStart(t *testing.T) {
 // carries the text verbatim.
 func TestHandle_TextDelta(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hello"})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -78,11 +66,12 @@ func TestHandle_TextDelta(t *testing.T) {
 // (nanoseconds) marshals as an int64 — the React client divides by 1e9.
 func TestHandle_ThinkingEnd_Nanoseconds(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{
 		Type:     types.EventThinkingEnd,
 		Thinking: &types.ThinkingEvent{Duration: 350 * time.Millisecond},
 	})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -104,12 +93,13 @@ func TestHandle_ThinkingEnd_Nanoseconds(t *testing.T) {
 // "agent" with snake_case inner fields (Phase 0 json tag additions).
 func TestHandle_AgentSnakeCase(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{
 		Type:    types.EventToolStart,
 		Agent:   &types.AgentMeta{ParentToolUseID: "call_1", AgentType: "Explore", Depth: 0},
 		ToolUse: &types.ToolUseEvent{ID: "tu_1", Name: "Grep", Input: json.RawMessage(`{}`)},
 	})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -140,6 +130,7 @@ func TestHandle_AgentSnakeCase(t *testing.T) {
 // tool_name in snake_case.
 func TestHandle_AskBuildsOutbound(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{
 		Type: types.EventAsk,
 		Ask: &types.AskEvent{
@@ -149,7 +140,7 @@ func TestHandle_AskBuildsOutbound(t *testing.T) {
 			Message:  "Allow Bash?",
 		},
 	})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var got struct {
 		Type     string          `json:"type"`
@@ -182,12 +173,13 @@ func TestHandle_AskBuildsOutbound(t *testing.T) {
 	}
 }
 
-// TestHandle_Error verifies EventError lands in msgCh
+// TestHandle_Error verifies EventError is written to the active WS
 // (blocking, must deliver) with the message field set.
 func TestHandle_Error(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventError, Error: assertErr("boom")})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Type    string `json:"type"`
@@ -204,12 +196,13 @@ func TestHandle_Error(t *testing.T) {
 	}
 }
 
-// TestHandle_QueryEnd verifies QueryEnd lands in msgCh so the
+// TestHandle_QueryEnd verifies QueryEnd is written to the active WS so the
 // "query done" signal is never dropped behind streaming deltas.
 func TestHandle_QueryEnd(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Type  string `json:"type"`
@@ -241,8 +234,9 @@ func TestHandle_QueryEnd_AbortedFlag(t *testing.T) {
 	abortErr := &engine.AbortError{Phase: "streaming", Err: ctx.Err()}
 
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -273,8 +267,9 @@ func TestHandle_QueryEnd_AbortedFlag(t *testing.T) {
 // the non-abort completion path.
 func TestHandle_QueryEnd_NoAbortedOnNilError(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -299,8 +294,9 @@ func TestHandle_QueryEnd_NoAbortedOnNilError(t *testing.T) {
 // counts as a user interrupt.
 func TestHandle_QueryEnd_NoAbortedOnNonAbortError(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: assertErr("api 500")})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 
 	var env struct {
 		Event struct {
@@ -326,6 +322,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("rewinds_when_no_content", func(t *testing.T) {
 		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -347,7 +344,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 		}
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
-		_ = readOne(t, c.msgCh) // drain query_end
+		_ = readWSMessage(t, ws) // drain query_end
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
@@ -361,6 +358,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("does_not_rewind_when_partial_text", func(t *testing.T) {
 		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -383,7 +381,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 		}
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
-		_ = readOne(t, c.msgCh) // drain query_end
+		_ = readWSMessage(t, ws) // drain query_end
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
@@ -394,6 +392,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("does_not_rewind_when_tool_use", func(t *testing.T) {
 		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -415,7 +414,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 		}
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
-		_ = readOne(t, c.msgCh) // drain query_end
+		_ = readWSMessage(t, ws) // drain query_end
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
@@ -426,6 +425,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("no_rewind_when_no_user_message", func(t *testing.T) {
 		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -439,7 +439,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 		}
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
-		_ = readOne(t, c.msgCh) // drain query_end
+		_ = readWSMessage(t, ws) // drain query_end
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
@@ -449,81 +449,12 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 	})
 }
 
-// TestMsgCh_NeverDrops verifies that msgCh blocks when full and never silently
-// drops a message, even under concurrent senders exceeding buffer capacity.
-func TestMsgCh_NeverDrops(t *testing.T) {
-	c := newTestConnector(t)
-
-	// Start reader BEFORE filling so sends don't deadlock.
-	const fillCount = handlerBufSize // 1024 to fill buffer
-	const extraCount = 50            // beyond buffer, requires blocking
-	const total = fillCount + extraCount
-	var mu sync.Mutex
-	received := make(map[string]bool)
-	readerDone := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case msg := <-c.msgCh:
-				mu.Lock()
-				received[string(msg)] = true
-				mu.Unlock()
-			case <-readerDone:
-				return
-			}
-		}
-	}()
-
-	// Send 1024+50 messages from a single goroutine. The first 1024 fill the
-	// buffer; the next 50 block until the reader drains. If sendCritical had
-	// drop logic, these 50 would be silently discarded.
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for i := range total {
-			c.msgCh <- fmt.Appendf(nil, "msg-%d", i)
-		}
-	})
-
-	sentDone := make(chan struct{})
-	go func() { wg.Wait(); close(sentDone) }()
-	select {
-	case <-sentDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("msgCh blocked >10s — messages stuck or dropped")
-	}
-
-	// Wait for reader to drain all messages.
-	for {
-		mu.Lock()
-		n := len(received)
-		mu.Unlock()
-		if n >= total {
-			break
-		}
-		select {
-		case <-time.After(10 * time.Millisecond):
-		case <-time.After(5 * time.Second):
-			t.Fatalf("reader only got %d/%d messages", n, total)
-		}
-	}
-	close(readerDone)
-
-	mu.Lock()
-	defer mu.Unlock()
-	// Verify the 50 "extra" messages (beyond buffer capacity) were delivered.
-	for i := fillCount; i < total; i++ {
-		key := fmt.Sprintf("msg-%d", i)
-		if !received[key] {
-			t.Errorf("message %q was dropped (beyond buffer)", key)
-		}
-	}
-}
-
 // TestHandle_PendingAskStoredResponseCh verifies the engine's Ask.ResponseCh
 // is reachable from the connector so a later ask_response inbound can unblock
 // the engine.
 func TestHandle_PendingAskStoredResponseCh(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	ch := make(chan types.AskResponse, 1)
 	c.Handle(types.QueryEvent{
 		Type: types.EventAsk,
@@ -533,7 +464,7 @@ func TestHandle_PendingAskStoredResponseCh(t *testing.T) {
 			ResponseCh: ch,
 		},
 	})
-	_ = readOne(t, c.msgCh)
+	_ = readWSMessage(t, ws)
 	if id := c.firstPendingAskIDTest(t); id != "1" {
 		t.Fatalf("firstPendingAskIDTest = %q, want \"1\"", id)
 	}
@@ -543,6 +474,7 @@ func TestHandle_PendingAskStoredResponseCh(t *testing.T) {
 // a permission ask, the engine's ResponseCh receives the decision.
 func TestSendAskResponse_UnblocksEngine(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	ch := make(chan types.AskResponse, 1)
 	c.Handle(types.QueryEvent{
 		Type: types.EventAsk,
@@ -552,7 +484,7 @@ func TestSendAskResponse_UnblocksEngine(t *testing.T) {
 			ResponseCh: ch,
 		},
 	})
-	_ = readOne(t, c.msgCh)
+	_ = readWSMessage(t, ws)
 
 	c.respondToAskTest(t, "1", types.AskResponse{Decision: types.DecisionAllow})
 
@@ -571,12 +503,13 @@ func TestSendAskResponse_UnblocksEngine(t *testing.T) {
 // unblocked with Aborted=true so the engine doesn't deadlock.
 func TestCleanupConn_AbortsPendingAsks(t *testing.T) {
 	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
 	ch1 := make(chan types.AskResponse, 1)
 	ch2 := make(chan types.AskResponse, 1)
 	c.Handle(types.QueryEvent{Type: types.EventAsk, Ask: &types.AskEvent{Kind: types.AskPermission, ToolName: "Bash", ResponseCh: ch1}})
 	c.Handle(types.QueryEvent{Type: types.EventAsk, Ask: &types.AskEvent{Kind: types.AskInput, Prompt: "pwd:", ResponseCh: ch2}})
-	_ = readOne(t, c.msgCh)
-	_ = readOne(t, c.msgCh)
+	_ = readWSMessage(t, ws)
+	_ = readWSMessage(t, ws)
 
 	c.cleanupConn()
 
@@ -597,10 +530,11 @@ func TestCleanupConn_AbortsPendingAsks(t *testing.T) {
 func TestNew_SubscribesToHub(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
-	// Dispatch through the hub directly: must reach our msgCh, proving New
+	ws := dialAndStore(t, c)
+	// Dispatch through the hub directly: must reach our WS, proving New
 	// registered the handler.
 	h.Dispatch(types.QueryEvent{Type: types.EventTextStart, Text: "via-hub"})
-	msg := readOne(t, c.msgCh)
+	msg := readWSMessage(t, ws)
 	var env struct {
 		Event struct {
 			Text string `json:"text"`
