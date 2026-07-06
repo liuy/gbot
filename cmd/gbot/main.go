@@ -78,6 +78,7 @@ func main() {
 	workingDir, _ := os.Getwd()
 	projectDir := project.Dir(workingDir)
 	if daemonMode {
+		workingDir = "daemon"
 		projectDir = filepath.Join(home, ".gbot", "projects", "daemon")
 	}
 
