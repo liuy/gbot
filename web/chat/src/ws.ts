@@ -14,7 +14,7 @@ interface ConnState {
   listeners: Set<Listener>
   ws: WebSocket | null
   connected: boolean
-  backoff: number
+  reconnectCount: number
   reconnectTimer: ReturnType<typeof setTimeout> | null
   disposed: boolean
 }
@@ -26,7 +26,7 @@ function createState(): ConnState {
     listeners: new Set(),
     ws: null,
     connected: false,
-    backoff: 1000,
+    reconnectCount: 0,
     reconnectTimer: null,
     disposed: false,
   }
@@ -34,21 +34,29 @@ function createState(): ConnState {
 
 function connect(s: ConnState, wsUrl: string) {
   if (s.disposed) return
+  if (s.ws) {
+    s.ws.onclose = null
+    s.ws.onerror = null
+    s.ws.onmessage = null
+    try { s.ws.close() } catch {}
+  }
   const ws = new WebSocket(wsUrl)
   s.ws = ws
 
   ws.onopen = () => {
-    s.backoff = 1000
+    s.reconnectCount = 0
     s.connected = true
   }
 
   ws.onclose = () => {
     s.connected = false
     if (s.disposed) return
+    if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
+    s.reconnectCount++
+    if (s.reconnectCount > 5) return
     s.reconnectTimer = setTimeout(() => {
-      s.backoff = Math.min(s.backoff * 2, 5000)
       connect(s, wsUrl)
-    }, s.backoff)
+    }, 1000)
   }
 
   ws.onerror = () => {
