@@ -440,6 +440,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     cleanupStreamingRefs()
     streaming = false
     inputBar.setStreaming(false)
+    queuedMsgs = []
+    pendingCancel = null
+    inputBar.setQueuedMsgs([])
     for (const m of messages) m.domRoot.remove()
     messages.length = 0
     nextCursor = ''
@@ -647,6 +650,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       messages.unshift(m)
       messagesContainer.insertBefore(outer, before)
     }
+    nextCursor = msg.nextCursor
+    hasMore = msg.hasMore
+    loadingMore = false
     if (messages.length === newMsgs.length) {
       requestAnimationFrame(() => {
         bottomSentinel.scrollIntoView({ behavior: 'smooth' })
@@ -661,9 +667,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         root.scrollTop = prevScrollTop + delta
       })
     }
-    nextCursor = msg.nextCursor
-    hasMore = msg.hasMore
-    loadingMore = false
   }
 
   function handleEvent(e: QueryEvent) {

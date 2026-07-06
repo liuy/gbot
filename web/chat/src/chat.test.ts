@@ -2,15 +2,22 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createChat } from './chat'
 
 // jsdom lacks IntersectionObserver
+let observerCallback: IntersectionObserverCallback | null = null
 class MockIntersectionObserver {
+  constructor(cb: IntersectionObserverCallback) { observerCallback = cb }
   observe() {}
   unobserve() {}
   disconnect() {}
-  takeRecords() {
-    return []
+  takeRecords() { return [] }
+}
+vi.stubGlobal('IntersectionObserver', MockIntersectionObserver as unknown as typeof IntersectionObserver)
+
+/** Simulate the scroll-to-top sentinel becoming visible (triggers prefetch). */
+function triggerTopObserver() {
+  if (observerCallback) {
+    observerCallback([{ isIntersecting: true } as IntersectionObserverEntry], null!)
   }
 }
-vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
 
 type Listener = (msg: any) => void
 
@@ -72,6 +79,7 @@ function assistantContentDivs(): HTMLElement[] {
 beforeEach(() => {
   listeners.clear()
   sent.length = 0
+  observerCallback = null
   document.body.innerHTML = ''
 })
 
@@ -398,6 +406,38 @@ describe('chat integration', () => {
       nextCursor: 'c1',
       hasMore: true,
     })
+    const historyReqs = sent.filter((m) => m.type === 'history_request')
+    expect(historyReqs.length).toBe(1)
+    expect(historyReqs[0].cursor).toBe('c1')
+  })
+
+  it('loadingMore stays true after initial-load prefetch guards observer', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Initial load with hasMore triggers a prefetch (history_request c1).
+    // BUG: loadHistory sets loadingMore=false at the function's tail,
+    // so the IntersectionObserver immediately fires a duplicate request.
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'm-1',
+          role: 'user',
+          text: 'msg1',
+          thinking: [],
+          tools: [],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '',
+          status: 'done',
+          startedAt: 0,
+        },
+      ],
+      nextCursor: 'c1',
+      hasMore: true,
+    })
+    // After initial load, the prefetch was sent and loadingMore should be true.
+    // If the observer fires right now it must NOT send a duplicate.
+    triggerTopObserver()
     const historyReqs = sent.filter((m) => m.type === 'history_request')
     expect(historyReqs.length).toBe(1)
     expect(historyReqs[0].cursor).toBe('c1')
