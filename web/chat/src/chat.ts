@@ -396,12 +396,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // Show/hide
     scrollBtn.style.opacity = isNearBottom ? '0' : '1'
     scrollBtn.style.pointerEvents = isNearBottom ? 'none' : 'auto'
-    // Glow when visible
-    if (!isNearBottom) {
-      scrollBtn.style.boxShadow = '0 0 20px -4px rgba(0,180,255,0.45)'
-    } else {
-      scrollBtn.style.boxShadow = 'none'
-    }
     // Progress ring: 0 at bottom, full at top
     if (maxScroll > 0) {
       const progress = Math.min(distFromBottom / maxScroll, 1)
