@@ -44,6 +44,9 @@ type mockEngine struct {
 	abortFn        func()
 	rewindToFn     func(idx int) error
 	systemPromptFn func() string
+	// onQueryDoneFn simulates engine committing an assistant response.
+	// Called after queryFn finishes — mirrors real engine's appendMessage + OnStreamDone.
+	onQueryDoneFn func()
 
 	// Recorded calls for assertions.
 	queryCalls         []queryCall
@@ -65,6 +68,11 @@ func (m *mockEngine) Query(ctx context.Context, userMessage, systemPrompt string
 	m.mu.Unlock()
 	if m.queryFn != nil {
 		m.queryFn(ctx, userMessage, systemPrompt)
+	}
+	// Engine commits assistant response after streaming finishes.
+	// This mirrors real engine: appendMessage(*resp) → e.OnStreamDone().
+	if m.onQueryDoneFn != nil {
+		m.onQueryDoneFn()
 	}
 }
 
@@ -144,6 +152,12 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
 	}
+	c.OnStreamDone = func() {
+		c.writeMu.Lock()
+		c.currentTurnBuf = nil
+		c.writeMu.Unlock()
+	}
+	c.mock().onQueryDoneFn = c.OnStreamDone
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
 	}

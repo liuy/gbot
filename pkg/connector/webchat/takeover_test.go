@@ -1,6 +1,7 @@
 package webchat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -228,7 +229,7 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 //
 // Falsifiability: if the unconditional buffer clear in
 // writePayloadAndClear is moved back after the ws==nil check, this test
-// fails because buffer still has frames after turn_end.
+// fails because buffer still has frames after query_end (which clears).
 func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -240,11 +241,11 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 		t.Fatalf("buffer should have 2 frames after 2 deltas, got %d", len(c.currentTurnBuf))
 	}
 
-	// turn_end arrives while disconnected. Buffer MUST be cleared.
-	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+	// query_end arrives while disconnected. Buffer MUST be cleared.
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if len(c.currentTurnBuf) != 0 {
-		t.Fatalf("buffer should be empty after turn_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", len(c.currentTurnBuf))
+		t.Fatalf("buffer should be empty after query_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", len(c.currentTurnBuf))
 	}
 }
 
@@ -284,10 +285,10 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 		t.Fatalf("buffer should have 8 frames after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", len(c.currentTurnBuf))
 	}
 
-	// Now main agent's turn_end arrives — THIS should clear the buffer.
-	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+	// Now main agent commits the assistant response — OnStreamDone clears buffer.
+	c.OnStreamDone()
 	if len(c.currentTurnBuf) != 0 {
-		t.Fatalf("buffer should be empty after main agent turn_end, got %d", len(c.currentTurnBuf))
+		t.Fatalf("buffer should be empty after OnStreamDone, got %d", len(c.currentTurnBuf))
 	}
 }
 
@@ -360,27 +361,27 @@ func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 		t.Fatalf("buffer should have 2 frames, got %d", len(c.currentTurnBuf))
 	}
 
-	// turn_end arrives while connected. Buffer MUST be cleared.
-	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+	// query_end arrives while connected. Buffer MUST be cleared.
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if len(c.currentTurnBuf) != 0 {
-		t.Fatalf("buffer should be empty after turn_end with active WS, got %d", len(c.currentTurnBuf))
+		t.Fatalf("buffer should be empty after query_end with active WS, got %d", len(c.currentTurnBuf))
 	}
 
-	// Drain delta1, delta2, then read turn_end from the WS.
+	// Drain delta1, delta2, then read query_end from the WS.
 	_ = readWSMessage(t, ws)    // delta1
 	_ = readWSMessage(t, ws)    // delta2
-	msg := readWSMessage(t, ws) // turn_end
+	msg := readWSMessage(t, ws) // query_end
 	var env struct {
 		Event struct {
 			Type string `json:"type"`
 		} `json:"event"`
 	}
 	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal turn_end: %v", err)
+		t.Fatalf("unmarshal query_end: %v", err)
 	}
-	if env.Event.Type != "turn_end" {
-		t.Errorf("turn_end event type = %q, want \"turn_end\"", env.Event.Type)
+	if env.Event.Type != "query_end" {
+		t.Errorf("expected query_end, got %q", env.Event.Type)
 	}
 }
 
@@ -419,11 +420,11 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 		}
 	}
 
-	// Even though write failed, turn_end must clear the buffer.
-	c.Handle(types.QueryEvent{Type: types.EventTurnEnd})
+	// Even though write failed, query_end must clear the buffer.
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if len(c.currentTurnBuf) != 0 {
-		t.Fatalf("buffer should be empty after turn_end even on write failure, got %d", len(c.currentTurnBuf))
+		t.Fatalf("buffer should be empty after query_end even on write failure, got %d", len(c.currentTurnBuf))
 	}
 }
 
@@ -532,4 +533,95 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	if !ws2GotMoreText {
 		t.Error("ws2 did not receive 'more text' in second replay")
 	}
+}
+
+// TestBufferClearedOnStreamDone verifies that takeover replay does not
+// duplicate events already reflected in engine history.
+//
+// Full integration test through WS connections — no internal buffer checks,
+// no direct OnStreamDone calls. Tests observable behavior only.
+func TestBufferClearedOnStreamDone(t *testing.T) {
+	c := newTestConnector(t)
+
+	// History: main agent's assistant response (committed to engine.Messages).
+	agentResponse := types.Message{
+		ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
+		Content: []types.ContentBlock{{
+			Type: types.ContentTypeText, Text: "committed response",
+		}},
+	}
+	c.mock().messagesFn = func() []types.Message {
+		return []types.Message{agentResponse}
+	}
+
+	// Mock engine: when Query runs, it dispatches streaming events,
+	// then commits (triggering OnStreamDone which clears the buffer).
+	// After commit, tool execution dispatches sub-agent events.
+	// This mirrors the real engine lifecycle.
+	c.mock().queryFn = func(ctx context.Context, userMessage, systemPrompt string) {
+		// LLM streaming: main agent response events.
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+		c.Handle(types.QueryEvent{Type: types.EventThinkingStart})
+		c.Handle(types.QueryEvent{Type: types.EventThinkingEnd})
+		c.Handle(types.QueryEvent{
+			Type:    types.EventToolStart,
+			ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+		})
+		// queryFn returns → mock engine auto-commits (OnStreamDone → buffer cleared).
+	}
+
+	// Trigger the full lifecycle: query → streaming → commit.
+	c.mock().Query(context.Background(), "test", "")
+
+	// Sub-agent events arrive AFTER commit (tool execution phase).
+	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
+
+	// Connect WS2 → takeover → read all messages.
+	ws2 := dialAndStore(t, c)
+	histMsg := readWSMessage(t, ws2)
+	var hist struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(histMsg, &hist); err != nil {
+		t.Fatalf("ws2 history unmarshal: %v", err)
+	}
+	if hist.Type != "history" {
+		t.Fatalf("ws2 first msg = %q, want \"history\"", hist.Type)
+	}
+
+	// Read all replay events from ws2.
+	var gotEvents []replayEvent
+	for {
+		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+		_, payload, err := ws2.ReadMessage()
+		if err != nil {
+			break
+		}
+		var env struct {
+			Event replayEvent `json:"event"`
+		}
+		if err := json.Unmarshal(payload, &env); err != nil {
+			continue
+		}
+		if env.Event.Type != "" {
+			gotEvents = append(gotEvents, env.Event)
+		}
+	}
+
+	// ws2 should see NO main agent events in replay — they were committed
+	// to history before buffer accumulated sub-agent events.
+	// Sub-agent events (Agent!=nil) are expected.
+	for _, ev := range gotEvents {
+		if ev.Agent == nil {
+			t.Errorf("unexpected main agent event %q in replay — leaked into buffer after commit", ev.Type)
+		}
+	}
+}
+
+type replayEvent struct {
+	Type  string `json:"type"`
+	Agent any    `json:"agent"`
 }

@@ -115,6 +115,12 @@ type WebChatConnector struct {
 	// a new ws during takeover so the in-flight stream is not lost.
 	// Guarded by writeMu.
 	currentTurnBuf [][]byte
+
+	// OnStreamDone is called when the main engine commits an assistant response
+	// to engine.Messages(). Clears currentTurnBuf so takeover replay does not
+	// duplicate events already reflected in history. Set by the connector's
+	// production wiring to engine.OnStreamDone.
+	OnStreamDone func()
 }
 
 // New builds a WebChatConnector bound to the given engine and hub. The
@@ -127,6 +133,14 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
 	}
+	c.OnStreamDone = func() {
+		c.writeMu.Lock()
+		frames := len(c.currentTurnBuf)
+		c.currentTurnBuf = nil
+		c.writeMu.Unlock()
+		slog.Info("webchat:stream done, buffer cleared", "frames", frames)
+	}
+	eng.OnStreamDone = c.OnStreamDone
 	if h != nil {
 		c.unsubscribe = h.Subscribe(c)
 	}
@@ -260,7 +274,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
-	if (event.Type == types.EventTurnEnd || event.Type == types.EventQueryEnd) && event.Agent == nil {
+	if event.Type == types.EventQueryEnd && event.Agent == nil {
 		_ = c.writePayloadAndClear(payload)
 	} else {
 		_ = c.writePayload(payload)
