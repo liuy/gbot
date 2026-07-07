@@ -78,8 +78,14 @@ func main() {
 	workingDir, _ := os.Getwd()
 	projectDir := project.Dir(workingDir)
 	if daemonMode {
-		workingDir = "daemon"
-		projectDir = filepath.Join(home, ".gbot", "projects", "daemon")
+		// Chdir to a fixed location so daemon state (PID, memory, session)
+		// is isolated from project-specific gbot instances.
+		daemonDir := filepath.Join(home, ".gbot", "daemon")
+		os.MkdirAll(daemonDir, 0755)
+		if err := os.Chdir(daemonDir); err == nil {
+			workingDir = daemonDir
+			projectDir = project.Dir(workingDir)
+		}
 	}
 
 	// PID-based single-instance guard
