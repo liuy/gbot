@@ -694,7 +694,9 @@ describe('chat integration', () => {
       }],
       nextCursor: '', hasMore: false,
     })
-    const stopBtn = document.querySelector('button') as HTMLButtonElement
-    expect(stopBtn?.textContent).toContain('STOP')
+    const stopBtn = Array.from(document.querySelectorAll('button')).find(
+      (b) => b.textContent?.includes('STOP'),
+    )
+    expect(stopBtn).toBeTruthy()
   })
 })

@@ -11,7 +11,7 @@ func TestBuildSystemPrompt_Basic(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	result := context.BuildSystemPrompt(tmpDir, nil, "", nil, "")
+	result := context.BuildSystemPrompt(tmpDir, "", nil, "", nil, "")
 	if result == "" {
 		t.Fatal("BuildSystemPrompt returned empty string")
 	}
@@ -25,7 +25,7 @@ func TestBuildSystemPrompt_ToolPromptsNotInSystemPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	toolPrompts := []string{"Bash: execute shell commands", "Grep: search file contents"}
-	result := context.BuildSystemPrompt(tmpDir, toolPrompts, "", nil, "")
+	result := context.BuildSystemPrompt(tmpDir, "", toolPrompts, "", nil, "")
 
 	if strings.Contains(result, "Bash: execute shell commands") {
 		t.Error("tool prompts must not appear in system prompt")
@@ -40,7 +40,7 @@ func TestBuildSystemPrompt_WithSkillListing(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	skillListing := "/commit - create a commit\n/review - review code"
-	result := context.BuildSystemPrompt(tmpDir, nil, skillListing, nil, "")
+	result := context.BuildSystemPrompt(tmpDir, "", nil, skillListing, nil, "")
 
 	if !strings.Contains(result, "## Available Skills") {
 		t.Error("prompt missing '## Available Skills' section")
@@ -55,7 +55,7 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	skillListing := "/test - run tests"
-	result := context.BuildSystemPrompt(tmpDir, nil, skillListing, nil, "")
+	result := context.BuildSystemPrompt(tmpDir, "", nil, skillListing, nil, "")
 	if result == "" {
 		t.Fatal("BuildSystemPrompt returned empty string")
 	}
@@ -76,7 +76,7 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 
 func TestBuildSystemPrompt_NonexistentDir(t *testing.T) {
 	t.Parallel()
-	result := context.BuildSystemPrompt("/nonexistent/path/that/does/not/exist", nil, "", nil, "")
+	result := context.BuildSystemPrompt("/nonexistent/path/that/does/not/exist", "", nil, "", nil, "")
 	if result == "" {
 		t.Fatal("BuildSystemPrompt returned empty string for nonexistent dir")
 	}
@@ -90,7 +90,7 @@ func TestBuildSystemPrompt_EmptyToolPrompts(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	toolPrompts := []string{"", "valid prompt", ""}
-	result := context.BuildSystemPrompt(tmpDir, toolPrompts, "", nil, "")
+	result := context.BuildSystemPrompt(tmpDir, "", toolPrompts, "", nil, "")
 
 	if strings.Contains(result, "valid prompt") {
 		t.Error("tool prompts must not appear in system prompt")

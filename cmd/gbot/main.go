@@ -81,7 +81,7 @@ func main() {
 		// Chdir to a fixed location so daemon state (PID, memory, session)
 		// is isolated from project-specific gbot instances.
 		daemonDir := filepath.Join(home, ".gbot", "daemon")
-		os.MkdirAll(daemonDir, 0755)
+		_ = os.MkdirAll(daemonDir, 0755)
 		if err := os.Chdir(daemonDir); err == nil {
 			workingDir = daemonDir
 			projectDir = project.Dir(workingDir)
@@ -323,7 +323,7 @@ func main() {
 			toolPrompts = append(toolPrompts, p)
 		}
 	}
-	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg, "")
+	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, lspReg, "")
 
 	// 6. Initialize short-term memory store
 	var store *short.Store
@@ -849,7 +849,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 	if d.daemonMode {
 		memDir := filepath.Join(d.projectDir, "memory", engineID)
 		wcEng.SetMemoryDir(memDir)
-		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.toolPrompts, d.skillListing, d.lspReg, memDir))
+		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, d.lspReg, memDir))
 	}
 	// Capture the media cache for shutdown teardown (the cache owns its
 	// cleanup goroutine; main must Close() it to stop that goroutine).

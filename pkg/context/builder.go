@@ -12,8 +12,13 @@ import (
 // Builder assembles the system prompt context.
 // Source: context.ts — builds the full system prompt from components.
 type Builder struct {
-	// WorkingDir is the current working directory.
+	// WorkingDir is the current working directory — where bash runs,
+	// where the LLM operates (reads, writes, searches files).
 	WorkingDir string
+
+	// ProjectDir is the gbot state directory (~/.gbot/daemon or project-derived).
+	// Contains gbot.log, gbot.pid, memory/, session_notes/, file-history/, meta.json.
+	ProjectDir string
 
 	// GitStatus is the injected git status information.
 	GitStatus *GitStatusInfo

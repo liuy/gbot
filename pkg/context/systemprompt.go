@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -122,7 +121,6 @@ func (b *Builder) RuntimeInfo() string {
 	}
 	goVer := runtime.Version()
 	repo := detectRepoRoot(b.WorkingDir)
-	workspace := detectWorkspace()
 
 	parts := []string{
 		fmt.Sprintf("host=%s", host),
@@ -133,8 +131,11 @@ func (b *Builder) RuntimeInfo() string {
 	if repo != "" {
 		parts = append(parts, fmt.Sprintf("repo=%s", repo))
 	}
-	if workspace != "" {
-		parts = append(parts, fmt.Sprintf("workspace=%s", workspace))
+	if b.WorkingDir != "" {
+		parts = append(parts, fmt.Sprintf("workspace=%s", b.WorkingDir))
+	}
+	if b.ProjectDir != "" {
+		parts = append(parts, fmt.Sprintf("projectspace=%s", b.ProjectDir))
 	}
 	if b.LSPReg != nil {
 		if lspStr := b.LSPReg.LSPString(); lspStr != "" {
@@ -143,7 +144,12 @@ func (b *Builder) RuntimeInfo() string {
 	}
 	parts = append(parts, "model={{MODEL}}")
 
-	return "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
+	runtime := "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
+	if b.WorkingDir != "" && b.ProjectDir != "" {
+		runtime += "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n"
+		runtime += "- projectspace: gbot state directory (gbot.log, memory, session notes, file history, PID)"
+	}
+	return runtime
 }
 
 func detectOS() string {
@@ -171,16 +177,4 @@ func detectRepoRoot(workingDir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func detectWorkspace() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	p := filepath.Join(home, ".gbot")
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	return ""
 }

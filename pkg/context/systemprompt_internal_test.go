@@ -139,35 +139,6 @@ func TestDetectRepoRoot_InGitRepo(t *testing.T) {
 	}
 }
 
-func TestDetectWorkspace_NoGbotDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
-
-	result := detectWorkspace()
-	if result != "" {
-		t.Errorf("detectWorkspace should return empty when ~/.gbot doesn't exist, got %q", result)
-	}
-}
-
-func TestDetectWorkspace_HasGbotDir(t *testing.T) {
-	homeDir := t.TempDir()
-	gbotDir := filepath.Join(homeDir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", homeDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
-
-	result := detectWorkspace()
-	if result != gbotDir {
-		t.Errorf("detectWorkspace = %q, want %q", result, gbotDir)
-	}
-}
-
 func TestRuntimeInfo_IncludesAllFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	b := &Builder{WorkingDir: tmpDir}
@@ -245,26 +216,6 @@ func TestDetectOS(t *testing.T) {
 	}
 	if !strings.Contains(osName, runtime.GOARCH) {
 		t.Errorf("detectOS = %q, expected to contain %q", osName, runtime.GOARCH)
-	}
-}
-
-func TestDetectWorkspace(t *testing.T) {
-	homeDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", homeDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
-
-	if got := detectWorkspace(); got != "" {
-		t.Errorf("detectWorkspace = %q, want empty when ~/.gbot absent", got)
-	}
-
-	if err := os.MkdirAll(filepath.Join(homeDir, ".gbot"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got := detectWorkspace()
-	want := filepath.Join(homeDir, ".gbot")
-	if got != want {
-		t.Errorf("detectWorkspace = %q, want %q", got, want)
 	}
 }
 
