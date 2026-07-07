@@ -69,9 +69,9 @@ function startStreamAndEnqueue(texts: string[]): Record<string, string> {
 }
 
 // Select queued bubbles inside the InputBar (not Header dropdown panels,
-// which also use the modal-enter class). The InputBar's root is .sticky.bottom-0.
+// which also use the modal-enter class). The InputBar's root is .absolute.bottom-0.
 function queuedBubbles(): NodeListOf<HTMLElement> {
-  const inputBarRoot = document.querySelector('.sticky.bottom-0') as HTMLElement
+  const inputBarRoot = document.querySelector('.absolute.bottom-0') as HTMLElement
   return inputBarRoot.querySelectorAll('.modal-enter')
 }
 

@@ -331,12 +331,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let pendingCancel: { uuid: string; text: string }[] | null = null
   let queuedMsgs: { uuid: string; text: string }[] = []
 
-  // ── Shell DOM: flex column, scroll container is flex-1 child with min-h-0.
+  // ── Shell DOM: relative root, scroll fills viewport, inputBar overlays.
   const root = document.createElement('div')
-  root.className = 'flex flex-col h-dvh'
+  root.className = 'relative flex flex-col h-dvh'
 
   const scroll = document.createElement('div')
-  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden'
+  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20'
 
   const header = createHeader()
   header.setStatus(initial.connected)
@@ -358,6 +358,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   root.appendChild(scroll)
 
   const inputBar = createInputBar({ connected: initial.connected })
+  inputBar.root.className = 'absolute bottom-0 inset-x-0 z-10 card-bg px-5 pb-3 pt-1'
   root.appendChild(inputBar.root)
 
   const conn = getConnection()
