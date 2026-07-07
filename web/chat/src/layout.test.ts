@@ -11,9 +11,9 @@ const css = fs.readFileSync(path.resolve(__dirname, 'index.css'), 'utf-8')
 
 describe('Chrome address bar flash prevention', () => {
 	it('html element has dark solid background', () => {
-		const match = css.match(/html\s*\{[^}]*background:\s*#0a1628/)
-		expect(match).not.toBeNull()
-		expect(match![0]).toContain('background:')
-		expect(match![0]).toContain('#0a1628')
+    const match = css.match(/html\s*\{[^}]*background:\s*#080d18/)
+    expect(match).not.toBeNull()
+    expect(match![0]).toContain('background:')
+    expect(match![0]).toContain('#080d18')
 	})
 })
