@@ -405,15 +405,15 @@ describe('chat integration', () => {
       nextCursor: 'c1',
       hasMore: true,
     })
-    // No prefetch on initial load — IntersectionObserver handles lazy loading.
+    // Auto-prefetch fires immediately when sentinel is visible (content short).
     let historyReqs = sent.filter((m) => m.type === 'history_request')
-    expect(historyReqs.length).toBe(0)
+    expect(historyReqs.length).toBe(1)
+    expect(historyReqs[0].cursor).toBe('c1')
 
-    // User scrolls to top — observer triggers prefetch.
+    // Observer already fired — loadingMore guard blocks duplicate.
     triggerTopObserver()
     historyReqs = sent.filter((m) => m.type === 'history_request')
     expect(historyReqs.length).toBe(1)
-    expect(historyReqs[0].cursor).toBe('c1')
   })
 
   it('loadingMore guard prevents concurrent observer prefetch', () => {
@@ -698,5 +698,30 @@ describe('chat integration', () => {
       (b) => b.textContent?.includes('STOP'),
     )
     expect(stopBtn).toBeTruthy()
+  })
+
+  it('auto-prefetches when content is shorter than viewport (observer missed)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Observer fires immediately — sentinel visible, content empty.
+    // At this point hasMore is false, so no request is sent.
+    triggerTopObserver()
+    // History arrives with more pages.
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-1', role: 'user', text: 'hello',
+        thinking: [], tools: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: 'c1', hasMore: true,
+    })
+    // Why: the sentinel is already visible when hasMore is set, so the
+    // IntersectionObserver won't re-fire. loadHistory detects this and
+    // triggers the fetch directly.
+    const historyReqs = sent.filter((m) => m.type === 'history_request')
+    expect(historyReqs.length).toBe(1)
+    expect(historyReqs[0].cursor).toBe('c1')
   })
 })

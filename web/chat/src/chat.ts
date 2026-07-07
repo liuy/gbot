@@ -308,6 +308,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let nextCursor = ''
   let hasMore = false
   let loadingMore = false
+  // Sentinel visibility margin — must match IntersectionObserver rootMargin.
+  const PREFETCH_MARGIN = 400
 
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
@@ -676,6 +678,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
+    // If the sentinel is already visible (content shorter than viewport),
+    // the observer won't re-fire after hasMore becomes true.
+    if (hasMore && nextCursor) {
+      const sentry = topSentinel.getBoundingClientRect()
+      const rootRect = scroll.getBoundingClientRect()
+      if (sentry.top <= rootRect.bottom && sentry.bottom >= rootRect.top - PREFETCH_MARGIN) {
+        loadingMore = true
+        conn.send({ type: 'history_request', cursor: nextCursor, limit: 10 })
+      }
+    }
     if (messages.length === newMsgs.length) {
       requestAnimationFrame(() => {
         bottomSentinel.scrollIntoView({ behavior: 'smooth' })
@@ -1166,7 +1178,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         conn.send({ type: 'history_request', cursor: nextCursor, limit: 10 })
       }
     },
-    { root: scroll, rootMargin: '400px 0px 0px 0px', threshold: 0 },
+    { root: scroll, rootMargin: `${PREFETCH_MARGIN}px 0px 0px 0px`, threshold: 0 },
   )
   obs.observe(topSentinel)
 
