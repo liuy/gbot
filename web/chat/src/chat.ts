@@ -162,7 +162,7 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
             isList: srk.isList,
             isLsp: srk.isLsp,
             isWeb: srk.isWeb,
-            state: (t.isError ? 'error' : 'done') as 'error' | 'done',
+            state: (t.isError ? 'error' : t.isRunning ? 'running' : 'done') as 'error' | 'running' | 'done',
             timingNs: t.durationNs ?? 0,
             displayOutput: t.displayOutput ?? '',
             startedAt: 0,
@@ -240,7 +240,8 @@ function isCollapsibleToolBlock(b: Block): boolean {
 // is indistinguishable from a message that just finished streaming.
 function renderCommittedMessageDOM(
   m: ChatMessage,
-): { outer: HTMLElement; content: HTMLDivElement } {
+): { outer: HTMLElement; content: HTMLDivElement; runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] } {
+  const runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] = []
   if (m.role === 'user') {
     const { outer, content } = buildShell('user')
     const text = m.blocks
@@ -257,13 +258,11 @@ function renderCommittedMessageDOM(
       err.textContent = m.error
       content.appendChild(err)
     }
-    return { outer, content }
+    return { outer, content, runningTools }
   }
 
   const { outer, content } = buildShell('assistant')
 
-  // Sequential append — findPrevToolSibling in streamDom handles cross-thinking grouping.
-  // Same code path as streaming, no buffer, no rebuild.
   for (const b of m.blocks) {
     if (b.kind === 'thinking') {
       const { p, labelEl } = appendThinkingBlock(content, 0)
@@ -273,11 +272,15 @@ function renderCommittedMessageDOM(
       const collapsible = isCollapsibleToolName(b.name) || isCollapsibleToolBlock(b)
       const handles = appendToolBlock(content, b.name, undefined, collapsible)
       if (b.summary) setToolSummary(handles, b.summary)
-      finishTool(handles, {
-        isError: b.state === 'error',
-        durationNs: b.timingNs,
-        output: b.displayOutput,
-      })
+      if (b.state === 'running') {
+        runningTools.push({ id: b.id, handles, block: b })
+      } else {
+        finishTool(handles, {
+          isError: b.state === 'error',
+          durationNs: b.timingNs,
+          output: b.displayOutput,
+        })
+      }
     } else if (b.kind === 'text') {
       if (!b.text) continue
       const div = appendTextBlock(content)
@@ -295,7 +298,7 @@ function renderCommittedMessageDOM(
     err.textContent = m.error
     content.appendChild(err)
   }
-  return { outer, content }
+  return { outer, content, runningTools }
 }
 
 export function createChat(initial: { connected: boolean }): ChatHandles {
@@ -636,7 +639,23 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const prevScrollTop = root.scrollTop
     const before = messagesContainer.firstChild
     for (const chat of newMsgs) {
-      const { outer, content } = renderCommittedMessageDOM(chat)
+      const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
+      // Register running tools so replay events (sub-agent thinking, tool
+      // output, etc.) can find their parent tool via pendingToolByID.
+      for (const rt of runningTools) {
+        toolEntries.set(rt.id, {
+          handles: rt.handles,
+          startedAt: Date.now(),
+          parentID: null,
+          pendingBlock: rt.block,
+        })
+        pendingToolByID.set(rt.id, rt.block)
+      }
+      // Running tool means streaming is in progress — show STOP button.
+      if (runningTools.length > 0 && !streaming) {
+        streaming = true
+        inputBar.setStreaming(true)
+      }
       const m: MessageState = {
         id: chat.id,
         role: chat.role,

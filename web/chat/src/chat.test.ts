@@ -610,4 +610,91 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('streaming')
     expect(document.body.textContent).toContain('current')
   })
+
+  it('takeover replay renders sub-agent events inside committed Agent tool', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+
+    // History: main agent committed [thinking, tool_use(Agent)].
+    // Agent tool is in "done" state with a result — but tool execution
+    // (sub-agent) is still running. This is the takeover scenario:
+    // appendMessage committed the response, buffer replays sub-agent events.
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1',
+        role: 'assistant',
+        thinking: [],
+        tools: [{
+          id: 'tu1',
+          name: 'Agent',
+          summary: 'Review latest commit',
+          isError: false,
+          isRunning: true,
+          durationNs: 0,
+          displayOutput: '',
+        }],
+        blocks: [
+          { kind: 'tool', tool: {
+            id: 'tu1',
+            name: 'Agent',
+            summary: 'Review latest commit',
+            isError: false,
+            isRunning: true,
+            durationNs: 0,
+            displayOutput: '',
+          }},
+        ],
+        text: '',
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '',
+        status: 'done',
+        startedAt: 0,
+      }],
+      nextCursor: '',
+      hasMore: false,
+    })
+
+    // Replay: sub-agent events arrive (from buffer).
+    const agent = { parent_tool_use_id: 'tu1', agent_type: 'Reviewer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'thinking_start', agent },
+      { type: 'thinking_delta', agent, thinking: { text: 'reviewing commit' } },
+      { type: 'thinking_end', agent },
+      { type: 'turn_end', agent },
+    ])
+
+    // Sub-agent content must appear in the DOM — not silently dropped.
+    expect(document.body.textContent).toContain('reviewing commit')
+  })
+
+  it('takeover with running tool shows STOP button', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1',
+        role: 'assistant',
+        thinking: [],
+        tools: [{
+          id: 'tu1', name: 'Agent', summary: 'review',
+          isRunning: true, durationNs: 0, displayOutput: '',
+        }],
+        blocks: [
+          { kind: 'tool', tool: {
+            id: 'tu1', name: 'Agent', summary: 'review',
+            isRunning: true, durationNs: 0, displayOutput: '',
+          }},
+        ],
+        text: '',
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    const stopBtn = document.querySelector('button') as HTMLButtonElement
+    expect(stopBtn?.textContent).toContain('STOP')
+  })
 })

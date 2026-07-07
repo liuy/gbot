@@ -414,6 +414,8 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 				if result, ok := toolResults[cb.ID]; ok {
 					entry.IsError = result.IsError
 					entry.DisplayOutput, entry.DurationNs = renderToolOutput(cb.Name, result.Content, tools)
+				} else {
+					entry.IsRunning = true
 				}
 				hm.Tools = append(hm.Tools, entry)
 				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "tool", Tool: &entry})
@@ -634,6 +636,7 @@ type historyToolEntry struct {
 	Summary       string `json:"summary,omitempty"`
 	DisplayOutput string `json:"displayOutput,omitempty"`
 	IsError       bool   `json:"isError,omitempty"`
+	IsRunning     bool   `json:"isRunning,omitempty"`
 	DurationNs    int64  `json:"durationNs,omitempty"`
 }
 

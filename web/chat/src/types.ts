@@ -24,6 +24,7 @@ export type HistoryBlockTool = {
   summary?: string
   displayOutput?: string
   isError?: boolean
+  isRunning?: boolean
   durationNs?: number
 }
 
@@ -42,7 +43,7 @@ export type HistoryChatMsg = {
   role: 'user' | 'assistant'
   text: string
   thinking: { text: string; durationNs: number }[]
-  tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; durationNs?: number }[]
+  tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; isRunning?: boolean; durationNs?: number }[]
   blocks?: HistoryBlock[]
   usage: {
     inputTokens: number
