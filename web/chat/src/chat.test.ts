@@ -384,10 +384,9 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('fresh')
   })
 
-  it('concurrent history_request guarded by loadingMore', () => {
+  it('IntersectionObserver triggers prefetch on scroll to top', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    // Initial load with hasMore triggers a prefetch.
     dispatch({
       type: 'history',
       messages: [
@@ -406,17 +405,20 @@ describe('chat integration', () => {
       nextCursor: 'c1',
       hasMore: true,
     })
-    const historyReqs = sent.filter((m) => m.type === 'history_request')
+    // No prefetch on initial load — IntersectionObserver handles lazy loading.
+    let historyReqs = sent.filter((m) => m.type === 'history_request')
+    expect(historyReqs.length).toBe(0)
+
+    // User scrolls to top — observer triggers prefetch.
+    triggerTopObserver()
+    historyReqs = sent.filter((m) => m.type === 'history_request')
     expect(historyReqs.length).toBe(1)
     expect(historyReqs[0].cursor).toBe('c1')
   })
 
-  it('loadingMore stays true after initial-load prefetch guards observer', () => {
+  it('loadingMore guard prevents concurrent observer prefetch', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    // Initial load with hasMore triggers a prefetch (history_request c1).
-    // BUG: loadHistory sets loadingMore=false at the function's tail,
-    // so the IntersectionObserver immediately fires a duplicate request.
     dispatch({
       type: 'history',
       messages: [
@@ -435,11 +437,177 @@ describe('chat integration', () => {
       nextCursor: 'c1',
       hasMore: true,
     })
-    // After initial load, the prefetch was sent and loadingMore should be true.
-    // If the observer fires right now it must NOT send a duplicate.
+    // First scroll triggers prefetch.
     triggerTopObserver()
-    const historyReqs = sent.filter((m) => m.type === 'history_request')
-    expect(historyReqs.length).toBe(1)
-    expect(historyReqs[0].cursor).toBe('c1')
+    expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
+
+    // Second trigger before response must not send duplicate.
+    triggerTopObserver()
+    expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
+  })
+
+  it('reconnect does not duplicate history messages', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'hello',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    expect(document.body.textContent).toContain('hello')
+
+    // Reconnect
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'hello',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'hello',
+    )
+    expect(spans.length).toBe(1)
+  })
+
+  it('reconnect after streaming does not duplicate', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u1', role: 'user', text: 'task',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'response' },
+      { type: 'text_end' },
+      { type: 'query_end' },
+    ])
+    expect(document.body.textContent).toContain('task')
+    expect(document.body.textContent).toContain('response')
+
+    // Reconnect
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u1', role: 'user', text: 'task',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+        { id: 'a1', role: 'assistant', text: 'response',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // Check presence, not count (regex \b is fragile with jsdom textContent).
+    expect(document.body.textContent).toContain('task')
+    expect(document.body.textContent).toContain('response')
+    // Count span children — user messages create exactly 1 span per message.
+    const userSpans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'task',
+    )
+    expect(userSpans.length).toBe(1)
+  })
+
+  it('reconnect mid-stream replay does not duplicate history', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Initial: user msg + streaming query in progress.
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u1', role: 'user', text: 'do it',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'working' },
+      // No query_end — stream interrupted by disconnect.
+    ])
+    expect(document.body.textContent).toContain('working')
+
+    // Reconnect: history has the user msg (committed), buffer has replay events.
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u1', role: 'user', text: 'do it',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // Replay: same stream events (turn not committed).
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'working' },
+      { type: 'text_end' },
+      { type: 'query_end' },
+    ])
+    // User message from history appears exactly once.
+    const userSpans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'do it',
+    )
+    expect(userSpans.length).toBe(1)
+    // "working" appears in the assistant response (from replay).
+    expect(document.body.textContent).toContain('working')
+  })
+
+  it('history during streaming prepends without breaking streaming', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u1', role: 'user', text: 'current',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: 'c1', hasMore: true,
+    })
+
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'streaming' },
+    ])
+
+    // History arrives mid-stream (user scrolled up, observer fired).
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'u0', role: 'user', text: 'older',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+
+    expect(document.body.textContent).toContain('older')
+    expect(document.body.textContent).toContain('streaming')
+    expect(document.body.textContent).toContain('current')
   })
 })

@@ -437,6 +437,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   const resetAllState = () => {
+    console.log(`[chat] reset: messages=${messages.length} dom=${messagesContainer.childElementCount} streaming=${streaming}`)
     cleanupStreamingRefs()
     streaming = false
     inputBar.setStreaming(false)
@@ -657,10 +658,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       requestAnimationFrame(() => {
         bottomSentinel.scrollIntoView({ behavior: 'smooth' })
       })
-      if (msg.hasMore && msg.nextCursor) {
-        loadingMore = true
-        conn.send({ type: 'history_request', cursor: msg.nextCursor, limit: 10 })
-      }
     } else {
       requestAnimationFrame(() => {
         const delta = root.scrollHeight - prevScrollHeight
@@ -1203,6 +1200,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'event':
+        if (msg.event.type === 'turn_start' || msg.event.type === 'query_start') {
+          console.log(`[chat] ${msg.event.type}: agent=${msg.event.agent?.parent_tool_use_id ?? ''}`)
+        }
         handleEvent(msg.event)
         return
     }
