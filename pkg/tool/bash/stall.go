@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -21,45 +22,52 @@ const (
 	stallTailBytes     = 1024
 )
 
-// promptPatterns are last-line patterns that suggest a command is blocked
-// waiting for keyboard input. Used to gate the stall notification.
-// Source: LocalShellTask.tsx:28-38
-var promptPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\(y\/n\)`),
-	regexp.MustCompile(`(?i)\[y\/n\]`),
-	regexp.MustCompile(`(?i)\(yes\/no\)`),
-	regexp.MustCompile(`(?i)\b(?:Do you|Would you|Shall I|Are you sure|Ready to)\b.*\? *$`),
-	regexp.MustCompile(`(?i)Press (any key|Enter)`),
-	regexp.MustCompile(`(?i)Continue\?`),
-	regexp.MustCompile(`(?i)Overwrite\?`),
-	regexp.MustCompile(`(?i)\bPassword\b.*:\s*$`),
+// drainStallThreshold is the production stall gate duration.
+const drainStallThreshold = 3 * time.Second
+
+// drainStallThresholdVar allows tests to shorten the stall gate.
+// Guarded by drainStallMu to avoid data races under -race with parallel tests.
+var (
+	drainStallMu           sync.Mutex
+	drainStallThresholdVar = drainStallThreshold
+)
+
+// SetDrainStallThreshold overrides the drain-level stall gate.
+// Exported for cross-package tests (e.g. engine integration tests).
+func SetDrainStallThreshold(d time.Duration) {
+	drainStallMu.Lock()
+	drainStallThresholdVar = d
+	drainStallMu.Unlock()
 }
+
+// getDrainStallThreshold returns the current stall gate.
+func getDrainStallThreshold() time.Duration {
+	drainStallMu.Lock()
+	defer drainStallMu.Unlock()
+	return drainStallThresholdVar
+}
+
+// passwordPattern matches common sudo password prompts.
+// Only used after drainStallThreshold confirms the output actually stopped.
+var passwordPattern = regexp.MustCompile(`(?i)\bPassword\b.*:\s*$`)
 
 // looksLikePrompt checks whether the tail of the output looks like an
-// interactive prompt the model can act on. It examines the last non-empty
-// line against the prompt patterns.
+// interactive prompt the model can act on.
 //
-// Source: LocalShellTask.tsx:39-42
+// In Drain: gated by a 3-second stall timer — never runs during streaming
+// output, only when the process is genuinely blocked waiting for input.
+// In stall watcher: gated by stallThreshold (45s) for background jobs.
 func looksLikePrompt(tail string) bool {
-	lastLine := lastNonEmptyLine(tail)
-	for _, p := range promptPatterns {
-		if p.MatchString(lastLine) {
-			return true
-		}
-	}
-	return false
-}
-
-// isPasswordPrompt checks whether the tail of the output looks like a
-// password prompt (masked input). Used by PTYSession.Drain to determine
-// if the InputDialog should mask user input.
-func isPasswordPrompt(tail string) bool {
 	lastLine := lastNonEmptyLine(tail)
 	return passwordPattern.MatchString(lastLine)
 }
 
-// passwordPattern matches common password prompts.
-var passwordPattern = regexp.MustCompile(`(?i)\bPassword\b.*:\s*$`)
+// isPasswordPrompt checks whether the tail looks like a password prompt
+// (masked input). Used by PTYSession.Drain to determine if the InputDialog
+// should mask user input.
+func isPasswordPrompt(tail string) bool {
+	return looksLikePrompt(tail)
+}
 
 // lastNonEmptyLine returns the last line from a multiline string after
 // trimming trailing whitespace, matching the TS: tail.trimEnd().split('\n').pop()

@@ -477,7 +477,7 @@ func TestJobNotification_FormatXML_Stall(t *testing.T) {
 		Status:  "",
 		Summary: `Background command "test" appears to be waiting for interactive input`,
 		IsStall: true,
-		Tail:    "Continue? (y/n)",
+		Tail:    "[sudo] password for user:",
 	}
 	xml := n.FormatXML()
 	// Stall notifications have no <status> tag
@@ -487,7 +487,7 @@ func TestJobNotification_FormatXML_Stall(t *testing.T) {
 	if !contains(xml, "Last output:") {
 		t.Error("stall should have Last output")
 	}
-	if !contains(xml, "Continue? (y/n)") {
+	if !contains(xml, "[sudo] password for user:") {
 		t.Error("stall should include tail content")
 	}
 	if !contains(xml, "The command is likely blocked") {

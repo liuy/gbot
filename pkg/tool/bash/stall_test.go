@@ -21,172 +21,6 @@ func mustWriteStream(t *testing.T, output *StreamingOutput, data []byte) {
 // looksLikePrompt
 // ---------------------------------------------------------------------------
 
-func TestLooksLikePrompt_YN(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Continue? (y/n)", true},
-		{"Continue? (Y/N)", true},
-		{"Continue? (y/N)", true},
-		{"Do you want to proceed? (y/n) ", true},
-		{"random output", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_BracketYN(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Continue? [y/n]", true},
-		{"Continue? [Y/N]", true},
-		{"Proceed [y/N] ", true},
-		{"no prompt here", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_YesNo(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Continue? (yes/no)", true},
-		{"(Yes/No) confirm?", true},
-		{"no match", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_DirectedQuestions(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Do you want to continue?", true},
-		{"Would you like to proceed?", true},
-		{"Shall I continue?", true},
-		{"Are you sure about this?", true},
-		{"Ready to deploy?", true},
-		{"Do something", false}, // no question mark
-		{"This is fine", false}, // no pattern word
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_PressAnyKey(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Press any key to continue", true},
-		{"Press Enter to proceed", true},
-		{"press any key", true},
-		{"press something else", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_Continue(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Continue?", true},
-		{"continue?", true},
-		{"CONTINUE?", true},
-		{"Continue", false}, // no question mark
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_Overwrite(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"Overwrite?", true},
-		{"overwrite?", true},
-		{"OVERWRITE?", true},
-		{"Overwrite file.txt", false}, // no question mark
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_MultilineTail(t *testing.T) {
-	t.Parallel()
-	// Only the last line should be checked
-	input := "line 1\nline 2\nline 3\nContinue? (y/n)"
-	if !looksLikePrompt(input) {
-		t.Error("should detect prompt in last line of multiline output")
-	}
-
-	input2 := "Continue? (y/n)\nline 1\nline 2"
-	if looksLikePrompt(input2) {
-		t.Error("should NOT detect prompt when it's not the last line")
-	}
-}
-
-func TestLooksLikePrompt_NonPrompt(t *testing.T) {
-	t.Parallel()
-	inputs := []string{
-		"Building project...",
-		"Tests passed: 42/42",
-		"Compiling main.go",
-		"done",
-		"127.0.0.1 - - [12/Apr/2026] GET /",
-		"",
-		"   ",
-	}
-	for _, input := range inputs {
-		if looksLikePrompt(input) {
-			t.Errorf("looksLikePrompt(%q) = true, want false", input)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// lastNonEmptyLine
-// ---------------------------------------------------------------------------
-
 func TestLastNonEmptyLine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -220,7 +54,7 @@ func TestWatchForStall_DetectsPrompt(t *testing.T) {
 		outputPath := filepath.Join(dir, "output.txt")
 
 		// Write initial content
-		if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\nContinue? (y/n)"), 0o644); err != nil {
+		if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\n[sudo] password for user:"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -283,7 +117,7 @@ func TestWatchForStall_CancelStops(t *testing.T) {
 
 		dir := t.TempDir()
 		outputPath := filepath.Join(dir, "output.txt")
-		if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
+		if err := os.WriteFile(outputPath, []byte("[sudo] password for user:"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -310,7 +144,7 @@ func TestWatchForStall_OutputGrowth(t *testing.T) {
 
 		dir := t.TempDir()
 		outputPath := filepath.Join(dir, "output.txt")
-		if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
+		if err := os.WriteFile(outputPath, []byte("[sudo] password for user:"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -433,7 +267,7 @@ func TestStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output.txt")
-	content := "Continue? (y/n)"
+	content := "[sudo] password for user:"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -482,17 +316,6 @@ func TestStallConstants(t *testing.T) {
 		t.Errorf("stallTailBytes = %d, want 1024", stallTailBytes)
 	}
 }
-
-func TestPromptPatternsCount(t *testing.T) {
-	t.Parallel()
-	if len(promptPatterns) != 8 {
-		t.Errorf("len(promptPatterns) = %d, want 8", len(promptPatterns))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// stallWatcher.check — unit test without real timers
-// ---------------------------------------------------------------------------
 
 func TestStallWatcher_Check_OutputGrows(t *testing.T) {
 	t.Parallel()
@@ -588,7 +411,7 @@ func TestStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output.txt")
-	content := "Continue? (y/n)"
+	content := "[sudo] password for user:"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +440,7 @@ func TestStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output.txt")
-	content := "Continue? (y/n)"
+	content := "[sudo] password for user:"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +464,7 @@ func TestStallWatcher_Check_UnderThreshold(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output.txt")
-	if err := os.WriteFile(path, []byte("Continue? (y/n)"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("[sudo] password for user:"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -662,7 +485,7 @@ func TestStallWatcher_Check_CancelledAfterPrompt(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output.txt")
-	_ = os.WriteFile(path, []byte("Continue? (y/n)"), 0o644)
+	_ = os.WriteFile(path, []byte("[sudo] password for user:"), 0o644)
 
 	w := &stallWatcher{
 		outputPath: path,
@@ -711,7 +534,6 @@ func TestIsPasswordPrompt(t *testing.T) {
 		{"password:", true},
 		{"PASSWORD:", true},
 		// Negative cases
-		{"Continue? (y/n)", false},
 		{"Enter your name:", false},
 		{"Your password has been reset", false},
 		{"passwords are secret", false},
@@ -865,7 +687,7 @@ func TestStreamStallWatcher_Check_Cancelled(t *testing.T) {
 func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output, []byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 	w := &streamStallWatcher{
 		job:        &BackgroundJob{Output: output},
@@ -903,7 +725,7 @@ func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output, []byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 	stalled := false
 	w := &streamStallWatcher{
@@ -927,7 +749,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output, []byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 	w := &streamStallWatcher{
 		job:        &BackgroundJob{Output: output},
@@ -945,7 +767,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 func TestStreamStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output, []byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 	w := &streamStallWatcher{
 		job:        &BackgroundJob{Output: output},
@@ -969,7 +791,7 @@ func TestWatchForStallStream_DetectsPrompt(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Building...\nContinue? (y/n)"))
+		mustWriteStream(t, output, []byte("Building...\n[sudo] password for user:"))
 
 		job := &BackgroundJob{
 			Output: output,
@@ -1001,7 +823,7 @@ func TestWatchForStallStream_CancelStops(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		job := &BackgroundJob{
 			Output: output,
@@ -1061,7 +883,7 @@ func TestWatchForStallStream_OutputGrowth(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		job := &BackgroundJob{
 			Output: output,
@@ -1104,7 +926,7 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		receivedCh := make(chan JobNotification, 1)
 		job := &BackgroundJob{
@@ -1152,7 +974,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		calledCh := make(chan struct{}, 1)
 		job := &BackgroundJob{
@@ -1187,7 +1009,7 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		receivedCh := make(chan JobNotification, 1)
 		job := &BackgroundJob{
@@ -1224,7 +1046,7 @@ func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output, []byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
 
 		job := &BackgroundJob{
 			Output:   output,
@@ -1242,3 +1064,20 @@ func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
 		job.cancelStall()
 	})
 }
+
+// TestLooksLikePrompt_LongMinifiedJSDoesNotMatch verifies that long lines
+// (e.g. minified JS output from git diff) do not match prompt patterns.
+// Real interactive prompts are always short.
+func TestLooksLikePrompt_LongMinifiedJSDoesNotMatch(t *testing.T) {
+	t.Parallel()
+	// minified JS chunk: contains "Password" substring and ends with ":"
+	// but is clearly not a prompt.
+	minified := `var md=Object.defineProperty;function checkPassword(e){return e.credentials==="omit":i.credentials="same-origin"};`
+	if looksLikePrompt(minified) {
+		t.Errorf("looksLikePrompt matched minified JS (len=%d) — long lines must be skipped", len(minified))
+	}
+}
+
+// TestLooksLikePrompt_GBOTSudoPrompt verifies the GBOT_SUDO_PROMPT marker
+// is detected. When sudo -p GBOT_SUDO_PROMPT is used, sudo outputs this
+// exact string only when it actually needs a password.

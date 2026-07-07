@@ -12,6 +12,8 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+
+	"log/slog"
 )
 
 // PTYSession manages a PTY-based command execution.
@@ -89,54 +91,112 @@ func (s *PTYSession) Drain(ctx context.Context, emitAskInput func(tail string, m
 	var partialLine bool
 	var lastLines []string
 
-	for {
-		n, err := syscall.Read(int(s.Master.Fd()), buf)
-		if n > 0 {
-			// Update partial-line state from raw PTY bytes (before Screen processing)
-			if emitAskInput != nil {
-				partialLine, lastLines = trackPartialLines(buf[:n], partialLine, lastLines)
+	// Cache fd once to avoid data race with Close().
+	masterFd := int(s.Master.Fd())
 
-				// Interaction detection (serial, like AskPermission)
-				if partialLine {
-					tail := strings.Join(lastLines, "\n")
-					if looksLikePrompt(tail) {
-						masked := isPasswordPrompt(tail)
-						respCh := emitAskInput(tail, masked)
-						if respCh == nil {
-							// Fix 3: expired deadline — skip prompt
-							continue
+	// readCh receives PTY read results from a goroutine, allowing the main
+	// loop to select between data arrival and a stall timer.
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readCh := make(chan readResult, 1)
+	go func() {
+		for {
+			n, err := syscall.Read(masterFd, buf)
+			var data []byte
+			if n > 0 {
+				data = make([]byte, n)
+				copy(data, buf[:n])
+			}
+			select {
+			case readCh <- readResult{data: data, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	var stallTimer *time.Timer
+	stallCh := make(chan struct{}, 1)
+	resetStall := func() {
+		if stallTimer != nil {
+			stallTimer.Stop()
+		}
+		stallTimer = time.AfterFunc(getDrainStallThreshold(), func() {
+			select {
+			case stallCh <- struct{}{}:
+			default:
+			}
+		})
+	}
+	defer func() {
+		if stallTimer != nil {
+			stallTimer.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = killProcessTree(s.Cmd.Process.Pid)
+			s.Screen.Flush()
+			return
+		case <-stallCh:
+			// Output stalled for drainStallThreshold — check for prompt.
+			// Streaming output (git diff, curl) resets the timer on every
+			// chunk so this only fires when the process is genuinely blocked.
+			if emitAskInput != nil && partialLine {
+				tail := strings.Join(lastLines, "\n")
+				if looksLikePrompt(tail) {
+					masked := isPasswordPrompt(tail)
+					slog.Info("pty:prompt_detected_after_stall", "tail", tail, "masked", masked)
+					respCh := emitAskInput(tail, masked)
+					if respCh == nil {
+						continue
+					}
+					var resp types.AskResponse
+					select {
+					case resp = <-respCh:
+					case <-ctx.Done():
+						_ = killProcessTree(s.Cmd.Process.Pid)
+						s.Screen.Flush()
+						return
+					}
+					if resp.Aborted {
+						reason := "cancelled by user"
+						if resp.Timeout {
+							reason = "timed out"
 						}
-						// Fix 1: select on ctx.Done() to prevent deadlock
-						var resp types.AskResponse
-						select {
-						case resp = <-respCh:
-						case <-ctx.Done():
-							_ = killProcessTree(s.Cmd.Process.Pid)
-							return
-						}
-						if resp.Aborted {
-							reason := "cancelled by user"
-							if resp.Timeout {
-								reason = "timed out"
-							}
-							s.Screen.Write(fmt.Appendf(nil, "\r\n[Interaction %s]\r\n", reason))
-							s.Screen.Flush()
-							_ = killProcessTree(s.Cmd.Process.Pid)
-							return
-						}
-						if writeErr := s.WriteInput(resp.Text + "\n"); writeErr != nil {
-							return
-						}
+						s.Screen.Write(fmt.Appendf(nil, "\r\n[Interaction %s]\r\n", reason))
+						s.Screen.Flush()
+						_ = killProcessTree(s.Cmd.Process.Pid)
+						s.Screen.Flush()
+						return
+					}
+					if writeErr := s.WriteInput(resp.Text + "\n"); writeErr != nil {
+						s.Screen.Flush()
+						return
 					}
 				}
 			}
-			s.Screen.Write(buf[:n])
-		}
-		if err != nil {
-			break
+		case res := <-readCh:
+			if len(res.data) > 0 {
+				resetStall()
+				if emitAskInput != nil {
+					partialLine, lastLines = trackPartialLines(res.data, partialLine, lastLines)
+				}
+				s.Screen.Write(res.data)
+			}
+			if res.err != nil {
+				s.Screen.Flush()
+				return
+			}
 		}
 	}
-	s.Screen.Flush()
 }
 
 // trackPartialLines updates partial-line state from raw PTY bytes.

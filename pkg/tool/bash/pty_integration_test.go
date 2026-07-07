@@ -11,6 +11,11 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func init() {
+	// Shorten stall gate for tests (production: 3s)
+	drainStallThresholdVar = 100 * time.Millisecond
+}
+
 // ---------------------------------------------------------------------------
 // PTY integration tests: real PTY with actual shell commands
 // ---------------------------------------------------------------------------
