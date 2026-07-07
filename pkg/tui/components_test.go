@@ -4225,16 +4225,335 @@ func TestGroupSpansThinking(t *testing.T) {
 		},
 	}
 
-	// Collapsed: group summary + thinking still rendered.
+	// Collapsed: thinking absorbed into the group — hidden along with tools.
+	collapsed := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(collapsed, "Read 2 files") {
+		t.Fatalf("thinking-span group missing summary:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "ctrl+o to expand") {
+		t.Fatalf("thinking-span group missing ctrl+o:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "thinking...") {
+		t.Fatalf("collapsed group leaks absorbed thinking content:\n%s", collapsed)
+	}
+
+	// Expanded: thinking renders inline between the two tools.
+	expanded := stripANSIPrintable(mv.View(80, true, "", false, false, 3))
+	if !strings.Contains(expanded, "thinking...") {
+		t.Fatalf("expanded group missing absorbed thinking:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "package main") || !strings.Contains(expanded, "package tui") {
+		t.Fatalf("expanded group missing individual tool output:\n%s", expanded)
+	}
+}
+
+func TestDetectToolGroups_AbsorbsLeadingThinking(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// [Thinking, Read, Read] — leading thinking at index 0.
+	blocks := []ContentBlock{
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "plan", Done: true}},
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	g := groups[0]
+	if len(g.indices) != 2 || g.indices[0] != 1 || g.indices[1] != 2 {
+		t.Fatalf("indices = %v, want [1 2]", g.indices)
+	}
+	if len(g.thinkingIndices) != 1 || g.thinkingIndices[0] != 0 {
+		t.Fatalf("thinkingIndices = %v, want [0]", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 0 {
+		t.Fatalf("firstBlockIdx = %d, want 0", g.firstBlockIdx)
+	}
+
+	// [Thinking, Thinking, Read, Read] — two leading thinking blocks (backward scan extends).
+	blocks = []ContentBlock{
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "a", Done: true}},
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "b", Done: true}},
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("two-leading: got %d groups, want 1", len(groups))
+	}
+	g = groups[0]
+	if len(g.thinkingIndices) != 2 || g.thinkingIndices[0] != 0 || g.thinkingIndices[1] != 1 {
+		t.Fatalf("two-leading thinkingIndices = %v, want [0 1]", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 0 {
+		t.Fatalf("two-leading firstBlockIdx = %d, want 0", g.firstBlockIdx)
+	}
+}
+
+func TestDetectToolGroups_AbsorbsInterToolThinking(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// [Read, Thinking, Read] — inter-tool thinking at index 1.
+	blocks := []ContentBlock{
+		makeBlockTool(srRead, true),
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "mid", Done: true}},
+		makeBlockTool(srRead, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	g := groups[0]
+	if len(g.indices) != 2 || g.indices[0] != 0 || g.indices[1] != 2 {
+		t.Fatalf("indices = %v, want [0 2]", g.indices)
+	}
+	if len(g.thinkingIndices) != 1 || g.thinkingIndices[0] != 1 {
+		t.Fatalf("thinkingIndices = %v, want [1]", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 0 {
+		t.Fatalf("firstBlockIdx = %d, want 0", g.firstBlockIdx)
+	}
+}
+
+func TestDetectToolGroups_ThinkingBeforeGroupNotAbsorbedIfTextBetween(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// [Thinking, Text("hi"), Read, Read] — non-empty text breaks the backward scan.
+	blocks := []ContentBlock{
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "plan", Done: true}},
+		{Type: BlockText, Text: "hi"},
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	g := groups[0]
+	if len(g.thinkingIndices) != 0 {
+		t.Fatalf("thinkingIndices = %v, want []", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 2 {
+		t.Fatalf("firstBlockIdx = %d, want 2", g.firstBlockIdx)
+	}
+}
+
+func TestDetectToolGroups_ThinkingAfterGroupNotAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// [Read, Read, Thinking] — trailing thinking must NOT be absorbed.
+	blocks := []ContentBlock{
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "after", Done: true}},
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	g := groups[0]
+	if len(g.indices) != 2 || g.indices[0] != 0 || g.indices[1] != 1 {
+		t.Fatalf("indices = %v, want [0 1]", g.indices)
+	}
+	if len(g.thinkingIndices) != 0 {
+		t.Fatalf("thinkingIndices = %v, want []", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 0 {
+		t.Fatalf("firstBlockIdx = %d, want 0", g.firstBlockIdx)
+	}
+}
+
+func TestDetectToolGroups_EmptyTextBreaksBackwardScan(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// [Thinking, Text(""), Read, Read] — non-thinking block (even empty)
+	// stops the backward scan per the strict rule.
+	blocks := []ContentBlock{
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "plan", Done: true}},
+		{Type: BlockText, Text: ""},
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	g := groups[0]
+	if len(g.thinkingIndices) != 0 {
+		t.Fatalf("thinkingIndices = %v, want []", g.thinkingIndices)
+	}
+	if g.firstBlockIdx != 2 {
+		t.Fatalf("firstBlockIdx = %d, want 2", g.firstBlockIdx)
+	}
+}
+
+func TestBuildGroupLookup_ConsumedIncludesThinking(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	blocks := []ContentBlock{
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "plan", Done: true}},
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	gl := buildGroupLookup(blocks)
+
+	if _, ok := gl.byFirstIdx[0]; !ok {
+		t.Fatal("byFirstIdx missing key 0 (firstBlockIdx is the thinking index)")
+	}
+	if _, ok := gl.byFirstIdx[1]; ok {
+		t.Fatal("byFirstIdx should NOT have key 1 (first tool is no longer the lookup key)")
+	}
+	if !gl.consumed[0] {
+		t.Fatal("consumed[0] = false, want true (thinking absorbed)")
+	}
+	if !gl.consumed[1] {
+		t.Fatal("consumed[1] = false, want true (first tool)")
+	}
+	if !gl.consumed[2] {
+		t.Fatal("consumed[2] = false, want true (second tool)")
+	}
+}
+
+func TestRenderGroup_LeadingThinkingCollapsed_HidesThinking(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockThinking, Thinking: ThinkingView{Text: "let me plan", Done: true, Duration: 100 * time.Millisecond}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	collapsed := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(collapsed, "Read 2 files") {
+		t.Fatalf("collapsed group missing summary:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "let me plan") {
+		t.Fatalf("collapsed group leaks absorbed thinking:\n%s", collapsed)
+	}
+
+	expanded := stripANSIPrintable(mv.View(80, true, "", false, false, 3))
+	if !strings.Contains(expanded, "let me plan") {
+		t.Fatalf("expanded group missing thinking content:\n%s", expanded)
+	}
+	if strings.Contains(expanded, "Read 2 files") {
+		t.Fatalf("expanded group shows summary:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "package main") || !strings.Contains(expanded, "package tui") {
+		t.Fatalf("expanded group missing individual tool output:\n%s", expanded)
+	}
+}
+
+func TestRenderGroup_InterToolThinkingExpanded_RendersInOrder(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "A\n", SearchRead: srRead,
+			}},
+			{Type: BlockThinking, Thinking: ThinkingView{Text: "mid", Done: true, Duration: 50 * time.Millisecond}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "B\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	expanded := stripANSIPrintable(mv.View(80, true, "", false, false, 3))
+	idxA := strings.Index(expanded, "A")
+	idxMid := strings.Index(expanded, "mid")
+	idxB := strings.Index(expanded, "B")
+	if idxA < 0 || idxMid < 0 || idxB < 0 {
+		t.Fatalf("expanded missing one of A/mid/B:\n%s", expanded)
+	}
+	if idxA >= idxMid || idxMid >= idxB {
+		t.Fatalf("expanded order wrong: A=%d mid=%d B=%d (want A<mid<B):\n%s", idxA, idxMid, idxB, expanded)
+	}
+}
+
+func TestRenderGroup_ThinkingAfterGroup_NotAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+			{Type: BlockThinking, Thinking: ThinkingView{Text: "after", Done: true, Duration: 50 * time.Millisecond}},
+		},
+	}
+
 	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
 	if !strings.Contains(rendered, "Read 2 files") {
-		t.Fatalf("thinking-span group missing summary:\n%s", rendered)
+		t.Fatalf("collapsed group missing summary:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "ctrl+o to expand") {
-		t.Fatalf("thinking-span group missing ctrl+o:\n%s", rendered)
+	if !strings.Contains(rendered, "after") {
+		t.Fatalf("collapsed group missing trailing thinking (should render standalone):\n%s", rendered)
 	}
-	// Thinking block should still render between group tools.
-	// (Thinking renders in its own section — it's not consumed by the group.)
+}
+
+func TestRenderGroup_LeadingThinkingStreamingActive_RendersActiveTense(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockThinking, Thinking: ThinkingView{Text: "plan", Done: true, Duration: 50 * time.Millisecond}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// All tools done but message still streaming → group is the last group with
+	// no content after it → active tense.
+	whiteDot := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+	rendered := stripANSIPrintable(mv.View(80, false, whiteDot, true, false, 3))
+	if !strings.Contains(rendered, "Reading 2 files") {
+		t.Fatalf("streaming group missing active tense 'Reading 2 files':\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Read 2 files") {
+		t.Fatalf("streaming group incorrectly uses past tense 'Read 2 files':\n%s", rendered)
+	}
 }
 
 func TestGroupDotMatchesToolDot(t *testing.T) {

@@ -812,9 +812,9 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 		// Find the last group index (matches TS isActiveCollapsedGroup:
 		// last group in a streaming message is "active" even if all tools done).
 		lastGroupIdx := -1
-		for _, g := range gl.byFirstIdx {
-			if g.indices[0] > lastGroupIdx {
-				lastGroupIdx = g.indices[0]
+		for firstIdx := range gl.byFirstIdx {
+			if firstIdx > lastGroupIdx {
+				lastGroupIdx = firstIdx
 			}
 		}
 		isStreaming := streaming
@@ -993,9 +993,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			gl := buildGroupLookup(tc.Blocks)
 			// Find the last group index for isActive streaming logic.
 			lastGroupIdx := -1
-			for _, g := range gl.byFirstIdx {
-				if g.indices[0] > lastGroupIdx {
-					lastGroupIdx = g.indices[0]
+			for firstIdx := range gl.byFirstIdx {
+				if firstIdx > lastGroupIdx {
+					lastGroupIdx = firstIdx
 				}
 			}
 			for i, sub := range tc.Blocks {
@@ -1725,8 +1725,11 @@ func buildGroupLookup(blocks []ContentBlock) groupLookup {
 	}
 	for gi := range groups {
 		g := &groups[gi]
-		gl.byFirstIdx[g.indices[0]] = g
+		gl.byFirstIdx[g.firstBlockIdx] = g
 		for _, idx := range g.indices {
+			gl.consumed[idx] = true
+		}
+		for _, idx := range g.thinkingIndices {
 			gl.consumed[idx] = true
 		}
 	}
@@ -1759,12 +1762,14 @@ func writeGroupSummary(sb *strings.Builder, prefix string, g *toolGroup, isActiv
 // Simplified from TS GroupAccumulator (collapseReadSearch.ts:270-330):
 // memory, MCP, git, hook fields deferred — gbot doesn't have these yet.
 type toolGroup struct {
-	indices     []int // indices into m.Blocks for the grouped tool blocks
-	searchCount int
-	readCount   int // operation count (unique file paths deferred)
-	listCount   int
-	lspCount    int
-	anyRunning  bool // true if any tool in group has Done==false
+	indices         []int // indices into m.Blocks for the grouped tool blocks
+	thinkingIndices []int // absorbed thinking blocks — hidden when collapsed, rendered inline when expanded
+	firstBlockIdx   int   // actual first block index (might be a thinking block before indices[0]); -1 = not computed
+	searchCount     int
+	readCount       int // operation count (unique file paths deferred)
+	listCount       int
+	lspCount        int
+	anyRunning      bool // true if any tool in group has Done==false
 }
 
 // detectToolGroups scans blocks for consecutive collapsible search/read tools.
@@ -1776,9 +1781,34 @@ func detectToolGroups(blocks []ContentBlock) []toolGroup {
 	var current toolGroup
 
 	flush := func() {
-		if len(current.indices) >= 2 {
-			groups = append(groups, current)
+		if len(current.indices) < 2 {
+			current = toolGroup{}
+			return
 		}
+		// Thinking before the group must fold with the tools, not render above.
+		for j := current.indices[0] - 1; j >= 0; j-- {
+			if blocks[j].Type != BlockThinking {
+				break
+			}
+			current.thinkingIndices = append([]int{j}, current.thinkingIndices...)
+		}
+		// Thinking between tools (inter-tool gaps) also folds into the group.
+		for k := 0; k+1 < len(current.indices); k++ {
+			if current.indices[k+1]-current.indices[k] <= 1 {
+				continue
+			}
+			for j := current.indices[k] + 1; j < current.indices[k+1]; j++ {
+				if blocks[j].Type == BlockThinking {
+					current.thinkingIndices = append(current.thinkingIndices, j)
+				}
+			}
+		}
+		if len(current.thinkingIndices) > 0 && current.thinkingIndices[0] < current.indices[0] {
+			current.firstBlockIdx = current.thinkingIndices[0]
+		} else {
+			current.firstBlockIdx = current.indices[0]
+		}
+		groups = append(groups, current)
 		current = toolGroup{}
 	}
 
