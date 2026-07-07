@@ -379,13 +379,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     '</svg>'
   root.appendChild(scrollBtn)
   scrollBtn.addEventListener('click', () => {
+    isNearBottom = true
+    lastScrollHeight = 0
     scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' })
+    updateScrollBtn()
   })
 
   const scrollArc = scrollBtn.querySelector('.scroll-progress') as SVGCircleElement
   const circumference = 2 * Math.PI * 18 // r=18
 
-  scroll.addEventListener('scroll', () => {
+  const updateScrollBtn = () => {
     const maxScroll = scroll.scrollHeight - scroll.clientHeight
     const distFromBottom = maxScroll - scroll.scrollTop
     const near = distFromBottom < 120
@@ -404,7 +407,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       const progress = Math.min(distFromBottom / maxScroll, 1)
       scrollArc.setAttribute('stroke-dashoffset', String(circumference * (1 - progress)))
     }
-  }, { passive: true })
+  }
+
+  scroll.addEventListener('scroll', updateScrollBtn, { passive: true })
   const scrollToBottom = () => {
     if (!isNearBottom) return
     const sh = scroll.scrollHeight
@@ -416,10 +421,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     })
   }
 
-  // Single observer: any DOM mutation in the messages container triggers scroll.
-  // Replaces scattered scrollToBottom() calls in handleEvent — covers streaming
-  // text, thinking, tools, sub-agents, and history load.
-  const scrollObserver = new MutationObserver(() => scrollToBottom())
+  // Single observer: any DOM mutation in the messages container triggers
+  // autoscroll and scroll-button update (progress ring follows streaming).
+  const scrollObserver = new MutationObserver(() => {
+    scrollToBottom()
+    updateScrollBtn()
+  })
   scrollObserver.observe(messagesContainer, { childList: true, subtree: true, characterData: true })
 
   const progressAnchor = (): Node | null => progressHandles?.root ?? null
