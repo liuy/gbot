@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build
+.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build web-test web-lint web-weak
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -45,7 +45,7 @@ test:
 lint:
 	golangci-lint run $(ALL)
 
-check: build test lint fix
+check: build test lint fix web-lint web-weak
 
 fix:
 	@gofmt -w $(shell find ./pkg ./cmd -name '*.go')
@@ -91,3 +91,12 @@ app-check:
 # without Node. Run this after changing web/chat source.
 web-build:
 	cd web/chat && npm install && npm run build
+
+web-test:
+	cd web/chat && npm test
+
+web-lint:
+	cd web/chat && npm run lint
+
+web-weak:
+	cd web/chat && npx vitest run test/weak.test.ts

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
 	appendToolBlock,
 	finishTool,
-	type ToolDomHandles,
 } from './streamDom'
 
 function setup() {

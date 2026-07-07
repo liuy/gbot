@@ -15,9 +15,9 @@ vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
 
 const css = readFileSync(resolve(__dirname, 'index.css'), 'utf-8')
 
-type Listener = (msg: any) => void
+type Listener = (msg: unknown) => void
 const listeners: Set<Listener> = new Set()
-const sent: any[] = []
+const sent: unknown[] = []
 
 vi.mock('./ws', () => ({
   getConnection: () => ({
@@ -25,12 +25,12 @@ vi.mock('./ws', () => ({
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    send: (p: any) => sent.push(p),
+    send: (p: unknown) => sent.push(p),
     connected: true,
   }),
 }))
 
-function dispatch(msg: any) {
+function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
 }
 
@@ -44,7 +44,7 @@ function mount() {
 
 function assistantWithBlocks(
   id: string,
-  blocks: any[],
+  blocks: unknown[],
   error = '',
 ) {
   return {
@@ -184,7 +184,8 @@ describe('committed message layout (via loadHistory)', () => {
     expect(toolRoot.dataset.toolName).toBe('Bash')
     // Finished non-error tool → green dot.
     const dot = toolRoot.querySelector('.text-green')
-    expect(dot).toBeTruthy()
+    expect(dot).not.toBeNull()
+    expect(dot!.classList.contains('text-green')).toBe(true)
   })
 
   it('thinking block renders collapsed after finishThinking', () => {

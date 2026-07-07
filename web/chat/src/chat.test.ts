@@ -19,10 +19,10 @@ function triggerTopObserver() {
   }
 }
 
-type Listener = (msg: any) => void
+type Listener = (msg: unknown) => void
 
 const listeners: Set<Listener> = new Set()
-const sent: any[] = []
+const sent: unknown[] = []
 
 vi.mock('./ws', () => ({
   getConnection: () => ({
@@ -30,18 +30,18 @@ vi.mock('./ws', () => ({
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    send: (p: any) => {
+    send: (p: unknown) => {
       sent.push(p)
     },
     connected: true,
   }),
 }))
 
-function dispatch(msg: any) {
+function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
 }
 
-function dispatchEvents(events: any[]) {
+function dispatchEvents(events: unknown[]) {
   for (const e of events) dispatch({ type: 'event', event: e })
 }
 
@@ -697,7 +697,7 @@ describe('chat integration', () => {
     const stopBtn = Array.from(document.querySelectorAll('button')).find(
       (b) => b.textContent?.includes('STOP'),
     )
-    expect(stopBtn).toBeTruthy()
+    expect(stopBtn).toBeInstanceOf(HTMLButtonElement)
   })
 
   it('auto-prefetches when content is shorter than viewport (observer missed)', () => {

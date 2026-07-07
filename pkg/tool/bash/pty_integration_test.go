@@ -12,8 +12,10 @@ import (
 )
 
 func init() {
-	// Shorten stall gate for tests (production: 3s)
-	drainStallThresholdVar = 100 * time.Millisecond
+	// Shorten stall gate for tests (production: 3s).
+	// Use SetDrainStallThreshold so the access is through a single
+	// function — avoids data races under -race when tests run in parallel.
+	SetDrainStallThreshold(100 * time.Millisecond)
 }
 
 // ---------------------------------------------------------------------------

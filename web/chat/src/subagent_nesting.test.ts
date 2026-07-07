@@ -11,9 +11,9 @@ class MockIntersectionObserver {
 }
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
 
-type Listener = (msg: any) => void
+type Listener = (msg: unknown) => void
 const listeners: Set<Listener> = new Set()
-const sent: any[] = []
+const sent: unknown[] = []
 
 vi.mock('./ws', () => ({
   getConnection: () => ({
@@ -21,15 +21,15 @@ vi.mock('./ws', () => ({
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    send: (p: any) => sent.push(p),
+    send: (p: unknown) => sent.push(p),
     connected: true,
   }),
 }))
 
-function dispatch(msg: any) {
+function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
 }
-function events(es: any[]) {
+function events(es: unknown[]) {
   for (const e of es) dispatch({ type: 'event', event: e })
 }
 
@@ -80,7 +80,8 @@ describe('sub-agent nesting', () => {
     const nested = agentRoot.querySelector(
       '[data-tool-children] [data-tool-root][data-tool-name="Grep"]',
     )
-    expect(nested).toBeTruthy()
+    expect(nested).not.toBeNull()
+    expect(nested!.getAttribute('data-tool-name')).toBe('Grep')
   })
 
   it('top-level events stay flat (no nesting)', () => {
@@ -160,7 +161,8 @@ describe('sub-agent nesting', () => {
     const r1 = a2.querySelector(
       '[data-tool-children] [data-tool-root][data-tool-name="Read"]',
     )
-    expect(r1).toBeTruthy()
+    expect(r1).not.toBeNull()
+    expect(r1!.getAttribute('data-tool-name')).toBe('Read')
   })
 
   it('auto-expand on running, auto-collapse on done', () => {

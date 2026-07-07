@@ -38,7 +38,7 @@ function connect(s: ConnState, wsUrl: string) {
     s.ws.onclose = null
     s.ws.onerror = null
     s.ws.onmessage = null
-    try { s.ws.close() } catch {}
+    try { s.ws.close() } catch { /* socket already closed */ }
   }
   const ws = new WebSocket(wsUrl)
   s.ws = ws

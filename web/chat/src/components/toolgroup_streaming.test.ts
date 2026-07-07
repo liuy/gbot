@@ -83,8 +83,8 @@ describe('ToolGroup streaming rendering', () => {
 
 	it('running tool in group shows running state in dot', () => {
 		const container = setup()
-		const h1 = appendToolBlock(container, 'Grep', null, true)
-		const h2 = appendToolBlock(container, 'Glob', null, true)
+		appendToolBlock(container, 'Grep', null, true)
+		appendToolBlock(container, 'Glob', null, true)
 
 		const group = container.querySelector('[data-tool-group]') as HTMLElement
 		const dot = group.querySelector('[data-group-dot]')

@@ -9,14 +9,14 @@ class MockIntersectionObserver {
 }
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
 
-type Listener = (msg: any) => void
+type Listener = (msg: unknown) => void
 const listeners: Set<Listener> = new Set()
-const sent: any[] = []
+const sent: unknown[] = []
 
 vi.mock('./ws', () => ({
   getConnection: () => ({
     subscribe: (fn: Listener) => { listeners.add(fn); return () => { listeners.delete(fn) } },
-    send: (p: any) => { sent.push(p) },
+    send: (p: unknown) => { sent.push(p) },
     connected: true,
   }),
 }))
@@ -29,11 +29,11 @@ function mount() {
   document.body.appendChild(chat.root)
 }
 
-function dispatch(msg: any) {
+function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
 }
 
-function dispatchEvents(events: any[]) {
+function dispatchEvents(events: unknown[]) {
   for (const e of events) dispatch({ type: 'event', event: e })
 }
 

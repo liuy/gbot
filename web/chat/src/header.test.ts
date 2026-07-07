@@ -34,7 +34,6 @@ describe('createHeader', () => {
 
   it('clicking a dropdown trigger toggles its panel visibility', () => {
     const { root } = createHeader()
-    const triggers = root.querySelectorAll('button')
     // Find a dropdown trigger (the first three .relative > button).
     const dd = root.querySelectorAll('.relative')
     expect(dd.length).toBe(3)
