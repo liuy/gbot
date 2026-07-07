@@ -495,7 +495,8 @@ export function finalizeProgressBar(
     const total = totalInput
     if (total > 0 && usage.cacheRead > 0) {
       const pct = usage.cacheRead * 100 / total
-      h.cacheEl.textContent = pct.toFixed(1) + '% cached'
+      // Truncate (not round) so 99.96% shows as 99.9%, not 100.0%.
+      h.cacheEl.textContent = (Math.floor(pct * 10) / 10).toFixed(1) + '% cached'
     } else if (usage.cacheCreation > 0) {
       h.cacheEl.textContent = formatTokenCount(usage.cacheCreation) + ' warmed'
     }

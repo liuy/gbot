@@ -245,8 +245,8 @@ describe('appendProgressBar', () => {
     expect(h.outEl.textContent).toContain('1.8')
     expect(h.rateEl.textContent).toContain('t/s')
     expect(h.toolCountEl.textContent).toContain('7 tools')
-    // cache: cacheRead=4096, total=20407 → 20.1%
-    expect(h.cacheEl.textContent).toContain('20.1%')
+    // cache: cacheRead=4096, total=20407 → 20.08% → truncated to 20.0%
+    expect(h.cacheEl.textContent).toContain('20.0%')
   })
 
   it('finalizeProgressBar cache percent uses floor, not round', () => {

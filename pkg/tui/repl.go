@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -760,6 +761,8 @@ func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usag
 		if total > 0 {
 			if queryUsage.CacheReadInputTokens > 0 {
 				pct := float64(queryUsage.CacheReadInputTokens) * 100 / float64(total)
+				// Truncate (not round) so 99.96% shows as 99.9%, not 100.0%.
+				pct = math.Floor(pct*10) / 10
 				cachePart = fmt.Sprintf(" · %.1f%% cached", pct)
 			} else {
 				cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
