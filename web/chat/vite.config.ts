@@ -8,6 +8,13 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../../pkg/connector/webchat/assets'),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'index.js',
+        chunkFileNames: '[name].js',
+        assetFileNames: '[name].[ext]',
+      },
+    },
   },
   test: {
     environment: 'jsdom',
