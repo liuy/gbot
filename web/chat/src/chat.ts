@@ -329,14 +329,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let pendingCancel: { uuid: string; text: string }[] | null = null
   let queuedMsgs: { uuid: string; text: string }[] = []
 
-  // ── Shell DOM.
+  // ── Shell DOM: flex column, scroll container is flex-1 child with min-h-0.
   const root = document.createElement('div')
-  root.className = 'overflow-y-auto overflow-x-hidden'
-  root.style.height = '100dvh'
+  root.className = 'flex flex-col h-dvh'
+
+  const scroll = document.createElement('div')
+  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden'
 
   const header = createHeader()
   header.setStatus(initial.connected)
-  root.appendChild(header.root)
+  scroll.appendChild(header.root)
 
   const wrapper = document.createElement('div')
   wrapper.className = 'mx-auto max-w-2xl py-4'
@@ -350,7 +352,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   wrapper.appendChild(topSentinel)
   wrapper.appendChild(messagesContainer)
   wrapper.appendChild(bottomSentinel)
-  root.appendChild(wrapper)
+  scroll.appendChild(wrapper)
+  root.appendChild(scroll)
 
   const inputBar = createInputBar({ connected: initial.connected })
   root.appendChild(inputBar.root)
@@ -374,15 +377,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     '</svg>'
   root.appendChild(scrollBtn)
   scrollBtn.addEventListener('click', () => {
-    root.scrollTo({ top: root.scrollHeight, behavior: 'smooth' })
+    scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' })
   })
 
   const scrollArc = scrollBtn.querySelector('.scroll-progress') as SVGCircleElement
   const circumference = 2 * Math.PI * 18 // r=18
 
-  root.addEventListener('scroll', () => {
-    const maxScroll = root.scrollHeight - root.clientHeight
-    const distFromBottom = maxScroll - root.scrollTop
+  scroll.addEventListener('scroll', () => {
+    const maxScroll = scroll.scrollHeight - scroll.clientHeight
+    const distFromBottom = maxScroll - scroll.scrollTop
     const near = distFromBottom < 120
     if (near !== isNearBottom) isNearBottom = near
     // Show/hide
@@ -402,7 +405,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }, { passive: true })
   const scrollToBottom = () => {
     if (!isNearBottom) return
-    const sh = root.scrollHeight
+    const sh = scroll.scrollHeight
     if (sh === lastScrollHeight) return
     lastScrollHeight = sh
     requestAnimationFrame(() => {
@@ -635,8 +638,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   function loadHistory(msg: Extract<ServerMessage, { type: 'history' }>) {
     const newMsgs = mapHistoryToChatMessages(msg.messages)
 
-    const prevScrollHeight = root.scrollHeight
-    const prevScrollTop = root.scrollTop
+    const prevScrollHeight = scroll.scrollHeight
+    const prevScrollTop = scroll.scrollTop
     const before = messagesContainer.firstChild
     for (const chat of newMsgs) {
       const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
@@ -679,8 +682,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       })
     } else {
       requestAnimationFrame(() => {
-        const delta = root.scrollHeight - prevScrollHeight
-        root.scrollTop = prevScrollTop + delta
+        const delta = scroll.scrollHeight - prevScrollHeight
+        scroll.scrollTop = prevScrollTop + delta
       })
     }
   }
@@ -1163,7 +1166,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         conn.send({ type: 'history_request', cursor: nextCursor, limit: 10 })
       }
     },
-    { root, rootMargin: '400px 0px 0px 0px', threshold: 0 },
+    { root: scroll, rootMargin: '400px 0px 0px 0px', threshold: 0 },
   )
   obs.observe(topSentinel)
 
@@ -1233,5 +1236,5 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     obs.disconnect()
   }
 
-  return { root, scrollEl: root, inputBar, cleanup }
+  return { root, scrollEl: scroll, inputBar, cleanup }
 }

@@ -317,10 +317,14 @@ describe('message CSS design tokens', () => {
 })
 
 describe('app layout (overflow)', () => {
-  it('root scroll container has overflow-y-auto + overflow-x-hidden', () => {
+  it('root is flex-col h-dvh, scroll child has overflow-y-auto', () => {
     mount()
     const root = document.body.firstElementChild as HTMLElement
-    expect(root.className).toContain('overflow-y-auto')
-    expect(root.className).toContain('overflow-x-hidden')
+    expect(root.className).toContain('flex')
+    expect(root.className).toContain('h-dvh')
+    const scroll = root.querySelector('.flex-1.min-h-0') as HTMLElement
+    expect(scroll).toBeTruthy()
+    expect(scroll.className).toContain('overflow-y-auto')
+    expect(scroll.className).toContain('overflow-x-hidden')
   })
 })

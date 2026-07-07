@@ -22,7 +22,7 @@ export function createInputBar(initial: {
   let cancelCb: (() => void) | null = null
 
   const root = document.createElement('div')
-  root.className = 'sticky bottom-0 z-10 px-5 pb-3 pt-1'
+  root.className = 'z-10 px-5 pb-3 pt-1'
 
   // Bubble row (rendered only while streaming and non-empty).
   const bubbles = document.createElement('div')
