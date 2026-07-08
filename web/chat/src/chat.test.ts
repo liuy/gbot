@@ -763,4 +763,36 @@ describe('chat integration', () => {
     expect(historyReqs.length).toBe(1)
     expect(historyReqs[0].cursor).toBe('c1')
   })
+
+  it('task_list message renders the task panel with summary', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'task_list',
+      tasks: [
+        { id: '1', subject: 'Plan', status: 'completed' },
+        { id: '2', subject: 'Code', status: 'in_progress' },
+        { id: '3', subject: 'Test', status: 'pending' },
+      ],
+    })
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('1/3 Done')
+    expect(body).toContain('1 Running')
+    expect(body).toContain('1 Pending')
+  })
+
+  it('connect_status hides the task panel', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'task_list',
+      tasks: [{ id: '1', subject: 'UniqueTaskSubject123', status: 'pending' }],
+    })
+    // Panel root is the glass card; find it by its class.
+    const panel = document.querySelector('.glass.border-hairline.rounded-xl') as HTMLElement
+    expect(panel).toBeTruthy()
+    expect(panel.style.display).toBe('')
+    dispatch({ type: 'connect_status', connected: true })
+    expect(panel.style.display).toBe('none')
+  })
 })

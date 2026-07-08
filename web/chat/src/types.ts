@@ -17,6 +17,16 @@ export type ServerMessage =
     }
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
+  | { type: 'task_list'; tasks: TaskWireItem[] }
+
+export type TaskWireItem = {
+  id: string
+  subject: string
+  status: 'pending' | 'in_progress' | 'completed'
+  owner?: string
+  blockedBy?: string[]
+  activeForm?: string
+}
 
 export type HistoryBlockTool = {
   id: string

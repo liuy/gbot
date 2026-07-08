@@ -29,10 +29,8 @@ import {
   collapseToolChildrenOnDone,
 } from './components/streamDom'
 import { createHeader } from './header'
-import {
-  createInputBar,
-  type InputBarHandles,
-} from './inputBar'
+import { createInputBar, type InputBarHandles } from './inputBar'
+import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { getConnection } from './ws'
 import { TokenRate } from './tokenRate'
@@ -358,8 +356,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   root.appendChild(scroll)
 
   const inputBar = createInputBar({ connected: initial.connected })
-  inputBar.root.className = 'absolute bottom-0 inset-x-0 z-10 card-bg px-5 pb-3 pt-1'
-  root.appendChild(inputBar.root)
+  inputBar.root.className = 'px-5 pb-3 pt-1'
+
+  const taskPanel = createTaskPanel()
+  const taskPanelHost = document.createElement('div')
+  taskPanelHost.className = 'px-5 pb-1'
+  taskPanelHost.appendChild(taskPanel.root)
+
+  const inputWrapper = document.createElement('div')
+  inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10 card-bg'
+  inputWrapper.appendChild(taskPanelHost)
+  inputWrapper.appendChild(inputBar.root)
+  root.appendChild(inputWrapper)
 
   const conn = getConnection()
 
@@ -1200,6 +1208,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setStatus(msg.connected)
         inputBar.setConnected(msg.connected)
         resetAllState()
+        taskPanel.setTasks([])
         scrollBtn.style.opacity = '0'
         scrollBtn.style.pointerEvents = 'none'
         return
@@ -1250,6 +1259,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           console.log(`[chat] ${msg.event.type}: agent=${msg.event.agent?.parent_tool_use_id ?? ''}`)
         }
         handleEvent(msg.event)
+        return
+      case 'task_list':
+        taskPanel.setTasks(msg.tasks)
         return
     }
   })

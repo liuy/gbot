@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -44,6 +45,7 @@ type mockEngine struct {
 	abortFn        func()
 	rewindToFn     func(idx int) error
 	systemPromptFn func() string
+	taskListFn     func() *task.List
 	// onQueryDoneFn simulates engine committing an assistant response.
 	// Called after queryFn finishes — mirrors real engine's appendMessage + OnStreamDone.
 	onQueryDoneFn func()
@@ -142,6 +144,13 @@ func (m *mockEngine) SystemPrompt() string {
 	return ""
 }
 
+func (m *mockEngine) TaskList() *task.List {
+	if m.taskListFn != nil {
+		return m.taskListFn()
+	}
+	return nil
+}
+
 // newTestConnectorWithHub builds a WebChatConnector with a mockEngine and the
 // given hub (for hub-routed dispatch tests). Tests configure the mock's
 // function fields to control behavior.
@@ -151,10 +160,12 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 		engine:      &mockEngine{},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
+		taskToolIDs: make(map[string]bool),
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
 		c.currentTurnBuf = nil
+		c.taskToolIDs = make(map[string]bool)
 		c.writeMu.Unlock()
 	}
 	c.mock().onQueryDoneFn = c.OnStreamDone

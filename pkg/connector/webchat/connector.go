@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -54,6 +55,7 @@ type engineClient interface {
 	RewindTo(idx int) error
 	RemoveAttachment(uuid string) bool
 	SystemPrompt() string
+	TaskList() *task.List
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -77,6 +79,7 @@ func (a *engineAdapter) EnqueueAttachment(item types.QueuedItem) {
 func (a *engineAdapter) Abort()                            { a.eng.Abort() }
 func (a *engineAdapter) RemoveAttachment(uuid string) bool { return a.eng.RemoveAttachment(uuid) }
 func (a *engineAdapter) SystemPrompt() string              { return a.eng.SystemPrompt() }
+func (a *engineAdapter) TaskList() *task.List              { return a.eng.TaskList() }
 func (a *engineAdapter) RewindTo(idx int) error {
 	_, err := a.eng.RewindTo(idx)
 	return err
@@ -116,6 +119,13 @@ type WebChatConnector struct {
 	// Guarded by writeMu.
 	currentTurnBuf [][]byte
 
+	// taskToolIDs tracks tool_use IDs of Task tool calls started by the main
+	// agent during the current turn. On tool_end for a tracked ID, the
+	// connector pushes a task_list frame AFTER the tool_end event frame so
+	// the frontend updates the task panel with the latest disk state.
+	// Guarded by writeMu; cleared alongside currentTurnBuf on stream done.
+	taskToolIDs map[string]bool
+
 	// OnStreamDone is called when the main engine commits an assistant response
 	// to engine.Messages(). Clears currentTurnBuf so takeover replay does not
 	// duplicate events already reflected in history. Set by the connector's
@@ -132,11 +142,13 @@ func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
 		engine:      &engineAdapter{eng: eng},
 		hub:         h,
 		pendingAsks: make(map[string]*types.AskEvent),
+		taskToolIDs: make(map[string]bool),
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
 		frames := len(c.currentTurnBuf)
 		c.currentTurnBuf = nil
+		c.taskToolIDs = make(map[string]bool)
 		c.writeMu.Unlock()
 		slog.Info("webchat:stream done, buffer cleared", "frames", frames)
 	}
@@ -203,6 +215,7 @@ func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
 	// during turn_end) to prevent stale events from replaying after takeover.
 	bufFrames := len(c.currentTurnBuf)
 	c.currentTurnBuf = nil
+	c.taskToolIDs = make(map[string]bool)
 	slog.Info("webchat:turnbuf cleared", "frames", bufFrames)
 	ws := c.activeWS.Load()
 	if ws == nil {
@@ -237,6 +250,15 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 // payload and written synchronously to the active WS via writePayload/writeDirect.
 // If no active WS or the write fails, the call is a no-op (engine keeps running).
 func (c *WebChatConnector) Handle(event hub.Event) {
+	// Track Task tool calls started by the main agent so tool_end can trigger
+	// a task_list push. Sub-agent Task calls (Agent != nil) are not tracked
+	// because the panel only reflects the main engine's top-level tasks.
+	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil && event.ToolUse.Name == "Task" {
+		c.writeMu.Lock()
+		c.taskToolIDs[event.ToolUse.ID] = true
+		c.writeMu.Unlock()
+	}
+
 	switch event.Type {
 	case types.EventAsk:
 		c.handleAsk(event)
@@ -274,10 +296,27 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
+
+	// Check whether this tool_end is for a tracked Task tool call — push the
+	// task_list AFTER the event frame so the client receives tool_end first,
+	// then the updated task summary.
+	pushTaskList := false
+	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
+		c.writeMu.Lock()
+		pushTaskList = c.taskToolIDs[event.ToolResult.ToolUseID]
+		c.writeMu.Unlock()
+	}
+
 	if event.Type == types.EventQueryEnd && event.Agent == nil {
 		_ = c.writePayloadAndClear(payload)
 	} else {
 		_ = c.writePayload(payload)
+	}
+
+	if pushTaskList {
+		if taskPayload := c.buildTaskListMessage(); taskPayload != nil {
+			_ = c.writePayload(taskPayload)
+		}
 	}
 }
 
@@ -688,4 +727,75 @@ func parentIDLog(m *types.AgentMeta) string {
 		return ""
 	}
 	return m.ParentToolUseID
+}
+
+// taskListOutbound is the wire payload for a task list snapshot. The frontend
+// renders the panel from this. Idempotent: a newer task_list replaces the prior
+// one entirely.
+type taskListOutbound struct {
+	Type  string             `json:"type"` // "task_list"
+	Tasks []taskListWireItem `json:"tasks"`
+}
+
+// taskListWireItem is the wire shape for a single task. Status mirrors the
+// engine's task.TaskStatus string values (pending|in_progress|completed).
+type taskListWireItem struct {
+	ID         string   `json:"id"`
+	Subject    string   `json:"subject"`
+	Status     string   `json:"status"`
+	Owner      string   `json:"owner,omitempty"`
+	BlockedBy  []string `json:"blockedBy,omitempty"`
+	ActiveForm string   `json:"activeForm,omitempty"`
+}
+
+// buildTaskListMessage reads the engine's task list, filters internal tasks,
+// resolves blockedBy from task IDs to subjects, and returns the JSON
+// task_list payload. Returns nil when there are no user-visible tasks so the
+// frontend hides the panel. Mirrors the TUI's taskListFn closure at
+// cmd/gbot/main.go:626-664.
+func (c *WebChatConnector) buildTaskListMessage() []byte {
+	tl := c.engine.TaskList()
+	if tl == nil || tl.Dir() == "" {
+		return nil
+	}
+	allTasks, err := tl.ListTasks()
+	if err != nil {
+		return nil
+	}
+
+	completedIDs := make(map[string]bool)
+	subjectByID := make(map[string]string)
+	for _, t := range allTasks {
+		if t.Status == task.StatusCompleted {
+			completedIDs[t.ID] = true
+		}
+		subjectByID[t.ID] = t.Subject
+	}
+
+	var items []taskListWireItem
+	for _, t := range allTasks {
+		if t.Metadata != nil && t.Metadata["_internal"] != nil {
+			continue
+		}
+		var activeBlockedBy []string
+		for _, id := range t.BlockedBy {
+			if !completedIDs[id] {
+				activeBlockedBy = append(activeBlockedBy, subjectByID[id])
+			}
+		}
+		items = append(items, taskListWireItem{
+			ID:         t.ID,
+			Subject:    t.Subject,
+			Status:     string(t.Status),
+			Owner:      t.Owner,
+			BlockedBy:  activeBlockedBy,
+			ActiveForm: t.ActiveForm,
+		})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	payload, _ := json.Marshal(taskListOutbound{Type: "task_list", Tasks: items})
+	return payload
 }

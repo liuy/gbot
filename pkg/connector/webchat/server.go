@@ -75,7 +75,17 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 		slog.Info("webchat:takeover replay", "frames", replayed)
 	}
 
-	c.activeWS.Store(ws) // 5. new connection becomes the sink
+	// task list — current committed disk state, pushed AFTER replay so the
+	// client has historical context first, then the latest task snapshot.
+	// Direct write (not from currentTurnBuf) because buildTaskListMessage
+	// reads live state, which may be newer than a task_list frame buffered
+	// earlier in this same turn.
+	if taskMsg := c.buildTaskListMessage(); taskMsg != nil {
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+		_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+	}
+
+	c.activeWS.Store(ws) // 6. new connection becomes the sink
 	c.writeMu.Unlock()
 	slog.Info("webchat:takeover complete")
 
