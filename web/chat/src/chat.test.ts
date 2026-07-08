@@ -395,7 +395,7 @@ describe('chat integration', () => {
     // Simulate user scrolled up: scroll button should be visible
     chat.scrollEl.scrollTop = 0
     chat.scrollEl.dispatchEvent(new Event('scroll'))
-    const scrollBtn = chat.root.querySelector('button.fixed') as HTMLElement
+    const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
     expect(scrollBtn.style.opacity).toBe('1')
 
     // Reconnect with history

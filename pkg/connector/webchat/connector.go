@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
@@ -56,6 +57,13 @@ type engineClient interface {
 	RemoveAttachment(uuid string) bool
 	SystemPrompt() string
 	TaskList() *task.List
+	SwitchSession(sessionID string) error
+	ListSessions(limit int) ([]*short.Session, error)
+	NewSession() (string, error)
+	UpdateSessionTitle(sessionID, title string) error
+	SessionID() string
+	Model() string
+	ProjectDir() string
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -84,6 +92,29 @@ func (a *engineAdapter) RewindTo(idx int) error {
 	_, err := a.eng.RewindTo(idx)
 	return err
 }
+func (a *engineAdapter) SwitchSession(sessionID string) error {
+	_, err := a.eng.SwitchSession(sessionID)
+	return err
+}
+func (a *engineAdapter) ListSessions(limit int) ([]*short.Session, error) {
+	return a.eng.ListSessions(limit)
+}
+func (a *engineAdapter) NewSession() (string, error) {
+	if err := a.eng.NewSession(a.eng.ProjectDir(), ""); err != nil {
+		return "", err
+	}
+	return a.eng.SessionID(), nil
+}
+func (a *engineAdapter) UpdateSessionTitle(sessionID, title string) error {
+	store := a.eng.Store()
+	if store == nil {
+		return fmt.Errorf("engine: no store")
+	}
+	return store.UpdateSessionTitle(sessionID, title)
+}
+func (a *engineAdapter) SessionID() string  { return a.eng.SessionID() }
+func (a *engineAdapter) Model() string     { return a.eng.Model() }
+func (a *engineAdapter) ProjectDir() string { return a.eng.ProjectDir() }
 
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
@@ -812,4 +843,113 @@ func (c *WebChatConnector) buildTaskListMessage() []byte {
 		_ = tl.CleanupCompleted()
 	}
 	return payload
+}
+
+// sessionListItem is the wire shape for a session entry in session_list.
+type sessionListItem struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// buildConnectStatusMessage returns a connect_status payload with the current
+// engine model, agent name, and sessionID. The client calls resetAllState on
+// every connect_status, then loads the subsequent history frame.
+func (c *WebChatConnector) buildConnectStatusMessage() []byte {
+	payload, _ := json.Marshal(struct {
+		Type      string `json:"type"`
+		Connected bool   `json:"connected"`
+		Agent     string `json:"agent"`
+		Model     string `json:"model"`
+		SessionID string `json:"sessionID"`
+	}{
+		Type:      "connect_status",
+		Connected: true,
+		Agent:     "main",
+		Model:     c.engine.Model(),
+		SessionID: c.engine.SessionID(),
+	})
+	return payload
+}
+
+// buildSessionListMessage returns a session_list payload with up to 50
+// sessions, or nil when the store returns none.
+func (c *WebChatConnector) buildSessionListMessage() []byte {
+	sessions, err := c.engine.ListSessions(50)
+	if err != nil || len(sessions) == 0 {
+		return nil
+	}
+	items := make([]sessionListItem, 0, len(sessions))
+	for _, s := range sessions {
+		items = append(items, sessionListItem{
+			ID:        s.SessionID,
+			Title:     s.Title,
+			UpdatedAt: s.UpdatedAt.UnixMilli(),
+		})
+	}
+	payload, _ := json.Marshal(struct {
+		Type     string            `json:"type"`
+		Sessions []sessionListItem `json:"sessions"`
+	}{Type: "session_list", Sessions: items})
+	return payload
+}
+
+// buildSessionBusyMessage is the fixed error frame for busy-guarded handlers.
+func buildSessionBusyMessage() []byte {
+	out, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}{Type: "error", Message: "Session busy"})
+	return out
+}
+
+// handleSessionSwitch loads the target session into the engine, then pushes
+// connect_status (triggers client resetAllState) followed by the history page.
+// Rejects when the engine is streaming so the active turn is never disturbed.
+func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
+	if c.engine.IsBusy() {
+		_ = c.writeDirect(buildSessionBusyMessage())
+		return
+	}
+	if err := c.engine.SwitchSession(sessionID); err != nil {
+		_ = c.writeDirect(buildErrorMessage(err))
+		return
+	}
+	connectMsg := c.buildConnectStatusMessage()
+	histMsg := c.buildHistoryMessage("", 10)
+	c.writeMu.Lock()
+	ws := c.activeWS.Load()
+	if ws != nil {
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		if histMsg != nil {
+			_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+		}
+	}
+	c.writeMu.Unlock()
+}
+
+// handleSessionNew creates a fresh session, then pushes connect_status (the
+// empty session has no history frame). Rejects when the engine is streaming.
+func (c *WebChatConnector) handleSessionNew() {
+	if c.engine.IsBusy() {
+		_ = c.writeDirect(buildSessionBusyMessage())
+		return
+	}
+	if _, err := c.engine.NewSession(); err != nil {
+		_ = c.writeDirect(buildErrorMessage(err))
+		return
+	}
+	connectMsg := c.buildConnectStatusMessage()
+	c.writeMu.Lock()
+	ws := c.activeWS.Load()
+	if ws != nil {
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+	}
+	c.writeMu.Unlock()
+	if payload := c.buildSessionListMessage(); payload != nil {
+		_ = c.writeDirect(payload)
+	}
 }

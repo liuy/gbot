@@ -33,18 +33,18 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 // connect_status + history + currentTurnBuf replay, (3) activate new
 // connection. The readLoop blocks until the client disconnects.
 func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
-	// Pre-construct connect_status outside the lock (static, no engine state).
-	connectMsg, _ := json.Marshal(struct {
-		Type      string `json:"type"`
-		Connected bool   `json:"connected"`
-	}{Type: "connect_status", Connected: true})
+	// Pre-construct connect_status outside the lock (reads engine state).
+	connectMsg := c.buildConnectStatusMessage()
+
+	// Pre-compute history snapshot before writeMu (constraint: no engine
+	// state access under the lock).
+	histMsg := c.buildHistoryMessage("", 10)
 
 	// Entire takeover sequence under writeMu: invalidate old, push frames,
 	// replay buffer, then activate new conn. The engine goroutine's Handle
 	// blocks on writeMu during this window — it cannot race with the replay
 	// or with buildHistoryMessage's snapshot of engine.Messages().
 	c.writeMu.Lock()
-	histMsg := c.buildHistoryMessage("", 10)
 	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.currentTurnBuf))
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
@@ -185,6 +185,30 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 					_ = c.writeDirect(histMsg)
 				}
 			}
+		case "session_list_request":
+			if payload := c.buildSessionListMessage(); payload != nil {
+				_ = c.writeDirect(payload)
+			}
+		case "session_switch":
+			var msg struct {
+				SessionID string `json:"sessionID"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.SessionID != "" {
+				c.handleSessionSwitch(msg.SessionID)
+			}
+		case "session_rename":
+			var msg struct {
+				SessionID string `json:"sessionID"`
+				Title     string `json:"title"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				_ = c.engine.UpdateSessionTitle(msg.SessionID, msg.Title)
+				if payload := c.buildSessionListMessage(); payload != nil {
+					_ = c.writeDirect(payload)
+				}
+			}
+		case "session_new":
+			c.handleSessionNew()
 		}
 	}
 }

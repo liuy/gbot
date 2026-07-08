@@ -29,6 +29,7 @@ import {
   collapseToolChildrenOnDone,
 } from './components/stream_dom'
 import { createHeader } from './header'
+import { createSidebar } from './sidebar'
 import { createInputBar, type InputBarHandles } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
@@ -329,15 +330,21 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let pendingCancel: { uuid: string; text: string }[] | null = null
   let queuedMsgs: { uuid: string; text: string }[] = []
 
-  // ── Shell DOM: relative root, scroll fills viewport, inputBar overlays.
+  // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = document.createElement('div')
   root.className = 'relative flex flex-col h-dvh'
 
+  const mainContent = document.createElement('div')
+  mainContent.className = 'relative overflow-hidden transition-transform duration-300 ease-out h-full'
+
   const scroll = document.createElement('div')
-  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20'
+  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20 h-full'
+
+  const sidebar = createSidebar({ mainContent })
 
   const header = createHeader()
   header.setStatus(initial.connected)
+  header.onHamburgerClick(() => sidebar.toggle())
   scroll.appendChild(header.root)
 
   const wrapper = document.createElement('div')
@@ -353,7 +360,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   wrapper.appendChild(messagesContainer)
   wrapper.appendChild(bottomSentinel)
   scroll.appendChild(wrapper)
-  root.appendChild(scroll)
+  mainContent.appendChild(scroll)
 
   const inputBar = createInputBar({ connected: initial.connected })
   inputBar.root.className = 'px-5 pb-3 pt-1'
@@ -367,7 +374,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10 card-bg'
   inputWrapper.appendChild(taskPanelHost)
   inputWrapper.appendChild(inputBar.root)
-  root.appendChild(inputWrapper)
+  mainContent.appendChild(inputWrapper)
+
+  root.appendChild(mainContent)
+
+  root.appendChild(sidebar.root)
+  root.appendChild(sidebar.overlay)
 
   const conn = getConnection()
 
@@ -377,7 +389,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
   const scrollBtn = document.createElement('button')
   scrollBtn.className =
-    'fixed bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full opacity-0 pointer-events-none transition-all duration-200'
+    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full opacity-0 pointer-events-none transition-all duration-200'
   scrollBtn.style.cssText = 'background:transparent;'
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
@@ -386,7 +398,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     '<circle class="scroll-progress" cx="22" cy="22" r="18" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.15s ease-out"/>' +
     '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
     '</svg>'
-  root.appendChild(scrollBtn)
+  mainContent.appendChild(scrollBtn)
   scrollBtn.addEventListener('click', () => {
     isNearBottom = true
     lastScrollHeight = 0
@@ -1183,6 +1195,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onStop(onStop)
   inputBar.onCancelQueued(onCancelQueued)
 
+  let currentSessionID = ''
+
+  sidebar.onSessionClick((id) => {
+    conn.send({ type: 'session_switch', sessionID: id })
+  })
+  sidebar.onNewSession(() => {
+    conn.send({ type: 'session_new' })
+  })
+  sidebar.onRename((id, title) => {
+    conn.send({ type: 'session_rename', sessionID: id, title })
+  })
+
   // IntersectionObserver: load more when scrolling to top.
   const obs = new IntersectionObserver(
     (entries) => {
@@ -1205,12 +1229,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
     switch (msg.type) {
       case 'connect_status':
+        sidebar.closeImmediate()
         header.setStatus(msg.connected)
+        header.setBreadcrumb(msg.agent ?? 'main', msg.model ?? '')
         inputBar.setConnected(msg.connected)
         resetAllState()
         taskPanel.setTasks([])
         scrollBtn.style.opacity = '0'
         scrollBtn.style.pointerEvents = 'none'
+        if (msg.sessionID) currentSessionID = msg.sessionID
+        conn.send({ type: 'session_list_request' })
         return
       case 'queued': {
         const uuid = msg.uuid
@@ -1262,6 +1290,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       case 'task_list':
         taskPanel.setTasks(msg.tasks)
+        return
+      case 'session_list':
+        sidebar.setSessions(msg.sessions, currentSessionID)
         return
     }
   })

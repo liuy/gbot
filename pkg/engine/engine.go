@@ -4152,6 +4152,14 @@ func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, s
 // Model returns the engine's model name.
 func (e *Engine) Model() string { return e.model }
 
+// ProjectDir returns the current project directory. Read-locked because
+// NewSession/SwitchSession mutate e.projectDir under the write lock.
+func (e *Engine) ProjectDir() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.projectDir
+}
+
 // SystemPrompt returns the stored system prompt bytes.
 func (e *Engine) SystemPrompt() string { return e.systemPrompt }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
@@ -50,6 +51,14 @@ type mockEngine struct {
 	// Called after queryFn finishes — mirrors real engine's appendMessage + OnStreamDone.
 	onQueryDoneFn func()
 
+	switchSessionFn func(sessionID string) error
+	listSessionsFn  func(limit int) ([]*short.Session, error)
+	newSessionFn    func() (string, error)
+	updateTitleFn   func(sessionID, title string) error
+	sessionIDFn     func() string
+	modelFn         func() string
+	projectDirFn    func() string
+
 	// Recorded calls for assertions.
 	queryCalls         []queryCall
 	enqueueCalls       []types.QueuedItem
@@ -57,6 +66,9 @@ type mockEngine struct {
 	rewindCalls        []int
 	removeAttachment   []string
 	removeAttachmentFn func(uuid string) bool
+	switchSessionCalls []string
+	newSessionCalls    int
+	updateTitleCalls   []struct{ ID, Title string }
 }
 
 type queryCall struct {
@@ -149,6 +161,64 @@ func (m *mockEngine) TaskList() *task.List {
 		return m.taskListFn()
 	}
 	return nil
+}
+
+func (m *mockEngine) SwitchSession(sessionID string) error {
+	m.mu.Lock()
+	m.switchSessionCalls = append(m.switchSessionCalls, sessionID)
+	m.mu.Unlock()
+	if m.switchSessionFn != nil {
+		return m.switchSessionFn(sessionID)
+	}
+	return nil
+}
+
+func (m *mockEngine) ListSessions(limit int) ([]*short.Session, error) {
+	if m.listSessionsFn != nil {
+		return m.listSessionsFn(limit)
+	}
+	return nil, nil
+}
+
+func (m *mockEngine) NewSession() (string, error) {
+	m.mu.Lock()
+	m.newSessionCalls++
+	m.mu.Unlock()
+	if m.newSessionFn != nil {
+		return m.newSessionFn()
+	}
+	return "new-session-id", nil
+}
+
+func (m *mockEngine) UpdateSessionTitle(sessionID, title string) error {
+	m.mu.Lock()
+	m.updateTitleCalls = append(m.updateTitleCalls, struct{ ID, Title string }{sessionID, title})
+	m.mu.Unlock()
+	if m.updateTitleFn != nil {
+		return m.updateTitleFn(sessionID, title)
+	}
+	return nil
+}
+
+func (m *mockEngine) SessionID() string {
+	if m.sessionIDFn != nil {
+		return m.sessionIDFn()
+	}
+	return "test-session"
+}
+
+func (m *mockEngine) Model() string {
+	if m.modelFn != nil {
+		return m.modelFn()
+	}
+	return "glm-5.2"
+}
+
+func (m *mockEngine) ProjectDir() string {
+	if m.projectDirFn != nil {
+		return m.projectDirFn()
+	}
+	return "/tmp/test"
 }
 
 // newTestConnectorWithHub builds a WebChatConnector with a mockEngine and the

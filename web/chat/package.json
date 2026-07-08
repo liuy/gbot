@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "dompurify": "^3.4.11",
+    "fuzzysearch": "^1.0.3",
     "highlight.js": "^11.10.0",
     "markdown-it": "^14.1.0",
     "markdown-it-highlightjs": "^4.2.0"

@@ -1,78 +1,128 @@
+// @ts-expect-error fuzzysearch has no types
+import fuzzysearch from 'fuzzysearch'
+
 export interface HeaderHandles {
   root: HTMLElement
   setStatus: (connected: boolean) => void
+  setBreadcrumb: (agent: string, model: string) => void
+  onHamburgerClick: (handler: () => void) => void
 }
 
-interface DropdownOption {
-  label: string
-  active?: boolean
+interface ModelEntry {
+  provider: string
+  model: string
 }
 
-// Dropdowns are decorative placeholders matching Header.tsx markup. The React
-// version's dropdowns never fired send() calls; that non-functional behavior
-// is preserved.
-function createDropdown(
-  triggerHTML: string,
-  options: DropdownOption[],
-  width: string,
-): HTMLElement {
+const allModels: ModelEntry[] = [
+  { provider: 'zhipu', model: 'glm-5.2' },
+  { provider: 'zhipu', model: 'glm-4.6' },
+  { provider: 'zhipu', model: 'glm-4-air' },
+  { provider: 'openai', model: 'gpt-5' },
+  { provider: 'openai', model: 'gpt-4.1' },
+  { provider: 'openai', model: 'o3' },
+  { provider: 'anthropic', model: 'claude-sonnet-4.5' },
+  { provider: 'anthropic', model: 'claude-opus-4.1' },
+  { provider: 'mcp', model: 'deepseek-v3.2' },
+  { provider: 'mcp', model: 'qwen3-coder-480b' },
+]
+
+function createModelPicker(onSelect: (provider: string, model: string) => void): HTMLElement {
   const wrap = document.createElement('div')
-  wrap.className = 'relative group'
+  wrap.className = 'relative'
 
   const trigger = document.createElement('button')
-  trigger.className = 'flex items-center gap-1 group'
-  trigger.innerHTML =
-    triggerHTML +
-    '<svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3 group-hover:text-t1"><path d="M6 9l6 6 6-6" /></svg>'
+  trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
 
   const panel = document.createElement('div')
-  panel.className = `absolute top-full left-0 mt-1 glass-solid border border-hairline rounded-lg shadow-xl modal-enter z-40 hidden ${width}`
-  const inner = document.createElement('div')
-  inner.className = 'p-1 max-h-60 overflow-y-auto'
-  for (const opt of options) {
-    const item = document.createElement('button')
-    item.className =
-      'w-full flex items-center justify-between px-2.5 py-2 rounded-md hover:bg-ink3 text-left'
-    const span = document.createElement('span')
-    span.className = `text-[13px] ${opt.active ? 'text-t1' : 'text-t2'}`
-    span.textContent = opt.label
-    item.appendChild(span)
-    if (opt.active) {
-      const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-      check.setAttribute('width', '12')
-      check.setAttribute('height', '12')
-      check.setAttribute('viewBox', '0 0 24 24')
-      check.setAttribute('fill', 'none')
-      check.setAttribute('stroke', '#00B4FF')
-      check.setAttribute('stroke-width', '2.5')
-      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      p.setAttribute('d', 'M20 6L9 17l-5-5')
-      check.appendChild(p)
-      item.appendChild(check)
-    }
-    inner.appendChild(item)
-  }
-  panel.appendChild(inner)
+  panel.className =
+    'fixed left-1/2 -translate-x-1/2 top-12 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
+  panel.style.background = 'rgba(12, 16, 24, 0.75)'
+  panel.style.backdropFilter = 'blur(20px) saturate(1.5)'
+  panel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
 
+  const searchInput = document.createElement('input')
+  searchInput.type = 'text'
+  searchInput.placeholder = 'Search models...'
+  searchInput.className =
+    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline'
+  panel.appendChild(searchInput)
+
+  const listContainer = document.createElement('div')
+  listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
+  panel.appendChild(listContainer)
+
+  let currentModel = ''
   let open = false
-  const close = () => {
+
+  const renderList = () => {
+    listContainer.innerHTML = ''
+    const query = searchInput.value.trim()
+    const filtered = allModels.filter(
+      (m) => !query || fuzzysearch(query.toLowerCase(), (m.provider + '/' + m.model).toLowerCase()),
+    )
+
+    if (filtered.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'px-3 py-4 text-center text-[13px] text-t3'
+      empty.textContent = 'No models found'
+      listContainer.appendChild(empty)
+      return
+    }
+
+    let lastProvider = ''
+    for (const entry of filtered) {
+      if (entry.provider !== lastProvider) {
+        lastProvider = entry.provider
+        const header = document.createElement('div')
+        header.className = 'px-3 pt-2 pb-1 mono text-[10px] text-t3 uppercase tracking-wider'
+        header.textContent = entry.provider
+        listContainer.appendChild(header)
+      }
+      const item = document.createElement('button')
+      const full = entry.provider + '/' + entry.model
+      const isActive = full === currentModel
+      item.className =
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50'
+      const span = document.createElement('span')
+      span.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
+      span.textContent = entry.model
+      item.appendChild(span)
+      item.addEventListener('click', () => {
+        currentModel = full
+        trigger.textContent = entry.model
+        onSelect(entry.provider, entry.model)
+        closePanel()
+      })
+      listContainer.appendChild(item)
+    }
+  }
+
+  searchInput.addEventListener('input', renderList)
+
+  const closePanel = () => {
     open = false
     panel.classList.add('hidden')
+    searchInput.value = ''
     document.removeEventListener('mousedown', onDocClick)
   }
   const onDocClick = (e: MouseEvent) => {
-    if (!wrap.contains(e.target as Node)) close()
+    if (!wrap.contains(e.target as Node) && !panel.contains(e.target as Node)) closePanel()
   }
   trigger.addEventListener('click', () => {
     open = !open
     if (open) {
+      if (!panel.parentElement) document.body.appendChild(panel)
       panel.classList.remove('hidden')
+      searchInput.value = ''
+      renderList()
+      setTimeout(() => searchInput.focus(), 50)
       document.addEventListener('mousedown', onDocClick)
-    } else close()
+    } else closePanel()
   })
 
+  trigger.textContent = ''
+
   wrap.appendChild(trigger)
-  wrap.appendChild(panel)
   return wrap
 }
 
@@ -81,66 +131,69 @@ export function createHeader(): HeaderHandles {
   root.className = 'sticky top-0 z-30 card-bg'
 
   const inner = document.createElement('div')
-  inner.className =
-    'flex items-center gap-2.5 px-4 h-11 max-w-2xl mx-auto'
+  inner.className = 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto'
 
+  const hamburgerWrap = document.createElement('button')
+  hamburgerWrap.className =
+    'flex items-center text-t2 hover:text-t1 transition-colors'
+  hamburgerWrap.innerHTML =
+    '<svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">' +
+    '<rect x="2" y="2" width="16" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
+    '<rect x="4" y="9.5" width="12" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
+    '</svg>'
+
+  const hamburgerHandler = { fn: () => {} }
+  hamburgerWrap.addEventListener('click', () => hamburgerHandler.fn())
+
+  const gbotWrap = document.createElement('button')
+  gbotWrap.className = 'group flex items-center'
   const wordmark = document.createElement('span')
   wordmark.className =
-    'font-semibold tracking-tight text-[14px] transition-colors text-t3'
+    'text-[14px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue'
   wordmark.textContent = 'GBot'
+  gbotWrap.appendChild(wordmark)
 
-  inner.appendChild(wordmark)
-  inner.appendChild(
-    createDropdown(
-      '<span class="mono text-[11px] text-t2 group-hover:text-t1 transition-colors">glm-5.2</span>',
-      [
-        { label: 'glm-5.2', active: true },
-        { label: 'glm-4.6' },
-        { label: 'gpt-5' },
-        { label: 'claude-sonnet-4.5' },
-      ],
-      'w-56',
-    ),
-  )
-  inner.appendChild(
-    createDropdown(
-      '<span class="text-[12px] text-t2 group-hover:text-t1 transition-colors truncate-sm">modality-fix</span>',
-      [
-        { label: 'modality-fix', active: true },
-        { label: 'ws-reversal' },
-      ],
-      'w-52',
-    ),
-  )
-  inner.appendChild(
-    createDropdown(
-      '<span class="text-[12px] text-t2 group-hover:text-t1 transition-colors truncate-sm">main</span>',
-      [
-        { label: 'main', active: true },
-        { label: 'wechat-bot' },
-      ],
-      'w-52',
-    ),
-  )
+  const agentSpan = document.createElement('span')
+  agentSpan.className = 'text-[12px] text-t2'
+  agentSpan.textContent = ''
 
-  const flex = document.createElement('div')
-  flex.className = 'flex-1'
-  inner.appendChild(flex)
+  const separator = document.createElement('span')
+  separator.className = 'text-t3 text-[10px]'
+  separator.textContent = '\u203a'
 
-  const settings = document.createElement('button')
-  settings.className =
-    'w-6 h-6 rounded-md flex items-center justify-center hover:ring-2 hover:ring-blue/40 transition-all text-t2 hover:text-t1'
-  settings.innerHTML =
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" /></svg>'
-  inner.appendChild(settings)
+  const modelPicker = createModelPicker(() => {})
+
+  const breadcrumb = document.createElement('div')
+  breadcrumb.className = 'flex items-baseline gap-1.5'
+  breadcrumb.appendChild(agentSpan)
+  breadcrumb.appendChild(separator)
+  breadcrumb.appendChild(modelPicker)
+
+  inner.appendChild(hamburgerWrap)
+  inner.appendChild(gbotWrap)
+  inner.appendChild(breadcrumb)
+
+  const spacer = document.createElement('div')
+  spacer.className = 'flex-1'
+  inner.appendChild(spacer)
 
   root.appendChild(inner)
 
   const setStatus = (connected: boolean) => {
     wordmark.className =
-      'font-semibold tracking-tight text-[14px] transition-colors ' +
+      'text-[14px] font-semibold tracking-tight transition-colors group-hover:text-blue ' +
       (connected ? 'text-blue pulse' : 'text-t3')
   }
 
-  return { root, setStatus }
+  const setBreadcrumb = (agent: string, model: string) => {
+    agentSpan.textContent = agent
+    const trigger = modelPicker.querySelector('button') as HTMLButtonElement
+    if (model) trigger.textContent = model
+  }
+
+  const onHamburgerClick = (handler: () => void) => {
+    hamburgerHandler.fn = handler
+  }
+
+  return { root, setStatus, setBreadcrumb, onHamburgerClick }
 }

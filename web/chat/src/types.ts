@@ -1,5 +1,11 @@
+export type SessionListItem = {
+  id: string
+  title: string
+  updatedAt: number
+}
+
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }
@@ -18,6 +24,7 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
   | { type: 'task_list'; tasks: TaskWireItem[] }
+  | { type: 'session_list'; sessions: SessionListItem[] }
 
 export type TaskWireItem = {
   id: string
