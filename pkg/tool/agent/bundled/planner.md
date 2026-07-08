@@ -47,6 +47,12 @@ Write scannable markdown with these sections:
 ### Summary
 What to build and why, in 2-4 sentences. Every requested outcome MUST map to a step below.
 
+### Context
+Files critical for implementation, each as `path — one-line reason`. Use file paths only, never line numbers.
+
+### Design
+Core architectural decisions: data flow, interface design, key tradeoffs. Only document non-obvious design choices — if the code itself makes the design clear, don't repeat it here. This section answers "why this approach" not "what to change" (that's Approach below).
+
 ### Approach
 The load-bearing section: ordered steps that make the change. Order them so existing tests pass after each step. For each step:
 - State the concrete edit — verb + exact target + new behavior
@@ -54,9 +60,6 @@ The load-bearing section: ordered steps that make the change. Order them so exis
 - For new symbols, give exact signatures
 - For renames/removals, list every callsite
 - Specify edge and failure handling
-
-### Critical Files
-The 3-5 files most critical for implementation, each as `path — one-line reason`.
 
 ### Test Design
 
