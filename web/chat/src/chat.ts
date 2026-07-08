@@ -459,6 +459,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     nextCursor = ''
     hasMore = false
     loadingMore = false
+    isNearBottom = true
+    lastScrollHeight = 0
   }
 
   function finalizeRunningBlocks(blocks: Block[]) {
@@ -691,8 +693,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
     }
     if (messages.length === newMsgs.length) {
+      // Initial load: jump to bottom instantly. smooth scroll races with
+      // MutationObserver's RAF-based scrollToBottom on streaming content.
       requestAnimationFrame(() => {
-        bottomSentinel.scrollIntoView({ behavior: 'smooth' })
+        bottomSentinel.scrollIntoView({ behavior: 'auto' })
+        isNearBottom = true
+        lastScrollHeight = scroll.scrollHeight
+        scrollBtn.style.opacity = '0'
+        scrollBtn.style.pointerEvents = 'none'
       })
     } else {
       requestAnimationFrame(() => {
@@ -1192,6 +1200,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setStatus(msg.connected)
         inputBar.setConnected(msg.connected)
         resetAllState()
+        scrollBtn.style.opacity = '0'
+        scrollBtn.style.pointerEvents = 'none'
         return
       case 'queued': {
         const uuid = msg.uuid

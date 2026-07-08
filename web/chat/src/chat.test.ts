@@ -384,6 +384,45 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('fresh')
   })
 
+  it('reconnect scrolls to bottom after history load even if previously scrolled up', () => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
+    Element.prototype.scrollIntoView = vi.fn()
+
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+
+    // Simulate user scrolled up: scroll button should be visible
+    chat.scrollEl.scrollTop = 0
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    const scrollBtn = chat.root.querySelector('button.fixed') as HTMLElement
+    expect(scrollBtn.style.opacity).toBe('1')
+
+    // Reconnect with history
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'm-1',
+          role: 'user',
+          text: 'reconnect message',
+          thinking: [],
+          tools: [],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '',
+          status: 'done',
+          startedAt: 0,
+        },
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+
+    // After reconnect, isNearBottom should be reset so scroll button is hidden
+    expect(scrollBtn.style.opacity).toBe('0')
+  })
+
   it('IntersectionObserver triggers prefetch on scroll to top', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
