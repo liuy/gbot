@@ -142,11 +142,6 @@ type userMessageMsg struct {
 	Text string
 }
 
-// errMsg wraps an error for display in the TUI.
-type errMsg struct {
-	Err error
-}
-
 // spinnerTickMsg is an internal message to animate the spinner.
 // infoMsg displays a transient info message in the status bar.
 type infoMsg string

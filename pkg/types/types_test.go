@@ -727,7 +727,6 @@ func TestQueryEventTypeConstants(t *testing.T) {
 		{"tool_output_delta", types.EventToolOutputDelta, "tool_output_delta"},
 		{"tool_end", types.EventToolEnd, "tool_end"},
 		{"usage", types.EventUsage, "usage"},
-		{"error", types.EventError, "error"},
 		{"ask", types.EventAsk, "ask"},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
@@ -63,11 +64,16 @@ func TestSessionListRequestEmpty(t *testing.T) {
 
 	sendJSON(t, ws, map[string]string{"type": "session_list_request"})
 
-	// No frame expected — set short deadline and expect timeout.
-	_ = ws.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	_, _, err := ws.ReadMessage()
-	if err == nil {
+	// No frame expected — wait briefly and confirm no response.
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = ws.ReadMessage()
+		close(done)
+	}()
+	select {
+	case <-done:
 		t.Fatal("expected no response for empty session list")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
@@ -282,7 +288,7 @@ func TestSessionNewBusy(t *testing.T) {
 }
 
 // sendJSON marshals v and writes it as a WS text message.
-func sendJSON(t *testing.T, ws interface{ WriteMessage(int, []byte) error }, v interface{}) {
+func sendJSON(t *testing.T, ws *websocket.Conn, v any) {
 	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {

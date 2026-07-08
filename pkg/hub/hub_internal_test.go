@@ -52,9 +52,6 @@ func TestLogEngineEvent_AllBranches(t *testing.T) {
 		{"thinking_end_nil", Event{Type: types.EventThinkingEnd}},
 		{"thinking_end_with_duration", Event{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 2 * time.Second}}},
 
-		// Error
-		{"error", Event{Type: types.EventError, Error: errTest}},
-
 		// Ask
 		{"ask_nil", Event{Type: types.EventAsk}},
 		{"ask_with_data", Event{Type: types.EventAsk, Ask: &types.AskEvent{ToolName: "Bash"}}},

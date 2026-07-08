@@ -1422,24 +1422,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.status.SetInfo(string(m))
 		return true, nil
 
-	case errMsg:
-		a.status.SetError(m.Err.Error())
-		// Commit uncommitted messages before resetting so error context
-		// is preserved in terminal scrollback.
-		var errCommitCmd tea.Cmd
-		uncommitted := a.repl.messages[a.repl.committedCount:]
-		if len(uncommitted) > 0 {
-			// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
-			// user's expand/collapse state.
-			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
-			errCommitCmd = tea.Println(rendered)
-		}
-		a.repl.Reset()
-		a.repl.committedCount = 0
-		a.spinner.Stop()
-		a.input.Focus()
-		return true, errCommitCmd
-
 	case userMessageMsg:
 		a.markViewportDirty()
 		a.repl.AddUserMessage(m.Text)

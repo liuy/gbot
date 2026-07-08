@@ -273,18 +273,13 @@ func TestStatusBar_SetUsage(t *testing.T) {
 	}
 }
 
-func TestStatusBar_SetError(t *testing.T) {
+func TestStatusBar_SetInfoField(t *testing.T) {
 	t.Parallel()
 
 	s := NewStatusBar()
-	s.SetError("rate limit")
-	// Error is stored but not rendered in the new minimal status bar design.
-	if s.err != "rate limit" {
-		t.Errorf("err = %q, want %q", s.err, "rate limit")
-	}
-	v := s.View()
-	if strings.Contains(v, "err:") {
-		t.Errorf("View() = %q, should not contain error in status bar", v)
+	s.SetInfo("hello")
+	if s.info != "hello" {
+		t.Errorf("info = %q, want %q", s.info, "hello")
 	}
 }
 

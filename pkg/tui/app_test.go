@@ -260,29 +260,6 @@ func TestApp_Update_WindowSize(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — errMsg
-// ---------------------------------------------------------------------------
-
-func TestApp_Update_ErrorMsg(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartStreamingForTest()
-	app.spinner.Start()
-
-	model, cmd := app.Update(errMsg{Err: errors.New("test error")})
-	if cmd != nil {
-		t.Error("errMsg should not produce a command")
-	}
-	a := model.(*App)
-	if a.repl.streaming {
-		t.Error("streaming should be false after error")
-	}
-	if a.spinner.active {
-		t.Error("spinner should be stopped after error")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Update — textDeltaMsg
 // ---------------------------------------------------------------------------
 
@@ -1897,31 +1874,6 @@ func TestApp_UpdateRepl_ThinkingEndMarksDone(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — errMsg resets state
-// ---------------------------------------------------------------------------
-
-func TestApp_UpdateRepl_ErrMsg(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartStreamingForTest()
-	app.spinner.Start()
-
-	handled, cmd := app.updateRepl(errMsg{Err: errors.New("boom")})
-	if !handled {
-		t.Error("errMsg should be handled")
-	}
-	if cmd != nil {
-		t.Error("errMsg should return nil cmd")
-	}
-	if app.repl.IsStreaming() {
-		t.Error("streaming should be false after error")
-	}
-	if app.status.err != "boom" {
-		t.Errorf("status err = %q, want %q", app.status.err, "boom")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // handleSubmitRepl — already streaming returns nil
 // ---------------------------------------------------------------------------
 
@@ -2445,20 +2397,6 @@ func TestApp_EngineEventToMsg_ToolResult_EmptyDisplayOutput(t *testing.T) {
 	// Should be empty, NOT the raw JSON
 	if strings.Contains(trm.Output, "exitCode") {
 		t.Errorf("Output should not contain raw JSON when DisplayOutput is empty, got: %q", trm.Output)
-	}
-}
-
-func TestApp_EngineEventToMsg_Error(t *testing.T) {
-	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type:  types.EventError,
-		Error: errors.New("test error"),
-	})
-	em, ok := msg.(errMsg)
-	if !ok {
-		t.Fatalf("expected errMsg, got %T", msg)
-	}
-	if em.Err.Error() != "test error" {
-		t.Errorf("error = %q, want %q", em.Err.Error(), "test error")
 	}
 }
 

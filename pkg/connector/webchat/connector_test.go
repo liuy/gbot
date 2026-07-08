@@ -173,32 +173,9 @@ func TestHandle_AskBuildsOutbound(t *testing.T) {
 	}
 }
 
-// TestHandle_Error verifies EventError is written to the active WS
-// (blocking, must deliver) with the message field set.
-func TestHandle_Error(t *testing.T) {
-	c := newTestConnector(t)
-	ws := dialAndStore(t, c)
-	c.Handle(types.QueryEvent{Type: types.EventError, Error: assertErr("boom")})
-	msg := readWSMessage(t, ws)
-
-	var env struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if env.Type != "error" {
-		t.Errorf("type = %q, want \"error\"", env.Type)
-	}
-	if !strings.Contains(env.Message, "boom") {
-		t.Errorf("message = %q, want it to contain \"boom\"", env.Message)
-	}
-}
-
 // TestHandle_QueryEndError_PushesErrorMessage verifies that query_end with
 // a non-abort Error pushes a type:"error" message so the frontend can
-// display it. API errors (429/5xx) arrive via this path, not EventError.
+// display it. API errors (429/5xx) arrive via this path.
 func TestHandle_QueryEndError_PushesErrorMessage(t *testing.T) {
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)

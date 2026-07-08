@@ -229,9 +229,6 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			}
 		}
 
-	case types.EventError:
-		return errMsg{Err: evt.Error}
-
 	case types.EventUsage:
 		if evt.Usage != nil {
 			return usageMsg{

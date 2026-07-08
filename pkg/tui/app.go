@@ -1124,7 +1124,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		attachmentMsg, idleAbortedMsg,
-		infoMsg, errMsg, submitMsg, spinnerTickMsg, bgTickMsg,
+		infoMsg, submitMsg, spinnerTickMsg, bgTickMsg,
 		permissionAskMsg, inputAskMsg, retryAttemptMsg,
 		quotaUpdatedMsg, modelQuotaFetchedMsg, userMessageMsg:
 		handled, cmd := a.updateRepl(msg)

@@ -216,10 +216,15 @@ func TestModelSwitch_CallsSetProviderAndSetModel(t *testing.T) {
 	// Model switch must NOT push connect_status — that would trigger
 	// resetAllState on the client, wiping the chat. Frontend already
 	// updates the header text on selection.
-	_ = ws.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	_, _, err := ws.ReadMessage()
-	if err == nil {
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = ws.ReadMessage()
+		close(done)
+	}()
+	select {
+	case <-done:
 		t.Fatal("expected no WS message after model switch, but got one")
+	case <-time.After(time.Millisecond * 300):
 	}
 }
 

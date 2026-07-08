@@ -7,7 +7,6 @@
 package hub
 
 import (
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -170,10 +169,6 @@ func logEngineEvent(event Event) {
 		if event.Thinking != nil {
 			slog.Info("engine:thinking_end", "duration", event.Thinking.Duration)
 		}
-
-	case types.EventError:
-		errMsg := fmt.Sprintf("%v", event.Error)
-		slog.Info("engine:error", "error", errMsg)
 
 	case types.EventRetryAttempt:
 		if event.RetryAttempt != nil {

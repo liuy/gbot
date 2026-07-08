@@ -197,7 +197,6 @@ func TestAllEventTypes(t *testing.T) {
 		{Type: types.EventThinkingStart},
 		{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "thinking..."}},
 		{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 2 * time.Second}},
-		{Type: types.EventError, Error: errTest},
 		{Type: types.EventQueryEnd},
 	}
 
@@ -220,14 +219,6 @@ func TestAllEventTypes(t *testing.T) {
 type EventHandlerFunc func(Event)
 
 func (f EventHandlerFunc) Handle(e Event) { f(e) }
-
-var errTest = func() error {
-	return &testError{"test error"}
-}()
-
-type testError struct{ msg string }
-
-func (e *testError) Error() string { return e.msg }
 
 func TestHub_RaceStress(t *testing.T) {
 	h := NewHub()

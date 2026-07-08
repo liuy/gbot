@@ -516,7 +516,6 @@ type StatusBar struct {
 	streaming    bool
 	usage        types.Usage
 	width        int
-	err          string
 	info         string
 	contextUsed  int // current context input tokens
 	contextTotal int // model context window size
@@ -554,11 +553,6 @@ func (s *StatusBar) SetUsage(u types.Usage) {
 // SetWidth sets the bar width.
 func (s *StatusBar) SetWidth(w int) {
 	s.width = w
-}
-
-// SetError sets an error message.
-func (s *StatusBar) SetError(msg string) {
-	s.err = msg
 }
 
 // SetInfo sets an info message.

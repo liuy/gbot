@@ -389,7 +389,6 @@ const (
 	// Distinct from EventToolStart which signals the tool_use content block began streaming.
 	EventToolRun    QueryEventType = "tool_run"
 	EventUsage      QueryEventType = "usage"
-	EventError      QueryEventType = "error"
 	EventAttachment QueryEventType = "attachment"
 
 	// Ask: engine requests user confirmation or input.

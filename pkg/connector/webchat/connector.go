@@ -121,13 +121,13 @@ func (a *engineAdapter) UpdateSessionTitle(sessionID, title string) error {
 	return store.UpdateSessionTitle(sessionID, title)
 }
 func (a *engineAdapter) SessionID() string  { return a.eng.SessionID() }
-func (a *engineAdapter) Model() string     { return a.eng.Model() }
+func (a *engineAdapter) Model() string      { return a.eng.Model() }
 func (a *engineAdapter) ProjectDir() string { return a.eng.ProjectDir() }
 
-func (a *engineAdapter) SetProvider(p llm.Provider)   { a.eng.SetProvider(p) }
-func (a *engineAdapter) SetModel(m string)            { a.eng.SetModel(m) }
+func (a *engineAdapter) SetProvider(p llm.Provider)    { a.eng.SetProvider(p) }
+func (a *engineAdapter) SetModel(m string)             { a.eng.SetModel(m) }
 func (a *engineAdapter) Provider() llm.Provider        { return a.eng.Provider() }
-func (a *engineAdapter) SetMaxTokens(n int)           { a.eng.SetMaxTokens(n) }
+func (a *engineAdapter) SetMaxTokens(n int)            { a.eng.SetMaxTokens(n) }
 func (a *engineAdapter) SetInputModalities(m []string) { a.eng.SetInputModalities(m) }
 func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	a.eng.UpdateAutoCompactConfig(cfg)
@@ -319,9 +319,6 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	switch event.Type {
 	case types.EventAsk:
 		c.handleAsk(event)
-		return
-	case types.EventError:
-		_ = c.writeDirect(buildErrorMessage(event.Error))
 		return
 	}
 
@@ -746,7 +743,7 @@ type historyUsage struct {
 	CacheCreation int `json:"cacheCreation"`
 }
 
-// buildErrorMessage formats an EventError payload.
+// buildErrorMessage formats a query_end error payload for the WS client.
 func buildErrorMessage(err error) []byte {
 	msg := "unknown error"
 	if err != nil {
