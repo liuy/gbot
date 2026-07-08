@@ -49,6 +49,37 @@ function findPrevToolSibling(before: Node | null, parent: HTMLElement): HTMLElem
   return el
 }
 
+// Collects consecutive data-thinking element siblings immediately preceding
+// `el`, walking backward. Returns oldest-first (document order) so callers
+// can appendChild in array order to reproduce the visual sequence inside a
+// group. Read-only; does not detach nodes.
+function collectLeadingThinking(el: HTMLElement | null): HTMLElement[] {
+  if (!el) return []
+  const out: HTMLElement[] = []
+  let node = el.previousElementSibling as HTMLElement | null
+  while (node && node.dataset.thinking) {
+    out.push(node)
+    node = node.previousElementSibling as HTMLElement | null
+  }
+  return out.reverse()
+}
+
+// Collects consecutive data-thinking element siblings immediately following
+// `el`, walking forward. Returns oldest-first (document order). Used to
+// absorb inter-tool thinking that sits between a group and the next tool.
+// The progress bar (when present) is not a thinking node, so it terminates
+// the walk naturally.
+function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
+  if (!el) return []
+  const out: HTMLElement[] = []
+  let node = el.nextElementSibling as HTMLElement | null
+  while (node && node.dataset.thinking) {
+    out.push(node)
+    node = node.nextElementSibling as HTMLElement | null
+  }
+  return out
+}
+
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
   div.className = 'md-body md-text text-t1 text-[15px] leading-relaxed'
@@ -286,17 +317,29 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
     const sibling = findPrevToolSibling(before ?? null, parent)
     if (sibling?.dataset.toolGroup) {
       const toolsContainer = sibling.querySelector('[data-group-tools]') as HTMLElement
-      if (toolsContainer) toolsContainer.appendChild(root)
-      else sibling.appendChild(root)
+      // Absorb inter-tool thinking sitting between the group and the new tool.
+      // Must run before appendChild(root) so thinking lands above the new tool.
+      if (toolsContainer) {
+        for (const th of collectTrailingThinking(sibling as HTMLElement)) {
+          toolsContainer.appendChild(th)
+        }
+        toolsContainer.appendChild(root)
+      } else {
+        sibling.appendChild(root)
+      }
       updateGroupSummary(sibling as HTMLElement)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
     }
     if (sibling?.dataset.collapsible === '1') {
+      // Collect pre-group thinking BEFORE replaceChild detaches sibling; after
+      // detach, sibling.previousElementSibling would return null.
+      const preThinking = collectLeadingThinking(sibling)
       const group = createGroupContainer()
       parent.replaceChild(group, sibling)
       const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
+      for (const th of preThinking) toolsContainer.appendChild(th)
       toolsContainer.appendChild(sibling)
       toolsContainer.appendChild(root)
       updateGroupSummary(group)

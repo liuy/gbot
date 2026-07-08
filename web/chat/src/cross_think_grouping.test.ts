@@ -60,7 +60,7 @@ function blockTypes(container: Element | null): string[] {
 describe('cross-thinking grouping (no rebuild)', () => {
   beforeEach(() => mount())
 
-  it('[think web web think web web] → [think group(4) think]', () => {
+  it('[think web web think web web] → [group(4 tools, 2 thinking absorbed)]', () => {
     send('test')
     dispatchEvents([
       { type: 'query_start' },
@@ -80,9 +80,10 @@ describe('cross-thinking grouping (no rebuild)', () => {
     ])
 
     const container = document.querySelector('.space-y-3')
-    console.log('ACTUAL:', blockTypes(container))
     const groups = container?.querySelectorAll('[data-tool-group]')
-    console.log('groups:', groups?.length, 'tools in group 1:', groups?.[0]?.querySelectorAll('[data-tool-root]').length)
-    expect(blockTypes(container)).toEqual(['thinking', 'group', 'thinking'])
+    expect(groups!.length).toBe(1)
+    expect(groups![0].querySelectorAll('[data-tool-root]').length).toBe(4)
+    expect(groups![0].querySelectorAll('[data-thinking]').length).toBe(2)
+    expect(blockTypes(container)).toEqual(['group'])
   })
 })

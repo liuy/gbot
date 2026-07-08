@@ -59,6 +59,8 @@ describe('ToolGroup streaming rendering', () => {
 		const summary = groups[0].querySelector('[data-group-summary]')
 		expect(summary!.textContent).toContain('3')
 		expect(summary!.textContent).toContain('Web')
+		expect(groups[0].querySelectorAll('[data-thinking]').length).toBe(1)
+		expect(container.querySelectorAll(':scope > [data-thinking]').length).toBe(0)
 	})
 
 	it('group header has fold/unfold toggle', () => {
