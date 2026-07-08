@@ -196,6 +196,41 @@ func TestHandle_Error(t *testing.T) {
 	}
 }
 
+// TestHandle_QueryEndError_PushesErrorMessage verifies that query_end with
+// a non-abort Error pushes a type:"error" message so the frontend can
+// display it. API errors (429/5xx) arrive via this path, not EventError.
+func TestHandle_QueryEndError_PushesErrorMessage(t *testing.T) {
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: assertErr("rate limit exceeded")})
+
+	// First message is the query_end event frame.
+	msg1 := readWSMessage(t, ws)
+	var eventEnv struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(msg1, &eventEnv)
+	if eventEnv.Type != "event" {
+		t.Fatalf("first message type = %q, want \"event\" (query_end)", eventEnv.Type)
+	}
+
+	// Second message should be the error message.
+	msg2 := readWSMessage(t, ws)
+	var errEnv struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(msg2, &errEnv); err != nil {
+		t.Fatalf("unmarshal error msg: %v", err)
+	}
+	if errEnv.Type != "error" {
+		t.Errorf("error type = %q, want \"error\"", errEnv.Type)
+	}
+	if !strings.Contains(errEnv.Message, "rate limit exceeded") {
+		t.Errorf("error message = %q, want it to contain \"rate limit exceeded\"", errEnv.Message)
+	}
+}
+
 // TestHandle_QueryEnd verifies QueryEnd is written to the active WS so the
 // "query done" signal is never dropped behind streaming deltas.
 func TestHandle_QueryEnd(t *testing.T) {

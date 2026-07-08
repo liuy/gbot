@@ -309,6 +309,9 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 
 	if event.Type == types.EventQueryEnd && event.Agent == nil {
 		_ = c.writePayloadAndClear(payload)
+		if event.Error != nil && !aborted {
+			_ = c.writeDirect(buildErrorMessage(event.Error))
+		}
 	} else {
 		_ = c.writePayload(payload)
 	}
