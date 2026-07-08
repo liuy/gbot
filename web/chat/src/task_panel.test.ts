@@ -48,13 +48,10 @@ describe('taskPanel', () => {
     expect(Math.abs(actual - expectedOffset)).toBeLessThan(0.01)
   })
 
-  it('omits running and pending elements when counts are zero', () => {
+  it('hides panel when all tasks are completed', () => {
     const panel = mount()
     panel.setTasks([{ id: '1', subject: 'Only', status: 'completed' }])
-    const text = panel.root.textContent ?? ''
-    expect(text).toContain('1/1 Done')
-    expect(text).not.toContain('Running')
-    expect(text).not.toContain('Pending')
+    expect(panel.root.style.display).toBe('none')
   })
 
   it('expand/collapse toggles list visibility and chevron rotation', () => {
@@ -88,7 +85,10 @@ describe('taskPanel', () => {
 
   it('renders completed checkmark with line-through', () => {
     const panel = mount()
-    panel.setTasks([{ id: '1', subject: 'Done thing', status: 'completed' }])
+    panel.setTasks([
+      { id: '1', subject: 'Done thing', status: 'completed' },
+      { id: '2', subject: 'Pending thing', status: 'pending' },
+    ])
     const header = panel.root.querySelector('button') as HTMLButtonElement
     header.click()
     const list = panel.root.children[1] as HTMLElement

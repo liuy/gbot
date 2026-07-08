@@ -797,5 +797,16 @@ func (c *WebChatConnector) buildTaskListMessage() []byte {
 	}
 
 	payload, _ := json.Marshal(taskListOutbound{Type: "task_list", Tasks: items})
+
+	allDone := true
+	for _, item := range items {
+		if item.Status != string(task.StatusCompleted) {
+			allDone = false
+			break
+		}
+	}
+	if allDone {
+		_ = tl.CleanupCompleted()
+	}
 	return payload
 }

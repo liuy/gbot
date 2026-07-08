@@ -379,3 +379,42 @@ func TestBuildTaskListMessage_HubDispatchEndToEnd(t *testing.T) {
 		t.Error("task_list frame not received via hub dispatch")
 	}
 }
+
+func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
+	tl := newRealTaskList(t)
+	id1, _ := tl.CreateTask("Task A", "desc", "", nil)
+	id2, _ := tl.CreateTask("Task B", "desc", "", nil)
+
+	c := newTestConnector(t)
+	c.mock().taskListFn = func() *task.List { return tl }
+
+	_, _, _ = tl.UpdateTask(id1, task.TaskUpdates{Status: new(task.StatusCompleted)})
+	_, _, _ = tl.UpdateTask(id2, task.TaskUpdates{Status: new(task.StatusCompleted)})
+
+	payload := c.buildTaskListMessage()
+	if payload == nil {
+		t.Fatal("expected non-nil payload with completed tasks")
+	}
+	var got taskListOutbound
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("len(Tasks) = %d, want 2", len(got.Tasks))
+	}
+	for _, item := range got.Tasks {
+		if item.Status != string(task.StatusCompleted) {
+			t.Errorf("task %s status = %s, want completed", item.ID, item.Status)
+		}
+	}
+
+	remaining, _ := tl.ListTasks()
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 tasks after cleanup, got %d", len(remaining))
+	}
+
+	payload2 := c.buildTaskListMessage()
+	if payload2 != nil {
+		t.Errorf("expected nil on second call (disk empty), got %s", string(payload2))
+	}
+}

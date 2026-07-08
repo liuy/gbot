@@ -111,6 +111,10 @@ export function createTaskPanel(): TaskPanelHandles {
       root.style.display = 'none'
       return
     }
+    if (tasks.every((t) => t.status === 'completed')) {
+      root.style.display = 'none'
+      return
+    }
     root.style.display = ''
 
     const completed = tasks.filter((t) => t.status === 'completed').length
