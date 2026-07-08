@@ -4942,6 +4942,29 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	}
 }
 
+func TestHistoryPathFor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		projectDir string
+		engineID   string
+		want       string
+	}{
+		{"normal", "/home/user/.gbot/projects/abc", "main", "/home/user/.gbot/projects/abc/history/main.jsonl"},
+		{"empty_projectDir", "", "main", ""},
+		{"empty_engineID", "/home/user/.gbot/projects/abc", "", ""},
+		{"both_empty", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := historyPathFor(tt.projectDir, tt.engineID)
+			if got != tt.want {
+				t.Errorf("historyPathFor(%q, %q) = %q, want %q", tt.projectDir, tt.engineID, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApp_SlashCommand_PersistedToHistory(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	dir := t.TempDir()

@@ -231,19 +231,19 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 	return NewAppWithManager(mgr, systemPrompt, h)
 }
 
+// historyPathFor returns the per-engine history file path under the
+// project directory: {projectDir}/history/{engineID}.jsonl.
+// Returns "" if either argument is empty.
+func historyPathFor(projectDir, engineID string) string {
+	if projectDir == "" || engineID == "" {
+		return ""
+	}
+	return filepath.Join(projectDir, "history", engineID+".jsonl")
+}
+
 // NewAppWithManager creates an App bound to an EngineManager that already
 // holds one or more engines. The active engine (mgr.Active()) becomes the
 // initial a.engine / a.repl / a.sessionID cache.
-// historyPathFor returns the per-engine history file path:
-// ~/.gbot/history/{engineID}.jsonl. Returns "" if config dir is unavailable.
-func historyPathFor(engineID string) string {
-	configDir, err := config.ConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(configDir, "history", engineID+".jsonl")
-}
-
 func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hub) *App {
 	a := &App{
 		input:            NewInput(),
@@ -287,7 +287,7 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 		// Initialize per-engine History for all registered view states.
 		for _, vs := range mgr.List() {
 			if vs.History == nil {
-				vs.History = NewHistory(historyPathFor(vs.ID))
+				vs.History = NewHistory(historyPathFor(a.projectDir, vs.ID))
 			}
 		}
 		if vs := mgr.Active(); vs != nil {
@@ -455,6 +455,20 @@ func (a *App) persistModelSelection() {
 func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	a.sessionID = sessionID
 	a.projectDir = projectDir
+
+	// Initialize per-project history now that projectDir is known.
+	// NewAppWithManager runs before SetStore, so historyPathFor was empty then.
+	// Unconditionally reassign — old History had empty filePath and won't persist.
+	if a.projectDir != "" && a.engineMgr != nil {
+		for _, vs := range a.engineMgr.List() {
+			vs.History = NewHistory(historyPathFor(a.projectDir, vs.ID))
+		}
+		if vs := a.engineMgr.Active(); vs != nil {
+			if h, ok := vs.History.(*History); ok {
+				a.history = h
+			}
+		}
+	}
 
 	// Propagate store to engine for persistence delegation
 	a.engine.SetStore(store, projectDir)

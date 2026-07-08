@@ -386,7 +386,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		Engine:          eng,
 		Handler:         handler,
 		Repl:            newReplAdapter(NewReplState()),
-		History:         NewHistory(historyPathFor(id)),
+		History:         NewHistory(historyPathFor(a.projectDir, id)),
 		ID:              id,
 		Name:            name,
 		ActiveSessionID: eng.SessionID(),
