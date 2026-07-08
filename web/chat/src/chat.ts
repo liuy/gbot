@@ -342,7 +342,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const sidebar = createSidebar({ mainContent })
 
-  const header = createHeader()
+  const header = createHeader({ onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }) })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
   scroll.appendChild(header.root)
@@ -1231,7 +1231,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'connect_status':
         sidebar.closeImmediate()
         header.setStatus(msg.connected)
-        header.setBreadcrumb(msg.agent ?? 'main', msg.model ?? '')
+        header.setAgentModel(msg.agent ?? 'main', msg.model ?? '')
         inputBar.setConnected(msg.connected)
         resetAllState()
         taskPanel.setTasks([])
@@ -1239,6 +1239,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         scrollBtn.style.pointerEvents = 'none'
         if (msg.sessionID) currentSessionID = msg.sessionID
         conn.send({ type: 'session_list_request' })
+        return
+      case 'config':
+        header.setModels(msg.models, msg.current.provider, msg.current.model)
         return
       case 'queued': {
         const uuid = msg.uuid

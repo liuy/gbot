@@ -40,6 +40,9 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// state access under the lock).
 	histMsg := c.buildHistoryMessage("", 10)
 
+	// Pre-compute config before writeMu (reads engine + provider state).
+	configMsg := c.buildConfigMessage()
+
 	// Entire takeover sequence under writeMu: invalidate old, push frames,
 	// replay buffer, then activate new conn. The engine goroutine's Handle
 	// blocks on writeMu during this window — it cannot race with the replay
@@ -57,6 +60,11 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
 		_ = ws.WriteMessage(websocket.TextMessage, histMsg)
 	}
+
+	// config frame — model list + current selection so the frontend can
+	// populate the model picker immediately on connect.
+	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 
 	// 4. replay current turn buffer — in-flight deltas that are NOT in
 	//    engine.Messages() yet (text_delta, thinking_delta, tool_start,
@@ -209,6 +217,14 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			}
 		case "session_new":
 			c.handleSessionNew()
+		case "model_switch":
+			var msg struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.handleModelSwitch(msg.Provider, msg.Model)
+			}
 		}
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/liuy/gbot/pkg/config"
 )
 
 // helperSessionItems creates PickerItem slice from SessionItem slice.
@@ -52,9 +54,9 @@ func TestModelItem_Label(t *testing.T) {
 		item ModelItem
 		want string
 	}{
-		{ModelItem{Provider: "openai", Model: "glm-5", Current: false}, "openai / glm-5"},
-		{ModelItem{Provider: "openai", Model: "glm-5", Current: true}, "openai / glm-5 *"},
-		{ModelItem{Provider: "anthropic", Model: "claude-haiku", Current: false}, "anthropic / claude-haiku"},
+		{ModelItem{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-5", Current: false}}, "openai / glm-5"},
+		{ModelItem{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-5", Current: true}}, "openai / glm-5 *"},
+		{ModelItem{ModelItem: config.ModelItem{Provider: "anthropic", Model: "claude-haiku", Current: false}}, "anthropic / claude-haiku"},
 	}
 
 	for _, tc := range tests {

@@ -2,18 +2,16 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/llm"
 )
 
-// ModelItem represents a single provider/model entry in the picker.
+// ModelItem embeds config.ModelItem (shared ordering) and adds the TUI-only
+// Quota field (populated async by spawnModelQuotaFetches).
 type ModelItem struct {
-	Provider string
-	Model    string
-	Current  bool
-	Quota    string // non-empty = quota display for this provider (shared across models)
+	config.ModelItem
+	Quota string
 }
 
 // Label returns a display line for the model item.
@@ -29,53 +27,21 @@ func (m *ModelItem) Label() string {
 	return label
 }
 
-// buildModelItems constructs an ordered list of model items from provider configs.
-//
-// Regular providers appear first (alphabetical). Providers marked `free: true`
-// (OpenRouter free models) appear last so they don't drown out the main
-// configured providers in the picker.
+// buildModelItems delegates the ordering logic to config.BuildModelItems and
+// copies the results into the TUI's ModelItem type (preserving the Quota
+// field for async population).
 func buildModelItems(providers map[string]llm.Provider, providerConfigs map[string]*config.Provider, currentProvider string, currentModel string) []ModelItem {
-	// Split names into regular and free groups so free providers sort last.
-	var regular, free []string
-	for n, cfg := range providerConfigs {
-		if cfg.Free {
-			free = append(free, n)
-		} else {
-			regular = append(regular, n)
-		}
+	items := config.BuildModelItems(
+		providerConfigs,
+		func(name string) bool { _, ok := providers[name]; return ok },
+		currentProvider,
+		currentModel,
+	)
+	out := make([]ModelItem, len(items))
+	for i, it := range items {
+		out[i] = ModelItem{ModelItem: it}
 	}
-	sort.Strings(regular)
-	sort.Strings(free)
-
-	var items []ModelItem
-	for _, name := range regular {
-		cfg := providerConfigs[name]
-		if _, ok := providers[name]; !ok {
-			continue
-		}
-		for _, modelName := range cfg.Models.Ordered() {
-			items = append(items, ModelItem{
-				Provider: name,
-				Model:    modelName,
-				Current:  name == currentProvider && modelName == currentModel,
-			})
-		}
-	}
-	for _, name := range free {
-		cfg := providerConfigs[name]
-		if _, ok := providers[name]; !ok {
-			continue
-		}
-		for _, modelName := range cfg.Models.Ordered() {
-			items = append(items, ModelItem{
-				Provider: name,
-				Model:    modelName,
-				Current:  name == currentProvider && modelName == currentModel,
-			})
-		}
-	}
-
-	return items
+	return out
 }
 
 // findCurrentIndex returns the index of the current item, or -1 if none found.

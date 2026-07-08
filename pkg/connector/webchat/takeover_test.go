@@ -61,8 +61,14 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws1 deltas = %v, want %v", got1, want1)
 	}
 
-	// Conn2 connects → takeover. dialAndStore drains connect_status only.
-	ws2 := dialAndStore(t, c)
+	// Conn2 connects → takeover. Dial manually and drain connect_status only
+	// so we can assert the history frame follows.
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws2) // drain connect_status
 
 	// Next frame on ws2 must be history (committed messages).
 	histMsg := readWSMessage(t, ws2)
@@ -82,8 +88,9 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	if len(hist.Messages) != 2 {
 		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
 	}
+	_ = readWSMessage(t, ws2) // drain config
 
-	// After history, ws2 must receive replay of currentTurnBuf (d0..d4) then
+	// After config, ws2 must receive replay of currentTurnBuf (d0..d4) then
 	// live d5..d7.
 	for i := 5; i < 8; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
@@ -480,6 +487,7 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	}
 	defer ws1.Close()
 	_ = readWSMessage(t, ws1) // connect_status
+	_ = readWSMessage(t, ws1) // config
 
 	if len(c.currentTurnBuf) != 6 {
 		t.Fatalf("buffer should still have 6 frames after first takeover, got %d", len(c.currentTurnBuf))
@@ -514,6 +522,7 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	}
 	defer ws2.Close()
 	_ = readWSMessage(t, ws2) // connect_status
+	_ = readWSMessage(t, ws2) // config
 
 	if len(c.currentTurnBuf) != 7 {
 		t.Fatalf("buffer should still have 7 frames after second takeover, got %d — repeated reconnects must not shrink buffer", len(c.currentTurnBuf))
@@ -584,8 +593,15 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
 
 	// Connect WS2 → takeover → read all messages.
-	ws2 := dialAndStore(t, c)
+	// Dial manually and drain connect_status only so we can assert history.
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws2) // drain connect_status
 	histMsg := readWSMessage(t, ws2)
+	_ = readWSMessage(t, ws2) // drain config
 	var hist struct {
 		Type string `json:"type"`
 	}

@@ -2,6 +2,7 @@ package webchat
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -58,6 +62,12 @@ type mockEngine struct {
 	sessionIDFn     func() string
 	modelFn         func() string
 	projectDirFn    func() string
+	setProviderFn   func(llm.Provider)
+	setModelFn      func(string)
+	providerFn      func() llm.Provider
+	setMaxTokensFn  func(int)
+	setInputModFn   func([]string)
+	updateAutoFn    func(engine.AutoCompactConfig)
 
 	// Recorded calls for assertions.
 	queryCalls         []queryCall
@@ -69,6 +79,11 @@ type mockEngine struct {
 	switchSessionCalls []string
 	newSessionCalls    int
 	updateTitleCalls   []struct{ ID, Title string }
+	setProviderCalls   []string
+	setModelCalls      []string
+	setMaxTokensCalls  []int
+	setInputModCalls   [][]string
+	updateAutoCalls    int
 }
 
 type queryCall struct {
@@ -221,16 +236,77 @@ func (m *mockEngine) ProjectDir() string {
 	return "/tmp/test"
 }
 
+func (m *mockEngine) SetProvider(p llm.Provider) {
+	m.mu.Lock()
+	m.setProviderCalls = append(m.setProviderCalls, p.Name())
+	m.mu.Unlock()
+	if m.setProviderFn != nil {
+		m.setProviderFn(p)
+	}
+}
+
+func (m *mockEngine) SetModel(model string) {
+	m.mu.Lock()
+	m.setModelCalls = append(m.setModelCalls, model)
+	m.mu.Unlock()
+	if m.setModelFn != nil {
+		m.setModelFn(model)
+	}
+}
+
+func (m *mockEngine) Provider() llm.Provider {
+	if m.providerFn != nil {
+		return m.providerFn()
+	}
+	return nil
+}
+
+func (m *mockEngine) SetMaxTokens(n int) {
+	m.mu.Lock()
+	m.setMaxTokensCalls = append(m.setMaxTokensCalls, n)
+	m.mu.Unlock()
+	if m.setMaxTokensFn != nil {
+		m.setMaxTokensFn(n)
+	}
+}
+
+func (m *mockEngine) SetInputModalities(modalities []string) {
+	m.mu.Lock()
+	m.setInputModCalls = append(m.setInputModCalls, modalities)
+	m.mu.Unlock()
+	if m.setInputModFn != nil {
+		m.setInputModFn(modalities)
+	}
+}
+
+func (m *mockEngine) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
+	m.mu.Lock()
+	m.updateAutoCalls++
+	m.mu.Unlock()
+	if m.updateAutoFn != nil {
+		m.updateAutoFn(cfg)
+	}
+}
+
 // newTestConnectorWithHub builds a WebChatConnector with a mockEngine and the
 // given hub (for hub-routed dispatch tests). Tests configure the mock's
 // function fields to control behavior.
 func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 	t.Helper()
+	return newTestConnectorWithConfig(t, h, nil, nil)
+}
+
+// newTestConnectorWithConfig builds a WebChatConnector with providers and
+// providerConfigs for config/model_switch tests.
+func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
+	t.Helper()
 	c := &WebChatConnector{
-		engine:      &mockEngine{},
-		hub:         h,
-		pendingAsks: make(map[string]*types.AskEvent),
-		taskToolIDs: make(map[string]bool),
+		engine:          &mockEngine{},
+		hub:             h,
+		pendingAsks:     make(map[string]*types.AskEvent),
+		taskToolIDs:     make(map[string]bool),
+		providers:       providers,
+		providerConfigs: providerConfigs,
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
@@ -291,9 +367,10 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 	}
 }
 
-// dialAndStore connects a WS client to c's endpoint and drains the
-// connect_status frame that the takeover always sends first. Returns the
-// client conn with connect_status consumed, ready for Handle-event reads.
+// dialAndStore connects a WS client to c's endpoint and drains the initial
+// takeover frames (connect_status, optional history, config, optional task_list)
+// so the caller can read events/responses immediately. Returns the client conn
+// with all initial frames consumed.
 // Tests that don't need history must set mock().messagesFn to return nil.
 func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
 	t.Helper()
@@ -302,6 +379,23 @@ func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
+	drainInitialFrames(t, ws)
 	return ws
+}
+
+// drainInitialFrames reads takeover frames until the config frame is consumed.
+// The takeover sequence is: connect_status, history (optional), config, replay,
+// task_list (optional). We drain connect_status + history (if present) + config.
+// The caller is responsible for reading replay/task_list frames if relevant.
+func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
+	t.Helper()
+	for {
+		data := readWSMessage(t, ws)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "config" {
+			return
+		}
+	}
 }

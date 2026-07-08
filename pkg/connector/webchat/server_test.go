@@ -80,6 +80,7 @@ func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
+	_ = readWSMessage(t, ws) // drain config
 
 	out, _ := json.Marshal(map[string]any{"type": "message", "text": "hello there"})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -159,6 +160,7 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
+	_ = readWSMessage(t, ws) // drain config
 
 	engineCh := make(chan types.AskResponse, 1)
 	// Dispatch an Ask through the hub — same path the engine takes.
@@ -217,6 +219,7 @@ func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
+	_ = readWSMessage(t, ws) // drain config
 
 	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "u-2"}})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -257,6 +260,7 @@ func TestRegisterChatWS_CancelQueuedBatch_FiltersEmpty(t *testing.T) {
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
+	_ = readWSMessage(t, ws) // drain config
 
 	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "", "u-2"}})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -311,6 +315,7 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 
 	// Initial history page: latest 10 messages
 	initData := readWSMessage(t, ws)
+	_ = readWSMessage(t, ws) // drain config
 	var initEnv struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`

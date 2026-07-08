@@ -588,7 +588,7 @@ func main() {
 		mainEng := app.Engine()
 		if mainEng != nil {
 			if mainHub, ok := mainEng.Dispatcher().(*hub.Hub); ok && mainHub != nil {
-				wc := webchat.New(mainEng, mainHub)
+				wc := webchat.New(mainEng, mainHub, providerMap, buildProviderConfigMap(cfg))
 				webchat.RegisterStaticRoutes(wsMux)
 				webchat.RegisterChatWS(wsMux, wc)
 				slog.Info("webchat: mounted on ws mux", "engine", mainEng.EngineID())
@@ -1007,6 +1007,17 @@ func startPprofServer(cfgAddr string) {
 			slog.Warn("pprof:server_failed", "error", err)
 		}
 	}()
+}
+
+// buildProviderConfigMap converts cfg.Providers ([]Provider) into the
+// map[string]*Provider shape used by TUI and webchat for model listing +
+// capability resolution. Mirrors tui.App.SetProviders.
+func buildProviderConfigMap(cfg *config.Config) map[string]*config.Provider {
+	m := make(map[string]*config.Provider, len(cfg.Providers))
+	for i := range cfg.Providers {
+		m[cfg.Providers[i].Name] = &cfg.Providers[i]
+	}
+	return m
 }
 
 // resolvePrimaryProvider resolves Config.Model into a concrete provider, model name,

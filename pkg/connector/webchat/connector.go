@@ -22,8 +22,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -64,6 +66,12 @@ type engineClient interface {
 	SessionID() string
 	Model() string
 	ProjectDir() string
+	SetProvider(provider llm.Provider)
+	SetModel(model string)
+	Provider() llm.Provider
+	SetMaxTokens(n int)
+	SetInputModalities(modalities []string)
+	UpdateAutoCompactConfig(cfg engine.AutoCompactConfig)
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -116,6 +124,15 @@ func (a *engineAdapter) SessionID() string  { return a.eng.SessionID() }
 func (a *engineAdapter) Model() string     { return a.eng.Model() }
 func (a *engineAdapter) ProjectDir() string { return a.eng.ProjectDir() }
 
+func (a *engineAdapter) SetProvider(p llm.Provider)   { a.eng.SetProvider(p) }
+func (a *engineAdapter) SetModel(m string)            { a.eng.SetModel(m) }
+func (a *engineAdapter) Provider() llm.Provider        { return a.eng.Provider() }
+func (a *engineAdapter) SetMaxTokens(n int)           { a.eng.SetMaxTokens(n) }
+func (a *engineAdapter) SetInputModalities(m []string) { a.eng.SetInputModalities(m) }
+func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
+	a.eng.UpdateAutoCompactConfig(cfg)
+}
+
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
 // wire protocol (Phase 0), and drives queries from inbound WS messages.
@@ -157,6 +174,13 @@ type WebChatConnector struct {
 	// Guarded by writeMu; cleared alongside currentTurnBuf on stream done.
 	taskToolIDs map[string]bool
 
+	// providers + providerConfigs drive the model picker (config message +
+	// model_switch handler). providers maps provider name → llm.Provider
+	// (only providers with resolved API keys appear here). providerConfigs
+	// is the full config map used for model ordering + capability resolution.
+	providers       map[string]llm.Provider
+	providerConfigs map[string]*config.Provider
+
 	// OnStreamDone is called when the main engine commits an assistant response
 	// to engine.Messages(). Clears currentTurnBuf so takeover replay does not
 	// duplicate events already reflected in history. Set by the connector's
@@ -168,12 +192,14 @@ type WebChatConnector struct {
 // connector subscribes to h immediately (same pattern as WeChat at
 // pkg/connector/wechat/connector.go:127); the returned unsubscribe func is
 // stored and called by Stop.
-func New(eng *engine.Engine, h *hub.Hub) *WebChatConnector {
+func New(eng *engine.Engine, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
 	c := &WebChatConnector{
-		engine:      &engineAdapter{eng: eng},
-		hub:         h,
-		pendingAsks: make(map[string]*types.AskEvent),
-		taskToolIDs: make(map[string]bool),
+		engine:          &engineAdapter{eng: eng},
+		hub:             h,
+		pendingAsks:     make(map[string]*types.AskEvent),
+		taskToolIDs:     make(map[string]bool),
+		providers:       providers,
+		providerConfigs: providerConfigs,
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
@@ -852,6 +878,47 @@ type sessionListItem struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
+// configModelItem is one entry in the config message's models array.
+type configModelItem struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// configCurrent is the active provider/model in the config message.
+type configCurrent struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// buildConfigMessage returns a JSON "config" message with the full ordered
+// model list (regular providers first, free providers last) and the current
+// provider/model. Always returns non-nil so the frontend always receives the
+// frame during takeover, even when there are no providers.
+func (c *WebChatConnector) buildConfigMessage() []byte {
+	var currentProvider string
+	if p := c.engine.Provider(); p != nil {
+		currentProvider = p.Name()
+	}
+	currentModel := c.engine.Model()
+	present := func(name string) bool { _, ok := c.providers[name]; return ok }
+	items := config.BuildModelItems(c.providerConfigs, present, currentProvider, currentModel)
+
+	out := struct {
+		Type    string            `json:"type"`
+		Models  []configModelItem `json:"models"`
+		Current configCurrent     `json:"current"`
+	}{
+		Type:    "config",
+		Models:  []configModelItem{},
+		Current: configCurrent{Provider: currentProvider, Model: currentModel},
+	}
+	for _, it := range items {
+		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
+	}
+	payload, _ := json.Marshal(out)
+	return payload
+}
+
 // buildConnectStatusMessage returns a connect_status payload with the current
 // engine model, agent name, and sessionID. The client calls resetAllState on
 // every connect_status, then loads the subsequent history frame.
@@ -917,6 +984,7 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	}
 	connectMsg := c.buildConnectStatusMessage()
 	histMsg := c.buildHistoryMessage("", 10)
+	configMsg := c.buildConfigMessage()
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
@@ -926,6 +994,8 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 			_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
 		}
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 	}
 	c.writeMu.Unlock()
 }
@@ -942,14 +1012,50 @@ func (c *WebChatConnector) handleSessionNew() {
 		return
 	}
 	connectMsg := c.buildConnectStatusMessage()
+	configMsg := c.buildConfigMessage()
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 	}
 	c.writeMu.Unlock()
 	if payload := c.buildSessionListMessage(); payload != nil {
 		_ = c.writeDirect(payload)
 	}
+}
+
+// handleModelSwitch switches the engine's provider + model, syncs capabilities,
+// then pushes fresh connect_status + config so the header updates immediately.
+func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
+	if c.engine.IsBusy() {
+		_ = c.writeDirect(buildSessionBusyMessage())
+		return
+	}
+	provider, ok := c.providers[providerName]
+	if !ok {
+		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("unknown provider: %s", providerName)))
+		return
+	}
+	cfgProv := c.providerConfigs[providerName]
+	if cfgProv == nil {
+		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("no config for provider %s", providerName)))
+		return
+	}
+	if !cfgProv.HasModel(modelName) {
+		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
+		return
+	}
+	c.engine.SetProvider(provider)
+	c.engine.SetModel(modelName)
+	c.engine.SetMaxTokens(cfgProv.ResolveMaxTokens(modelName))
+	c.engine.SetInputModalities(cfgProv.ResolveInput(modelName))
+	c.engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+		ContextWindow:          cfgProv.ResolveContext(modelName),
+		MaxConsecutiveFailures: 3,
+	})
+
+	slog.Info("webchat:model switched", "provider", providerName, "model", modelName)
 }

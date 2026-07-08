@@ -4,8 +4,9 @@ import fuzzysearch from 'fuzzysearch'
 export interface HeaderHandles {
   root: HTMLElement
   setStatus: (connected: boolean) => void
-  setBreadcrumb: (agent: string, model: string) => void
+  setAgentModel: (agent: string, model: string) => void
   onHamburgerClick: (handler: () => void) => void
+  setModels: (models: { provider: string; model: string }[], curProvider: string, curModel: string) => void
 }
 
 interface ModelEntry {
@@ -13,20 +14,9 @@ interface ModelEntry {
   model: string
 }
 
-const allModels: ModelEntry[] = [
-  { provider: 'zhipu', model: 'glm-5.2' },
-  { provider: 'zhipu', model: 'glm-4.6' },
-  { provider: 'zhipu', model: 'glm-4-air' },
-  { provider: 'openai', model: 'gpt-5' },
-  { provider: 'openai', model: 'gpt-4.1' },
-  { provider: 'openai', model: 'o3' },
-  { provider: 'anthropic', model: 'claude-sonnet-4.5' },
-  { provider: 'anthropic', model: 'claude-opus-4.1' },
-  { provider: 'mcp', model: 'deepseek-v3.2' },
-  { provider: 'mcp', model: 'qwen3-coder-480b' },
-]
-
-function createModelPicker(onSelect: (provider: string, model: string) => void): HTMLElement {
+function createModelPicker(
+  onSelect: (provider: string, model: string) => void,
+): { wrap: HTMLElement; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void } {
   const wrap = document.createElement('div')
   wrap.className = 'relative'
 
@@ -51,6 +41,8 @@ function createModelPicker(onSelect: (provider: string, model: string) => void):
   listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
   panel.appendChild(listContainer)
 
+  let allModels: ModelEntry[] = []
+  let currentProvider = ''
   let currentModel = ''
   let open = false
 
@@ -79,8 +71,7 @@ function createModelPicker(onSelect: (provider: string, model: string) => void):
         listContainer.appendChild(header)
       }
       const item = document.createElement('button')
-      const full = entry.provider + '/' + entry.model
-      const isActive = full === currentModel
+      const isActive = entry.provider === currentProvider && entry.model === currentModel
       item.className =
         'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50'
       const span = document.createElement('span')
@@ -88,7 +79,8 @@ function createModelPicker(onSelect: (provider: string, model: string) => void):
       span.textContent = entry.model
       item.appendChild(span)
       item.addEventListener('click', () => {
-        currentModel = full
+        currentProvider = entry.provider
+        currentModel = entry.model
         trigger.textContent = entry.model
         onSelect(entry.provider, entry.model)
         closePanel()
@@ -122,11 +114,18 @@ function createModelPicker(onSelect: (provider: string, model: string) => void):
 
   trigger.textContent = ''
 
+  const setModels = (models: ModelEntry[], curProvider: string, curModel: string) => {
+    allModels = models
+    currentProvider = curProvider
+    currentModel = curModel
+    if (curModel) trigger.textContent = curModel
+  }
+
   wrap.appendChild(trigger)
-  return wrap
+  return { wrap, setModels }
 }
 
-export function createHeader(): HeaderHandles {
+export function createHeader(opts: { onModelSelect: (provider: string, model: string) => void }): HeaderHandles {
   const root = document.createElement('header')
   root.className = 'sticky top-0 z-30 card-bg'
 
@@ -161,13 +160,13 @@ export function createHeader(): HeaderHandles {
   separator.className = 'text-t3 text-[10px]'
   separator.textContent = '\u203a'
 
-  const modelPicker = createModelPicker(() => {})
+  const modelPicker = createModelPicker(opts.onModelSelect)
 
   const breadcrumb = document.createElement('div')
   breadcrumb.className = 'flex items-baseline gap-1.5'
   breadcrumb.appendChild(agentSpan)
   breadcrumb.appendChild(separator)
-  breadcrumb.appendChild(modelPicker)
+  breadcrumb.appendChild(modelPicker.wrap)
 
   inner.appendChild(hamburgerWrap)
   inner.appendChild(gbotWrap)
@@ -185,15 +184,21 @@ export function createHeader(): HeaderHandles {
       (connected ? 'text-blue pulse' : 'text-t3')
   }
 
-  const setBreadcrumb = (agent: string, model: string) => {
+  const setAgentModel = (agent: string, model: string) => {
     agentSpan.textContent = agent
-    const trigger = modelPicker.querySelector('button') as HTMLButtonElement
-    if (model) trigger.textContent = model
+    if (model) {
+      const trigger = modelPicker.wrap.querySelector('button') as HTMLButtonElement
+      if (trigger) trigger.textContent = model
+    }
   }
 
   const onHamburgerClick = (handler: () => void) => {
     hamburgerHandler.fn = handler
   }
 
-  return { root, setStatus, setBreadcrumb, onHamburgerClick }
+  const setModels = (models: { provider: string; model: string }[], curProvider: string, curModel: string) => {
+    modelPicker.setModels(models, curProvider, curModel)
+  }
+
+  return { root, setStatus, setAgentModel, onHamburgerClick, setModels }
 }

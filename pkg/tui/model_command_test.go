@@ -589,7 +589,7 @@ func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
 	helperSetupModelPicker(a)
 
 	p := a.activeDialog
-	ghostItems := []ModelItem{{Provider: "ghost", Model: "ghost-model"}}
+	ghostItems := []ModelItem{{ModelItem: config.ModelItem{Provider: "ghost", Model: "ghost-model"}}}
 	p.done = true
 	p.cursor = 0
 
@@ -773,9 +773,9 @@ func TestBuildModelItems_Empty(t *testing.T) {
 
 func TestFindCurrentIndex_Found(t *testing.T) {
 	items := []ModelItem{
-		{Provider: "openai", Model: "glm-lite", Current: false},
-		{Provider: "openai", Model: "glm-5", Current: true},
-		{Provider: "openai", Model: "glm-max", Current: false},
+		{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-lite", Current: false}},
+		{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-5", Current: true}},
+		{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-max", Current: false}},
 	}
 	idx := findCurrentIndex(items)
 	if idx != 1 {
@@ -785,7 +785,7 @@ func TestFindCurrentIndex_Found(t *testing.T) {
 
 func TestFindCurrentIndex_NotFound(t *testing.T) {
 	items := []ModelItem{
-		{Provider: "openai", Model: "glm-5", Current: false},
+		{ModelItem: config.ModelItem{Provider: "openai", Model: "glm-5", Current: false}},
 	}
 	idx := findCurrentIndex(items)
 	if idx != -1 {

@@ -25,6 +25,11 @@ export type ServerMessage =
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
   | { type: 'task_list'; tasks: TaskWireItem[] }
   | { type: 'session_list'; sessions: SessionListItem[] }
+  | {
+      type: 'config'
+      models: { provider: string; model: string }[]
+      current: { provider: string; model: string }
+    }
 
 export type TaskWireItem = {
   id: string
