@@ -13,7 +13,7 @@ import {
   setProgressBarUsage,
   refreshProgressBar,
   finalizeProgressBar,
-} from './streamDom'
+} from './stream_dom'
 
 function newParent(): HTMLElement {
   return document.createElement('div')

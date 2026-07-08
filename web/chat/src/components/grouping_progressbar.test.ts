@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
 	appendToolBlock,
 	appendProgressBar,
-} from './streamDom'
+} from './stream_dom'
 
 function setup() {
 	const container = document.createElement('div')

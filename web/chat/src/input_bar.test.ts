@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createInputBar } from './inputBar'
+import { createInputBar } from './input_bar'
 
 function mount() {
   const ib = createInputBar({ connected: true })

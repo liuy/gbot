@@ -194,6 +194,10 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 
 	// ws2 connects → takeover → activeWS now points to ws2.
 	ws2 := dialAndStore(t, c)
+	// serveChatWS runs takeover asynchronously. Wait for ws2 to become
+	// active before simulating ws1's exit — otherwise clearActiveIfCurrent(ws1)
+	// races with ws2's pending Store and clears the nil left by ws2's takeover.
+	waitFor(2*time.Second, func() bool { return c.activeWS.Load() == ws2 })
 	if c.activeWS.Load() == nil {
 		t.Fatal("activeWS nil after ws2 takeover")
 	}

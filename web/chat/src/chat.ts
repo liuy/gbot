@@ -27,13 +27,13 @@ import {
   finishTool,
   expandToolChildrenForRunning,
   collapseToolChildrenOnDone,
-} from './components/streamDom'
+} from './components/stream_dom'
 import { createHeader } from './header'
-import { createInputBar, type InputBarHandles } from './inputBar'
+import { createInputBar, type InputBarHandles } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { getConnection } from './ws'
-import { TokenRate } from './tokenRate'
+import { TokenRate } from './token_rate'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
