@@ -426,6 +426,21 @@ func renderResult(data any) string {
 	case *DeviceInfo:
 		return renderDeviceInfo(v)
 	case map[string]any:
+		if _, ok := v["MIMEType"]; ok {
+			if w, _ := v["Width"].(float64); w > 0 {
+				h, _ := v["Height"].(float64)
+				mime, _ := v["MIMEType"].(string)
+				return fmt.Sprintf("screenshot %dx%d (%s)", int(w), int(h), mime)
+			}
+		}
+		if elements, ok := v["Elements"].([]any); ok {
+			return fmt.Sprintf("screen %d elements", len(elements))
+		}
+		if _, ok := v["Manufacturer"]; ok {
+			manu, _ := v["Manufacturer"].(string)
+			model, _ := v["Model"].(string)
+			return fmt.Sprintf("%s %s", manu, model)
+		}
 		if errMsg, ok := v["error"].(string); ok {
 			return "error: " + errMsg
 		}

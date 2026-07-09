@@ -644,7 +644,11 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	}
 
 	if t, ok := tools[toolName]; ok {
-		return t.RenderResult(json.RawMessage(rest)), elapsed
+		var data any
+		if err := json.Unmarshal([]byte(rest), &data); err == nil {
+			return t.RenderResult(data), elapsed
+		}
+		return t.RenderResult(rest), elapsed
 	}
 
 	var obj struct {

@@ -608,6 +608,33 @@ func TestComputer_RenderResult_OkMap(t *testing.T) {
 	}
 }
 
+func TestComputer_RenderResult_ScreenshotMap(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	got := tt.RenderResult(map[string]any{
+		"Width":    float64(1256),
+		"Height":   float64(2760),
+		"MIMEType": "image/jpeg",
+	})
+	want := "screenshot 1256x2760 (image/jpeg)"
+	if got != want {
+		t.Errorf("RenderResult = %q, want %q", got, want)
+	}
+}
+
+func TestComputer_RenderResult_DeviceInfoMap(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	got := tt.RenderResult(map[string]any{
+		"Manufacturer": "HONOR",
+		"Model":        "BKQ-AN80",
+	})
+	want := "HONOR BKQ-AN80"
+	if got != want {
+		t.Errorf("RenderResult = %q, want %q", got, want)
+	}
+}
+
 func TestComputer_RenderResult_ScreenshotType(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
