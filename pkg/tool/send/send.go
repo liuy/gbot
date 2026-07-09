@@ -88,20 +88,17 @@ func New(sender FileSender) tool.Tool {
 					return "Sent"
 				}
 				return fmt.Sprintf("Sent %s", fp)
-			case json.RawMessage:
-				var m map[string]any
-				if json.Unmarshal(v, &m) != nil {
-					return string(v)
-				}
-				fp, _ := m["file_path"].(string)
-				if fp == "" {
-					return "Sent"
-				}
-				return fmt.Sprintf("Sent %s", fp)
 			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, err
+			}
+			return m, nil
 		},
 	})
 }

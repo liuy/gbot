@@ -534,12 +534,17 @@ func TestRenderResult_DefaultCase(t *testing.T) {
 
 func TestRenderResult_JSONRawMessage(t *testing.T) {
 	t.Parallel()
-	// TUI passes marshaled output as json.RawMessage. renderResult must
-	// extract the content field rather than dump the whole JSON envelope.
+	tt := New()
+	// TUI passes marshaled output as json.RawMessage. DecodeResult recovers
+	// the concrete type, then renderResult extracts the content field.
 	raw := json.RawMessage(`{"content":"hello world","file_path":"/tmp/x.go","num_lines":1}`)
-	result := renderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := renderResult(v)
 	if result != "hello world" {
-		t.Errorf("renderResult(json.RawMessage) = %q, want %q", result, "hello world")
+		t.Errorf("renderResult(decoded) = %q, want %q", result, "hello world")
 	}
 }
 
@@ -802,5 +807,77 @@ func TestOutput_InterfaceConformance(t *testing.T) {
 	}
 	for _, o := range out {
 		o.output()
+	}
+}
+
+func TestDecodeResult_TextOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	original := &TextOutput{Type: "text", FilePath: "/tmp/x.go", Content: "hello", NumLines: 1}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*TextOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
+	}
+	if got.Content != "hello" || got.FilePath != "/tmp/x.go" {
+		t.Errorf("round-trip lost fields: %+v", got)
+	}
+	if tt.RenderResult(original) != tt.RenderResult(v) {
+		t.Error("stream and history render differ")
+	}
+}
+
+func TestDecodeResult_ImageOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	original := &ImageOutput{Type: "image", FilePath: "/tmp/x.png", OriginalWidth: 100, OriginalHeight: 200}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*ImageOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *ImageOutput", v)
+	}
+	if got.FilePath != "/tmp/x.png" || got.OriginalWidth != 100 {
+		t.Errorf("round-trip lost fields: %+v", got)
+	}
+	if tt.RenderResult(original) != tt.RenderResult(v) {
+		t.Error("stream and history render differ")
+	}
+}
+
+func TestDecodeResult_FileUnchangedOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	original := &FileUnchangedOutput{Type: "file_unchanged", FilePath: "/tmp/x.go"}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*FileUnchangedOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *FileUnchangedOutput", v)
+	}
+	if got.FilePath != "/tmp/x.go" {
+		t.Errorf("round-trip lost fields: %+v", got)
+	}
+	if tt.RenderResult(original) != tt.RenderResult(v) {
+		t.Error("stream and history render differ")
 	}
 }

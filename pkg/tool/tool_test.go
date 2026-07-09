@@ -521,7 +521,6 @@ func (minimalTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
 func (minimalTool) MaxResultSize() int                        { return 50000 }
 func (minimalTool) Prompt() string                            { return "" }
 func (minimalTool) RenderResult(any) string                   { return "" }
-func (minimalTool) NewResultType() any                        { return nil }
 
 func TestFormatWireResult(t *testing.T) {
 	t.Parallel()

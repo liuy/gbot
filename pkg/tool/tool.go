@@ -234,6 +234,13 @@ type ToolWithSearchOrRead interface {
 	IsSearchOrRead(input json.RawMessage) SearchReadKind
 }
 
+// ToolWithDecodeResult lets a tool recover its concrete result type from
+// persisted JSON, so RenderResult only ever sees concrete types.
+type ToolWithDecodeResult interface {
+	Tool
+	DecodeResult(raw json.RawMessage) (any, error)
+}
+
 // IsDeferredTool is an optional interface for tools that should be deferred
 // from the initial tool set and loaded on-demand via ToolSearch.
 // Source: TS prompt.ts:62-108 — isDeferredTool()
@@ -293,6 +300,11 @@ type ToolDef struct {
 
 	// Result rendering
 	RenderResult_ func(data any) string // default: json.Marshal
+
+	// DecodeResult_ recovers a concrete result type from persisted JSON so
+	// RenderResult only sees concrete types (never json.RawMessage).
+	// Default: generic json.Unmarshal to any (string/map/slice/float64).
+	DecodeResult_ func(raw json.RawMessage) (any, error)
 
 	// Optional wire format override for tool_result content sent to the LLM.
 	// If set, BuildTool returns a tool that also implements ToolWithWireFormat.
@@ -374,6 +386,15 @@ func BuildTool(def ToolDef) Tool {
 			return string(b)
 		}
 	}
+	if def.DecodeResult_ == nil {
+		def.DecodeResult_ = func(raw json.RawMessage) (any, error) {
+			var v any
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return raw, nil
+			}
+			return v, nil
+		}
+	}
 	if def.FormatWireResult_ != nil && def.IsSearchOrRead_ != nil {
 		return &builtFullTool{builtTool{def: def}}
 	}
@@ -409,5 +430,8 @@ func (t *builtTool) MaxResultSize() int                   { return t.def.MaxResu
 
 func (t *builtTool) Prompt() string               { return t.def.Prompt_ }
 func (t *builtTool) RenderResult(data any) string { return t.def.RenderResult_(data) }
-func (t *builtTool) IsDeferred() bool             { return t.def.ShouldDefer_ }
-func (t *builtTool) SearchHint() string           { return t.def.SearchHint_ }
+func (t *builtTool) DecodeResult(raw json.RawMessage) (any, error) {
+	return t.def.DecodeResult_(raw)
+}
+func (t *builtTool) IsDeferred() bool   { return t.def.ShouldDefer_ }
+func (t *builtTool) SearchHint() string { return t.def.SearchHint_ }

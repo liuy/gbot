@@ -83,6 +83,13 @@ func NewListMcpResources(reg *gbotmcp.Registry) tool.Tool {
 		FormatWireResult_: func(data any) string {
 			return renderResourceResultJSON(data)
 		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var resources []gbotmcp.ServerResource
+			if err := json.Unmarshal(raw, &resources); err != nil {
+				return nil, err
+			}
+			return resources, nil
+		},
 		ShouldDefer_: true,
 		SearchHint_:  "list resources from connected MCP servers",
 	})
@@ -170,6 +177,13 @@ func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 		FormatWireResult_: func(data any) string {
 			return renderResourceResultJSON(data)
 		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var contents []gbotmcp.ResourceContent
+			if err := json.Unmarshal(raw, &contents); err != nil {
+				return nil, err
+			}
+			return contents, nil
+		},
 		ShouldDefer_: true,
 		SearchHint_:  "read a specific MCP resource by URI",
 	})
@@ -212,12 +226,6 @@ func renderListResourcesTUI(data any) string {
 	switch v := data.(type) {
 	case []gbotmcp.ServerResource:
 		return formatResourceList(v)
-	case json.RawMessage:
-		var resources []gbotmcp.ServerResource
-		if json.Unmarshal(v, &resources) != nil {
-			return emptyResourcesMessage
-		}
-		return formatResourceList(resources)
 	default:
 		return emptyResourcesMessage
 	}
@@ -263,12 +271,6 @@ func renderReadResourceTUI(data any) string {
 	switch v := data.(type) {
 	case []gbotmcp.ResourceContent:
 		return formatResourceContent(v)
-	case json.RawMessage:
-		var contents []gbotmcp.ResourceContent
-		if json.Unmarshal(v, &contents) != nil {
-			return ""
-		}
-		return formatResourceContent(contents)
 	default:
 		return ""
 	}

@@ -60,18 +60,11 @@ type fileReadResult struct {
 // renderEditResult converts Edit tool output to a human-readable string for TUI.
 // Source: FileEditTool/UI.tsx — renderToolResultMessage → FileEditToolUpdatedMessage
 func renderEditResult(data any) string {
-	var out *Output
-	switch v := data.(type) {
-	case *Output:
-		out = v
-	case json.RawMessage:
-		out = &Output{}
-		if err := json.Unmarshal(v, out); err != nil {
-			return string(v)
+	out, ok := data.(*Output)
+	if !ok {
+		if s, ok := data.(string); ok {
+			return renderEditError(s)
 		}
-	case string:
-		return renderEditError(v)
-	default:
 		return fmt.Sprintf("%v", data)
 	}
 
@@ -185,6 +178,13 @@ func New() tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            fileEditPrompt(),
 		RenderResult_:      renderEditResult,
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o Output
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
+		},
 	})
 }
 

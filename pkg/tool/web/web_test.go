@@ -933,23 +933,23 @@ func TestNew_RenderResult_Output(t *testing.T) {
 
 func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 	tl := New(nil)
-	type renderer interface {
-		RenderResult(data any) string
-	}
-	r, _ := tl.(renderer)
 
 	// Valid JSON Output → content
 	valid := json.RawMessage(`{"Mode":"fetch","Content":"hello-json"}`)
-	got := r.RenderResult(valid)
+	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(valid)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := tl.RenderResult(v)
 	if got != "hello-json" {
 		t.Errorf("RenderResult(valid json) = %q, want %q", got, "hello-json")
 	}
 
-	// Invalid JSON → raw string
+	// Invalid JSON → DecodeResult returns error
 	invalid := json.RawMessage(`not json`)
-	got = r.RenderResult(invalid)
-	if got != "not json" {
-		t.Errorf("RenderResult(invalid json) = %q, want %q", got, "not json")
+	_, err = tl.(tool.ToolWithDecodeResult).DecodeResult(invalid)
+	if err == nil {
+		t.Error("DecodeResult(invalid json) should return error")
 	}
 }
 

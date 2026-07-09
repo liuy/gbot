@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // mockRegistry implements Registry for testing.
@@ -1163,7 +1165,11 @@ func TestJob_RenderResult_JSONRawMessage(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJob(reg)
 	raw := json.RawMessage(`{"poll":{"task":{"job_id":"bg-1","status":"completed","exit_code":0},"retrieval_status":"success","output":"hello world"}}`)
-	got := tl.RenderResult(raw)
+	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := tl.RenderResult(v)
 	if strings.Contains(got, "[123") || strings.Contains(got, "34 117") {
 		t.Errorf("RenderResult should not show raw bytes, got: %q", got)
 	}

@@ -116,18 +116,19 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			switch v := data.(type) {
 			case *Output:
 				return v.Content
-			case json.RawMessage:
-				var out Output
-				if err := json.Unmarshal(v, &out); err != nil {
-					return string(v)
-				}
-				return out.Content
 			case string:
 				return v
 			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o Output
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}

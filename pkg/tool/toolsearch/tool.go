@@ -104,19 +104,19 @@ func New() tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            toolPrompt,
 		RenderResult_: func(data any) string {
-			switch v := data.(type) {
-			case *Output:
-				return renderToolSearchOutput(v.Matches, v.PendingMCPServers)
-			case json.RawMessage:
-				var out Output
-				if err := json.Unmarshal(v, &out); err != nil {
-					return string(v)
-				}
-				return renderToolSearchOutput(out.Matches, out.PendingMCPServers)
-			default:
+			out, ok := data.(*Output)
+			if !ok {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+			return renderToolSearchOutput(out.Matches, out.PendingMCPServers)
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o Output
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
 		},
 	})
 }

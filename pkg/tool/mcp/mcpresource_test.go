@@ -829,7 +829,11 @@ func TestRenderReadResourceTUI_WithMimeType(t *testing.T) {
 
 func TestRenderListResourcesTUI_JSONRawMessage(t *testing.T) {
 	raw := json.RawMessage(`[{"uri":"test://1","name":"res1","server":"s1","mimeType":"text/plain"}]`)
-	got := renderListResourcesTUI(raw)
+	v, err := NewListMcpResources(nil).(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := renderListResourcesTUI(v)
 	if !strings.Contains(got, "test://1") {
 		t.Errorf("renderListResourcesTUI(RawMessage) should contain URI, got: %q", got)
 	}
@@ -840,7 +844,11 @@ func TestRenderListResourcesTUI_JSONRawMessage(t *testing.T) {
 
 func TestRenderReadResourceTUI_JSONRawMessage(t *testing.T) {
 	raw := json.RawMessage(`[{"uri":"test://1","text":"hello world"}]`)
-	got := renderReadResourceTUI(raw)
+	v, err := NewReadMcpResource(nil).(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := renderReadResourceTUI(v)
 	if !strings.Contains(got, "test://1") {
 		t.Errorf("renderReadResourceTUI(RawMessage) should contain URI, got: %q", got)
 	}

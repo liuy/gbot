@@ -1898,25 +1898,25 @@ func TestExecute_CircularRefPanic(t *testing.T) {
 func TestREPLTool_RenderResult_JSONRawMessage(t *testing.T) {
 	r := New()
 	raw := json.RawMessage(`"console output from REPL"`)
-	got := r.RenderResult(raw)
-	if got != "console output from REPL" {
-		t.Errorf("RenderResult(json.RawMessage) = %q, want unquoted string", got)
+	v, err := r.DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
 	}
-}
-
-func TestREPLTool_NewResultType(t *testing.T) {
-	r := New()
-	result := r.NewResultType()
-	if result != nil {
-		t.Errorf("NewResultType() = %v, want nil (REPL returns string data)", result)
+	got := r.RenderResult(v)
+	if got != "console output from REPL" {
+		t.Errorf("RenderResult(decoded) = %q, want unquoted string", got)
 	}
 }
 
 func TestREPLTool_RenderResult_NonJSONRawMessage(t *testing.T) {
 	r := New()
-	// RawMessage that is not valid JSON string — should return raw string
+	// RawMessage that is not valid JSON string — DecodeResult returns the raw bytes
 	raw := json.RawMessage(`not a json string`)
-	got := r.RenderResult(raw)
+	v, err := r.DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := r.RenderResult(v)
 	if got != "not a json string" {
 		t.Errorf("RenderResult(non-JSON raw) = %q, want %q", got, "not a json string")
 	}

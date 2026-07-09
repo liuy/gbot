@@ -1633,10 +1633,15 @@ func TestNew_RenderResult(t *testing.T) {
 	if got == "" {
 		t.Error("expected non-empty JSON render")
 	}
-	// json.RawMessage must decode the JSON string and return its content.
-	got = tt.RenderResult(json.RawMessage(`"hover text here"`))
+	// Resume path: json.RawMessage decoded by DecodeResult, then rendered.
+	raw := json.RawMessage(`"hover text here"`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got = tt.RenderResult(v)
 	if got != "hover text here" {
-		t.Errorf("RenderResult(RawMessage string) = %q, want 'hover text here'", got)
+		t.Errorf("RenderResult(decoded) = %q, want 'hover text here'", got)
 	}
 }
 

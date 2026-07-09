@@ -132,15 +132,8 @@ func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 		// TUI render: what the user sees in the terminal.
 		// Source: UI.tsx:20-46 — renderToolResultMessage
 		RenderResult_: func(data any) string {
-			var out skillOutput
-			switch v := data.(type) {
-			case skillOutput:
-				out = v
-			case json.RawMessage:
-				if err := json.Unmarshal(v, &out); err != nil {
-					return string(v)
-				}
-			default:
+			out, ok := data.(skillOutput)
+			if !ok {
 				return fmt.Sprintf("%v", data)
 			}
 			if out.Status == "forked" {
@@ -159,6 +152,13 @@ func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 				parts = append(parts, out.Model)
 			}
 			return strings.Join(parts, " · ")
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o skillOutput
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return o, nil
 		},
 	})
 }

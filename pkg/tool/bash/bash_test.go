@@ -696,12 +696,15 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 	t.Parallel()
 
 	tt := bash.New(nil)
-	// This is what the persisted file actually contains
 	raw := json.RawMessage(`{"output":"make[1]: Entering directory\nok  test result\n","exitCode":0}`)
-	result := tt.RenderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := tt.RenderResult(v)
 	want := "make[1]: Entering directory\nok  test result\n"
 	if result != want {
-		t.Errorf("RenderResult(json.RawMessage) = %q, want %q", result, want)
+		t.Errorf("RenderResult(decoded) = %q, want %q", result, want)
 	}
 }
 
@@ -710,9 +713,9 @@ func TestRenderResult_JsonRawMessage_InvalidJson(t *testing.T) {
 
 	tt := bash.New(nil)
 	raw := json.RawMessage(`not valid json`)
-	result := tt.RenderResult(raw)
-	if result != "not valid json" {
-		t.Errorf("RenderResult(invalid json) = %q, want raw string", result)
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err == nil {
+		t.Error("DecodeResult(invalid json) should return error")
 	}
 }
 

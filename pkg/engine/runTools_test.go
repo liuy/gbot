@@ -42,7 +42,6 @@ func (t *testTool) IsEnabled() bool                           { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                            { return "" }
 func (t *testTool) RenderResult(any) string                   { return "" }
-func (t *testTool) NewResultType() any                        { return nil }
 
 func (t *testTool) MaxResultSize() int { return 50000 }
 
@@ -2295,7 +2294,6 @@ func (t *stuckTool) IsEnabled() bool                           { return true }
 func (t *stuckTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *stuckTool) Prompt() string                            { return "" }
 func (t *stuckTool) RenderResult(any) string                   { return "" }
-func (t *stuckTool) NewResultType() any                        { return nil }
 func (t *stuckTool) MaxResultSize() int                        { return 50000 }
 
 // TestExecuteAll_BlocksOnStuckTool_AfterCtxCancel verifies that ExecuteAll

@@ -449,9 +449,13 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 
 	// Valid JSON RawMessage with output fields
 	raw := json.RawMessage(`{"filenames":["a.go","b.go"],"numFiles":2,"durationMs":5,"truncated":false}`)
-	result := tt.RenderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := tt.RenderResult(v)
 	if result != "a.go\nb.go" {
-		t.Errorf("RenderResult(json.RawMessage) = %q, want %q", result, "a.go\nb.go")
+		t.Errorf("RenderResult(decoded) = %q, want %q", result, "a.go\nb.go")
 	}
 }
 
@@ -461,9 +465,13 @@ func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 
 	// Empty files list
 	raw := json.RawMessage(`{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`)
-	result := tt.RenderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := tt.RenderResult(v)
 	if result != "" {
-		t.Errorf("RenderResult(json.RawMessage empty) = %q, want empty", result)
+		t.Errorf("RenderResult(decoded empty) = %q, want empty", result)
 	}
 }
 
@@ -471,10 +479,10 @@ func TestRenderResult_JsonRawMessage_Invalid(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 
-	// Invalid JSON within RawMessage — should return raw string
+	// Invalid JSON within RawMessage — DecodeResult returns an error
 	raw := json.RawMessage(`not valid json`)
-	result := tt.RenderResult(raw)
-	if result != "not valid json" {
-		t.Errorf("RenderResult(invalid json.RawMessage) = %q, want %q", result, "not valid json")
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err == nil {
+		t.Error("DecodeResult(invalid json) should return error")
 	}
 }

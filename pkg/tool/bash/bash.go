@@ -144,16 +144,8 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 		MaxResultSizeChars: 30000,
 		Prompt_:            bashPrompt(),
 		RenderResult_: func(data any) string {
-			var out *Output
-			switch v := data.(type) {
-			case *Output:
-				out = v
-			case json.RawMessage:
-				out = &Output{}
-				if err := json.Unmarshal(v, out); err != nil {
-					return string(v)
-				}
-			default:
+			out, ok := data.(*Output)
+			if !ok {
 				return fmt.Sprintf("%v", data)
 			}
 			var sb strings.Builder
@@ -179,6 +171,13 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 				fmt.Fprintf(&sb, "Command timed out and was moved to background (job ID: %s)", out.BackgroundJobID)
 			}
 			return sb.String()
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o Output
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
 		},
 	})
 }

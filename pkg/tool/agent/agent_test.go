@@ -34,7 +34,6 @@ func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
 func (m *mockTool) IsEnabled() bool                           { return true }
 func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
 func (m *mockTool) Prompt() string                            { return "" }
-func (m *mockTool) NewResultType() any                        { return nil }
 func (m *mockTool) RenderResult(any) string                   { return "" }
 
 func (m *mockTool) MaxResultSize() int { return 50000 }
@@ -441,9 +440,13 @@ func TestRenderResult_JSONRawMessage(t *testing.T) {
 	at := New()
 	// Resume path: json.RawMessage containing a SubQueryResult.
 	raw := json.RawMessage(`{"content":"Found 3 files matching the pattern","usage":{"input_tokens":100,"output_tokens":50}}`)
-	got := at.RenderResult(raw)
+	v, err := at.DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := at.RenderResult(v)
 	if !strings.Contains(got, "Found 3 files") {
-		t.Errorf("RenderResult(json.RawMessage) should contain result content, got: %q", got)
+		t.Errorf("RenderResult(decoded) should contain result content, got: %q", got)
 	}
 	// Must NOT show raw JSON keys like "usage"
 	if strings.Contains(got, `"usage"`) {

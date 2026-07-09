@@ -96,6 +96,44 @@ func New(b *AndroidBackend) tool.Tool {
 		MaxResultSizeChars: 50000,
 		Prompt_:            computerPrompt(),
 		RenderResult_:      renderResult,
+		// DecodeResult probes the JSON keys to recover the concrete struct.
+		// The probe keys ("MIMEType", "Elements", "Manufacturer") are the raw
+		// Go field names — Screenshot/ScreenResult/DeviceInfo have NO json tags,
+		// so the persisted wire format uses field names as JSON keys. If json
+		// tags are ever added to these structs, the probe keys MUST be updated
+		// in lockstep (adding tags also invalidates existing SQLite rows).
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var probe map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				return nil, err
+			}
+			if _, ok := probe["MIMEType"]; ok {
+				var s Screenshot
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return nil, err
+				}
+				return &s, nil
+			}
+			if _, ok := probe["Elements"]; ok {
+				var s ScreenResult
+				if err := json.Unmarshal(raw, &s); err != nil {
+					return nil, err
+				}
+				return &s, nil
+			}
+			if _, ok := probe["Manufacturer"]; ok {
+				var d DeviceInfo
+				if err := json.Unmarshal(raw, &d); err != nil {
+					return nil, err
+				}
+				return &d, nil
+			}
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				return nil, err
+			}
+			return m, nil
+		},
 	})
 }
 
@@ -425,28 +463,7 @@ func renderResult(data any) string {
 		return fmt.Sprintf("screenshot %dx%d (%s)", v.Width, v.Height, v.MIMEType)
 	case *DeviceInfo:
 		return renderDeviceInfo(v)
-	case json.RawMessage:
-		var m map[string]any
-		if json.Unmarshal(v, &m) != nil {
-			return string(v)
-		}
-		return renderResult(m)
 	case map[string]any:
-		if _, ok := v["MIMEType"]; ok {
-			if w, _ := v["Width"].(float64); w > 0 {
-				h, _ := v["Height"].(float64)
-				mime, _ := v["MIMEType"].(string)
-				return fmt.Sprintf("screenshot %dx%d (%s)", int(w), int(h), mime)
-			}
-		}
-		if elements, ok := v["Elements"].([]any); ok {
-			return fmt.Sprintf("screen %d elements", len(elements))
-		}
-		if _, ok := v["Manufacturer"]; ok {
-			manu, _ := v["Manufacturer"].(string)
-			model, _ := v["Model"].(string)
-			return fmt.Sprintf("%s %s", manu, model)
-		}
 		if errMsg, ok := v["error"].(string); ok {
 			return "error: " + errMsg
 		}

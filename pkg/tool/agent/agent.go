@@ -277,22 +277,19 @@ func (t *AgentTool) RenderResult(data any) string {
 			return fmt.Sprintf("Fork agent %s running in background...", v.AgentID)
 		}
 		return v.Content
-	case json.RawMessage:
-		var result types.SubQueryResult
-		if err := json.Unmarshal(v, &result); err != nil {
-			return string(v)
-		}
-		if result.AsyncLaunched {
-			return fmt.Sprintf("Fork agent %s running in background...", result.AgentID)
-		}
-		return result.Content
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
 }
 
-func (t *AgentTool) NewResultType() any { return &types.SubQueryResult{} }
+func (t *AgentTool) DecodeResult(raw json.RawMessage) (any, error) {
+	var r types.SubQueryResult
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
 
 // FormatWireResult formats the tool result for the LLM wire format.
 // Source: AgentTool.tsx:1340-1374

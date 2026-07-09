@@ -210,19 +210,19 @@ func (t *REPLTool) RenderResult(data any) string {
 	switch v := data.(type) {
 	case string:
 		return v
-	case json.RawMessage:
-		var s string
-		if json.Unmarshal(v, &s) == nil {
-			return s
-		}
-		return string(v)
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
 }
 
-func (t *REPLTool) NewResultType() any { return nil } // REPL returns string data
+func (t *REPLTool) DecodeResult(raw json.RawMessage) (any, error) {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, nil
+	}
+	return string(raw), nil
+}
 
 // CleanSession removes a session from the map and closes it.
 // Call this when the owning engine/sub-engine shuts down.

@@ -114,16 +114,17 @@ func New(reg *lsp.Registry) tool.Tool {
 			switch v := data.(type) {
 			case string:
 				return v
-			case json.RawMessage:
-				var s string
-				if json.Unmarshal(v, &s) == nil {
-					return s
-				}
-				return string(v)
 			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				return s, nil
+			}
+			return string(raw), nil
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
 			var in Input

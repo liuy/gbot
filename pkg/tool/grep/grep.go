@@ -163,16 +163,8 @@ func New() tool.Tool {
 		MaxResultSizeChars: 20000,
 		Prompt_:            grepPrompt(),
 		RenderResult_: func(data any) string {
-			var out *Output
-			switch v := data.(type) {
-			case *Output:
-				out = v
-			case json.RawMessage:
-				out = &Output{}
-				if err := json.Unmarshal(v, out); err != nil {
-					return string(v)
-				}
-			default:
+			out, ok := data.(*Output)
+			if !ok {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
@@ -190,6 +182,13 @@ func New() tool.Tool {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+		},
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o Output
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}

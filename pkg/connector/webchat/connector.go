@@ -634,21 +634,15 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 
 	if strings.HasPrefix(rest, "<persisted-output>") {
 		if data := readPersistedFile(rest); data != nil {
-			if t, ok := tools[toolName]; ok {
-				if rendered := t.RenderResult(data); rendered != "" {
-					return rendered, elapsed
-				}
+			if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+				return r, elapsed
 			}
 		}
 		return extractPersistedPreview(rest), elapsed
 	}
 
-	if t, ok := tools[toolName]; ok {
-		var data any
-		if err := json.Unmarshal([]byte(rest), &data); err == nil {
-			return t.RenderResult(data), elapsed
-		}
-		return t.RenderResult(rest), elapsed
+	if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
+		return r, elapsed
 	}
 
 	var obj struct {
@@ -658,6 +652,22 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		return obj.Output, elapsed
 	}
 	return rest, elapsed
+}
+
+// renderViaTool finds the tool, decodes the raw JSON to its concrete result
+// type via DecodeResult, then calls RenderResult. Returns (rendered, false)
+// if the tool is not in the map so callers can apply their own fallback.
+func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, bool) {
+	t, ok := tools[toolName]
+	if !ok {
+		return "", false
+	}
+	if dt, ok := t.(tool.ToolWithDecodeResult); ok {
+		if v, err := dt.DecodeResult(raw); err == nil {
+			return t.RenderResult(v), true
+		}
+	}
+	return t.RenderResult(string(raw)), true
 }
 
 func readPersistedFile(s string) json.RawMessage {

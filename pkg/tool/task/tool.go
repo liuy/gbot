@@ -311,6 +311,13 @@ func New(list *List) tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            tasksToolPrompt(),
 		RenderResult_:      tasksRenderResult,
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o TasksOutput
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
+		},
 	})
 }
 
@@ -585,12 +592,6 @@ func tasksRenderResult(data any) string {
 	switch v := data.(type) {
 	case *TasksOutput:
 		return renderTasksOutput(v)
-	case json.RawMessage:
-		var out TasksOutput
-		if err := json.Unmarshal(v, &out); err != nil {
-			return string(v)
-		}
-		return renderTasksOutput(&out)
 	default:
 		return fmt.Sprintf("%v", data)
 	}

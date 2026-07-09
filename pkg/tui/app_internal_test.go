@@ -19,7 +19,10 @@ func TestRenderViaTool_Found(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Glob": &mockRenderTool{},
 	}
-	got := renderViaTool("Glob", json.RawMessage(`{"filenames":["a.go"]}`), tools)
+	got, ok := renderViaTool("Glob", json.RawMessage(`{"filenames":["a.go"]}`), tools)
+	if !ok {
+		t.Fatal("renderViaTool(Glob) returned ok=false, want true")
+	}
 	if got != "a.go" {
 		t.Errorf("renderViaTool(Glob) = %q, want %q", got, "a.go")
 	}
@@ -27,9 +30,44 @@ func TestRenderViaTool_Found(t *testing.T) {
 
 func TestRenderViaTool_NotFound(t *testing.T) {
 	t.Parallel()
-	got := renderViaTool("Missing", nil, nil)
+	_, ok := renderViaTool("Missing", nil, nil)
+	if ok {
+		t.Error("renderViaTool(Missing) returned ok=true, want false")
+	}
+}
+
+func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	inner := `{"filenames":["a.go","b.go"]}`
+	content := "[Tool spent 1.5s]" + inner
+	wrapped, _ := json.Marshal(content)
+	got, elapsed := renderToolOutput("Glob", wrapped, tools)
+	want := "a.go\nb.go"
+	if got != want {
+		t.Errorf("renderToolOutput = %q, want %q", got, want)
+	}
+	if elapsed != 1500*time.Millisecond {
+		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
+	}
+}
+
+func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	// valid JSON wrapper, but the inner content is not valid JSON for the tool.
+	// DecodeResult fails → renderViaTool falls back to RenderResult(string(raw)).
+	content := "[Tool spent 0s]garbage"
+	wrapped, _ := json.Marshal(content)
+	got, _ := renderToolOutput("Glob", wrapped, tools)
+	// The mockRenderTool.RenderResult returns "" for non-*globResult types.
+	// The fallback passes string(raw) which is not *globResult, so "" is expected.
 	if got != "" {
-		t.Errorf("renderViaTool(Missing) = %q, want empty", got)
+		t.Errorf("renderToolOutput decode-error fallback = %q, want empty (mock returns empty for non-decoded)", got)
 	}
 }
 
@@ -509,6 +547,11 @@ func TestRenderAgentLogs_LongSummaryTruncated(t *testing.T) {
 	}
 }
 
+// globResult is the concrete type mockRenderTool decodes from JSON.
+type globResult struct {
+	Files []string `json:"filenames"`
+}
+
 // mockRenderTool is a minimal tool.Tool implementation for render tests.
 type mockRenderTool struct{}
 
@@ -523,20 +566,21 @@ func (m *mockRenderTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext)
 	return types.PermissionAllowDecision{}
 }
 func (m *mockRenderTool) RenderResult(data any) string {
-	raw, ok := data.(json.RawMessage)
+	out, ok := data.(*globResult)
 	if !ok {
 		return ""
-	}
-	var out struct {
-		Files []string `json:"filenames"`
-	}
-	if json.Unmarshal(raw, &out) != nil {
-		return string(raw)
 	}
 	if len(out.Files) == 0 {
 		return ""
 	}
 	return strings.Join(out.Files, "\n")
+}
+func (m *mockRenderTool) DecodeResult(raw json.RawMessage) (any, error) {
+	var out globResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 func (m *mockRenderTool) IsEnabled() bool                           { return true }
 func (m *mockRenderTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -545,4 +589,3 @@ func (m *mockRenderTool) IsConcurrencySafe(json.RawMessage) bool    { return tru
 func (m *mockRenderTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
 func (m *mockRenderTool) MaxResultSize() int                        { return 0 }
 func (m *mockRenderTool) Prompt() string                            { return "" }
-func (m *mockRenderTool) NewResultType() any                        { return nil }

@@ -173,6 +173,13 @@ func NewJob(reg Registry) tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            jobPrompt(),
 		RenderResult_:      jobRenderResult,
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			var o JobOutput
+			if err := json.Unmarshal(raw, &o); err != nil {
+				return nil, err
+			}
+			return &o, nil
+		},
 	})
 }
 
@@ -328,12 +335,6 @@ func jobRenderResult(data any) string {
 	switch v := data.(type) {
 	case *JobOutput:
 		return renderJobOutput(v)
-	case json.RawMessage:
-		var out JobOutput
-		if err := json.Unmarshal(v, &out); err != nil {
-			return string(v)
-		}
-		return renderJobOutput(&out)
 	default:
 		return fmt.Sprintf("%v", data)
 	}

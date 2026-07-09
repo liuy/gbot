@@ -718,19 +718,19 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	// Handle <persisted-output>: read file from disk, then render via tool.
 	if strings.HasPrefix(rest, "<persisted-output>") {
 		if data := readPersistedFile(rest); data != nil {
-			if rendered := renderViaTool(toolName, data, tools); rendered != "" {
-				return rendered, elapsed
+			if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+				return r, elapsed
 			}
 		}
 		// Fallback: show preview
 		return extractPersistedPreview(rest), elapsed
 	}
 
-	// Try tool's RenderResult with the raw JSON content.
+	// Try tool's RenderResult with the decoded concrete type.
 	// If the tool exists, its RenderResult is authoritative — even empty output
 	// means the tool handled it (e.g. Bash with no stdout). Don't fallback.
-	if t, ok := tools[toolName]; ok {
-		return t.RenderResult(json.RawMessage(rest)), elapsed
+	if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
+		return r, elapsed
 	}
 
 	// Fallback: try unwrapping one more level (gbot's {"output":"..."} format).
@@ -744,13 +744,21 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	return rest, elapsed
 }
 
-// renderViaTool finds the tool and calls RenderResult with the raw JSON.
-func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.Tool) string {
+// renderViaTool finds the tool, decodes the raw JSON to its concrete result
+// type via DecodeResult, then calls RenderResult. This produces the same
+// display as the streaming path. Returns (rendered, false) if the tool is
+// not in the map so callers can apply their own fallback.
+func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, bool) {
 	t, ok := tools[toolName]
 	if !ok {
-		return ""
+		return "", false
 	}
-	return t.RenderResult(raw)
+	if dt, ok := t.(tool.ToolWithDecodeResult); ok {
+		if v, err := dt.DecodeResult(raw); err == nil {
+			return t.RenderResult(v), true
+		}
+	}
+	return t.RenderResult(string(raw)), true
 }
 
 // readPersistedFile extracts the file path from a <persisted-output> block

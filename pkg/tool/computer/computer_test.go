@@ -608,33 +608,6 @@ func TestComputer_RenderResult_OkMap(t *testing.T) {
 	}
 }
 
-func TestComputer_RenderResult_ScreenshotMap(t *testing.T) {
-	t.Parallel()
-	tt, _, _ := newTestTool()
-	got := tt.RenderResult(map[string]any{
-		"Width":    float64(1256),
-		"Height":   float64(2760),
-		"MIMEType": "image/jpeg",
-	})
-	want := "screenshot 1256x2760 (image/jpeg)"
-	if got != want {
-		t.Errorf("RenderResult = %q, want %q", got, want)
-	}
-}
-
-func TestComputer_RenderResult_DeviceInfoMap(t *testing.T) {
-	t.Parallel()
-	tt, _, _ := newTestTool()
-	got := tt.RenderResult(map[string]any{
-		"Manufacturer": "HONOR",
-		"Model":        "BKQ-AN80",
-	})
-	want := "HONOR BKQ-AN80"
-	if got != want {
-		t.Errorf("RenderResult = %q, want %q", got, want)
-	}
-}
-
 func TestComputer_RenderResult_ScreenshotType(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
@@ -870,10 +843,14 @@ func TestComputer_RenderResult_JSONRawMessage_Screenshot(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	raw := json.RawMessage(`{"Width":1256,"Height":2760,"MIMEType":"image/jpeg","DataB64":"abc"}`)
-	got := tt.RenderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := tt.RenderResult(v)
 	want := "screenshot 1256x2760 (image/jpeg)"
 	if got != want {
-		t.Errorf("RenderResult(RawMessage screenshot) = %q, want %q", got, want)
+		t.Errorf("RenderResult(decoded screenshot) = %q, want %q", got, want)
 	}
 }
 
@@ -881,9 +858,13 @@ func TestComputer_RenderResult_JSONRawMessage_Action(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	raw := json.RawMessage(`{"action":"click","ok":true}`)
-	got := tt.RenderResult(raw)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := tt.RenderResult(v)
 	if got != "click: ok" {
-		t.Errorf("RenderResult(RawMessage action) = %q, want 'click: ok'", got)
+		t.Errorf("RenderResult(decoded action) = %q, want 'click: ok'", got)
 	}
 }
 
@@ -1272,5 +1253,114 @@ func TestComputer_SummarizeAction_SendFilePath(t *testing.T) {
 	}
 	if !contains(desc, "x.apk") {
 		t.Errorf("Description = %q, want it to contain 'x.apk' (in.Path)", desc)
+	}
+}
+
+func TestComputer_DecodeResult_ScreenshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	original := &Screenshot{MIMEType: "image/jpeg", Width: 100, Height: 200, DataB64: "abc"}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*Screenshot)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *Screenshot", v)
+	}
+	if got.MIMEType != "image/jpeg" || got.Width != 100 || got.Height != 200 || got.DataB64 != "abc" {
+		t.Errorf("DecodeResult round-trip lost fields: %+v", got)
+	}
+	renderedStream := tt.RenderResult(original)
+	renderedHistory := tt.RenderResult(v)
+	if renderedStream != renderedHistory {
+		t.Errorf("round-trip mismatch: stream=%q history=%q", renderedStream, renderedHistory)
+	}
+}
+
+func TestComputer_DecodeResult_ScreenResultRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// Ref has json:"-" so it is excluded from persisted JSON by design.
+	original := &ScreenResult{Width: 1080, Height: 2400, Elements: []ElementRef{{Text: "button"}}}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*ScreenResult)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *ScreenResult", v)
+	}
+	if got.Width != 1080 || got.Height != 2400 || len(got.Elements) != 1 || got.Elements[0].Text != "button" {
+		t.Errorf("DecodeResult round-trip lost fields: %+v", got)
+	}
+	renderedStream := tt.RenderResult(original)
+	renderedHistory := tt.RenderResult(v)
+	if renderedStream != renderedHistory {
+		t.Errorf("round-trip mismatch: stream=%q history=%q", renderedStream, renderedHistory)
+	}
+}
+
+func TestComputer_DecodeResult_DeviceInfoRoundTrip(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	original := &DeviceInfo{Manufacturer: "Google", Model: "Pixel 8", SDK: 34}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*DeviceInfo)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *DeviceInfo", v)
+	}
+	if got.Manufacturer != "Google" || got.Model != "Pixel 8" || got.SDK != 34 {
+		t.Errorf("DecodeResult round-trip lost fields: %+v", got)
+	}
+	renderedStream := tt.RenderResult(original)
+	renderedHistory := tt.RenderResult(v)
+	if renderedStream != renderedHistory {
+		t.Errorf("round-trip mismatch: stream=%q history=%q", renderedStream, renderedHistory)
+	}
+}
+
+func TestComputer_DecodeResult_ActionMap(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	raw := json.RawMessage(`{"action":"click","ok":true}`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want map[string]any", v)
+	}
+	if m["action"] != "click" {
+		t.Errorf("action = %v, want click", m["action"])
+	}
+	rendered := tt.RenderResult(v)
+	if rendered != "click: ok" {
+		t.Errorf("RenderResult(action map) = %q, want %q", rendered, "click: ok")
+	}
+}
+
+func TestComputer_DecodeResult_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{bad`))
+	if err == nil {
+		t.Error("DecodeResult(malformed) should return error")
 	}
 }

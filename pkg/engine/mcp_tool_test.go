@@ -320,7 +320,6 @@ func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.In
 func (s *stubTool) MaxResultSize() int                          { return 0 }
 func (s *stubTool) Prompt() string                              { return s.prompt }
 func (s *stubTool) RenderResult(any) string                     { return "" }
-func (s *stubTool) NewResultType() any                          { return nil }
 func (s *stubTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
@@ -710,18 +709,5 @@ func TestMCPTool_IsSearchOrRead(t *testing.T) {
 				t.Errorf("IsSearchOrRead() = %+v, want IsCollapsible=%v", srk, tt.wantIsSet)
 			}
 		})
-	}
-}
-
-func TestMCPTool_NewResultType(t *testing.T) {
-	t.Parallel()
-	info := mcp.DiscoveredTool{
-		Name:         "mcp__server__test",
-		OriginalName: "test",
-		ServerName:   "server",
-	}
-	tl := NewMCPTool(info, nil)
-	if result := tl.NewResultType(); result != nil {
-		t.Errorf("NewResultType() = %v, want nil (MCP tools return string data)", result)
 	}
 }

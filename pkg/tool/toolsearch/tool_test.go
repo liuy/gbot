@@ -44,7 +44,6 @@ func (m *mockTool) MaxResultSize() int                        { return 50000 }
 func (m *mockTool) Prompt() string                            { return "" }
 func (m *mockTool) IsDeferred() bool                          { return m.deferred }
 func (m *mockTool) SearchHint() string                        { return m.searchHint }
-func (m *mockTool) NewResultType() any                        { return nil }
 
 // helper to create a deferred tool
 func deferredTool(name, desc string) *mockTool {
@@ -997,7 +996,11 @@ func TestRenderResult_NoMatchesWithPending(t *testing.T) {
 func TestRenderResult_JSONRawMessage_WithMatches(t *testing.T) {
 	tl := New()
 	raw := json.RawMessage(`{"matches":["FileRead","FileEdit"],"query":"read","total_deferred_tools":3}`)
-	result := tl.RenderResult(raw)
+	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := tl.RenderResult(v)
 	if !strings.Contains(result, "Found 2 tools") {
 		t.Errorf("expected 'Found 2 tools' in render, got %q", result)
 	}
@@ -1009,7 +1012,11 @@ func TestRenderResult_JSONRawMessage_WithMatches(t *testing.T) {
 func TestRenderResult_JSONRawMessage_NoMatches(t *testing.T) {
 	tl := New()
 	raw := json.RawMessage(`{"matches":[],"query":"xyz","total_deferred_tools":3,"pending_mcp_servers":["slack"]}`)
-	result := tl.RenderResult(raw)
+	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	result := tl.RenderResult(v)
 	if !strings.Contains(result, "No matching deferred tools found") {
 		t.Errorf("expected 'No matching deferred tools found' in render, got %q", result)
 	}

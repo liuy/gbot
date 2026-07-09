@@ -250,14 +250,24 @@ func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 	t.Parallel()
 	tt := New(&fakeSender{})
 
-	got := tt.RenderResult(json.RawMessage(`{"file_path":"/tmp/x.png","status":"sent"}`))
+	rawWith := json.RawMessage(`{"file_path":"/tmp/x.png","status":"sent"}`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(rawWith)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got := tt.RenderResult(v)
 	if got != "Sent /tmp/x.png" {
-		t.Errorf("RenderResult(RawMessage with path) = %q, want 'Sent /tmp/x.png'", got)
+		t.Errorf("RenderResult(decoded with path) = %q, want 'Sent /tmp/x.png'", got)
 	}
 
-	got = tt.RenderResult(json.RawMessage(`{"status":"sent"}`))
+	rawWithout := json.RawMessage(`{"status":"sent"}`)
+	v, err = tt.(tool.ToolWithDecodeResult).DecodeResult(rawWithout)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	got = tt.RenderResult(v)
 	if got != "Sent" {
-		t.Errorf("RenderResult(RawMessage without path) = %q, want 'Sent'", got)
+		t.Errorf("RenderResult(decoded without path) = %q, want 'Sent'", got)
 	}
 }
 
