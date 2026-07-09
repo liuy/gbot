@@ -458,7 +458,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     accumulatedThinkingMs = 0
     tokenRate.reset()
     progressHandles = null
-    progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
     pendingBlocks.length = 0
     pendingToolByID.clear()
     currentPendingText = null
@@ -466,9 +465,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     currentSubAgentThinking.clear()
   }
 
+  const resetProgressUsage = () => {
+    progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+  }
+
   const resetAllState = () => {
     console.log(`[chat] reset: messages=${messages.length} dom=${messagesContainer.childElementCount} streaming=${streaming}`)
     cleanupStreamingRefs()
+    resetProgressUsage()
     streaming = false
     inputBar.setStreaming(false)
     queuedMsgs = []
@@ -596,6 +600,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (!progressHandles) {
       progressHandles = appendProgressBar(streamContainer)
     }
+    setProgressBarUsage(progressHandles, progressUsage)
     refreshInterval = window.setInterval(() => {
       toolEntries.forEach((entry) => {
         if (entry.pendingBlock.state === 'running') {
@@ -826,12 +831,21 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         inputBar.setQueuedMsgs([])
         // Finalize progress bar to static stats before cleanup nulls its refs.
         if (progressHandles) {
+          const finalUsage = e.usage_event
+            ? {
+                inputTokens: e.usage_event.input_tokens,
+                outputTokens: e.usage_event.output_tokens,
+                cacheRead: e.usage_event.cache_read_input_tokens ?? 0,
+                cacheCreation: e.usage_event.cache_creation_input_tokens ?? 0,
+              }
+            : progressUsage
           const streamMs = tokenRate.streamDurationMs()
-          finalizeProgressBar(progressHandles, progressUsage,
+          finalizeProgressBar(progressHandles, finalUsage,
             streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
             pendingBlocks.filter((b) => b.kind === 'tool').length, accumulatedThinkingMs)
         }
         cleanupStreamingRefs()
+        resetProgressUsage()
         return
       }
       case 'thinking_start': {
@@ -1085,12 +1099,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
         progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
         if (progressHandles) {
-          setProgressBarUsage(progressHandles, {
-            inputTokens: u.input_tokens,
-            outputTokens: u.output_tokens,
-            cacheRead: u.cache_read_input_tokens ?? 0,
-            cacheCreation: u.cache_creation_input_tokens ?? 0,
-          })
+          setProgressBarUsage(progressHandles, progressUsage)
         }
         const last = messages[messages.length - 1]
         if (last && last.role === 'assistant' && last.status === 'streaming') {
@@ -1234,6 +1243,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setAgentModel(msg.agent ?? 'main', msg.model ?? '')
         inputBar.setConnected(msg.connected)
         resetAllState()
+        // Restore cumulative usage from server so progress bar shows correct
+        // stats after takeover reconnect.
+        if (msg.usage) {
+          progressUsage = {
+            inputTokens: msg.usage.input_tokens ?? msg.usage.InputTokens ?? 0,
+            outputTokens: msg.usage.output_tokens ?? msg.usage.OutputTokens ?? 0,
+            cacheRead: msg.usage.cache_read_input_tokens ?? msg.usage.CacheReadInputTokens ?? 0,
+            cacheCreation: msg.usage.cache_creation_input_tokens ?? msg.usage.CacheCreationInputTokens ?? 0,
+          }
+        }
         taskPanel.setTasks([])
         scrollBtn.style.opacity = '0'
         scrollBtn.style.pointerEvents = 'none'

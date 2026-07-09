@@ -160,6 +160,12 @@ type WebChatConnector struct {
 	// It also guards currentTurnBuf (Handle appends, serveChatWS replays).
 	writeMu sync.Mutex
 
+	// currentUsage accumulates per-query token usage from EventUsage events.
+	// Reset on EventQueryEnd. Sent to client via connect_status on takeover
+	// so the progress bar shows cumulative stats for the whole query.
+	// Guarded by writeMu.
+	currentUsage types.Usage
+
 	// currentTurnBuf holds the serialized payloads of the current turn's events
 	// that have NOT yet been committed to engine.Messages(). Cleared on
 	// turn_end / query_end (the turn is then visible via history). Replayed to
@@ -313,6 +319,21 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil && event.ToolUse.Name == "Task" {
 		c.writeMu.Lock()
 		c.taskToolIDs[event.ToolUse.ID] = true
+		c.writeMu.Unlock()
+	}
+
+	// Accumulate per-query usage. Reset on query_end.
+	if event.Type == types.EventUsage && event.Agent == nil && event.Usage != nil {
+		c.writeMu.Lock()
+		c.currentUsage.InputTokens += event.Usage.InputTokens
+		c.currentUsage.OutputTokens += event.Usage.OutputTokens
+		c.currentUsage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
+		c.currentUsage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		c.writeMu.Unlock()
+	}
+	if event.Type == types.EventQueryEnd && event.Agent == nil {
+		c.writeMu.Lock()
+		c.currentUsage = types.Usage{}
 		c.writeMu.Unlock()
 	}
 
@@ -934,18 +955,23 @@ func (c *WebChatConnector) buildConfigMessage() []byte {
 // engine model, agent name, and sessionID. The client calls resetAllState on
 // every connect_status, then loads the subsequent history frame.
 func (c *WebChatConnector) buildConnectStatusMessage() []byte {
+	c.writeMu.Lock()
+	usage := c.currentUsage
+	c.writeMu.Unlock()
 	payload, _ := json.Marshal(struct {
-		Type      string `json:"type"`
-		Connected bool   `json:"connected"`
-		Agent     string `json:"agent"`
-		Model     string `json:"model"`
-		SessionID string `json:"sessionID"`
+		Type      string      `json:"type"`
+		Connected bool        `json:"connected"`
+		Agent     string      `json:"agent"`
+		Model     string      `json:"model"`
+		SessionID string      `json:"sessionID"`
+		Usage     types.Usage `json:"usage"`
 	}{
 		Type:      "connect_status",
 		Connected: true,
 		Agent:     "main",
 		Model:     c.engine.Model(),
 		SessionID: c.engine.SessionID(),
+		Usage:     usage,
 	})
 	return payload
 }

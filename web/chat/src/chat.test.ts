@@ -795,4 +795,107 @@ describe('chat integration', () => {
     dispatch({ type: 'connect_status', connected: true })
     expect(panel.style.display).toBe('none')
   })
+
+  it('takeover does not reset cumulative usage for the whole query', () => {
+    // The engine emits per-turn usage deltas; the frontend accumulates
+    // across the whole query. On takeover (reconnect), connect_status
+    // must NOT wipe the accumulated progressUsage, because query_end
+    // finalizes stats from progressUsage and the final stats must reflect
+    // the ENTIRE query (both pre- and post-takeover turns).
+    //
+    // Event sequence during a takeover:
+    //   query_start → turn_start → usage(turn1) → [disconnect]
+    //   connect_status → history → [replay: turn_start → usage(turn2)]
+    //   → query_end(usage_event = turn1+turn2 totals)
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+
+    // Turn 1: first turn before disconnect. Accumulate usage.
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 1000, output_tokens: 500 } },
+    ])
+
+    // Disconnect + takeover: connect_status resets state but carries
+    // server-accumulated usage so progressUsage is restored.
+    dispatch({
+      type: 'connect_status',
+      connected: true,
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    })
+
+    // History replays committed messages (none yet — query still in flight).
+    dispatch({
+      type: 'history',
+      messages: [],
+      nextCursor: '',
+      hasMore: false,
+    })
+
+    // Replay buffer: turn_start (new turn after takeover) + usage for turn 2.
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 2000, output_tokens: 3000 } },
+      // query_end carries the authoritative cumulative totals from the engine.
+      {
+        type: 'query_end',
+        usage_event: { input_tokens: 3000, output_tokens: 3500 },
+      },
+    ])
+
+    // Final progress bar stats must reflect the WHOLE query (3000 in, 3500 out),
+    // not just the post-takeover turn (2000 in, 3000 out).
+    // totalInput = input_tokens + cacheRead + cacheCreation = 3000 + 0 + 0 = 3000
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑2.9k') // 3000 / 1024 = 2.93k → "2.9k"
+    const outEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↓'),
+    )
+    expect(outEl?.textContent).toBe('↓3.4k') // 3500 / 1024 = 3.42k → "3.4k"
+  })
+
+  it('takeover accumulates new usage on top of restored baseline', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+
+    // Turn 1: accumulate usage before disconnect
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 1000, output_tokens: 500 } },
+      { type: 'turn_end' },
+    ])
+
+    // Takeover: connect_status carries server-accumulated baseline (1000 in, 500 out)
+    dispatch({
+      type: 'connect_status',
+      connected: true,
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+
+    // New turn after takeover — usage delta must accumulate on top of baseline
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 2048, output_tokens: 1000 } },
+    ])
+
+    // 1000 (baseline) + 2048 (new) = 3048 input → "3.0k"
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑3.0k')
+    // 500 (baseline) + 1000 (new) = 1500 output → "1.5k"
+    const outEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↓'),
+    )
+    expect(outEl?.textContent).toBe('↓1.5k')
+  })
 })

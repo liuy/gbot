@@ -5,7 +5,7 @@ export type SessionListItem = {
 }
 
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; usage?: ServerUsage }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }
@@ -137,3 +137,16 @@ export type QueryEvent = {
 }
 
 export type AskDecision = 'allow' | 'deny' | 'allow_always'
+
+export type ServerUsage = {
+  // Go types.Usage JSON tags (snake_case — what server actually sends)
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  // PascalCase fallback (e.g. manually constructed in tests)
+  InputTokens?: number
+  OutputTokens?: number
+  CacheReadInputTokens?: number
+  CacheCreationInputTokens?: number
+}

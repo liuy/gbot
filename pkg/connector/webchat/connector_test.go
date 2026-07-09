@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1010,5 +1012,175 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 	if p4.HasMore {
 		t.Error("page 4 hasMore = true, want false")
+	}
+}
+
+func TestCurrentUsage_AccumulatesEventUsage(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Emit two EventUsage events (simulating two turns in a query).
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 80}})
+
+	c.writeMu.Lock()
+	got := c.currentUsage
+	c.writeMu.Unlock()
+
+	if got.InputTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300", got.InputTokens)
+	}
+	if got.OutputTokens != 80 {
+		t.Errorf("OutputTokens = %d, want 80", got.OutputTokens)
+	}
+	if got.CacheReadInputTokens != 80 {
+		t.Errorf("CacheReadInputTokens = %d, want 80", got.CacheReadInputTokens)
+	}
+}
+
+func TestCurrentUsage_IgnoresSubAgentEvents(t *testing.T) {
+	c := newTestConnector(t)
+
+	agent := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "sub", Depth: 1}
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Agent: agent, Usage: &types.UsageEvent{InputTokens: 500}})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
+
+	c.writeMu.Lock()
+	got := c.currentUsage
+	c.writeMu.Unlock()
+
+	if got.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100 (sub-agent event should be ignored)", got.InputTokens)
+	}
+}
+
+func TestCurrentUsage_ResetsOnQueryEnd(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	c.writeMu.Lock()
+	got := c.currentUsage
+	c.writeMu.Unlock()
+
+	if got.InputTokens != 0 {
+		t.Errorf("InputTokens = %d, want 0 after query_end", got.InputTokens)
+	}
+}
+
+func TestBuildConnectStatusMessage_WithUsage(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
+	payload := c.buildConnectStatusMessage()
+
+	var msg struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Usage == nil {
+		t.Fatal("usage is nil, want non-nil")
+	}
+	if msg.Usage.InputTokens != 100 {
+		t.Errorf("usage.input_tokens = %d, want 100", msg.Usage.InputTokens)
+	}
+	if msg.Usage.OutputTokens != 50 {
+		t.Errorf("usage.output_tokens = %d, want 50", msg.Usage.OutputTokens)
+	}
+}
+
+func TestBuildConnectStatusMessage_NoUsage(t *testing.T) {
+	c := newTestConnector(t)
+
+	payload := c.buildConnectStatusMessage()
+
+	var msg struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Usage == nil {
+		t.Fatal("usage is nil, want zero-value object")
+	}
+	if msg.Usage.InputTokens != 0 {
+		t.Errorf("input_tokens = %d, want 0 when no events received", msg.Usage.InputTokens)
+	}
+}
+
+func TestBuildConnectStatusMessage_ResetAfterQueryEnd(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	payload := c.buildConnectStatusMessage()
+
+	var msg struct {
+		Usage *struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Usage == nil {
+		t.Fatal("usage is nil after query_end")
+	}
+	if msg.Usage.InputTokens != 0 {
+		t.Errorf("input_tokens = %d, want 0 after query_end reset", msg.Usage.InputTokens)
+	}
+}
+
+func TestTakeover_ConnectStatusCarriesAccumulatedUsage(t *testing.T) {
+	c := newTestConnector(t)
+
+	ws1 := dialAndStore(t, c)
+	t.Cleanup(func() { _ = ws1.Close() })
+
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{
+		InputTokens: 5000, OutputTokens: 300, CacheReadInputTokens: 200,
+	}})
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+
+	connectMsg := readWSMessage(t, ws2)
+	var connect struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(connectMsg, &connect); err != nil {
+		t.Fatalf("unmarshal connect_status: %v\nraw: %s", err, connectMsg)
+	}
+	if connect.Type != "connect_status" {
+		t.Fatalf("type = %q, want connect_status", connect.Type)
+	}
+	if connect.Usage == nil {
+		t.Fatalf("usage is nil — connect_status did not carry accumulated usage.\nraw: %s", connectMsg)
+	}
+	if connect.Usage.InputTokens != 5000 {
+		t.Errorf("input_tokens = %d, want 5000", connect.Usage.InputTokens)
+	}
+	if connect.Usage.OutputTokens != 300 {
+		t.Errorf("output_tokens = %d, want 300", connect.Usage.OutputTokens)
+	}
+	if connect.Usage.CacheReadInputTokens != 200 {
+		t.Errorf("cache_read_input_tokens = %d, want 200", connect.Usage.CacheReadInputTokens)
 	}
 }
