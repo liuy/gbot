@@ -60,12 +60,19 @@ import (
 func main() {
 	var mediaStores []*media.Store
 
-	// Parse -d/--daemon flag before anything else.
+	// Parse -d/--daemon and -p/--port flags before anything else.
 	var daemonMode bool
-	for _, arg := range os.Args[1:] {
-		if arg == "-d" || arg == "--daemon" {
+	wsPort := "8765"
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-d", "--daemon":
 			daemonMode = true
-			break
+		case "-p", "--port":
+			if i+1 < len(args) {
+				wsPort = args[i+1]
+				i++
+			}
 		}
 	}
 
@@ -269,11 +276,15 @@ func main() {
 	// wsMux is hoisted to the outer scope so the webchat connector can mount
 	// its routes on the same mux later (after app/engine exist). The HTTP
 	// server starts listening immediately; chat routes are added in Step B.
+	// WebSocket server: start when daemon mode (-d) OR when an explicit
+	// port is given (-p). The -p flag alone starts WS without daemon mode,
+	// useful for running TUI + webchat on the same machine.
+	needWS := daemonMode || wsPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
 	var wsRegistry *computer.ConnectionRegistry
 	var wsMux *http.ServeMux
-	if daemonMode {
+	if needWS {
 		wsRegistry = computer.NewConnectionRegistry()
-		wsAddr := ":8765"
+		wsAddr := ":" + wsPort
 		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
 			wsAddr = env
 		}
@@ -584,7 +595,7 @@ func main() {
 	// correct: webchat is not a meaningful target for read-only WeChat
 	// engines. Routes are added to the same *http.ServeMux the already-running
 	// *http.Server uses (Go's ServeMux is safe for concurrent register+read).
-	if daemonMode && wsMux != nil {
+	if needWS && wsMux != nil {
 		mainEng := app.Engine()
 		if mainEng != nil {
 			if mainHub, ok := mainEng.Dispatcher().(*hub.Hub); ok && mainHub != nil {
