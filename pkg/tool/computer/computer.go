@@ -128,11 +128,25 @@ func New(b *AndroidBackend) tool.Tool {
 				}
 				return &d, nil
 			}
-			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			if _, ok := probe["host"]; ok {
+				var c ConnectResult
+				if err := json.Unmarshal(raw, &c); err != nil {
+					return nil, err
+				}
+				return &c, nil
+			}
+			if _, ok := probe["error"]; ok {
+				var e ErrorResult
+				if err := json.Unmarshal(raw, &e); err != nil {
+					return nil, err
+				}
+				return &e, nil
+			}
+			var a ActionResult
+			if err := json.Unmarshal(raw, &a); err != nil {
 				return nil, err
 			}
-			return m, nil
+			return &a, nil
 		},
 	})
 }
@@ -200,7 +214,7 @@ func doConnect(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResu
 	if err := b.Connect(ctx, in.Host, port, in.Password); err != nil {
 		return errorResponse(err.Error()), nil
 	}
-	return okResponse(map[string]any{"action": ActionConnect, "host": in.Host, "port": port}), nil
+	return &tool.ToolResult{Data: &ConnectResult{Action: ActionConnect, Host: in.Host, Port: port, OK: true}}, nil
 }
 
 // doDisconnect is idempotent — it returns ok regardless of prior state.
@@ -208,7 +222,7 @@ func doDisconnect(_ context.Context, b *AndroidBackend, _ Input) (*tool.ToolResu
 	if err := b.Disconnect(); err != nil {
 		return errorResponse(err.Error()), nil
 	}
-	return okResponse(map[string]any{"action": ActionDisconnect}), nil
+	return okResponse(ActionDisconnect), nil
 }
 
 // doScreen renders the numbered element list for the model.
@@ -271,7 +285,7 @@ func doCoordinateAction(ctx context.Context, b *AndroidBackend, in Input) (*tool
 	if err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": in.Action, "x": x, "y": y}), nil
+	return okResponse(in.Action), nil
 }
 
 // doRefAction handles click_element/open_menu_element, which require a ref
@@ -290,7 +304,7 @@ func doRefAction(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolRe
 	if err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": in.Action, "ref": *in.Ref}), nil
+	return okResponse(in.Action), nil
 }
 
 // doScroll validates the direction (allowlist) before calling the backend.
@@ -302,7 +316,7 @@ func doScroll(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResul
 	if err := b.Scroll(ctx, dir); err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": ActionScroll, "direction": dir}), nil
+	return okResponse(ActionScroll), nil
 }
 
 // doType rejects empty text BEFORE any connect check — typing nothing is
@@ -322,7 +336,7 @@ func doType(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResult,
 	if err := b.Type(ctx, in.Text, mode); err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": ActionType}), nil
+	return okResponse(ActionType), nil
 }
 
 // doSendKey runs the allowlist check BEFORE ensureConnected so an unknown key
@@ -336,7 +350,7 @@ func doSendKey(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResu
 	if err := b.SendKey(ctx, key); err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": ActionSendKey, "key": key}), nil
+	return okResponse(ActionSendKey), nil
 }
 
 // doDeviceInfo returns the device metadata summary.
@@ -358,7 +372,7 @@ func doOpenApp(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResu
 	if err := b.OpenApp(ctx, in.Package); err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": ActionOpenApp, "package": in.Package}), nil
+	return okResponse(ActionOpenApp), nil
 }
 
 // doSendFile validates non-empty path BEFORE ensureConnected (mirrors
@@ -371,7 +385,7 @@ func doSendFile(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolRes
 	if err := b.SendFile(ctx, in.Path); err != nil {
 		return notConnectedOrError(err), nil
 	}
-	return okResponse(map[string]any{"action": ActionSendFile, "path": in.Path}), nil
+	return okResponse(ActionSendFile), nil
 }
 
 // notConnectedOrError maps errNotConnected onto the single canonical
@@ -384,17 +398,35 @@ func notConnectedOrError(err error) *tool.ToolResult {
 	return errorResponse(err.Error())
 }
 
-// okResponse wraps an action-result map as a successful ToolResult.
-func okResponse(data map[string]any) *tool.ToolResult {
-	data["ok"] = true
-	return &tool.ToolResult{Data: data}
+// ActionResult is the success response for action calls (click, type, etc.).
+type ActionResult struct {
+	Action string `json:"action"`
+	OK     bool   `json:"ok"`
+}
+
+// ConnectResult extends ActionResult with host/port for connect responses.
+type ConnectResult struct {
+	Action string `json:"action"`
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	OK     bool   `json:"ok"`
+}
+
+// ErrorResult is the error response for failed tool calls.
+type ErrorResult struct {
+	Error string `json:"error"`
+}
+
+// okResponse wraps an action as a successful ToolResult.
+func okResponse(action string) *tool.ToolResult {
+	return &tool.ToolResult{Data: &ActionResult{Action: action, OK: true}}
 }
 
 // errorResponse wraps an error message as a ToolResult whose data carries an
 // "error" field. Returning a non-error ToolResult (rather than a Go error)
 // lets the model read the message and recover.
 func errorResponse(msg string) *tool.ToolResult {
-	return &tool.ToolResult{Data: map[string]any{"error": msg}}
+	return &tool.ToolResult{Data: &ErrorResult{Error: msg}}
 }
 
 // summarizeAction produces a short action-aware description for the tool card.
@@ -451,10 +483,7 @@ func refOr(r *int) int {
 	return *r
 }
 
-// renderResult shapes a ToolResult data value for TUI display. It handles the
-// concrete result types the dispatch paths produce: *ScreenResult (numbered
-// element list), *Screenshot (caption + dimensions), *DeviceInfo (one-line
-// summary), and action-result maps (ok/error JSON).
+// renderResult shapes a ToolResult data value for TUI display.
 func renderResult(data any) string {
 	switch v := data.(type) {
 	case *ScreenResult:
@@ -463,18 +492,18 @@ func renderResult(data any) string {
 		return fmt.Sprintf("screenshot %dx%d (%s)", v.Width, v.Height, v.MIMEType)
 	case *DeviceInfo:
 		return renderDeviceInfo(v)
-	case map[string]any:
-		if errMsg, ok := v["error"].(string); ok {
-			return "error: " + errMsg
+	case *ActionResult:
+		if v.OK {
+			return v.Action + ": ok"
 		}
-		if action, ok := v["action"].(string); ok {
-			if ok2, _ := v["ok"].(bool); ok2 {
-				return action + ": ok"
-			}
-			return action
+		return v.Action
+	case *ConnectResult:
+		if v.OK {
+			return v.Action + ": ok"
 		}
-		b, _ := json.Marshal(v)
-		return string(b)
+		return v.Action
+	case *ErrorResult:
+		return "error: " + v.Error
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)

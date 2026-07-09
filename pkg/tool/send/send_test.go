@@ -54,15 +54,15 @@ func TestNew_CallForwardsFilePathAndCaption(t *testing.T) {
 	if result == nil {
 		t.Fatal("Call returned nil result")
 	}
-	m, ok := result.Data.(map[string]any)
+	sr, ok := result.Data.(*SendResult)
 	if !ok {
-		t.Fatalf("result.Data type = %T, want map[string]any", result.Data)
+		t.Fatalf("result.Data type = %T, want *SendResult", result.Data)
 	}
-	if m["file_path"] != filePath {
-		t.Errorf("result file_path = %q, want %q", m["file_path"], filePath)
+	if sr.FilePath != filePath {
+		t.Errorf("result file_path = %q, want %q", sr.FilePath, filePath)
 	}
-	if m["status"] != "sent" {
-		t.Errorf("result status = %q, want 'sent'", m["status"])
+	if sr.Status != "sent" {
+		t.Errorf("result status = %q, want 'sent'", sr.Status)
 	}
 }
 
@@ -136,15 +136,15 @@ func TestNew_ResultDataAndRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := result.Data.(map[string]any)
+	sr, ok := result.Data.(*SendResult)
 	if !ok {
-		t.Fatalf("result.Data type = %T, want map[string]any", result.Data)
+		t.Fatalf("result.Data type = %T, want *SendResult", result.Data)
 	}
-	if m["file_path"] != filePath {
-		t.Errorf("result file_path = %v, want %q", m["file_path"], filePath)
+	if sr.FilePath != filePath {
+		t.Errorf("result file_path = %q, want %q", sr.FilePath, filePath)
 	}
-	if m["status"] != "sent" {
-		t.Errorf("result status = %v, want 'sent'", m["status"])
+	if sr.Status != "sent" {
+		t.Errorf("result status = %q, want 'sent'", sr.Status)
 	}
 
 	rendered := tt.RenderResult(result.Data)
@@ -230,18 +230,18 @@ func TestNew_RenderResult(t *testing.T) {
 	t.Parallel()
 	tt := New(&fakeSender{})
 
-	got := tt.RenderResult(map[string]any{"file_path": "/tmp/x.png", "status": "sent"})
+	got := tt.RenderResult(&SendResult{FilePath: "/tmp/x.png", Status: "sent"})
 	if got != "Sent /tmp/x.png" {
 		t.Errorf("RenderResult with path = %q, want 'Sent /tmp/x.png'", got)
 	}
 
-	got = tt.RenderResult(map[string]any{"status": "sent"})
+	got = tt.RenderResult(&SendResult{Status: "sent"})
 	if got != "Sent" {
 		t.Errorf("RenderResult without path = %q, want 'Sent'", got)
 	}
 
-	got = tt.RenderResult("not a map")
-	if !strings.Contains(got, "not a map") {
+	got = tt.RenderResult("not a SendResult")
+	if !strings.Contains(got, "not a SendResult") {
 		t.Errorf("RenderResult fallback = %q, want JSON fallback", got)
 	}
 }

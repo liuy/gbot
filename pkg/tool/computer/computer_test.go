@@ -171,15 +171,15 @@ func TestComputer_Execute_ConnectMissingHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field for missing host", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for missing host", er.Error)
 	}
-	if e, _ := m["error"].(string); !contains(e, "host") {
-		t.Errorf("error = %q, want mention of 'host'", e)
+	if !contains(er.Error, "host") {
+		t.Errorf("error = %q, want mention of 'host'", er.Error)
 	}
 }
 
@@ -203,15 +203,15 @@ func TestComputer_Execute_ConnectDefaultsPort8765(t *testing.T) {
 	if lc.port != 8765 {
 		t.Errorf("connect port = %d, want 8765 (default)", lc.port)
 	}
-	m, ok := res.Data.(map[string]any)
+	cr, ok := res.Data.(*ConnectResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ConnectResult", res.Data)
 	}
-	if m["host"] != "1.2.3.4" {
-		t.Errorf("result host = %v, want 1.2.3.4", m["host"])
+	if cr.Host != "1.2.3.4" {
+		t.Errorf("result host = %q, want 1.2.3.4", cr.Host)
 	}
-	if port := numAsInt(m["port"]); port != 8765 {
-		t.Errorf("result port = %v, want 8765", m["port"])
+	if cr.Port != 8765 {
+		t.Errorf("result port = %d, want 8765", cr.Port)
 	}
 }
 
@@ -246,14 +246,14 @@ func TestComputer_Execute_Disconnect(t *testing.T) {
 	if b.IsConnected() {
 		t.Error("still connected after disconnect")
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "disconnect" {
-		t.Errorf("action = %v, want disconnect", m["action"])
+	if ar.Action != "disconnect" {
+		t.Errorf("action = %q, want disconnect", ar.Action)
 	}
-	if ok2, _ := m["ok"].(bool); !ok2 {
+	if !ar.OK {
 		t.Error("ok = false, want true")
 	}
 }
@@ -265,11 +265,11 @@ func TestComputer_Execute_DisconnectWhenNeverConnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if ok2, _ := m["ok"].(bool); !ok2 {
+	if !ar.OK {
 		t.Error("ok = false, want true (idempotent disconnect)")
 	}
 }
@@ -281,12 +281,12 @@ func TestComputer_Execute_ScreenBeforeConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "not connected; call connect first") {
-		t.Errorf("error = %q, want 'not connected; call connect first'", e)
+	if !contains(er.Error, "not connected; call connect first") {
+		t.Errorf("error = %q, want 'not connected; call connect first'", er.Error)
 	}
 }
 
@@ -364,12 +364,12 @@ func TestComputer_Execute_TypeEmptyText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "non-empty text") {
-		t.Errorf("error = %q, want 'non-empty text'", e)
+	if !contains(er.Error, "non-empty text") {
+		t.Errorf("error = %q, want 'non-empty text'", er.Error)
 	}
 	if fc.callCount() != callsBefore {
 		t.Errorf("wire calls changed from %d to %d (empty type must not reach wire)", callsBefore, fc.callCount())
@@ -389,12 +389,12 @@ func TestComputer_Execute_TypeBlockedText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "blocked") {
-		t.Errorf("error = %q, want 'blocked'", e)
+	if !contains(er.Error, "blocked") {
+		t.Errorf("error = %q, want 'blocked'", er.Error)
 	}
 	// set_text must not have been issued.
 	last := fc.lastCall()
@@ -419,12 +419,12 @@ func TestComputer_Execute_TypeSuccess(t *testing.T) {
 	if last.Command != "set_text" {
 		t.Errorf("command = %q, want set_text", last.Command)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "type" {
-		t.Errorf("action = %v, want type", m["action"])
+	if ar.Action != "type" {
+		t.Errorf("action = %q, want type", ar.Action)
 	}
 }
 
@@ -441,12 +441,12 @@ func TestComputer_Execute_SendKeyUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "unknown key") {
-		t.Errorf("error = %q, want 'unknown key'", e)
+	if !contains(er.Error, "unknown key") {
+		t.Errorf("error = %q, want 'unknown key'", er.Error)
 	}
 	if fc.callCount() != callsBefore {
 		t.Errorf("wire calls changed from %d to %d (unknown key must not reach wire)", callsBefore, fc.callCount())
@@ -472,12 +472,15 @@ func TestComputer_Execute_SendKeyValid(t *testing.T) {
 	if last.Params["key"] != "back" {
 		t.Errorf("key param = %v, want back (lowercased)", last.Params["key"])
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["key"] != "back" {
-		t.Errorf("result key = %v, want back", m["key"])
+	if ar.Action != "send_key" {
+		t.Errorf("action = %q, want send_key", ar.Action)
+	}
+	if !ar.OK {
+		t.Error("ok = false, want true")
 	}
 }
 
@@ -488,12 +491,12 @@ func TestComputer_Execute_ClickRequiresCoordinate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "coordinate") {
-		t.Errorf("error = %q, want mention of 'coordinate'", e)
+	if !contains(er.Error, "coordinate") {
+		t.Errorf("error = %q, want mention of 'coordinate'", er.Error)
 	}
 }
 
@@ -504,12 +507,12 @@ func TestComputer_Execute_ClickElementRequiresRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "ref") {
-		t.Errorf("error = %q, want mention of 'ref'", e)
+	if !contains(er.Error, "ref") {
+		t.Errorf("error = %q, want mention of 'ref'", er.Error)
 	}
 }
 
@@ -522,12 +525,12 @@ func TestComputer_Execute_ScrollBadDirection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "direction") {
-		t.Errorf("error = %q, want mention of 'direction'", e)
+	if !contains(er.Error, "direction") {
+		t.Errorf("error = %q, want mention of 'direction'", er.Error)
 	}
 }
 
@@ -578,19 +581,19 @@ func TestComputer_Execute_ClickWithCoordinate(t *testing.T) {
 	if y := numAsInt(last.Params["y"]); y != 200 {
 		t.Errorf("tap y = %v, want 200", last.Params["y"])
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if ok2, _ := m["ok"].(bool); !ok2 {
+	if !ar.OK {
 		t.Error("ok = false, want true")
 	}
 }
 
-func TestComputer_RenderResult_ErrorMap(t *testing.T) {
+func TestComputer_RenderResult_ErrorResult(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	got := tt.RenderResult(map[string]any{"error": "bad thing"})
+	got := tt.RenderResult(&ErrorResult{Error: "bad thing"})
 	if !strings.HasPrefix(got, "error:") {
 		t.Errorf("RenderResult = %q, want 'error:' prefix", got)
 	}
@@ -599,10 +602,10 @@ func TestComputer_RenderResult_ErrorMap(t *testing.T) {
 	}
 }
 
-func TestComputer_RenderResult_OkMap(t *testing.T) {
+func TestComputer_RenderResult_OkAction(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	got := tt.RenderResult(map[string]any{"action": "click", "ok": true})
+	got := tt.RenderResult(&ActionResult{Action: "click", OK: true})
 	if got != "click: ok" {
 		t.Errorf("RenderResult = %q, want 'click: ok'", got)
 	}
@@ -696,15 +699,15 @@ func TestComputer_Execute_ClickElementSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "click_element" {
-		t.Errorf("action = %v, want click_element", m["action"])
+	if ar.Action != "click_element" {
+		t.Errorf("action = %q, want click_element", ar.Action)
 	}
-	if ref := numAsInt(m["ref"]); ref != 1 {
-		t.Errorf("ref = %v, want 1", m["ref"])
+	if !ar.OK {
+		t.Error("ok = false, want true")
 	}
 }
 
@@ -719,12 +722,12 @@ func TestComputer_Execute_ScrollSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["direction"] != "down" {
-		t.Errorf("direction = %v, want down", m["direction"])
+	if ar.Action != "scroll" {
+		t.Errorf("action = %q, want scroll", ar.Action)
 	}
 	// Confirm the scroll command reached the wire with direction down.
 	last := b.client.(*fakeCaller).lastCall()
@@ -747,12 +750,12 @@ func TestComputer_Execute_ZoomSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "zoom" {
-		t.Errorf("action = %v, want zoom", m["action"])
+	if ar.Action != "zoom" {
+		t.Errorf("action = %q, want zoom", ar.Action)
 	}
 }
 
@@ -767,12 +770,12 @@ func TestComputer_Execute_OpenMenuSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "open_menu" {
-		t.Errorf("action = %v, want open_menu", m["action"])
+	if ar.Action != "open_menu" {
+		t.Errorf("action = %q, want open_menu", ar.Action)
 	}
 }
 
@@ -788,12 +791,12 @@ func TestComputer_Execute_ConnectBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field for dial failure", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for dial failure", er.Error)
 	}
 }
 
@@ -878,11 +881,11 @@ func TestComputer_Execute_DisconnectBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if ok2, _ := m["ok"].(bool); !ok2 {
+	if !ar.OK {
 		t.Error("ok = false, want true")
 	}
 }
@@ -899,12 +902,12 @@ func TestComputer_Execute_ScreenBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field for backend failure", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -920,12 +923,12 @@ func TestComputer_Execute_ScreenshotBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -941,12 +944,12 @@ func TestComputer_Execute_DeviceInfoBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -966,12 +969,12 @@ func TestComputer_Execute_ClickElementBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -987,12 +990,12 @@ func TestComputer_Execute_ScrollBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -1008,12 +1011,12 @@ func TestComputer_Execute_TypeBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -1029,12 +1032,12 @@ func TestComputer_Execute_SendKeyBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -1050,12 +1053,12 @@ func TestComputer_Execute_ClickBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -1070,15 +1073,12 @@ func TestComputer_Execute_OpenAppSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "open_app" {
-		t.Errorf("action = %v, want open_app", m["action"])
-	}
-	if m["package"] != "com.android.chrome" {
-		t.Errorf("package = %v, want com.android.chrome", m["package"])
+	if ar.Action != "open_app" {
+		t.Errorf("action = %q, want open_app", ar.Action)
 	}
 	last := b.client.(*fakeCaller).lastCall()
 	if last.Command != "open_app" {
@@ -1100,12 +1100,12 @@ func TestComputer_Execute_OpenAppEmptyPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "package") {
-		t.Errorf("error = %q, want mention of 'package'", e)
+	if !contains(er.Error, "package") {
+		t.Errorf("error = %q, want mention of 'package'", er.Error)
 	}
 	if rec.clientCount() != 0 {
 		t.Errorf("clients dialed = %d, want 0 (validation must run pre-connect)", rec.clientCount())
@@ -1126,12 +1126,12 @@ func TestComputer_Execute_OpenAppBackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if _, hasErr := m["error"]; !hasErr {
-		t.Errorf("Data = %+v, want 'error' field", m)
+	if er.Error == "" {
+		t.Errorf("Error = %q, want non-empty for backend failure", er.Error)
 	}
 }
 
@@ -1146,12 +1146,12 @@ func TestComputer_Execute_OpenAppNotConnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "connect first") {
-		t.Errorf("error = %q, want 'connect first'", e)
+	if !contains(er.Error, "connect first") {
+		t.Errorf("error = %q, want 'connect first'", er.Error)
 	}
 }
 
@@ -1168,15 +1168,15 @@ func TestComputer_Execute_SendFileSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	ar, ok := res.Data.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if m["action"] != "send_file" {
-		t.Errorf("action = %v, want send_file", m["action"])
+	if ar.Action != "send_file" {
+		t.Errorf("action = %q, want send_file", ar.Action)
 	}
-	if m["path"] != tmpPath {
-		t.Errorf("path = %v, want %q", m["path"], tmpPath)
+	if !ar.OK {
+		t.Error("ok = false, want true")
 	}
 	// The first wire call must be receive_file_begin with the basename param.
 	if got := len(fc.calls); got != 2 {
@@ -1200,12 +1200,12 @@ func TestComputer_Execute_SendFileEmptyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "path") {
-		t.Errorf("error = %q, want mention of 'path'", e)
+	if !contains(er.Error, "path") {
+		t.Errorf("error = %q, want mention of 'path'", er.Error)
 	}
 	if rec.clientCount() != 0 {
 		t.Errorf("clients dialed = %d, want 0 (validation must run pre-connect)", rec.clientCount())
@@ -1225,12 +1225,12 @@ func TestComputer_Execute_SendFileNotConnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	m, ok := res.Data.(map[string]any)
+	er, ok := res.Data.(*ErrorResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want map", res.Data)
+		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if e, _ := m["error"].(string); !contains(e, "connect first") {
-		t.Errorf("error = %q, want 'connect first'", e)
+	if !contains(er.Error, "connect first") {
+		t.Errorf("error = %q, want 'connect first'", er.Error)
 	}
 }
 
@@ -1335,7 +1335,7 @@ func TestComputer_DecodeResult_DeviceInfoRoundTrip(t *testing.T) {
 	}
 }
 
-func TestComputer_DecodeResult_ActionMap(t *testing.T) {
+func TestComputer_DecodeResult_ActionResult(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	raw := json.RawMessage(`{"action":"click","ok":true}`)
@@ -1343,16 +1343,19 @@ func TestComputer_DecodeResult_ActionMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
 	}
-	m, ok := v.(map[string]any)
+	ar, ok := v.(*ActionResult)
 	if !ok {
-		t.Fatalf("DecodeResult returned %T, want map[string]any", v)
+		t.Fatalf("DecodeResult returned %T, want *ActionResult", v)
 	}
-	if m["action"] != "click" {
-		t.Errorf("action = %v, want click", m["action"])
+	if ar.Action != "click" {
+		t.Errorf("action = %q, want click", ar.Action)
+	}
+	if !ar.OK {
+		t.Error("ok = false, want true")
 	}
 	rendered := tt.RenderResult(v)
 	if rendered != "click: ok" {
-		t.Errorf("RenderResult(action map) = %q, want %q", rendered, "click: ok")
+		t.Errorf("RenderResult(action result) = %q, want %q", rendered, "click: ok")
 	}
 }
 

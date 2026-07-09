@@ -25,6 +25,12 @@ type Input struct {
 
 const staticDescription = "Send a file (image, document, or video) to the user."
 
+// SendResult is the success response for the Send tool.
+type SendResult struct {
+	FilePath string `json:"file_path"`
+	Status   string `json:"status"`
+}
+
 // New creates the Send tool bound to the given FileSender.
 func New(sender FileSender) tool.Tool {
 	schema := json.RawMessage(`{
@@ -69,10 +75,7 @@ func New(sender FileSender) tool.Tool {
 				return nil, err
 			}
 			return &tool.ToolResult{
-				Data: map[string]any{
-					"file_path": in.FilePath,
-					"status":    "sent",
-				},
+				Data: &SendResult{FilePath: in.FilePath, Status: "sent"},
 			}, nil
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return false },
@@ -81,24 +84,22 @@ func New(sender FileSender) tool.Tool {
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_:            "Send a file (image, document, or video) to the user.",
 		RenderResult_: func(data any) string {
-			switch v := data.(type) {
-			case map[string]any:
-				fp, _ := v["file_path"].(string)
-				if fp == "" {
-					return "Sent"
-				}
-				return fmt.Sprintf("Sent %s", fp)
-			default:
+			s, ok := data.(*SendResult)
+			if !ok {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
+			if s.FilePath == "" {
+				return "Sent"
+			}
+			return fmt.Sprintf("Sent %s", s.FilePath)
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
-			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err != nil {
+			var s SendResult
+			if err := json.Unmarshal(raw, &s); err != nil {
 				return nil, err
 			}
-			return m, nil
+			return &s, nil
 		},
 	})
 }
