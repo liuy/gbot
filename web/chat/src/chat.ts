@@ -313,12 +313,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
   let streamStartedAt = 0
+  let committedToolCount = 0  // restored from connect_status, incremented by tool_start
   let streaming = false
   const toolEntries = new Map<string, ToolEntry>()
   let currentTextDiv: HTMLDivElement | null = null
   let currentPendingText: { block: { kind: 'text'; id: string; text: string } } | null = null
   let currentThinking: ThinkingEntry | null = null
-  let accumulatedThinkingMs = 0
+  let accumulatedThinkingMs = 0  // restored from connect_status, incremented by thinking_end
   const tokenRate = new TokenRate()
   let progressHandles: ProgressDomHandles | null = null
   let progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
@@ -455,7 +456,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     toolEntries.clear()
     currentTextDiv = null
     currentThinking = null
-    accumulatedThinkingMs = 0
     tokenRate.reset()
     progressHandles = null
     pendingBlocks.length = 0
@@ -467,13 +467,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const resetProgressUsage = () => {
     progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+    committedToolCount = 0
+    accumulatedThinkingMs = 0
+    streamStartedAt = 0
   }
 
   const resetAllState = () => {
-    console.log(`[chat] reset: messages=${messages.length} dom=${messagesContainer.childElementCount} streaming=${streaming}`)
     cleanupStreamingRefs()
     resetProgressUsage()
     streaming = false
+    console.debug('[chat] resetAllState')
     inputBar.setStreaming(false)
     queuedMsgs = []
     pendingCancel = null
@@ -620,7 +623,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         refreshProgressBar(
           progressHandles,
           streamStartedAt,
-          pendingBlocks.filter((b) => b.kind === 'tool').length,
+          committedToolCount + pendingBlocks.filter((b) => b.kind === 'tool').length,
           progressUsage.outputTokens,
         )
         progressHandles.rateEl.textContent = r > 0 ? r.toFixed(1) + ' t/s' : '0.0 t/s'
@@ -689,6 +692,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (runningTools.length > 0 && !streaming) {
         streaming = true
         inputBar.setStreaming(true)
+        streamContainer = content
+        if (streamStartedAt === 0) {
+          streamStartedAt = Date.now()
+        }
+        setupStreaming()
+        console.debug('[chat] initStreaming reason=loadHistory_runningTool streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
       }
       const m: MessageState = {
         id: chat.id,
@@ -735,43 +744,38 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
+  function initStreaming(reason: string) {
+    const { outer, content } = buildShell('assistant')
+    const m: MessageState = {
+      ...newAssistantMessage(''),
+      domRoot: outer,
+      contentDiv: content,
+    }
+    messages.push(m)
+    messagesContainer.appendChild(outer)
+    streamContainer = content
+    if (streamStartedAt === 0) {
+      streamStartedAt = Date.now()
+    }
+    streaming = true
+    inputBar.setStreaming(true)
+    setupStreaming()
+    console.debug('[chat] initStreaming reason=' + reason + ' streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
+  }
+
   function handleEvent(e: QueryEvent) {
     switch (e.type) {
       case 'query_start': {
         if (e.agent) return
         cleanupStreamingRefs()
-        const { outer, content } = buildShell('assistant')
-        const m: MessageState = {
-          ...newAssistantMessage(''),
-          domRoot: outer,
-          contentDiv: content,
-        }
-        messages.push(m)
-        messagesContainer.appendChild(outer)
-        streamContainer = content
-        streamStartedAt = Date.now()
-        streaming = true
-        inputBar.setStreaming(true)
-        setupStreaming()
+        initStreaming('query_start')
         return
       }
       case 'turn_start': {
         if (e.agent) return
         if (streaming) return
         cleanupStreamingRefs()
-        const { outer, content } = buildShell('assistant')
-        const m: MessageState = {
-          ...newAssistantMessage(''),
-          domRoot: outer,
-          contentDiv: content,
-        }
-        messages.push(m)
-        messagesContainer.appendChild(outer)
-        streamContainer = content
-        streamStartedAt = Date.now()
-        streaming = true
-        inputBar.setStreaming(true)
-        setupStreaming()
+        initStreaming('turn_start')
         return
       }
       case 'query_end': {
@@ -842,10 +846,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           const streamMs = tokenRate.streamDurationMs()
           finalizeProgressBar(progressHandles, finalUsage,
             streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
-            pendingBlocks.filter((b) => b.kind === 'tool').length, accumulatedThinkingMs)
+            committedToolCount + pendingBlocks.filter((b) => b.kind === 'tool').length, accumulatedThinkingMs)
         }
         cleanupStreamingRefs()
         resetProgressUsage()
+        console.debug('[chat] query_end aborted=' + wasAborted)
         return
       }
       case 'thinking_start': {
@@ -1011,6 +1016,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             })
           }
           return
+        }
+        if (!streaming) {
+          initStreaming('tool_start_fallback')
         }
         const block = buildToolBlock(tu)
         pendingBlocks.push(block)
@@ -1253,6 +1261,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             cacheCreation: msg.usage.cache_creation_input_tokens ?? msg.usage.CacheCreationInputTokens ?? 0,
           }
         }
+        if (msg.queryStartMs) {
+          streamStartedAt = msg.queryStartMs
+        }
+        committedToolCount = msg.toolCount ?? 0
+        accumulatedThinkingMs = msg.thinkingMs ?? 0
         taskPanel.setTasks([])
         scrollBtn.style.opacity = '0'
         scrollBtn.style.pointerEvents = 'none'
@@ -1305,9 +1318,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'event':
-        if (msg.event.type === 'turn_start' || msg.event.type === 'query_start') {
-          console.log(`[chat] ${msg.event.type}: agent=${msg.event.agent?.parent_tool_use_id ?? ''}`)
-        }
         handleEvent(msg.event)
         return
       case 'task_list':

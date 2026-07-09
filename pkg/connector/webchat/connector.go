@@ -133,6 +133,15 @@ func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	a.eng.UpdateAutoCompactConfig(cfg)
 }
 
+// queryStats accumulates per-query stats (usage + start time + tool count +
+// thinking duration) for connect_status. Reset on EventQueryEnd.
+type queryStats struct {
+	usage      types.Usage
+	startMs    int64
+	toolCount  int
+	thinkingMs int64
+}
+
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
 // wire protocol (Phase 0), and drives queries from inbound WS messages.
@@ -157,27 +166,25 @@ type WebChatConnector struct {
 	// writeMu serializes all writes to the active WS. gorilla websocket does
 	// not support concurrent writers; every outbound path (Handle, serveChatWS
 	// takeover, readLoop responses) goes through writePayload or its variants.
-	// It also guards currentTurnBuf (Handle appends, serveChatWS replays).
+	// It also guards streamBuf (Handle appends, serveChatWS replays).
 	writeMu sync.Mutex
 
-	// currentUsage accumulates per-query token usage from EventUsage events.
-	// Reset on EventQueryEnd. Sent to client via connect_status on takeover
-	// so the progress bar shows cumulative stats for the whole query.
-	// Guarded by writeMu.
-	currentUsage types.Usage
+	// queryStats accumulates per-query stats sent to the client via
+	// connect_status on takeover. Reset on EventQueryEnd. Guarded by writeMu.
+	queryStats queryStats
 
-	// currentTurnBuf holds the serialized payloads of the current turn's events
+	// streamBuf holds the serialized payloads of the current turn's events
 	// that have NOT yet been committed to engine.Messages(). Cleared on
 	// turn_end / query_end (the turn is then visible via history). Replayed to
 	// a new ws during takeover so the in-flight stream is not lost.
 	// Guarded by writeMu.
-	currentTurnBuf [][]byte
+	streamBuf [][]byte
 
 	// taskToolIDs tracks tool_use IDs of Task tool calls started by the main
 	// agent during the current turn. On tool_end for a tracked ID, the
 	// connector pushes a task_list frame AFTER the tool_end event frame so
 	// the frontend updates the task panel with the latest disk state.
-	// Guarded by writeMu; cleared alongside currentTurnBuf on stream done.
+	// Guarded by writeMu; cleared alongside streamBuf on stream done.
 	taskToolIDs map[string]bool
 
 	// providers + providerConfigs drive the model picker (config message +
@@ -188,7 +195,7 @@ type WebChatConnector struct {
 	providerConfigs map[string]*config.Provider
 
 	// OnStreamDone is called when the main engine commits an assistant response
-	// to engine.Messages(). Clears currentTurnBuf so takeover replay does not
+	// to engine.Messages(). Clears streamBuf so takeover replay does not
 	// duplicate events already reflected in history. Set by the connector's
 	// production wiring to engine.OnStreamDone.
 	OnStreamDone func()
@@ -209,8 +216,8 @@ func New(eng *engine.Engine, h *hub.Hub, providers map[string]llm.Provider, prov
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
-		frames := len(c.currentTurnBuf)
-		c.currentTurnBuf = nil
+		frames := len(c.streamBuf)
+		c.streamBuf = nil
 		c.taskToolIDs = make(map[string]bool)
 		c.writeMu.Unlock()
 		slog.Info("webchat:stream done, buffer cleared", "frames", frames)
@@ -244,7 +251,7 @@ func (c *WebChatConnector) Send(userID, text string) error { return nil }
 // writePayload writes a text message to the active WS under writeMu with a
 // 5s deadline. On failure (slow client, dead socket), stores nil so the
 // engine is never blocked by a wedged connection. Also appends the payload to
-// currentTurnBuf (inside the lock) so takeover replay is consistent. Returns
+// streamBuf (inside the lock) so takeover replay is consistent. Returns
 // the error so callers with their own bookkeeping can react.
 //
 // Buffer is appended UNCONDITIONALLY — even when activeWS is nil or write
@@ -254,7 +261,7 @@ func (c *WebChatConnector) Send(userID, text string) error { return nil }
 func (c *WebChatConnector) writePayload(payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	c.currentTurnBuf = append(c.currentTurnBuf, payload)
+	c.streamBuf = append(c.streamBuf, payload)
 	ws := c.activeWS.Load()
 	if ws == nil {
 		return nil // inactive — buffer captures event, engine keeps running
@@ -267,7 +274,7 @@ func (c *WebChatConnector) writePayload(payload []byte) error {
 	return nil
 }
 
-// writePayloadAndClear writes to activeWS then clears currentTurnBuf. For
+// writePayloadAndClear writes to activeWS then clears streamBuf. For
 // turn_end / query_end — the turn is now committed to engine.Messages(), so
 // the buffer is reset to avoid duplicate replay on the next takeover.
 func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
@@ -276,8 +283,8 @@ func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
 	// Clear buffer unconditionally — the turn is committed to engine.Messages()
 	// so replay would duplicate. Must clear even when activeWS is nil (disconnect
 	// during turn_end) to prevent stale events from replaying after takeover.
-	bufFrames := len(c.currentTurnBuf)
-	c.currentTurnBuf = nil
+	bufFrames := len(c.streamBuf)
+	c.streamBuf = nil
 	c.taskToolIDs = make(map[string]bool)
 	slog.Info("webchat:turnbuf cleared", "frames", bufFrames)
 	ws := c.activeWS.Load()
@@ -292,7 +299,7 @@ func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
 	return nil
 }
 
-// writeDirect writes to activeWS without touching currentTurnBuf. For ask
+// writeDirect writes to activeWS without touching streamBuf. For ask
 // events (must NOT be buffered) and error events (ephemeral, not replayed).
 func (c *WebChatConnector) writeDirect(payload []byte) error {
 	c.writeMu.Lock()
@@ -322,18 +329,33 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 		c.writeMu.Unlock()
 	}
 
-	// Accumulate per-query usage. Reset on query_end.
+	// Accumulate per-query stats. Reset on query_end.
 	if event.Type == types.EventUsage && event.Agent == nil && event.Usage != nil {
 		c.writeMu.Lock()
-		c.currentUsage.InputTokens += event.Usage.InputTokens
-		c.currentUsage.OutputTokens += event.Usage.OutputTokens
-		c.currentUsage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
-		c.currentUsage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		c.queryStats.usage.InputTokens += event.Usage.InputTokens
+		c.queryStats.usage.OutputTokens += event.Usage.OutputTokens
+		c.queryStats.usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
+		c.queryStats.usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		c.writeMu.Unlock()
+	}
+	if event.Type == types.EventQueryStart && event.Agent == nil {
+		c.writeMu.Lock()
+		c.queryStats.startMs = time.Now().UnixMilli()
+		c.writeMu.Unlock()
+	}
+	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil {
+		c.writeMu.Lock()
+		c.queryStats.toolCount++
+		c.writeMu.Unlock()
+	}
+	if event.Type == types.EventThinkingEnd && event.Agent == nil && event.Thinking != nil {
+		c.writeMu.Lock()
+		c.queryStats.thinkingMs += event.Thinking.Duration.Milliseconds()
 		c.writeMu.Unlock()
 	}
 	if event.Type == types.EventQueryEnd && event.Agent == nil {
 		c.writeMu.Lock()
-		c.currentUsage = types.Usage{}
+		c.queryStats = queryStats{}
 		c.writeMu.Unlock()
 	}
 
@@ -350,7 +372,9 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	if event.Type == types.EventQueryEnd && event.Error != nil && event.Agent == nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
-			if !c.shouldAutoRewind() {
+			rewind := c.shouldAutoRewind()
+			slog.Info("webchat:abort", "shouldAutoRewind", rewind, "msgs", len(c.engine.Messages()))
+			if !rewind {
 				interruptPayload, _ := json.Marshal(struct {
 					Type  string           `json:"type"`
 					Event types.QueryEvent `json:"event"`
@@ -956,22 +980,28 @@ func (c *WebChatConnector) buildConfigMessage() []byte {
 // every connect_status, then loads the subsequent history frame.
 func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 	c.writeMu.Lock()
-	usage := c.currentUsage
+	qs := c.queryStats
 	c.writeMu.Unlock()
 	payload, _ := json.Marshal(struct {
-		Type      string      `json:"type"`
-		Connected bool        `json:"connected"`
-		Agent     string      `json:"agent"`
-		Model     string      `json:"model"`
-		SessionID string      `json:"sessionID"`
-		Usage     types.Usage `json:"usage"`
+		Type         string      `json:"type"`
+		Connected    bool        `json:"connected"`
+		Agent        string      `json:"agent"`
+		Model        string      `json:"model"`
+		SessionID    string      `json:"sessionID"`
+		Usage        types.Usage `json:"usage"`
+		QueryStartMs int64       `json:"queryStartMs"`
+		ToolCount    int         `json:"toolCount"`
+		ThinkingMs   int64       `json:"thinkingMs"`
 	}{
-		Type:      "connect_status",
-		Connected: true,
-		Agent:     "main",
-		Model:     c.engine.Model(),
-		SessionID: c.engine.SessionID(),
-		Usage:     usage,
+		Type:         "connect_status",
+		Connected:    true,
+		Agent:        "main",
+		Model:        c.engine.Model(),
+		SessionID:    c.engine.SessionID(),
+		Usage:        qs.usage,
+		QueryStartMs: qs.startMs,
+		ToolCount:    qs.toolCount,
+		ThinkingMs:   qs.thinkingMs,
 	})
 	return payload
 }

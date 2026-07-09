@@ -898,4 +898,451 @@ describe('chat integration', () => {
     )
     expect(outEl?.textContent).toBe('↓1.5k')
   })
+
+  it('takeover restores elapsed time from queryStartMs', () => {
+    vi.useFakeTimers()
+    mount()
+    const pastTime = Date.now() - 5000
+    dispatch({ type: 'connect_status', connected: true, queryStartMs: pastTime })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([{ type: 'turn_start' }, { type: 'text_delta', text: 'x' }])
+    vi.advanceTimersByTime(300)
+    const elapsedEls = Array.from(document.querySelectorAll('span')).filter(
+      (s) => /^\d+(\.\d+)?s$/.test(s.textContent ?? ''),
+    )
+    const elapsedValues = elapsedEls.map((s) => parseFloat(s.textContent!))
+    const maxElapsed = Math.max(...elapsedValues)
+    expect(maxElapsed).toBeGreaterThanOrEqual(5)
+    vi.useRealTimers()
+  })
+
+  it('takeover tool count restored from server, increments on new tool_start', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true, toolCount: 2 })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 't3', name: 'Grep' } },
+    ])
+    vi.advanceTimersByTime(300)
+    const toolCountEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.includes('tool'),
+    )
+    expect(toolCountEl?.textContent).toBe('3 tools')
+    vi.useRealTimers()
+  })
+
+  it('turn_start does not reset elapsed time mid-query', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    vi.advanceTimersByTime(300)
+    const elapsedAtQueryStart = Math.max(
+      ...Array.from(document.querySelectorAll('span'))
+        .filter((s) => /^\d+(\.\d+)?s$/.test(s.textContent ?? ''))
+        .map((s) => parseFloat(s.textContent!)),
+    )
+    vi.advanceTimersByTime(5000)
+    dispatchEvents([{ type: 'turn_start' }])
+    vi.advanceTimersByTime(300)
+    const elapsedAfterTurnStart = Math.max(
+      ...Array.from(document.querySelectorAll('span'))
+        .filter((s) => /^\d+(\.\d+)?s$/.test(s.textContent ?? ''))
+        .map((s) => parseFloat(s.textContent!)),
+    )
+    expect(elapsedAfterTurnStart).toBeGreaterThan(elapsedAtQueryStart + 4)
+    vi.useRealTimers()
+  })
+
+  // ── Takeover state restoration: full lifecycle tests ──
+
+  it('takeover restores thinking duration from server baseline', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true, thinkingMs: 3200 })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'thinking_start' },
+      { type: 'thinking_end', thinking: { duration: 1800000000 } },
+      { type: 'usage', usage_event: { input_tokens: 100, output_tokens: 50 } },
+      { type: 'turn_end' },
+      { type: 'query_end', usage_event: { input_tokens: 100, output_tokens: 50 } },
+    ])
+    vi.advanceTimersByTime(300)
+    // 3200 (baseline) + 1800 (new thinking_end) = 5000ms = 5.0s
+    const thinkingEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.startsWith('thought for'),
+    )
+    expect(thinkingEl?.textContent).toBe('thought for 5.0s')
+    vi.useRealTimers()
+  })
+
+  it('cold start connect_status with all-zero stats shows no progress bar', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    // No streaming events — progress bar should not exist
+    const progressBars = document.querySelectorAll('[data-progress]')
+    expect(progressBars.length).toBe(0)
+  })
+
+  it('full recovery: disconnect mid-query, reconnect, continue, query_end', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+
+    // Simulate query started, accumulated some stats on server
+    // Now takeover happens with server-accumulated stats
+    dispatch({
+      type: 'connect_status',
+      connected: true,
+      usage: { input_tokens: 5000, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 30000,  // 30s ago
+      toolCount: 3,
+      thinkingMs: 5000,
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+
+    // New turn after reconnect
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 't4', name: 'Bash' } },
+      { type: 'thinking_start' },
+      { type: 'thinking_end', thinking: { duration: 2000000000 } },
+      { type: 'usage', usage_event: { input_tokens: 2000, output_tokens: 500 } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // Verify cumulative stats during streaming
+    // Tool count: 3 (server) + 1 (new) = 4
+    const toolEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.includes('tool'),
+    )
+    expect(toolEl?.textContent).toBe('4 tools')
+
+    // Now trigger query_end — final stats should use authoritative usage_event
+    dispatchEvents([
+      { type: 'turn_end' },
+      { type: 'query_end', usage_event: { input_tokens: 8000, output_tokens: 1800 } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // After query_end: progress bar finalized, no longer updating
+    // Input: 5000 + 2000 + 8000 = 15000 (cumulative + authoritative)
+    // Actually: usage_event in query_end is the authoritative total from LLM.
+    // The client replaces progressUsage with it. So final input should reflect
+    // usage_event total (8000) since that's what LLM reports for last turn.
+    // Check that the progress bar is finalized (data-progress=1)
+    const finalizedBar = document.querySelector('[data-progress="1"]') as HTMLDivElement | null
+    expect(finalizedBar).not.toBeNull()
+    expect(finalizedBar!.dataset.progress).toBe('1')
+
+    // Thinking: 5000 (server) + 2000 (new) = 7000ms = 7.0s
+    const thinkingEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.startsWith('thought for'),
+    )
+    expect(thinkingEl?.textContent).toBe('thought for 7.0s')
+
+    vi.useRealTimers()
+  })
+
+  it('agent tool_end after takeover: main agent text_delta renders', () => {
+    mount()
+    // Phase 1: main agent starts Agent tool (normal pre-takeover streaming)
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('review my code')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    // Phase 2: takeover mid-agent-run.
+    // resetAllState wipes streaming state. connect_status resets everything.
+    // History shows committed turns (empty for this simple case).
+    // Replay buffer: buffer was cleared at turn_start, so it starts from
+    // tool_start (NOT turn_start — turn_start was already committed).
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+
+    // Replay buffer does NOT have turn_start — only tool_start onward
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'text_delta', text: 'Reviewing code...\n', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+    ])
+
+    // Phase 3: sub-agent finishes, Agent tool_end, main agent continues
+    dispatchEvents([
+      { type: 'query_end', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+      { type: 'tool_end', tool_result: { tool_use_id: 'agent-1', display_output: 'Review complete.' } },
+      // Main agent continues with text — THIS must render
+      { type: 'text_delta', text: 'Based on the review, here are my findings.' },
+    ])
+
+    // The main agent's text_delta after Agent tool_end must appear in the DOM
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('Based on the review')
+  })
+
+  it('takeover during Agent tool: history with running tool initializes progress bar', () => {
+    vi.useFakeTimers()
+    mount()
+    // Takeover: connect_status with server-accumulated stats
+    dispatch({
+      type: 'connect_status',
+      connected: true,
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 5000,
+      toolCount: 1,
+      thinkingMs: 0,
+    })
+    // History: committed assistant message with a RUNNING Agent tool
+    // (no tool_result yet — Agent is still executing)
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', text: '',
+        thinking: [],
+        tools: [],
+        blocks: [
+          { kind: 'tool', tool: { id: 'agent-1', name: 'Agent', isRunning: true } },
+        ],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'streaming', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    // Replay buffer: sub-agent events arrive after history
+    dispatchEvents([
+      { type: 'turn_start', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+      { type: 'text_delta', text: 'Working...\n', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // Progress bar MUST exist — history with running tool should init streaming
+    const inEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.startsWith('↑'),
+    )
+    expect(inEl).toBeTruthy()
+    expect(inEl?.textContent).toBe('↑1.0k')
+
+    vi.useRealTimers()
+  })
+
+  it('STOP during Agent tool after takeover: [Request interrupted by user] renders', () => {
+    mount()
+    // Takeover: history has running Agent tool
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', text: '',
+        thinking: [], tools: [],
+        blocks: [
+          { kind: 'tool', tool: { id: 'agent-1', name: 'Agent', isRunning: true } },
+        ],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'streaming', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    // Sub-agent event replay
+    dispatchEvents([
+      { type: 'text_delta', text: 'Working...\n', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+    ])
+    // User clicks STOP: connector injects interrupt text_delta, then query_end(aborted)
+    dispatchEvents([
+      { type: 'text_delta', text: '[Request interrupted by user]' },
+      { type: 'query_end', aborted: true },
+    ])
+
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('[Request interrupted by user]')
+  })
+
+  // ── DOM integrity: assert ALL streaming elements exist after each scenario ──
+
+  function assertStreamingDOMIntegrity(label: string, opts: {
+    expectTokenStats?: boolean
+    expectElapsed?: boolean
+    expectToolCount?: number | null
+  } = {}) {
+    const { expectTokenStats = true, expectElapsed = true, expectToolCount = null } = opts
+    // Progress bar exists iff token stats span exists (↑ is always in progress bar)
+    if (expectTokenStats) {
+      const inEl = Array.from(document.querySelectorAll('span')).find(
+        (s) => s.textContent?.startsWith('↑'),
+      )
+      expect(inEl?.textContent ?? '').toMatch(/^↑/)
+    }
+    if (expectElapsed) {
+      const elapsedEl = Array.from(document.querySelectorAll('span')).find(
+        (s) => /^\d+(\.\d+)?s$/.test(s.textContent ?? ''),
+      )
+      expect(elapsedEl?.textContent ?? '').toMatch(/^\d/)
+    }
+    if (expectToolCount !== null) {
+      const toolEl = Array.from(document.querySelectorAll('span')).find(
+        (s) => s.textContent?.includes('tool'),
+      )
+      if (expectToolCount > 0) {
+        expect(toolEl?.textContent).toContain(String(expectToolCount))
+      }
+    }
+  }
+
+  it('normal streaming: all DOM elements exist during live stream', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('hello')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 500, output_tokens: 200 } },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+    ])
+    vi.advanceTimersByTime(300)
+    assertStreamingDOMIntegrity('normal streaming', { expectToolCount: 1 })
+    vi.useRealTimers()
+  })
+
+  it('takeover mid-text-stream: all DOM elements restored', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('hello')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 500, output_tokens: 200 } },
+    ])
+    // Takeover
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 500, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 3000,
+      toolCount: 0, thinkingMs: 0,
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([{ type: 'turn_start' }, { type: 'usage', usage_event: { input_tokens: 300, output_tokens: 100 } }])
+    vi.advanceTimersByTime(300)
+    assertStreamingDOMIntegrity('takeover mid-text', { expectToolCount: null })
+    vi.useRealTimers()
+  })
+
+  it('takeover mid-Agent-tool: all DOM elements restored (progress bar, tool count, elapsed)', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 5000,
+      toolCount: 1, thinkingMs: 0,
+    })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', text: '',
+        thinking: [], tools: [],
+        blocks: [
+          { kind: 'tool', tool: { id: 'agent-1', name: 'Agent', isRunning: true } },
+        ],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'streaming', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([
+      { type: 'text_delta', text: 'Working...\n', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+    ])
+    vi.advanceTimersByTime(300)
+    // Must have: progress bar, token stats, elapsed time, tool count
+    assertStreamingDOMIntegrity('takeover mid-Agent-tool', { expectToolCount: 1 })
+    vi.useRealTimers()
+  })
+
+  it('double takeover: reconnect twice during same query without DOM loss', () => {
+    vi.useFakeTimers()
+    mount()
+    // First takeover
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 2000,
+      toolCount: 0, thinkingMs: 0,
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([{ type: 'turn_start' }, { type: 'usage', usage_event: { input_tokens: 300, output_tokens: 50 } }])
+    vi.advanceTimersByTime(300)
+    assertStreamingDOMIntegrity('first takeover', { expectToolCount: null })
+
+    // Second takeover — same query, fresh reconnect
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 800, output_tokens: 150, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 5000,
+      toolCount: 1, thinkingMs: 0,
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'usage', usage_event: { input_tokens: 200, output_tokens: 80 } },
+    ])
+    vi.advanceTimersByTime(300)
+    assertStreamingDOMIntegrity('second takeover', { expectToolCount: null })
+    vi.useRealTimers()
+  })
+
+  it('STOP after takeover: progress bar finalized, interrupt visible', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 5000,
+      toolCount: 1, thinkingMs: 2000,
+    })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', text: '',
+        thinking: [], tools: [],
+        blocks: [
+          { kind: 'tool', tool: { id: 'agent-1', name: 'Agent', isRunning: true } },
+        ],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'streaming', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([
+      { type: 'text_delta', text: 'Working...\n', agent: { parent_tool_use_id: 'agent-1', agent_type: 'sub', depth: 1 } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // STOP
+    dispatchEvents([
+      { type: 'text_delta', text: '[Request interrupted by user]' },
+      { type: 'query_end', aborted: true },
+    ])
+    vi.advanceTimersByTime(300)
+
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('[Request interrupted by user]')
+    // Progress bar finalized (data-progress=1)
+    const finalizedBar = document.querySelector('[data-progress="1"]') as HTMLDivElement | null
+    expect(finalizedBar).not.toBeNull()
+    vi.useRealTimers()
+  })
 })

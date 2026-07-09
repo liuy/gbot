@@ -30,7 +30,7 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 
 // serveChatWS drives one WS connection to completion with a 3-step atomic
 // takeover under writeMu: (1) invalidate old connection, (2) push
-// connect_status + history + currentTurnBuf replay, (3) activate new
+// connect_status + history + streamBuf replay, (3) activate new
 // connection. The readLoop blocks until the client disconnects.
 func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// Pre-construct connect_status outside the lock (reads engine state).
@@ -48,7 +48,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// blocks on writeMu during this window — it cannot race with the replay
 	// or with buildHistoryMessage's snapshot of engine.Messages().
 	c.writeMu.Lock()
-	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.currentTurnBuf))
+	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.streamBuf))
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status
@@ -71,7 +71,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	//    tool_output_delta, etc., accumulated since the last turn_end).
 	//    The buffer is under writeMu so Handle's appends are serialized.
 	replayed := 0
-	for _, payload := range c.currentTurnBuf {
+	for _, payload := range c.streamBuf {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
 		if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
 			slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
@@ -85,7 +85,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 
 	// task list — current committed disk state, pushed AFTER replay so the
 	// client has historical context first, then the latest task snapshot.
-	// Direct write (not from currentTurnBuf) because buildTaskListMessage
+	// Direct write (not from streamBuf) because buildTaskListMessage
 	// reads live state, which may be newer than a task_list frame buffered
 	// earlier in this same turn.
 	if taskMsg := c.buildTaskListMessage(); taskMsg != nil {

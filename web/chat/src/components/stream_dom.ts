@@ -476,9 +476,12 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   elapsedEl.textContent = '0s'
   root.appendChild(elapsedEl)
 
+  const thinkingEl = document.createElement('span')
+  root.appendChild(thinkingEl)
+
   insertBefore(parent, root, before ?? null)
 
-  return { root, elapsedEl, inEl, outEl, rateEl, toolCountEl, dotEl, cacheEl, thinkingEl: document.createElement('span'), tokensSuffix }
+  return { root, elapsedEl, inEl, outEl, rateEl, toolCountEl, dotEl, cacheEl, thinkingEl, tokensSuffix }
 }
 
 export function setProgressBarUsage(

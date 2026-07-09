@@ -1023,7 +1023,7 @@ func TestCurrentUsage_AccumulatesEventUsage(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 80}})
 
 	c.writeMu.Lock()
-	got := c.currentUsage
+	got := c.queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 300 {
@@ -1045,7 +1045,7 @@ func TestCurrentUsage_IgnoresSubAgentEvents(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 
 	c.writeMu.Lock()
-	got := c.currentUsage
+	got := c.queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 100 {
@@ -1060,11 +1060,51 @@ func TestCurrentUsage_ResetsOnQueryEnd(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	c.writeMu.Lock()
-	got := c.currentUsage
+	got := c.queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 0 {
 		t.Errorf("InputTokens = %d, want 0 after query_end", got.InputTokens)
+	}
+}
+
+func TestCurrentUsage_AccumulatesToolCountAndThinkingMs(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t2", Name: "Read"}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1500 * time.Millisecond}})
+
+	c.writeMu.Lock()
+	got := c.queryStats
+	c.writeMu.Unlock()
+
+	if got.toolCount != 2 {
+		t.Errorf("toolCount = %d, want 2", got.toolCount)
+	}
+	if got.thinkingMs != 1500 {
+		t.Errorf("thinkingMs = %d, want 1500", got.thinkingMs)
+	}
+}
+
+func TestCurrentUsage_IgnoresSubAgentToolAndThinking(t *testing.T) {
+	c := newTestConnector(t)
+
+	agent := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "sub", Depth: 1}
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: agent, ToolUse: &types.ToolUseEvent{ID: "s1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Grep"}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent, Thinking: &types.ThinkingEvent{Duration: 2000 * time.Millisecond}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 500 * time.Millisecond}})
+
+	c.writeMu.Lock()
+	got := c.queryStats
+	c.writeMu.Unlock()
+
+	if got.toolCount != 1 {
+		t.Errorf("toolCount = %d, want 1 (sub-agent event should be ignored)", got.toolCount)
+	}
+	if got.thinkingMs != 500 {
+		t.Errorf("thinkingMs = %d, want 500 (sub-agent event should be ignored)", got.thinkingMs)
 	}
 }
 
@@ -1182,5 +1222,58 @@ func TestTakeover_ConnectStatusCarriesAccumulatedUsage(t *testing.T) {
 	}
 	if connect.Usage.CacheReadInputTokens != 200 {
 		t.Errorf("cache_read_input_tokens = %d, want 200", connect.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestTakeover_ConnectStatusCarriesQueryStartMs(t *testing.T) {
+	c := newTestConnector(t)
+
+	ws1 := dialAndStore(t, c)
+	t.Cleanup(func() { _ = ws1.Close() })
+
+	beforeMs := time.Now().UnixMilli() // REAL-TIME
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+
+	connectMsg := readWSMessage(t, ws2)
+	var connect struct {
+		Type         string `json:"type"`
+		QueryStartMs int64  `json:"queryStartMs"`
+	}
+	if err := json.Unmarshal(connectMsg, &connect); err != nil {
+		t.Fatalf("unmarshal connect_status: %v\nraw: %s", err, connectMsg)
+	}
+	if connect.Type != "connect_status" {
+		t.Fatalf("type = %q, want connect_status", connect.Type)
+	}
+	if connect.QueryStartMs == 0 {
+		t.Fatalf("queryStartMs = 0, want non-zero (EventQueryStart should have set it)")
+	}
+	delta := connect.QueryStartMs - beforeMs
+	if delta < -1000 || delta > 1000 {
+		t.Errorf("queryStartMs = %d, beforeMs = %d, delta = %dms; want within ±1s", connect.QueryStartMs, beforeMs, delta)
+	}
+}
+
+func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	payload := c.buildConnectStatusMessage()
+	var msg struct {
+		QueryStartMs int64 `json:"queryStartMs"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.QueryStartMs != 0 {
+		t.Errorf("queryStartMs = %d, want 0 after query_end reset", msg.QueryStartMs)
 	}
 }

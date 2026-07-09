@@ -310,7 +310,7 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 	}
 	c.OnStreamDone = func() {
 		c.writeMu.Lock()
-		c.currentTurnBuf = nil
+		c.streamBuf = nil
 		c.taskToolIDs = make(map[string]bool)
 		c.writeMu.Unlock()
 	}

@@ -270,9 +270,9 @@ describe('appendProgressBar', () => {
       if (t) parts.push(t)
     })
     const line = parts.join(' ')
-    // Format: ● ↑180.6k ↓96 · 1.5 t/s · 99% cached · 8 tools · 1m 3s
+    // Format: ● ↑180.6k ↓96 · 1.5 t/s · 99.8% cached · 8 tools · 1m 3s thought for 12.0s
     const dot = '\\u00B7'  // ·
-    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' [\\d.]+% cached ' + dot + ' 8 tools ' + dot + ' 1m 3s$'))
+    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' [\\d.]+% cached ' + dot + ' 8 tools ' + dot + ' 1m 3s thought for 12.0s$'))
     console.log('FINAL:', JSON.stringify(line))
     expect(line).not.toMatch(/^·|·$/)
     expect(line).not.toMatch(/ · · /)
