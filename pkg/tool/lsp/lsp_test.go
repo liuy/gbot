@@ -1633,6 +1633,11 @@ func TestNew_RenderResult(t *testing.T) {
 	if got == "" {
 		t.Error("expected non-empty JSON render")
 	}
+	// json.RawMessage must decode the JSON string and return its content.
+	got = tt.RenderResult(json.RawMessage(`"hover text here"`))
+	if got != "hover text here" {
+		t.Errorf("RenderResult(RawMessage string) = %q, want 'hover text here'", got)
+	}
 }
 
 func TestNew_Constructor(t *testing.T) {

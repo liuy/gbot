@@ -115,6 +115,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
       row.appendChild(timeSpan)
 
       row.addEventListener('click', () => {
+        if (pressed) {
+          pressed = false
+          return
+        }
         handlers.sessionClick(s.id)
         closeImmediate()
       })

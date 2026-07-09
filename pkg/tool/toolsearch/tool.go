@@ -104,22 +104,19 @@ func New() tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            toolPrompt,
 		RenderResult_: func(data any) string {
-			out, ok := data.(*Output)
-			if !ok {
+			switch v := data.(type) {
+			case *Output:
+				return renderToolSearchOutput(v.Matches, v.PendingMCPServers)
+			case json.RawMessage:
+				var out Output
+				if err := json.Unmarshal(v, &out); err != nil {
+					return string(v)
+				}
+				return renderToolSearchOutput(out.Matches, out.PendingMCPServers)
+			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
-			if len(out.Matches) == 0 {
-				text := "No matching deferred tools found"
-				if len(out.PendingMCPServers) > 0 {
-					text += fmt.Sprintf(
-						". Some MCP servers are still connecting: %s. Their tools will become available shortly — try searching again.",
-						strings.Join(out.PendingMCPServers, ", "),
-					)
-				}
-				return text
-			}
-			return fmt.Sprintf("Found %d tools:\n- %s", len(out.Matches), strings.Join(out.Matches, "\n- "))
 		},
 	})
 }
@@ -130,6 +127,20 @@ type parsedName struct {
 	Parts []string // searchable parts
 	Full  string   // full lowercased name
 	IsMCP bool     // true for MCP tools (mcp__ prefix)
+}
+
+func renderToolSearchOutput(matches, pendingMCPServers []string) string {
+	if len(matches) == 0 {
+		text := "No matching deferred tools found"
+		if len(pendingMCPServers) > 0 {
+			text += fmt.Sprintf(
+				". Some MCP servers are still connecting: %s. Their tools will become available shortly — try searching again.",
+				strings.Join(pendingMCPServers, ", "),
+			)
+		}
+		return text
+	}
+	return fmt.Sprintf("Found %d tools:\n- %s", len(matches), strings.Join(matches, "\n- "))
 }
 
 // parseToolName parses a tool name into searchable parts.

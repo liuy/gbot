@@ -367,7 +367,7 @@ func summarizeAction(in Input) string {
 	case ActionDisconnect:
 		return "disconnect from device"
 	case ActionScreen:
-		return "list on-screen elements (refs)"
+		return "list on-screen elements"
 	case ActionScreenshot:
 		return "capture a screenshot"
 	case ActionClick:
@@ -425,6 +425,12 @@ func renderResult(data any) string {
 		return fmt.Sprintf("screenshot %dx%d (%s)", v.Width, v.Height, v.MIMEType)
 	case *DeviceInfo:
 		return renderDeviceInfo(v)
+	case json.RawMessage:
+		var m map[string]any
+		if json.Unmarshal(v, &m) != nil {
+			return string(v)
+		}
+		return renderResult(m)
 	case map[string]any:
 		if _, ok := v["MIMEType"]; ok {
 			if w, _ := v["Width"].(float64); w > 0 {

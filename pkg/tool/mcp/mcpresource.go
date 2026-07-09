@@ -209,14 +209,21 @@ func renderResourceResultJSON(data any) string {
 // renderListResourcesTUI renders resource list for TUI display.
 // Groups resources by server, shows URI and MIME type per line.
 func renderListResourcesTUI(data any) string {
-	if data == nil {
+	switch v := data.(type) {
+	case []gbotmcp.ServerResource:
+		return formatResourceList(v)
+	case json.RawMessage:
+		var resources []gbotmcp.ServerResource
+		if json.Unmarshal(v, &resources) != nil {
+			return emptyResourcesMessage
+		}
+		return formatResourceList(resources)
+	default:
 		return emptyResourcesMessage
 	}
+}
 
-	resources, ok := data.([]gbotmcp.ServerResource)
-	if !ok {
-		return emptyResourcesMessage
-	}
+func formatResourceList(resources []gbotmcp.ServerResource) string {
 	if len(resources) == 0 {
 		return emptyResourcesMessage
 	}
@@ -253,14 +260,21 @@ func renderListResourcesTUI(data any) string {
 // renderReadResourceTUI renders resource content for TUI display.
 // Shows header with URI and MIME type, then content text.
 func renderReadResourceTUI(data any) string {
-	if data == nil {
+	switch v := data.(type) {
+	case []gbotmcp.ResourceContent:
+		return formatResourceContent(v)
+	case json.RawMessage:
+		var contents []gbotmcp.ResourceContent
+		if json.Unmarshal(v, &contents) != nil {
+			return ""
+		}
+		return formatResourceContent(contents)
+	default:
 		return ""
 	}
+}
 
-	contents, ok := data.([]gbotmcp.ResourceContent)
-	if !ok {
-		return ""
-	}
+func formatResourceContent(contents []gbotmcp.ResourceContent) string {
 	if len(contents) == 0 {
 		return "[]"
 	}

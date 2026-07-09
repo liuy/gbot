@@ -866,6 +866,27 @@ func TestComputer_RenderResult_UnknownType(t *testing.T) {
 	}
 }
 
+func TestComputer_RenderResult_JSONRawMessage_Screenshot(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	raw := json.RawMessage(`{"Width":1256,"Height":2760,"MIMEType":"image/jpeg","DataB64":"abc"}`)
+	got := tt.RenderResult(raw)
+	want := "screenshot 1256x2760 (image/jpeg)"
+	if got != want {
+		t.Errorf("RenderResult(RawMessage screenshot) = %q, want %q", got, want)
+	}
+}
+
+func TestComputer_RenderResult_JSONRawMessage_Action(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	raw := json.RawMessage(`{"action":"click","ok":true}`)
+	got := tt.RenderResult(raw)
+	if got != "click: ok" {
+		t.Errorf("RenderResult(RawMessage action) = %q, want 'click: ok'", got)
+	}
+}
+
 func TestComputer_Execute_DisconnectBackendError(t *testing.T) {
 	t.Parallel()
 	// Disconnect never errors in the current implementation, but the

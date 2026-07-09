@@ -994,6 +994,30 @@ func TestRenderResult_NoMatchesWithPending(t *testing.T) {
 	}
 }
 
+func TestRenderResult_JSONRawMessage_WithMatches(t *testing.T) {
+	tl := New()
+	raw := json.RawMessage(`{"matches":["FileRead","FileEdit"],"query":"read","total_deferred_tools":3}`)
+	result := tl.RenderResult(raw)
+	if !strings.Contains(result, "Found 2 tools") {
+		t.Errorf("expected 'Found 2 tools' in render, got %q", result)
+	}
+	if !strings.Contains(result, "FileRead") {
+		t.Errorf("expected 'FileRead' in render, got %q", result)
+	}
+}
+
+func TestRenderResult_JSONRawMessage_NoMatches(t *testing.T) {
+	tl := New()
+	raw := json.RawMessage(`{"matches":[],"query":"xyz","total_deferred_tools":3,"pending_mcp_servers":["slack"]}`)
+	result := tl.RenderResult(raw)
+	if !strings.Contains(result, "No matching deferred tools found") {
+		t.Errorf("expected 'No matching deferred tools found' in render, got %q", result)
+	}
+	if !strings.Contains(result, "slack") {
+		t.Errorf("expected 'slack' in render, got %q", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: slices.Contains helper
 // ---------------------------------------------------------------------------

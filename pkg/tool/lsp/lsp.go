@@ -111,11 +111,19 @@ func New(reg *lsp.Registry) tool.Tool {
 			return execute(ctx, reg, input, tctx)
 		},
 		RenderResult_: func(data any) string {
-			if s, ok := data.(string); ok {
-				return s
+			switch v := data.(type) {
+			case string:
+				return v
+			case json.RawMessage:
+				var s string
+				if json.Unmarshal(v, &s) == nil {
+					return s
+				}
+				return string(v)
+			default:
+				b, _ := json.Marshal(data)
+				return string(b)
 			}
-			b, _ := json.Marshal(data)
-			return string(b)
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
 			var in Input

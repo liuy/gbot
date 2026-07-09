@@ -81,16 +81,27 @@ func New(sender FileSender) tool.Tool {
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_:            "Send a file (image, document, or video) to the user.",
 		RenderResult_: func(data any) string {
-			m, ok := data.(map[string]any)
-			if !ok {
+			switch v := data.(type) {
+			case map[string]any:
+				fp, _ := v["file_path"].(string)
+				if fp == "" {
+					return "Sent"
+				}
+				return fmt.Sprintf("Sent %s", fp)
+			case json.RawMessage:
+				var m map[string]any
+				if json.Unmarshal(v, &m) != nil {
+					return string(v)
+				}
+				fp, _ := m["file_path"].(string)
+				if fp == "" {
+					return "Sent"
+				}
+				return fmt.Sprintf("Sent %s", fp)
+			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
-			fp, _ := m["file_path"].(string)
-			if fp == "" {
-				return "Sent"
-			}
-			return fmt.Sprintf("Sent %s", fp)
 		},
 	})
 }

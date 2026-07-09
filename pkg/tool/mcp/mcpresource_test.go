@@ -827,6 +827,28 @@ func TestRenderReadResourceTUI_WithMimeType(t *testing.T) {
 	}
 }
 
+func TestRenderListResourcesTUI_JSONRawMessage(t *testing.T) {
+	raw := json.RawMessage(`[{"uri":"test://1","name":"res1","server":"s1","mimeType":"text/plain"}]`)
+	got := renderListResourcesTUI(raw)
+	if !strings.Contains(got, "test://1") {
+		t.Errorf("renderListResourcesTUI(RawMessage) should contain URI, got: %q", got)
+	}
+	if !strings.Contains(got, "text/plain") {
+		t.Errorf("renderListResourcesTUI(RawMessage) should contain MIME type, got: %q", got)
+	}
+}
+
+func TestRenderReadResourceTUI_JSONRawMessage(t *testing.T) {
+	raw := json.RawMessage(`[{"uri":"test://1","text":"hello world"}]`)
+	got := renderReadResourceTUI(raw)
+	if !strings.Contains(got, "test://1") {
+		t.Errorf("renderReadResourceTUI(RawMessage) should contain URI, got: %q", got)
+	}
+	if !strings.Contains(got, "hello world") {
+		t.Errorf("renderReadResourceTUI(RawMessage) should contain text, got: %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FormatWireResult for ReadMcpResource (line 166-168)
 // ---------------------------------------------------------------------------
