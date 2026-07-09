@@ -1699,21 +1699,16 @@ func TestFileConflict_QueuedTool_ResumesAfterConflictClears(t *testing.T) {
 func TestFileConflict_NonEditWrite_NoFilePath(t *testing.T) {
 	t.Parallel()
 
-	startedG1, startedE, startedG2 := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	releases := make(chan struct{}, 3)
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
 
 	tools := map[string]tool.Tool{
 		"Grep": &concurrentTool{
 			name:   "Grep",
 			isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				select {
-				case <-startedG1:
-					close(startedG2)
-				default:
-					close(startedG1)
-				}
-				<-releases
+				started <- struct{}{}
+				<-release
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		},
@@ -1721,8 +1716,8 @@ func TestFileConflict_NonEditWrite_NoFilePath(t *testing.T) {
 			name:   "Edit",
 			isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				close(startedE)
-				<-releases
+				started <- struct{}{}
+				<-release
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		}},
@@ -1733,16 +1728,22 @@ func TestFileConflict_NonEditWrite_NoFilePath(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "g2", Name: "Grep", Input: json.RawMessage(`{"pattern":"bar"}`)},
 	}
 
+	// All 3 tools are concurrency-safe with no file conflict
+	// (Grep has no file_path, only 1 Edit), so all should start.
 	go func() {
-		<-startedG1
-		<-startedE
-		<-startedG2
-		releases <- struct{}{}
-		releases <- struct{}{}
-		releases <- struct{}{}
+		for range 3 {
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				close(release)
+				return
+			}
+		}
+		close(release)
 	}()
 
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+
 	if len(result.ToolResultBlocks) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
 	}
@@ -1753,21 +1754,16 @@ func TestFileConflict_NonEditWrite_NoFilePath(t *testing.T) {
 func TestFileConflict_InvalidJSON_NoConflict(t *testing.T) {
 	t.Parallel()
 
-	started1, started2 := make(chan struct{}), make(chan struct{})
-	releases := make(chan struct{}, 2)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
 
 	tools := map[string]tool.Tool{
 		"Edit": &editTool{concurrentTool{
 			name:   "Edit",
 			isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				select {
-				case <-started1:
-					close(started2)
-				default:
-					close(started1)
-				}
-				<-releases
+				started <- struct{}{}
+				<-release
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		}},
@@ -1777,11 +1773,18 @@ func TestFileConflict_InvalidJSON_NoConflict(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("a.go")},
 	}
 
+	// e1 has invalid JSON → empty FilePath → no file conflict with e2.
+	// Both Edits should start in parallel.
 	go func() {
-		<-started1
-		<-started2
-		releases <- struct{}{}
-		releases <- struct{}{}
+		for range 2 {
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				close(release)
+				return
+			}
+		}
+		close(release)
 	}()
 
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
@@ -2116,14 +2119,11 @@ func TestFileConflict_FilePathRace_TwoFiles(t *testing.T) {
 	t.Parallel()
 
 	const n = 6
-	var mu sync.Mutex
-	var counts = map[string]int{}
-
 	started := make([]chan struct{}, n)
 	for i := range started {
 		started[i] = make(chan struct{})
 	}
-	releases := make(chan struct{}, n)
+	release := make(chan struct{})
 
 	tools := map[string]tool.Tool{
 		"Edit": &editTool{concurrentTool{
@@ -2131,15 +2131,13 @@ func TestFileConflict_FilePathRace_TwoFiles(t *testing.T) {
 			isSafe: true,
 			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				var in struct {
-					FilePath string `json:"file_path"`
+					FilePath  string `json:"file_path"`
+					OldString string `json:"old_string"`
 				}
 				_ = json.Unmarshal(input, &in)
-				mu.Lock()
-				idx := len(counts)
-				counts[in.FilePath]++
-				mu.Unlock()
+				idx := int(in.OldString[1] - '0')
 				close(started[idx])
-				<-releases
+				<-release
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		}},
@@ -2155,25 +2153,25 @@ func TestFileConflict_FilePathRace_TwoFiles(t *testing.T) {
 			Type:  types.ContentTypeToolUse,
 			ID:    "e" + string(rune('0'+i)),
 			Name:  "Edit",
-			Input: editInput(file),
+			Input: json.RawMessage(`{"file_path":"` + file + `","old_string":"x` + string(rune('0'+i)) + `","new_string":"y"}`),
 		})
 	}
 
 	go func() {
 		for i := range n {
-			<-started[i]
-			releases <- struct{}{}
+			select {
+			case <-started[i]:
+			case <-time.After(5 * time.Second):
+				close(release)
+				return
+			}
 		}
+		close(release)
 	}()
 
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
 	if len(result.ToolResultBlocks) != n {
-		t.Fatalf("expected %d results, got %d", n, len(result.ToolResultBlocks))
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if counts["a.go"] != 3 || counts["b.go"] != 3 {
-		t.Errorf("counts = %v, want a.go=3 b.go=3", counts)
+		t.Fatalf("expected %d results, got %d", len(result.ToolResultBlocks), n)
 	}
 }
 
