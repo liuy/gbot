@@ -99,18 +99,36 @@ export function createInputBar(initial: {
   textarea.addEventListener('input', recomputeCanSend)
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Enter — send (Shift+Enter for newline, handled by browser default)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       onSubmit(new Event('submit'))
       return
     }
-    // Up key pops all queued messages back to input (TUI popAllQueuedToInput
-    // parity). The streaming guard prevents the key from eating normal
-    // multiline navigation outside a streaming turn.
+
+    // Esc — stop streaming / cancel queued messages
+    if (e.key === 'Escape') {
+      if (streaming) {
+        e.preventDefault()
+        stopCb?.()
+      }
+      return
+    }
+
+    // ArrowUp while streaming — pop all queued messages back to input
     if (streaming && e.key === 'ArrowUp' && queuedMsgs.length > 0) {
       e.preventDefault()
       cancelCb?.()
+      return
     }
+
+    const mod = e.metaKey || e.ctrlKey
+    if (!mod) return
+
+    // Browser defaults kept: Ctrl+A (select all), Ctrl+C/X/V (clipboard),
+    // Ctrl+Z/Y (undo/redo), Ctrl+W (close tab), Ctrl+K (address bar),
+    // Ctrl+U (view source), Ctrl+F (page search), Alt+←/→ (browser nav).
+    // No custom shortcuts — textarea already provides all needed editing.
   })
 
   const renderBubbles = () => {

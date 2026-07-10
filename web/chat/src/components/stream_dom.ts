@@ -91,7 +91,7 @@ export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTML
 
 export function appendUserBlock(parent: HTMLElement, text: string, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
-  div.className = 'text-[13px] text-t2 italic ml-2 my-1'
+  div.className = 'text-[13px] text-t2 italic ml-2 my-1 whitespace-pre-wrap'
   div.textContent = text
   insertBefore(parent, div, before ?? null)
   return div

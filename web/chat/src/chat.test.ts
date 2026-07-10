@@ -520,6 +520,33 @@ describe('chat integration', () => {
     expect(spans.length).toBe(1)
   })
 
+  it('user message preserves newlines in history', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'line1\nline2\nline3',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // The span must have whitespace-pre-wrap to render newlines
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      (s) => s.textContent === 'line1\nline2\nline3',
+    )
+    expect(spans.length).toBe(1)
+    expect(spans[0].className).toContain('whitespace-pre-wrap')
+    // The parent content div must also have whitespace-pre-wrap
+    // (buildShell user content div)
+    const contentDiv = spans[0].parentElement
+    expect(contentDiv).toBeTruthy()
+    expect(contentDiv!.className).toContain('whitespace-pre-wrap')
+  })
+
   it('reconnect after streaming does not duplicate', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

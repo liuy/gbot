@@ -55,6 +55,13 @@ describe('appendUserBlock', () => {
     expect(div.textContent).toBe('queued message')
     expect(div.className).toContain('italic')
   })
+
+  it('preserves newlines in multiline text', () => {
+    const parent = newParent()
+    const div = appendUserBlock(parent, 'line1\nline2\nline3')
+    expect(div.textContent).toBe('line1\nline2\nline3')
+    expect(div.className).toContain('whitespace-pre-wrap')
+  })
 })
 
 describe('appendThinkingBlock', () => {

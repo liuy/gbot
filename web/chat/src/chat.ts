@@ -211,7 +211,7 @@ function buildShell(
   if (role === 'assistant') {
     content.className = 'space-y-3'
   } else {
-    content.className = 'ml-auto w-fit text-left text-t1 text-[15px]'
+    content.className = 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap'
   }
 
   centerCol.appendChild(content)
@@ -248,6 +248,7 @@ function renderCommittedMessageDOM(
       .map((b) => (b as { text: string }).text)
       .join('')
     const span = document.createElement('span')
+    span.className = 'whitespace-pre-wrap'
     span.textContent = text
     content.appendChild(span)
     if (m.error) {
@@ -1142,6 +1143,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         } else {
           const { outer, content } = buildShell('user')
           const span = document.createElement('span')
+          span.className = 'whitespace-pre-wrap'
           span.textContent = text
           content.appendChild(span)
           const m: MessageState = {
@@ -1177,6 +1179,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     const { outer, content } = buildShell('user')
     const span = document.createElement('span')
+    span.className = 'whitespace-pre-wrap'
     span.textContent = text
     content.appendChild(span)
     const m: MessageState = {
