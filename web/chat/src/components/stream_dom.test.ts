@@ -130,11 +130,11 @@ describe('setToolSummary', () => {
 })
 
 describe('setToolOutput', () => {
-  it('writes stripped ANSI output as textContent', () => {
+  it('renders output as markdown HTML', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')
-    setToolOutput(h, '\x1b[32mclean\x1b[0m output')
-    expect(h.body.textContent).toBe('clean output')
+    setToolOutput(h, 'clean output')
+    expect(h.body.innerHTML).toContain('clean output')
   })
 })
 
@@ -147,7 +147,7 @@ describe('finishTool', () => {
     expect(h.dot.classList.contains('text-green')).toBe(true)
     expect(h.dot.classList.contains('text-red')).toBe(false)
     expect(h.durEl.textContent).toBe(' 2s')
-    expect(h.body.textContent).toBe('done')
+    expect(h.body.innerHTML).toContain('done')
     expect(h.durEl.classList.contains('text-t3')).toBe(true)
   })
 

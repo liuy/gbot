@@ -6,7 +6,8 @@
 // can pin the progress bar to the bottom of the streaming container by
 // passing `progressHandles.current?.root ?? null` as the anchor.
 
-import { formatDurationNs, formatTokenCount, stripAnsi, summarize } from '../utils'
+import { formatDurationNs, formatTokenCount, summarize } from '../utils'
+import { renderToolOutput } from '../tool_render'
 
 export interface ToolDomHandles {
   root: HTMLDivElement
@@ -303,7 +304,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   root.appendChild(header)
 
   const body = document.createElement('div')
-  body.className = 'ml-[20px] font-mono text-sm leading-relaxed text-t2 whitespace-pre overflow-x-auto hidden'
+  body.className = 'ml-[20px] font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden'
   root.appendChild(body)
 
   const childrenContainer = document.createElement('div')
@@ -367,7 +368,7 @@ export function setToolSummary(handles: ToolDomHandles, summary: string): void {
 }
 
 export function setToolOutput(handles: ToolDomHandles, output: string): void {
-  handles.body.textContent = stripAnsi(output)
+  handles.body.innerHTML = renderToolOutput(output)
 }
 
 export function refreshToolDuration(handles: ToolDomHandles, startedAt: number): void {
