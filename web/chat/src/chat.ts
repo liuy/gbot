@@ -313,7 +313,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
   let streamStartedAt = 0
-  let committedToolCount = 0  // restored from connect_status, incremented by tool_start
+  let committedToolCount = 0  // restored from connect_status, tracks all known tool IDs
+  const knownToolIDs = new Set<string>()
   let streaming = false
   const toolEntries = new Map<string, ToolEntry>()
   let currentTextDiv: HTMLDivElement | null = null
@@ -623,7 +624,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         refreshProgressBar(
           progressHandles,
           streamStartedAt,
-          committedToolCount + pendingBlocks.filter((b) => b.kind === 'tool').length,
+          committedToolCount,
           progressUsage.outputTokens,
         )
         progressHandles.rateEl.textContent = r > 0 ? r.toFixed(1) + ' t/s' : '0.0 t/s'
@@ -687,6 +688,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           pendingBlock: rt.block,
         })
         pendingToolByID.set(rt.id, rt.block)
+        knownToolIDs.add(rt.id)
       }
       // Running tool means streaming is in progress — show STOP button.
       if (runningTools.length > 0 && !streaming) {
@@ -846,10 +848,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           const streamMs = tokenRate.streamDurationMs()
           finalizeProgressBar(progressHandles, finalUsage,
             streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
-            committedToolCount + pendingBlocks.filter((b) => b.kind === 'tool').length, accumulatedThinkingMs)
+            committedToolCount, accumulatedThinkingMs)
         }
         cleanupStreamingRefs()
         resetProgressUsage()
+        knownToolIDs.clear()
         console.debug('[chat] query_end aborted=' + wasAborted)
         return
       }
@@ -1020,6 +1023,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!streaming) {
           initStreaming('tool_start_fallback')
         }
+        if (knownToolIDs.has(tu.id)) return
+        knownToolIDs.add(tu.id)
+        committedToolCount++
         const block = buildToolBlock(tu)
         pendingBlocks.push(block)
         pendingToolByID.set(tu.id, block)

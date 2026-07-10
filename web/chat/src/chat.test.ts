@@ -1345,4 +1345,42 @@ describe('chat integration', () => {
     expect(finalizedBar).not.toBeNull()
     vi.useRealTimers()
   })
+
+  it('double takeover: tool count not double-counted after reconnect', () => {
+    vi.useFakeTimers()
+    mount()
+    // Phase 1: normal streaming with one tool
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('hello')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // Phase 2: first takeover — server toolCount=1 (the Bash tool already started)
+    dispatch({
+      type: 'connect_status', connected: true,
+      usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      queryStartMs: Date.now() - 2000,
+      toolCount: 1, thinkingMs: 0,
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+    // Replay buffer replays tool_start (same t1, already counted by server)
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+    ])
+    vi.advanceTimersByTime(300)
+
+    // Tool count must be 1, not 2
+    const toolEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.includes('tool'),
+    )
+    expect(toolEl?.textContent).toBe('1 tool')
+
+    vi.useRealTimers()
+  })
 })
