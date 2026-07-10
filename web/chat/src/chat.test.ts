@@ -816,6 +816,45 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('reviewing commit')
   })
 
+  it('sub-agent text_delta renders markdown (not plain textContent)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', text: '',
+        thinking: [], tools: [],
+        blocks: [
+          { kind: 'tool', tool: {
+            id: 'tu1', name: 'Agent', summary: 'research',
+            isRunning: true, durationNs: 0, displayOutput: '',
+          }},
+        ],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+
+    const agent = { parent_tool_use_id: 'tu1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'text_start', agent },
+      { type: 'text_delta', agent, text: '## Findings\n\nThe tool uses `pendingToolStart`.' },
+      { type: 'turn_end', agent },
+    ])
+
+    // Sub-agent text should be rendered as markdown HTML, not raw textContent.
+    // If rendered correctly, <h2> and <code> tags exist.
+    const agentTool = document.querySelector('[data-tool-name="Agent"]')
+    expect(agentTool).toBeTruthy()
+    const toolRoot = agentTool!.closest('[data-tool-root]')
+    const mdBody = toolRoot?.querySelector('.md-body')
+    expect(mdBody).toBeTruthy()
+    expect(mdBody!.innerHTML).toContain('<h2>')
+    expect(mdBody!.innerHTML).toContain('<code>')
+  })
+
   it('takeover with running tool shows STOP button', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

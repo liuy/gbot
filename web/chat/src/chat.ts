@@ -962,7 +962,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             container.push(newBlock)
             if (domContainer) {
               const div = appendTextBlock(domContainer)
-              div.textContent = e.text
+              div.innerHTML = renderMarkdown(e.text)
               currentSubAgentTextDiv.set(parentID, div)
             }
             return
@@ -973,7 +973,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               div = appendTextBlock(domContainer)
               currentSubAgentTextDiv.set(parentID, div)
             }
-            div.textContent = (last as { text: string }).text
+            div.innerHTML = renderMarkdown((last as { text: string }).text)
           }
           return
         }
