@@ -227,4 +227,184 @@ describe('createInputBar', () => {
     submitForm(ib.textarea)
     expect(ib.textarea.value).toBe('')
   })
+
+  // ── Input history navigation ──
+
+  function setCursor(ta: HTMLTextAreaElement, pos: number) {
+    ta.selectionStart = pos
+    ta.selectionEnd = pos
+  }
+
+  function dispatchArrow(ta: HTMLTextAreaElement, key: 'ArrowUp' | 'ArrowDown') {
+    ta.dispatchEvent(
+      new KeyboardEvent('keydown', { key, bubbles: true }),
+    )
+  }
+
+  it('ArrowUp when NOT streaming and historyUpCb returns text sets textarea value and cursor to start', () => {
+    const ib = mount()
+    ib.onHistoryUp(() => 'old query')
+    ib.textarea.value = 'cur'
+    setCursor(ib.textarea, 3)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(ib.textarea.value).toBe('old query')
+    expect(ib.textarea.selectionStart).toBe(0)
+  })
+
+  it('ArrowUp when NOT streaming and historyUpCb returns null is a no-op', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => null as string | null)
+    ib.onHistoryUp(upSpy)
+    ib.textarea.value = 'cur'
+    setCursor(ib.textarea, 3)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(upSpy).toHaveBeenCalledOnce()
+    expect(ib.textarea.value).toBe('cur')
+  })
+
+  it('ArrowDown when NOT streaming and historyDownCb returns text sets textarea value and cursor to end', () => {
+    const ib = mount()
+    ib.onHistoryDown(() => 'restored')
+    ib.textarea.value = 'x'
+    setCursor(ib.textarea, 0)
+    dispatchArrow(ib.textarea, 'ArrowDown')
+    expect(ib.textarea.value).toBe('restored')
+    expect(ib.textarea.selectionStart).toBe('restored'.length)
+  })
+
+  it('ArrowDown when NOT streaming and historyDownCb returns null is a no-op', () => {
+    const ib = mount()
+    ib.onHistoryDown(() => null)
+    ib.textarea.value = 'keep'
+    setCursor(ib.textarea, 0)
+    dispatchArrow(ib.textarea, 'ArrowDown')
+    expect(ib.textarea.value).toBe('keep')
+  })
+
+  it('ArrowUp when streaming still fires onCancelQueued (existing behavior preserved)', () => {
+    const ib = mount()
+    const spy = vi.fn()
+    ib.onCancelQueued(spy)
+    ib.onHistoryUp(() => 'should not be called')
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'hello' }])
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(spy).toHaveBeenCalledOnce()
+  })
+
+  it('ArrowUp when streaming without queue navigates history', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => 'history item' as string | null)
+    ib.onHistoryUp(upSpy)
+    ib.setStreaming(true)
+    // No queued messages — should fall through to history
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(upSpy).toHaveBeenCalledOnce()
+    expect(ib.textarea.value).toBe('history item')
+  })
+
+  it('historyUpCb fires exactly once per keydown', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => 'r' as string | null)
+    ib.onHistoryUp(upSpy)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(upSpy).toHaveBeenCalledOnce()
+  })
+
+  it('historyDownCb fires exactly once per keydown', () => {
+    const ib = mount()
+    const downSpy = vi.fn(() => 'r' as string | null)
+    ib.onHistoryDown(downSpy)
+    dispatchArrow(ib.textarea, 'ArrowDown')
+    expect(downSpy).toHaveBeenCalledOnce()
+  })
+
+  it('ArrowUp on multi-line input with cursor NOT on line 0 does NOT navigate history', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => 'history' as string | null)
+    ib.onHistoryUp(upSpy)
+    ib.textarea.value = 'line1\nline2'
+    // Place cursor inside "line2" (offset 8 = after the \n)
+    setCursor(ib.textarea, 8)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(upSpy).not.toHaveBeenCalled()
+    expect(ib.textarea.value).toBe('line1\nline2')
+  })
+
+  it('ArrowUp on multi-line input with cursor at start of line 0 DOES navigate', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => 'history' as string | null)
+    ib.onHistoryUp(upSpy)
+    ib.textarea.value = 'line1\nline2'
+    setCursor(ib.textarea, 0)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(upSpy).toHaveBeenCalledOnce()
+    expect(ib.textarea.value).toBe('history')
+  })
+
+  it('ArrowDown on multi-line input with cursor NOT on last line does NOT navigate', () => {
+    const ib = mount()
+    const downSpy = vi.fn(() => 'history' as string | null)
+    ib.onHistoryDown(downSpy)
+    ib.textarea.value = 'line1\nline2'
+    // Place cursor inside "line1" (offset 2)
+    setCursor(ib.textarea, 2)
+    dispatchArrow(ib.textarea, 'ArrowDown')
+    expect(downSpy).not.toHaveBeenCalled()
+    expect(ib.textarea.value).toBe('line1\nline2')
+  })
+
+  it('ArrowDown on single-line input DOES navigate (selectionStart at end)', () => {
+    const ib = mount()
+    const downSpy = vi.fn(() => 'history' as string | null)
+    ib.onHistoryDown(downSpy)
+    ib.textarea.value = 'single'
+    setCursor(ib.textarea, 'single'.length)
+    dispatchArrow(ib.textarea, 'ArrowDown')
+    expect(downSpy).toHaveBeenCalledOnce()
+    expect(ib.textarea.value).toBe('history')
+  })
+
+  it('typing a rune after Up navigation resets nav state', () => {
+    const ib = mount()
+    let callCount = 0
+    const upSpy = vi.fn((_current: string): string | null => {
+      // Simulate History.up behavior: first call returns "old2", second "old1"
+      callCount++
+      if (callCount === 1) return 'old2'
+      if (callCount === 2) return 'old1'
+      return null
+    })
+    ib.onHistoryUp(upSpy)
+    ib.onHistoryReset(() => {
+      callCount = 0 // reset state
+    })
+    // Seed history: press ArrowUp → shows "old2"
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(ib.textarea.value).toBe('old2')
+    // User types a character → input event fires → reset
+    ib.textarea.value = 'old2X'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    // Next ArrowUp should show "old2" again (nav state was reset)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(ib.textarea.value).toBe('old2')
+  })
+
+  it('programmatic textarea.value assignment does NOT fire input event / reset nav', () => {
+    const ib = mount()
+    let callCount = 0
+    const upSpy = vi.fn((_current: string): string | null => {
+      callCount++
+      if (callCount === 1) return 'old2'
+      if (callCount === 2) return 'old1'
+      return null
+    })
+    ib.onHistoryUp(upSpy)
+    // First ArrowUp → old2 (sets textarea.value programmatically)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(ib.textarea.value).toBe('old2')
+    // Second ArrowUp without any user input event → old1 (nav NOT reset)
+    dispatchArrow(ib.textarea, 'ArrowUp')
+    expect(ib.textarea.value).toBe('old1')
+  })
 })

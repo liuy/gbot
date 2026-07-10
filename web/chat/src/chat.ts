@@ -36,6 +36,7 @@ import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
+import { History } from './history'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -306,6 +307,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Module-level state (persists across createChat calls in the same
   // session, mirroring persistedMessages in ChatInterface.tsx).
   const messages: MessageState[] = []
+  const inputHistory = new History()
   let nextCursor = ''
   let hasMore = false
   let loadingMore = false
@@ -491,6 +493,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     loadingMore = false
     isNearBottom = true
     lastScrollHeight = 0
+    inputHistory.load([])
   }
 
   function finalizeRunningBlocks(blocks: Block[]) {
@@ -1187,6 +1190,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   const onSend = (text: string) => {
+    inputHistory.add(text)
     if (streaming) {
       queuedMsgs = [...queuedMsgs, { uuid: '', text }]
       inputBar.setQueuedMsgs(queuedMsgs)
@@ -1236,6 +1240,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onSend(onSend)
   inputBar.onStop(onStop)
   inputBar.onCancelQueued(onCancelQueued)
+  inputBar.onHistoryUp((current) => {
+    const r = inputHistory.up(current)
+    return r.cursor === 'none' ? null : r.text
+  })
+  inputBar.onHistoryDown(() => {
+    const r = inputHistory.down()
+    return r.cursor === 'none' ? null : r.text
+  })
+  inputBar.onHistoryReset(() => {
+    inputHistory.resetNav()
+  })
 
   let currentSessionID = ''
 
@@ -1291,6 +1306,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         committedToolCount = msg.toolCount ?? 0
         accumulatedThinkingMs = msg.thinkingMs ?? 0
+        if (msg.inputHistory) inputHistory.load(msg.inputHistory)
         taskPanel.setTasks([])
         scrollBtn.style.opacity = '0'
         scrollBtn.style.pointerEvents = 'none'

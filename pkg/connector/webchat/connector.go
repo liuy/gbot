@@ -9,12 +9,14 @@
 package webchat
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +66,7 @@ type engineClient interface {
 	NewSession() (string, error)
 	UpdateSessionTitle(sessionID, title string) error
 	SessionID() string
+	EngineID() string
 	Model() string
 	ProjectDir() string
 	SetProvider(provider llm.Provider)
@@ -121,6 +124,7 @@ func (a *engineAdapter) UpdateSessionTitle(sessionID, title string) error {
 	return store.UpdateSessionTitle(sessionID, title)
 }
 func (a *engineAdapter) SessionID() string  { return a.eng.SessionID() }
+func (a *engineAdapter) EngineID() string   { return a.eng.EngineID() }
 func (a *engineAdapter) Model() string      { return a.eng.Model() }
 func (a *engineAdapter) ProjectDir() string { return a.eng.ProjectDir() }
 
@@ -444,6 +448,96 @@ func (c *WebChatConnector) autoRewindOnAbort() {
 	}
 	if err := c.engine.RewindTo(lastUserIdx); err != nil {
 		slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
+	}
+}
+
+// inputHistoryEntry is the JSONL on-disk format for the shared input history,
+// matching pkg/tui/history.go historyEntry.
+type inputHistoryEntry struct {
+	Display   string `json:"display"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// inputHistoryPath returns the shared per-engine input history JSONL path,
+// mirroring pkg/tui/app.go historyPathFor. Returns "" when projectDir or
+// engineID is empty (connector has no engine bound).
+func (c *WebChatConnector) inputHistoryPath() string {
+	dir := c.engine.ProjectDir()
+	id := c.engine.EngineID()
+	if dir == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(dir, "history", id+".jsonl")
+}
+
+// loadInputHistory reads the shared per-engine input history JSONL and returns
+// the display entries oldest-first, applying the same consecutive-duplicate
+// skip, empty-display skip, malformed-line skip, and maxSize cap as
+// pkg/tui/history.go load(). Returns nil (not an empty slice) when the file
+// doesn't exist or yields no entries so the JSON field can be omitempty.
+func (c *WebChatConnector) loadInputHistory() []string {
+	path := c.inputHistoryPath()
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil // file doesn't exist yet — that's fine
+	}
+	defer f.Close()
+	const maxSize = 1000
+	var items []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var entry inputHistoryEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue // skip malformed lines
+		}
+		if entry.Display == "" {
+			continue
+		}
+		if len(items) > 0 && items[len(items)-1] == entry.Display {
+			continue // skip consecutive duplicates
+		}
+		items = append(items, entry.Display)
+	}
+	if len(items) > maxSize {
+		items = items[len(items)-maxSize:]
+	}
+	return items
+}
+
+// appendInputHistory appends a single entry to the shared per-engine input
+// history JSONL, mirroring pkg/tui/history.go save(). The file is purely
+// append-only; consecutive-duplicate skip and cap happen on read. Errors are
+// swallowed — history is best-effort and never blocks the query path.
+func (c *WebChatConnector) appendInputHistory(cmd string) {
+	path := c.inputHistoryPath()
+	if path == "" {
+		return
+	}
+	entry := inputHistoryEntry{
+		Display:   cmd,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(line); err != nil {
+		return
+	}
+	if _, err := f.Write([]byte("\n")); err != nil {
+		return
 	}
 }
 
@@ -996,6 +1090,7 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 	c.writeMu.Lock()
 	qs := c.queryStats
 	c.writeMu.Unlock()
+	inputHistory := c.loadInputHistory()
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
 		Connected    bool        `json:"connected"`
@@ -1006,6 +1101,7 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 		QueryStartMs int64       `json:"queryStartMs"`
 		ToolCount    int         `json:"toolCount"`
 		ThinkingMs   int64       `json:"thinkingMs"`
+		InputHistory []string    `json:"inputHistory,omitempty"`
 	}{
 		Type:         "connect_status",
 		Connected:    true,
@@ -1016,6 +1112,7 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 		QueryStartMs: qs.startMs,
 		ToolCount:    qs.toolCount,
 		ThinkingMs:   qs.thinkingMs,
+		InputHistory: inputHistory,
 	})
 	return payload
 }

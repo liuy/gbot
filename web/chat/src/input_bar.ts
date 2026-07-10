@@ -9,6 +9,9 @@ export interface InputBarHandles {
   onSend: (cb: (text: string) => void) => void
   onStop: (cb: () => void) => void
   onCancelQueued: (cb: () => void) => void
+  onHistoryUp: (cb: (current: string) => string | null) => void
+  onHistoryDown: (cb: () => string | null) => void
+  onHistoryReset: (cb: () => void) => void
 }
 
 export function createInputBar(initial: {
@@ -20,6 +23,9 @@ export function createInputBar(initial: {
   let sendCb: ((text: string) => void) | null = null
   let stopCb: (() => void) | null = null
   let cancelCb: (() => void) | null = null
+  let historyUpCb: ((current: string) => string | null) | null = null
+  let historyDownCb: (() => string | null) | null = null
+  let historyResetCb: (() => void) | null = null
 
   const root = document.createElement('div')
   root.className = 'sticky bottom-0 z-10 px-5 pb-3 pt-1'
@@ -96,7 +102,10 @@ export function createInputBar(initial: {
   }
   form.addEventListener('submit', onSubmit)
 
-  textarea.addEventListener('input', recomputeCanSend)
+  textarea.addEventListener('input', () => {
+    recomputeCanSend()
+    historyResetCb?.()
+  })
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
     // Enter — send (Shift+Enter for newline, handled by browser default)
@@ -111,6 +120,44 @@ export function createInputBar(initial: {
       if (streaming) {
         e.preventDefault()
         stopCb?.()
+      }
+      return
+    }
+
+    // Up: streaming → cancel queued (existing behavior); idle → history
+    if (e.key === 'ArrowUp') {
+      if (streaming && queuedMsgs.length > 0) {
+        e.preventDefault()
+        cancelCb?.()
+        return
+      }
+      const atFirstLine =
+        textarea.selectionStart === 0 ||
+        textarea.value.lastIndexOf('\n', textarea.selectionStart - 1) === -1
+      if (atFirstLine) {
+        e.preventDefault()
+        const newText = historyUpCb?.(textarea.value) ?? null
+        if (newText !== null) {
+          textarea.value = newText
+          textarea.setSelectionRange(0, 0)
+          recomputeCanSend()
+        }
+      }
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      const atLastLine =
+        textarea.selectionStart >= textarea.value.length ||
+        textarea.value.indexOf('\n', textarea.selectionStart) === -1
+      if (atLastLine) {
+        e.preventDefault()
+        const newText = historyDownCb?.() ?? null
+        if (newText !== null) {
+          textarea.value = newText
+          const len = newText.length
+          textarea.setSelectionRange(len, len)
+          recomputeCanSend()
+        }
       }
       return
     }
@@ -198,6 +245,15 @@ export function createInputBar(initial: {
     },
     onCancelQueued: (cb) => {
       cancelCb = cb
+    },
+    onHistoryUp: (cb) => {
+      historyUpCb = cb
+    },
+    onHistoryDown: (cb) => {
+      historyDownCb = cb
+    },
+    onHistoryReset: (cb) => {
+      historyResetCb = cb
     },
     setConnected: (c: boolean) => {
       connected = c

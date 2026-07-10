@@ -234,6 +234,7 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 // (same path as TUI's handleEnqueueMessage) — the engine drains it
 // automatically after the current query finishes.
 func (c *WebChatConnector) handleMessageInbound(text string) {
+	c.appendInputHistory(text)
 	if c.engine.IsBusy() {
 		attachUUID := uuid.NewString()
 		c.engine.EnqueueAttachment(types.QueuedItem{

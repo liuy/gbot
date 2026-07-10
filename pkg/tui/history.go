@@ -59,7 +59,7 @@ func NewHistory(filePath string) *History {
 	}
 	h := &History{
 		items:    make([]string, 0, 100),
-		maxSize:  200,
+		maxSize:  1000,
 		filePath: filePath,
 	}
 	if filePath != "" {

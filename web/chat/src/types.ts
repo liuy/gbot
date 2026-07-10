@@ -5,7 +5,7 @@ export type SessionListItem = {
 }
 
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; inputHistory?: string[] }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }

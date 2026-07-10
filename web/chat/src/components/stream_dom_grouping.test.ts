@@ -75,8 +75,8 @@ describe('collapsible tool grouping during streaming', () => {
     const container = setup()
     // In real streaming, chat.ts now computes:
     // collapsible = isCollapsibleToolName('Bash') || !!tu.is_search = true
-    const h1 = appendToolBlock(container, 'Bash', null, true)
-    const h2 = appendToolBlock(container, 'Bash', null, true)
+    appendToolBlock(container, 'Bash', null, true)
+    appendToolBlock(container, 'Bash', null, true)
 
     const group = container.querySelector('[data-tool-group]')
     expect(group).toBeTruthy()

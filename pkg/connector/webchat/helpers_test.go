@@ -60,6 +60,7 @@ type mockEngine struct {
 	newSessionFn    func() (string, error)
 	updateTitleFn   func(sessionID, title string) error
 	sessionIDFn     func() string
+	engineIDFn      func() string
 	modelFn         func() string
 	projectDirFn    func() string
 	setProviderFn   func(llm.Provider)
@@ -220,6 +221,13 @@ func (m *mockEngine) SessionID() string {
 		return m.sessionIDFn()
 	}
 	return "test-session"
+}
+
+func (m *mockEngine) EngineID() string {
+	if m.engineIDFn != nil {
+		return m.engineIDFn()
+	}
+	return "main"
 }
 
 func (m *mockEngine) Model() string {
