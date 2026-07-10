@@ -482,7 +482,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
 
   const dotEl = document.createElement('span')
-  dotEl.className = 'inline-block overflow-hidden text-[12px] align-middle text-blue heartbeat'
+  dotEl.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center text-blue heartbeat'
   dotEl.textContent = '●'
   root.appendChild(dotEl)
 
@@ -582,6 +582,7 @@ export function finalizeProgressBar(
   thinkingDurationMs?: number,
 ): void {
   h.dotEl.classList.remove('heartbeat')
+  h.dotEl.style.display = 'none'
   h.root.dataset.progress = '1'
   const totalInput = usage.inputTokens + usage.cacheRead + usage.cacheCreation
   h.inEl.textContent = '↑' + formatTokenCount(totalInput)

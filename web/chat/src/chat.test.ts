@@ -384,6 +384,89 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('fresh')
   })
 
+  it('query_end scrolls to bottom after streaming completes', () => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 2000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('test query')
+    pressEnter()
+    // Simulate user at bottom (scrollTop near maxScroll)
+    chat.scrollEl.scrollTop = 1500
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'A'.repeat(1000) },
+    ])
+
+    // Reset mock to only track query_end-triggered scroll
+    scrollIntoView.mockClear()
+
+    // query_end: progress bar finalize changes DOM height, must re-scroll.
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 3000 })
+    chat.scrollEl.scrollTop = 2500 // near bottom for scrollHeight=3000
+    dispatchEvents([
+      { type: 'text_end' },
+      { type: 'turn_end' },
+      { type: 'query_end' },
+    ])
+
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+
+  it('streaming fast text keeps scrolled to bottom (no scrollBtn)', () => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
+    Element.prototype.scrollIntoView = vi.fn()
+
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('fast stream')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    // Rapid-fire deltas (simulating fast stream)
+    for (let i = 0; i < 50; i++) {
+      Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 + i * 50 })
+      dispatch({ type: 'event', event: { type: 'text_delta', text: `chunk ${i} ` } })
+    }
+
+    // scrollBtn should remain hidden (user is at bottom)
+    const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
+    expect(scrollBtn.style.opacity).toBe('0')
+  })
+
+  it('initial history load scrolls to bottom synchronously (no RAF delay)', () => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'm1', role: 'user', text: 'hello',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+
+    // scrollIntoView must be called synchronously during loadHistory,
+    // not deferred to RAF (content-visibility makes deferred scroll land wrong).
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+
   it('reconnect scrolls to bottom after history load even if previously scrolled up', () => {
     Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 })
     Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })

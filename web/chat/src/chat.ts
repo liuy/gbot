@@ -363,7 +363,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   topSentinel.style.height = '1px'
   const messagesContainer = document.createElement('div')
   messagesContainer.className = 'space-y-7'
+  messagesContainer.style.overflowAnchor = 'none'
+
   const bottomSentinel = document.createElement('div')
+  bottomSentinel.style.height = '1px'
+  bottomSentinel.style.overflowAnchor = 'auto'
 
   wrapper.appendChild(topSentinel)
   wrapper.appendChild(messagesContainer)
@@ -747,15 +751,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
     }
     if (messages.length === newMsgs.length) {
-      // Initial load: jump to bottom instantly. smooth scroll races with
-      // MutationObserver's RAF-based scrollToBottom on streaming content.
-      requestAnimationFrame(() => {
-        bottomSentinel.scrollIntoView({ behavior: 'auto' })
-        isNearBottom = true
-        lastScrollHeight = scroll.scrollHeight
-        scrollBtn.style.opacity = '0'
-        scrollBtn.style.pointerEvents = 'none'
-      })
+      // Initial load: jump to bottom synchronously. RAF defers past
+      // content-visibility height estimation, landing at wrong position.
+      bottomSentinel.scrollIntoView({ behavior: 'auto' })
+      isNearBottom = true
+      lastScrollHeight = scroll.scrollHeight
+      scrollBtn.style.opacity = '0'
+      scrollBtn.style.pointerEvents = 'none'
     } else {
       requestAnimationFrame(() => {
         const delta = scroll.scrollHeight - prevScrollHeight
@@ -871,6 +873,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         cleanupStreamingRefs()
         resetProgressUsage()
         knownToolIDs.clear()
+        if (isNearBottom) {
+          bottomSentinel.scrollIntoView({ behavior: 'auto' })
+        }
         console.debug('[chat] query_end aborted=' + wasAborted)
         return
       }
