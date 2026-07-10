@@ -95,7 +95,7 @@ func TestFinishStream_WithErr_AppendsSystemMsg(t *testing.T) {
 	if last.Role != "system" {
 		t.Errorf("expected role system, got %q", last.Role)
 	}
-	if last.Blocks[0].Text != "Error: boom" {
+	if last.Blocks[0].Text != "boom" {
 		t.Errorf("expected error text, got %q", last.Blocks[0].Text)
 	}
 }

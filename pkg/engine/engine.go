@@ -1972,7 +1972,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	streamCh, err := e.provider.Stream(ctx, req)
 	if err != nil {
 		e.logger.Error("stream request failed", "error", err)
-		return nil, nil, fmt.Errorf("stream request: %w", err)
+		return nil, nil, err
 	}
 
 	// Accumulate streaming response

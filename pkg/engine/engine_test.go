@@ -221,9 +221,9 @@ func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.T
 func (t *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (t *mockTool) IsReadOnly(json.RawMessage) bool           { return true }
-func (t *mockTool) IsDestructive(json.RawMessage) bool        { return false }
-func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *mockTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *mockTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool { return true }
 func (t *mockTool) IsSearchOrRead(input json.RawMessage) tool.SearchReadKind {
 	return tool.SearchReadKind{IsSearch: t.isSearch}
 }

@@ -1277,3 +1277,37 @@ func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
 		t.Errorf("queryStartMs = %d, want 0 after query_end reset", msg.QueryStartMs)
 	}
 }
+
+func TestBuildErrorMessage_APIError(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("API Error 429: rate limited")
+	data := buildErrorMessage(err)
+	var out struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Type != "error" {
+		t.Errorf("type = %q, want 'error'", out.Type)
+	}
+	if out.Message != "API Error 429: rate limited" {
+		t.Errorf("message = %q, want %q", out.Message, "API Error 429: rate limited")
+	}
+}
+
+func TestBuildErrorMessage_GenericError(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("connection refused")
+	data := buildErrorMessage(err)
+	var out struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Message != "connection refused" {
+		t.Errorf("message = %q, want %q", out.Message, "connection refused")
+	}
+}

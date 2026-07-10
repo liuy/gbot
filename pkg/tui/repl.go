@@ -19,7 +19,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
-	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -645,16 +644,9 @@ func (s *ReplState) FinishStream(err error) {
 	s.thinkingStart = time.Time{}
 
 	if err != nil {
-		var apiErr *llm.APIError
-		var msg string
-		if errors.As(err, &apiErr) {
-			msg = apiErr.Message
-		} else {
-			msg = err.Error()
-		}
 		s.messages = append(s.messages, MessageView{
 			Role:   "system",
-			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("%s: %s", errorPrefix(err), msg)}},
+			Blocks: []ContentBlock{{Type: BlockText, Text: err.Error()}},
 		})
 	}
 }

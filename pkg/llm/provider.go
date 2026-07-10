@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -176,6 +177,9 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.Status > 0 {
+		return fmt.Sprintf("API Error %d: %s", e.Status, e.Message)
+	}
 	return e.Message
 }
 

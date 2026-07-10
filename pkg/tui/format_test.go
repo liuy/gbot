@@ -1,13 +1,10 @@
 package tui
 
 import (
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -169,50 +166,21 @@ func TestFormatRetryError_EmptyType(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// errorPrefix
-// ---------------------------------------------------------------------------
-
-func TestErrorPrefix_APIError(t *testing.T) {
+func TestAnimateTokenValue(t *testing.T) {
 	t.Parallel()
-	err := &llm.APIError{Message: "rate limited", Status: 429}
-	got := errorPrefix(err)
-	if got != "API Error 429" {
-		t.Errorf("errorPrefix(APIError) = %q, want %q", got, "API Error 429")
+	// Below 1000: step = 1
+	got := animateTokenValue(0, 5)
+	if got != 1 {
+		t.Errorf("animateTokenValue(0,5) = %d, want 1", got)
 	}
-}
-
-func TestErrorPrefix_APIError_NoStatus(t *testing.T) {
-	t.Parallel()
-	err := &llm.APIError{Message: "overloaded"}
-	got := errorPrefix(err)
-	if got != "API Error" {
-		t.Errorf("errorPrefix(APIError no status) = %q, want %q", got, "API Error")
+	// Above 1000: step = 100
+	got = animateTokenValue(1000, 1500)
+	if got != 1100 {
+		t.Errorf("animateTokenValue(1000,1500) = %d, want 1100", got)
 	}
-}
-
-func TestErrorPrefix_WrappedAPIError(t *testing.T) {
-	t.Parallel()
-	err := fmt.Errorf("stream request: %w", &llm.APIError{Message: "overloaded", Status: 503})
-	got := errorPrefix(err)
-	if got != "API Error 503" {
-		t.Errorf("errorPrefix(wrapped APIError) = %q, want %q", got, "API Error 503")
-	}
-}
-
-func TestErrorPrefix_GenericError(t *testing.T) {
-	t.Parallel()
-	err := errors.New("internal error: panic")
-	got := errorPrefix(err)
-	if got != "Error" {
-		t.Errorf("errorPrefix(generic) = %q, want %q", got, "Error")
-	}
-}
-
-func TestErrorPrefix_NilError(t *testing.T) {
-	t.Parallel()
-	got := errorPrefix(nil)
-	if got != "Error" {
-		t.Errorf("errorPrefix(nil) = %q, want %q", got, "Error")
+	// Clamps to target
+	got = animateTokenValue(1400, 1500)
+	if got != 1500 {
+		t.Errorf("animateTokenValue(1400,1500) = %d, want 1500", got)
 	}
 }

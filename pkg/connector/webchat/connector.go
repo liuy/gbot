@@ -914,7 +914,7 @@ type historyUsage struct {
 func buildErrorMessage(err error) []byte {
 	msg := "unknown error"
 	if err != nil {
-		msg = fmt.Sprintf("%v", err)
+		msg = err.Error()
 	}
 	out, _ := json.Marshal(struct {
 		Type    string `json:"type"`
