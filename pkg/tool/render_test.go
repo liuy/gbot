@@ -896,3 +896,263 @@ func TestRenderContentWithLineNumbers(t *testing.T) {
 		}
 	})
 }
+
+func TestComputePatch_OverlappingHunks_NoContextDuplication(t *testing.T) {
+	old := "            newEntry.pendingBlock.text += e.thinking.text\n" +
+		"            writeThinkingText(newEntry.p, newEntry.pendingBlock.text)\n" +
+		"            domContainer.appendChild(newEntry.p.parentElement!)\n" +
+		"            return\n" +
+		"          }\n" +
+		"          entry.pendingBlock.text += e.thinking.text\n" +
+		"          writeThinkingText(entry.p, entry.pendingBlock.text)"
+	new_ := "            newEntry.pendingBlock.text += e.thinking.text\n" +
+		"            tokenRate.add(e.thinking.text)\n" +
+		"            writeThinkingText(newEntry.p, newEntry.pendingBlock.text)\n" +
+		"            domContainer.appendChild(newEntry.p.parentElement!)\n" +
+		"            return\n" +
+		"          }\n" +
+		"          entry.pendingBlock.text += e.thinking.text\n" +
+		"          tokenRate.add(e.thinking.text)\n" +
+		"          writeThinkingText(entry.p, entry.pendingBlock.text)"
+
+	hunks := ComputePatch(old, new_)
+	diff := RenderDiff(hunks)
+
+	ctxCount := strings.Count(diff, "entry.pendingBlock.text += e.thinking.text")
+	if ctxCount > 2 {
+		t.Errorf("context line duplicated %d times (should be <=2). Diff:\n%s", ctxCount, diff)
+	}
+
+	wtCount := strings.Count(diff, "writeThinkingText(entry.p")
+	if wtCount > 2 {
+		t.Errorf("writeThinkingText(entry.p) duplicated %d times (should be <=2). Diff:\n%s", wtCount, diff)
+	}
+
+	addCount := strings.Count(diff, "tokenRate.add")
+	if addCount != 2 {
+		t.Errorf("tokenRate.add appears %d times, want 2. Diff:\n%s", addCount, diff)
+	}
+}
+
+func TestComputePatch_MultipleHunks_LineNumberContinuity(t *testing.T) {
+	// Changes far apart (> 2*ctx=6 lines) produce multiple hunks.
+	old := "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\n"
+	new_ := "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nI\no\np\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) < 2 {
+		t.Fatalf("expected >=2 hunks (gap > 6), got %d", len(hunks))
+	}
+	for _, h := range hunks {
+		if h.OldLines <= 0 {
+			t.Errorf("OldLines=%d, want >0 (hunk starting at old line %d)", h.OldLines, h.OldStart)
+		}
+		if h.NewLines <= 0 {
+			t.Errorf("NewLines=%d, want >0 (hunk starting at new line %d)", h.NewLines, h.NewStart)
+		}
+	}
+	for i := 0; i < len(hunks)-1; i++ {
+		end := hunks[i].OldStart + hunks[i].OldLines
+		next := hunks[i+1].OldStart
+		if end > next {
+			t.Errorf("hunks overlap: hunk[%d] ends at old line %d, hunk[%d] starts at %d",
+				i, end, i+1, next)
+		}
+	}
+}
+
+func TestComputePatch_ExactCtxLinesGap(t *testing.T) {
+	// 3 equal lines between 2 changes: ctxLines=3, afterCtx will be 3, not >3, so merge.
+	old := "x\na\nb\nc\nd\ne\ny\n"
+	new_ := "x\nA\nb\nc\nd\ne\ny\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 merged hunk (3 lines = ctxLines), got %d", len(hunks))
+	}
+}
+
+func TestComputePatch_CtxLinesPlusOneGap(t *testing.T) {
+	// 7 equal lines between 2 changes: > 2*ctx=6, so split.
+	lines := []string{"x", "a", "b", "c", "d", "e", "f", "g", "h", "i", "y"}
+	old := strings.Join(lines, "\n") + "\n"
+	newLines := make([]string, len(lines))
+	copy(newLines, lines)
+	newLines[1] = "A"
+	newLines[9] = "I"
+	new_ := strings.Join(newLines, "\n") + "\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 2 {
+		t.Fatalf("expected 2 split hunks (7 lines > 2*ctx=6), got %d", len(hunks))
+	}
+}
+
+func TestComputePatch_ConsecutiveChanges(t *testing.T) {
+	// Two changes with zero equal lines between them.
+	old := "a\nb\nc\nd\n"
+	new_ := "a\nB\nC\nd\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk for consecutive changes, got %d", len(hunks))
+	}
+	diff := RenderDiff(hunks)
+	if strings.Count(diff, "+B") != 1 || strings.Count(diff, "+C") != 1 {
+		t.Errorf("expected +B and +C in diff:\n%s", diff)
+	}
+}
+
+func TestComputePatch_ChangeAtVeryStart(t *testing.T) {
+	// No leading context — first line changed.
+	old := "a\nb\nc\n"
+	new_ := "A\nb\nc\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	h := hunks[0]
+	if h.OldStart != 1 {
+		t.Errorf("OldStart=%d, want 1 (change at file start)", h.OldStart)
+	}
+	if h.NewStart != 1 {
+		t.Errorf("NewStart=%d, want 1 (change at file start)", h.NewStart)
+	}
+}
+
+func TestComputePatch_ChangeAtVeryEnd(t *testing.T) {
+	// No trailing context — last line changed.
+	old := "a\nb\nc\n"
+	new_ := "a\nb\nC\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	h := hunks[0]
+	// OldStart=1, OldLines=3 (context a, b, change c)
+	if h.OldStart != 1 {
+		t.Errorf("OldStart=%d, want 1", h.OldStart)
+	}
+	if h.OldLines != 3 {
+		t.Errorf("OldLines=%d, want 3", h.OldLines)
+	}
+}
+
+func TestComputePatch_BeforeContextOverflow(t *testing.T) {
+	// 10 equal lines before first change — beforeContext should be trimmed to ctxLines.
+	lines := make([]string, 12)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i+1)
+	}
+	lines[10] = "CHANGED"
+	old := strings.Join(lines, "\n") + "\n"
+	linesCopy := make([]string, len(lines))
+	copy(linesCopy, lines)
+	linesCopy[10] = "NEW"
+	new_ := strings.Join(linesCopy, "\n") + "\n"
+
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	h := hunks[0]
+	// Leading context should be at most ctxLines=3 lines.
+	// Change at line 11, leading context = lines 8,9,10 → OldStart=8
+	if h.OldStart != 8 {
+		t.Errorf("OldStart=%d, want 8 (change line 11 - 3 context = 8)", h.OldStart)
+	}
+}
+
+func TestComputePatch_OnlyAdditions(t *testing.T) {
+	old := "a\nc\n"
+	new_ := "a\nb\nc\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	diff := RenderDiff(hunks)
+	if strings.Count(diff, "+b") != 1 {
+		t.Errorf("expected exactly 1 +b in diff:\n%s", diff)
+	}
+	if strings.Count(diff, "-") != 0 {
+		t.Errorf("expected no deletions in diff:\n%s", diff)
+	}
+}
+
+func TestComputePatch_OnlyDeletions(t *testing.T) {
+	old := "a\nb\nc\n"
+	new_ := "a\nc\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	diff := RenderDiff(hunks)
+	if strings.Count(diff, "-b") != 1 {
+		t.Errorf("expected exactly 1 -b in diff:\n%s", diff)
+	}
+	if strings.Count(diff, "+") != 0 {
+		t.Errorf("expected no additions in diff:\n%s", diff)
+	}
+}
+
+func TestComputePatch_FiveChanges_Scattered(t *testing.T) {
+	// 5 changes spread across 40 lines with gaps > 6 — verify correct hunk count and no duplication.
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i+1)
+	}
+	changedIdx := []int{0, 9, 19, 29, 39}
+	oldLines := make([]string, len(lines))
+	copy(oldLines, lines)
+	newLines := make([]string, len(lines))
+	copy(newLines, lines)
+	for _, idx := range changedIdx {
+		oldLines[idx] = fmt.Sprintf("OLD%d", idx)
+		newLines[idx] = fmt.Sprintf("NEW%d", idx)
+	}
+	old := strings.Join(oldLines, "\n") + "\n"
+	new_ := strings.Join(newLines, "\n") + "\n"
+
+	hunks := ComputePatch(old, new_)
+	if len(hunks) < 2 {
+		t.Fatalf("expected >=2 hunks for 5 scattered changes, got %d", len(hunks))
+	}
+
+	// No line should appear twice across all hunks (no duplication).
+	seen := map[string]int{}
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			seen[l]++
+		}
+	}
+	for l, count := range seen {
+		if count > 1 && len(l) > 0 && l[0] == ' ' {
+			t.Errorf("context line %q appears %d times (duplication)", l, count)
+		}
+	}
+}
+
+func TestComputePatch_EmptyLineChange(t *testing.T) {
+	old := "a\n\n\nc\n"
+	new_ := "a\nb\n\nc\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	diff := RenderDiff(hunks)
+	if !strings.Contains(diff, "+b") {
+		t.Errorf("expected +b in diff:\n%s", diff)
+	}
+}
+
+func TestComputePatch_SingleLineFile_Changed(t *testing.T) {
+	old := "only\n"
+	new_ := "changed\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	h := hunks[0]
+	if h.OldStart != 1 || h.OldLines != 1 {
+		t.Errorf("OldStart=%d OldLines=%d, want 1/1", h.OldStart, h.OldLines)
+	}
+	if h.NewStart != 1 || h.NewLines != 1 {
+		t.Errorf("NewStart=%d NewLines=%d, want 1/1", h.NewStart, h.NewLines)
+	}
+}

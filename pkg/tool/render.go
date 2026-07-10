@@ -43,11 +43,8 @@ func removeEmptyStrings(ss []string) []string {
 }
 
 // ComputePatch computes a line-level structured patch between old and new content.
-// Uses Myers-based line diff with heuristics from znkr.io/diff.
-// Source: diff npm — tokenize + diffLines + structuredPatch, context=CONTEXT_LINES(3)
+// Delegates hunk generation (context, merging, splitting) to znkr.io/diff.Hunks.
 func ComputePatch(oldContent, newContent string) []DiffHunk {
-	const ctxLines = 3
-
 	oldLines := removeEmptyStrings(tokenizeLines(oldContent))
 	newLines := removeEmptyStrings(tokenizeLines(newContent))
 
@@ -55,155 +52,33 @@ func ComputePatch(oldContent, newContent string) []DiffHunk {
 		return nil
 	}
 
-	entries := hunksToLineEntries(diff.Hunks(oldLines, newLines), oldLines, newLines)
-	return buildHunks(entries, ctxLines)
-}
-
-// hunksToLineEntries converts znkr.io/diff hunks into a flat lineEntry sequence
-// that buildHunks can consume. Hunks cover only changed regions, so the gaps
-// between them (and before/after) are equal context lines.
-func hunksToLineEntries(hunks []diff.Hunk[string], oldLines, newLines []string) []lineEntry {
-	var entries []lineEntry
-	oldNum, newNum := 1, 1
-
-	for _, h := range hunks {
-		// Equal context lines before this hunk's first edit.
-		if h.PosX >= oldNum-1 && h.PosY >= newNum-1 {
-			ctx := min(h.PosY-(newNum-1), h.PosX-(oldNum-1))
-			for j := range ctx {
-				entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1+j], oldN: oldNum + j, newN: newNum + j})
-			}
-			oldNum += ctx
-			newNum += ctx
-		}
-
-		// Apply each edit in the hunk, advancing line numbers based on Op.
+	var hunks []DiffHunk
+	for _, h := range diff.Hunks(oldLines, newLines) {
+		var lines []string
+		oldCnt, newCnt := 0, 0
 		for _, e := range h.Edits {
 			switch e.Op {
-			case diff.Delete:
-				entries = append(entries, lineEntry{op: -1, line: e.X, oldN: oldNum, newN: newNum})
-				oldNum++
-			case diff.Insert:
-				entries = append(entries, lineEntry{op: +1, line: e.Y, oldN: oldNum, newN: newNum})
-				newNum++
 			case diff.Match:
-				entries = append(entries, lineEntry{op: 0, line: e.X, oldN: oldNum, newN: newNum})
-				oldNum++
-				newNum++
+				lines = append(lines, " "+strings.TrimSuffix(e.X, "\n"))
+				oldCnt++
+				newCnt++
+			case diff.Delete:
+				lines = append(lines, "-"+strings.TrimSuffix(e.X, "\n"))
+				oldCnt++
+			case diff.Insert:
+				lines = append(lines, "+"+strings.TrimSuffix(e.Y, "\n"))
+				newCnt++
 			}
 		}
+		hunks = append(hunks, DiffHunk{
+			OldStart: h.PosX + 1,
+			OldLines: oldCnt,
+			NewStart: h.PosY + 1,
+			NewLines: newCnt,
+			Lines:    lines,
+		})
 	}
-
-	// Trailing equal context after the last hunk.
-	for oldNum-1 < len(oldLines) && newNum-1 < len(newLines) {
-		entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
-		oldNum++
-		newNum++
-	}
-	// Trailing deletes (more old lines than new).
-	for oldNum-1 < len(oldLines) {
-		entries = append(entries, lineEntry{op: -1, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
-		oldNum++
-	}
-	// Trailing inserts (more new lines than old).
-	for newNum-1 < len(newLines) {
-		entries = append(entries, lineEntry{op: +1, line: newLines[newNum-1], oldN: oldNum, newN: newNum})
-		newNum++
-	}
-
-	return entries
-}
-
-// lineEntry is a single line with its diff operation and line numbers.
-type lineEntry struct {
-	op   int // +1=added, -1=deleted, 0=equal
-	line string
-	oldN int // old file line number (1-based)
-	newN int // new file line number (1-based)
-}
-
-// buildHunks groups a flat lineEntry sequence into structured hunks with
-// ctxLines of context around each change. Mirrors diffLinesResultToPatch in
-// structuredPatch.js, context=3.
-func buildHunks(entries []lineEntry, ctxLines int) []DiffHunk {
-	// Strip trailing \n from each line (structuredPatch step 2)
-	for i := range entries {
-		entries[i].line = strings.TrimSuffix(entries[i].line, "\n")
-	}
-
-	var hunks []DiffHunk
-	var curRange []lineEntry
-	var oldRangeStart, newRangeStart int
-
-	for i := range entries {
-		e := entries[i]
-		if e.op != 0 {
-			// Change line
-			if len(curRange) == 0 {
-				oldRangeStart = e.oldN
-				newRangeStart = e.newN
-				// Add trailing context from previous equal lines
-				ctxStart := max(i-ctxLines, 0)
-				for j := ctxStart; j < i; j++ {
-					if entries[j].op == 0 {
-						curRange = append(curRange, entries[j])
-						oldRangeStart = entries[j].oldN
-						newRangeStart = entries[j].newN
-					}
-				}
-			}
-			curRange = append(curRange, e)
-		} else {
-			// Equal line
-			if len(curRange) > 0 {
-				if i < len(entries)-1 && i < ctxLines*2 {
-					// Close enough — add as context and continue
-					curRange = append(curRange, e)
-				} else {
-					// End the hunk: add entries[i] and up to ctxLines-1 more as trailing context
-					endCtx := min(ctxLines, len(entries)-i)
-					for j := range endCtx {
-						curRange = append(curRange, entries[i+j])
-					}
-					hunks = append(hunks, makeHunk(curRange, oldRangeStart, newRangeStart))
-					curRange = nil
-				}
-			}
-		}
-	}
-
-	// Flush remaining hunk
-	if len(curRange) > 0 {
-		hunks = append(hunks, makeHunk(curRange, oldRangeStart, newRangeStart))
-	}
-
 	return hunks
-}
-
-func makeHunk(lines []lineEntry, oldStart, newStart int) DiffHunk {
-	hunkLines := make([]string, len(lines))
-	oldCnt, newCnt := 0, 0
-	for i, e := range lines {
-		switch e.op {
-		case -1:
-			hunkLines[i] = "-" + e.line
-			oldCnt++
-		case +1:
-			hunkLines[i] = "+" + e.line
-			newCnt++
-		default:
-			hunkLines[i] = " " + e.line
-			oldCnt++
-			newCnt++
-		}
-	}
-	return DiffHunk{
-		OldStart: oldStart,
-		OldLines: oldCnt,
-		NewStart: newStart,
-		NewLines: newCnt,
-		Lines:    hunkLines,
-	}
 }
 
 // ---------------------------------------------------------------------------
