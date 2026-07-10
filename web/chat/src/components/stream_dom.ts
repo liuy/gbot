@@ -482,7 +482,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
 
   const dotEl = document.createElement('span')
-  dotEl.className = 'inline-block overflow-hidden text-[12px] text-blue heartbeat'
+  dotEl.className = 'inline-block overflow-hidden text-[12px] align-middle text-blue heartbeat'
   dotEl.textContent = '●'
   root.appendChild(dotEl)
 
