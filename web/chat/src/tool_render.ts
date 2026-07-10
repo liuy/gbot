@@ -1,3 +1,4 @@
+import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
 import { stripAnsi } from './utils'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
@@ -12,12 +13,12 @@ export function renderToolOutput(output: string, skipHighlight = false): string 
   if (!output) return ''
   const clean = stripAnsi(output)
   if (isDiffOutput(clean)) {
-    return renderDiff(clean)
+    return renderDiff(clean, skipHighlight)
   }
   return skipHighlight ? renderMarkdownNoHighlight(clean) : renderMarkdown(clean)
 }
 
-function renderDiff(output: string): string {
+function renderDiff(output: string, skipHighlight = false): string {
   const lines = output.split('\n')
   const html = lines.map((line) => {
     const m = line.match(DIFF_LINE_RE)
@@ -26,9 +27,18 @@ function renderDiff(output: string): string {
         ? 'bg-green/15 text-green/90'
         : 'bg-red/15 text-red/90'
       : 'text-t2'
-    return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${escapeHtml(line)}</div>`
+    const content = skipHighlight ? escapeHtml(line) : highlightLine(line)
+    return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${content}</div>`
   })
   return DOMPurify.sanitize(html.join(''), { USE_PROFILES: { html: true } })
+}
+
+function highlightLine(line: string): string {
+  try {
+    return hljs.highlightAuto(line).value
+  } catch {
+    return escapeHtml(line)
+  }
 }
 
 function escapeHtml(s: string): string {
