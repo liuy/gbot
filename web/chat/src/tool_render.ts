@@ -1,4 +1,3 @@
-import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
 import { stripAnsi } from './utils'
 import { renderMarkdown } from './markdown'
@@ -27,18 +26,9 @@ function renderDiff(output: string): string {
         ? 'bg-green/15 text-green/90'
         : 'bg-red/15 text-red/90'
       : 'text-t2'
-    const highlighted = highlightLine(line)
-    return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${highlighted}</div>`
+    return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${escapeHtml(line)}</div>`
   })
   return DOMPurify.sanitize(html.join(''), { USE_PROFILES: { html: true } })
-}
-
-function highlightLine(line: string): string {
-  try {
-    return hljs.highlightAuto(line).value
-  } catch {
-    return escapeHtml(line)
-  }
 }
 
 function escapeHtml(s: string): string {

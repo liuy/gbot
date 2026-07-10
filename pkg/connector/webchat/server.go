@@ -38,7 +38,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 
 	// Pre-compute history snapshot before writeMu (constraint: no engine
 	// state access under the lock).
-	histMsg := c.buildHistoryMessage("", 10)
+	histMsg := c.buildHistoryMessage("", 30)
 
 	// Pre-compute config before writeMu (reads engine + provider state).
 	configMsg := c.buildConfigMessage()

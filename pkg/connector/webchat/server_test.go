@@ -293,8 +293,8 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
 	mock.messagesFn = func() []types.Message {
-		msgs := make([]types.Message, 25)
-		for i := range 25 {
+		msgs := make([]types.Message, 65)
+		for i := range 65 {
 			msgs[i] = types.Message{
 				ID:        fmt.Sprintf("msg-%d", i),
 				Role:      types.RoleAssistant,
@@ -328,18 +328,18 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	if initEnv.Type != "history" {
 		t.Errorf("initial type = %q, want \"history\"", initEnv.Type)
 	}
-	if len(initEnv.Messages) != 10 {
-		t.Errorf("initial messages = %d, want 10", len(initEnv.Messages))
+	if len(initEnv.Messages) != 30 {
+		t.Errorf("initial messages = %d, want 30", len(initEnv.Messages))
 	}
 	if !initEnv.HasMore {
 		t.Error("initial hasMore = false, want true")
 	}
-	if initEnv.NextCursor != "10" {
-		t.Errorf("initial nextCursor = %q, want \"10\"", initEnv.NextCursor)
+	if initEnv.NextCursor != "30" {
+		t.Errorf("initial nextCursor = %q, want \"30\"", initEnv.NextCursor)
 	}
 
 	// Request next page
-	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "10", "limit": 10})
+	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "30", "limit": 30})
 	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
 		t.Fatalf("write history_request: %v", err)
 	}
@@ -357,13 +357,13 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	if p2Env.Type != "history" {
 		t.Errorf("page 2 type = %q, want \"history\"", p2Env.Type)
 	}
-	if len(p2Env.Messages) != 10 {
-		t.Errorf("page 2 messages = %d, want 10", len(p2Env.Messages))
+	if len(p2Env.Messages) != 30 {
+		t.Errorf("page 2 messages = %d, want 30", len(p2Env.Messages))
 	}
 	if !p2Env.HasMore {
 		t.Error("page 2 hasMore = false, want true")
 	}
-	if p2Env.NextCursor != "20" {
-		t.Errorf("page 2 nextCursor = %q, want \"20\"", p2Env.NextCursor)
+	if p2Env.NextCursor != "60" {
+		t.Errorf("page 2 nextCursor = %q, want \"60\"", p2Env.NextCursor)
 	}
 }

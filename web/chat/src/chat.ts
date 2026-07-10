@@ -191,6 +191,8 @@ function buildShell(
 ): { outer: HTMLElement; content: HTMLDivElement } {
   const outer = document.createElement('div')
   outer.className = 'px-1.5'
+  outer.style.contentVisibility = 'auto'
+  outer.style.containIntrinsicSize = 'auto 300px'
   const grid = document.createElement('div')
   grid.className =
     'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5'
@@ -689,6 +691,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const prevScrollHeight = scroll.scrollHeight
     const prevScrollTop = scroll.scrollTop
     const before = messagesContainer.firstChild
+    const frag = document.createDocumentFragment()
     for (const chat of newMsgs) {
       const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
       // Register running tools so replay events (sub-agent thinking, tool
@@ -726,8 +729,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         contentDiv: content,
       }
       messages.unshift(m)
-      messagesContainer.insertBefore(outer, before)
+      frag.appendChild(outer)
     }
+    messagesContainer.insertBefore(frag, before)
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
@@ -738,7 +742,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       const rootRect = scroll.getBoundingClientRect()
       if (sentry.top <= rootRect.bottom && sentry.bottom >= rootRect.top - PREFETCH_MARGIN) {
         loadingMore = true
-        conn.send({ type: 'history_request', cursor: nextCursor, limit: 10 })
+        conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
       }
     }
     if (messages.length === newMsgs.length) {
@@ -1285,7 +1289,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         nextCursor
       ) {
         loadingMore = true
-        conn.send({ type: 'history_request', cursor: nextCursor, limit: 10 })
+        conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
       }
     },
     { root: scroll, rootMargin: `${PREFETCH_MARGIN}px 0px 0px 0px`, threshold: 0 },

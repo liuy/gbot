@@ -582,7 +582,7 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 //
 // cursor is an opaque token encoding how many messages from the END have
 // already been delivered in prior pages ("0"/"" → deliver the most recent
-// page). limit defaults to 10 when <= 0. The payload carries nextCursor and
+// page). limit defaults to 30 when <= 0. The payload carries nextCursor and
 // hasMore so the frontend can request further pages via history_request.
 //
 // The full history is still computed (needed to resolve tool_result
@@ -686,7 +686,7 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 	// appended at the back) never shifts already-delivered page offsets.
 	total := len(out)
 	if limit <= 0 {
-		limit = 10
+		limit = 30
 	}
 	offset := 0
 	if cursor != "" {
