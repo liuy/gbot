@@ -30,23 +30,12 @@ type Input struct {
 	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
-// PatchHunk represents a single hunk in a unified diff.
-// Source: FileEditTool/types.ts — hunkSchema.
-type PatchHunk struct {
-	OldStart int      `json:"oldStart"`
-	OldLines int      `json:"oldLines"`
-	NewStart int      `json:"newStart"`
-	NewLines int      `json:"newLines"`
-	Lines    []string `json:"lines"`
-}
-
 type Output struct {
-	FilePath        string      `json:"filePath"`
-	OldString       string      `json:"oldString"`
-	NewString       string      `json:"newString"`
-	ReplaceAll      bool        `json:"replaceAll"`
-	OriginalFile    *string     `json:"originalFile"`
-	StructuredPatch []PatchHunk `json:"structuredPatch"`
+	FilePath     string  `json:"filePath"`
+	OldString    string  `json:"oldString"`
+	NewString    string  `json:"newString"`
+	ReplaceAll   bool    `json:"replaceAll"`
+	OriginalFile *string `json:"originalFile"`
 }
 
 type fileReadResult struct {
@@ -68,12 +57,7 @@ func renderEditResult(data any) string {
 		return fmt.Sprintf("%v", data)
 	}
 
-	hunks := convertEditHunks(out.StructuredPatch)
-	// StructuredPatch is empty when deserialized from persisted JSON (resume path).
-	// Reconstruct hunks from OldString/NewString.
-	if len(hunks) == 0 && (out.OldString != "" || out.NewString != "") {
-		hunks = editStringsToHunks(out.OldString, out.NewString)
-	}
+	hunks := tool.ComputePatch(out.OldString, out.NewString)
 	added, removed := tool.CountPatchChanges(hunks)
 	summary := tool.FormatDiffSummary(added, removed)
 	diff := tool.RenderDiff(hunks)
@@ -93,42 +77,6 @@ func renderEditError(msg string) string {
 		return "Error editing file"
 	}
 	return msg
-}
-
-// editStringsToHunks converts old/new strings to DiffHunks for rendering.
-func editStringsToHunks(old, new_ string) []tool.DiffHunk {
-	oldLines := strings.Split(old, "\n")
-	newLines := strings.Split(new_, "\n")
-	var lines []string
-	for _, l := range oldLines {
-		lines = append(lines, "-"+l)
-	}
-	for _, l := range newLines {
-		lines = append(lines, "+"+l)
-	}
-	return []tool.DiffHunk{{
-		OldStart: 1, OldLines: len(oldLines),
-		NewStart: 1, NewLines: len(newLines),
-		Lines: lines,
-	}}
-}
-
-// convertEditHunks converts fileedit-specific hunks to tool.DiffHunk.
-func convertEditHunks(hunks []PatchHunk) []tool.DiffHunk {
-	if len(hunks) == 0 {
-		return nil
-	}
-	result := make([]tool.DiffHunk, len(hunks))
-	for i, h := range hunks {
-		result[i] = tool.DiffHunk{
-			OldStart: h.OldStart,
-			OldLines: h.OldLines,
-			NewStart: h.NewStart,
-			NewLines: h.NewLines,
-			Lines:    h.Lines,
-		}
-	}
-	return result
 }
 
 func New() tool.Tool {
@@ -312,8 +260,6 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 		}
 	}
 
-	// Compute structured patch
-	patch := getStructuredPatch(fr.content, updatedContent)
 	originalFile := fr.content
 
 	// Update ReadFileState so subsequent edits in the same turn see the
@@ -331,12 +277,11 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	}
 
 	return &tool.ToolResult{Data: &Output{
-		FilePath:        fullFilePath,
-		OldString:       actualOldString,
-		NewString:       actualNewString,
-		ReplaceAll:      in.ReplaceAll,
-		OriginalFile:    &originalFile,
-		StructuredPatch: patch,
+		FilePath:     fullFilePath,
+		OldString:    actualOldString,
+		NewString:    actualNewString,
+		ReplaceAll:   in.ReplaceAll,
+		OriginalFile: &originalFile,
 	}}, nil
 }
 
@@ -446,24 +391,4 @@ func desanitizeMatchString(s string) (string, []struct{ From, To string }) {
 		}
 	}
 	return result, applied
-}
-
-// getStructuredPatch computes structured unified diff hunks between old and new content.
-// Source: diff npm package structuredPatch with context=3.
-func getStructuredPatch(oldContent, newContent string) []PatchHunk {
-	hunks := tool.ComputePatch(oldContent, newContent)
-	if hunks == nil {
-		return nil
-	}
-	result := make([]PatchHunk, len(hunks))
-	for i, h := range hunks {
-		result[i] = PatchHunk{
-			OldStart: h.OldStart,
-			OldLines: h.OldLines,
-			NewStart: h.NewStart,
-			NewLines: h.NewLines,
-			Lines:    h.Lines,
-		}
-	}
-	return result
 }

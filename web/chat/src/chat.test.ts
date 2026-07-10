@@ -387,14 +387,11 @@ describe('chat integration', () => {
   it('query_end scrolls to bottom after streaming completes', () => {
     Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 2000 })
     Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
-    const scrollIntoView = vi.fn()
-    Element.prototype.scrollIntoView = scrollIntoView
 
     const chat = mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('test query')
     pressEnter()
-    // Simulate user at bottom (scrollTop near maxScroll)
     chat.scrollEl.scrollTop = 1500
     dispatchEvents([
       { type: 'query_start' },
@@ -402,19 +399,16 @@ describe('chat integration', () => {
       { type: 'text_delta', text: 'A'.repeat(1000) },
     ])
 
-    // Reset mock to only track query_end-triggered scroll
-    scrollIntoView.mockClear()
-
     // query_end: progress bar finalize changes DOM height, must re-scroll.
     Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 3000 })
-    chat.scrollEl.scrollTop = 2500 // near bottom for scrollHeight=3000
+    chat.scrollEl.scrollTop = 2500
     dispatchEvents([
       { type: 'text_end' },
       { type: 'turn_end' },
       { type: 'query_end' },
     ])
 
-    expect(scrollIntoView).toHaveBeenCalled()
+    expect(chat.scrollEl.scrollTop).toBe(chat.scrollEl.scrollHeight)
   })
 
   it('streaming fast text keeps scrolled to bottom (no scrollBtn)', () => {
@@ -445,10 +439,8 @@ describe('chat integration', () => {
   it('initial history load scrolls to bottom synchronously (no RAF delay)', () => {
     Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 1000 })
     Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
-    const scrollIntoView = vi.fn()
-    Element.prototype.scrollIntoView = scrollIntoView
 
-    mount()
+    const chat = mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
       type: 'history',
@@ -462,9 +454,9 @@ describe('chat integration', () => {
       nextCursor: '', hasMore: false,
     })
 
-    // scrollIntoView must be called synchronously during loadHistory,
+    // scrollTop must be set synchronously during loadHistory,
     // not deferred to RAF (content-visibility makes deferred scroll land wrong).
-    expect(scrollIntoView).toHaveBeenCalled()
+    expect(chat.scrollEl.scrollTop).toBe(chat.scrollEl.scrollHeight)
   })
 
   it('reconnect scrolls to bottom after history load even if previously scrolled up', () => {

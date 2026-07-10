@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 func TestDecodeUTF16LE(t *testing.T) {
@@ -232,7 +234,7 @@ func TestGetStructuredPatch_SingleCharInLine(t *testing.T) {
 	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n}"
 	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n}"
 
-	hunks := getStructuredPatch(old, new_)
+	hunks := tool.ComputePatch(old, new_)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks, got none")
 	}
@@ -270,7 +272,7 @@ func TestGetStructuredPatch_SingleCharInLine_LargeFile(t *testing.T) {
 	oldContent := strings.Join(oldLines, "\n")
 	newContent := strings.Join(newLines, "\n")
 
-	hunks := getStructuredPatch(oldContent, newContent)
+	hunks := tool.ComputePatch(oldContent, newContent)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks")
 	}
@@ -301,7 +303,7 @@ func TestGetStructuredPatch_RemoveWordFromLine(t *testing.T) {
 	old := "\tcontent before\n\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n\t\terror here\n\t}"
 	new_ := "\tcontent before\n\tif !strings.Contains(got.Content, \"28, 2024\") {\n\t\terror here\n\t}"
 
-	hunks := getStructuredPatch(old, new_)
+	hunks := tool.ComputePatch(old, new_)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks, got none")
 	}
@@ -339,7 +341,7 @@ func TestGetStructuredPatch_LargeFile_NoFragments_SingleChar(t *testing.T) {
 	old := strings.Replace(base, "\tline 0050", "\tfunc TestHandleStackOverflow_NonNumericID(t *testing.T) {\n", 1)
 	new_ := strings.Replace(base, "\tline 0050", "\tfunc TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n", 1)
 
-	hunks := getStructuredPatch(old, new_)
+	hunks := tool.ComputePatch(old, new_)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks")
 	}
@@ -381,7 +383,7 @@ func TestGetStructuredPatch_LargeFile_NoFragments_RemoveWord(t *testing.T) {
 	old := strings.Replace(base, "\tline 0050", "\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n", 1)
 	new_ := strings.Replace(base, "\tline 0050", "\tif !strings.Contains(got.Content, \"28, 2024\") {\n", 1)
 
-	hunks := getStructuredPatch(old, new_)
+	hunks := tool.ComputePatch(old, new_)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks")
 	}
@@ -429,13 +431,11 @@ func TestExecute_WriteErrorNormal(t *testing.T) {
 func TestRenderEditResult_SingleCharChange(t *testing.T) {
 	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n}"
 	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n}"
-	patch := getStructuredPatch(old, new_)
 
 	result := renderEditResult(&Output{
-		FilePath:        "test.go",
-		OldString:       old,
-		NewString:       new_,
-		StructuredPatch: patch,
+		FilePath:  "test.go",
+		OldString: old,
+		NewString: new_,
 	})
 
 	strip := stripANSI(result)
@@ -458,13 +458,11 @@ func TestRenderEditResult_SingleCharChange(t *testing.T) {
 func TestRenderEditResult_RemoveWordFromLine(t *testing.T) {
 	old := "\tcontent before\n\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n\t\terror here\n\t}"
 	new_ := "\tcontent before\n\tif !strings.Contains(got.Content, \"28, 2024\") {\n\t\terror here\n\t}"
-	patch := getStructuredPatch(old, new_)
 
 	result := renderEditResult(&Output{
-		FilePath:        "test.go",
-		OldString:       old,
-		NewString:       new_,
-		StructuredPatch: patch,
+		FilePath:  "test.go",
+		OldString: old,
+		NewString: new_,
 	})
 
 	strip := stripANSI(result)
@@ -490,12 +488,10 @@ func stripANSI(s string) string {
 }
 
 func TestEditStringsToHunks_SingleCharChange(t *testing.T) {
-	// editStringsToHunks is the fallback when StructuredPatch is empty.
-	// It splits old/new strings into lines and marks all old as removed, all new as added.
 	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {"
 	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {"
 
-	hunks := editStringsToHunks(old, new_)
+	hunks := tool.ComputePatch(old, new_)
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks")
 	}
@@ -517,32 +513,37 @@ func TestEditStringsToHunks_SingleCharChange(t *testing.T) {
 	}
 }
 
-func TestRenderEditResult_FallbackPath(t *testing.T) {
-	// Test renderEditResult when StructuredPatch is empty (uses editStringsToHunks)
-	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {"
-	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {"
+func TestEditStringsToHunks_MultiLine_PreservesContext(t *testing.T) {
+	old := "line1\nline2\nline3"
+	new_ := "line1\nMODIFIED\nline3"
 
-	result := renderEditResult(&Output{
-		FilePath:  "test.go",
-		OldString: old,
-		NewString: new_,
-		// StructuredPatch is empty → triggers editStringsToHunks fallback
-	})
+	hunks := tool.ComputePatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks")
+	}
 
-	strip := stripANSI(result)
-	// Must contain full old line
-	if !strings.Contains(strip, "NonNumericID(t") {
-		t.Errorf("fallback render missing old function name in:\n%s", strip)
-	}
-	// Must contain full new line
-	if !strings.Contains(strip, "NonNumericID2(t") {
-		t.Errorf("fallback render missing new function name in:\n%s", strip)
-	}
-	// "2" must not appear alone on a line
-	for line := range strings.SplitSeq(strip, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "2" || trimmed == "+2" || trimmed == "-2" {
-			t.Errorf("found isolated '2' on own line: %q in:\n%s", line, strip)
+	var removed, added, context int
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			switch l[0] {
+			case '-':
+				removed++
+			case '+':
+				added++
+			default:
+				context++
+			}
 		}
+	}
+	// line2 is the only changed line — should be 1 remove + 1 add.
+	// line1 and line3 are context — should NOT be deleted+reinserted.
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (only line2)", removed)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1 (only MODIFIED)", added)
+	}
+	if context < 2 {
+		t.Errorf("context = %d, want >= 2 (line1 + line3)", context)
 	}
 }

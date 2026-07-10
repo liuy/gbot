@@ -191,8 +191,6 @@ function buildShell(
 ): { outer: HTMLElement; content: HTMLDivElement } {
   const outer = document.createElement('div')
   outer.className = 'px-1.5'
-  outer.style.contentVisibility = 'auto'
-  outer.style.containIntrinsicSize = 'auto 300px'
   const grid = document.createElement('div')
   grid.className =
     'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5'
@@ -443,10 +441,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const sh = scroll.scrollHeight
     if (sh === lastScrollHeight) return
     lastScrollHeight = sh
-    requestAnimationFrame(() => {
-      if (!isNearBottom) return
-      bottomSentinel.scrollIntoView({ behavior: 'auto' })
-    })
+    scroll.scrollTop = sh
   }
 
   // Single observer: any DOM mutation in the messages container triggers
@@ -751,9 +746,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
     }
     if (messages.length === newMsgs.length) {
-      // Initial load: jump to bottom synchronously. RAF defers past
-      // content-visibility height estimation, landing at wrong position.
-      bottomSentinel.scrollIntoView({ behavior: 'auto' })
+      scroll.scrollTop = scroll.scrollHeight
       isNearBottom = true
       lastScrollHeight = scroll.scrollHeight
       scrollBtn.style.opacity = '0'
@@ -874,7 +867,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         resetProgressUsage()
         knownToolIDs.clear()
         if (isNearBottom) {
-          bottomSentinel.scrollIntoView({ behavior: 'auto' })
+          scroll.scrollTop = scroll.scrollHeight
         }
         console.debug('[chat] query_end aborted=' + wasAborted)
         return

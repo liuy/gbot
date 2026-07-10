@@ -801,10 +801,10 @@ func TestExecute_DesanitizeMatchesFunctionResults(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task #20: Structured patch output
+// Task #20: OriginalFile output
 // ---------------------------------------------------------------------------
 
-func TestExecute_StructuredPatchOutput(t *testing.T) {
+func TestExecute_OriginalFileOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "patch.txt")
@@ -821,9 +821,6 @@ func TestExecute_StructuredPatchOutput(t *testing.T) {
 		t.Error("OriginalFile = nil, want original content")
 	} else if *output.OriginalFile != "line1\nline2\nline3\n" {
 		t.Errorf("OriginalFile = %q, want original content", *output.OriginalFile)
-	}
-	if len(output.StructuredPatch) == 0 {
-		t.Error("StructuredPatch is empty, want at least one hunk")
 	}
 }
 
@@ -952,12 +949,6 @@ func TestRenderResult_WithPatch(t *testing.T) {
 		NewString:    "replaced",
 		ReplaceAll:   false,
 		OriginalFile: &original,
-		StructuredPatch: []fileedit.PatchHunk{
-			{
-				OldStart: 1, OldLines: 3, NewStart: 1, NewLines: 3,
-				Lines: []string{" line1", "-line2", "+replaced", " line3"},
-			},
-		},
 	}
 	got := tt.RenderResult(out)
 	if !strings.Contains(got, "Added") || !strings.Contains(got, "removed") {
@@ -971,16 +962,10 @@ func TestRenderResult_AdditionsOnly(t *testing.T) {
 	original := "line1\n"
 	out := &fileedit.Output{
 		FilePath:     "/tmp/test.txt",
-		OldString:    "line1",
-		NewString:    "line1\nline2",
+		OldString:    "line1\n",
+		NewString:    "line1\nline2\n",
 		ReplaceAll:   false,
 		OriginalFile: &original,
-		StructuredPatch: []fileedit.PatchHunk{
-			{
-				OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 2,
-				Lines: []string{" line1", "+line2"},
-			},
-		},
 	}
 	got := tt.RenderResult(out)
 	if !strings.Contains(got, "Added") {
@@ -1001,12 +986,6 @@ func TestRenderResult_RemovalsOnly(t *testing.T) {
 		NewString:    "",
 		ReplaceAll:   false,
 		OriginalFile: &original,
-		StructuredPatch: []fileedit.PatchHunk{
-			{
-				OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 1,
-				Lines: []string{" line1", "-line2"},
-			},
-		},
 	}
 	got := tt.RenderResult(out)
 	if !strings.Contains(got, "Removed") {
@@ -1017,19 +996,18 @@ func TestRenderResult_RemovalsOnly(t *testing.T) {
 	}
 }
 
-func TestRenderResult_NoPatch(t *testing.T) {
+func TestRenderResult_OldNewDiff(t *testing.T) {
 	t.Parallel()
 	tt := fileedit.New()
 	out := &fileedit.Output{
-		FilePath:        "/tmp/test.txt",
-		OldString:       "old",
-		NewString:       "new",
-		ReplaceAll:      false,
-		StructuredPatch: nil,
+		FilePath:   "/tmp/test.txt",
+		OldString:  "old",
+		NewString:  "new",
+		ReplaceAll: false,
 	}
 	got := tt.RenderResult(out)
 	if got == "" {
-		t.Errorf("expected diff from OldString/NewString fallback, got empty")
+		t.Errorf("expected diff from OldString/NewString, got empty")
 	}
 }
 
@@ -1058,7 +1036,7 @@ func TestRenderResult_ErrorString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getStructuredPatch — large files (O(ND) Myers handles them directly)
+// ComputePatch — large files (O(ND) Myers handles them directly)
 // ---------------------------------------------------------------------------
 
 func TestExecute_LargeFileFallbackPath(t *testing.T) {
@@ -1089,11 +1067,12 @@ func TestExecute_LargeFileFallbackPath(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 	output := result.Data.(*fileedit.Output)
-	if len(output.StructuredPatch) == 0 {
-		t.Error("StructuredPatch should have at least one hunk")
+	hunks := tool.ComputePatch(output.OldString, output.NewString)
+	if len(hunks) == 0 {
+		t.Fatal("ComputePatch should have at least one hunk")
 	}
 	added, removed := 0, 0
-	for _, hunk := range output.StructuredPatch {
+	for _, hunk := range hunks {
 		for _, l := range hunk.Lines {
 			if len(l) > 0 {
 				switch l[0] {

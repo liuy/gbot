@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createChat } from './chat'
 
 class MockIntersectionObserver {
@@ -27,6 +27,7 @@ function mount() {
   document.body.innerHTML = ''
   const chat = createChat({ connected: true })
   document.body.appendChild(chat.root)
+  return chat
 }
 
 function dispatch(msg: unknown) {
@@ -41,27 +42,24 @@ function send(text: string) {
 }
 
 describe('thinking_delta scroll', () => {
-  let scrollIntoViewSpy: ReturnType<typeof vi.spyOn>
-
   beforeEach(() => {
     mount()
-    scrollIntoViewSpy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
   })
-  afterEach(() => scrollIntoViewSpy.mockRestore())
 
   it('auto-scrolls during thinking_delta when near bottom', async () => {
     send('test')
-    const scrollEl = document.querySelector('.overflow-y-auto') as HTMLElement
+    const chat = mount()
+    const scrollEl = chat.scrollEl
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 500 })
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 400 })
-    scrollEl.scrollTop = 0
+    // Position near bottom so isNearBottom is true after the scroll listener fires.
+    scrollEl.scrollTop = 500 - 400
 
-    scrollIntoViewSpy.mockClear()
     dispatch({ type: 'event', event: { type: 'query_start' } })
     dispatch({ type: 'event', event: { type: 'thinking_start' } })
     dispatch({ type: 'event', event: { type: 'thinking_delta', thinking: { text: 'A'.repeat(2000) } } })
 
     await new Promise((resolve) => requestAnimationFrame(resolve))
-    expect(scrollIntoViewSpy).toHaveBeenCalled()
+    expect(scrollEl.scrollTop).toBe(scrollEl.scrollHeight)
   })
 })
