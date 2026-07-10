@@ -688,6 +688,48 @@ describe('chat integration', () => {
     expect(allText).toContain('second query')
   })
 
+  it('Edit tool output auto-expands on finish (not hidden)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('fix the bug')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'edit-1', name: 'Edit' } },
+    ])
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'edit-1', display_output: 'some diff output' } },
+      { type: 'query_end' },
+    ])
+
+    const editTool = document.querySelector('[data-tool-root][data-tool-name="Edit"]')
+    expect(editTool).toBeTruthy()
+    const bodyEl = editTool!.children[1] as HTMLElement
+    expect(bodyEl.classList.contains('hidden')).toBe(false)
+  })
+
+  it('Read tool output stays collapsed on finish (hidden)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('read the file')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'read-1', name: 'Read' } },
+    ])
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'read-1', display_output: 'file contents' } },
+      { type: 'query_end' },
+    ])
+
+    const readTool = document.querySelector('[data-tool-root][data-tool-name="Read"]')
+    expect(readTool).toBeTruthy()
+    const bodyEl = readTool!.children[1] as HTMLElement
+    expect(bodyEl.classList.contains('hidden')).toBe(true)
+  })
+
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

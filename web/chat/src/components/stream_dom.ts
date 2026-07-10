@@ -10,6 +10,10 @@ import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
 import hljs from 'highlight.js'
 
+function shouldAutoExpand(toolName: string): boolean {
+  return toolName === 'Edit' || toolName === 'Write'
+}
+
 export interface ToolDomHandles {
   root: HTMLDivElement
   header: HTMLSpanElement
@@ -436,7 +440,12 @@ export function finishTool(
   const dur = formatDurationNs(durationNs)
   handles.durEl.textContent = ' ' + (isError ? `FAIL · ${dur}` : dur)
   handles.durEl.className = 'font-mono text-xs align-middle ' + (isError ? 'text-red' : 'text-t3')
-  if (output) setToolOutput(handles, output)
+  if (output) {
+    setToolOutput(handles, output)
+    if (shouldAutoExpand(handles.root.dataset.toolName ?? '')) {
+      handles.body.classList.remove('hidden')
+    }
+  }
   // If tool is inside a group, update group dot/summary/duration.
   const group = handles.root.closest('[data-tool-group]') as HTMLElement | null
   if (group) updateGroupSummary(group)
