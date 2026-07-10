@@ -805,6 +805,44 @@ describe('chat integration', () => {
     expect(bodyEl.classList.contains('hidden')).toBe(true)
   })
 
+  it('sub-agent thinking_delta updates token rate', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('research something')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'thinking_start', agent },
+    ])
+
+    // Feed sub-agent thinking text
+    const longThinking = 'B'.repeat(200)
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(100)
+      dispatchEvents([
+        { type: 'thinking_delta', agent, thinking: { text: longThinking } },
+      ])
+    }
+
+    // Find rate element — should show non-zero after sub-agent thinking
+    const allSpans = document.querySelectorAll('span')
+    let rateEl: HTMLElement | null = null
+    allSpans.forEach(s => {
+      if (s.textContent && s.textContent.includes('t/s')) rateEl = s as HTMLElement
+    })
+    expect(rateEl).toBeTruthy()
+    expect(rateEl!.textContent).not.toMatch(/^0\.0 t\/s$/)
+    vi.useRealTimers()
+  })
+
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

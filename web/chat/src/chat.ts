@@ -912,11 +912,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             container.push(newEntry.pendingBlock)
             currentSubAgentThinking.set(parentID, newEntry)
             newEntry.pendingBlock.text += e.thinking.text
+            tokenRate.add(e.thinking.text)
             writeThinkingText(newEntry.p, newEntry.pendingBlock.text)
             domContainer.appendChild(newEntry.p.parentElement!)
             return
           }
           entry.pendingBlock.text += e.thinking.text
+          tokenRate.add(e.thinking.text)
           writeThinkingText(entry.p, entry.pendingBlock.text)
           return
         }
