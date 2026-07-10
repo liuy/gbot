@@ -420,8 +420,8 @@ export function setToolSummary(handles: ToolDomHandles, summary: string, toolNam
   }
 }
 
-export function setToolOutput(handles: ToolDomHandles, output: string): void {
-  handles.body.innerHTML = renderToolOutput(output)
+export function setToolOutput(handles: ToolDomHandles, output: string, skipHighlight = false): void {
+  handles.body.innerHTML = renderToolOutput(output, skipHighlight)
 }
 
 export function refreshToolDuration(handles: ToolDomHandles, startedAt: number): void {
@@ -431,9 +431,9 @@ export function refreshToolDuration(handles: ToolDomHandles, startedAt: number):
 
 export function finishTool(
   handles: ToolDomHandles,
-  opts: { isError: boolean; durationNs: number; output: string },
+  opts: { isError: boolean; durationNs: number; output: string; skipHighlight?: boolean },
 ): void {
-  const { isError, durationNs, output } = opts
+  const { isError, durationNs, output, skipHighlight } = opts
   handles.dot.classList.remove('heartbeat', 'text-white')
   handles.dot.classList.add(isError ? 'text-red' : 'text-green')
   handles.root.dataset.toolTimingNs = String(durationNs)
@@ -441,7 +441,7 @@ export function finishTool(
   handles.durEl.textContent = ' ' + (isError ? `FAIL · ${dur}` : dur)
   handles.durEl.className = 'font-mono text-xs align-middle ' + (isError ? 'text-red' : 'text-t3')
   if (output) {
-    setToolOutput(handles, output)
+    setToolOutput(handles, output, skipHighlight)
     if (shouldAutoExpand(handles.root.dataset.toolName ?? '')) {
       handles.body.classList.remove('hidden')
     }

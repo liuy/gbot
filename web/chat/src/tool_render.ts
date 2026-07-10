@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify'
 import { stripAnsi } from './utils'
-import { renderMarkdown } from './markdown'
+import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 
 const DIFF_LINE_RE = /^\s*\d+\s([+-])/m
 
@@ -8,13 +8,13 @@ export function isDiffOutput(output: string): boolean {
   return DIFF_LINE_RE.test(output)
 }
 
-export function renderToolOutput(output: string): string {
+export function renderToolOutput(output: string, skipHighlight = false): string {
   if (!output) return ''
   const clean = stripAnsi(output)
   if (isDiffOutput(clean)) {
     return renderDiff(clean)
   }
-  return renderMarkdown(clean)
+  return skipHighlight ? renderMarkdownNoHighlight(clean) : renderMarkdown(clean)
 }
 
 function renderDiff(output: string): string {

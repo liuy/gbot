@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
 } from './model'
 import { isCollapsibleToolName } from './utils'
-import { renderMarkdown } from './markdown'
+import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 import {
   type ToolDomHandles,
   type ProgressDomHandles,
@@ -283,12 +283,13 @@ function renderCommittedMessageDOM(
           isError: b.state === 'error',
           durationNs: b.timingNs,
           output: b.displayOutput,
+          skipHighlight: true,
         })
       }
     } else if (b.kind === 'text') {
       if (!b.text) continue
       const div = appendTextBlock(content)
-      div.innerHTML = renderMarkdown(b.text)
+      div.innerHTML = renderMarkdownNoHighlight(b.text)
     } else if (b.kind === 'user') {
       if (!b.text) continue
       appendUserBlock(content, b.text)
