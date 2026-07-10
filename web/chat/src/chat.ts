@@ -496,14 +496,22 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     inputHistory.load([])
   }
 
-  function finalizeRunningBlocks(blocks: Block[]) {
+  function finalizeRunningBlocks(blocks: Block[], aborted = false) {
     for (const b of blocks) {
       if (b.kind === 'tool') {
         if (b.state === 'running') {
-          b.state = 'done'
+          b.state = aborted ? 'error' : 'done'
           if (!b.timingNs) b.timingNs = (Date.now() - b.startedAt) * 1e6
+          if (aborted && toolEntries.get(b.id)) {
+            const entry = toolEntries.get(b.id)!
+            finishTool(entry.handles, {
+              isError: true,
+              durationNs: b.timingNs,
+              output: '',
+            })
+          }
         }
-        if (b.children.length > 0) finalizeRunningBlocks(b.children)
+        if (b.children.length > 0) finalizeRunningBlocks(b.children, aborted)
       }
     }
   }
@@ -788,7 +796,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'query_end': {
         if (e.agent) return
         const wasAborted = !!e.aborted
-        finalizeRunningBlocks(pendingBlocks)
+        finalizeRunningBlocks(pendingBlocks, wasAborted)
 
         if (wasAborted) {
           const last = messages[messages.length - 1]
@@ -987,7 +995,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
           } else if (streamContainer) {
             // Late delta: sink not yet mounted. Mount inline now.
-            currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
+            const anchor = progressHandles?.root ?? null
+            currentTextDiv = appendTextBlock(streamContainer, anchor)
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
           }
         }
@@ -1031,6 +1040,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (knownToolIDs.has(tu.id)) return
         knownToolIDs.add(tu.id)
         committedToolCount++
+        currentPendingText = null
+        currentTextDiv = null
         const block = buildToolBlock(tu)
         pendingBlocks.push(block)
         pendingToolByID.set(tu.id, block)

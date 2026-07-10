@@ -1144,7 +1144,7 @@ func buildSessionBusyMessage() []byte {
 	out, _ := json.Marshal(struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
-	}{Type: "error", Message: "Session busy"})
+	}{Type: "error", Message: "Session is busy — please wait for the current request to finish, then try again"})
 	return out
 }
 

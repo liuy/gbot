@@ -246,8 +246,8 @@ func TestSessionSwitchBusy(t *testing.T) {
 	if msg.Type != "error" {
 		t.Fatalf("expected type error, got %s", msg.Type)
 	}
-	if msg.Message != "Session busy" {
-		t.Fatalf("expected message \"Session busy\", got %q", msg.Message)
+	if msg.Message != "Session is busy — please wait for the current request to finish, then try again" {
+		t.Fatalf("expected session busy message, got %q", msg.Message)
 	}
 
 	c.mock().mu.Lock()
@@ -276,8 +276,8 @@ func TestSessionNewBusy(t *testing.T) {
 	if msg.Type != "error" {
 		t.Fatalf("expected type error, got %s", msg.Type)
 	}
-	if msg.Message != "Session busy" {
-		t.Fatalf("expected message \"Session busy\", got %q", msg.Message)
+	if msg.Message != "Session is busy — please wait for the current request to finish, then try again" {
+		t.Fatalf("expected session busy message, got %q", msg.Message)
 	}
 
 	c.mock().mu.Lock()

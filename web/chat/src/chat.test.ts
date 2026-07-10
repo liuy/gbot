@@ -578,6 +578,116 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it('Esc during running tool: interrupt text renders after tool, not appended to prior text block', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run slow command')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'Let me read that.' },
+      { type: 'tool_start', tool_use: { id: 'read-1', name: 'Read' } },
+    ])
+
+    // Tool running, no output. Esc. Connector sends interrupt text_delta.
+    dispatchEvents([
+      { type: 'text_delta', text: '[Request interrupted by user]' },
+      { type: 'query_end', aborted: true },
+    ])
+
+    // DOM order must be: text("Let me read that") → tool(Read) → text("[Request interrupted]")
+    // NOT: text("Let me read that[Request interrupted]") → tool(Read)
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('[Request interrupted by user]')
+
+    // Verify the interrupt text is NOT inside the first text block (appended to "Let me read that")
+    const toolRoot = document.querySelector('[data-tool-root][data-tool-name="Read"]')
+    expect(toolRoot).toBeTruthy()
+
+    // The interrupt text element should come AFTER the tool root in DOM order
+    const allElements = document.querySelectorAll('*')
+    let toolIdx = -1
+    let interruptIdx = -1
+    for (let i = 0; i < allElements.length; i++) {
+      if (allElements[i] === toolRoot) toolIdx = i
+    }
+    // Find the element containing interrupt text
+    for (let i = 0; i < allElements.length; i++) {
+      const el = allElements[i] as HTMLElement
+      if (el.children.length === 0 && el.textContent === '[Request interrupted by user]') {
+        interruptIdx = i
+        break
+      }
+    }
+    expect(interruptIdx).toBeGreaterThan(toolIdx)
+  })
+
+  it('Esc during running tool: interrupt text renders, tool shows failed', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run slow command')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'Let me run that.' },
+      { type: 'tool_start', tool_use: { id: 'bash-1', name: 'Bash' } },
+    ])
+
+    // Tool is running with no output. User presses Esc.
+    // Connector sends interrupt via text_delta, then query_end(aborted).
+    dispatchEvents([
+      { type: 'text_delta', text: '[Request interrupted by user]' },
+      { type: 'query_end', aborted: true },
+    ])
+
+    const allText = document.body.textContent ?? ''
+
+    // 1. Interrupt text must be visible in DOM (not dropped)
+    expect(allText).toContain('[Request interrupted by user]')
+
+    // 2. Interrupt text should appear only once (no duplication)
+    const interruptCount = (allText.match(/Request interrupted/g) || []).length
+    expect(interruptCount).toBe(1)
+
+    // 3. Running tool should show as failed (red dot), not success (green dot)
+    const bashTool = document.querySelector('[data-tool-root][data-tool-name="Bash"]')
+    expect(bashTool).toBeTruthy()
+    const dot = bashTool!.querySelector('span > span:first-child')
+    expect(dot?.classList.contains('text-red')).toBe(true)
+  })
+
+  it('Esc during running tool: subsequent query works normally', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('first query')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'bash-1', name: 'Bash' } },
+    ])
+    dispatchEvents([
+      { type: 'text_delta', text: '[Request interrupted by user]' },
+      { type: 'query_end', aborted: true },
+    ])
+
+    // Second query after abort should work normally
+    setTextarea('second query')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'Working again.' },
+      { type: 'query_end' },
+    ])
+
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('Working again.')
+    expect(allText).toContain('second query')
+  })
+
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

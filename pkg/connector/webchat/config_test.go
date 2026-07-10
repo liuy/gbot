@@ -292,8 +292,8 @@ func TestModelSwitch_Busy(t *testing.T) {
 	if resp.Type != "error" {
 		t.Fatalf("type = %q, want error", resp.Type)
 	}
-	if resp.Message != "Session busy" {
-		t.Errorf("message = %q, want 'Session busy'", resp.Message)
+	if resp.Message != "Session is busy — please wait for the current request to finish, then try again" {
+		t.Errorf("message = %q, want session busy message", resp.Message)
 	}
 
 	c.mock().mu.Lock()
