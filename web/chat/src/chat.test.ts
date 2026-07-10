@@ -485,6 +485,99 @@ describe('chat integration', () => {
     expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
   })
 
+  it('sub-agent tool duration shows perceived time on tool_end', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'tool_start', agent, tool_use: { id: 'sub-tool-1', name: 'Bash' } },
+    ])
+
+    // Advance time by 2 seconds
+    vi.advanceTimersByTime(2000)
+
+    dispatchEvents([
+      { type: 'tool_end', agent, tool_result: { tool_use_id: 'sub-tool-1', display_output: 'done' } },
+    ])
+
+    // Find the sub-agent tool's duration element
+    const subTool = document.querySelector('[data-tool-root][data-tool-name="Bash"]')
+    expect(subTool).toBeTruthy()
+    const durEl = subTool!.querySelector('.font-mono.text-xs')
+    expect(durEl).toBeTruthy()
+    // Duration should show ~2s, not 0s
+    expect(durEl!.textContent).toContain('2s')
+    vi.useRealTimers()
+  })
+
+  it('sub-agent tool live ticking updates duration while running', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'tool_start', agent, tool_use: { id: 'sub-tool-1', name: 'Bash' } },
+    ])
+
+    const subTool = document.querySelector('[data-tool-root][data-tool-name="Bash"]')
+    const durEl = subTool!.querySelector('.font-mono.text-xs') as HTMLElement
+    expect(durEl).toBeTruthy()
+
+    // After 1 second, live ticking should update duration
+    const before = durEl.textContent
+    vi.advanceTimersByTime(1000)
+    const after = durEl.textContent
+    expect(after).not.toBe(before)
+    expect(after).toContain('1s')
+    vi.useRealTimers()
+  })
+
+  it('sub-agent tool duration freezes after tool_end', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+      { type: 'tool_start', agent, tool_use: { id: 'sub-tool-1', name: 'Bash' } },
+    ])
+
+    vi.advanceTimersByTime(3000)
+    dispatchEvents([
+      { type: 'tool_end', agent, tool_result: { tool_use_id: 'sub-tool-1', display_output: 'done' } },
+    ])
+
+    const subTool = document.querySelector('[data-tool-root][data-tool-name="Bash"]')
+    const durEl = subTool!.querySelector('.font-mono.text-xs') as HTMLElement
+    const frozen = durEl.textContent
+
+    // Advance more time — duration should NOT change
+    vi.advanceTimersByTime(5000)
+    expect(durEl.textContent).toBe(frozen)
+    vi.useRealTimers()
+  })
+
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
