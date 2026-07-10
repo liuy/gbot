@@ -27,6 +27,7 @@ import {
   finishTool,
   expandToolChildrenForRunning,
   collapseToolChildrenOnDone,
+  markToolCollapsible,
 } from './components/stream_dom'
 import { createHeader } from './header'
 import { createSidebar } from './sidebar'
@@ -156,10 +157,10 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
             id: t.id,
             name: t.name,
             summary: t.summary ?? '',
-            isSearch: srk.isSearch,
-            isRead: srk.isRead,
-            isList: srk.isList,
-            isLsp: srk.isLsp,
+            isSearch: srk.isSearch || !!t.is_search,
+            isRead: srk.isRead || !!t.is_read,
+            isList: srk.isList || !!t.is_list,
+            isLsp: srk.isLsp || !!t.is_lsp,
             isWeb: srk.isWeb,
             state: (t.isError ? 'error' : t.isRunning ? 'running' : 'done') as 'error' | 'running' | 'done',
             timingNs: t.durationNs ?? 0,
@@ -1005,7 +1006,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           container.push(block)
           pendingToolByID.set(tu.id, block)
           if (domContainer) {
-            const collapsible = isCollapsibleToolName(tu.name)
+            const collapsible = isCollapsibleToolName(tu.name) || !!tu.is_search
             const handles = appendToolBlock(
               domContainer,
               tu.name,
@@ -1031,7 +1032,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         pendingBlocks.push(block)
         pendingToolByID.set(tu.id, block)
         if (streamContainer) {
-          const collapsible = isCollapsibleToolName(tu.name)
+          const collapsible = isCollapsibleToolName(tu.name) || !!tu.is_search
           const handles = appendToolBlock(
             streamContainer,
             tu.name,
@@ -1054,10 +1055,25 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const entry = toolEntries.get(targetId)
         if (entry) setToolSummary(entry.handles, summary, entry.pendingBlock.name)
         const pending = pendingToolByID.get(targetId)
-        if (pending) pending.summary = summary
+        if (pending) {
+          pending.summary = summary
+          if (e.partial_input.is_search !== undefined) pending.isSearch = e.partial_input.is_search
+          if (e.partial_input.is_read !== undefined) pending.isRead = e.partial_input.is_read
+          if (e.partial_input.is_list !== undefined) pending.isList = e.partial_input.is_list
+          if (e.partial_input.is_lsp !== undefined) pending.isLsp = e.partial_input.is_lsp
+        }
         return
       }
       case 'tool_run': {
+        if (!e.tool_use) return
+        const ruEntry = toolEntries.get(e.tool_use.id)
+        if (!ruEntry) return
+        // tool_start fires with empty input, so is_search is false.
+        // Now that tool_param_delta has populated the block flags,
+        // retroactively mark collapsible and trigger grouping.
+        const srk = classifyToolName(e.tool_use.name)
+        const shouldCollapse = srk.isSearch || ruEntry.pendingBlock.isSearch
+        if (shouldCollapse) markToolCollapsible(ruEntry.handles.root)
         return
       }
       case 'tool_output_delta': {

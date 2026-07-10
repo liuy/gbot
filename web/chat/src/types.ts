@@ -48,6 +48,10 @@ export type HistoryBlockTool = {
   isError?: boolean
   isRunning?: boolean
   durationNs?: number
+  is_search?: boolean
+  is_read?: boolean
+  is_list?: boolean
+  is_lsp?: boolean
 }
 
 export type HistoryBlockThinking = {
@@ -65,7 +69,7 @@ export type HistoryChatMsg = {
   role: 'user' | 'assistant'
   text: string
   thinking: { text: string; durationNs: number }[]
-  tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; isRunning?: boolean; durationNs?: number }[]
+  tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; isRunning?: boolean; durationNs?: number; is_search?: boolean; is_read?: boolean; is_list?: boolean; is_lsp?: boolean }[]
   blocks?: HistoryBlock[]
   usage: {
     inputTokens: number

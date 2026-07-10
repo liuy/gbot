@@ -552,6 +552,16 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 					Name:    formatToolDisplayName(cb.Name),
 					Summary: computeToolSummary(cb.Name, cb.Input, tools),
 				}
+				// Compute search/read/list classification from tool definition.
+				if t, ok := tools[cb.Name]; ok {
+					if ts, ok := t.(tool.ToolWithSearchOrRead); ok {
+						srk := ts.IsSearchOrRead(cb.Input)
+						entry.IsSearch = srk.IsSearch
+						entry.IsRead = srk.IsRead
+						entry.IsList = srk.IsList
+						entry.IsLsp = srk.IsLsp
+					}
+				}
 				if result, ok := toolResults[cb.ID]; ok {
 					entry.IsError = result.IsError
 					entry.DisplayOutput, entry.DurationNs = renderToolOutput(cb.Name, result.Content, tools)
@@ -793,6 +803,10 @@ type historyToolEntry struct {
 	IsError       bool   `json:"isError,omitempty"`
 	IsRunning     bool   `json:"isRunning,omitempty"`
 	DurationNs    int64  `json:"durationNs,omitempty"`
+	IsSearch      bool   `json:"is_search,omitempty"`
+	IsRead        bool   `json:"is_read,omitempty"`
+	IsList        bool   `json:"is_list,omitempty"`
+	IsLsp         bool   `json:"is_lsp,omitempty"`
 }
 
 type historyUsage struct {

@@ -66,6 +66,21 @@ func TestIsSearchOrReadBashCommand(t *testing.T) {
 		{"cd && ls", `cd /repo && ls -la`, tool.SearchReadKind{IsList: true}},
 		{"cd && git commit", `cd /repo && git commit -m "x"`, tool.SearchReadKind{}},
 		{"cd only", `cd /repo`, tool.SearchReadKind{}},
+
+		// git read-only subcommands → search
+		{"git diff", `git diff HEAD`, tool.SearchReadKind{IsSearch: true}},
+		{"git log", `git log --oneline -5`, tool.SearchReadKind{IsSearch: true}},
+		{"git show", `git show HEAD`, tool.SearchReadKind{IsSearch: true}},
+		{"git status", `git status`, tool.SearchReadKind{IsSearch: true}},
+		{"git branch", `git branch -a`, tool.SearchReadKind{IsSearch: true}},
+		{"git blame", `git blame file.go`, tool.SearchReadKind{IsSearch: true}},
+		{"git --no-pager log", `git --no-pager log --oneline`, tool.SearchReadKind{IsSearch: true}},
+		{"git --no-optional-locks diff", `git --no-optional-locks diff --stat`, tool.SearchReadKind{IsSearch: true}},
+		// git write subcommands → not collapsible
+		{"git add", `git add -A`, tool.SearchReadKind{}},
+		{"git push", `git push origin main`, tool.SearchReadKind{}},
+		{"git stash pop", `git stash pop`, tool.SearchReadKind{}},
+		{"git remote", `git remote -v`, tool.SearchReadKind{}},
 	}
 
 	for _, tt := range tests {

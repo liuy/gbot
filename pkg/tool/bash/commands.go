@@ -25,6 +25,13 @@ var (
 		"echo": true, "printf": true, "true": true, "false": true, ":": true,
 		"cd": true, "pushd": true, "popd": true,
 	}
+	gitReadOnlyCommands = map[string]bool{
+		"diff": true, "log": true, "show": true, "status": true,
+		"branch": true, "blame": true, "cat-file": true,
+		"ls-files": true, "ls-tree": true,
+		"rev-parse": true, "describe": true, "shortlog": true,
+		"reflog": true,
+	}
 )
 
 // isSearchOrReadBashCommand classifies a bash command for TUI collapse behavior.
@@ -69,6 +76,17 @@ func isSearchOrReadBashCommand(command string) tool.SearchReadKind {
 		}
 
 		hasNonNeutral = true
+
+		// git: classify by subcommand. Only read-only operations
+		// (diff, log, show, status, etc.) are collapsible.
+		if baseCmd == "git" {
+			subcmd := extractGitSubcommand(part)
+			if subcmd != "" && gitReadOnlyCommands[subcmd] {
+				hasSearch = true
+				continue
+			}
+			return tool.SearchReadKind{}
+		}
 
 		// sed: search unless -i (inplace edit) flag is present.
 		if baseCmd == "sed" {
@@ -299,6 +317,25 @@ func isAwkDestructive(part string) bool {
 		}
 	}
 	return strings.Contains(part, "system(")
+}
+
+// extractGitSubcommand returns the git subcommand (e.g. "log" from
+// "git --no-pager log --oneline"). Returns "" if no subcommand found.
+func extractGitSubcommand(part string) string {
+	fields := strings.Fields(part)
+	for i, f := range fields {
+		if i == 0 && f == "git" {
+			continue
+		}
+		if f == "git" {
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		return f
+	}
+	return ""
 }
 
 // IsSearchOrRead implements tool.ToolWithSearchOrRead for the Bash tool.

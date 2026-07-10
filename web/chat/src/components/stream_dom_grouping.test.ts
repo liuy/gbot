@@ -62,16 +62,40 @@ describe('collapsible tool grouping during streaming', () => {
 		expect(lastChild?.getAttribute('data-tool-group')).toBeNull()
 	})
 
-	it('text block between collapsible tools prevents grouping', () => {
-		const container = setup()
-		appendTool(container, 'Grep')
-		appendTextBlock(container, null)
-		appendTool(container, 'Glob')
+  it('text block between collapsible tools prevents grouping', () => {
+    const container = setup()
+    appendTool(container, 'Grep')
+    appendTextBlock(container, null)
+    appendTool(container, 'Glob')
 
-		expect(container.querySelector('[data-tool-group]')).toBeNull()
-	})
+    expect(container.querySelector('[data-tool-group]')).toBeNull()
+  })
 
-	it('non-collapsible then collapsible: no group', () => {
+  it('consecutive Bash tools with isSearch=true form a group', () => {
+    const container = setup()
+    // In real streaming, chat.ts now computes:
+    // collapsible = isCollapsibleToolName('Bash') || !!tu.is_search = true
+    const h1 = appendToolBlock(container, 'Bash', null, true)
+    const h2 = appendToolBlock(container, 'Bash', null, true)
+
+    const group = container.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
+  it('thinking blocks between collapsible tools do not break grouping', () => {
+    const container = setup()
+    appendToolBlock(container, 'Bash', null, true)
+    // Insert thinking block between tools (like streaming does)
+    appendThinkingBlock(container, 0)
+    appendToolBlock(container, 'Bash', null, true)
+
+    const group = container.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
+  it('non-collapsible then collapsible: no group', () => {
 		const container = setup()
 		appendTool(container, 'Bash')
 		appendTool(container, 'Grep')

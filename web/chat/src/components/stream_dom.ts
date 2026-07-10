@@ -360,6 +360,45 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   return handles
 }
 
+// markToolCollapsible retroactively marks an already-rendered tool as
+// collapsible and attempts to group it with the previous tool sibling.
+// Used when is_search arrives via tool_param_delta after tool_start.
+export function markToolCollapsible(root: HTMLElement): void {
+  if (root.dataset.collapsible) return
+  root.dataset.collapsible = '1'
+
+  const parent = root.parentElement
+  if (!parent) return
+  const sibling = findPrevToolSibling(root, parent)
+  if (!sibling) return
+
+  // Previous sibling is a group — move this tool into it.
+  if (sibling.dataset.toolGroup) {
+    const toolsContainer = sibling.querySelector('[data-group-tools]') as HTMLElement
+    if (toolsContainer) {
+      // Absorb inter-tool thinking.
+      for (const th of collectTrailingThinking(sibling as HTMLElement)) {
+        toolsContainer.appendChild(th)
+      }
+      toolsContainer.appendChild(root)
+      updateGroupSummary(sibling as HTMLElement)
+    }
+    return
+  }
+
+  // Previous sibling is also collapsible — create a new group.
+  if (sibling.dataset.collapsible === '1') {
+    const preThinking = collectLeadingThinking(sibling)
+    const group = createGroupContainer()
+    parent.replaceChild(group, sibling)
+    const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
+    for (const th of preThinking) toolsContainer.appendChild(th)
+    toolsContainer.appendChild(sibling)
+    toolsContainer.appendChild(root)
+    updateGroupSummary(group)
+  }
+}
+
 export function appendToolChildrenContainer(handles: ToolDomHandles): HTMLDivElement {
   return handles.childrenContainer
 }

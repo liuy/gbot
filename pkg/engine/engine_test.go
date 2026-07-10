@@ -194,10 +194,11 @@ func waitForCallCount(t *testing.T, mp *mockProvider, target int, timeout time.D
 // ---------------------------------------------------------------------------
 
 type mockTool struct {
-	name    string
-	callFn  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
-	descFn  func(json.RawMessage) (string, error)
-	enabled bool
+	name     string
+	callFn   func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
+	descFn   func(json.RawMessage) (string, error)
+	enabled  bool
+	isSearch bool
 }
 
 func (t *mockTool) Name() string      { return t.name }
@@ -223,6 +224,9 @@ func (t *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types
 func (t *mockTool) IsReadOnly(json.RawMessage) bool           { return true }
 func (t *mockTool) IsDestructive(json.RawMessage) bool        { return false }
 func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *mockTool) IsSearchOrRead(input json.RawMessage) tool.SearchReadKind {
+	return tool.SearchReadKind{IsSearch: t.isSearch}
+}
 func (t *mockTool) IsEnabled() bool                           { return t.enabled }
 func (t *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *mockTool) Prompt() string                            { return "" }
@@ -1167,6 +1171,55 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 				t.Errorf("expected tool use name my_tool, got %s", evt.ToolUse.Name)
 			}
 		}
+	}
+}
+
+func TestQuery_ToolStartIncludesIsSearch(t *testing.T) {
+	t.Parallel()
+
+	// Use a tool that implements ToolWithSearchOrRead and returns IsSearch=true.
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_1", "search_tool", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	ec := newEventCollector()
+	mt := &mockTool{name: "search_tool", enabled: true, isSearch: true}
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	// The tool_start event should include IsSearch=true so the client
+	// can mark the tool as collapsible for grouping.
+	toolStartEvents := ec.FindEvents(types.EventToolStart)
+	if len(toolStartEvents) == 0 {
+		t.Fatal("expected EventToolStart event")
+	}
+	found := false
+	for _, evt := range toolStartEvents {
+		if evt.ToolUse != nil && evt.ToolUse.Name == "search_tool" {
+			if !evt.ToolUse.IsSearch {
+				t.Errorf("tool_start for search_tool should have IsSearch=true, got false")
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("search_tool tool_start event not found")
 	}
 }
 

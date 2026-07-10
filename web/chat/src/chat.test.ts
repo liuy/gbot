@@ -547,6 +547,87 @@ describe('chat integration', () => {
     expect(contentDiv!.className).toContain('whitespace-pre-wrap')
   })
 
+  it('Bash grep in history is classified as search', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'a1', role: 'assistant', text: '',
+          thinking: [],
+          tools: [],
+          blocks: [
+            {
+              kind: 'tool',
+              tool: {
+                id: 't1', name: 'Bash', summary: 'grep -n "pattern"',
+                displayOutput: 'result', isError: false, isRunning: false,
+                durationNs: 1_000_000_000,
+                is_search: true,
+              },
+            },
+          ],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // The Bash tool with is_search:true should be rendered as collapsible
+    const all = document.querySelectorAll('[data-tool-root]')
+    expect(all.length).toBe(1)
+    expect(all[0].getAttribute('data-collapsible')).toBe('1')
+  })
+
+  it('tool_start with is_search groups consecutive Bash tools', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: { command: 'git log' }, is_search: true } },
+      { type: 'tool_start', tool_use: { id: 't2', name: 'Bash', input: { command: 'git status' }, is_search: true } },
+    ])
+    // Both tools should be in a group
+    const toolRoots = document.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(2)
+    expect(toolRoots[0].getAttribute('data-collapsible')).toBe('1')
+    expect(toolRoots[1].getAttribute('data-collapsible')).toBe('1')
+    // They should be inside a tool-group
+    const group = document.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
+  it('tool_start with is_search renders Bash as collapsible', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: {}, is_search: true } },
+    ])
+    const toolRoots = document.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(1)
+    expect(toolRoots[0].getAttribute('data-collapsible')).toBe('1')
+  })
+
+  it('tool_param_delta updates isSearch and enables grouping', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: {} } },
+      { type: 'tool_param_delta', partial_input: { id: 't1', name: 'Bash', delta: '', summary: 'git log', is_search: true } },
+      { type: 'tool_run', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'tool_start', tool_use: { id: 't2', name: 'Bash', input: {} } },
+      { type: 'tool_param_delta', partial_input: { id: 't2', name: 'Bash', delta: '', summary: 'git status', is_search: true } },
+      { type: 'tool_run', tool_use: { id: 't2', name: 'Bash' } },
+    ])
+    const toolRoots = document.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(2)
+    // Both should be marked collapsible after tool_param_delta provides is_search
+    const group = document.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
   it('reconnect after streaming does not duplicate', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
