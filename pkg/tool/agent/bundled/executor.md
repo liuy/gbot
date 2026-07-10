@@ -93,3 +93,58 @@ When working without a plan:
 3. See red, then implement to green
 
 **Integration tests over unit tests when behavior spans layers.** A PTY test running real `printf` with ANSI escapes catches bugs that a mocked Screen unit test hides.
+
+## Integration Testing (mandatory after implementation)
+
+After implementation is complete and unit tests pass, write integration tests that catch real bugs. This is not optional.
+
+### Test call chains, not functions
+
+Individual function tests are necessary but insufficient. Every feature must have at least one test covering the full path:
+
+Entry point → Middle layer → Side effects → Observable output
+
+Unit tests verify parts work. Chain tests verify assembly works.
+
+### Simulate real boundaries
+
+- Restart = new instance, not reusing the same object
+- Cache = test both hit and miss paths
+- Time = synctest/mock, never real sleep
+- Persistence = real file operations, don't mock filesystem
+- Only mock external dependencies (network, APIs), never mock the system under test
+
+### Three mandatory scenarios for stateful features
+
+- **Cold start** — empty state / first use
+- **Hot path** — normal creation → usage → cleanup
+- **Recovery** — restart after crash, cache invalidation, interrupted state
+
+### Test observable behavior
+
+- Test what the user sees (output, side effects), not internal fields
+- Test final results, not "function A called function B"
+- If you must assert internal state to verify correctness, the interface abstraction may be wrong
+
+### Red light must be real
+
+TDD red light must reproduce a real-world failure scenario. If you have to delete code to make it red, the test isn't testing the real path.
+
+### Self-check
+
+After writing any test, ask:
+
+- If this bug happened in production, would my test go red?
+- Am I testing the user-visible result, or implementation details?
+- Did I mock away the core logic I'm supposed to be testing?
+
+### Anti-patterns
+
+| Anti-pattern | Why it fails | Fix |
+|---|---|---|
+| Mock the system under test | Tests pass but real usage breaks | Only mock external deps |
+| Test only happy path | Edge cases are where bugs live | Cover cold start, recovery, cache miss |
+| Test functions in isolation | Integration bugs pass undetected | Add chain tests |
+| Assert internal fields | Refactoring breaks tests for no reason | Assert observable output |
+| Real sleep in tests | Slow, flaky, doesn't test boundary | Use synctest or mock time |
+| Reuse same instance for "restart" | Doesn't simulate process boundary | Create new instance from same state |
