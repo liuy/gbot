@@ -270,7 +270,7 @@ function renderCommittedMessageDOM(
     } else if (b.kind === 'tool') {
       const collapsible = isCollapsibleToolName(b.name) || isCollapsibleToolBlock(b)
       const handles = appendToolBlock(content, b.name, undefined, collapsible)
-      if (b.summary) setToolSummary(handles, b.summary)
+      if (b.summary) setToolSummary(handles, b.summary, b.name)
       if (b.state === 'running') {
         runningTools.push({ id: b.id, handles, block: b })
       } else {
@@ -1051,7 +1051,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const targetId = e.partial_input.id
         const summary = e.partial_input.summary
         const entry = toolEntries.get(targetId)
-        if (entry) setToolSummary(entry.handles, summary)
+        if (entry) setToolSummary(entry.handles, summary, entry.pendingBlock.name)
         const pending = pendingToolByID.get(targetId)
         if (pending) pending.summary = summary
         return

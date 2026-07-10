@@ -8,6 +8,7 @@
 
 import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
+import hljs from 'highlight.js'
 
 export interface ToolDomHandles {
   root: HTMLDivElement
@@ -363,8 +364,17 @@ export function appendToolChildrenContainer(handles: ToolDomHandles): HTMLDivEle
   return handles.childrenContainer
 }
 
-export function setToolSummary(handles: ToolDomHandles, summary: string): void {
-  handles.summaryEl.textContent = summary ? ` (${summary})` : ''
+export function setToolSummary(handles: ToolDomHandles, summary: string, toolName?: string): void {
+  if (!summary) {
+    handles.summaryEl.textContent = ''
+    return
+  }
+  if (toolName === 'Bash') {
+    const highlighted = hljs.highlight(summary, { language: 'bash' }).value
+    handles.summaryEl.innerHTML = ` (${highlighted})`
+  } else {
+    handles.summaryEl.textContent = ` (${summary})`
+  }
 }
 
 export function setToolOutput(handles: ToolDomHandles, output: string): void {
