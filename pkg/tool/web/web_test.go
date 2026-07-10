@@ -139,6 +139,24 @@ func TestFormatForLLM(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("sources render as valid markdown list", func(t *testing.T) {
+		resp := &providers.SearchResponse{
+			Provider: "test",
+			Answer:   "The answer.",
+			Sources: []providers.SearchSource{
+				{Title: "Go 1.18 Release Notes", URL: "https://go.dev/doc/go1.18"},
+				{Title: "Go Generics Tutorial", URL: "https://go.dev/doc/tutorial/generics"},
+			},
+		}
+		got := formatForLLM(resp)
+		if !strings.Contains(got, "- [1]") {
+			t.Errorf("source items should use markdown list syntax '- [N] Title', got:\n%s", got)
+		}
+		if !strings.Contains(got, "- [2]") {
+			t.Errorf("second source should use markdown list syntax '- [2] Title', got:\n%s", got)
+		}
+	})
 }
 
 func TestFormatAge(t *testing.T) {

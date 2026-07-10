@@ -26,13 +26,13 @@ func formatForLLM(resp *providers.SearchResponse) string {
 		if age != "" {
 			title = fmt.Sprintf("%s (%s)", src.Title, age)
 		}
-		parts = append(parts, fmt.Sprintf("[%d] %s\n    %s", i+1, title, src.URL))
+		parts = append(parts, fmt.Sprintf("- [%d] %s\n  %s", i+1, title, src.URL))
 		if src.Snippet != "" {
 			snippet := src.Snippet
 			if len(snippet) > 240 {
 				snippet = truncateRunes(snippet, 239) + "…"
 			}
-			parts = append(parts, fmt.Sprintf("    %s", snippet))
+			parts = append(parts, fmt.Sprintf("  %s", snippet))
 		}
 	}
 
