@@ -37,11 +37,17 @@ function createModelPicker(
   panel.style.backdropFilter = 'blur(20px) saturate(1.5)'
   panel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
 
-  const searchInput = document.createElement('input')
-  searchInput.type = 'text'
+  const searchInput = document.createElement('textarea')
+  searchInput.rows = 1
   searchInput.placeholder = 'Search models...'
+  searchInput.setAttribute('autocapitalize', 'off')
+  searchInput.setAttribute('autocorrect', 'off')
+  searchInput.spellcheck = false
   searchInput.className =
-    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline'
+    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none'
+  searchInput.style.fontFamily = 'inherit'
+  searchInput.style.fontSize = 'inherit'
+  ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
   panel.appendChild(searchInput)
 
   const listContainer = document.createElement('div')
