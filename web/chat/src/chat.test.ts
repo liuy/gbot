@@ -1480,11 +1480,11 @@ describe('chat integration', () => {
       { type: 'query_end', usage_event: { input_tokens: 100, output_tokens: 50 } },
     ])
     vi.advanceTimersByTime(300)
-    // 3200 (baseline) + 1800 (new thinking_end) = 5000ms = 5.0s
+    // Thinking stats are hidden — verify no 'thought for' text appears
     const thinkingEl = Array.from(document.querySelectorAll('span')).find(
       (s) => s.textContent?.startsWith('thought for'),
     )
-    expect(thinkingEl?.textContent).toBe('thought for 5.0s')
+    expect(thinkingEl).toBeUndefined()
     vi.useRealTimers()
   })
 
@@ -1548,11 +1548,11 @@ describe('chat integration', () => {
     expect(finalizedBar).not.toBeNull()
     expect(finalizedBar!.dataset.progress).toBe('1')
 
-    // Thinking: 5000 (server) + 2000 (new) = 7000ms = 7.0s
+    // Thinking stats are hidden — verify no 'thought for' text appears
     const thinkingEl = Array.from(document.querySelectorAll('span')).find(
       (s) => s.textContent?.startsWith('thought for'),
     )
-    expect(thinkingEl?.textContent).toBe('thought for 7.0s')
+    expect(thinkingEl).toBeUndefined()
 
     vi.useRealTimers()
   })

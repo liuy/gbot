@@ -537,6 +537,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
 
   const thinkingEl = document.createElement('span')
   root.appendChild(thinkingEl)
+  thinkingEl.style.display = 'none'
 
   insertBefore(parent, root, before ?? null)
 
@@ -608,10 +609,5 @@ export function finalizeProgressBar(
     }
   } else {
     h.cacheEl.textContent = 'cache missed'
-  }
-  if (thinkingDurationMs && thinkingDurationMs > 0) {
-    h.thinkingEl.textContent = 'thought for ' + (thinkingDurationMs / 1000).toFixed(1) + 's'
-  } else {
-    h.thinkingEl.textContent = ''
   }
 }
