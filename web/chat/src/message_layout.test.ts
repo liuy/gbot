@@ -139,6 +139,30 @@ describe('committed message layout (via loadHistory)', () => {
     expect(mdBody.querySelector('strong')?.textContent).toBe('bold')
   })
 
+  it('user and assistant avatars share the same size class for vertical alignment', () => {
+    mount()
+    dispatch({
+      type: 'history',
+      messages: [
+        userMsg('u-1', 'hello'),
+        assistantWithBlocks('a-1', [{ kind: 'text', text: 'hi' }]),
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+    const grids = document.querySelectorAll('.grid.grid-cols-\\[1\\.25rem_1fr_1\\.25rem\\]')
+    expect(grids.length).toBe(2)
+    const userAvatar = grids[0].children[2] as HTMLElement
+    const assistantAvatar = grids[1].children[0] as HTMLElement
+    // Both avatars must share the same size/layout class so they align
+    // vertically with the first line of text in their respective messages.
+    const extractSize = (cls: string) =>
+      cls.split(' ').filter((c) =>
+        c.match(/^(flex|h-5|w-5|shrink-0|items-center|justify-center|rounded-md)$/)
+      ).sort().join(' ')
+    expect(extractSize(userAvatar.className)).toBe(extractSize(assistantAvatar.className))
+  })
+
   it('assistant error block renders red-bordered div', () => {
     mount()
     dispatch({

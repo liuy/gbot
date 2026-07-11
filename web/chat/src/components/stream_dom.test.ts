@@ -96,6 +96,39 @@ describe('appendToolBlock', () => {
     expect(nameEl?.textContent).toBe('Bash')
   })
 
+  it('header splits prefix (dot+chevron) from content block so summary wraps aligned to tool name', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    // header is flex, no wrap — prefix and content side by side
+    expect(h.header.className).toContain('flex')
+    expect(h.header.className).not.toContain('flex-wrap')
+    // prefix (dot+chevron) is shrink-0 so it never compresses
+    const prefix = h.header.querySelector(':scope > span.shrink-0')
+    expect(prefix).not.toBeNull()
+    expect(prefix?.contains(h.dot)).toBe(true)
+    // content (name+summary+dur) is a flex-1 min-w-0 block — summary wraps
+    // within it, continuation lines align to name position (same as body)
+    const content = h.header.querySelector(':scope > span.flex-1')
+    expect(content).not.toBeNull()
+    const nameEl = content?.querySelector('.font-mono.text-blue')
+    expect(nameEl?.textContent).toBe('Bash')
+  })
+
+  it('prefix width matches body/children margin for vertical alignment', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    // prefix width must equal body/children left margin so that summary
+    // continuation lines, body output, and children all align vertically
+    // to the tool name position.
+    const prefix = h.header.querySelector(':scope > span.shrink-0') as HTMLElement
+    const prefixW = prefix.className.match(/w-(\d+)/)?.[1]
+    const bodyMl = h.body.className.match(/ml-(\d+)/)?.[1]
+    const childrenMl = h.childrenContainer.className.match(/ml-(\d+)/)?.[1]
+    expect(prefixW).toBeTruthy()
+    expect(bodyMl).toBe(prefixW)
+    expect(childrenMl).toBe(prefixW)
+  })
+
   it('stamps data-tool-root on root and data-tool-children on children container', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')

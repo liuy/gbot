@@ -729,7 +729,7 @@ describe('chat integration', () => {
     // 3. Running tool should show as failed (red dot), not success (green dot)
     const bashTool = document.querySelector('[data-tool-root][data-tool-name="Bash"]')
     expect(bashTool).toBeTruthy()
-    const dot = bashTool!.querySelector('span > span:first-child')
+    const dot = bashTool!.querySelector('span.heartbeat, span.text-red')
     expect(dot?.classList.contains('text-red')).toBe(true)
   })
 

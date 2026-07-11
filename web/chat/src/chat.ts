@@ -181,10 +181,17 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   return result
 }
 
-const avatarGClass =
-  'flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white'
-const avatarUClass =
-  'flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-t2 to-t3'
+const avatarSizeClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md'
+const avatarGExtra = 'bg-gradient-to-br from-blue to-violet text-[11px] font-bold text-white'
+const avatarUExtra = 'bg-gradient-to-br from-t2 to-t3'
+const userAvatarSVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a8 8 0 0116 0v1" /></svg>'
+
+// Shared layout for user and assistant messages. The grid (avatar | content |
+// avatar) is identical for both roles — only the avatar position and content
+// alignment differ. This ensures both sides stay vertically aligned without
+// having to synchronise margin/line-height changes across two code paths.
+const shellGridClass = 'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5'
 
 function buildShell(
   role: 'user' | 'assistant',
@@ -192,8 +199,7 @@ function buildShell(
   const outer = document.createElement('div')
   outer.className = 'px-1.5'
   const grid = document.createElement('div')
-  grid.className =
-    'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5'
+  grid.className = shellGridClass
 
   const leftCol = document.createElement('div')
   const centerCol = document.createElement('div')
@@ -201,20 +207,15 @@ function buildShell(
   const rightCol = document.createElement('div')
 
   if (role === 'assistant') {
-    leftCol.className = avatarGClass
+    leftCol.className = `${avatarSizeClass} ${avatarGExtra}`
     leftCol.textContent = 'G'
   } else {
-    rightCol.className = avatarUClass
-    rightCol.innerHTML =
-      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a8 8 0 0116 0v1" /></svg>'
+    rightCol.className = `${avatarSizeClass} ${avatarUExtra}`
+    rightCol.innerHTML = userAvatarSVG
   }
 
   const content = document.createElement('div')
-  if (role === 'assistant') {
-    content.className = 'space-y-3'
-  } else {
-    content.className = 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap'
-  }
+  content.className = role === 'assistant' ? 'space-y-3' : 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap'
 
   centerCol.appendChild(content)
   grid.appendChild(leftCol)

@@ -88,7 +88,7 @@ function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
-  div.className = 'md-body md-text text-t1 text-[15px] leading-relaxed'
+  div.className = 'md-body md-text text-t1 text-[15px]'
   insertBefore(parent, div, before ?? null)
   return div
 }
@@ -133,7 +133,7 @@ export function appendThinkingBlock(
   // <p> always mounted (CSS hidden when collapsed) so the sink stays live
   // for streaming writes even when collapsed.
   const p = document.createElement('p')
-  p.className = 'ml-5 text-t2 text-sm italic whitespace-pre-wrap'
+  p.className = 'ml-6 text-t2 text-sm italic whitespace-pre-wrap'
   p.style.maxHeight = 'none'
   wrap.appendChild(p)
 
@@ -189,7 +189,7 @@ function createGroupContainer(): HTMLElement {
 
   // Dot: same class as individual tool dot (text-white heartbeat while running)
   const dot = document.createElement('span')
-  dot.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center text-white heartbeat'
+  dot.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
   dot.dataset.groupDot = '1'
   dot.textContent = '●'
   header.appendChild(dot)
@@ -217,7 +217,7 @@ function createGroupContainer(): HTMLElement {
   // Tools container: default collapsed
   const toolsContainer = document.createElement('div')
   toolsContainer.dataset.groupTools = '1'
-  toolsContainer.className = 'ml-[20px]'
+  toolsContainer.className = 'ml-6'
   toolsContainer.style.display = 'none'
   group.appendChild(toolsContainer)
 
@@ -281,39 +281,47 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
+  header.className = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+
+  const prefix = document.createElement('span')
+  prefix.className = 'shrink-0 w-6'
 
   const dot = document.createElement('span')
-  dot.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center text-white heartbeat'
+  dot.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
   dot.textContent = '●'
-  header.appendChild(dot)
+  prefix.appendChild(dot)
 
   const chevron = document.createElement('span')
   chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
-  header.appendChild(chevron)
+  prefix.appendChild(chevron)
+  header.appendChild(prefix)
+
+  const content = document.createElement('span')
+  content.className = 'flex-1 min-w-0'
 
   const nameEl = document.createElement('span')
   nameEl.className = 'font-mono text-sm text-blue align-middle'
   nameEl.textContent = name
-  header.appendChild(nameEl)
+  content.appendChild(nameEl)
 
   const summaryEl = document.createElement('span')
   summaryEl.className = 'text-sm text-t2 font-light break-all align-middle'
-  header.appendChild(summaryEl)
+  content.appendChild(summaryEl)
 
   const durEl = document.createElement('span')
   durEl.className = 'font-mono text-xs align-middle text-blue'
   durEl.textContent = ' 0s'
-  header.appendChild(durEl)
+  content.appendChild(durEl)
 
+  header.appendChild(content)
   root.appendChild(header)
 
   const body = document.createElement('div')
-  body.className = 'ml-[20px] font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden'
+  body.className = 'ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden'
   root.appendChild(body)
 
   const childrenContainer = document.createElement('div')
-  childrenContainer.className = 'ml-[20px] mt-1 space-y-1 border-l border-t3/30 pl-2 hidden'
+  childrenContainer.className = 'ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden'
   childrenContainer.dataset.toolChildren = '1'
   root.appendChild(childrenContainer)
 
