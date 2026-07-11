@@ -12,6 +12,7 @@ export interface InputBarHandles {
   onHistoryUp: (cb: (current: string) => string | null) => void
   onHistoryDown: (cb: () => string | null) => void
   onHistoryReset: (cb: () => void) => void
+  onHistoryPicker: (cb: () => string[]) => void
 }
 
 export function createInputBar(initial: {
@@ -87,10 +88,127 @@ export function createInputBar(initial: {
   form.appendChild(card)
   root.appendChild(form)
 
-  const recomputeCanSend = () => {
-    const can = textarea.value.trim().length > 0 && connected
-    sendBtn.disabled = !can
+  // History picker panel — shown when user taps send on empty input.
+  let historyPickerCb: (() => string[]) | null = null
+  const histPanel = document.createElement('div')
+  histPanel.className =
+    'fixed left-1/2 -translate-x-1/2 bottom-20 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
+  histPanel.style.background = 'rgba(12, 16, 24, 0.75)'
+  histPanel.style.backdropFilter = 'blur(20px) saturate(1.5)'
+  histPanel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
+  histPanel.style.height = '300px'
+  histPanel.style.display = 'none'
+  histPanel.style.flexDirection = 'column'
+
+  const histSearch = document.createElement('textarea')
+  histSearch.rows = 1
+  histSearch.placeholder = 'Search history...'
+  histSearch.setAttribute('autocapitalize', 'off')
+  histSearch.setAttribute('autocorrect', 'off')
+  histSearch.spellcheck = false
+  histSearch.className =
+    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0'
+  histSearch.style.fontFamily = 'inherit'
+  histSearch.style.fontSize = 'inherit'
+  histPanel.appendChild(histSearch)
+
+  const histList = document.createElement('div')
+  histList.className = 'flex-1 overflow-y-auto p-1 min-h-0'
+  histPanel.appendChild(histList)
+
+  const closeHistPanel = () => {
+    histPanel.style.display = 'none'
+    histSearch.value = ''
   }
+
+  const renderHistList = (items: string[]) => {
+    histList.innerHTML = ''
+    const query = histSearch.value.trim().toLowerCase()
+    const filtered = query
+      ? items.filter((s) => s.toLowerCase().includes(query))
+      : items
+    if (filtered.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'px-3 py-4 text-center text-[13px] text-t3'
+      empty.textContent = 'No history'
+      histList.appendChild(empty)
+      return
+    }
+    for (const item of filtered) {
+      const el = document.createElement('div')
+      el.setAttribute('role', 'button')
+      el.tabIndex = 0
+      el.style.whiteSpace = 'nowrap'
+      el.style.overflow = 'hidden'
+      el.style.textOverflow = 'ellipsis'
+      el.style.width = '100%'
+      el.style.padding = '8px 12px'
+      el.style.borderRadius = '8px'
+      el.style.textAlign = 'left'
+      el.style.fontSize = '13px'
+      el.style.color = 'var(--color-t2)'
+      el.style.cursor = 'pointer'
+      el.style.lineHeight = '1.4'
+      el.textContent = item
+      el.addEventListener('click', () => {
+        textarea.value = item
+        textarea.focus()
+        textarea.setSelectionRange(item.length, item.length)
+        recomputeCanSend()
+        closeHistPanel()
+      })
+      histList.appendChild(el)
+    }
+  }
+
+  const openHistPanel = () => {
+    const items = historyPickerCb?.() ?? []
+    if (items.length === 0) return
+    if (!histPanel.parentElement) document.body.appendChild(histPanel)
+    histPanel.style.display = 'flex'
+    histSearch.value = ''
+    renderHistList(items)
+  }
+
+  histSearch.addEventListener('input', () => {
+    const items = historyPickerCb?.() ?? []
+    renderHistList(items)
+  })
+
+  const onHistDocClick = (e: MouseEvent) => {
+    if (!histPanel.contains(e.target as Node) && !sendBtn.contains(e.target as Node)) closeHistPanel()
+  }
+  histPanel.addEventListener('click', (e) => e.stopPropagation())
+  histSearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeHistPanel()
+      textarea.focus()
+    }
+  })
+
+  const recomputeCanSend = () => {
+    const hasText = textarea.value.trim().length > 0
+    sendBtn.disabled = !hasText && !connected ? true : !connected
+    if (!hasText) {
+      sendBtn.style.opacity = '0.5'
+    } else {
+      sendBtn.style.opacity = ''
+    }
+  }
+
+  sendBtn.addEventListener('click', (e) => {
+    if (textarea.value.trim() === '') {
+      e.preventDefault()
+      if (histPanel.style.display === 'flex') {
+        closeHistPanel()
+        document.removeEventListener('mousedown', onHistDocClick)
+      } else {
+        openHistPanel()
+        document.addEventListener('mousedown', onHistDocClick)
+      }
+    }
+  })
 
   const onSubmit = (e: Event) => {
     e.preventDefault()
@@ -254,6 +372,9 @@ export function createInputBar(initial: {
     },
     onHistoryReset: (cb) => {
       historyResetCb = cb
+    },
+    onHistoryPicker: (cb) => {
+      historyPickerCb = cb
     },
     setConnected: (c: boolean) => {
       connected = c

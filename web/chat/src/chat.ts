@@ -1272,6 +1272,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onHistoryReset(() => {
     inputHistory.resetNav()
   })
+  inputBar.onHistoryPicker(() => inputHistory.getAll())
 
   let currentSessionID = ''
 

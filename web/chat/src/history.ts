@@ -73,4 +73,8 @@ export class History {
     this.historyIndex = 0
     this.savedDraft = ''
   }
+
+  getAll(): string[] {
+    return [...this.items].reverse()
+  }
 }
