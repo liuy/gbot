@@ -112,19 +112,23 @@ export function appendThinkingBlock(
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
+  header.className = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
+
+  const prefix = document.createElement('span')
+  prefix.className = 'shrink-0 w-6'
 
   const glyph = document.createElement('span')
-  glyph.className = 'text-amber text-sm leading-none align-middle inline-block w-4 text-center heartbeat'
+  glyph.className = 'text-amber text-sm inline-block w-3 text-center heartbeat'
   glyph.textContent = '✦'
-  header.appendChild(glyph)
+  prefix.appendChild(glyph)
 
   const chevron = document.createElement('span')
   chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform rotate-90" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
-  header.appendChild(chevron)
+  prefix.appendChild(chevron)
+  header.appendChild(prefix)
 
   const labelEl = document.createElement('span')
-  labelEl.className = 'text-amber text-sm align-middle'
+  labelEl.className = 'text-amber text-sm'
   labelEl.textContent = `Thinking (${formatDurationNs(0)})`
   header.appendChild(labelEl)
 
@@ -185,20 +189,24 @@ function createGroupContainer(): HTMLElement {
   header.dataset.groupHeader = '1'
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'inline cursor-pointer bg-transparent border-0 p-0 text-left align-middle'
+  header.className = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+
+  const prefix = document.createElement('span')
+  prefix.className = 'shrink-0 w-6'
 
   // Dot: same class as individual tool dot (text-white heartbeat while running)
   const dot = document.createElement('span')
   dot.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
   dot.dataset.groupDot = '1'
   dot.textContent = '●'
-  header.appendChild(dot)
+  prefix.appendChild(dot)
 
   // Chevron SVG (same as ToolGroup.tsx)
   const chevron = document.createElement('span')
   chevron.dataset.groupChevron = '1'
   chevron.innerHTML = '<svg class="inline-block align-middle text-t3" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
-  header.appendChild(chevron)
+  prefix.appendChild(chevron)
+  header.appendChild(prefix)
 
   // Summary text: "2 Searches, 1 Read"
   const summary = document.createElement('span')
@@ -489,10 +497,13 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   const root = document.createElement('div')
   root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
 
+  const dotWrap = document.createElement('span')
+  dotWrap.className = 'shrink-0 w-6'
   const dotEl = document.createElement('span')
-  dotEl.className = 'text-[10px] leading-none align-middle inline-block w-4 text-center text-blue heartbeat'
+  dotEl.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-blue heartbeat'
   dotEl.textContent = '●'
-  root.appendChild(dotEl)
+  dotWrap.appendChild(dotEl)
+  root.appendChild(dotWrap)
 
   const inEl = document.createElement('span')
   inEl.textContent = '↑' + formatTokenCount(0)
@@ -591,7 +602,7 @@ export function finalizeProgressBar(
   _thinkingDurationMs?: number,
 ): void {
   h.dotEl.classList.remove('heartbeat')
-  h.dotEl.style.display = 'none'
+  if (h.dotEl.parentElement) h.dotEl.parentElement.style.display = 'none'
   h.root.dataset.progress = '1'
   const totalInput = usage.inputTokens + usage.cacheRead + usage.cacheCreation
   h.inEl.textContent = '↑' + formatTokenCount(totalInput)

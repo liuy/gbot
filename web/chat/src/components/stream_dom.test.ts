@@ -81,6 +81,25 @@ describe('appendThinkingBlock', () => {
     labelEl.parentElement?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(p.classList.contains('hidden')).toBe(true)
   })
+
+  it('uses w-6 prefix to align dot+chevron with tool blocks', () => {
+    const parent = newParent()
+    const { labelEl } = appendThinkingBlock(parent, Date.now())
+    const header = labelEl.parentElement!
+    const prefix = header.querySelector(':scope > span.shrink-0')
+    expect(prefix).not.toBeNull()
+    expect(prefix?.className).toContain('w-6')
+  })
+
+  it('glyph is ✦ with w-3 and heartbeat class', () => {
+    const parent = newParent()
+    const { labelEl } = appendThinkingBlock(parent, Date.now())
+    const header = labelEl.parentElement!
+    const dot = header.querySelector('span.heartbeat')
+    expect(dot).not.toBeNull()
+    expect(dot?.className).toContain('w-3')
+    expect(dot?.textContent).toBe('✦')
+  })
 })
 
 describe('appendToolBlock', () => {
@@ -233,6 +252,15 @@ describe('appendProgressBar', () => {
     expect(h.rateEl.textContent).toBe('0.0 t/s')
   })
 
+  it('dot is w-3 ● with heartbeat and text-blue', () => {
+    const parent = newParent()
+    const h = appendProgressBar(parent)
+    expect(h.dotEl.className).toContain('w-3')
+    expect(h.dotEl.textContent).toBe('●')
+    expect(h.dotEl.classList.contains('heartbeat')).toBe(true)
+    expect(h.dotEl.classList.contains('text-blue')).toBe(true)
+  })
+
   it('setProgressBarUsage updates token counts', () => {
     const parent = newParent()
     const h = appendProgressBar(parent)
@@ -306,6 +334,8 @@ describe('appendProgressBar', () => {
     h.root.childNodes.forEach((n) => {
       const el = n as HTMLElement
       if (el.style && el.style.display === 'none') return
+      // Skip the dot wrapper (contains only the ● dot)
+      if (el.classList?.contains('w-6')) return
       const t = (el.textContent ?? '').trim()
       if (t) parts.push(t)
     })

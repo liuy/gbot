@@ -377,6 +377,7 @@ func (c *WebChatConnector) writePayloadTo(slot *engineSlot, event types.QueryEve
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		slog.Warn("webchat:ws write failed", "frame", "stream:"+event.Type, "error", err)
 		c.activeWS.Store(nil) // mark inactive
 		return err
 	}
@@ -404,6 +405,7 @@ func (c *WebChatConnector) writePayloadAndClearTo(slot *engineSlot, payload []by
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		slog.Warn("webchat:ws write failed", "frame", "turn_end/query_end", "error", err)
 		c.activeWS.Store(nil)
 		return err
 	}
@@ -421,6 +423,7 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		slog.Warn("webchat:ws write failed", "frame", "direct", "error", err)
 		c.activeWS.Store(nil)
 		return err
 	}
