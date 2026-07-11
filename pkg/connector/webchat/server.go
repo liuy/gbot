@@ -52,18 +52,18 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status
-	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
 
 	// 3. history page (committed messages only; in-flight not yet committed)
 	if histMsg != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 		_ = ws.WriteMessage(websocket.TextMessage, histMsg)
 	}
 
 	// config frame — model list + current selection so the frontend can
 	// populate the model picker immediately on connect.
-	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 
 	// 4. replay current turn buffer — in-flight deltas that are NOT in
@@ -72,7 +72,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	//    The buffer is under writeMu so Handle's appends are serialized.
 	replayed := 0
 	for _, payload := range c.streamBuf {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 		if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
 			slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
 			break
@@ -89,7 +89,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// reads live state, which may be newer than a task_list frame buffered
 	// earlier in this same turn.
 	if taskMsg := c.buildTaskListMessage(); taskMsg != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 		_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
 	}
 
@@ -111,7 +111,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 			case <-ticker.C:
 				c.writeMu.Lock()
 				if cur := c.activeWS.Load(); cur == ws {
-					_ = cur.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					_ = cur.SetWriteDeadline(time.Now().Add(30 * time.Second))
 					_ = cur.WriteMessage(websocket.PingMessage, nil)
 				}
 				c.writeMu.Unlock()

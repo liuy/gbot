@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -620,42 +621,43 @@ func TestEmitEvent_FlushBufsFlushesAllFour(t *testing.T) {
 // the coalesce window expires trigger an early flush of the previous batch,
 // producing multiple coalesced events for the same id.
 func TestEmitEvent_WindowExpiredMidStream(t *testing.T) {
-	md := &mockDispatcher{}
-	eng := New(&Params{
-		Provider:   &mockProvider{},
-		Model:      "test",
-		Logger:     slog.Default(),
-		Dispatcher: md,
-	})
-	t.Cleanup(func() { eng.Close() })
+	synctest.Test(t, func(t *testing.T) {
+		md := &mockDispatcher{}
+		eng := New(&Params{
+			Provider:   &mockProvider{},
+			Model:      "test",
+			Logger:     slog.Default(),
+			Dispatcher: md,
+		})
+		t.Cleanup(func() { eng.Close() })
 
-	// Override window to a very short duration, then sleep past it.
-	eng.window = 1 * time.Millisecond
+		eng.window = 1 * time.Millisecond
 
-	eng.emitEvent(types.QueryEvent{
-		Type:         types.EventToolParamDelta,
-		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "first"},
-	})
-	time.Sleep(5 * time.Millisecond)
-	eng.emitEvent(types.QueryEvent{
-		Type:         types.EventToolParamDelta,
-		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "second"},
-	})
-	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+		eng.emitEvent(types.QueryEvent{
+			Type:         types.EventToolParamDelta,
+			PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "first"},
+		})
+		time.Sleep(5 * time.Millisecond)
+		eng.emitEvent(types.QueryEvent{
+			Type:         types.EventToolParamDelta,
+			PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "second"},
+		})
+		eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
 
-	var deltas []string
-	for _, evt := range md.events {
-		if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
-			deltas = append(deltas, evt.PartialInput.Delta)
+		var deltas []string
+		for _, evt := range md.events {
+			if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
+				deltas = append(deltas, evt.PartialInput.Delta)
+			}
 		}
-	}
-	if len(deltas) != 2 {
-		t.Fatalf("expected 2 coalesced param events (window split), got %d: %v", len(deltas), deltas)
-	}
-	if deltas[0] != "first" {
-		t.Errorf("first delta = %q, want %q", deltas[0], "first")
-	}
-	if deltas[1] != "second" {
-		t.Errorf("second delta = %q, want %q", deltas[1], "second")
-	}
+		if len(deltas) != 2 {
+			t.Fatalf("expected 2 coalesced param events (window split), got %d: %v", len(deltas), deltas)
+		}
+		if deltas[0] != "first" {
+			t.Errorf("first delta = %q, want %q", deltas[0], "first")
+		}
+		if deltas[1] != "second" {
+			t.Errorf("second delta = %q, want %q", deltas[1], "second")
+		}
+	})
 }

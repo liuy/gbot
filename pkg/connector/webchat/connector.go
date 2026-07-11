@@ -270,7 +270,7 @@ func (c *WebChatConnector) writePayload(payload []byte) error {
 	if ws == nil {
 		return nil // inactive — buffer captures event, engine keeps running
 	}
-	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
 		c.activeWS.Store(nil) // mark inactive
 		return err
@@ -295,7 +295,7 @@ func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
 	if ws == nil {
 		return nil
 	}
-	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
 		c.activeWS.Store(nil)
 		return err
@@ -312,7 +312,7 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 	if ws == nil {
 		return nil
 	}
-	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
 		c.activeWS.Store(nil)
 		return err
@@ -1166,13 +1166,13 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
 		if histMsg != nil {
-			_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
 		}
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 	}
 	c.writeMu.Unlock()
@@ -1194,9 +1194,9 @@ func (c *WebChatConnector) handleSessionNew() {
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
 	}
 	c.writeMu.Unlock()
