@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,4 +243,419 @@ func coalescedText(events []types.QueryEvent) string {
 		}
 	}
 	return buf.String()
+}
+
+// TestEmitEvent_CoalescesToolParamDeltas verifies that multiple
+// tool_param_delta events for the same tool_use_id are buffered and flushed as
+// a single coalesced event when a non-delta event arrives.
+func TestEmitEvent_CoalescesToolParamDeltas(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{
+		Type: types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{
+			ID:    "tool_1",
+			Name:  "Bash",
+			Delta: `{"command":"`,
+		},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type: types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{
+			ID:    "tool_1",
+			Name:  "Bash",
+			Delta: `echo hi"}`,
+		},
+	})
+
+	if len(md.events) != 0 {
+		t.Fatalf("tool_param_delta should be buffered, got %d events", len(md.events))
+	}
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	if len(md.events) != 2 {
+		t.Fatalf("expected 2 events (flushed param_delta + tool_start), got %d", len(md.events))
+	}
+	if md.events[0].Type != types.EventToolParamDelta {
+		t.Fatalf("first event should be tool_param_delta, got %s", md.events[0].Type)
+	}
+	if md.events[0].PartialInput == nil {
+		t.Fatal("PartialInput should not be nil")
+	}
+	if md.events[0].PartialInput.ID != "tool_1" {
+		t.Errorf("coalesced param id = %q, want %q", md.events[0].PartialInput.ID, "tool_1")
+	}
+	if md.events[0].PartialInput.Name != "Bash" {
+		t.Errorf("coalesced param name = %q, want %q", md.events[0].PartialInput.Name, "Bash")
+	}
+	wantDelta := `{"command":"echo hi"}`
+	if md.events[0].PartialInput.Delta != wantDelta {
+		t.Errorf("coalesced param delta = %q, want %q", md.events[0].PartialInput.Delta, wantDelta)
+	}
+	if md.events[1].Type != types.EventToolStart {
+		t.Fatalf("second event should be tool_start, got %s", md.events[1].Type)
+	}
+}
+
+// TestEmitEvent_CoalescesToolOutputDeltas verifies that multiple
+// tool_output_delta events for the same tool_use_id are buffered and flushed
+// as a single coalesced event.
+func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{
+		Type: types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     "tool_1",
+			DisplayOutput: "line1\n",
+			IsSearch:      true,
+		},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type: types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     "tool_1",
+			DisplayOutput: "line2\n",
+			IsSearch:      true,
+		},
+	})
+
+	if len(md.events) != 0 {
+		t.Fatalf("tool_output_delta should be buffered, got %d events", len(md.events))
+	}
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolEnd})
+
+	if len(md.events) != 2 {
+		t.Fatalf("expected 2 events (flushed output_delta + tool_end), got %d", len(md.events))
+	}
+	if md.events[0].Type != types.EventToolOutputDelta {
+		t.Fatalf("first event should be tool_output_delta, got %s", md.events[0].Type)
+	}
+	if md.events[0].ToolResult == nil {
+		t.Fatal("ToolResult should not be nil")
+	}
+	if md.events[0].ToolResult.ToolUseID != "tool_1" {
+		t.Errorf("coalesced output id = %q, want %q", md.events[0].ToolResult.ToolUseID, "tool_1")
+	}
+	wantOutput := "line1\nline2\n"
+	if md.events[0].ToolResult.DisplayOutput != wantOutput {
+		t.Errorf("coalesced output = %q, want %q", md.events[0].ToolResult.DisplayOutput, wantOutput)
+	}
+	if !md.events[0].ToolResult.IsSearch {
+		t.Error("coalesced output lost IsSearch metadata")
+	}
+	if md.events[1].Type != types.EventToolEnd {
+		t.Fatalf("second event should be tool_end, got %s", md.events[1].Type)
+	}
+}
+
+// TestEmitEvent_ToolDeltaMultiID verifies that deltas for different tool_use_ids
+// accumulate in parallel and both flush together when a non-delta event arrives.
+func TestEmitEvent_ToolDeltaMultiID(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_A", Delta: "A1"},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_B", Delta: "B1"},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_A", Delta: "A2"},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_B", Delta: "B2"},
+	})
+
+	if len(md.events) != 0 {
+		t.Fatalf("param deltas should be buffered, got %d events", len(md.events))
+	}
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	// 2 coalesced param deltas + 1 tool_start
+	if len(md.events) != 3 {
+		t.Fatalf("expected 3 events (2 param_delta + tool_start), got %d", len(md.events))
+	}
+
+	deltas := map[string]string{}
+	for _, evt := range md.events[:2] {
+		if evt.Type != types.EventToolParamDelta {
+			t.Errorf("expected tool_param_delta, got %s", evt.Type)
+			continue
+		}
+		if evt.PartialInput == nil {
+			t.Error("PartialInput nil")
+			continue
+		}
+		deltas[evt.PartialInput.ID] = evt.PartialInput.Delta
+	}
+	if deltas["tool_A"] != "A1A2" {
+		t.Errorf("tool_A delta = %q, want %q", deltas["tool_A"], "A1A2")
+	}
+	if deltas["tool_B"] != "B1B2" {
+		t.Errorf("tool_B delta = %q, want %q", deltas["tool_B"], "B1B2")
+	}
+}
+
+// TestEmitEvent_ToolDeltaWindowExpiry verifies that the coalesce window
+// triggers a flush even without a non-delta event.
+func TestEmitEvent_ToolDeltaWindowExpiry(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "early"},
+	})
+
+	if len(md.events) != 0 {
+		t.Fatal("should be buffered initially")
+	}
+
+	eng.paramCoalesce.lastFlush = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "late"},
+	})
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 flushed event, got %d", len(md.events))
+	}
+	if md.events[0].PartialInput == nil {
+		t.Fatal("PartialInput nil")
+	}
+	if md.events[0].PartialInput.Delta != "early" {
+		t.Errorf("flushed delta = %q, want %q", md.events[0].PartialInput.Delta, "early")
+	}
+}
+
+// TestEmitEvent_ToolDeltaEmptySkipped verifies that tool delta events with
+// empty text are not buffered.
+func TestEmitEvent_ToolDeltaEmptySkipped(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: ""},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: nil,
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tool_1", DisplayOutput: ""},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		ToolResult: nil,
+	})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	for _, evt := range md.events {
+		if evt.Type == types.EventToolParamDelta || evt.Type == types.EventToolOutputDelta {
+			t.Errorf("empty tool deltas should not produce events, got %s", evt.Type)
+		}
+	}
+}
+
+// TestEmitEvent_ConcurrentToolParamDeltas verifies that multiple goroutines
+// emitting param deltas for distinct tool_use_ids produce exactly one coalesced
+// event per id on flush. Exercises the coalesceMu race protection.
+func TestEmitEvent_ConcurrentToolParamDeltas(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("tool_%d", i)
+			eng.emitEvent(types.QueryEvent{
+				Type:         types.EventToolParamDelta,
+				PartialInput: &types.PartialInputEvent{ID: id, Delta: fmt.Sprintf("delta_%d", i)},
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	// Flush via a non-delta event
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	// Count param delta events per id
+	seen := make(map[string]string)
+	for _, evt := range md.events {
+		if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
+			seen[evt.PartialInput.ID] = evt.PartialInput.Delta
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("expected %d coalesced param events, got %d", n, len(seen))
+	}
+	for i := range n {
+		id := fmt.Sprintf("tool_%d", i)
+		want := fmt.Sprintf("delta_%d", i)
+		if got, ok := seen[id]; !ok || got != want {
+			t.Errorf("param delta for %s = %q, want %q (ok=%v)", id, got, want, ok)
+		}
+	}
+}
+
+// TestEmitEvent_FlushBufsFlushesAllFour verifies that a single non-delta event
+// flushes text, thinking, param, AND output coalesce buffers simultaneously.
+func TestEmitEvent_FlushBufsFlushesAllFour(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "txt"})
+	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "thk"}})
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "param"},
+	})
+	eng.emitEvent(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tool_2", DisplayOutput: "output"},
+	})
+
+	if len(md.events) != 0 {
+		t.Fatalf("expected 0 events before flush, got %d", len(md.events))
+	}
+
+	// Single non-delta event triggers flushBufs → all four flush
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	gotText, gotThink, gotParam, gotOutput := false, false, false, false
+	for _, evt := range md.events {
+		switch evt.Type {
+		case types.EventTextDelta:
+			if evt.Text == "txt" {
+				gotText = true
+			}
+		case types.EventThinkingDelta:
+			if evt.Thinking != nil && evt.Thinking.Text == "thk" {
+				gotThink = true
+			}
+		case types.EventToolParamDelta:
+			if evt.PartialInput != nil && evt.PartialInput.Delta == "param" {
+				gotParam = true
+			}
+		case types.EventToolOutputDelta:
+			if evt.ToolResult != nil && evt.ToolResult.DisplayOutput == "output" {
+				gotOutput = true
+			}
+		}
+	}
+	if !gotText {
+		t.Error("flushBufs did not flush text delta")
+	}
+	if !gotThink {
+		t.Error("flushBufs did not flush thinking delta")
+	}
+	if !gotParam {
+		t.Error("flushBufs did not flush param delta")
+	}
+	if !gotOutput {
+		t.Error("flushBufs did not flush output delta")
+	}
+}
+
+// TestEmitEvent_WindowExpiredMidStream verifies that deltas arriving after
+// the coalesce window expires trigger an early flush of the previous batch,
+// producing multiple coalesced events for the same id.
+func TestEmitEvent_WindowExpiredMidStream(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	// Override window to a very short duration, then sleep past it.
+	eng.window = 1 * time.Millisecond
+
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "first"},
+	})
+	time.Sleep(5 * time.Millisecond)
+	eng.emitEvent(types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "tool_1", Delta: "second"},
+	})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	var deltas []string
+	for _, evt := range md.events {
+		if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
+			deltas = append(deltas, evt.PartialInput.Delta)
+		}
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 coalesced param events (window split), got %d: %v", len(deltas), deltas)
+	}
+	if deltas[0] != "first" {
+		t.Errorf("first delta = %q, want %q", deltas[0], "first")
+	}
+	if deltas[1] != "second" {
+		t.Errorf("second delta = %q, want %q", deltas[1], "second")
+	}
 }

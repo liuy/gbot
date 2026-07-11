@@ -222,11 +222,15 @@ type Engine struct {
 	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
 	permissionChecker permission.PermissionChecker
 
-	// Per-engine coalescing buffers. emitEvent is single-goroutine
-	// (queryActive prevents concurrent queryLoop/processAttachments),
-	// so no mutex needed.
-	textCoalesce  coalesceBuf
-	thinkCoalesce coalesceBuf
+	// Per-engine coalescing buffers. emitEvent is reached from two
+	// goroutines: the streaming loop (text/thinking/param deltas) and
+	// tool execution workers (output deltas via doEmit). coalesceMu
+	// serializes buffer access across both.
+	coalesceMu     sync.Mutex
+	textCoalesce   coalesceBuf
+	thinkCoalesce  coalesceBuf
+	paramCoalesce  toolDeltaCoalesce
+	outputCoalesce toolDeltaCoalesce
 
 	// window overrides coalesceWindow for testing. Zero = use default.
 	window time.Duration
@@ -1007,7 +1011,7 @@ func normalizeAttachmentForAPI(msg types.Message) types.Message {
 }
 
 // coalesceBuf holds a per-event-type coalescing buffer.
-// Not safe for concurrent use — only called from Engine's single goroutine.
+// Access serialized by Engine.coalesceMu (see emitEvent).
 type coalesceBuf struct {
 	buf       strings.Builder
 	lastFlush time.Time
@@ -1036,16 +1040,66 @@ func (c *coalesceBuf) flush(dispatch func(string)) {
 	dispatch(text)
 }
 
+// toolDeltaCoalesce coalesces tool streaming deltas (tool_param_delta,
+// tool_output_delta) per tool_use_id. Unlike coalesceBuf, it maintains a
+// separate buffer per id because multiple tool calls can stream concurrently.
+// meta preserves the last metadata payload per id so flush can reconstruct
+// full events (Name/Summary/classification for params, nothing extra for
+// output yet) instead of just the accumulated text.
+type toolDeltaCoalesce struct {
+	bufs      map[string]*strings.Builder
+	meta      map[string]any
+	lastFlush time.Time
+}
+
+func (t *toolDeltaCoalesce) write(id, text string, meta any, window time.Duration, onFlush func()) {
+	if !t.lastFlush.IsZero() && time.Since(t.lastFlush) >= window {
+		onFlush()
+	}
+	if t.bufs == nil {
+		t.bufs = make(map[string]*strings.Builder)
+		t.meta = make(map[string]any)
+	}
+	b := t.bufs[id]
+	if b == nil {
+		b = &strings.Builder{}
+		t.bufs[id] = b
+	}
+	b.WriteString(text)
+	if meta != nil {
+		t.meta[id] = meta
+	}
+	if t.lastFlush.IsZero() {
+		t.lastFlush = time.Now()
+	}
+}
+
+func (t *toolDeltaCoalesce) flush(dispatch func(id, text string, meta any)) {
+	for id, b := range t.bufs {
+		if b.Len() == 0 {
+			continue
+		}
+		dispatch(id, b.String(), t.meta[id])
+	}
+	t.bufs = nil
+	t.meta = nil
+	t.lastFlush = time.Now()
+}
+
 // emitEvent sends an event via the dispatcher (Hub).
 // Streaming deltas (text_delta, thinking_delta) are buffered per-engine and
 // coalesced to reduce channel writes. Non-delta events flush pending buffers
-// first to preserve ordering.
+// first to preserve ordering. coalesceMu serializes buffer access because
+// emitEvent is called from both the streaming loop and tool worker goroutines.
 func (e *Engine) emitEvent(event types.QueryEvent) {
 	if e.dispatcher == nil {
 		return
 	}
 
 	event.SessionID = e.sessionID
+
+	e.coalesceMu.Lock()
+	defer e.coalesceMu.Unlock()
 
 	switch event.Type {
 	case types.EventTextDelta:
@@ -1055,6 +1109,18 @@ func (e *Engine) emitEvent(event types.QueryEvent) {
 	case types.EventThinkingDelta:
 		if event.Thinking != nil && event.Thinking.Text != "" {
 			e.thinkCoalesce.write(event.Thinking.Text, e.effectiveWindow(), e.flushThinkBuf)
+		}
+		return
+
+	case types.EventToolParamDelta:
+		if event.PartialInput != nil && event.PartialInput.Delta != "" {
+			e.paramCoalesce.write(event.PartialInput.ID, event.PartialInput.Delta, event.PartialInput, e.effectiveWindow(), e.flushParamBuf)
+		}
+		return
+
+	case types.EventToolOutputDelta:
+		if event.ToolResult != nil && event.ToolResult.DisplayOutput != "" {
+			e.outputCoalesce.write(event.ToolResult.ToolUseID, event.ToolResult.DisplayOutput, event.ToolResult, e.effectiveWindow(), e.flushOutputBuf)
 		}
 		return
 	}
@@ -1074,6 +1140,8 @@ func (e *Engine) effectiveWindow() time.Duration {
 func (e *Engine) flushBufs() {
 	e.flushTextBuf()
 	e.flushThinkBuf()
+	e.flushParamBuf()
+	e.flushOutputBuf()
 }
 
 func truncate(s string, n int) string {
@@ -1096,6 +1164,48 @@ func (e *Engine) flushThinkBuf() {
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:     types.EventThinkingDelta,
 			Thinking: &types.ThinkingEvent{Text: text},
+		})
+	})
+}
+
+func (e *Engine) flushParamBuf() {
+	e.paramCoalesce.flush(func(id, text string, meta any) {
+		pi := &types.PartialInputEvent{
+			ID:    id,
+			Delta: text,
+		}
+		if m, ok := meta.(*types.PartialInputEvent); ok {
+			pi.Name = m.Name
+			pi.Summary = m.Summary
+			pi.IsSearch = m.IsSearch
+			pi.IsRead = m.IsRead
+			pi.IsList = m.IsList
+			pi.IsLsp = m.IsLsp
+		}
+		e.dispatcher.Dispatch(types.QueryEvent{
+			Type:         types.EventToolParamDelta,
+			PartialInput: pi,
+		})
+	})
+}
+
+func (e *Engine) flushOutputBuf() {
+	e.outputCoalesce.flush(func(id, text string, meta any) {
+		tr := &types.ToolResultEvent{
+			ToolUseID:     id,
+			DisplayOutput: text,
+		}
+		if m, ok := meta.(*types.ToolResultEvent); ok {
+			tr.IsError = m.IsError
+			tr.IsBackground = m.IsBackground
+			tr.IsSearch = m.IsSearch
+			tr.IsRead = m.IsRead
+			tr.IsList = m.IsList
+			tr.IsLsp = m.IsLsp
+		}
+		e.dispatcher.Dispatch(types.QueryEvent{
+			Type:       types.EventToolOutputDelta,
+			ToolResult: tr,
 		})
 	})
 }
