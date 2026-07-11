@@ -71,9 +71,9 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	//    tool_output_delta, etc., accumulated since the last turn_end).
 	//    The buffer is under writeMu so Handle's appends are serialized.
 	replayed := 0
-	for _, payload := range c.streamBuf {
+	for _, entry := range c.streamBuf {
 		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-		if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
 			slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
 			break
 		}

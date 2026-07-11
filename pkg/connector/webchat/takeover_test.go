@@ -161,7 +161,7 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	}
 
 	// First write should fail because TCP is closed.
-	err = c.writePayload([]byte(`{"type":"event"}`))
+	err = c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`))
 	if err == nil {
 		t.Fatal("writePayload returned nil on closed conn — expected error")
 	}
@@ -170,7 +170,7 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	}
 
 	// After failure cleared activeWS, subsequent writes are no-ops (nil error).
-	if err := c.writePayload([]byte(`{"type":"event"}`)); err != nil {
+	if err := c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`)); err != nil {
 		t.Fatalf("writePayload after inactive: %v", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 func TestWritePayload_NoActiveWSIsNoOp(t *testing.T) {
 	c := newTestConnector(t)
 	// activeWS is nil by default (never connected).
-	err := c.writePayload([]byte(`{"type":"event"}`))
+	err := c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`))
 	if err != nil {
 		t.Fatal("writePayload with nil activeWS should return nil (no-op)")
 	}

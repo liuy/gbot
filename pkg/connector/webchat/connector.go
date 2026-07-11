@@ -146,6 +146,13 @@ type queryStats struct {
 	thinkingMs int64
 }
 
+// streamEntry stores a raw event for replay. payload is pre-serialized for
+// direct WS write; event is the original for future merge/filter operations.
+type streamEntry struct {
+	event   types.QueryEvent
+	payload []byte
+}
+
 // WebChatConnector implements connector.Connector for the web chat. It
 // subscribes to the main engine's hub, translates QueryEvents into the WS
 // wire protocol (Phase 0), and drives queries from inbound WS messages.
@@ -177,12 +184,12 @@ type WebChatConnector struct {
 	// connect_status on takeover. Reset on EventQueryEnd. Guarded by writeMu.
 	queryStats queryStats
 
-	// streamBuf holds the serialized payloads of the current turn's events
-	// that have NOT yet been committed to engine.Messages(). Cleared on
-	// turn_end / query_end (the turn is then visible via history). Replayed to
-	// a new ws during takeover so the in-flight stream is not lost.
+	// streamBuf holds the raw events of the current turn that have NOT yet
+	// been committed to engine.Messages(). Cleared on turn_end / query_end
+	// (the turn is then visible via history). Replayed to a new ws during
+	// takeover so the in-flight stream is not lost.
 	// Guarded by writeMu.
-	streamBuf [][]byte
+	streamBuf []streamEntry
 
 	// taskToolIDs tracks tool_use IDs of Task tool calls started by the main
 	// agent during the current turn. On tool_end for a tracked ID, the
@@ -262,10 +269,10 @@ func (c *WebChatConnector) Send(userID, text string) error { return nil }
 // fails — so that events during disconnect (tool_end, turn_end, etc.) are
 // preserved for takeover replay. Only writePayloadAndClear (turn_end/
 // query_end) resets the buffer.
-func (c *WebChatConnector) writePayload(payload []byte) error {
+func (c *WebChatConnector) writePayload(event types.QueryEvent, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	c.streamBuf = append(c.streamBuf, payload)
+	c.streamBuf = append(c.streamBuf, streamEntry{event: event, payload: payload})
 	ws := c.activeWS.Load()
 	if ws == nil {
 		return nil // inactive — buffer captures event, engine keeps running
@@ -386,7 +393,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 					Type: types.EventTextDelta,
 					Text: types.InterruptMessage,
 				}})
-				_ = c.writePayload(interruptPayload)
+				_ = c.writePayload(types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage}, interruptPayload)
 			}
 			c.autoRewindOnAbort()
 		}
@@ -416,12 +423,12 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 			_ = c.writeDirect(buildErrorMessage(event.Error))
 		}
 	} else {
-		_ = c.writePayload(payload)
+		_ = c.writePayload(event, payload)
 	}
 
 	if pushTaskList {
 		if taskPayload := c.buildTaskListMessage(); taskPayload != nil {
-			_ = c.writePayload(taskPayload)
+			_ = c.writePayload(types.QueryEvent{}, taskPayload)
 		}
 	}
 }
