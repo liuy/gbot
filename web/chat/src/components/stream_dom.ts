@@ -580,7 +580,7 @@ export function finalizeProgressBar(
   usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheCreation: number },
   elapsedMs: number,
   toolCount: number,
-  thinkingDurationMs?: number,
+  _thinkingDurationMs?: number,
 ): void {
   h.dotEl.classList.remove('heartbeat')
   h.dotEl.style.display = 'none'

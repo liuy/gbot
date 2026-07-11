@@ -305,27 +305,34 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
 }
 
 // newTestConnectorWithConfig builds a WebChatConnector with providers and
-// providerConfigs for config/model_switch tests.
+// providerConfigs for config/model_switch tests. The connector is constructed
+// directly (not via New) because mockEngine is not a *engine.Engine; the slot
+// map and active field are set up manually. The mock's onQueryDoneFn is wired
+// to clearStreamBuf so tests that trigger Query get realistic buffer cleanup.
 func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
 	t.Helper()
+	mock := &mockEngine{}
+	const engineID = "main"
 	c := &WebChatConnector{
-		engine:          &mockEngine{},
-		hub:             h,
+		mgr:             nil, // tests that need engine_list set this manually
+		slots:           make(map[string]*engineSlot),
+		active:          engineID,
 		pendingAsks:     make(map[string]*types.AskEvent),
-		taskToolIDs:     make(map[string]bool),
 		providers:       providers,
 		providerConfigs: providerConfigs,
+		testMock:        mock,
 	}
-	c.OnStreamDone = func() {
-		c.writeMu.Lock()
-		c.streamBuf = nil
-		c.taskToolIDs = make(map[string]bool)
-		c.writeMu.Unlock()
+	slot := &engineSlot{
+		engineID:    engineID,
+		engine:      mock,
+		hub:         h,
+		taskToolIDs: make(map[string]bool),
 	}
-	c.mock().onQueryDoneFn = c.OnStreamDone
 	if h != nil {
-		c.unsubscribe = h.Subscribe(c)
+		slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: engineID, c: c})
 	}
+	c.slots[engineID] = slot
+	mock.onQueryDoneFn = func() { c.clearStreamBuf(engineID) }
 	t.Cleanup(c.Stop)
 	return c
 }
@@ -336,10 +343,20 @@ func newTestConnector(t *testing.T) *WebChatConnector {
 	return newTestConnectorWithHub(t, hub.NewHub())
 }
 
-// mock returns the connector's mockEngine. Panics if the engine is not a
-// *mockEngine (i.e., the connector was not created via newTestConnector*).
+// mock returns the connector's mockEngine. Uses the cached testMock pointer
+// (set by newTestConnector*) for lock-free access. Falls back to activeSlot's
+// engine for connectors built via the real New(). Panics if neither holds a
+// *mockEngine.
 func (c *WebChatConnector) mock() *mockEngine {
-	return c.engine.(*mockEngine)
+	if c.testMock != nil {
+		return c.testMock.(*mockEngine)
+	}
+	if slot := c.activeSlot(); slot != nil {
+		if m, ok := slot.engine.(*mockEngine); ok {
+			return m
+		}
+	}
+	panic("mock() called on connector without a mockEngine")
 }
 
 // firstPendingAskIDTest returns the id of the first stored pending ask.
@@ -376,7 +393,7 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 }
 
 // dialAndStore connects a WS client to c's endpoint and drains the initial
-// takeover frames (connect_status, optional history, config, optional task_list)
+// takeover frames (connect_status, optional history, config, engine_list)
 // so the caller can read events/responses immediately. Returns the client conn
 // with all initial frames consumed.
 // Tests that don't need history must set mock().messagesFn to return nil.
@@ -391,10 +408,33 @@ func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
 	return ws
 }
 
-// drainInitialFrames reads takeover frames until the config frame is consumed.
-// The takeover sequence is: connect_status, history (optional), config, replay,
-// task_list (optional). We drain connect_status + history (if present) + config.
-// The caller is responsible for reading replay/task_list frames if relevant.
+// activeStreamBufLen returns the number of buffered entries in the active
+// engine's slot. Test accessor that acquires writeMu for a consistent read.
+func (c *WebChatConnector) activeStreamBufLen() int {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if s := c.activeSlot(); s != nil {
+		return len(s.streamBuf)
+	}
+	return 0
+}
+
+// clearStreamBufTest exposes clearStreamBuf for test-driven buffer cleanup
+// (replaces the old c.OnStreamDone() test call).
+func (c *WebChatConnector) clearStreamBufTest(engineID string) {
+	c.clearStreamBuf(engineID)
+}
+
+// activeEngineTest returns the active engine's engineClient for test use.
+func (c *WebChatConnector) activeEngineTest() engineClient {
+	return c.activeEngine()
+}
+
+// drainInitialFrames reads takeover frames until the engine_list frame is
+// consumed. The takeover sequence is: connect_status, history (optional),
+// config, engine_list, replay, task_list (optional). We drain connect_status
+// + history (if present) + config + engine_list. The caller is responsible
+// for reading replay/task_list frames if relevant.
 func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 	t.Helper()
 	for {
@@ -402,7 +442,7 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 		var head struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "config" {
+		if json.Unmarshal(data, &head) == nil && head.Type == "engine_list" {
 			return
 		}
 	}

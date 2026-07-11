@@ -1,3 +1,9 @@
+export type EngineListItem = {
+  id: string
+  name: string
+  model: string
+}
+
 export type SessionListItem = {
   id: string
   title: string
@@ -24,6 +30,7 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
   | { type: 'task_list'; tasks: TaskWireItem[] }
+  | { type: 'engine_list'; engines: EngineListItem[]; activeID: string }
   | { type: 'session_list'; sessions: SessionListItem[] }
   | {
       type: 'config'

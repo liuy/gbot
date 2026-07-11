@@ -1023,7 +1023,7 @@ func TestCurrentUsage_AccumulatesEventUsage(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 80}})
 
 	c.writeMu.Lock()
-	got := c.queryStats.usage
+	got := c.slots["main"].queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 300 {
@@ -1045,7 +1045,7 @@ func TestCurrentUsage_IgnoresSubAgentEvents(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 
 	c.writeMu.Lock()
-	got := c.queryStats.usage
+	got := c.slots["main"].queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 100 {
@@ -1060,7 +1060,7 @@ func TestCurrentUsage_ResetsOnQueryEnd(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	c.writeMu.Lock()
-	got := c.queryStats.usage
+	got := c.slots["main"].queryStats.usage
 	c.writeMu.Unlock()
 
 	if got.InputTokens != 0 {
@@ -1076,7 +1076,7 @@ func TestCurrentUsage_AccumulatesToolCountAndThinkingMs(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1500 * time.Millisecond}})
 
 	c.writeMu.Lock()
-	got := c.queryStats
+	got := c.slots["main"].queryStats
 	c.writeMu.Unlock()
 
 	if got.toolCount != 2 {
@@ -1097,7 +1097,7 @@ func TestCurrentUsage_IgnoresSubAgentToolAndThinking(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 500 * time.Millisecond}})
 
 	c.writeMu.Lock()
-	got := c.queryStats
+	got := c.slots["main"].queryStats
 	c.writeMu.Unlock()
 
 	if got.toolCount != 1 {

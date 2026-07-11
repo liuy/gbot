@@ -22,7 +22,7 @@ func TestCleanupConn_DoesNotAbortActiveQuery(t *testing.T) {
 		close(queryStarted)
 		<-ctx.Done()
 	}
-	go c.engine.Query(context.Background(), "test", "")
+	go c.activeEngineTest().Query(context.Background(), "test", "")
 	<-queryStarted
 
 	// Simulate WebSocket disconnect
@@ -35,6 +35,6 @@ func TestCleanupConn_DoesNotAbortActiveQuery(t *testing.T) {
 
 	// Cleanup: cancel the query to let the goroutine exit
 	c.mock().abortFn = func() {}
-	c.engine.Abort()
+	c.activeEngineTest().Abort()
 	waitFor(time.Second, func() bool { return c.mock().abortCount >= 2 })
 }

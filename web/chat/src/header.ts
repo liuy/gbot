@@ -4,13 +4,20 @@ import fuzzysearch from 'fuzzysearch'
 export interface HeaderHandles {
   root: HTMLElement
   setStatus: (connected: boolean) => void
-  setAgentModel: (agent: string, model: string) => void
+  setModel: (model: string) => void
   onHamburgerClick: (handler: () => void) => void
   setModels: (models: { provider: string; model: string }[], curProvider: string, curModel: string) => void
+  setEngines: (engines: EngineEntry[], activeID: string) => void
 }
 
 interface ModelEntry {
   provider: string
+  model: string
+}
+
+interface EngineEntry {
+  id: string
+  name: string
   model: string
 }
 
@@ -125,7 +132,109 @@ function createModelPicker(
   return { wrap, setModels }
 }
 
-export function createHeader(opts: { onModelSelect: (provider: string, model: string) => void }): HeaderHandles {
+function createEnginePicker(
+  onSwitch: (engineID: string) => void,
+  onNew: () => void,
+): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
+  const wrap = document.createElement('div')
+  wrap.className = 'relative'
+
+  const trigger = document.createElement('button')
+  trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
+
+  const panel = document.createElement('div')
+  panel.className =
+    'fixed left-1/2 -translate-x-1/2 top-12 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
+  panel.style.background = 'rgba(12, 16, 24, 0.75)'
+  panel.style.backdropFilter = 'blur(20px) saturate(1.5)'
+  panel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
+
+  const listContainer = document.createElement('div')
+  listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
+  panel.appendChild(listContainer)
+
+  let allEngines: EngineEntry[] = []
+  let activeID = ''
+  let open = false
+
+  const renderList = () => {
+    listContainer.innerHTML = ''
+    for (const entry of allEngines) {
+      const isActive = entry.id === activeID
+      const item = document.createElement('button')
+      item.className =
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50'
+      const dot = document.createElement('span')
+      dot.className = 'h-2 w-2 rounded-full shrink-0 ' + (isActive ? 'bg-blue' : 'bg-t3/30')
+      item.appendChild(dot)
+      const nameSpan = document.createElement('span')
+      nameSpan.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
+      nameSpan.textContent = entry.name || entry.id
+      item.appendChild(nameSpan)
+      const modelSpan = document.createElement('span')
+      modelSpan.className = 'text-[11px] text-t3 ml-2'
+      modelSpan.textContent = entry.model
+      item.appendChild(modelSpan)
+      if (isActive) {
+        item.addEventListener('click', () => closePanel())
+      } else {
+        item.addEventListener('click', () => {
+          onSwitch(entry.id)
+          closePanel()
+        })
+      }
+      listContainer.appendChild(item)
+    }
+    // Footer: + icon only
+    const footer = document.createElement('button')
+    footer.className =
+      'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1'
+    footer.innerHTML =
+      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
+    footer.style.color = 'var(--blue, #60a5fa)'
+    footer.addEventListener('click', () => {
+      onNew()
+      closePanel()
+    })
+    listContainer.appendChild(footer)
+  }
+
+  const closePanel = () => {
+    open = false
+    panel.classList.add('hidden')
+    document.removeEventListener('mousedown', onDocClick)
+  }
+  const onDocClick = (e: MouseEvent) => {
+    if (!wrap.contains(e.target as Node) && !panel.contains(e.target as Node)) closePanel()
+  }
+  trigger.addEventListener('click', () => {
+    open = !open
+    if (open) {
+      if (!panel.parentElement) document.body.appendChild(panel)
+      panel.classList.remove('hidden')
+      renderList()
+      document.addEventListener('mousedown', onDocClick)
+    } else closePanel()
+  })
+
+  trigger.textContent = ''
+
+  const setEngines = (engines: EngineEntry[], active: string) => {
+    allEngines = engines
+    activeID = active
+    const cur = engines.find((e) => e.id === active)
+    if (cur) trigger.textContent = cur.name || cur.id
+  }
+
+  wrap.appendChild(trigger)
+  return { wrap, setEngines }
+}
+
+export function createHeader(opts: {
+  onModelSelect: (provider: string, model: string) => void
+  onEngineSwitch: (engineID: string) => void
+  onEngineNew: () => void
+}): HeaderHandles {
   const root = document.createElement('header')
   root.className = 'sticky top-0 z-30 card-bg'
 
@@ -152,20 +261,20 @@ export function createHeader(opts: { onModelSelect: (provider: string, model: st
   wordmark.textContent = 'GBot'
   gbotWrap.appendChild(wordmark)
 
-  const agentSpan = document.createElement('span')
-  agentSpan.className = 'text-[12px] text-t2'
-  agentSpan.textContent = ''
-
-  const separator = document.createElement('span')
-  separator.className = 'text-t3 text-[10px]'
-  separator.textContent = '\u203a'
-
   const modelPicker = createModelPicker(opts.onModelSelect)
+  const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
+
+  const sep = () => {
+    const s = document.createElement('span')
+    s.className = 'text-t3 text-[10px]'
+    s.textContent = '\u203a'
+    return s
+  }
 
   const breadcrumb = document.createElement('div')
   breadcrumb.className = 'flex items-baseline gap-1.5'
-  breadcrumb.appendChild(agentSpan)
-  breadcrumb.appendChild(separator)
+  breadcrumb.appendChild(enginePicker.wrap)
+  breadcrumb.appendChild(sep())
   breadcrumb.appendChild(modelPicker.wrap)
 
   inner.appendChild(hamburgerWrap)
@@ -184,8 +293,7 @@ export function createHeader(opts: { onModelSelect: (provider: string, model: st
       (connected ? 'text-blue pulse' : 'text-t3')
   }
 
-  const setAgentModel = (agent: string, model: string) => {
-    agentSpan.textContent = agent
+  const setModel = (model: string) => {
     if (model) {
       const trigger = modelPicker.wrap.querySelector('button') as HTMLButtonElement
       if (trigger) trigger.textContent = model
@@ -200,5 +308,9 @@ export function createHeader(opts: { onModelSelect: (provider: string, model: st
     modelPicker.setModels(models, curProvider, curModel)
   }
 
-  return { root, setStatus, setAgentModel, onHamburgerClick, setModels }
+  const setEngines = (engines: EngineEntry[], activeID: string) => {
+    enginePicker.setEngines(engines, activeID)
+  }
+
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines }
 }

@@ -30,8 +30,9 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 
 // serveChatWS drives one WS connection to completion with a 3-step atomic
 // takeover under writeMu: (1) invalidate old connection, (2) push
-// connect_status + history + streamBuf replay, (3) activate new
-// connection. The readLoop blocks until the client disconnects.
+// connect_status + history + config + engine_list + streamBuf replay +
+// task_list, (3) activate new connection. The readLoop blocks until the
+// client disconnects.
 func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// Pre-construct connect_status outside the lock (reads engine state).
 	connectMsg := c.buildConnectStatusMessage()
@@ -43,17 +44,28 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// Pre-compute config before writeMu (reads engine + provider state).
 	configMsg := c.buildConfigMessage()
 
+	// Pre-compute engine_list before writeMu (reads mgr.Snapshot, lock-safe).
+	engineListMsg := c.buildEngineListMessage()
+
 	// Entire takeover sequence under writeMu: invalidate old, push frames,
-	// replay buffer, then activate new conn. The engine goroutine's Handle
-	// blocks on writeMu during this window — it cannot race with the replay
-	// or with buildHistoryMessage's snapshot of engine.Messages().
+	// replay buffer, then activate new conn. The engine goroutine's
+	// handleForEngine blocks on writeMu during this window — it cannot race
+	// with the replay or with buildHistoryMessage's snapshot of
+	// engine.Messages().
 	c.writeMu.Lock()
-	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", len(c.streamBuf))
+	slot := c.activeSlot()
+	bufLen := 0
+	if slot != nil {
+		bufLen = len(slot.streamBuf)
+	}
+	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", bufLen)
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+	if connectMsg != nil {
+		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+	}
 
 	// 3. history page (committed messages only; in-flight not yet committed)
 	if histMsg != nil {
@@ -63,21 +75,32 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 
 	// config frame — model list + current selection so the frontend can
 	// populate the model picker immediately on connect.
+	if configMsg != nil {
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
+		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+	}
+
+	// engine_list frame — engine picker list + active marker. Sits after
+	// config (model picker populated) and before replay (picker reflects
+	// active engine before in-flight deltas land).
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+	_ = ws.WriteMessage(websocket.TextMessage, engineListMsg)
 
 	// 4. replay current turn buffer — in-flight deltas that are NOT in
 	//    engine.Messages() yet (text_delta, thinking_delta, tool_start,
 	//    tool_output_delta, etc., accumulated since the last turn_end).
-	//    The buffer is under writeMu so Handle's appends are serialized.
+	//    The buffer is under writeMu so handleForEngine's appends are
+	//    serialized.
 	replayed := 0
-	for _, entry := range c.streamBuf {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-		if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-			slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
-			break
+	if slot != nil {
+		for _, entry := range slot.streamBuf {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
+			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
+				slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
+				break
+			}
+			replayed++
 		}
-		replayed++
 	}
 	if replayed > 0 {
 		slog.Info("webchat:takeover replay", "frames", replayed)
@@ -85,12 +108,11 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 
 	// task list — current committed disk state, pushed AFTER replay so the
 	// client has historical context first, then the latest task snapshot.
-	// Direct write (not from streamBuf) because buildTaskListMessage
-	// reads live state, which may be newer than a task_list frame buffered
-	// earlier in this same turn.
-	if taskMsg := c.buildTaskListMessage(); taskMsg != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-		_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+	if slot != nil {
+		if taskMsg := c.buildTaskListMessageFor(slot); taskMsg != nil {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
+			_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+		}
 	}
 
 	c.activeWS.Store(ws) // 6. new connection becomes the sink
@@ -172,8 +194,9 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				var removed []string
+				eng := c.activeEngine()
 				for _, id := range msg.UUIDs {
-					if id != "" && c.engine.RemoveAttachment(id) {
+					if id != "" && eng != nil && eng.RemoveAttachment(id) {
 						removed = append(removed, id)
 					}
 				}
@@ -210,7 +233,9 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 				Title     string `json:"title"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				_ = c.engine.UpdateSessionTitle(msg.SessionID, msg.Title)
+				if eng := c.activeEngine(); eng != nil {
+					_ = eng.UpdateSessionTitle(msg.SessionID, msg.Title)
+				}
 				if payload := c.buildSessionListMessage(); payload != nil {
 					_ = c.writeDirect(payload)
 				}
@@ -225,19 +250,37 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleModelSwitch(msg.Provider, msg.Model)
 			}
+		case "engine_switch":
+			var msg struct {
+				EngineID string `json:"engineID"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.EngineID != "" {
+				c.handleEngineSwitch(msg.EngineID)
+			}
+		case "engine_new":
+			var msg struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.handleEngineNew(msg.Name)
+			}
 		}
 	}
 }
 
-// handleMessageInbound dispatches a user message to the engine. If a query
-// is already active, the message is enqueued via engine.EnqueueAttachment
+// handleMessageInbound dispatches a user message to the active engine. If a
+// query is already active, the message is enqueued via engine.EnqueueAttachment
 // (same path as TUI's handleEnqueueMessage) — the engine drains it
 // automatically after the current query finishes.
 func (c *WebChatConnector) handleMessageInbound(text string) {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
 	c.appendInputHistory(text)
-	if c.engine.IsBusy() {
+	if eng.IsBusy() {
 		attachUUID := uuid.NewString()
-		c.engine.EnqueueAttachment(types.QueuedItem{
+		eng.EnqueueAttachment(types.QueuedItem{
 			Value:     text,
 			Mode:      types.ItemModePrompt,
 			UUID:      attachUUID,
@@ -253,7 +296,7 @@ func (c *WebChatConnector) handleMessageInbound(text string) {
 		_ = c.writeDirect(resp)
 		return
 	}
-	go c.engine.Query(context.Background(), text, c.engine.SystemPrompt())
+	go eng.Query(context.Background(), text, eng.SystemPrompt())
 }
 
 // handleAskResponse looks up a pending ask by id and writes the response to
@@ -283,7 +326,9 @@ func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted 
 // same path as TUI's ESC handler. This cancels the engine's internal
 // activeCancel which propagates to the LLM stream and all tool contexts.
 func (c *WebChatConnector) handleStop() {
-	c.engine.Abort()
+	if eng := c.activeEngine(); eng != nil {
+		eng.Abort()
+	}
 }
 
 // cleanupConn aborts any pending asks (so the engine doesn't deadlock waiting

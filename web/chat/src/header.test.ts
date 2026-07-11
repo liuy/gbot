@@ -16,7 +16,7 @@ function findHamburger(root: HTMLElement): HTMLElement | null {
 
 describe('createHeader', () => {
   it('builds sticky header with glass', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     expect(root.tagName).toBe('HEADER')
     expect(root.className).toContain('sticky')
     expect(root.className).toContain('top-0')
@@ -24,7 +24,7 @@ describe('createHeader', () => {
   })
 
   it('renders GBot wordmark span', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     const spans = root.querySelectorAll('span')
     let found = false
     for (const s of Array.from(spans)) {
@@ -34,22 +34,25 @@ describe('createHeader', () => {
   })
 
   it('contains hamburger button with two rects', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     const hamburger = findHamburger(root)
     expect(hamburger).not.toBeNull()
     const rects = hamburger!.querySelectorAll('rect')
     expect(rects.length).toBe(2)
   })
 
-  it('contains agent span with text-t2 class (empty until setAgentModel)', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
-    const spans = root.querySelectorAll('span.text-\\[12px\\].text-t2')
-    expect(spans.length).toBe(1)
-    expect(spans[0].textContent).toBe('')
+  it('contains engine picker button with mono class', () => {
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
+    const buttons = root.querySelectorAll('button')
+    let monoButtons = 0
+    for (const b of Array.from(buttons)) {
+      if (b.className.includes('mono')) monoButtons++
+    }
+    expect(monoButtons).toBeGreaterThanOrEqual(1)
   })
 
   it('contains separator chevron', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     const spans = root.querySelectorAll('span')
     let found = false
     for (const s of Array.from(spans)) {
@@ -59,7 +62,7 @@ describe('createHeader', () => {
   })
 
   it('contains model button with mono class', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     const buttons = root.querySelectorAll('button')
     let modelButton: HTMLElement | null = null
     for (const b of Array.from(buttons)) {
@@ -71,31 +74,13 @@ describe('createHeader', () => {
   })
 
   it('has no session dropdown (no .relative group with session text)', () => {
-    const { root } = createHeader({ onModelSelect: () => {} })
+    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     const dropdowns = root.querySelectorAll('.relative.group')
     expect(dropdowns.length).toBe(0)
   })
 
-  it('setAgentModel sets agent and model text', () => {
-    const h = createHeader({ onModelSelect: () => {} })
-    h.setAgentModel('coder', 'glm-4.6')
-    const spans = h.root.querySelectorAll('span')
-    let agentText = ''
-    for (const s of Array.from(spans)) {
-      if (s.textContent === 'coder') agentText = s.textContent
-    }
-    expect(agentText).toBe('coder')
-
-    const buttons = h.root.querySelectorAll('button')
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) {
-        expect(b.textContent).toBe('glm-4.6')
-      }
-    }
-  })
-
   it('setStatus(true) applies pulse + text-blue to GBot wordmark', () => {
-    const h = createHeader({ onModelSelect: () => {} })
+    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     h.setStatus(true)
     const spans = h.root.querySelectorAll('span')
     let gbotSpan: HTMLElement | null = null
@@ -108,7 +93,7 @@ describe('createHeader', () => {
   })
 
   it('setStatus(false) applies text-t3 and no pulse', () => {
-    const h = createHeader({ onModelSelect: () => {} })
+    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     h.setStatus(false)
     const spans = h.root.querySelectorAll('span')
     let gbotSpan: HTMLElement | null = null
@@ -121,7 +106,7 @@ describe('createHeader', () => {
   })
 
   it('onHamburgerClick registers handler called on click', () => {
-    const h = createHeader({ onModelSelect: () => {} })
+    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     let clicked = 0
     h.onHamburgerClick(() => { clicked++ })
     const hamburger = findHamburger(h.root)
@@ -131,7 +116,7 @@ describe('createHeader', () => {
   })
 
   it('clicking model button opens dropdown panel', () => {
-    const h = createHeader({ onModelSelect: () => {} })
+    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     h.setModels([{ provider: 'zhipu', model: 'glm-5.2' }], 'zhipu', 'glm-5.2')
     const buttons = h.root.querySelectorAll('button')
     let modelButton: HTMLElement | null = null
@@ -155,7 +140,7 @@ describe('createHeader', () => {
   })
 
   it('setModels populates the picker and highlights current', () => {
-    const h = createHeader({ onModelSelect: () => {} })
+    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
     h.setModels(
       [
         { provider: 'zhipu', model: 'glm-5.2' },

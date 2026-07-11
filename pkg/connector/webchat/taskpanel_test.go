@@ -314,7 +314,7 @@ func TestHandle_TaskToolIDsClearedOnStreamDone(t *testing.T) {
 		ToolUse: &types.ToolUseEvent{ID: "tu_leak", Name: "Task"},
 	})
 	// Engine commits the turn → OnStreamDone clears taskToolIDs.
-	c.OnStreamDone()
+	c.clearStreamBufTest("main")
 
 	c.Handle(types.QueryEvent{
 		Type:       types.EventToolEnd,
@@ -350,6 +350,8 @@ func TestBuildTaskListMessage_HubDispatchEndToEnd(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // connect_status
+	_ = readWSMessage(t, ws) // config
+	_ = readWSMessage(t, ws) // engine_list; drain it
 	_ = readWSMessage(t, ws) // takeover pushes task_list; drain it
 
 	h.Dispatch(types.QueryEvent{

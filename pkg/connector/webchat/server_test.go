@@ -161,6 +161,7 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
 	_ = readWSMessage(t, ws) // drain config
+	_ = readWSMessage(t, ws) // drain engine_list
 
 	engineCh := make(chan types.AskResponse, 1)
 	// Dispatch an Ask through the hub — same path the engine takes.
@@ -316,6 +317,7 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	// Initial history page: latest 10 messages
 	initData := readWSMessage(t, ws)
 	_ = readWSMessage(t, ws) // drain config
+	_ = readWSMessage(t, ws) // drain engine_list
 	var initEnv struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`

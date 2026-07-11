@@ -588,23 +588,28 @@ func main() {
 	app.SetStore(store, sessionID, projectDir)
 	app.SetEngineFactory(engineFactory)
 
-	// Webchat wiring (Step B): now that app/engine exist, build the webchat
-	// connector and mount its routes on wsMux. The connector captures the
-	// main engine pointer and subscribes to that engine's hub — it always
-	// drives the main engine regardless of TUI active-engine state, which is
-	// correct: webchat is not a meaningful target for read-only WeChat
-	// engines. Routes are added to the same *http.ServeMux the already-running
-	// *http.Server uses (Go's ServeMux is safe for concurrent register+read).
+	// Webchat wiring: the connector owns the EngineManager and subscribes to
+	// every engine's hub. engine_new is wired via a closure that captures
+	// engineFactory + engineMgr + store. Routes are added to the same
+	// *http.ServeMux the already-running *http.Server uses (Go's ServeMux is
+	// safe for concurrent register+read).
 	if needWS && wsMux != nil {
-		mainEng := app.Engine()
-		if mainEng != nil {
-			if mainHub, ok := mainEng.Dispatcher().(*hub.Hub); ok && mainHub != nil {
-				wc := webchat.New(mainEng, mainHub, providerMap, buildProviderConfigMap(cfg))
-				webchat.RegisterStaticRoutes(wsMux)
-				webchat.RegisterChatWS(wsMux, wc)
-				slog.Info("webchat: mounted on ws mux", "engine", mainEng.EngineID())
+		wc := webchat.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
+		wc.SetCreateEngineFn(func(name string) (string, error) {
+			currentProvider, currentModel := "", model
+			if vs := engineMgr.Active(); vs != nil {
+				if vs.Engine != nil && vs.Engine.Provider() != nil {
+					currentProvider = vs.Engine.Provider().Name()
+				}
+				if vs.Engine != nil && vs.Engine.Model() != "" {
+					currentModel = vs.Engine.Model()
+				}
 			}
-		}
+			return createEngineForWebchat(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
+		})
+		webchat.RegisterStaticRoutes(wsMux)
+		webchat.RegisterChatWS(wsMux, wc)
+		slog.Info("webchat: mounted on ws mux", "engines", engineMgr.Count())
 	}
 
 	// Estimate initial context usage
@@ -962,6 +967,56 @@ func restoreEngines(d restoreEnginesDeps) string {
 		return vs.ActiveSessionID
 	}
 	return ""
+}
+
+// createEngineForWebchat builds a new engine via engineFactory, registers it
+// in the manager, subscribes the webchat connector to its hub, and wires
+// OnStreamDone. Returns the new engine ID. Called by the connector's
+// engine_new handler via the closure injected by SetCreateEngineFn.
+func createEngineForWebchat(
+	name string,
+	mgr *engine.EngineManager,
+	factory tui.EngineFactoryFn,
+	store *short.Store,
+	projectDir string,
+	connector *webchat.WebChatConnector,
+	currentProvider string,
+	currentModel string,
+) (string, error) {
+	if name == "" {
+		name = mgr.NewEngineName()
+	}
+	id := mgr.NewEngineID()
+	eng, handler, err := factory(id, name, currentProvider, currentModel)
+	if err != nil {
+		return "", fmt.Errorf("factory: %w", err)
+	}
+	if store != nil {
+		eng.SetStore(store, projectDir)
+	}
+	if err := eng.NewSession(projectDir, ""); err != nil {
+		eng.Close()
+		return "", fmt.Errorf("new session: %w", err)
+	}
+	vs := &engine.EngineViewState{
+		Engine:          eng,
+		Handler:         handler,
+		ID:              id,
+		Name:            name,
+		ActiveSessionID: eng.SessionID(),
+		Model:           eng.Model(),
+		CreatedAt:       time.Now(),
+		LastActiveAt:    time.Now(),
+		Repl:            nil,
+		History:         nil,
+		ReadOnly:        false,
+	}
+	mgr.Add(vs)
+	connector.RegisterEngine(vs)
+	if err := mgr.PersistMeta(projectDir); err != nil {
+		slog.Warn("webchat: persist meta after engine new", "error", err)
+	}
+	return id, nil
 }
 
 // planRestore decides which engines to rebuild on startup and which one is

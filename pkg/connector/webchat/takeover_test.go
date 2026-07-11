@@ -89,6 +89,7 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
 	}
 	_ = readWSMessage(t, ws2) // drain config
+	_ = readWSMessage(t, ws2) // drain engine_list
 
 	// After config, ws2 must receive replay of streamBuf (d0..d4) then
 	// live d5..d7.
@@ -161,7 +162,7 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	}
 
 	// First write should fail because TCP is closed.
-	err = c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`))
+	err = c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`))
 	if err == nil {
 		t.Fatal("writePayload returned nil on closed conn — expected error")
 	}
@@ -170,7 +171,7 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	}
 
 	// After failure cleared activeWS, subsequent writes are no-ops (nil error).
-	if err := c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`)); err != nil {
+	if err := c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`)); err != nil {
 		t.Fatalf("writePayload after inactive: %v", err)
 	}
 }
@@ -181,14 +182,14 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 func TestWritePayload_NoActiveWSIsNoOp(t *testing.T) {
 	c := newTestConnector(t)
 	// activeWS is nil by default (never connected).
-	err := c.writePayload(types.QueryEvent{}, []byte(`{"type":"event"}`))
+	err := c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`))
 	if err != nil {
 		t.Fatal("writePayload with nil activeWS should return nil (no-op)")
 	}
 	// Buffer captures event even when activeWS is nil — so events during
 	// disconnect are preserved for takeover replay.
-	if len(c.streamBuf) != 1 {
-		t.Fatalf("streamBuf should have 1 frame (unconditional append), got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("streamBuf should have 1 frame (unconditional append), got %d", c.activeStreamBufLen())
 	}
 }
 
@@ -248,15 +249,15 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	if len(c.streamBuf) != 2 {
-		t.Fatalf("buffer should have 2 frames after 2 deltas, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 2 {
+		t.Fatalf("buffer should have 2 frames after 2 deltas, got %d", c.activeStreamBufLen())
 	}
 
 	// query_end arrives while disconnected. Buffer MUST be cleared.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	if len(c.streamBuf) != 0 {
-		t.Fatalf("buffer should be empty after query_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", len(c.streamBuf))
+	if c.activeStreamBufLen() != 0 {
+		t.Fatalf("buffer should be empty after query_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", c.activeStreamBufLen())
 	}
 }
 
@@ -292,19 +293,19 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 	// NOT have cleared it. Main agent's turn is still in progress.
 	// Events: turn_start(main) + thinking_start + thinking_end + tool_start +
 	//         turn_start(sub) + thinking_start + thinking_end + turn_end(sub) = 8
-	if len(c.streamBuf) != 8 {
-		t.Fatalf("buffer should have 8 frames after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", len(c.streamBuf))
+	if c.activeStreamBufLen() != 8 {
+		t.Fatalf("buffer should have 8 frames after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", c.activeStreamBufLen())
 	}
 
 	// Now main agent commits the assistant response — OnStreamDone clears buffer.
-	c.OnStreamDone()
-	if len(c.streamBuf) != 0 {
-		t.Fatalf("buffer should be empty after OnStreamDone, got %d", len(c.streamBuf))
+	c.clearStreamBufTest("main")
+	if c.activeStreamBufLen() != 0 {
+		t.Fatalf("buffer should be empty after OnStreamDone, got %d", c.activeStreamBufLen())
 	}
 }
 
 // TestTakeoverConcurrent_NoRaceOnBufferLen verifies that reading
-// len(c.streamBuf) during takeover doesn't race with concurrent
+// c.activeStreamBufLen() during takeover doesn't race with concurrent
 // Handle appends. The takeover log line reads buffer length outside
 // writeMu — race detector catches this when Handle and serveChatWS
 // run concurrently.
@@ -315,7 +316,7 @@ func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
 	_ = dialAndStore(t, c)
 
 	// Concurrently pump Handle events while repeatedly dialing new WS
-	// connections (triggering takeover). If len(c.streamBuf) is read
+	// connections (triggering takeover). If c.activeStreamBufLen() is read
 	// outside writeMu, the race detector fires.
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -368,15 +369,15 @@ func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	if len(c.streamBuf) != 2 {
-		t.Fatalf("buffer should have 2 frames, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 2 {
+		t.Fatalf("buffer should have 2 frames, got %d", c.activeStreamBufLen())
 	}
 
 	// query_end arrives while connected. Buffer MUST be cleared.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	if len(c.streamBuf) != 0 {
-		t.Fatalf("buffer should be empty after query_end with active WS, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 0 {
+		t.Fatalf("buffer should be empty after query_end with active WS, got %d", c.activeStreamBufLen())
 	}
 
 	// Drain delta1, delta2, then read query_end from the WS.
@@ -407,8 +408,8 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	if len(c.streamBuf) != 2 {
-		t.Fatalf("buffer should have 2 frames, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 2 {
+		t.Fatalf("buffer should have 2 frames, got %d", c.activeStreamBufLen())
 	}
 
 	// Break the WS so turn_end write fails.
@@ -434,8 +435,8 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	// Even though write failed, query_end must clear the buffer.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	if len(c.streamBuf) != 0 {
-		t.Fatalf("buffer should be empty after query_end even on write failure, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 0 {
+		t.Fatalf("buffer should be empty after query_end even on write failure, got %d", c.activeStreamBufLen())
 	}
 }
 
@@ -470,8 +471,8 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 		Agent:      agent,
 	})
 
-	if len(c.streamBuf) != 6 {
-		t.Fatalf("buffer should have 6 frames, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 6 {
+		t.Fatalf("buffer should have 6 frames, got %d", c.activeStreamBufLen())
 	}
 
 	mux := http.NewServeMux()
@@ -488,9 +489,10 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	defer ws1.Close()
 	_ = readWSMessage(t, ws1) // connect_status
 	_ = readWSMessage(t, ws1) // config
+	_ = readWSMessage(t, ws1) // engine_list; drain it
 
-	if len(c.streamBuf) != 6 {
-		t.Fatalf("buffer should still have 6 frames after first takeover, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 6 {
+		t.Fatalf("buffer should still have 6 frames after first takeover, got %d", c.activeStreamBufLen())
 	}
 
 	// Verify ws1 received the grep result during replay.
@@ -508,8 +510,8 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	// More sub-agent events arrive after first takeover.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
 
-	if len(c.streamBuf) != 7 {
-		t.Fatalf("buffer should have 7 frames after new event, got %d", len(c.streamBuf))
+	if c.activeStreamBufLen() != 7 {
+		t.Fatalf("buffer should have 7 frames after new event, got %d", c.activeStreamBufLen())
 	}
 
 	// ── Second takeover ──
@@ -523,9 +525,10 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	defer ws2.Close()
 	_ = readWSMessage(t, ws2) // connect_status
 	_ = readWSMessage(t, ws2) // config
+	_ = readWSMessage(t, ws2) // engine_list; drain it
 
-	if len(c.streamBuf) != 7 {
-		t.Fatalf("buffer should still have 7 frames after second takeover, got %d — repeated reconnects must not shrink buffer", len(c.streamBuf))
+	if c.activeStreamBufLen() != 7 {
+		t.Fatalf("buffer should still have 7 frames after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
 	}
 
 	// Verify ws2 received ALL 7 frames including grep result + more text.

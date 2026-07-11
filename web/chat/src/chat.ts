@@ -349,7 +349,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const sidebar = createSidebar({ mainContent })
 
-  const header = createHeader({ onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }) })
+  const header = createHeader({
+    onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }),
+    onEngineSwitch: (engineID) => conn.send({ type: 'engine_switch', engineID }),
+    onEngineNew: () => conn.send({ type: 'engine_new' }),
+  })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
   scroll.appendChild(header.root)
@@ -1304,7 +1308,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'connect_status':
         sidebar.closeImmediate()
         header.setStatus(msg.connected)
-        header.setAgentModel(msg.agent ?? 'main', msg.model ?? '')
+        header.setModel(msg.model ?? '')
         inputBar.setConnected(msg.connected)
         resetAllState()
         // Restore cumulative usage from server so progress bar shows correct
@@ -1379,6 +1383,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       case 'task_list':
         taskPanel.setTasks(msg.tasks)
+        return
+      case 'engine_list':
+        header.setEngines(msg.engines, msg.activeID)
         return
       case 'session_list':
         sidebar.setSessions(msg.sessions, currentSessionID)

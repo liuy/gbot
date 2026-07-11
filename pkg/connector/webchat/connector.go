@@ -153,14 +153,28 @@ type streamEntry struct {
 	payload []byte
 }
 
-// WebChatConnector implements connector.Connector for the web chat. It
-// subscribes to the main engine's hub, translates QueryEvents into the WS
-// wire protocol (Phase 0), and drives queries from inbound WS messages.
-type WebChatConnector struct {
-	engine engineClient
-	hub    *hub.Hub
-
+// engineSlot holds the per-engine state that was previously global on the
+// connector. Each engine gets its own streamBuf, queryStats, and taskToolIDs
+// so background engines accumulate state independently of the active one.
+type engineSlot struct {
+	engineID    string
+	engine      engineClient
+	hub         *hub.Hub
 	unsubscribe func()
+	streamBuf   []streamEntry
+	queryStats  queryStats
+	taskToolIDs map[string]bool
+}
+
+// WebChatConnector implements connector.Connector for the web chat. It owns
+// an EngineManager, subscribes to every engine's hub, and routes events to
+// the single active WS connection. Inbound WS messages operate on the
+// active engine; engine_switch swaps the active engine and replays its
+// buffered in-flight stream.
+type WebChatConnector struct {
+	mgr    *engine.EngineManager
+	slots  map[string]*engineSlot // keyed by engine ID
+	active string                 // active engine ID; cached for lock-free reads under writeMu
 
 	// Ask → ResponseCh plumbing. When the engine dispatches EventAsk, Handle
 	// stores evt.Ask under a fresh monotonic id and emits the ask outbound.
@@ -177,26 +191,9 @@ type WebChatConnector struct {
 	// writeMu serializes all writes to the active WS. gorilla websocket does
 	// not support concurrent writers; every outbound path (Handle, serveChatWS
 	// takeover, readLoop responses) goes through writePayload or its variants.
-	// It also guards streamBuf (Handle appends, serveChatWS replays).
+	// It also guards the slots map, the active field, and each slot's
+	// streamBuf/queryStats/taskToolIDs.
 	writeMu sync.Mutex
-
-	// queryStats accumulates per-query stats sent to the client via
-	// connect_status on takeover. Reset on EventQueryEnd. Guarded by writeMu.
-	queryStats queryStats
-
-	// streamBuf holds the raw events of the current turn that have NOT yet
-	// been committed to engine.Messages(). Cleared on turn_end / query_end
-	// (the turn is then visible via history). Replayed to a new ws during
-	// takeover so the in-flight stream is not lost.
-	// Guarded by writeMu.
-	streamBuf []streamEntry
-
-	// taskToolIDs tracks tool_use IDs of Task tool calls started by the main
-	// agent during the current turn. On tool_end for a tracked ID, the
-	// connector pushes a task_list frame AFTER the tool_end event frame so
-	// the frontend updates the task panel with the latest disk state.
-	// Guarded by writeMu; cleared alongside streamBuf on stream done.
-	taskToolIDs map[string]bool
 
 	// providers + providerConfigs drive the model picker (config message +
 	// model_switch handler). providers maps provider name → llm.Provider
@@ -205,52 +202,142 @@ type WebChatConnector struct {
 	providers       map[string]llm.Provider
 	providerConfigs map[string]*config.Provider
 
-	// OnStreamDone is called when the main engine commits an assistant response
-	// to engine.Messages(). Clears streamBuf so takeover replay does not
-	// duplicate events already reflected in history. Set by the connector's
-	// production wiring to engine.OnStreamDone.
-	OnStreamDone func()
+	// createEngine builds a new engine, registers it in the manager, and
+	// subscribes this connector to its hub. Set by main.go via
+	// SetCreateEngineFn. nil when engine_new is not supported.
+	createEngine func(name string) (string, error)
+
+	// testMock caches the mockEngine for lock-free test access via mock().
+	// nil in production connectors. Set only by newTestConnector* helpers.
+	// Typed as any so the production file does not depend on the test-only
+	// mockEngine type; mock() (in helpers_test.go) does the type assertion.
+	testMock any
 }
 
-// New builds a WebChatConnector bound to the given engine and hub. The
-// connector subscribes to h immediately (same pattern as WeChat at
-// pkg/connector/wechat/connector.go:127); the returned unsubscribe func is
-// stored and called by Stop.
-func New(eng *engine.Engine, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
+// New builds a WebChatConnector bound to an EngineManager. The connector
+// subscribes to every engine's hub immediately. The active engine is set
+// from mgr.ActiveID(). main.go must call SetCreateEngineFn to enable
+// engine_new.
+func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
 	c := &WebChatConnector{
-		engine:          &engineAdapter{eng: eng},
-		hub:             h,
+		mgr:             mgr,
+		slots:           make(map[string]*engineSlot),
 		pendingAsks:     make(map[string]*types.AskEvent),
-		taskToolIDs:     make(map[string]bool),
 		providers:       providers,
 		providerConfigs: providerConfigs,
 	}
-	c.OnStreamDone = func() {
-		c.writeMu.Lock()
-		frames := len(c.streamBuf)
-		c.streamBuf = nil
-		c.taskToolIDs = make(map[string]bool)
-		c.writeMu.Unlock()
-		slog.Info("webchat:stream done, buffer cleared", "frames", frames)
+	for _, vs := range mgr.List() {
+		c.registerEngine(vs)
 	}
-	eng.OnStreamDone = c.OnStreamDone
-	if h != nil {
-		c.unsubscribe = h.Subscribe(c)
-	}
+	c.active = mgr.ActiveID()
 	return c
+}
+
+// activeSlot returns the slot for the active engine. Caller must hold writeMu
+// OR be in a single-goroutine test context. Returns nil if active is unset or
+// the slot is missing (e.g. during init before any engine is registered).
+func (c *WebChatConnector) activeSlot() *engineSlot {
+	return c.slots[c.active]
+}
+
+// activeEngine returns the active engine's engineClient (may be nil during
+// init). Convenience wrapper for inbound WS handlers that always operate on
+// the active engine.
+func (c *WebChatConnector) activeEngine() engineClient {
+	if s := c.activeSlot(); s != nil {
+		return s.engine
+	}
+	return nil
+}
+
+// engineHubShim is a per-engine hub.EventHandler that tags each event with
+// the engine ID so handleForEngine knows which slot to route to. One shim
+// is created per registered engine and subscribed to that engine's hub.
+type engineHubShim struct {
+	engineID string
+	c        *WebChatConnector
+}
+
+func (s *engineHubShim) Handle(event hub.Event) {
+	s.c.handleForEngine(s.engineID, event)
+}
+
+// registerEngine subscribes the connector to vs.Engine's hub and creates a
+// per-engine slot. Idempotent: a second call for an existing ID logs and
+// returns without re-subscribing (re-subscribing would double-deliver every
+// event). Exported as RegisterEngine so main.go can add engines created
+// outside the connector (engine_new flow).
+func (c *WebChatConnector) registerEngine(vs *engine.EngineViewState) {
+	// webchat subscribes only to fully materialized engines. Every engine is
+	// built by restoreEngines (boot) or createEngineForWebchat (engine_new)
+	// before reaching here, so Engine must be non-nil. A nil Engine is a
+	// wiring bug — panic so it surfaces immediately.
+	if vs.Engine == nil {
+		panic(fmt.Sprintf("webchat: registerEngine called with nil Engine for %q", vs.ID))
+	}
+	c.writeMu.Lock()
+	if _, exists := c.slots[vs.ID]; exists {
+		c.writeMu.Unlock()
+		slog.Warn("webchat: registerEngine called twice for same engine, ignoring", "id", vs.ID)
+		return
+	}
+	c.writeMu.Unlock()
+
+	h, ok := vs.Engine.Dispatcher().(*hub.Hub)
+	if !ok {
+		slog.Warn("webchat: engine dispatcher is not *hub.Hub, skipping", "id", vs.ID)
+		return
+	}
+	slot := &engineSlot{
+		engineID:    vs.ID,
+		engine:      &engineAdapter{eng: vs.Engine},
+		hub:         h,
+		taskToolIDs: map[string]bool{},
+	}
+	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
+	vs.Engine.OnStreamDone = func() { c.clearStreamBuf(vs.ID) }
+
+	c.writeMu.Lock()
+	c.slots[vs.ID] = slot
+	c.writeMu.Unlock()
+}
+
+// RegisterEngine is the exported wrapper around registerEngine, used by
+// main.go's createEngineForWebchat to register engines created after boot.
+func (c *WebChatConnector) RegisterEngine(vs *engine.EngineViewState) {
+	c.registerEngine(vs)
+}
+
+// clearStreamBuf clears the per-engine streamBuf and taskToolIDs. Called by
+// OnStreamDone — when the assistant response is committed to
+// engine.Messages(), the buffer's events are now in history and replay
+// would duplicate.
+func (c *WebChatConnector) clearStreamBuf(engineID string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if slot := c.slots[engineID]; slot != nil {
+		frames := len(slot.streamBuf)
+		slot.streamBuf = nil
+		slot.taskToolIDs = make(map[string]bool)
+		slog.Info("webchat:stream done, buffer cleared", "engine", engineID, "frames", frames)
+	}
 }
 
 // Start is a no-op: the HTTP/WS server is registered separately via
 // RegisterChatWS in main.go, and the connector is request-driven.
 func (c *WebChatConnector) Start(ctx context.Context) error { return nil }
 
-// Stop unsubscribes from the hub, aborts any pending asks, and clears the
-// active WS. Does NOT abort the active query — a brief disconnect (e.g. mobile
-// browser backgrounding) should not interrupt the LLM.
+// Stop unsubscribes from all engine hubs, aborts any pending asks, and clears
+// the active WS. Does NOT abort the active query — a brief disconnect (e.g.
+// mobile browser backgrounding) should not interrupt the LLM.
 func (c *WebChatConnector) Stop() {
-	if c.unsubscribe != nil {
-		c.unsubscribe()
+	c.writeMu.Lock()
+	for _, slot := range c.slots {
+		if slot.unsubscribe != nil {
+			slot.unsubscribe()
+		}
 	}
+	c.writeMu.Unlock()
 	c.cleanupConn()
 }
 
@@ -259,20 +346,23 @@ func (c *WebChatConnector) Stop() {
 // connector.Connector contract.
 func (c *WebChatConnector) Send(userID, text string) error { return nil }
 
-// writePayload writes a text message to the active WS under writeMu with a
-// 5s deadline. On failure (slow client, dead socket), stores nil so the
+// writePayloadTo writes a text message to the active WS under writeMu with a
+// 30s deadline. On failure (slow client, dead socket), stores nil so the
 // engine is never blocked by a wedged connection. Also appends the payload to
-// streamBuf (inside the lock) so takeover replay is consistent. Returns
-// the error so callers with their own bookkeeping can react.
+// slot.streamBuf (inside the lock) so takeover replay is consistent.
 //
 // Buffer is appended UNCONDITIONALLY — even when activeWS is nil or write
-// fails — so that events during disconnect (tool_end, turn_end, etc.) are
-// preserved for takeover replay. Only writePayloadAndClear (turn_end/
-// query_end) resets the buffer.
-func (c *WebChatConnector) writePayload(event types.QueryEvent, payload []byte) error {
+// fails, and even when this engine is not the active one — so that events
+// from background engines are preserved for takeover replay. Only the active
+// engine's events are written to the WS in real-time; background engines
+// buffer only. writePayloadAndClearTo (turn_end/query_end) resets the buffer.
+func (c *WebChatConnector) writePayloadTo(slot *engineSlot, event types.QueryEvent, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	c.streamBuf = append(c.streamBuf, streamEntry{event: event, payload: payload})
+	slot.streamBuf = append(slot.streamBuf, streamEntry{event: event, payload: payload})
+	if slot.engineID != c.active {
+		return nil // background engine — buffer only, no WS write
+	}
 	ws := c.activeWS.Load()
 	if ws == nil {
 		return nil // inactive — buffer captures event, engine keeps running
@@ -285,19 +375,21 @@ func (c *WebChatConnector) writePayload(event types.QueryEvent, payload []byte) 
 	return nil
 }
 
-// writePayloadAndClear writes to activeWS then clears streamBuf. For
-// turn_end / query_end — the turn is now committed to engine.Messages(), so
-// the buffer is reset to avoid duplicate replay on the next takeover.
-func (c *WebChatConnector) writePayloadAndClear(payload []byte) error {
+// writePayloadAndClearTo writes to activeWS then clears slot.streamBuf,
+// slot.taskToolIDs, and slot.queryStats. For turn_end / query_end — the turn
+// is now committed to engine.Messages(), so the buffer is reset to avoid
+// duplicate replay on the next takeover.
+func (c *WebChatConnector) writePayloadAndClearTo(slot *engineSlot, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	// Clear buffer unconditionally — the turn is committed to engine.Messages()
-	// so replay would duplicate. Must clear even when activeWS is nil (disconnect
-	// during turn_end) to prevent stale events from replaying after takeover.
-	bufFrames := len(c.streamBuf)
-	c.streamBuf = nil
-	c.taskToolIDs = make(map[string]bool)
+	bufFrames := len(slot.streamBuf)
+	slot.streamBuf = nil
+	slot.taskToolIDs = make(map[string]bool)
+	slot.queryStats = queryStats{}
 	slog.Info("webchat:turnbuf cleared", "frames", bufFrames)
+	if slot.engineID != c.active {
+		return nil
+	}
 	ws := c.activeWS.Load()
 	if ws == nil {
 		return nil
@@ -327,64 +419,79 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 	return nil
 }
 
-// Handle implements hub.EventHandler. Every event is marshalled to its wire
-// payload and written synchronously to the active WS via writePayload/writeDirect.
-// If no active WS or the write fails, the call is a no-op (engine keeps running).
+// Handle dispatches an event to the active engine. It is kept for test
+// compatibility: existing tests call c.Handle(event) to simulate hub dispatch.
+// Production code routes events through engineHubShim → handleForEngine.
 func (c *WebChatConnector) Handle(event hub.Event) {
-	// Track Task tool calls started by the main agent so tool_end can trigger
-	// a task_list push. Sub-agent Task calls (Agent != nil) are not tracked
-	// because the panel only reflects the main engine's top-level tasks.
-	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil && event.ToolUse.Name == "Task" {
-		c.writeMu.Lock()
-		c.taskToolIDs[event.ToolUse.ID] = true
-		c.writeMu.Unlock()
-	}
+	c.writeMu.Lock()
+	active := c.active
+	c.writeMu.Unlock()
+	c.handleForEngine(active, event)
+}
 
-	// Accumulate per-query stats. Reset on query_end.
-	if event.Type == types.EventUsage && event.Agent == nil && event.Usage != nil {
+// handleForEngine is the per-engine event handler. It is called by the
+// engineHubShim for each event dispatched on that engine's hub. All events
+// from all engines are processed here: stats accumulate into the per-engine
+// slot, streamBuf appends to the per-engine slot, and only the active
+// engine's events are written to the WS in real-time.
+//
+// Ask events from inactive engines are silently dropped: an Ask demands a UI
+// prompt, and only the active engine's UI is visible. The engine's own Ask
+// timeout (if any) will eventually fire.
+func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
+	// Ask routing — active engine only. Must happen before slot lookup so
+	// we don't touch the buffer for a dropped Ask.
+	if event.Type == types.EventAsk {
 		c.writeMu.Lock()
-		c.queryStats.usage.InputTokens += event.Usage.InputTokens
-		c.queryStats.usage.OutputTokens += event.Usage.OutputTokens
-		c.queryStats.usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
-		c.queryStats.usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		isActive := engineID == c.active
 		c.writeMu.Unlock()
-	}
-	if event.Type == types.EventQueryStart && event.Agent == nil {
-		c.writeMu.Lock()
-		c.queryStats.startMs = time.Now().UnixMilli()
-		c.writeMu.Unlock()
-	}
-	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil {
-		c.writeMu.Lock()
-		c.queryStats.toolCount++
-		c.writeMu.Unlock()
-	}
-	if event.Type == types.EventThinkingEnd && event.Agent == nil && event.Thinking != nil {
-		c.writeMu.Lock()
-		c.queryStats.thinkingMs += event.Thinking.Duration.Milliseconds()
-		c.writeMu.Unlock()
-	}
-	if event.Type == types.EventQueryEnd && event.Agent == nil {
-		c.writeMu.Lock()
-		c.queryStats = queryStats{}
-		c.writeMu.Unlock()
-	}
-
-	switch event.Type {
-	case types.EventAsk:
+		if !isActive {
+			return
+		}
 		c.handleAsk(event)
 		return
 	}
 
-	slog.Info("webchat:event", "type", event.Type,
+	c.writeMu.Lock()
+	slot := c.slots[engineID]
+	if slot == nil {
+		c.writeMu.Unlock()
+		return
+	}
+
+	// Track Task tool calls started by the main agent so tool_end can trigger
+	// a task_list push. Sub-agent Task calls (Agent != nil) are not tracked.
+	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil && event.ToolUse.Name == "Task" {
+		slot.taskToolIDs[event.ToolUse.ID] = true
+	}
+
+	// Accumulate per-query stats into the per-engine slot. Reset on query_end.
+	if event.Type == types.EventUsage && event.Agent == nil && event.Usage != nil {
+		slot.queryStats.usage.InputTokens += event.Usage.InputTokens
+		slot.queryStats.usage.OutputTokens += event.Usage.OutputTokens
+		slot.queryStats.usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
+		slot.queryStats.usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+	}
+	if event.Type == types.EventQueryStart && event.Agent == nil {
+		slot.queryStats.startMs = time.Now().UnixMilli()
+	}
+	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil {
+		slot.queryStats.toolCount++
+	}
+	if event.Type == types.EventThinkingEnd && event.Agent == nil && event.Thinking != nil {
+		slot.queryStats.thinkingMs += event.Thinking.Duration.Milliseconds()
+	}
+	c.writeMu.Unlock()
+
+	slog.Info("webchat:event", "type", event.Type, "engine", engineID,
 		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
 
 	aborted := false
 	if event.Type == types.EventQueryEnd && event.Error != nil && event.Agent == nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
-			rewind := c.shouldAutoRewind()
-			slog.Info("webchat:abort", "shouldAutoRewind", rewind, "msgs", len(c.engine.Messages()))
+			rewind := c.shouldAutoRewindFor(slot.engine)
+			slog.Info("webchat:abort", "engine", engineID, "shouldAutoRewind", rewind, "msgs", len(slot.engine.Messages()))
 			if !rewind {
 				interruptPayload, _ := json.Marshal(struct {
 					Type  string           `json:"type"`
@@ -393,9 +500,9 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 					Type: types.EventTextDelta,
 					Text: types.InterruptMessage,
 				}})
-				_ = c.writePayload(types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage}, interruptPayload)
+				_ = c.writePayloadTo(slot, types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage}, interruptPayload)
 			}
-			c.autoRewindOnAbort()
+			c.autoRewindOnAbortFor(slot.engine)
 		}
 	}
 	payload, err := json.Marshal(struct {
@@ -413,29 +520,30 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 	pushTaskList := false
 	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
 		c.writeMu.Lock()
-		pushTaskList = c.taskToolIDs[event.ToolResult.ToolUseID]
+		pushTaskList = slot.taskToolIDs[event.ToolResult.ToolUseID]
 		c.writeMu.Unlock()
 	}
 
 	if event.Type == types.EventQueryEnd && event.Agent == nil {
-		_ = c.writePayloadAndClear(payload)
+		_ = c.writePayloadAndClearTo(slot, payload)
 		if event.Error != nil && !aborted {
 			_ = c.writeDirect(buildErrorMessage(event.Error))
 		}
 	} else {
-		_ = c.writePayload(event, payload)
+		_ = c.writePayloadTo(slot, event, payload)
 	}
 
 	if pushTaskList {
-		if taskPayload := c.buildTaskListMessage(); taskPayload != nil {
-			_ = c.writePayload(types.QueryEvent{}, taskPayload)
+		if taskPayload := c.buildTaskListMessageFor(slot); taskPayload != nil {
+			_ = c.writePayloadTo(slot, types.QueryEvent{}, taskPayload)
 		}
 	}
 }
 
-// shouldAutoRewind checks whether autoRewindOnAbort would rewind.
-func (c *WebChatConnector) shouldAutoRewind() bool {
-	msgs := c.engine.Messages()
+// shouldAutoRewindFor checks whether autoRewindOnAbortFor would rewind, using
+// the given engine (per-engine, not global).
+func (c *WebChatConnector) shouldAutoRewindFor(eng engineClient) bool {
+	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
 		return true
@@ -443,17 +551,17 @@ func (c *WebChatConnector) shouldAutoRewind() bool {
 	return utils.MessagesAfterAreOnlySynthetic(msgs, lastUserIdx)
 }
 
-// autoRewindOnAbort mirrors TUI's tryAutoRewind.
-func (c *WebChatConnector) autoRewindOnAbort() {
-	if !c.shouldAutoRewind() {
+// autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given engine.
+func (c *WebChatConnector) autoRewindOnAbortFor(eng engineClient) {
+	if !c.shouldAutoRewindFor(eng) {
 		return
 	}
-	msgs := c.engine.Messages()
+	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
 		return
 	}
-	if err := c.engine.RewindTo(lastUserIdx); err != nil {
+	if err := eng.RewindTo(lastUserIdx); err != nil {
 		slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
 	}
 }
@@ -469,8 +577,17 @@ type inputHistoryEntry struct {
 // mirroring pkg/tui/app.go historyPathFor. Returns "" when projectDir or
 // engineID is empty (connector has no engine bound).
 func (c *WebChatConnector) inputHistoryPath() string {
-	dir := c.engine.ProjectDir()
-	id := c.engine.EngineID()
+	eng := c.activeEngine()
+	if eng == nil {
+		return ""
+	}
+	return c.inputHistoryPathFor(eng)
+}
+
+// inputHistoryPathFor computes the history path for a specific engine.
+func (c *WebChatConnector) inputHistoryPathFor(eng engineClient) string {
+	dir := eng.ProjectDir()
+	id := eng.EngineID()
 	if dir == "" || id == "" {
 		return ""
 	}
@@ -484,6 +601,24 @@ func (c *WebChatConnector) inputHistoryPath() string {
 // doesn't exist or yields no entries so the JSON field can be omitempty.
 func (c *WebChatConnector) loadInputHistory() []string {
 	path := c.inputHistoryPath()
+	return loadInputHistoryFromFile(path)
+}
+
+// loadInputHistoryFor reads input history for a specific engine (used by
+// buildConnectStatusMessageForSlot during engine_switch, when the slot is not
+// yet the active engine).
+func (c *WebChatConnector) loadInputHistoryFor(eng engineClient) []string {
+	path := c.inputHistoryPathFor(eng)
+	return loadInputHistoryFromFile(path)
+}
+
+// loadInputHistoryFromFile reads the shared per-engine input history JSONL
+// from path and returns the display entries oldest-first, applying the same
+// consecutive-duplicate skip, empty-display skip, malformed-line skip, and
+// maxSize cap as pkg/tui/history.go load(). Returns nil (not an empty slice)
+// when the file doesn't exist or yields no entries so the JSON field can be
+// omitempty.
+func loadInputHistoryFromFile(path string) []string {
 	if path == "" {
 		return nil
 	}
@@ -597,11 +732,22 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
 func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte {
-	msgs := c.engine.Messages()
+	slot := c.activeSlot()
+	if slot == nil {
+		return nil
+	}
+	return c.buildHistoryMessageForSlot(slot, cursor, limit)
+}
+
+// buildHistoryMessageForSlot is the per-slot core of buildHistoryMessage. It
+// is called directly by handleEngineSwitch (which needs to build history for
+// a non-active slot before c.active is flipped).
+func (c *WebChatConnector) buildHistoryMessageForSlot(slot *engineSlot, cursor string, limit int) []byte {
+	msgs := slot.engine.Messages()
 	if len(msgs) == 0 {
 		return nil
 	}
-	tools := c.engine.Tools()
+	tools := slot.engine.Tools()
 
 	// First pass: collect all tool_results keyed by tool_use_id (same as TUI).
 	toolResults := make(map[string]types.ContentBlock)
@@ -979,13 +1125,24 @@ type taskListWireItem struct {
 	ActiveForm string   `json:"activeForm,omitempty"`
 }
 
-// buildTaskListMessage reads the engine's task list, filters internal tasks,
-// resolves blockedBy from task IDs to subjects, and returns the JSON
-// task_list payload. Returns nil when there are no user-visible tasks so the
-// frontend hides the panel. Mirrors the TUI's taskListFn closure at
-// cmd/gbot/main.go:626-664.
+// buildTaskListMessage reads the active engine's task list. Delegates to
+// buildTaskListMessageFor with the active slot.
 func (c *WebChatConnector) buildTaskListMessage() []byte {
-	tl := c.engine.TaskList()
+	slot := c.activeSlot()
+	if slot == nil {
+		return nil
+	}
+	return c.buildTaskListMessageFor(slot)
+}
+
+// buildTaskListMessageFor reads the slot's engine task list, filters internal
+// tasks, resolves blockedBy from task IDs to subjects, and returns the JSON
+// task_list payload. Returns nil when there are no user-visible tasks.
+func (c *WebChatConnector) buildTaskListMessageFor(slot *engineSlot) []byte {
+	if slot == nil {
+		return nil
+	}
+	tl := slot.engine.TaskList()
 	if tl == nil || tl.Dir() == "" {
 		return nil
 	}
@@ -1061,16 +1218,23 @@ type configCurrent struct {
 	Model    string `json:"model"`
 }
 
-// buildConfigMessage returns a JSON "config" message with the full ordered
-// model list (regular providers first, free providers last) and the current
-// provider/model. Always returns non-nil so the frontend always receives the
-// frame during takeover, even when there are no providers.
+// buildConfigMessage returns a JSON "config" message for the active engine.
 func (c *WebChatConnector) buildConfigMessage() []byte {
+	slot := c.activeSlot()
+	if slot == nil {
+		return nil
+	}
+	return c.buildConfigMessageForSlot(slot)
+}
+
+// buildConfigMessageForSlot is the per-slot config builder, used by
+// handleEngineSwitch for non-active slots.
+func (c *WebChatConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 	var currentProvider string
-	if p := c.engine.Provider(); p != nil {
+	if p := slot.engine.Provider(); p != nil {
 		currentProvider = p.Name()
 	}
-	currentModel := c.engine.Model()
+	currentModel := slot.engine.Model()
 	present := func(name string) bool { _, ok := c.providers[name]; return ok }
 	items := config.BuildModelItems(c.providerConfigs, present, currentProvider, currentModel)
 
@@ -1090,14 +1254,27 @@ func (c *WebChatConnector) buildConfigMessage() []byte {
 	return payload
 }
 
-// buildConnectStatusMessage returns a connect_status payload with the current
-// engine model, agent name, and sessionID. The client calls resetAllState on
-// every connect_status, then loads the subsequent history frame.
+// buildConnectStatusMessage returns a connect_status payload for the active
+// engine. Delegates to buildConnectStatusMessageForSlot.
 func (c *WebChatConnector) buildConnectStatusMessage() []byte {
+	slot := c.activeSlot()
+	if slot == nil {
+		return nil
+	}
+	return c.buildConnectStatusMessageForSlot(slot)
+}
+
+// buildConnectStatusMessageForSlot builds connect_status for a specific slot.
+// The client calls resetAllState on every connect_status, then loads the
+// subsequent history frame. engineID and engineName are included so the
+// frontend can track which engine is active during a switch.
+func (c *WebChatConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte {
 	c.writeMu.Lock()
-	qs := c.queryStats
+	qs := slot.queryStats
 	c.writeMu.Unlock()
-	inputHistory := c.loadInputHistory()
+	eng := slot.engine
+	engineName := c.engineNameForSlot(slot)
+	inputHistory := c.loadInputHistoryFor(eng)
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
 		Connected    bool        `json:"connected"`
@@ -1109,25 +1286,44 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 		ToolCount    int         `json:"toolCount"`
 		ThinkingMs   int64       `json:"thinkingMs"`
 		InputHistory []string    `json:"inputHistory,omitempty"`
+		EngineID     string      `json:"engineID"`
+		EngineName   string      `json:"engineName"`
 	}{
 		Type:         "connect_status",
 		Connected:    true,
-		Agent:        "main",
-		Model:        c.engine.Model(),
-		SessionID:    c.engine.SessionID(),
+		Agent:        engineName,
+		Model:        eng.Model(),
+		SessionID:    eng.SessionID(),
 		Usage:        qs.usage,
 		QueryStartMs: qs.startMs,
 		ToolCount:    qs.toolCount,
 		ThinkingMs:   qs.thinkingMs,
 		InputHistory: inputHistory,
+		EngineID:     slot.engineID,
+		EngineName:   engineName,
 	})
 	return payload
 }
 
-// buildSessionListMessage returns a session_list payload with up to 50
-// sessions, or nil when the store returns none.
+// engineNameForSlot resolves the engine's display name from the manager. Falls
+// back to the engine ID if the manager lookup fails.
+func (c *WebChatConnector) engineNameForSlot(slot *engineSlot) string {
+	if c.mgr != nil {
+		if vs := c.mgr.Get(slot.engineID); vs != nil {
+			return vs.Name
+		}
+	}
+	return slot.engineID
+}
+
+// buildSessionListMessage returns a session_list payload for the active engine
+// with up to 50 sessions, or nil when the store returns none.
 func (c *WebChatConnector) buildSessionListMessage() []byte {
-	sessions, err := c.engine.ListSessions(50)
+	eng := c.activeEngine()
+	if eng == nil {
+		return nil
+	}
+	sessions, err := eng.ListSessions(50)
 	if err != nil || len(sessions) == 0 {
 		return nil
 	}
@@ -1146,6 +1342,36 @@ func (c *WebChatConnector) buildSessionListMessage() []byte {
 	return payload
 }
 
+// buildEngineListMessage returns an engine_list payload with all engines from
+// the manager and the active engine ID. Reads mgr.Snapshot() (lock-safe).
+type engineListItem struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+func (c *WebChatConnector) buildEngineListMessage() []byte {
+	var views []engine.EngineViewSnapshot
+	activeID := c.active
+	if c.mgr != nil {
+		views, activeID = c.mgr.Snapshot()
+	}
+	items := make([]engineListItem, 0, len(views))
+	for _, v := range views {
+		items = append(items, engineListItem{
+			ID:    v.ID,
+			Name:  v.Name,
+			Model: v.Model,
+		})
+	}
+	payload, _ := json.Marshal(struct {
+		Type     string           `json:"type"`
+		Engines  []engineListItem `json:"engines"`
+		ActiveID string           `json:"activeID"`
+	}{Type: "engine_list", Engines: items, ActiveID: activeID})
+	return payload
+}
+
 // buildSessionBusyMessage is the fixed error frame for busy-guarded handlers.
 func buildSessionBusyMessage() []byte {
 	out, _ := json.Marshal(struct {
@@ -1155,15 +1381,20 @@ func buildSessionBusyMessage() []byte {
 	return out
 }
 
-// handleSessionSwitch loads the target session into the engine, then pushes
-// connect_status (triggers client resetAllState) followed by the history page.
-// Rejects when the engine is streaming so the active turn is never disturbed.
+// handleSessionSwitch loads the target session into the active engine, then
+// pushes connect_status (triggers client resetAllState) followed by the
+// history page. Rejects when the engine is streaming so the active turn is
+// never disturbed.
 func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
-	if c.engine.IsBusy() {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
+	if eng.IsBusy() {
 		_ = c.writeDirect(buildSessionBusyMessage())
 		return
 	}
-	if err := c.engine.SwitchSession(sessionID); err != nil {
+	if err := eng.SwitchSession(sessionID); err != nil {
 		_ = c.writeDirect(buildErrorMessage(err))
 		return
 	}
@@ -1185,14 +1416,19 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	c.writeMu.Unlock()
 }
 
-// handleSessionNew creates a fresh session, then pushes connect_status (the
-// empty session has no history frame). Rejects when the engine is streaming.
+// handleSessionNew creates a fresh session on the active engine, then pushes
+// connect_status (the empty session has no history frame). Rejects when the
+// engine is streaming.
 func (c *WebChatConnector) handleSessionNew() {
-	if c.engine.IsBusy() {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
+	if eng.IsBusy() {
 		_ = c.writeDirect(buildSessionBusyMessage())
 		return
 	}
-	if _, err := c.engine.NewSession(); err != nil {
+	if _, err := eng.NewSession(); err != nil {
 		_ = c.writeDirect(buildErrorMessage(err))
 		return
 	}
@@ -1212,10 +1448,15 @@ func (c *WebChatConnector) handleSessionNew() {
 	}
 }
 
-// handleModelSwitch switches the engine's provider + model, syncs capabilities,
-// then pushes fresh connect_status + config so the header updates immediately.
+// handleModelSwitch switches the active engine's provider + model, syncs
+// capabilities, then pushes fresh connect_status + config so the header
+// updates immediately.
 func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
-	if c.engine.IsBusy() {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
+	if eng.IsBusy() {
 		_ = c.writeDirect(buildSessionBusyMessage())
 		return
 	}
@@ -1233,14 +1474,91 @@ func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
 		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
 		return
 	}
-	c.engine.SetProvider(provider)
-	c.engine.SetModel(modelName)
-	c.engine.SetMaxTokens(cfgProv.ResolveMaxTokens(modelName))
-	c.engine.SetInputModalities(cfgProv.ResolveInput(modelName))
-	c.engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+	eng.SetProvider(provider)
+	eng.SetModel(modelName)
+	eng.SetMaxTokens(cfgProv.ResolveMaxTokens(modelName))
+	eng.SetInputModalities(cfgProv.ResolveInput(modelName))
+	eng.UpdateAutoCompactConfig(engine.AutoCompactConfig{
 		ContextWindow:          cfgProv.ResolveContext(modelName),
 		MaxConsecutiveFailures: 3,
 	})
 
 	slog.Info("webchat:model switched", "provider", providerName, "model", modelName)
+}
+
+// SetCreateEngineFn injects the engine creation closure used by engine_new.
+// main.go calls this to wire engineFactory + engineMgr + store into the
+// connector.
+func (c *WebChatConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
+	c.createEngine = fn
+}
+
+// handleEngineSwitch switches the active engine to engineID and replays the
+// target engine's takeover sequence (connect_status → history → config →
+// engine_list → streamBuf replay → task_list). The entire frame-send sequence runs
+// under a single writeMu.Lock() so c.active is flipped before any replay
+// frame is sent, preventing double-delivery from concurrent hub events.
+func (c *WebChatConnector) handleEngineSwitch(engineID string) {
+	c.writeMu.Lock()
+	slot, ok := c.slots[engineID]
+	c.writeMu.Unlock()
+	if !ok {
+		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("unknown engine: %s", engineID)))
+		return
+	}
+	if c.mgr != nil {
+		if err := c.mgr.SetActive(engineID); err != nil {
+			_ = c.writeDirect(buildErrorMessage(err))
+			return
+		}
+	}
+
+	connectMsg := c.buildConnectStatusMessageForSlot(slot)
+	histMsg := c.buildHistoryMessageForSlot(slot, "", 30)
+	configMsg := c.buildConfigMessageForSlot(slot)
+	taskMsg := c.buildTaskListMessageFor(slot)
+	engineListMsg := c.buildEngineListMessage()
+
+	c.writeMu.Lock()
+	c.active = engineID
+	ws := c.activeWS.Load()
+	if ws != nil {
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		if histMsg != nil {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+		}
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		_ = ws.WriteMessage(websocket.TextMessage, engineListMsg)
+		for _, entry := range slot.streamBuf {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
+				break
+			}
+		}
+		if taskMsg != nil {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+		}
+	}
+	c.writeMu.Unlock()
+}
+
+// handleEngineNew creates a new engine via the injected createEngine closure,
+// then switches to it. If createEngine is nil (not configured), sends an error.
+func (c *WebChatConnector) handleEngineNew(name string) {
+	if c.createEngine == nil {
+		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("engine creation not configured")))
+		return
+	}
+	engineID, err := c.createEngine(name)
+	if err != nil {
+		_ = c.writeDirect(buildErrorMessage(err))
+		return
+	}
+	_ = c.writeDirect(c.buildEngineListMessage())
+	c.handleEngineSwitch(engineID)
 }
