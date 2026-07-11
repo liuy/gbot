@@ -661,3 +661,190 @@ func TestEmitEvent_WindowExpiredMidStream(t *testing.T) {
 		}
 	})
 }
+
+// TestEmitEvent_E2E_ToolParamDeltaPreservesMetadata verifies that coalesced
+// tool_param_delta events preserve Name and Summary from the original stream.
+// This is the observable behavior downstream consumers (TUI, webchat) rely on.
+func TestEmitEvent_E2E_ToolParamDeltaPreservesMetadata(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	// Simulate LLM streaming tool_use input deltas with metadata.
+	deltas := []struct {
+		delta   string
+		name    string
+		summary string
+	}{
+		{`{"`, "Bash", ""},
+		{`command`, "Bash", ""},
+		{`":"`, "Bash", "Execute a bash command"},
+		{`grep`, "Bash", "Execute a bash command"},
+		{` test`, "Bash", "Execute a bash command"},
+		{`"}`, "Bash", "Execute a bash command"},
+	}
+	for _, d := range deltas {
+		eng.emitEvent(types.QueryEvent{
+			Type: types.EventToolParamDelta,
+			PartialInput: &types.PartialInputEvent{
+				ID:      "tool_1",
+				Delta:   d.delta,
+				Name:    d.name,
+				Summary: d.summary,
+			},
+		})
+	}
+
+	// Non-delta event triggers flush.
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+	var paramEvents []types.QueryEvent
+	for _, evt := range md.events {
+		if evt.Type == types.EventToolParamDelta {
+			paramEvents = append(paramEvents, evt)
+		}
+	}
+
+	if len(paramEvents) != 1 {
+		t.Fatalf("expected 1 coalesced param event, got %d", len(paramEvents))
+	}
+
+	pi := paramEvents[0].PartialInput
+	if pi.ID != "tool_1" {
+		t.Errorf("ID = %q, want tool_1", pi.ID)
+	}
+	if pi.Name != "Bash" {
+		t.Errorf("Name = %q, want Bash", pi.Name)
+	}
+	if pi.Summary != "Execute a bash command" {
+		t.Errorf("Summary = %q, want 'Execute a bash command'", pi.Summary)
+	}
+
+	var want strings.Builder
+	for _, d := range deltas {
+		want.WriteString(d.delta)
+	}
+	if pi.Delta != want.String() {
+		t.Errorf("Delta = %q, want %q", pi.Delta, want.String())
+	}
+}
+
+// TestEmitEvent_E2E_ConcurrentToolOutputDeltas simulates tool workers on
+// separate goroutines emitting output deltas. Verifies coalescing is safe
+// under -race and each id gets its own coalesced event.
+func TestEmitEvent_E2E_ConcurrentToolOutputDeltas(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("tool_%d", i)
+			for j := range 5 {
+				eng.emitEvent(types.QueryEvent{
+					Type: types.EventToolOutputDelta,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     id,
+						DisplayOutput: fmt.Sprintf("line_%d_%d\n", i, j),
+					},
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolEnd})
+
+	outputByID := make(map[string]string)
+	for _, evt := range md.events {
+		if evt.Type == types.EventToolOutputDelta && evt.ToolResult != nil {
+			outputByID[evt.ToolResult.ToolUseID] += evt.ToolResult.DisplayOutput
+		}
+	}
+
+	if len(outputByID) != n {
+		t.Errorf("expected %d distinct tool output events, got %d", n, len(outputByID))
+	}
+
+	for i := range n {
+		id := fmt.Sprintf("tool_%d", i)
+		got, ok := outputByID[id]
+		if !ok {
+			t.Errorf("missing output for %s", id)
+			continue
+		}
+		for j := range 5 {
+			want := fmt.Sprintf("line_%d_%d\n", i, j)
+			if !strings.Contains(got, want) {
+				t.Errorf("output for %s missing %q, got: %s", id, want, got)
+			}
+		}
+	}
+}
+
+// TestEmitEvent_E2E_DeltaStormReduction verifies that a burst of 100 param
+// deltas for a single tool produces at most a few coalesced events (not 100).
+// This is the core anti-hang guarantee.
+func TestEmitEvent_E2E_DeltaStormReduction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		md := &mockDispatcher{}
+		eng := New(&Params{
+			Provider:   &mockProvider{},
+			Model:      "test",
+			Logger:     slog.Default(),
+			Dispatcher: md,
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		eng.window = 100 * time.Millisecond
+
+		// Simulate 100 deltas arriving within one window (no sleep).
+		for i := range 100 {
+			eng.emitEvent(types.QueryEvent{
+				Type: types.EventToolParamDelta,
+				PartialInput: &types.PartialInputEvent{
+					ID:    "tool_1",
+					Delta: fmt.Sprintf("%d,", i),
+				},
+			})
+		}
+
+		// No flush yet — all within window.
+		paramCount := 0
+		for _, evt := range md.events {
+			if evt.Type == types.EventToolParamDelta {
+				paramCount++
+			}
+		}
+		if paramCount != 0 {
+			t.Errorf("expected 0 dispatched before flush, got %d", paramCount)
+		}
+
+		// Flush via non-delta event.
+		eng.emitEvent(types.QueryEvent{Type: types.EventToolStart})
+
+		paramCount = 0
+		for _, evt := range md.events {
+			if evt.Type == types.EventToolParamDelta {
+				paramCount++
+			}
+		}
+		if paramCount != 1 {
+			t.Errorf("expected 1 coalesced param event from 100 deltas, got %d", paramCount)
+		}
+	})
+}
