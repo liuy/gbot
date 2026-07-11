@@ -3,6 +3,7 @@ package webchat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -62,29 +63,25 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if connectMsg != nil {
-		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		wsSend(ws, "takeover:connect_status", connectMsg)
 	}
 
 	// 3. history page (committed messages only; in-flight not yet committed)
 	if histMsg != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-		_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+		wsSend(ws, "takeover:history", histMsg)
 	}
 
 	// config frame — model list + current selection so the frontend can
 	// populate the model picker immediately on connect.
 	if configMsg != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+		wsSend(ws, "takeover:config", configMsg)
 	}
 
 	// engine_list frame — engine picker list + active marker. Sits after
 	// config (model picker populated) and before replay (picker reflects
 	// active engine before in-flight deltas land).
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	_ = ws.WriteMessage(websocket.TextMessage, engineListMsg)
+	wsSend(ws, "takeover:engine_list", engineListMsg)
 
 	// 4. replay current turn buffer — in-flight deltas that are NOT in
 	//    engine.Messages() yet (text_delta, thinking_delta, tool_start,
@@ -93,10 +90,10 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	//    serialized.
 	replayed := 0
 	if slot != nil {
-		for _, entry := range slot.streamBuf {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
+		for i, entry := range slot.streamBuf {
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-				slog.Warn("webchat:takeover replay write failed", "frame", replayed, "error", err)
+				slog.Warn("webchat:ws write failed", "frame", fmt.Sprintf("takeover:replay[%d]", i), "error", err)
 				break
 			}
 			replayed++
@@ -110,8 +107,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// client has historical context first, then the latest task snapshot.
 	if slot != nil {
 		if taskMsg := c.buildTaskListMessageFor(slot); taskMsg != nil {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-			_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+			wsSend(ws, "takeover:task_list", taskMsg)
 		}
 	}
 
@@ -134,7 +130,9 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 				c.writeMu.Lock()
 				if cur := c.activeWS.Load(); cur == ws {
 					_ = cur.SetWriteDeadline(time.Now().Add(30 * time.Second))
-					_ = cur.WriteMessage(websocket.PingMessage, nil)
+					if err := cur.WriteMessage(websocket.PingMessage, nil); err != nil {
+						slog.Warn("webchat:ws write failed", "frame", "heartbeat:ping", "error", err)
+					}
 				}
 				c.writeMu.Unlock()
 			}
@@ -158,6 +156,7 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
+			slog.Info("webchat:readLoop exit", "error", err)
 			return
 		}
 		// Peek type first, then unmarshal into the right shape. Using a single

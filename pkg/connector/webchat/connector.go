@@ -346,6 +346,14 @@ func (c *WebChatConnector) Stop() {
 // connector.Connector contract.
 func (c *WebChatConnector) Send(userID, text string) error { return nil }
 
+// wsSend writes a text message to ws with a 30s deadline, logging failures.
+func wsSend(ws *websocket.Conn, label string, payload []byte) {
+	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+		slog.Warn("webchat:ws write failed", "frame", label, "error", err)
+	}
+}
+
 // writePayloadTo writes a text message to the active WS under writeMu with a
 // 30s deadline. On failure (slow client, dead socket), stores nil so the
 // engine is never blocked by a wedged connection. Also appends the payload to
@@ -1404,14 +1412,11 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		wsSend(ws, "model_switch:connect_status", connectMsg)
 		if histMsg != nil {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+			wsSend(ws, "model_switch:history", histMsg)
 		}
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+		wsSend(ws, "model_switch:config", configMsg)
 	}
 	c.writeMu.Unlock()
 }
@@ -1437,10 +1442,8 @@ func (c *WebChatConnector) handleSessionNew() {
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
+		wsSend(ws, "session_new:connect_status", connectMsg)
+		wsSend(ws, "session_new:config", configMsg)
 	}
 	c.writeMu.Unlock()
 	if payload := c.buildSessionListMessage(); payload != nil {
@@ -1523,25 +1526,21 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 	c.active = engineID
 	ws := c.activeWS.Load()
 	if ws != nil {
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, connectMsg)
+		wsSend(ws, "engine_switch:connect_status", connectMsg)
 		if histMsg != nil {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			_ = ws.WriteMessage(websocket.TextMessage, histMsg)
+			wsSend(ws, "engine_switch:history", histMsg)
 		}
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, configMsg)
-		_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_ = ws.WriteMessage(websocket.TextMessage, engineListMsg)
-		for _, entry := range slot.streamBuf {
+		wsSend(ws, "engine_switch:config", configMsg)
+		wsSend(ws, "engine_switch:engine_list", engineListMsg)
+		for i, entry := range slot.streamBuf {
 			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
+				slog.Warn("webchat:ws write failed", "frame", fmt.Sprintf("engine_switch:replay[%d]", i), "error", err)
 				break
 			}
 		}
 		if taskMsg != nil {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			_ = ws.WriteMessage(websocket.TextMessage, taskMsg)
+			wsSend(ws, "engine_switch:task_list", taskMsg)
 		}
 	}
 	c.writeMu.Unlock()
