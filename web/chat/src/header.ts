@@ -29,7 +29,7 @@ function createModelPicker(
   wrap.className = 'relative'
 
   const trigger = document.createElement('button')
-  trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
+  trigger.className = 'text-[14px] text-t2 hover:text-t1 transition-colors'
 
   const panel = createPopupPanel()
 
@@ -142,7 +142,7 @@ function createEnginePicker(
   wrap.className = 'relative'
 
   const trigger = document.createElement('button')
-  trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
+  trigger.className = 'text-[14px] text-t2 hover:text-t1 transition-colors'
 
   const panel = createPopupPanel()
 
@@ -242,9 +242,9 @@ export function createHeader(opts: {
   hamburgerWrap.className =
     'flex items-center text-t2 hover:text-t1 transition-colors'
   hamburgerWrap.innerHTML =
-    '<svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">' +
-    '<rect x="2" y="2" width="16" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
-    '<rect x="4" y="9.5" width="12" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
+    '<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+    '<rect x="1" y="1" width="16" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
+    '<rect x="3" y="10.5" width="12" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
     '</svg>'
 
   const hamburgerHandler = { fn: () => {} }
@@ -263,13 +263,14 @@ export function createHeader(opts: {
 
   const sep = () => {
     const s = document.createElement('span')
-    s.className = 'text-t3 text-[10px]'
+    s.className = 'text-t3 text-[14px]'
     s.textContent = '\u203a'
     return s
   }
 
   const breadcrumb = document.createElement('div')
-  breadcrumb.className = 'flex items-baseline gap-1.5'
+  breadcrumb.className = 'flex items-center gap-1.5'
+  breadcrumb.style.lineHeight = '14px'
   breadcrumb.appendChild(enginePicker.wrap)
   breadcrumb.appendChild(sep())
   breadcrumb.appendChild(modelPicker.wrap)
