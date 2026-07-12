@@ -10,12 +10,44 @@ import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
 import hljs from 'highlight.js'
 
-const headerBtnClassBaseline = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
-const headerBtnClassStart = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+const headerBtnClass = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
 const prefixClass = 'shrink-0 w-6'
 const runningDotClass = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
 const chevronClass = 'inline-block align-middle text-t3 transition-transform'
 const chevronExpandedClass = 'inline-block align-middle text-t3 transition-transform rotate-90'
+
+interface ToolHeaderHandles {
+  header: HTMLSpanElement
+  dot: HTMLSpanElement
+  chevron: HTMLSpanElement
+  content: HTMLSpanElement
+}
+
+function createToolHeader(): ToolHeaderHandles {
+  const header = document.createElement('span')
+  header.setAttribute('role', 'button')
+  header.tabIndex = 0
+  header.className = headerBtnClass
+
+  const prefix = document.createElement('span')
+  prefix.className = prefixClass
+
+  const dot = document.createElement('span')
+  dot.className = runningDotClass
+  dot.textContent = '●'
+  prefix.appendChild(dot)
+
+  const chevron = document.createElement('span')
+  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
+  prefix.appendChild(chevron)
+  header.appendChild(prefix)
+
+  const content = document.createElement('span')
+  content.className = 'flex-1 min-w-0'
+  header.appendChild(content)
+
+  return { header, dot, chevron, content }
+}
 
 function shouldAutoExpand(toolName: string): boolean {
   return toolName === 'Edit' || toolName === 'Write'
@@ -119,7 +151,7 @@ export function appendThinkingBlock(
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = headerBtnClassBaseline
+  header.className = headerBtnClass
 
   const prefix = document.createElement('span')
   prefix.className = prefixClass
@@ -188,52 +220,28 @@ function createGroupContainer(): HTMLElement {
   const group = document.createElement('div')
   group.dataset.toolGroup = '1'
 
-  // Header: button with dot + chevron + summary + duration (mirrors ToolGroup.tsx)
-  const header = document.createElement('span')
+  const { header, dot, chevron, content } = createToolHeader()
   header.dataset.groupHeader = '1'
-  header.setAttribute('role', 'button')
-  header.tabIndex = 0
-  header.className = headerBtnClassStart
-
-  const prefix = document.createElement('span')
-  prefix.className = prefixClass
-
-  // Dot: same class as individual tool dot (text-white heartbeat while running)
-  const dot = document.createElement('span')
-  dot.className = runningDotClass
   dot.dataset.groupDot = '1'
-  dot.textContent = '●'
-  prefix.appendChild(dot)
-
-  // Chevron SVG (same as ToolGroup.tsx). transition-transform matches the
-  // individual tool chevron so the rotation animates consistently.
-  const chevron = document.createElement('span')
   chevron.dataset.groupChevron = '1'
-  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
-  prefix.appendChild(chevron)
-  header.appendChild(prefix)
 
-  // Summary text: "2 Searches, 1 Read"
   const summary = document.createElement('span')
   summary.dataset.groupSummary = '1'
   summary.className = 'font-mono text-sm text-blue align-middle'
-  header.appendChild(summary)
+  content.appendChild(summary)
 
-  // Duration: shown when all done
   const duration = document.createElement('span')
   duration.dataset.groupDuration = '1'
   duration.className = 'font-mono text-xs align-middle text-t3'
-  header.appendChild(duration)
+  content.appendChild(duration)
 
   group.appendChild(header)
 
-  // Tools container: default collapsed
   const toolsContainer = document.createElement('div')
   toolsContainer.dataset.groupTools = '1'
   toolsContainer.className = 'ml-6 hidden'
   group.appendChild(toolsContainer)
 
-  // Toggle expand/collapse on click
   header.addEventListener('click', () => {
     const visible = !toolsContainer.classList.contains('hidden')
     toolsContainer.classList.toggle('hidden', visible)
@@ -290,26 +298,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   root.dataset.toolName = name
   if (collapsible) root.dataset.collapsible = '1'
 
-  const header = document.createElement('span')
-  header.setAttribute('role', 'button')
-  header.tabIndex = 0
-  header.className = headerBtnClassStart
-
-  const prefix = document.createElement('span')
-  prefix.className = prefixClass
-
-  const dot = document.createElement('span')
-  dot.className = runningDotClass
-  dot.textContent = '●'
-  prefix.appendChild(dot)
-
-  const chevron = document.createElement('span')
-  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
-  prefix.appendChild(chevron)
-  header.appendChild(prefix)
-
-  const content = document.createElement('span')
-  content.className = 'flex-1 min-w-0'
+  const { header, dot, content } = createToolHeader()
 
   const nameEl = document.createElement('span')
   nameEl.className = 'font-mono text-sm text-blue align-middle'
@@ -325,7 +314,6 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   durEl.textContent = ' 0s'
   content.appendChild(durEl)
 
-  header.appendChild(content)
   root.appendChild(header)
 
   const body = document.createElement('div')
