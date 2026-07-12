@@ -1,5 +1,6 @@
 export interface InputBarHandles {
   root: HTMLElement
+  bubbles: HTMLElement
   textarea: HTMLTextAreaElement
   setStreaming: (s: boolean) => void
   setQueuedMsgs: (q: { uuid: string; text: string }[]) => void
@@ -31,9 +32,8 @@ export function createInputBar(initial: {
   const root = document.createElement('div')
   root.className = 'sticky bottom-0 z-10 px-5 pb-3 pt-1'
 
-  // Bubble row (rendered only while streaming and non-empty).
   const bubbles = document.createElement('div')
-  root.appendChild(bubbles)
+  bubbles.className = 'sticky bottom-16 z-10 px-5'
 
   const form = document.createElement('form')
   const card = document.createElement('div')
@@ -302,7 +302,7 @@ export function createInputBar(initial: {
     queuedMsgs.forEach((m, i) => {
       const bub = document.createElement('div')
       bub.className =
-        'mb-2 mx-auto bg-ink2/80 backdrop-blur border border-hairline rounded-full px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
+        'mb-2 mx-auto bg-ink2/70 border border-hairline rounded-full px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
       bub.innerHTML =
         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>'
       const label = document.createElement('span')
@@ -330,6 +330,7 @@ export function createInputBar(initial: {
 
   return {
     root,
+    bubbles,
     textarea,
     setStreaming: (s: boolean) => {
       streaming = s

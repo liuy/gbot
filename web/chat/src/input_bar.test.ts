@@ -7,6 +7,7 @@ afterEach(() => {
 
 function mount() {
   const ib = createInputBar({ connected: true })
+  document.body.appendChild(ib.bubbles)
   document.body.appendChild(ib.root)
   return ib
 }
@@ -52,9 +53,9 @@ describe('createInputBar', () => {
     const ib = mount()
     ib.setStreaming(true)
     ib.setQueuedMsgs([{ uuid: 'u-1', text: 'hello' }])
-    expect(ib.root.textContent).toContain('hello')
-    expect(ib.root.textContent).toContain('Tap to CANCEL')
-    expect(ib.root.textContent).not.toContain('Tap to CANCEL all')
+    expect(ib.bubbles.textContent).toContain('hello')
+    expect(ib.bubbles.textContent).toContain('Tap to CANCEL')
+    expect(ib.bubbles.textContent).not.toContain('Tap to CANCEL all')
   })
 
   it('setQueuedMsgs multiple shows Tap to CANCEL all on first bubble', () => {
@@ -64,9 +65,9 @@ describe('createInputBar', () => {
       { uuid: 'u-1', text: 'one' },
       { uuid: 'u-2', text: 'two' },
     ])
-    expect(ib.root.textContent).toContain('Tap to CANCEL all')
+    expect(ib.bubbles.textContent).toContain('Tap to CANCEL all')
     // Second bubble should still show plain CANCEL — assert exact count.
-    const allText = ib.root.textContent ?? ''
+    const allText = ib.bubbles.textContent ?? ''
     expect(allText.indexOf('Tap to CANCEL all')).toBeGreaterThanOrEqual(0)
   })
 
@@ -77,7 +78,7 @@ describe('createInputBar', () => {
       { uuid: 'u-1', text: 'one' },
       { uuid: 'u-2', text: 'two' },
     ])
-    const bubbles = ib.root.querySelectorAll('.modal-enter')
+    const bubbles = ib.bubbles.querySelectorAll('.modal-enter')
     expect(bubbles.length).toBe(2)
   })
 
@@ -85,6 +86,15 @@ describe('createInputBar', () => {
     const ib = mount()
     ib.setInputText('hi')
     expect(ib.textarea.value).toBe('hi')
+  })
+
+  it('bubbles is separate from root (no card-bg backdrop bleed)', () => {
+    const ib = mount()
+    expect(ib.bubbles).not.toBe(ib.root)
+    expect(ib.bubbles.parentElement).not.toBe(ib.root)
+    expect(ib.bubbles.className).not.toContain('card-bg')
+    const card = ib.root.querySelector('.card-bg')
+    expect(card).not.toBeNull()
   })
 
   it('appendQueuedText with empty textarea sets value', () => {
@@ -172,7 +182,7 @@ describe('createInputBar', () => {
     ib.onCancelQueued(spy)
     ib.setStreaming(true)
     ib.setQueuedMsgs([{ uuid: 'u-1', text: 'hello' }])
-    const bubble = ib.root.querySelector('.modal-enter') as HTMLElement
+    const bubble = ib.bubbles.querySelector('.modal-enter') as HTMLElement
     bubble.click()
     expect(spy).toHaveBeenCalledOnce()
   })

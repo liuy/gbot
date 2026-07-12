@@ -387,8 +387,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   taskPanelHost.appendChild(taskPanel.root)
 
   const inputWrapper = document.createElement('div')
-  inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10 card-bg'
+  inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10'
   inputWrapper.appendChild(taskPanelHost)
+  inputWrapper.appendChild(inputBar.bubbles)
   inputWrapper.appendChild(inputBar.root)
   mainContent.appendChild(inputWrapper)
 
