@@ -40,7 +40,7 @@ function createModelPicker(
   searchInput.setAttribute('autocorrect', 'off')
   searchInput.spellcheck = false
   searchInput.className =
-    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none'
+    'w-full bg-transparent px-4 py-2.5 text-[13px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none'
   searchInput.style.fontFamily = 'inherit'
   searchInput.style.fontSize = 'inherit'
   ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
@@ -75,7 +75,7 @@ function createModelPicker(
       if (entry.provider !== lastProvider) {
         lastProvider = entry.provider
         const header = document.createElement('div')
-        header.className = 'px-3 pt-2 pb-1 mono text-[10px] text-t3 uppercase tracking-wider'
+        header.className = 'px-3 pt-2 pb-1 mono text-[13px] text-t3 uppercase tracking-wider'
         header.textContent = entry.provider
         listContainer.appendChild(header)
       }
@@ -169,7 +169,7 @@ function createEnginePicker(
       nameSpan.textContent = entry.name || entry.id
       item.appendChild(nameSpan)
       const modelSpan = document.createElement('span')
-      modelSpan.className = 'text-[11px] text-t3 ml-2'
+      modelSpan.className = 'text-[13px] text-t3 ml-2'
       modelSpan.textContent = entry.model
       item.appendChild(modelSpan)
       if (isActive) {

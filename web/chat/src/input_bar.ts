@@ -51,9 +51,9 @@ export function createInputBar(initial: {
   const stopBtn = document.createElement('button')
   stopBtn.type = 'button'
   stopBtn.className =
-    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue transition-colors pulse-blue bg-blue/12 hidden'
+    'flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-full text-blue transition-colors pulse-blue bg-blue/12 hidden'
   stopBtn.innerHTML =
-    '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
+    '<span class="text-[10px] mono font-bold tracking-wide">STOP</span>'
   stopBtn.addEventListener('click', () => stopCb?.())
 
   // Textarea wrap.
@@ -297,7 +297,7 @@ export function createInputBar(initial: {
         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>'
       const label = document.createElement('span')
       label.className =
-        'text-[12px] text-t2 font-light italic truncate max-w-[240px]'
+        'text-[10px] text-t2 font-light italic truncate max-w-[240px]'
       label.textContent = m.text
       bub.appendChild(label)
       if (i === 0 && queuedMsgs.length > 1) {
