@@ -70,7 +70,7 @@ export function createInputBar(initial: {
 
   // Send button.
   const sendBtn = document.createElement('button')
-  sendBtn.type = 'submit'
+  sendBtn.type = 'button'
   sendBtn.setAttribute('aria-label', 'Send')
   sendBtn.className =
     'flex-shrink-0 text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30'
@@ -191,6 +191,8 @@ export function createInputBar(initial: {
         openHistPanel()
         document.addEventListener('mousedown', onHistDocClick)
       }
+    } else {
+      onSubmit(e)
     }
   })
 
@@ -210,6 +212,10 @@ export function createInputBar(initial: {
   })
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Mobile: Enter inserts newline (browser default). Send via button only.
+    // Desktop: Enter sends, Shift+Enter for newline.
+    const isTouch = navigator.maxTouchPoints > 0
+    if (isTouch) return
     // Enter — send (Shift+Enter for newline, handled by browser default)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
