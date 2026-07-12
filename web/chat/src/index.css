@@ -237,7 +237,7 @@ body {
 }
 
 [data-theme="light"] .glow-blue {
-  box-shadow: none;
+  box-shadow: 0 0 24px -4px rgba(140,140,150,0.55);
 }
 
 [data-theme="light"] .md-body th {
