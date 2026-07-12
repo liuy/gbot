@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createChat } from './chat'
 
-// jsdom lacks IntersectionObserver
+// jsdom lacks IntersectionObserver — no longer needed (scroll-based prefetch).
+// Kept as empty stubs for any remaining references.
 let observerCallback: IntersectionObserverCallback | null = null
 class MockIntersectionObserver {
   constructor(cb: IntersectionObserverCallback) { observerCallback = cb }
@@ -12,7 +13,6 @@ class MockIntersectionObserver {
 }
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver as unknown as typeof IntersectionObserver)
 
-/** Simulate the scroll-to-top sentinel becoming visible (triggers prefetch). */
 function triggerTopObserver() {
   if (observerCallback) {
     observerCallback([{ isIntersecting: true } as IntersectionObserverEntry], null!)
@@ -498,66 +498,102 @@ describe('chat integration', () => {
     expect(scrollBtn.classList.contains('opacity-0')).toBe(true)
   })
 
-  it('IntersectionObserver triggers prefetch on scroll to top', () => {
+  it('scroll near top triggers prefetch when < 10 messages above viewport', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
       type: 'history',
       messages: [
         {
-          id: 'm-1',
-          role: 'user',
-          text: 'first',
-          thinking: [],
-          tools: [],
+          id: 'm-1', role: 'user', text: 'first',
+          thinking: [], tools: [],
           usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
-          error: '',
-          status: 'done',
-          startedAt: 0,
+          error: '', status: 'done', startedAt: 0,
         },
       ],
       nextCursor: 'c1',
       hasMore: true,
     })
-    // Auto-prefetch fires immediately when sentinel is visible (content short).
-    let historyReqs = sent.filter((m) => m.type === 'history_request')
+    // With only 1 message and hasMore=true, loadHistory calls maybePrefetchHistory
+    // which detects < 10 messages above viewport and fetches immediately.
+    const historyReqs = sent.filter((m) => m.type === 'history_request')
     expect(historyReqs.length).toBe(1)
     expect(historyReqs[0].cursor).toBe('c1')
-
-    // Observer already fired — loadingMore guard blocks duplicate.
-    triggerTopObserver()
-    historyReqs = sent.filter((m) => m.type === 'history_request')
-    expect(historyReqs.length).toBe(1)
   })
 
-  it('loadingMore guard prevents concurrent observer prefetch', () => {
+  it('loadingMore guard prevents concurrent prefetch', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
       type: 'history',
       messages: [
         {
-          id: 'm-1',
-          role: 'user',
-          text: 'msg1',
-          thinking: [],
-          tools: [],
+          id: 'm-1', role: 'user', text: 'msg1',
+          thinking: [], tools: [],
           usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
-          error: '',
-          status: 'done',
-          startedAt: 0,
+          error: '', status: 'done', startedAt: 0,
         },
       ],
       nextCursor: 'c1',
       hasMore: true,
     })
-    // First scroll triggers prefetch.
-    triggerTopObserver()
+    // First prefetch already sent by loadHistory's maybePrefetchHistory.
     expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
 
-    // Second trigger before response must not send duplicate.
-    triggerTopObserver()
+    // Scrolling again must not send duplicate (loadingMore guard).
+    const scrollEl = document.querySelector('.overflow-y-auto') as HTMLElement
+    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, writable: true, value: 10 })
+    scrollEl.dispatchEvent(new Event('scroll'))
     expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
+  })
+
+  it('does not prefetch when hasMore is false', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-1', role: 'user', text: 'only',
+        thinking: [], tools: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    expect(sent.filter((m) => m.type === 'history_request').length).toBe(0)
+  })
+
+  it('chain-prefetches: second batch arrives with few messages, continues loading', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-1', role: 'user', text: 'first',
+        thinking: [], tools: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: 'c1', hasMore: true,
+    })
+    // First prefetch fired immediately (1 message < 10 threshold).
+    expect(sent.filter((m) => m.type === 'history_request').length).toBe(1)
+
+    // Second batch arrives — still only a few messages, still has more.
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-2', role: 'assistant', text: 'reply',
+        thinking: [], tools: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: 'c2', hasMore: true,
+    })
+    // Second prefetch should fire (2 messages still < 10 threshold).
+    const reqs = sent.filter((m) => m.type === 'history_request')
+    expect(reqs.length).toBe(2)
+    expect(reqs[1].cursor).toBe('c2')
   })
 
   it('sub-agent tool duration shows perceived time on tool_end', () => {
@@ -1244,13 +1280,10 @@ describe('chat integration', () => {
     expect(stopBtn).toBeInstanceOf(HTMLButtonElement)
   })
 
-  it('auto-prefetches when content is shorter than viewport (observer missed)', () => {
+  it('auto-prefetches when content is shorter than viewport (few messages)', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    // Observer fires immediately — sentinel visible, content empty.
-    // At this point hasMore is false, so no request is sent.
-    triggerTopObserver()
-    // History arrives with more pages.
+    // History arrives with more pages and only 1 message.
     dispatch({
       type: 'history',
       messages: [{
@@ -1261,9 +1294,7 @@ describe('chat integration', () => {
       }],
       nextCursor: 'c1', hasMore: true,
     })
-    // Why: the sentinel is already visible when hasMore is set, so the
-    // IntersectionObserver won't re-fire. loadHistory detects this and
-    // triggers the fetch directly.
+    // With < 10 messages above viewport, maybePrefetchHistory fires.
     const historyReqs = sent.filter((m) => m.type === 'history_request')
     expect(historyReqs.length).toBe(1)
     expect(historyReqs[0].cursor).toBe('c1')

@@ -313,8 +313,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let nextCursor = ''
   let hasMore = false
   let loadingMore = false
-  // Sentinel visibility margin — must match IntersectionObserver rootMargin.
-  const PREFETCH_MARGIN = 400
 
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
@@ -436,6 +434,27 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (maxScroll > 0) {
       const progress = Math.min(distFromBottom / maxScroll, 1)
       scrollArc.setAttribute('stroke-dashoffset', String(circumference * (1 - progress)))
+    }
+    maybePrefetchHistory()
+  }
+
+  // Prefetch when fewer than REMAINING_THRESHOLD messages are above the viewport.
+  const REMAINING_THRESHOLD = 10
+  function maybePrefetchHistory() {
+    if (!hasMore || loadingMore || !nextCursor) return
+    const scrollTop = scroll.scrollTop
+    // Count messages above the viewport top. In jsdom offsetTop/offsetHeight
+    // are always 0, so aboveCount=0 — which correctly triggers prefetch when
+    // there are few messages (scrollTop=0 means at top).
+    let aboveCount = 0
+    for (const child of messagesContainer.children) {
+      const el = child as HTMLElement
+      if (el.offsetTop + el.offsetHeight >= scrollTop) break
+      aboveCount++
+    }
+    if (aboveCount < REMAINING_THRESHOLD) {
+      loadingMore = true
+      conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
     }
   }
 
@@ -739,16 +758,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
-    // If the sentinel is already visible (content shorter than viewport),
-    // the observer won't re-fire after hasMore becomes true.
-    if (hasMore && nextCursor) {
-      const sentry = topSentinel.getBoundingClientRect()
-      const rootRect = scroll.getBoundingClientRect()
-      if (sentry.top <= rootRect.bottom && sentry.bottom >= rootRect.top - PREFETCH_MARGIN) {
-        loadingMore = true
-        conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
-      }
-    }
+    maybePrefetchHistory()
     if (messages.length === newMsgs.length) {
       scroll.scrollTop = scroll.scrollHeight
       isNearBottom = true
@@ -1284,23 +1294,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     conn.send({ type: 'session_rename', sessionID: id, title })
   })
 
-  // IntersectionObserver: load more when scrolling to top.
-  const obs = new IntersectionObserver(
-    (entries) => {
-      if (
-        entries[0].isIntersecting &&
-        hasMore &&
-        !loadingMore &&
-        nextCursor
-      ) {
-        loadingMore = true
-        conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
-      }
-    },
-    { root: scroll, rootMargin: `${PREFETCH_MARGIN}px 0px 0px 0px`, threshold: 0 },
-  )
-  obs.observe(topSentinel)
-
   let askEls: HTMLElement[] = []
 
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
@@ -1395,7 +1388,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const cleanup = () => {
     unsubscribe()
     if (refreshInterval !== null) clearInterval(refreshInterval)
-    obs.disconnect()
   }
 
   return { root, scrollEl: scroll, inputBar, cleanup }
