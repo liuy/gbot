@@ -44,10 +44,51 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   const fab = document.createElement('button')
   fab.className =
-    'absolute bottom-5 right-5 w-10 h-10 rounded-full bg-blue/15 border border-blue/20 flex items-center justify-center hover:bg-blue/25 transition-colors'
+    'absolute bottom-5 right-5 w-10 h-10 flex items-center justify-center text-blue'
   fab.innerHTML =
-    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00B4FF" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
+    '<svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
   root.appendChild(fab)
+
+  // Theme toggle — bottom-left corner
+  const moonSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+  const sunSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
+  const taiChiSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M17 3.34a10 10 0 1 1 -14.995 8.984l-.005 -.324l.005 -.324a10 10 0 0 1 14.995 -8.336zm-9 1.732a8 8 0 0 0 4 14.928l.2 -.005a4 4 0 0 0 0 -7.99l-.2 -.005a4 4 0 0 1 -.2 -7.995l.2 -.005a7.995 7.995 0 0 0 -4 1.072zm4 1.428a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0 -3" fill="currentColor"/><circle cx="12" cy="15.5" r="1.5" fill="currentColor"/><circle cx="12" cy="8.5" r="1.5" fill="var(--color-ink2, white)"/></svg>'
+
+  const THEME_CYCLE = ['dark', 'light', 'system'] as const
+  type Theme = typeof THEME_CYCLE[number]
+
+  const resolveTheme = (pref: Theme): 'dark' | 'light' => {
+    if (pref === 'system') return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    return pref
+  }
+
+  const savedPref = (localStorage.getItem('gbot-theme') || 'dark') as Theme
+  const effectiveTheme = resolveTheme(savedPref)
+  document.documentElement.dataset.theme = effectiveTheme
+
+  const themeIcon = (pref: Theme) => pref === 'dark' ? moonSvg : pref === 'light' ? sunSvg : taiChiSvg
+
+  const themeToggle = document.createElement('button')
+  themeToggle.className =
+    'absolute bottom-5 left-5 w-10 h-10 flex items-center justify-center text-t2'
+  themeToggle.innerHTML = themeIcon(savedPref)
+
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
+  const onSystemChange = () => {
+    const pref = localStorage.getItem('gbot-theme') as Theme || 'dark'
+    if (pref === 'system') document.documentElement.dataset.theme = resolveTheme('system')
+  }
+  mediaQuery.addEventListener('change', onSystemChange)
+
+  themeToggle.addEventListener('click', () => {
+    const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
+    const idx = THEME_CYCLE.indexOf(current)
+    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
+    localStorage.setItem('gbot-theme', next)
+    document.documentElement.dataset.theme = resolveTheme(next)
+    themeToggle.innerHTML = themeIcon(next)
+  })
+  root.appendChild(themeToggle)
 
   const overlay = document.createElement('div')
   overlay.className = 'fixed inset-0 z-40 bg-black/30 transition-opacity duration-300'

@@ -24,8 +24,8 @@ function renderDiff(output: string, skipHighlight = false): string {
     const m = line.match(DIFF_LINE_RE)
     const cls = m
       ? m[1] === '+'
-        ? 'bg-green/15 text-green/90'
-        : 'bg-red/15 text-red/90'
+        ? 'diff-add text-green/90'
+        : 'diff-del text-red/90'
       : 'text-t2'
     const content = skipHighlight ? escapeHtml(line) : highlightLine(line)
     return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${content}</div>`

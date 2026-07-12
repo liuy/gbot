@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark.css";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   --color-primary: #00B4FF;
   --color-bg: rgb(4 6 12);
@@ -9,6 +11,7 @@
   --color-ink3: #121826;
   --color-card: rgba(12, 16, 24, 0.5);
   --color-glass: rgba(6, 8, 15, 0.3);
+  --color-glass-header: rgba(6, 8, 15, 0.1);
   --color-glass-solid: rgba(12, 16, 24, 0.92);
   --color-t1: #E8ECF4;
   --color-t2: #8A93A6;
@@ -23,7 +26,7 @@
 }
 
 html {
-  background: #080d18;
+  background: var(--bg-page, #080d18);
 }
 
 html, body, #root {
@@ -34,35 +37,38 @@ html, body, #root {
 }
 
 body {
-  background: radial-gradient(ellipse 800px 600px at 50% -5%, rgba(0, 120, 220, 0.08), transparent 70%);
-  color: #E8ECF4;
+  background: var(--bg-body, radial-gradient(ellipse 800px 600px at 50% -5%, rgba(0, 120, 220, 0.08), transparent 70%));
+  color: var(--color-body-text, #E8ECF4);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 .glass {
-  background: rgba(6, 8, 15, 0.3);
+  background: var(--color-glass);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .glass-solid {
-  background: rgba(12, 16, 24, 0.85);
+  background: var(--color-glass-solid);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 
 .glass-header {
-  background: rgba(6, 8, 15, 0.1);
+  background: var(--color-glass-header);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .card-bg {
-  background: rgba(12, 16, 24, 0.5);
+  background: var(--color-card);
   backdrop-filter: blur(4px);
 }
 
+.scroll-ring { opacity: 0.15; }
+.diff-add { background: rgba(61,214,140,0.1); }
+.diff-del { background: rgba(255,92,92,0.1); }
 .glow-blue { box-shadow: 0 0 20px -6px rgba(0,180,255,0.5); }
 .fade-top { background: linear-gradient(to bottom, #06080F 60%, rgba(6,8,15,0)); }
 .truncate-sm { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -198,4 +204,51 @@ body {
   max-width: 100%;
   overflow-x: auto;
   margin: 0.5em 0;
+}
+
+/* ── Light theme ─────────────────────────────────────────────── */
+[data-theme="light"] {
+  --color-bg: #FAFAFA;
+  --color-ink: #FFFFFF;
+  --color-ink2: #F0F0F0;
+  --color-ink3: #E5E5E5;
+  --color-card: rgba(255, 255, 255, 0.8);
+  --color-glass: rgba(255, 255, 255, 0.6);
+  --color-glass-header: rgba(255, 255, 255, 0.7);
+  --color-glass-solid: rgba(250, 250, 250, 0.9);
+  --color-t1: #111111;
+  --color-t2: #666666;
+  --color-t3: #999999;
+  --color-blue: #333333;
+  --color-green: #333333;
+  --color-red: #333333;
+  --color-amber: #333333;
+  --color-violet: #333333;
+  --color-primary: #333333;
+  --color-hairline: rgba(0, 0, 0, 0.08);
+  --color-line2: rgba(0, 0, 0, 0.04);
+  --bg-page: #F5F5F5;
+  --bg-body: #FAFAFA;
+  --color-body-text: #111111;
+}
+
+[data-theme="light"] .fade-top {
+  background: linear-gradient(to bottom, #FAFAFA 60%, rgba(250,250,250,0));
+}
+
+[data-theme="light"] .glow-blue {
+  box-shadow: none;
+}
+
+[data-theme="light"] .md-body th {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .md-body tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .hljs {
+  background: transparent !important;
+  color: #24292e !important;
 }

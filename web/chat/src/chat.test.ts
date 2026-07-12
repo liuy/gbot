@@ -1,23 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createChat } from './chat'
 
-// jsdom lacks IntersectionObserver — no longer needed (scroll-based prefetch).
-// Kept as empty stubs for any remaining references.
-let observerCallback: IntersectionObserverCallback | null = null
+// jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
 class MockIntersectionObserver {
-  constructor(cb: IntersectionObserverCallback) { observerCallback = cb }
   observe() {}
   unobserve() {}
   disconnect() {}
   takeRecords() { return [] }
 }
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver as unknown as typeof IntersectionObserver)
-
-function triggerTopObserver() {
-  if (observerCallback) {
-    observerCallback([{ isIntersecting: true } as IntersectionObserverEntry], null!)
-  }
-}
 
 type Listener = (msg: unknown) => void
 
@@ -79,7 +70,6 @@ function assistantContentDivs(): HTMLElement[] {
 beforeEach(() => {
   listeners.clear()
   sent.length = 0
-  observerCallback = null
   document.body.innerHTML = ''
 })
 
@@ -1325,7 +1315,7 @@ describe('chat integration', () => {
       tasks: [{ id: '1', subject: 'UniqueTaskSubject123', status: 'pending' }],
     })
     // Panel root is the glass card; find it by its class.
-    const panel = document.querySelector('.glass.border-hairline.rounded-xl') as HTMLElement
+    const panel = document.querySelector('[class*="bg-ink2"][class*="border-hairline"]') as HTMLElement
     expect(panel).toBeTruthy()
     expect(panel.style.display).toBe('')
     dispatch({ type: 'connect_status', connected: true })

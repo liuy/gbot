@@ -1,3 +1,5 @@
+import { createPopupPanel } from './utils'
+
 export interface InputBarHandles {
   root: HTMLElement
   bubbles: HTMLElement
@@ -86,9 +88,7 @@ export function createInputBar(initial: {
 
   // History picker panel — shown when user taps send on empty input.
   let historyPickerCb: (() => string[]) | null = null
-  const histPanel = document.createElement('div')
-  histPanel.className =
-    'fixed left-1/2 -translate-x-1/2 bottom-20 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden flex flex-col w-[90vw] max-w-sm bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] h-[300px]'
+  const histPanel = createPopupPanel({ bottom: true, className: 'flex flex-col h-[300px]' })
 
   const histSearch = document.createElement('textarea')
   histSearch.rows = 1
@@ -292,7 +292,7 @@ export function createInputBar(initial: {
     queuedMsgs.forEach((m, i) => {
       const bub = document.createElement('div')
       bub.className =
-        'mb-2 mx-auto bg-ink2/70 border border-hairline rounded-full px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
+        'mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
       bub.innerHTML =
         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>'
       const label = document.createElement('span')

@@ -1,5 +1,6 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
+import { createPopupPanel } from './utils'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -30,12 +31,7 @@ function createModelPicker(
   const trigger = document.createElement('button')
   trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
 
-  const panel = document.createElement('div')
-  panel.className =
-    'fixed left-1/2 -translate-x-1/2 top-12 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
-  panel.style.background = 'rgba(12, 16, 24, 0.75)'
-  panel.style.backdropFilter = 'blur(20px) saturate(1.5)'
-  panel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
+  const panel = createPopupPanel()
 
   const searchInput = document.createElement('textarea')
   searchInput.rows = 1
@@ -148,12 +144,7 @@ function createEnginePicker(
   const trigger = document.createElement('button')
   trigger.className = 'mono text-[12px] text-t2 hover:text-t1 transition-colors'
 
-  const panel = document.createElement('div')
-  panel.className =
-    'fixed left-1/2 -translate-x-1/2 top-12 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
-  panel.style.background = 'rgba(12, 16, 24, 0.75)'
-  panel.style.backdropFilter = 'blur(20px) saturate(1.5)'
-  panel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
+  const panel = createPopupPanel()
 
   const listContainer = document.createElement('div')
   listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
@@ -197,7 +188,7 @@ function createEnginePicker(
       'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1'
     footer.innerHTML =
       '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
-    footer.style.color = 'var(--blue, #60a5fa)'
+    footer.style.color = 'var(--color-blue)'
     footer.addEventListener('click', () => {
       onNew()
       closePanel()

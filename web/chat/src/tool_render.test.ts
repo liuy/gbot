@@ -28,7 +28,7 @@ describe('renderToolOutput', () => {
     const ansiDiff = '\x1b[1m 5 -const x\x1b[0m'
     const html = renderToolOutput(ansiDiff)
     expect(html).not.toContain('\x1b[')
-    expect(html).toContain('bg-red')
+    expect(html).toContain('diff-del')
   })
 
   it('renders plain text via markdown', () => {
@@ -69,12 +69,12 @@ const x = 1;
 describe('renderDiff output', () => {
   it('applies green background to added lines', () => {
     const html = renderToolOutput(' 5 +const x = 1;')
-    expect(html).toContain('bg-green')
+    expect(html).toContain('diff-add')
   })
 
   it('applies red background to removed lines', () => {
     const html = renderToolOutput(' 5 -const x = 1;')
-    expect(html).toContain('bg-red')
+    expect(html).toContain('diff-del')
   })
 
   it('uses text-t2 for context lines (no background)', () => {
@@ -84,7 +84,7 @@ describe('renderDiff output', () => {
  5 -old line`
     const html = renderToolOutput(diff)
     expect(html).toContain('text-t2')
-    expect(html).toContain('bg-red')
+    expect(html).toContain('diff-del')
   })
 
   it('classifies mixed diff lines correctly', () => {
@@ -101,9 +101,9 @@ describe('renderDiff output', () => {
     expect(html).toMatch(/import/)
     expect(html).toMatch(/DOMPurify/)
     // added line → green
-    expect(html).toContain('bg-green')
+    expect(html).toContain('diff-add')
     // removed line → red
-    expect(html).toContain('bg-red')
+    expect(html).toContain('diff-del')
   })
 })
 
@@ -127,8 +127,8 @@ describe('renderToolOutput integration', () => {
  5 +new line`
     const html = renderToolOutput(diff)
     // Each line in its own div with correct class
-    expect(html).toContain('bg-red')
-    expect(html).toContain('bg-green')
+    expect(html).toContain('diff-del')
+    expect(html).toContain('diff-add')
     expect(html).toContain('text-t2')
     // Lines are in separate divs
     const divCount = (html.match(/<div /g) || []).length

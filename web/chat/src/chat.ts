@@ -404,13 +404,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
   const scrollBtn = document.createElement('button')
   scrollBtn.className =
-    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full bg-transparent opacity-0 pointer-events-none transition-all duration-200'
+    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full bg-transparent opacity-0 pointer-events-none transition-all duration-200 text-blue'
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
-    '<circle class="scroll-ring" cx="22" cy="22" r="18" fill="none" stroke="rgba(0,180,255,0.15)" stroke-width="2"/>' +
-    '<circle class="scroll-progress" cx="22" cy="22" r="18" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.15s ease-out"/>' +
-    '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<circle class="scroll-ring" cx="22" cy="22" r="18" fill="none" stroke="currentColor" stroke-width="2"/>' +
+    '<circle class="scroll-progress" cx="22" cy="22" r="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.15s ease-out"/>' +
+    '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
     '</svg>'
   mainContent.appendChild(scrollBtn)
   scrollBtn.addEventListener('click', () => {

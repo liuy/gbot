@@ -12,7 +12,7 @@ export function createTaskPanel(): TaskPanelHandles {
   let expanded = false
 
   const root = document.createElement('div')
-  root.className = 'mb-2 glass border border-hairline rounded-xl overflow-hidden'
+  root.className = 'mb-2 bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl overflow-hidden'
   root.style.display = 'none'
 
   // ── Header button (always visible when panel is shown).
@@ -27,10 +27,10 @@ export function createTaskPanel(): TaskPanelHandles {
   ringWrap.setAttribute('width', '16')
   ringWrap.setAttribute('height', '16')
   ringWrap.setAttribute('viewBox', '0 0 16 16')
-  ringWrap.setAttribute('class', 'flex-shrink-0')
+  ringWrap.setAttribute('class', 'flex-shrink-0 text-blue')
   ringWrap.innerHTML =
     `<circle cx="8" cy="8" r="${RING_RADIUS}" fill="none" stroke="rgba(120,180,255,0.12)" stroke-width="2"/>` +
-    `<circle class="task-ring" cx="8" cy="8" r="${RING_RADIUS}" fill="none" stroke="#00B4FF" stroke-width="2" stroke-linecap="round" stroke-dasharray="${RING_CIRCUMFERENCE.toFixed(3)}" stroke-dashoffset="${RING_CIRCUMFERENCE.toFixed(3)}" transform="rotate(-90 8 8)" style="transition:stroke-dashoffset 0.3s ease"/>`
+    `<circle class="task-ring" cx="8" cy="8" r="${RING_RADIUS}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${RING_CIRCUMFERENCE.toFixed(3)}" stroke-dashoffset="${RING_CIRCUMFERENCE.toFixed(3)}" transform="rotate(-90 8 8)" style="transition:stroke-dashoffset 0.3s ease"/>`
 
   const doneText = document.createElement('span')
   doneText.className = 'mono text-[11px] text-t2'
@@ -74,16 +74,16 @@ export function createTaskPanel(): TaskPanelHandles {
     subject.className = 'text-[13px]'
 
     if (t.status === 'completed') {
-      icon.className += ' bg-green/20'
+      icon.className += ' bg-green/20 text-green'
       icon.innerHTML =
-        '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#3DD68C" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>'
+        '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>'
       subject.className += ' text-t3 line-through'
       subject.textContent = t.subject
       row.append(icon, subject)
     } else if (t.status === 'in_progress') {
-      icon.className += ' bg-blue/20'
+      icon.className += ' bg-blue/20 text-blue'
       icon.innerHTML =
-        '<svg class="spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#00B4FF" stroke-width="2.5"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>'
+        '<svg class="spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>'
       subject.className += ' text-t1 font-medium'
       subject.textContent = t.subject
       const running = document.createElement('span')

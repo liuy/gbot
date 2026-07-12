@@ -96,6 +96,18 @@ export function pluralize(noun: string, count: number): string {
 	return `${count} ${noun}s`
 }
 
+// ── Popup panels ────────────────────────────────────────────────
+
+const PANEL_BASE =
+  'bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
+
+export function createPopupPanel(opts?: { bottom?: boolean; className?: string }): HTMLDivElement {
+  const panel = document.createElement('div')
+  const pos = opts?.bottom ? 'fixed left-1/2 -translate-x-1/2 bottom-20' : 'fixed left-1/2 -translate-x-1/2 top-12'
+  panel.className = PANEL_BASE + ' ' + pos + (opts?.className ? ' ' + opts.className : '')
+  return panel
+}
+
 // Group summary: "2 Searches, 1 Read, 1 LSP". Shared by ToolGroup.tsx and streamDom.ts.
 export function summarize(tools: { name: string; isList?: boolean }[]): string {
 	const counts = new Map<string, number>()
