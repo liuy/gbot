@@ -363,14 +363,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   wrapper.className = 'mx-auto max-w-2xl py-4'
 
   const topSentinel = document.createElement('div')
-  topSentinel.style.height = '1px'
+  topSentinel.className = 'h-px'
   const messagesContainer = document.createElement('div')
   messagesContainer.className = 'space-y-7'
-  messagesContainer.style.overflowAnchor = 'none'
+  ;(messagesContainer.style as unknown as Record<string, string>).overflowAnchor = 'none'
 
   const bottomSentinel = document.createElement('div')
-  bottomSentinel.style.height = '1px'
-  bottomSentinel.style.overflowAnchor = 'auto'
+  bottomSentinel.className = 'h-px'
+  ;(bottomSentinel.style as unknown as Record<string, string>).overflowAnchor = 'auto'
 
   wrapper.appendChild(topSentinel)
   wrapper.appendChild(messagesContainer)
@@ -406,8 +406,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
   const scrollBtn = document.createElement('button')
   scrollBtn.className =
-    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full opacity-0 pointer-events-none transition-all duration-200'
-  scrollBtn.style.cssText = 'background:transparent;'
+    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full bg-transparent opacity-0 pointer-events-none transition-all duration-200'
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
@@ -431,9 +430,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const distFromBottom = maxScroll - scroll.scrollTop
     const near = distFromBottom < 120
     if (near !== isNearBottom) isNearBottom = near
-    // Show/hide
-    scrollBtn.style.opacity = isNearBottom ? '0' : '1'
-    scrollBtn.style.pointerEvents = isNearBottom ? 'none' : 'auto'
+    scrollBtn.classList.toggle('opacity-0', isNearBottom)
+    scrollBtn.classList.toggle('pointer-events-none', isNearBottom)
     // Progress ring: 0 at bottom, full at top
     if (maxScroll > 0) {
       const progress = Math.min(distFromBottom / maxScroll, 1)
@@ -755,8 +753,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       scroll.scrollTop = scroll.scrollHeight
       isNearBottom = true
       lastScrollHeight = scroll.scrollHeight
-      scrollBtn.style.opacity = '0'
-      scrollBtn.style.pointerEvents = 'none'
+      scrollBtn.classList.add('opacity-0', 'pointer-events-none')
     } else {
       requestAnimationFrame(() => {
         const delta = scroll.scrollHeight - prevScrollHeight
@@ -1331,8 +1328,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         accumulatedThinkingMs = msg.thinkingMs ?? 0
         if (msg.inputHistory) inputHistory.load(msg.inputHistory)
         taskPanel.setTasks([])
-        scrollBtn.style.opacity = '0'
-        scrollBtn.style.pointerEvents = 'none'
+        scrollBtn.classList.add('opacity-0', 'pointer-events-none')
         if (msg.sessionID) currentSessionID = msg.sessionID
         conn.send({ type: 'session_list_request' })
         return

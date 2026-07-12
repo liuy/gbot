@@ -433,7 +433,7 @@ describe('chat integration', () => {
 
     // scrollBtn should remain hidden (user is at bottom)
     const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
-    expect(scrollBtn.style.opacity).toBe('0')
+    expect(scrollBtn.classList.contains('opacity-0')).toBe(true)
   })
 
   it('initial history load scrolls to bottom synchronously (no RAF delay)', () => {
@@ -471,7 +471,7 @@ describe('chat integration', () => {
     chat.scrollEl.scrollTop = 0
     chat.scrollEl.dispatchEvent(new Event('scroll'))
     const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
-    expect(scrollBtn.style.opacity).toBe('1')
+    expect(scrollBtn.classList.contains('opacity-0')).toBe(false)
 
     // Reconnect with history
     dispatch({ type: 'connect_status', connected: true })
@@ -495,7 +495,7 @@ describe('chat integration', () => {
     })
 
     // After reconnect, isNearBottom should be reset so scroll button is hidden
-    expect(scrollBtn.style.opacity).toBe('0')
+    expect(scrollBtn.classList.contains('opacity-0')).toBe(true)
   })
 
   it('IntersectionObserver triggers prefetch on scroll to top', () => {
