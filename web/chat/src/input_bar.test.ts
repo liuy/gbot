@@ -46,7 +46,7 @@ describe('createInputBar', () => {
     const stopBtn = Array.from(ib.root.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('STOP'),
     )!
-    expect(stopBtn.style.display).toBe('none')
+    expect(stopBtn.classList.contains('hidden')).toBe(true)
   })
 
   it('setQueuedMsgs single shows Tap to CANCEL', () => {
@@ -251,10 +251,11 @@ describe('createInputBar', () => {
     ta.selectionEnd = pos
   }
 
-  function dispatchArrow(ta: HTMLTextAreaElement, key: 'ArrowUp' | 'ArrowDown') {
-    ta.dispatchEvent(
-      new KeyboardEvent('keydown', { key, bubbles: true }),
-    )
+  function dispatchArrow(
+    ta: HTMLTextAreaElement,
+    key: 'ArrowUp' | 'ArrowDown',
+  ) {
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
   }
 
   it('ArrowUp when NOT streaming and historyUpCb returns text sets textarea value and cursor to start', () => {
@@ -426,25 +427,29 @@ describe('createInputBar', () => {
 
   // ── History picker: single-line truncation ──
 
-  function openHistPicker(ib: ReturnType<typeof createInputBar>, items: string[]) {
+  function openHistPicker(
+    ib: ReturnType<typeof createInputBar>,
+    items: string[],
+  ) {
     ib.onHistoryPicker(() => items)
     const sendBtn = ib.root.querySelector(
       'button[aria-label="Send"]',
     ) as HTMLButtonElement
     sendBtn.click()
-    return document.body.querySelector('div[role="button"]')?.parentElement as HTMLElement
+    return document.body.querySelector('div[role="button"]')
+      ?.parentElement as HTMLElement
   }
 
   it('history items use nowrap+ellipsis truncation, not webkit-line-clamp', () => {
     const ib = mount()
-    const histList = openHistPicker(ib, ['short', 'a very long message that should be truncated to one line'])
+    const histList = openHistPicker(ib, [
+      'short',
+      'a very long message that should be truncated to one line',
+    ])
     const items = histList.querySelectorAll('div[role="button"]')
     expect(items.length).toBe(2)
     for (const el of items) {
-      const s = (el as HTMLElement).style
-      expect(s.whiteSpace).toBe('nowrap')
-      expect(s.overflow).toBe('hidden')
-      expect(s.textOverflow).toBe('ellipsis')
+      expect((el as HTMLElement).classList.contains('truncate')).toBe(true)
     }
   })
 
@@ -455,12 +460,16 @@ describe('createInputBar', () => {
     item.click()
     expect(ib.textarea.value).toBe('hello world')
     const panel = histList.parentElement as HTMLElement
-    expect(panel.style.display).toBe('none')
+    expect(panel.classList.contains('hidden')).toBe(true)
   })
 
   it('history picker search filters items', () => {
     const ib = mount()
-    const histList = openHistPicker(ib, ['apple pie', 'banana split', 'apple juice'])
+    const histList = openHistPicker(ib, [
+      'apple pie',
+      'banana split',
+      'apple juice',
+    ])
     const panel = histList.parentElement as HTMLElement
     const search = panel.querySelector('textarea') as HTMLTextAreaElement
     search.value = 'apple'

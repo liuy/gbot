@@ -28,6 +28,10 @@ export function createInputBar(initial: {
   let historyUpCb: ((current: string) => string | null) | null = null
   let historyDownCb: (() => string | null) | null = null
   let historyResetCb: (() => void) | null = null
+  let histPanelOpen = false
+
+  const histItemClass =
+    'w-full px-3 py-2 rounded-lg text-left text-[13px] text-t2 cursor-pointer leading-[1.4] truncate'
 
   const root = document.createElement('div')
   root.className = 'sticky bottom-0 z-10 px-5 pb-3 pt-1'
@@ -45,30 +49,22 @@ export function createInputBar(initial: {
   const stopBtn = document.createElement('button')
   stopBtn.type = 'button'
   stopBtn.className =
-    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue transition-colors pulse-blue'
-  stopBtn.style.background = 'rgba(0,180,255,0.12)'
+    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue transition-colors pulse-blue bg-blue/12 hidden'
   stopBtn.innerHTML =
     '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
-  stopBtn.style.display = 'none'
   stopBtn.addEventListener('click', () => stopCb?.())
 
   // Textarea wrap.
   const taWrap = document.createElement('div')
-  taWrap.className =
-    'flex-1 flex justify-center min-h-[20px] cursor-text'
+  taWrap.className = 'flex-1 flex justify-center min-h-[20px] cursor-text'
   const textarea = document.createElement('textarea')
   textarea.rows = 1
   textarea.placeholder = 'Sup?'
   textarea.disabled = !connected
   textarea.className =
-    'bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40'
+    'bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40 w-fit max-w-full max-h-[120px] overflow-hidden'
   // fieldSizing is non-standard TS lib type; cast via setProperty.
-  ;(textarea.style as unknown as Record<string, string>).fieldSizing =
-    'content'
-  textarea.style.width = 'fit-content'
-  textarea.style.maxWidth = '100%'
-  textarea.style.maxHeight = '120px'
-  textarea.style.overflow = 'hidden'
+  ;(textarea.style as unknown as Record<string, string>).fieldSizing = 'content'
   taWrap.appendChild(textarea)
   taWrap.addEventListener('click', () => textarea.focus())
 
@@ -92,13 +88,7 @@ export function createInputBar(initial: {
   let historyPickerCb: (() => string[]) | null = null
   const histPanel = document.createElement('div')
   histPanel.className =
-    'fixed left-1/2 -translate-x-1/2 bottom-20 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
-  histPanel.style.background = 'rgba(12, 16, 24, 0.75)'
-  histPanel.style.backdropFilter = 'blur(20px) saturate(1.5)'
-  histPanel.style.setProperty('-webkit-backdrop-filter', 'blur(20px) saturate(1.5)')
-  histPanel.style.height = '300px'
-  histPanel.style.display = 'none'
-  histPanel.style.flexDirection = 'column'
+    'fixed left-1/2 -translate-x-1/2 bottom-20 border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden flex flex-col w-[90vw] max-w-sm bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] h-[300px]'
 
   const histSearch = document.createElement('textarea')
   histSearch.rows = 1
@@ -107,9 +97,7 @@ export function createInputBar(initial: {
   histSearch.setAttribute('autocorrect', 'off')
   histSearch.spellcheck = false
   histSearch.className =
-    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0'
-  histSearch.style.fontFamily = 'inherit'
-  histSearch.style.fontSize = 'inherit'
+    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0 font-[inherit] text-[length:inherit]'
   histPanel.appendChild(histSearch)
 
   const histList = document.createElement('div')
@@ -117,7 +105,8 @@ export function createInputBar(initial: {
   histPanel.appendChild(histList)
 
   const closeHistPanel = () => {
-    histPanel.style.display = 'none'
+    histPanel.classList.add('hidden')
+    histPanelOpen = false
     histSearch.value = ''
   }
 
@@ -138,17 +127,7 @@ export function createInputBar(initial: {
       const el = document.createElement('div')
       el.setAttribute('role', 'button')
       el.tabIndex = 0
-      el.style.whiteSpace = 'nowrap'
-      el.style.overflow = 'hidden'
-      el.style.textOverflow = 'ellipsis'
-      el.style.width = '100%'
-      el.style.padding = '8px 12px'
-      el.style.borderRadius = '8px'
-      el.style.textAlign = 'left'
-      el.style.fontSize = '13px'
-      el.style.color = 'var(--color-t2)'
-      el.style.cursor = 'pointer'
-      el.style.lineHeight = '1.4'
+      el.className = histItemClass
       el.textContent = item
       el.addEventListener('click', () => {
         textarea.value = item
@@ -165,7 +144,8 @@ export function createInputBar(initial: {
     const items = historyPickerCb?.() ?? []
     if (items.length === 0) return
     if (!histPanel.parentElement) document.body.appendChild(histPanel)
-    histPanel.style.display = 'flex'
+    histPanel.classList.remove('hidden')
+    histPanelOpen = true
     histSearch.value = ''
     renderHistList(items)
   }
@@ -176,7 +156,11 @@ export function createInputBar(initial: {
   })
 
   const onHistDocClick = (e: MouseEvent) => {
-    if (!histPanel.contains(e.target as Node) && !sendBtn.contains(e.target as Node)) closeHistPanel()
+    if (
+      !histPanel.contains(e.target as Node) &&
+      !sendBtn.contains(e.target as Node)
+    )
+      closeHistPanel()
   }
   histPanel.addEventListener('click', (e) => e.stopPropagation())
   histSearch.addEventListener('keydown', (e) => {
@@ -191,16 +175,16 @@ export function createInputBar(initial: {
     const hasText = textarea.value.trim().length > 0
     sendBtn.disabled = !hasText && !connected ? true : !connected
     if (!hasText) {
-      sendBtn.style.opacity = '0.5'
+      sendBtn.classList.add('opacity-50')
     } else {
-      sendBtn.style.opacity = ''
+      sendBtn.classList.remove('opacity-50')
     }
   }
 
   sendBtn.addEventListener('click', (e) => {
     if (textarea.value.trim() === '') {
       e.preventDefault()
-      if (histPanel.style.display === 'flex') {
+      if (histPanelOpen) {
         closeHistPanel()
         document.removeEventListener('mousedown', onHistDocClick)
       } else {
@@ -334,7 +318,7 @@ export function createInputBar(initial: {
     textarea,
     setStreaming: (s: boolean) => {
       streaming = s
-      stopBtn.style.display = s ? '' : 'none'
+      stopBtn.classList.toggle('hidden', !s)
       if (!s) {
         queuedMsgs = []
       }
