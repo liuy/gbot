@@ -115,34 +115,9 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	c.writeMu.Unlock()
 	slog.Info("webchat:takeover complete")
 
-	// Heartbeat: ping every 30s to keep the connection alive through idle
-	// proxies and detect dead clients. Shares writeMu to avoid concurrent
-	// writes (gorilla constraint).
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				c.writeMu.Lock()
-				if cur := c.activeWS.Load(); cur == ws {
-					_ = cur.SetWriteDeadline(time.Now().Add(30 * time.Second))
-					if err := cur.WriteMessage(websocket.PingMessage, nil); err != nil {
-						slog.Warn("webchat:ws write failed", "frame", "heartbeat:ping", "error", err)
-					}
-				}
-				c.writeMu.Unlock()
-			}
-		}
-	}()
-
 	// readLoop owns the read side and dispatches inbound (query/ask/stop/
-	// cancel_queued/history_request). Blocks until read error (client gone).
+	// cancel_queued/history_request/ping). Blocks until read error (client gone).
 	c.readLoop(ws)
-	close(done)
 
 	// Connection gone: clear activeWS only if it still points at us (a newer
 	// takeover may have already swapped in its own ws — don't clobber it).
@@ -263,6 +238,11 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleEngineNew(msg.Name)
 			}
+		case "ping":
+			pong, _ := json.Marshal(struct {
+				Type string `json:"type"`
+			}{Type: "pong"})
+			_ = c.writeDirect(pong)
 		}
 	}
 }
