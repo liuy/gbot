@@ -751,8 +751,7 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 }
 
 // buildHistoryMessageForSlot is the per-slot core of buildHistoryMessage. It
-// is called directly by handleEngineSwitch (which needs to build history for
-// a non-active slot before c.active is flipped).
+// is called directly by handleEngineSwitch to build history for the target slot.
 func (c *WebChatConnector) buildHistoryMessageForSlot(slot *engineSlot, cursor string, limit int) []byte {
 	msgs := slot.engine.Messages()
 	if len(msgs) == 0 {
@@ -1501,17 +1500,24 @@ func (c *WebChatConnector) SetCreateEngineFn(fn func(name string) (string, error
 
 // handleEngineSwitch switches the active engine to engineID and replays the
 // target engine's takeover sequence (connect_status → history → config →
-// engine_list → streamBuf replay → task_list). The entire frame-send sequence runs
-// under a single writeMu.Lock() so c.active is flipped before any replay
-// frame is sent, preventing double-delivery from concurrent hub events.
+// engine_list → streamBuf replay → task_list).
+//
+// c.active is flipped in the FIRST writeMu.Lock() — before any build/send —
+// so concurrent writePayloadTo calls from the old engine immediately see
+// slot.engineID != c.active and skip WS writes (buffer-only). This prevents
+// the old engine from holding writeMu through slow WS sends while the user
+// waits for the switch to take effect.
 func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 	c.writeMu.Lock()
 	slot, ok := c.slots[engineID]
-	c.writeMu.Unlock()
 	if !ok {
+		c.writeMu.Unlock()
 		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("unknown engine: %s", engineID)))
 		return
 	}
+	c.active = engineID
+	c.writeMu.Unlock()
+
 	if c.mgr != nil {
 		if err := c.mgr.SetActive(engineID); err != nil {
 			_ = c.writeDirect(buildErrorMessage(err))
@@ -1526,7 +1532,6 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 	engineListMsg := c.buildEngineListMessage()
 
 	c.writeMu.Lock()
-	c.active = engineID
 	ws := c.activeWS.Load()
 	if ws != nil {
 		wsSend(ws, "engine_switch:connect_status", connectMsg)

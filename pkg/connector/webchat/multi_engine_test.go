@@ -306,3 +306,67 @@ func TestMultiEngine_ConcurrentEventDelivery(t *testing.T) {
 		t.Errorf("expected ~100 events in engineB buffer, got %d", bBuf)
 	}
 }
+
+// TestMultiEngine_SwitchDuringActiveStreaming verifies that after
+// handleEngineSwitch returns, c.active is the new engine and events
+// dispatched to the old engine are buffered (not written to WS).
+func TestMultiEngine_SwitchDuringActiveStreaming(t *testing.T) {
+	hubMain := hub.NewHub()
+	c := newTestConnectorWithHub(t, hubMain)
+	_, _ = addMockEngine(t, c, "engineB")
+
+	ws := dialAndStore(t, c)
+
+	// Switch to engineB.
+	c.handleEngineSwitch("engineB")
+
+	// c.active must be engineB immediately after switch.
+	c.writeMu.Lock()
+	active := c.active
+	c.writeMu.Unlock()
+	if active != "engineB" {
+		t.Fatalf("c.active = %q, want engineB", active)
+	}
+
+	// Dispatch an event to main (now inactive) — should be buffered, not
+	// written to WS.
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "post-switch-main"})
+
+	// Verify main's streamBuf has the event.
+	c.writeMu.Lock()
+	mainBuf := len(c.slots["main"].streamBuf)
+	c.writeMu.Unlock()
+	if mainBuf == 0 {
+		t.Error("main engine should have buffered the post-switch event")
+	}
+
+	// Read WS — should find connect_status (from switch), NOT the post-switch
+	// event from main. Drain frames until connect_status or timeout.
+	foundConnectStatus := false
+	foundPostSwitchEvent := false
+	for range 20 {
+		msg := readWSMessage(t, ws)
+		var env struct {
+			Type  string `json:"type"`
+			Event struct {
+				Text string `json:"text"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(msg, &env); err != nil {
+			continue
+		}
+		if env.Type == "connect_status" {
+			foundConnectStatus = true
+			break
+		}
+		if env.Type == "event" && env.Event.Text == "post-switch-main" {
+			foundPostSwitchEvent = true
+		}
+	}
+	if !foundConnectStatus {
+		t.Error("expected connect_status on WS after switch")
+	}
+	if foundPostSwitchEvent {
+		t.Error("post-switch event from old (inactive) engine leaked to WS — writePayloadTo did not check c.active before writing")
+	}
+}
