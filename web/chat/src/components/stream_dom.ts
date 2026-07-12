@@ -10,6 +10,13 @@ import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
 import hljs from 'highlight.js'
 
+const headerBtnClassBaseline = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
+const headerBtnClassStart = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+const prefixClass = 'shrink-0 w-6'
+const runningDotClass = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
+const chevronClass = 'inline-block align-middle text-t3 transition-transform'
+const chevronExpandedClass = 'inline-block align-middle text-t3 transition-transform rotate-90'
+
 function shouldAutoExpand(toolName: string): boolean {
   return toolName === 'Edit' || toolName === 'Write'
 }
@@ -112,10 +119,10 @@ export function appendThinkingBlock(
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
+  header.className = headerBtnClassBaseline
 
   const prefix = document.createElement('span')
-  prefix.className = 'shrink-0 w-6'
+  prefix.className = prefixClass
 
   const glyph = document.createElement('span')
   glyph.className = 'text-amber text-sm inline-block w-3 text-center heartbeat'
@@ -123,7 +130,7 @@ export function appendThinkingBlock(
   prefix.appendChild(glyph)
 
   const chevron = document.createElement('span')
-  chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform rotate-90" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
+  chevron.innerHTML = `<svg class="${chevronExpandedClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
   prefix.appendChild(chevron)
   header.appendChild(prefix)
 
@@ -138,7 +145,6 @@ export function appendThinkingBlock(
   // for streaming writes even when collapsed.
   const p = document.createElement('p')
   p.className = 'ml-6 text-t2 text-sm italic whitespace-pre-wrap'
-  p.style.maxHeight = 'none'
   wrap.appendChild(p)
 
   insertBefore(parent, wrap, before ?? null)
@@ -147,8 +153,7 @@ export function appendThinkingBlock(
   header.addEventListener('click', () => {
     const collapsed = p.classList.toggle('hidden')
     const svg = chevron.querySelector('svg')
-    if (svg) svg.setAttribute('class',
-      'inline-block align-middle text-t3 transition-transform ' + (collapsed ? '' : 'rotate-90'))
+    if (svg) svg.setAttribute('class', collapsed ? chevronClass : chevronExpandedClass)
   })
 
   return { p, labelEl }
@@ -176,8 +181,7 @@ export function finishThinking(
   p.classList.add('hidden')
   // Sync chevron: collapsed = no rotation, expanded = rotate-90.
   const chevron = labelEl.parentElement?.querySelector('svg')
-  if (chevron) chevron.setAttribute('class',
-    'inline-block align-middle text-t3 transition-transform')
+  if (chevron) chevron.setAttribute('class', chevronClass)
 }
 
 function createGroupContainer(): HTMLElement {
@@ -189,22 +193,23 @@ function createGroupContainer(): HTMLElement {
   header.dataset.groupHeader = '1'
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+  header.className = headerBtnClassStart
 
   const prefix = document.createElement('span')
-  prefix.className = 'shrink-0 w-6'
+  prefix.className = prefixClass
 
   // Dot: same class as individual tool dot (text-white heartbeat while running)
   const dot = document.createElement('span')
-  dot.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
+  dot.className = runningDotClass
   dot.dataset.groupDot = '1'
   dot.textContent = '●'
   prefix.appendChild(dot)
 
-  // Chevron SVG (same as ToolGroup.tsx)
+  // Chevron SVG (same as ToolGroup.tsx). transition-transform matches the
+  // individual tool chevron so the rotation animates consistently.
   const chevron = document.createElement('span')
   chevron.dataset.groupChevron = '1'
-  chevron.innerHTML = '<svg class="inline-block align-middle text-t3" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
+  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
   prefix.appendChild(chevron)
   header.appendChild(prefix)
 
@@ -225,16 +230,15 @@ function createGroupContainer(): HTMLElement {
   // Tools container: default collapsed
   const toolsContainer = document.createElement('div')
   toolsContainer.dataset.groupTools = '1'
-  toolsContainer.className = 'ml-6'
-  toolsContainer.style.display = 'none'
+  toolsContainer.className = 'ml-6 hidden'
   group.appendChild(toolsContainer)
 
   // Toggle expand/collapse on click
   header.addEventListener('click', () => {
-    const visible = toolsContainer.style.display !== 'none'
-    toolsContainer.style.display = visible ? 'none' : ''
+    const visible = !toolsContainer.classList.contains('hidden')
+    toolsContainer.classList.toggle('hidden', visible)
     const svg = chevron.querySelector('svg')
-    if (svg) svg.style.transform = visible ? '' : 'rotate(90deg)'
+    if (svg) svg.setAttribute('class', visible ? chevronClass : chevronExpandedClass)
   })
 
   return group
@@ -289,18 +293,18 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = 'flex items-start cursor-pointer bg-transparent border-0 p-0 text-left'
+  header.className = headerBtnClassStart
 
   const prefix = document.createElement('span')
-  prefix.className = 'shrink-0 w-6'
+  prefix.className = prefixClass
 
   const dot = document.createElement('span')
-  dot.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
+  dot.className = runningDotClass
   dot.textContent = '●'
   prefix.appendChild(dot)
 
   const chevron = document.createElement('span')
-  chevron.innerHTML = '<svg class="inline-block align-middle text-t3 transition-transform" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>'
+  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
   prefix.appendChild(chevron)
   header.appendChild(prefix)
 
@@ -477,20 +481,19 @@ export function toggleToolExpanded(handles: ToolDomHandles): void {
     handles.childrenContainer.classList.remove('hidden')
   }
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class',
-    'inline-block align-middle text-t3 transition-transform' + (collapsed ? '' : ' rotate-90'))
+  if (svg) svg.setAttribute('class', collapsed ? chevronClass : chevronExpandedClass)
 }
 
 export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
   handles.childrenContainer.classList.remove('hidden')
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class', 'inline-block align-middle text-t3 transition-transform rotate-90')
+  if (svg) svg.setAttribute('class', chevronExpandedClass)
 }
 
 export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
   handles.childrenContainer.classList.add('hidden')
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class', 'inline-block align-middle text-t3 transition-transform')
+  if (svg) svg.setAttribute('class', chevronClass)
 }
 
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {
@@ -498,7 +501,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
 
   const dotWrap = document.createElement('span')
-  dotWrap.className = 'shrink-0 w-6'
+  dotWrap.className = prefixClass
   const dotEl = document.createElement('span')
   dotEl.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-blue heartbeat'
   dotEl.textContent = '●'
@@ -515,7 +518,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
 
   const tokensSuffix = document.createElement('span')
   tokensSuffix.textContent = ''
-  tokensSuffix.style.display = 'none'
+  tokensSuffix.className = 'hidden'
   root.appendChild(tokensSuffix)
 
   const sep1 = document.createElement('span')
@@ -528,8 +531,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
 
   const sep2 = document.createElement('span')
   sep2.textContent = '·'
-  sep2.className = 'sep-cache'
-  sep2.style.display = 'none'
+  sep2.className = 'sep-cache hidden'
   root.appendChild(sep2)
 
   const cacheEl = document.createElement('span')
@@ -537,8 +539,7 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
 
   const sep3 = document.createElement('span')
   sep3.textContent = '·'
-  sep3.className = 'sep-tools'
-  sep3.style.display = 'none'
+  sep3.className = 'sep-tools hidden'
   root.appendChild(sep3)
 
   const toolCountEl = document.createElement('span')
@@ -555,8 +556,8 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.appendChild(elapsedEl)
 
   const thinkingEl = document.createElement('span')
+  thinkingEl.className = 'hidden'
   root.appendChild(thinkingEl)
-  thinkingEl.style.display = 'none'
 
   insertBefore(parent, root, before ?? null)
 
@@ -575,7 +576,7 @@ export function setProgressBarUsage(
   // cacheStr (only AppendStatsLine does). Keep cacheEl/sep-cache hidden.
   h.cacheEl.textContent = ''
   const sep = h.root.querySelector('.sep-cache') as HTMLElement | null
-  if (sep) sep.style.display = 'none'
+  if (sep) sep.classList.add('hidden')
 }
 
 export function refreshProgressBar(
@@ -590,8 +591,8 @@ export function refreshProgressBar(
   h.rateEl.textContent = rate.toFixed(1) + ' t/s'
   h.toolCountEl.textContent = toolCount === 1 ? '1 tool' : toolCount + ' tools'
   const sep = h.root.querySelector('.sep-tools') as HTMLElement | null
-  if (sep) sep.style.display = toolCount > 0 ? '' : 'none'
-  h.toolCountEl.style.display = toolCount > 0 ? '' : 'none'
+  if (sep) sep.classList.toggle('hidden', !(toolCount > 0))
+  h.toolCountEl.classList.toggle('hidden', !(toolCount > 0))
 }
 
 export function finalizeProgressBar(
@@ -602,7 +603,7 @@ export function finalizeProgressBar(
   _thinkingDurationMs?: number,
 ): void {
   h.dotEl.classList.remove('heartbeat')
-  if (h.dotEl.parentElement) h.dotEl.parentElement.style.display = 'none'
+  if (h.dotEl.parentElement) h.dotEl.parentElement.classList.add('hidden')
   h.root.dataset.progress = '1'
   const totalInput = usage.inputTokens + usage.cacheRead + usage.cacheCreation
   h.inEl.textContent = '↑' + formatTokenCount(totalInput)
@@ -613,10 +614,10 @@ export function finalizeProgressBar(
   h.elapsedEl.textContent = formatDurationNs(elapsedMs * 1e6)
   h.toolCountEl.textContent = toolCount === 1 ? '1 tool' : toolCount > 0 ? toolCount + ' tools' : ''
   const sepTools = h.root.querySelector('.sep-tools') as HTMLElement | null
-  if (sepTools) sepTools.style.display = toolCount > 0 ? '' : 'none'
+  if (sepTools) sepTools.classList.toggle('hidden', !(toolCount > 0))
   // Cache line matching TUI AppendStatsLine.
   const sepCache = h.root.querySelector('.sep-cache') as HTMLElement | null
-  if (sepCache) sepCache.style.display = ''
+  if (sepCache) sepCache.classList.remove('hidden')
   if (usage.cacheRead > 0 || usage.cacheCreation > 0) {
     const total = totalInput
     if (total > 0 && usage.cacheRead > 0) {

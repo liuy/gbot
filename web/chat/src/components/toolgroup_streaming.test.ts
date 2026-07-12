@@ -74,13 +74,13 @@ describe('ToolGroup streaming rendering', () => {
 
 		// Click header should toggle visibility of tools inside
 		const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
-		expect(toolsContainer.style.display).toBe('none') // default collapsed
+		expect(toolsContainer.classList.contains('hidden')).toBe(true) // default collapsed
 
 		header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-		expect(toolsContainer.style.display).toBe('') // expanded
+		expect(toolsContainer.classList.contains('hidden')).toBe(false) // expanded
 
 		header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-		expect(toolsContainer.style.display).toBe('none') // collapsed again
+		expect(toolsContainer.classList.contains('hidden')).toBe(true) // collapsed again
 	})
 
 	it('running tool in group shows running state in dot', () => {

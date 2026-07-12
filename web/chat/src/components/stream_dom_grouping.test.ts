@@ -230,12 +230,12 @@ describe('thinking absorption into tool groups', () => {
 
 		const group = container.querySelector('[data-tool-group]') as HTMLElement
 		const tc = toolsContainer(group)
-		expect(tc.style.display).toBe('none')
+		expect(tc.classList.contains('hidden')).toBe(true)
 		expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
 
 		const header = group.querySelector('[data-group-header]') as HTMLElement
 		header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-		expect(tc.style.display).toBe('')
+		expect(tc.classList.contains('hidden')).toBe(false)
 		expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
 	})
 })

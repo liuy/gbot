@@ -320,10 +320,10 @@ describe('committed message layout (via loadHistory)', () => {
     const toolsContainer = group.querySelector(
       '[data-group-tools]',
     ) as HTMLElement
-    expect(toolsContainer.style.display).toBe('none')
+    expect(toolsContainer.classList.contains('hidden')).toBe(true)
     const header = group.querySelector('[data-group-header]') as HTMLElement
     header.click()
-    expect(toolsContainer.style.display).not.toBe('none')
+    expect(toolsContainer.classList.contains('hidden')).toBe(false)
   })
 })
 

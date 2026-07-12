@@ -278,7 +278,7 @@ describe('appendProgressBar', () => {
     // Even with cacheRead>0, cacheEl must be empty during streaming.
     expect(h.cacheEl.textContent).toBe('')
     const sep = h.root.querySelector('.sep-cache') as HTMLElement | null
-    expect(sep?.style.display).toBe('none')
+    expect(sep?.classList.contains('hidden')).toBe(true)
   })
 
   it('refreshProgressBar updates elapsed, rate, tool count without NaN', () => {
@@ -333,7 +333,7 @@ describe('appendProgressBar', () => {
     const parts: string[] = []
     h.root.childNodes.forEach((n) => {
       const el = n as HTMLElement
-      if (el.style && el.style.display === 'none') return
+      if (el.classList?.contains('hidden')) return
       // Skip the dot wrapper (contains only the ● dot)
       if (el.classList?.contains('w-6')) return
       const t = (el.textContent ?? '').trim()
@@ -357,7 +357,7 @@ describe('appendProgressBar', () => {
     const parts: string[] = []
     h.root.childNodes.forEach((n) => {
       const el = n as HTMLElement
-      if (el.style && el.style.display === 'none') return
+      if (el.classList?.contains('hidden')) return
       const t = (el.textContent ?? '').trim()
       if (t) parts.push(t)
     })
