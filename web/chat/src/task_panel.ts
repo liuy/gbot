@@ -52,7 +52,7 @@ export function createTaskPanel(): TaskPanelHandles {
 
   // ── Expanded list.
   const list = document.createElement('div')
-  list.className = 'hidden px-3 pb-2 space-y-0.5'
+  list.className = 'hidden px-3 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto'
   root.appendChild(list)
 
   header.addEventListener('click', () => {
