@@ -281,7 +281,7 @@ func RenderContentWithLineNumbers(content string) string {
 	for i, line := range lines {
 		paddedNum := fmt.Sprintf("%*d", maxDigits, i+1)
 		sb.WriteString(diffDimFg)
-		fmt.Fprintf(&sb, " %s  ", paddedNum)
+		fmt.Fprintf(&sb, " %s +", paddedNum)
 		sb.WriteString(diffReset)
 		sb.WriteString(line)
 		sb.WriteByte('\n')

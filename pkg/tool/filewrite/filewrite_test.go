@@ -786,10 +786,10 @@ func TestRenderResult_Create(t *testing.T) {
 	}
 	// Content should have line numbers (strip ANSI for matching)
 	plain := tool.StripANSI(got)
-	if !strings.Contains(plain, " 1  package main") {
+	if !strings.Contains(plain, " 1 +package main") {
 		t.Errorf("expected line 1 with line number, got: %q", plain)
 	}
-	if !strings.Contains(plain, " 3  func main() {}") {
+	if !strings.Contains(plain, " 3 +func main() {}") {
 		t.Errorf("expected line 3 with line number, got: %q", plain)
 	}
 }
@@ -814,7 +814,7 @@ func TestRenderResult_Create_LongContent(t *testing.T) {
 	}
 	// Full content with line numbers should be present (strip ANSI for matching)
 	plain := tool.StripANSI(got)
-	if !strings.Contains(plain, " 1  line 1") || !strings.Contains(plain, " 15  line 15") {
+	if !strings.Contains(plain, " 1 +line 1") || !strings.Contains(plain, " 15 +line 15") {
 		t.Errorf("expected full content with line numbers, got: %q", plain)
 	}
 }
