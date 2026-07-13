@@ -141,7 +141,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	slog.Info("webchat:takeover complete")
 
 	// readLoop owns the read side and dispatches inbound (query/ask/stop/
-	// cancel_queued/history_request/ping). Blocks until read error (client gone).
+	// cancel_queued/history_request). Blocks until read error (client gone).
 	c.readLoop(ws)
 
 	// Connection gone: clear activeWS only if it still points at us (a newer
@@ -263,11 +263,6 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleEngineNew(msg.Name)
 			}
-		case "ping":
-			pong, _ := json.Marshal(struct {
-				Type string `json:"type"`
-			}{Type: "pong"})
-			_ = c.writeDirect(pong)
 		}
 	}
 }

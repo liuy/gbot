@@ -17,8 +17,6 @@ interface ConnState {
   reconnectCount: number
   reconnectTimer: ReturnType<typeof setTimeout> | null
   disposed: boolean
-  pingTimer: ReturnType<typeof setInterval> | null
-  pongTimer: ReturnType<typeof setTimeout> | null
 }
 
 let state: ConnState | null = null
@@ -31,33 +29,11 @@ function createState(): ConnState {
     reconnectCount: 0,
     reconnectTimer: null,
     disposed: false,
-    pingTimer: null,
-    pongTimer: null,
   }
-}
-
-function startHeartbeat(s: ConnState, wsUrl: string) {
-  stopHeartbeat(s)
-  s.pingTimer = setInterval(() => {
-    if (s.ws && s.ws.readyState === WebSocket.OPEN) {
-      s.ws.send(JSON.stringify({ type: 'ping' }))
-      if (s.pongTimer) clearTimeout(s.pongTimer)
-      s.pongTimer = setTimeout(() => {
-        if (s.ws) { s.ws.onclose = null; try { s.ws.close() } catch { /* already closed */ } }
-        scheduleReconnect(s, wsUrl)
-      }, 1000)
-    }
-  }, 10000)
-}
-
-function stopHeartbeat(s: ConnState) {
-  if (s.pingTimer) { clearInterval(s.pingTimer); s.pingTimer = null }
-  if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null }
 }
 
 function scheduleReconnect(s: ConnState, wsUrl: string) {
   s.connected = false
-  stopHeartbeat(s)
   if (s.disposed) return
   if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
   s.reconnectCount++
@@ -75,14 +51,12 @@ function connect(s: ConnState, wsUrl: string) {
     s.ws.onmessage = null
     try { s.ws.close() } catch { /* socket already closed */ }
   }
-  stopHeartbeat(s)
   const ws = new WebSocket(wsUrl)
   s.ws = ws
 
   ws.onopen = () => {
     s.reconnectCount = 0
     s.connected = true
-    startHeartbeat(s, wsUrl)
   }
 
   ws.onclose = () => {
@@ -98,10 +72,6 @@ function connect(s: ConnState, wsUrl: string) {
     try {
       msg = JSON.parse(ev.data) as ServerMessage
     } catch {
-      return
-    }
-    if (msg.type === 'pong') {
-      if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null }
       return
     }
     s.listeners.forEach((fn) => fn(msg))

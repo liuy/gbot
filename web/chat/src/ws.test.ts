@@ -52,77 +52,8 @@ describe('ws reconnect backoff', () => {
     vi.advanceTimersByTime(1)
     expect(MockWebSocket.instances.length).toBe(3)
   })
-})
 
-describe('ws heartbeat', () => {
-  beforeEach(() => {
-    MockWebSocket.instances = []
-    vi.stubGlobal('WebSocket', MockWebSocket)
-    vi.useFakeTimers()
-    vi.resetModules()
-  })
-  afterEach(() => {
-    vi.useRealTimers()
-    vi.unstubAllGlobals()
-  })
-
-  it('sends ping every 10s after onopen', async () => {
-    const { getConnection } = await import('./ws')
-    getConnection()
-    const ws = MockWebSocket.instances[0]
-    ws.onopen!()
-
-    expect(ws.sentMessages).toEqual([])
-    vi.advanceTimersByTime(10000)
-    expect(ws.sentMessages).toEqual([JSON.stringify({ type: 'ping' })])
-
-    // Reply with pong so the connection stays alive for the next ping
-    ws.onmessage!({ data: JSON.stringify({ type: 'pong' }) })
-
-    vi.advanceTimersByTime(10000)
-    expect(ws.sentMessages).toEqual([
-      JSON.stringify({ type: 'ping' }),
-      JSON.stringify({ type: 'ping' }),
-    ])
-  })
-
-  it('pong clears the pongTimer and prevents reconnect', async () => {
-    const { getConnection } = await import('./ws')
-    getConnection()
-    const ws = MockWebSocket.instances[0]
-    ws.onopen!()
-
-    vi.advanceTimersByTime(10000)
-    expect(ws.sentMessages).toEqual([JSON.stringify({ type: 'ping' })])
-
-    ws.onmessage!({ data: JSON.stringify({ type: 'pong' }) })
-
-    vi.advanceTimersByTime(10000)
-    expect(MockWebSocket.instances.length).toBe(1)
-    expect(ws.readyState).toBe(MockWebSocket.OPEN)
-  })
-
-  it('missing pong within 10s triggers close and reconnect', async () => {
-    const { getConnection } = await import('./ws')
-    getConnection()
-    const ws = MockWebSocket.instances[0]
-    ws.onopen!()
-
-    // First ping at 10s
-    vi.advanceTimersByTime(10000)
-    expect(ws.sentMessages).toEqual([JSON.stringify({ type: 'ping' })])
-
-    // At 20s, both the pong timeout (10s after ping) and the next ping fire.
-    // The pong timeout closes the WS and schedules reconnect.
-    vi.advanceTimersByTime(10000)
-    expect(ws.readyState).toBe(MockWebSocket.CLOSED)
-
-    // Reconnect after 1s
-    vi.advanceTimersByTime(1000)
-    expect(MockWebSocket.instances.length).toBe(2)
-  })
-
-  it('pong is not forwarded to listeners', async () => {
+  it('forwards messages to listeners', async () => {
     const { getConnection } = await import('./ws')
     const conn = getConnection()
     const listener = vi.fn()
@@ -130,9 +61,6 @@ describe('ws heartbeat', () => {
 
     const ws = MockWebSocket.instances[0]
     ws.onopen!()
-
-    ws.onmessage!({ data: JSON.stringify({ type: 'pong' }) })
-    expect(listener).not.toHaveBeenCalled()
 
     ws.onmessage!({ data: JSON.stringify({ type: 'error', message: 'test' }) })
     expect(listener).toHaveBeenCalledTimes(1)

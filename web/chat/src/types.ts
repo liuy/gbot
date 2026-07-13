@@ -38,7 +38,6 @@ export type ServerMessage =
       models: { provider: string; model: string }[]
       current: { provider: string; model: string }
     }
-  | { type: 'pong' }
 
 export type TaskWireItem = {
   id: string

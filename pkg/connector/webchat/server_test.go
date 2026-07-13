@@ -365,35 +365,3 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 		t.Errorf("page 2 nextCursor = %q, want \"60\"", p2Env.NextCursor)
 	}
 }
-
-// TestRegisterChatWS_PingPong verifies that an inbound {"type":"ping"} gets
-// an immediate {"type":"pong"} reply.
-func TestRegisterChatWS_PingPong(t *testing.T) {
-	c := newTestConnector(t)
-	mux := http.NewServeMux()
-	RegisterChatWS(mux, c)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	// Drain connect_status + config + engine_list + stats sent on connect.
-	for range 4 {
-		readWSMessage(t, ws)
-	}
-
-	ping, _ := json.Marshal(map[string]string{"type": "ping"})
-	if err := ws.WriteMessage(websocket.TextMessage, ping); err != nil {
-		t.Fatalf("write ping: %v", err)
-	}
-
-	data := readWSMessage(t, ws)
-	var got struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Type != "pong" {
-		t.Errorf("type = %q, want \"pong\"", got.Type)
-	}
-}
