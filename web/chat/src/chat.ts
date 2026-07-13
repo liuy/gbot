@@ -1032,6 +1032,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           const container = pendingChildrenFor(parentID)
           if (!container) return
           maybeAutoExpandParent(parentID)
+          committedToolCount++
           const domContainer = subAgentContainer(parentID)
           const block = buildToolBlock(tu)
           container.push(block)

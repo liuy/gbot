@@ -1573,6 +1573,37 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it('sub-agent tool_start accumulates into committedToolCount', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      // Main agent tool
+      { type: 'tool_start', tool_use: { id: 'main-t1', name: 'Bash', input: 'echo hi' } },
+      // Agent tool (parent) — starts sub-agent
+      { type: 'tool_start', tool_use: { id: 'agent-t1', name: 'Agent', input: 'do stuff' } },
+      // Sub-agent tools
+      { type: 'tool_start', tool_use: { id: 'sub-t1', name: 'Read', input: 'file.txt' }, agent: { parent_tool_use_id: 'agent-t1', agent_type: 'sub', depth: 1 } },
+      { type: 'tool_start', tool_use: { id: 'sub-t2', name: 'Grep', input: 'pattern' }, agent: { parent_tool_use_id: 'agent-t1', agent_type: 'sub', depth: 1 } },
+    ])
+    // Dispatch query_end to finalize and check stats
+    dispatchEvents([
+      { type: 'tool_end', tool_use_id: 'sub-t1', output: 'done', name: 'Read', agent: { parent_tool_use_id: 'agent-t1', agent_type: 'sub', depth: 1 } },
+      { type: 'tool_end', tool_use_id: 'sub-t2', output: 'done', name: 'Grep', agent: { parent_tool_use_id: 'agent-t1', agent_type: 'sub', depth: 1 } },
+      { type: 'tool_end', tool_use_id: 'agent-t1', output: 'done', name: 'Agent' },
+      { type: 'tool_end', tool_use_id: 'main-t1', output: 'done', name: 'Bash' },
+      { type: 'query_end' },
+    ])
+    // 4 tools total: Bash + Agent + Read + Grep
+    const toolEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.match(/\d+\s*tools?/),
+    )
+    expect(toolEl?.textContent).toBe('4 tools')
+  })
+
   it('full recovery: disconnect mid-query, reconnect, continue, query_end', () => {
     vi.useFakeTimers()
     mount()
