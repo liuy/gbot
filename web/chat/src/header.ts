@@ -29,7 +29,7 @@ function createModelPicker(
   wrap.className = 'relative'
 
   const trigger = document.createElement('button')
-  trigger.className = 'text-[14px] text-t2 hover:text-t1 transition-colors'
+  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors'
 
   const panel = createPopupPanel()
 
@@ -142,7 +142,7 @@ function createEnginePicker(
   wrap.className = 'relative'
 
   const trigger = document.createElement('button')
-  trigger.className = 'text-[14px] text-t2 hover:text-t1 transition-colors'
+  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors'
 
   const panel = createPopupPanel()
 
