@@ -1488,6 +1488,14 @@ func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
 		MaxConsecutiveFailures: 3,
 	})
 
+	if c.mgr != nil {
+		fullModel := providerName + "/" + modelName
+		c.mgr.SetActiveModel(fullModel)
+		if err := c.mgr.PersistMeta(eng.ProjectDir()); err != nil {
+			slog.Warn("webchat: failed to persist model selection", "error", err)
+		}
+	}
+
 	slog.Info("webchat:model switched", "provider", providerName, "model", modelName)
 }
 
