@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build web-test web-lint web-weak
+.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -94,6 +94,8 @@ web-build:
 
 web-test:
 	cd web/chat && npm test
+
+web-check: web-build web-test web-lint web-weak
 
 web-lint:
 	cd web/chat && npm run lint

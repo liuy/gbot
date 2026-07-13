@@ -1,6 +1,7 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel } from './utils'
+import { getDebugLogs, onDebugLog } from './log'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -252,6 +253,77 @@ export function createHeader(opts: {
 
   const gbotWrap = document.createElement('button')
   gbotWrap.className = 'group flex items-center'
+
+  const debugPanel = createPopupPanel({ className: 'flex flex-col h-[60vh]' })
+  const copyBtn = document.createElement('button')
+  copyBtn.className = 'absolute top-2 right-2 text-t3 z-10'
+  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+  copyBtn.addEventListener('click', () => {
+    const logs = getDebugLogs()
+    const text = logs.join('\n')
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      })
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+  })
+  debugPanel.appendChild(copyBtn)
+
+  const debugList = document.createElement('div')
+  debugList.className = 'flex-1 overflow-y-auto p-2 min-h-0 space-y-0.5'
+  debugPanel.appendChild(debugList)
+
+  let debugOpen = false
+  const renderDebugLogs = () => {
+    if (!debugOpen) return
+    const logs = getDebugLogs()
+    debugList.innerHTML = ''
+    for (const line of logs) {
+      const el = document.createElement('div')
+      el.className = 'text-[11px] text-t3 font-mono break-all leading-tight'
+      el.textContent = line
+      debugList.appendChild(el)
+    }
+    debugList.scrollTop = debugList.scrollHeight
+  }
+
+  gbotWrap.addEventListener('dblclick', (e) => {
+    e.stopPropagation()
+    debugOpen = !debugOpen
+    if (debugOpen) {
+      if (!debugPanel.parentElement) document.body.appendChild(debugPanel)
+      debugPanel.classList.remove('hidden')
+      renderDebugLogs()
+      document.addEventListener('mousedown', onDebugOutside)
+    } else {
+      debugPanel.classList.add('hidden')
+      document.removeEventListener('mousedown', onDebugOutside)
+    }
+  })
+  const onDebugOutside = (ev: MouseEvent) => {
+    if (!gbotWrap.contains(ev.target as Node) && !debugPanel.contains(ev.target as Node)) {
+      debugOpen = false
+      debugPanel.classList.add('hidden')
+      document.removeEventListener('mousedown', onDebugOutside)
+    }
+  }
+  onDebugLog(renderDebugLogs)
   const wordmark = document.createElement('span')
   wordmark.className =
     'text-[14px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue'
