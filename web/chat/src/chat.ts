@@ -949,6 +949,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           entry.pendingBlock.active = false
           entry.pendingBlock.durationNs =
             e.thinking?.duration ?? entry.pendingBlock.durationNs
+          accumulatedThinkingMs += Math.round(entry.pendingBlock.durationNs / 1e6)
           finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
           currentSubAgentThinking.delete(parentID)
           return
@@ -1154,7 +1155,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
       case 'usage': {
         if (!e.usage_event) return
-        if (e.agent) return
         const u = e.usage_event
         // engine emits per-turn deltas; accumulate across the whole query.
         progressUsage.inputTokens += u.input_tokens
@@ -1304,26 +1304,27 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModel(msg.model ?? '')
         inputBar.setConnected(msg.connected)
         resetAllState()
-        // Restore cumulative usage from server so progress bar shows correct
-        // stats after takeover reconnect.
-        if (msg.usage) {
-          progressUsage = {
-            inputTokens: msg.usage.input_tokens ?? msg.usage.InputTokens ?? 0,
-            outputTokens: msg.usage.output_tokens ?? msg.usage.OutputTokens ?? 0,
-            cacheRead: msg.usage.cache_read_input_tokens ?? msg.usage.CacheReadInputTokens ?? 0,
-            cacheCreation: msg.usage.cache_creation_input_tokens ?? msg.usage.CacheCreationInputTokens ?? 0,
-          }
+        if (msg.inputHistory) inputHistory.load(msg.inputHistory)
+        taskPanel.setTasks([])
+        scrollBtn.classList.add('opacity-0', 'pointer-events-none')
+        if (msg.sessionID) currentSessionID = msg.sessionID
+        conn.send({ type: 'session_list_request' })
+        return
+      case 'stats':
+        progressUsage = {
+          inputTokens: msg.usage?.input_tokens ?? msg.usage?.InputTokens ?? 0,
+          outputTokens: msg.usage?.output_tokens ?? msg.usage?.OutputTokens ?? 0,
+          cacheRead: msg.usage?.cache_read_input_tokens ?? msg.usage?.CacheReadInputTokens ?? 0,
+          cacheCreation: msg.usage?.cache_creation_input_tokens ?? msg.usage?.CacheCreationInputTokens ?? 0,
         }
         if (msg.queryStartMs) {
           streamStartedAt = msg.queryStartMs
         }
         committedToolCount = msg.toolCount ?? 0
         accumulatedThinkingMs = msg.thinkingMs ?? 0
-        if (msg.inputHistory) inputHistory.load(msg.inputHistory)
-        taskPanel.setTasks([])
-        scrollBtn.classList.add('opacity-0', 'pointer-events-none')
-        if (msg.sessionID) currentSessionID = msg.sessionID
-        conn.send({ type: 'session_list_request' })
+        if (progressHandles) {
+          setProgressBarUsage(progressHandles, progressUsage)
+        }
         return
       case 'config':
         header.setModels(msg.models, msg.current.provider, msg.current.model)

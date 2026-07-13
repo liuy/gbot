@@ -393,9 +393,9 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 }
 
 // dialAndStore connects a WS client to c's endpoint and drains the initial
-// takeover frames (connect_status, optional history, config, engine_list)
-// so the caller can read events/responses immediately. Returns the client conn
-// with all initial frames consumed.
+// takeover frames (connect_status, config, engine_list, task_list, history,
+// replay, stats) so the caller can read events/responses immediately. Returns
+// the client conn with all initial frames consumed.
 // Tests that don't need history must set mock().messagesFn to return nil.
 func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
 	t.Helper()
@@ -430,11 +430,11 @@ func (c *WebChatConnector) activeEngineTest() engineClient {
 	return c.activeEngine()
 }
 
-// drainInitialFrames reads takeover frames until the engine_list frame is
-// consumed. The takeover sequence is: connect_status, history (optional),
-// config, engine_list, replay, task_list (optional). We drain connect_status
-// + history (if present) + config + engine_list. The caller is responsible
-// for reading replay/task_list frames if relevant.
+// drainInitialFrames reads takeover frames until the stats frame is consumed.
+// The takeover sequence is: connect_status, config, engine_list, task_list
+// (optional), history (optional), replay events, stats. drainInitialFrames
+// drains all of these and returns after stats — the LAST frame in the
+// takeover sequence.
 func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 	t.Helper()
 	for {
@@ -442,7 +442,7 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 		var head struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "engine_list" {
+		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
 			return
 		}
 	}

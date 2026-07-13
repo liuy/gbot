@@ -11,7 +11,8 @@ export type SessionListItem = {
 }
 
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; inputHistory?: string[] }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[] }
+  | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }

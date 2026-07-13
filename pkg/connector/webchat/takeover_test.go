@@ -70,6 +70,9 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws2) // drain connect_status
 
+	_ = readWSMessage(t, ws2) // drain config
+	_ = readWSMessage(t, ws2) // drain engine_list
+
 	// Next frame on ws2 must be history (committed messages).
 	histMsg := readWSMessage(t, ws2)
 	var hist struct {
@@ -83,30 +86,28 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws2 history unmarshal: %v", err)
 	}
 	if hist.Type != "history" {
-		t.Fatalf("ws2 first msg type = %q, want \"history\"", hist.Type)
+		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
 	}
 	if len(hist.Messages) != 2 {
 		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
 	}
-	_ = readWSMessage(t, ws2) // drain config
-	_ = readWSMessage(t, ws2) // drain engine_list
 
-	// After config, ws2 must receive replay of streamBuf (d0..d4) then
-	// live d5..d7.
+	// After history, ws2 must receive replay of streamBuf (d0..d4), then
+	// stats frame, then live d5..d7. Skip non-event frames (stats).
 	for i := 5; i < 8; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 	}
 
 	var got2 []string
-	for i := range 8 {
+	for len(got2) < 8 {
 		msg := readWSMessage(t, ws2)
 		var env struct {
 			Event struct {
 				Text string `json:"text"`
 			} `json:"event"`
 		}
-		if err := json.Unmarshal(msg, &env); err != nil {
-			t.Fatalf("ws2 delta %d unmarshal: %v", i, err)
+		if err := json.Unmarshal(msg, &env); err != nil || env.Event.Text == "" {
+			continue // skip non-event frames (stats)
 		}
 		got2 = append(got2, env.Event.Text)
 	}
@@ -603,8 +604,9 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws2) // drain connect_status
-	histMsg := readWSMessage(t, ws2)
 	_ = readWSMessage(t, ws2) // drain config
+	_ = readWSMessage(t, ws2) // drain engine_list
+	histMsg := readWSMessage(t, ws2)
 	var hist struct {
 		Type string `json:"type"`
 	}
@@ -612,7 +614,7 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 		t.Fatalf("ws2 history unmarshal: %v", err)
 	}
 	if hist.Type != "history" {
-		t.Fatalf("ws2 first msg = %q, want \"history\"", hist.Type)
+		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
 	}
 
 	// Read all replay events from ws2.
@@ -647,4 +649,112 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 type replayEvent struct {
 	Type  string `json:"type"`
 	Agent any    `json:"agent"`
+}
+
+// TestTakeover_StatsMessageSentAfterReplay verifies that:
+//  1. The stats frame is sent LAST (after connect_status, config, engine_list,
+//     task_list, history, and streamBuf replay).
+//  2. connect_status does NOT carry stats fields (usage/queryStartMs/toolCount/
+//     thinkingMs).
+//  3. The stats frame carries the accumulated values from slot.queryStats.
+func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
+	c := newTestConnector(t)
+
+	ws1 := dialAndStore(t, c)
+	t.Cleanup(func() { _ = ws1.Close() })
+
+	// Accumulate stats on the server.
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{
+		InputTokens: 5000, OutputTokens: 300, CacheReadInputTokens: 200,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1500 * time.Millisecond}})
+
+	// Dial ws2 → takeover.
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+
+	// Read all frames until we find the stats frame.
+	var lastNonStatsType string
+	var statsMsg []byte
+	var connectStatusRaw []byte
+	framesSeen := []string{}
+	for {
+		data := readWSMessage(t, ws2)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) != nil {
+			continue
+		}
+		framesSeen = append(framesSeen, head.Type)
+		if head.Type == "stats" {
+			statsMsg = data
+			break
+		}
+		if head.Type == "connect_status" {
+			connectStatusRaw = data
+		}
+		lastNonStatsType = head.Type
+	}
+
+	// 1. stats must be the LAST frame (the frame we broke on).
+	// lastNonStatsType is the frame just before stats.
+	if lastNonStatsType == "" {
+		t.Fatalf("stats was the only frame — expected at least connect_status before it; frames: %v", framesSeen)
+	}
+
+	// 2. connect_status must NOT contain stats fields.
+	if connectStatusRaw == nil {
+		t.Fatalf("connect_status frame not found; frames: %v", framesSeen)
+	}
+	for _, field := range []string{`"usage"`, `"queryStartMs"`, `"toolCount"`, `"thinkingMs"`} {
+		if strings.Contains(string(connectStatusRaw), field) {
+			t.Errorf("connect_status must NOT contain %s; got: %s", field, string(connectStatusRaw))
+		}
+	}
+
+	// 3. stats frame must carry the accumulated values.
+	var stats struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+		QueryStartMs int64 `json:"queryStartMs"`
+		ToolCount    int   `json:"toolCount"`
+		ThinkingMs   int64 `json:"thinkingMs"`
+	}
+	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
+	}
+	if stats.Type != "stats" {
+		t.Errorf("stats type = %q, want \"stats\"", stats.Type)
+	}
+	if stats.Usage == nil {
+		t.Fatal("stats.usage is nil")
+	}
+	if stats.Usage.InputTokens != 5000 {
+		t.Errorf("stats.usage.input_tokens = %d, want 5000", stats.Usage.InputTokens)
+	}
+	if stats.Usage.OutputTokens != 300 {
+		t.Errorf("stats.usage.output_tokens = %d, want 300", stats.Usage.OutputTokens)
+	}
+	if stats.Usage.CacheReadInputTokens != 200 {
+		t.Errorf("stats.usage.cache_read_input_tokens = %d, want 200", stats.Usage.CacheReadInputTokens)
+	}
+	if stats.QueryStartMs == 0 {
+		t.Error("stats.queryStartMs = 0, want non-zero (query_start was emitted)")
+	}
+	if stats.ToolCount != 1 {
+		t.Errorf("stats.toolCount = %d, want 1", stats.ToolCount)
+	}
+	if stats.ThinkingMs != 1500 {
+		t.Errorf("stats.thinkingMs = %d, want 1500", stats.ThinkingMs)
+	}
 }

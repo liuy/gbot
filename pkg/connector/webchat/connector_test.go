@@ -1037,7 +1037,7 @@ func TestCurrentUsage_AccumulatesEventUsage(t *testing.T) {
 	}
 }
 
-func TestCurrentUsage_IgnoresSubAgentEvents(t *testing.T) {
+func TestCurrentUsage_AccumulatesSubAgentUsage(t *testing.T) {
 	c := newTestConnector(t)
 
 	agent := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "sub", Depth: 1}
@@ -1048,8 +1048,8 @@ func TestCurrentUsage_IgnoresSubAgentEvents(t *testing.T) {
 	got := c.slots["main"].queryStats.usage
 	c.writeMu.Unlock()
 
-	if got.InputTokens != 100 {
-		t.Errorf("InputTokens = %d, want 100 (sub-agent event should be ignored)", got.InputTokens)
+	if got.InputTokens != 600 {
+		t.Errorf("InputTokens = %d, want 600 (sub-agent usage should be accumulated)", got.InputTokens)
 	}
 }
 
@@ -1087,7 +1087,7 @@ func TestCurrentUsage_AccumulatesToolCountAndThinkingMs(t *testing.T) {
 	}
 }
 
-func TestCurrentUsage_IgnoresSubAgentToolAndThinking(t *testing.T) {
+func TestCurrentUsage_AccumulatesSubAgentToolAndThinking(t *testing.T) {
 	c := newTestConnector(t)
 
 	agent := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "sub", Depth: 1}
@@ -1100,19 +1100,19 @@ func TestCurrentUsage_IgnoresSubAgentToolAndThinking(t *testing.T) {
 	got := c.slots["main"].queryStats
 	c.writeMu.Unlock()
 
-	if got.toolCount != 1 {
-		t.Errorf("toolCount = %d, want 1 (sub-agent event should be ignored)", got.toolCount)
+	if got.toolCount != 2 {
+		t.Errorf("toolCount = %d, want 2 (sub-agent tool should be accumulated)", got.toolCount)
 	}
-	if got.thinkingMs != 500 {
-		t.Errorf("thinkingMs = %d, want 500 (sub-agent event should be ignored)", got.thinkingMs)
+	if got.thinkingMs != 2500 {
+		t.Errorf("thinkingMs = %d, want 2500 (sub-agent thinking should be accumulated)", got.thinkingMs)
 	}
 }
 
-func TestBuildConnectStatusMessage_WithUsage(t *testing.T) {
+func TestBuildStatsMessage_WithUsage(t *testing.T) {
 	c := newTestConnector(t)
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildStatsMessage()
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1123,6 +1123,9 @@ func TestBuildConnectStatusMessage_WithUsage(t *testing.T) {
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != "stats" {
+		t.Errorf("type = %q, want \"stats\"", msg.Type)
 	}
 	if msg.Usage == nil {
 		t.Fatal("usage is nil, want non-nil")
@@ -1135,10 +1138,10 @@ func TestBuildConnectStatusMessage_WithUsage(t *testing.T) {
 	}
 }
 
-func TestBuildConnectStatusMessage_NoUsage(t *testing.T) {
+func TestBuildStatsMessage_NoUsage(t *testing.T) {
 	c := newTestConnector(t)
 
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildStatsMessage()
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1149,6 +1152,9 @@ func TestBuildConnectStatusMessage_NoUsage(t *testing.T) {
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	if msg.Type != "stats" {
+		t.Errorf("type = %q, want \"stats\"", msg.Type)
+	}
 	if msg.Usage == nil {
 		t.Fatal("usage is nil, want zero-value object")
 	}
@@ -1157,12 +1163,12 @@ func TestBuildConnectStatusMessage_NoUsage(t *testing.T) {
 	}
 }
 
-func TestBuildConnectStatusMessage_ResetAfterQueryEnd(t *testing.T) {
+func TestBuildStatsMessage_ResetAfterQueryEnd(t *testing.T) {
 	c := newTestConnector(t)
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildStatsMessage()
 
 	var msg struct {
 		Usage *struct {
@@ -1180,7 +1186,7 @@ func TestBuildConnectStatusMessage_ResetAfterQueryEnd(t *testing.T) {
 	}
 }
 
-func TestTakeover_ConnectStatusCarriesAccumulatedUsage(t *testing.T) {
+func TestTakeover_StatsMessageCarriesAccumulatedUsage(t *testing.T) {
 	c := newTestConnector(t)
 
 	ws1 := dialAndStore(t, c)
@@ -1196,8 +1202,19 @@ func TestTakeover_ConnectStatusCarriesAccumulatedUsage(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 
-	connectMsg := readWSMessage(t, ws2)
-	var connect struct {
+	// Drain all frames until we find the stats frame (last frame in new order).
+	var statsMsg []byte
+	for {
+		data := readWSMessage(t, ws2)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
+			statsMsg = data
+			break
+		}
+	}
+	var stats struct {
 		Type  string `json:"type"`
 		Usage *struct {
 			InputTokens          int `json:"input_tokens"`
@@ -1205,27 +1222,27 @@ func TestTakeover_ConnectStatusCarriesAccumulatedUsage(t *testing.T) {
 			CacheReadInputTokens int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(connectMsg, &connect); err != nil {
-		t.Fatalf("unmarshal connect_status: %v\nraw: %s", err, connectMsg)
+	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
 	}
-	if connect.Type != "connect_status" {
-		t.Fatalf("type = %q, want connect_status", connect.Type)
+	if stats.Type != "stats" {
+		t.Fatalf("type = %q, want stats", stats.Type)
 	}
-	if connect.Usage == nil {
-		t.Fatalf("usage is nil — connect_status did not carry accumulated usage.\nraw: %s", connectMsg)
+	if stats.Usage == nil {
+		t.Fatalf("usage is nil — stats message did not carry accumulated usage.\nraw: %s", statsMsg)
 	}
-	if connect.Usage.InputTokens != 5000 {
-		t.Errorf("input_tokens = %d, want 5000", connect.Usage.InputTokens)
+	if stats.Usage.InputTokens != 5000 {
+		t.Errorf("input_tokens = %d, want 5000", stats.Usage.InputTokens)
 	}
-	if connect.Usage.OutputTokens != 300 {
-		t.Errorf("output_tokens = %d, want 300", connect.Usage.OutputTokens)
+	if stats.Usage.OutputTokens != 300 {
+		t.Errorf("output_tokens = %d, want 300", stats.Usage.OutputTokens)
 	}
-	if connect.Usage.CacheReadInputTokens != 200 {
-		t.Errorf("cache_read_input_tokens = %d, want 200", connect.Usage.CacheReadInputTokens)
+	if stats.Usage.CacheReadInputTokens != 200 {
+		t.Errorf("cache_read_input_tokens = %d, want 200", stats.Usage.CacheReadInputTokens)
 	}
 }
 
-func TestTakeover_ConnectStatusCarriesQueryStartMs(t *testing.T) {
+func TestTakeover_StatsMessageCarriesQueryStartMs(t *testing.T) {
 	c := newTestConnector(t)
 
 	ws1 := dialAndStore(t, c)
@@ -1240,23 +1257,97 @@ func TestTakeover_ConnectStatusCarriesQueryStartMs(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 
-	connectMsg := readWSMessage(t, ws2)
-	var connect struct {
+	// Drain all frames until we find the stats frame (last frame in new order).
+	var statsMsg []byte
+	for {
+		data := readWSMessage(t, ws2)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
+			statsMsg = data
+			break
+		}
+	}
+	var stats struct {
 		Type         string `json:"type"`
 		QueryStartMs int64  `json:"queryStartMs"`
 	}
-	if err := json.Unmarshal(connectMsg, &connect); err != nil {
-		t.Fatalf("unmarshal connect_status: %v\nraw: %s", err, connectMsg)
+	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
 	}
-	if connect.Type != "connect_status" {
-		t.Fatalf("type = %q, want connect_status", connect.Type)
+	if stats.Type != "stats" {
+		t.Fatalf("type = %q, want stats", stats.Type)
 	}
-	if connect.QueryStartMs == 0 {
+	if stats.QueryStartMs == 0 {
 		t.Fatalf("queryStartMs = 0, want non-zero (EventQueryStart should have set it)")
 	}
-	delta := connect.QueryStartMs - beforeMs
+	delta := stats.QueryStartMs - beforeMs
 	if delta < -1000 || delta > 1000 {
-		t.Errorf("queryStartMs = %d, beforeMs = %d, delta = %dms; want within ±1s", connect.QueryStartMs, beforeMs, delta)
+		t.Errorf("queryStartMs = %d, beforeMs = %d, delta = %dms; want within ±1s", stats.QueryStartMs, beforeMs, delta)
+	}
+}
+
+// TestEngineSwitch_SendsStatsMessage verifies that after engine switch, the
+// stats frame carries the target engine's stats. The main engine's stats are
+// not transferred — each engine has its own queryStats.
+func TestEngineSwitch_SendsStatsMessage(t *testing.T) {
+	c := newTestConnector(t)
+	_, _ = addMockEngine(t, c, "engineB")
+
+	// Dial and drain initial takeover frames.
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+
+	// Accumulate stats on the main engine.
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{
+		InputTokens: 3000, OutputTokens: 200,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"}})
+
+	// Send engine_switch via WS.
+	sendJSON(t, ws, map[string]string{"type": "engine_switch", "engineID": "engineB"})
+
+	// Read all frames until stats (skip connect_status, config, engine_list,
+	// history, replay events).
+	var statsMsg []byte
+	for range 20 {
+		data := readWSMessage(t, ws)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
+			statsMsg = data
+			break
+		}
+	}
+	if statsMsg == nil {
+		t.Fatal("did not receive stats frame after engine switch")
+	}
+
+	var stats struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+		ToolCount int `json:"toolCount"`
+	}
+	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v", err)
+	}
+	if stats.Type != "stats" {
+		t.Fatalf("type = %q, want stats", stats.Type)
+	}
+	if stats.Usage == nil {
+		t.Fatal("stats.usage is nil")
+	}
+	// engineB has no accumulated stats — values must be zero.
+	if stats.Usage.InputTokens != 0 {
+		t.Errorf("stats.usage.input_tokens = %d, want 0 (engineB has no stats)", stats.Usage.InputTokens)
+	}
+	if stats.ToolCount != 0 {
+		t.Errorf("stats.toolCount = %d, want 0 (engineB has no tools)", stats.ToolCount)
 	}
 }
 
@@ -1266,7 +1357,7 @@ func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildStatsMessage()
 	var msg struct {
 		QueryStartMs int64 `json:"queryStartMs"`
 	}

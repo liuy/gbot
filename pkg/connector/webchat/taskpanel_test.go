@@ -150,9 +150,7 @@ func TestHandle_ToolEndTask_PushesTaskList(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 	ws := dialAndStore(t, c)
-	// takeover pushes task_list because taskListFn is set; drain it so the
-	// only task_list we assert on is the tool_end-triggered one.
-	_ = readWSMessage(t, ws)
+	// dialAndStore now drains all takeover frames including task_list.
 
 	c.Handle(types.QueryEvent{
 		Type:    types.EventToolStart,
@@ -202,7 +200,7 @@ func TestHandle_ToolEndNonTask_NoPush(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 	ws := dialAndStore(t, c)
-	_ = readWSMessage(t, ws) // drain takeover task_list
+	// dialAndStore now drains all takeover frames including task_list.
 
 	c.Handle(types.QueryEvent{
 		Type:    types.EventToolStart,
@@ -223,8 +221,8 @@ func TestHandle_ToolEndNonTask_NoPush(t *testing.T) {
 }
 
 // TestTakeover_PushesTaskList verifies that on reconnect (WS takeover), the
-// client receives a task_list frame after connect_status and history. This
-// is the path that populates the panel on page refresh.
+// client receives a task_list frame during takeover. This is the path that
+// populates the panel on page refresh.
 func TestTakeover_PushesTaskList(t *testing.T) {
 	tl := newRealTaskList(t)
 	_, _ = tl.CreateTask("Resume work", "desc", "", nil)
@@ -232,9 +230,17 @@ func TestTakeover_PushesTaskList(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	// dialAndStore drains connect_status; if there are tasks, the takeover
-	// sequence pushes task_list right after.
-	ws := dialAndStore(t, c)
+	// Use dialRaw (manual) + manual drain so we can assert task_list is sent
+	// during takeover. dialAndStore would drain through stats and consume it.
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	// Drain connect_status, config, engine_list, then read task_list.
+	_ = readWSMessage(t, ws)
+	_ = readWSMessage(t, ws)
+	_ = readWSMessage(t, ws)
 
 	// Next frame must be task_list (no history since messagesFn returns nil).
 	msg := readWSMessage(t, ws)
@@ -273,7 +279,7 @@ func TestHandle_SubAgentTaskNotTracked(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 	ws := dialAndStore(t, c)
-	_ = readWSMessage(t, ws) // drain takeover task_list
+	// dialAndStore now drains all takeover frames including task_list.
 
 	agent := &types.AgentMeta{ParentToolUseID: "parent_tu", AgentType: "Executor"}
 	c.Handle(types.QueryEvent{
@@ -307,7 +313,7 @@ func TestHandle_TaskToolIDsClearedOnStreamDone(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 	ws := dialAndStore(t, c)
-	_ = readWSMessage(t, ws) // drain takeover task_list
+	// dialAndStore now drains all takeover frames including task_list.
 
 	c.Handle(types.QueryEvent{
 		Type:    types.EventToolStart,
@@ -349,10 +355,7 @@ func TestBuildTaskListMessage_HubDispatchEndToEnd(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // connect_status
-	_ = readWSMessage(t, ws) // config
-	_ = readWSMessage(t, ws) // engine_list; drain it
-	_ = readWSMessage(t, ws) // takeover pushes task_list; drain it
+	drainInitialFrames(t, ws) // drains everything including task_list
 
 	h.Dispatch(types.QueryEvent{
 		Type:    types.EventToolStart,

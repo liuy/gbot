@@ -31,9 +31,14 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 
 // serveChatWS drives one WS connection to completion with a 3-step atomic
 // takeover under writeMu: (1) invalidate old connection, (2) push
-// connect_status + history + config + engine_list + streamBuf replay +
-// task_list, (3) activate new connection. The readLoop blocks until the
+// connect_status + config + engine_list + task_list + history + streamBuf
+// replay + stats, (3) activate new connection. The readLoop blocks until the
 // client disconnects.
+//
+// Stats is sent LAST — after replay — so the client receives authoritative
+// server-side values that overwrite any replay-accumulated deltas. This
+// avoids double-counting (the original bug where connect_status carried stats
+// before replay, causing the client to restore them and then re-accumulate).
 func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// Pre-construct connect_status outside the lock (reads engine state).
 	connectMsg := c.buildConnectStatusMessage()
@@ -53,6 +58,10 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// handleForEngine blocks on writeMu during this window — it cannot race
 	// with the replay or with buildHistoryMessage's snapshot of
 	// engine.Messages().
+	//
+	// taskMsg is pre-computed before the lock (reads task list from disk).
+	// statsMsg is NOT pre-computed — it must be built inside the lock (after
+	// replay) so the values are consistent with what was replayed.
 	c.writeMu.Lock()
 	slot := c.activeSlot()
 	bufLen := 0
@@ -62,28 +71,34 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", bufLen)
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
-	// 2. connect_status
+	// 2. connect_status (metadata only — no stats)
 	if connectMsg != nil {
 		wsSend(ws, "takeover:connect_status", connectMsg)
 	}
 
-	// 3. history page (committed messages only; in-flight not yet committed)
-	if histMsg != nil {
-		wsSend(ws, "takeover:history", histMsg)
-	}
-
-	// config frame — model list + current selection so the frontend can
-	// populate the model picker immediately on connect.
+	// 3. config frame — model list + current selection so the frontend can
+	//    populate the model picker immediately on connect.
 	if configMsg != nil {
 		wsSend(ws, "takeover:config", configMsg)
 	}
 
-	// engine_list frame — engine picker list + active marker. Sits after
-	// config (model picker populated) and before replay (picker reflects
-	// active engine before in-flight deltas land).
+	// 4. engine_list frame — engine picker list + active marker.
 	wsSend(ws, "takeover:engine_list", engineListMsg)
 
-	// 4. replay current turn buffer — in-flight deltas that are NOT in
+	// 5. task_list frame — current committed disk state. Sent before history
+	//    and replay so the panel can render immediately.
+	if slot != nil {
+		if taskMsg := c.buildTaskListMessageFor(slot); taskMsg != nil {
+			wsSend(ws, "takeover:task_list", taskMsg)
+		}
+	}
+
+	// 6. history page (committed messages only; in-flight not yet committed)
+	if histMsg != nil {
+		wsSend(ws, "takeover:history", histMsg)
+	}
+
+	// 7. replay current turn buffer — in-flight deltas that are NOT in
 	//    engine.Messages() yet (text_delta, thinking_delta, tool_start,
 	//    tool_output_delta, etc., accumulated since the last turn_end).
 	//    The buffer is under writeMu so handleForEngine's appends are
@@ -103,15 +118,25 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 		slog.Info("webchat:takeover replay", "frames", replayed)
 	}
 
-	// task list — current committed disk state, pushed AFTER replay so the
-	// client has historical context first, then the latest task snapshot.
+	// 8. stats — authoritative server-side stats sent AFTER replay.
+	//    Built inside the lock so values are consistent with the replayed
+	//    buffer. The client's stats handler overwrites any replay-accumulated
+	//    values with these authoritative ones.
+	var statsMsg []byte
 	if slot != nil {
-		if taskMsg := c.buildTaskListMessageFor(slot); taskMsg != nil {
-			wsSend(ws, "takeover:task_list", taskMsg)
-		}
+		statsMsg = c.buildStatsMessageForSlotLocked(slot)
+	} else {
+		statsMsg, _ = json.Marshal(struct {
+			Type         string      `json:"type"`
+			Usage        types.Usage `json:"usage"`
+			QueryStartMs int64       `json:"queryStartMs"`
+			ToolCount    int         `json:"toolCount"`
+			ThinkingMs   int64       `json:"thinkingMs"`
+		}{Type: "stats"})
 	}
+	wsSend(ws, "takeover:stats", statsMsg)
 
-	c.activeWS.Store(ws) // 6. new connection becomes the sink
+	c.activeWS.Store(ws) // 9. new connection becomes the sink
 	c.writeMu.Unlock()
 	slog.Info("webchat:takeover complete")
 

@@ -300,6 +300,13 @@ func TestBuildConnectStatusMessage_InputHistoryOmitted(t *testing.T) {
 	if strings.Contains(string(payload), "inputHistory") {
 		t.Errorf("payload should omit inputHistory when empty; got: %s", string(payload))
 	}
+	// Stats fields must NOT be in connect_status — they are sent as a
+	// separate "stats" frame after replay.
+	for _, field := range []string{`"usage"`, `"queryStartMs"`, `"toolCount"`, `"thinkingMs"`} {
+		if strings.Contains(string(payload), field) {
+			t.Errorf("connect_status should NOT contain %s; got: %s", field, string(payload))
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

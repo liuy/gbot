@@ -477,7 +477,9 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 	}
 
 	// Accumulate per-query stats into the per-engine slot. Reset on query_end.
-	if event.Type == types.EventUsage && event.Agent == nil && event.Usage != nil {
+	// Sub-agent events are included so slot.queryStats reflects the full query
+	// cost (main + sub-agent tokens/tools/thinking).
+	if event.Type == types.EventUsage && event.Usage != nil {
 		slot.queryStats.usage.InputTokens += event.Usage.InputTokens
 		slot.queryStats.usage.OutputTokens += event.Usage.OutputTokens
 		slot.queryStats.usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
@@ -486,10 +488,10 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 	if event.Type == types.EventQueryStart && event.Agent == nil {
 		slot.queryStats.startMs = time.Now().UnixMilli()
 	}
-	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil {
+	if event.Type == types.EventToolStart && event.ToolUse != nil {
 		slot.queryStats.toolCount++
 	}
-	if event.Type == types.EventThinkingEnd && event.Agent == nil && event.Thinking != nil {
+	if event.Type == types.EventThinkingEnd && event.Thinking != nil {
 		slot.queryStats.thinkingMs += event.Thinking.Duration.Milliseconds()
 	}
 	c.writeMu.Unlock()
@@ -1278,41 +1280,70 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 // The client calls resetAllState on every connect_status, then loads the
 // subsequent history frame. engineID and engineName are included so the
 // frontend can track which engine is active during a switch.
+// Stats (usage/toolCount/thinkingMs/queryStartMs) are NOT included here —
+// they are sent as a separate "stats" frame AFTER replay to avoid
+// double-counting (connect_status arrives before replay, so including stats
+// here would cause the client to restore them and then re-accumulate the
+// same deltas from replayed events).
 func (c *WebChatConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte {
-	c.writeMu.Lock()
-	qs := slot.queryStats
-	c.writeMu.Unlock()
 	eng := slot.engine
 	engineName := c.engineNameForSlot(slot)
 	inputHistory := c.loadInputHistoryFor(eng)
 	payload, _ := json.Marshal(struct {
-		Type         string      `json:"type"`
-		Connected    bool        `json:"connected"`
-		Agent        string      `json:"agent"`
-		Model        string      `json:"model"`
-		SessionID    string      `json:"sessionID"`
-		Usage        types.Usage `json:"usage"`
-		QueryStartMs int64       `json:"queryStartMs"`
-		ToolCount    int         `json:"toolCount"`
-		ThinkingMs   int64       `json:"thinkingMs"`
-		InputHistory []string    `json:"inputHistory,omitempty"`
-		EngineID     string      `json:"engineID"`
-		EngineName   string      `json:"engineName"`
+		Type         string   `json:"type"`
+		Connected    bool     `json:"connected"`
+		Agent        string   `json:"agent"`
+		Model        string   `json:"model"`
+		SessionID    string   `json:"sessionID"`
+		InputHistory []string `json:"inputHistory,omitempty"`
+		EngineID     string   `json:"engineID"`
+		EngineName   string   `json:"engineName"`
 	}{
 		Type:         "connect_status",
 		Connected:    true,
 		Agent:        engineName,
 		Model:        eng.Model(),
 		SessionID:    eng.SessionID(),
-		Usage:        qs.usage,
-		QueryStartMs: qs.startMs,
-		ToolCount:    qs.toolCount,
-		ThinkingMs:   qs.thinkingMs,
 		InputHistory: inputHistory,
 		EngineID:     slot.engineID,
 		EngineName:   engineName,
 	})
 	return payload
+}
+
+// buildStatsMessageForSlotLocked builds the stats payload without acquiring
+// writeMu. Caller MUST hold writeMu. Used by serveChatWS and handleEngineSwitch
+// which already hold the lock — building stats inside the lock ensures the
+// values are consistent with the replayed buffer (no events can arrive between
+// stats read and replay send).
+func (c *WebChatConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []byte {
+	qs := slot.queryStats
+	payload, _ := json.Marshal(struct {
+		Type         string      `json:"type"`
+		Usage        types.Usage `json:"usage"`
+		QueryStartMs int64       `json:"queryStartMs"`
+		ToolCount    int         `json:"toolCount"`
+		ThinkingMs   int64       `json:"thinkingMs"`
+	}{
+		Type:         "stats",
+		Usage:        qs.usage,
+		QueryStartMs: qs.startMs,
+		ToolCount:    qs.toolCount,
+		ThinkingMs:   qs.thinkingMs,
+	})
+	return payload
+}
+
+// buildStatsMessage returns the stats payload for the active engine's slot.
+// Acquires writeMu for a consistent read. Returns nil if no active slot.
+func (c *WebChatConnector) buildStatsMessage() []byte {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	slot := c.activeSlot()
+	if slot == nil {
+		return nil
+	}
+	return c.buildStatsMessageForSlotLocked(slot)
 }
 
 // engineNameForSlot resolves the engine's display name from the manager. Falls
@@ -1392,9 +1423,10 @@ func buildSessionBusyMessage() []byte {
 }
 
 // handleSessionSwitch loads the target session into the active engine, then
-// pushes connect_status (triggers client resetAllState) followed by the
-// history page. Rejects when the engine is streaming so the active turn is
-// never disturbed.
+// pushes connect_status + history + config + stats. Rejects when the engine
+// is streaming so the active turn is never disturbed.
+// stats is built outside the lock (no in-flight query after session switch),
+// and resets the client's stats variables to zero.
 func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	eng := c.activeEngine()
 	if eng == nil {
@@ -1411,21 +1443,25 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 	connectMsg := c.buildConnectStatusMessage()
 	histMsg := c.buildHistoryMessage("", 10)
 	configMsg := c.buildConfigMessage()
+	statsMsg := c.buildStatsMessage()
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
-		wsSend(ws, "model_switch:connect_status", connectMsg)
+		wsSend(ws, "session_switch:connect_status", connectMsg)
 		if histMsg != nil {
-			wsSend(ws, "model_switch:history", histMsg)
+			wsSend(ws, "session_switch:history", histMsg)
 		}
-		wsSend(ws, "model_switch:config", configMsg)
+		wsSend(ws, "session_switch:config", configMsg)
+		if statsMsg != nil {
+			wsSend(ws, "session_switch:stats", statsMsg)
+		}
 	}
 	c.writeMu.Unlock()
 }
 
 // handleSessionNew creates a fresh session on the active engine, then pushes
-// connect_status (the empty session has no history frame). Rejects when the
-// engine is streaming.
+// connect_status + config + stats. Rejects when the engine is streaming.
+// stats resets the client's stats variables to zero.
 func (c *WebChatConnector) handleSessionNew() {
 	eng := c.activeEngine()
 	if eng == nil {
@@ -1441,11 +1477,15 @@ func (c *WebChatConnector) handleSessionNew() {
 	}
 	connectMsg := c.buildConnectStatusMessage()
 	configMsg := c.buildConfigMessage()
+	statsMsg := c.buildStatsMessage()
 	c.writeMu.Lock()
 	ws := c.activeWS.Load()
 	if ws != nil {
 		wsSend(ws, "session_new:connect_status", connectMsg)
 		wsSend(ws, "session_new:config", configMsg)
+		if statsMsg != nil {
+			wsSend(ws, "session_new:stats", statsMsg)
+		}
 	}
 	c.writeMu.Unlock()
 	if payload := c.buildSessionListMessage(); payload != nil {
@@ -1507,14 +1547,17 @@ func (c *WebChatConnector) SetCreateEngineFn(fn func(name string) (string, error
 }
 
 // handleEngineSwitch switches the active engine to engineID and replays the
-// target engine's takeover sequence (connect_status → history → config →
-// engine_list → streamBuf replay → task_list).
+// target engine's takeover sequence (connect_status → config → engine_list →
+// task_list → history → streamBuf replay → stats).
 //
 // c.active is flipped in the FIRST writeMu.Lock() — before any build/send —
 // so concurrent writePayloadTo calls from the old engine immediately see
 // slot.engineID != c.active and skip WS writes (buffer-only). This prevents
 // the old engine from holding writeMu through slow WS sends while the user
 // waits for the switch to take effect.
+//
+// stats is built inside the lock (after replay) so the values are consistent
+// with the replayed buffer.
 func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 	c.writeMu.Lock()
 	slot, ok := c.slots[engineID]
@@ -1543,11 +1586,14 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 	ws := c.activeWS.Load()
 	if ws != nil {
 		wsSend(ws, "engine_switch:connect_status", connectMsg)
+		wsSend(ws, "engine_switch:config", configMsg)
+		wsSend(ws, "engine_switch:engine_list", engineListMsg)
+		if taskMsg != nil {
+			wsSend(ws, "engine_switch:task_list", taskMsg)
+		}
 		if histMsg != nil {
 			wsSend(ws, "engine_switch:history", histMsg)
 		}
-		wsSend(ws, "engine_switch:config", configMsg)
-		wsSend(ws, "engine_switch:engine_list", engineListMsg)
 		for i, entry := range slot.streamBuf {
 			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
@@ -1555,9 +1601,9 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 				break
 			}
 		}
-		if taskMsg != nil {
-			wsSend(ws, "engine_switch:task_list", taskMsg)
-		}
+		// stats built inside the lock, after replay, so values are consistent.
+		statsMsg := c.buildStatsMessageForSlotLocked(slot)
+		wsSend(ws, "engine_switch:stats", statsMsg)
 	}
 	c.writeMu.Unlock()
 }

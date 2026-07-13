@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestSessionListRequest(t *testing.T) {
@@ -296,6 +297,64 @@ func sendJSON(t *testing.T, ws *websocket.Conn, v any) {
 	}
 	if err := ws.WriteMessage(1, data); err != nil {
 		t.Fatalf("write: %v", err)
+	}
+}
+
+// TestSessionSwitch_SendsStatsMessage verifies that session switch sends a
+// stats frame with zero values (no in-flight query after switch), resetting
+// the client's accumulated stats.
+func TestSessionSwitch_SendsStatsMessage(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().switchSessionFn = func(sessionID string) error { return nil }
+
+	// Simulate a completed query (query_start → usage → query_end resets queryStats).
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{
+		InputTokens: 5000, OutputTokens: 300,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+
+	// Switch session.
+	sendJSON(t, ws, map[string]string{"type": "session_switch", "sessionID": "target-123"})
+
+	// Read all frames until we find the stats frame (last in session_switch).
+	// Frame order: connect_status, [history], config, stats.
+	var statsMsg []byte
+	for range 10 {
+		data := readWSMessage(t, ws)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
+			statsMsg = data
+			break
+		}
+	}
+	var stats struct {
+		Type  string `json:"type"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v", err)
+	}
+	if stats.Type != "stats" {
+		t.Fatalf("expected stats frame, got %q", stats.Type)
+	}
+	if stats.Usage == nil {
+		t.Fatal("stats.usage is nil, want zero-value object")
+	}
+	// After session switch, queryStats is reset — values must be zero.
+	if stats.Usage.InputTokens != 0 {
+		t.Errorf("stats.usage.input_tokens = %d, want 0", stats.Usage.InputTokens)
+	}
+	if stats.Usage.OutputTokens != 0 {
+		t.Errorf("stats.usage.output_tokens = %d, want 0", stats.Usage.OutputTokens)
 	}
 }
 

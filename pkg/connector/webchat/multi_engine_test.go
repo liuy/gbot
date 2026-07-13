@@ -3,6 +3,9 @@ package webchat
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -117,8 +120,18 @@ func TestMultiEngine_DualStreamSwitch(t *testing.T) {
 	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "main-1"})
 	hubB.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "b-1"})
 
-	// Connect WS — triggers takeover for main (active).
-	ws := dialAndStore(t, c)
+	// Connect WS manually without draining replay frames.
+	// dialAndStore would drain through stats (consuming replay), so we
+	// drain metadata frames (connect_status, config, engine_list) then
+	// read replay from subsequent frames.
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	_ = readWSMessage(t, ws) // drain connect_status
+	_ = readWSMessage(t, ws) // drain config
+	_ = readWSMessage(t, ws) // drain engine_list
 
 	// main-1 should have been replayed during takeover.
 	drainUntilTextDelta(t, ws, "main-1")

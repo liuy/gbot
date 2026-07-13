@@ -79,8 +79,7 @@ func TestRegisterChatWS_MessageDispatchesQuery(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-	_ = readWSMessage(t, ws) // drain config
+	drainInitialFrames(t, ws)
 
 	out, _ := json.Marshal(map[string]any{"type": "message", "text": "hello there"})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -159,9 +158,7 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-	_ = readWSMessage(t, ws) // drain config
-	_ = readWSMessage(t, ws) // drain engine_list
+	drainInitialFrames(t, ws)
 
 	engineCh := make(chan types.AskResponse, 1)
 	// Dispatch an Ask through the hub — same path the engine takes.
@@ -219,8 +216,7 @@ func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-	_ = readWSMessage(t, ws) // drain config
+	drainInitialFrames(t, ws)
 
 	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "u-2"}})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -260,8 +256,7 @@ func TestRegisterChatWS_CancelQueuedBatch_FiltersEmpty(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-	_ = readWSMessage(t, ws) // drain config
+	drainInitialFrames(t, ws)
 
 	out, _ := json.Marshal(map[string]any{"type": "cancel_queued", "uuids": []string{"u-1", "", "u-2"}})
 	if err := ws.WriteMessage(websocket.TextMessage, out); err != nil {
@@ -313,11 +308,12 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	_ = readWSMessage(t, ws) // drain connect_status
-
-	// Initial history page: latest 10 messages
-	initData := readWSMessage(t, ws)
 	_ = readWSMessage(t, ws) // drain config
 	_ = readWSMessage(t, ws) // drain engine_list
+
+	// Initial history page: latest 30 messages (now 4th frame after connect_status/config/engine_list)
+	initData := readWSMessage(t, ws)
+	_ = readWSMessage(t, ws) // drain stats
 	var initEnv struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -380,8 +376,8 @@ func TestRegisterChatWS_PingPong(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	// Drain connect_status + config + engine_list sent on connect.
-	for range 3 {
+	// Drain connect_status + config + engine_list + stats sent on connect.
+	for range 4 {
 		readWSMessage(t, ws)
 	}
 
