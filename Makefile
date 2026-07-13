@@ -14,7 +14,7 @@ DEBUG_GCFLAGS := -gcflags="all=-N -l"
 all: build
 	./$(BINARY)
 
-# build compiles frontend (web/chat) + backend (Go binary).
+# build compiles frontend (web/ui) + backend (Go binary).
 build: web-build
 	go build -o $(BINARY) $(CMD)
 
@@ -33,7 +33,7 @@ debug: build-debug
 test:
 	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
 	go test ./test/ -count=1 -timeout 120s
-	cd web/chat && npm test
+	cd web/ui && npm test
 	@echo ""
 	@echo "Coverage:"
 	@go tool cover -func=coverage.out
@@ -88,17 +88,17 @@ app-check:
 
 # web-build regenerates the React SPA embedded into the Go binary.
 # Assets are checked into pkg/connector/webchat/assets/ so go build works
-# without Node. Run this after changing web/chat source.
+# without Node. Run this after changing web/ui source.
 web-build:
-	cd web/chat && npm install && npm run build
+	cd web/ui && npm install && npm run build
 
 web-test:
-	cd web/chat && npm test
+	cd web/ui && npm test
 
 web-check: web-build web-test web-lint web-weak
 
 web-lint:
-	cd web/chat && npm run lint
+	cd web/ui && npm run lint
 
 web-weak:
-	cd web/chat && npx vitest run test/weak.test.ts
+	cd web/ui && npx vitest run test/weak.test.ts

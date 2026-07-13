@@ -1,4 +1,4 @@
-package webchat
+package wui
 
 import (
 	"context"

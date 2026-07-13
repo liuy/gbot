@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [tailwindcss()],
   base: './',
   build: {
-    outDir: path.resolve(__dirname, '../../pkg/connector/webchat/assets'),
+    outDir: path.resolve(__dirname, '../../pkg/connector/wui/assets'),
     emptyOutDir: true,
     rollupOptions: {
       output: {

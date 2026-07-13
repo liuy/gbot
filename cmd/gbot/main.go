@@ -25,7 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
-	"github.com/liuy/gbot/pkg/connector/webchat"
+	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/connector/wechat"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
@@ -273,12 +273,12 @@ func main() {
 	// is built so an inbound device conn can register before the model calls
 	// connect. TUI mode leaves wsRegistry nil — the Computer tool then
 	// surfaces "daemon not running" on connect, same inert behavior as today.
-	// wsMux is hoisted to the outer scope so the webchat connector can mount
+	// wsMux is hoisted to the outer scope so the wui connector can mount
 	// its routes on the same mux later (after app/engine exist). The HTTP
 	// server starts listening immediately; chat routes are added in Step B.
 	// WebSocket server: start when daemon mode (-d) OR when an explicit
 	// port is given (-p). The -p flag alone starts WS without daemon mode,
-	// useful for running TUI + webchat on the same machine.
+	// useful for running TUI + wui on the same machine.
 	needWS := daemonMode || wsPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
 	var wsRegistry *computer.ConnectionRegistry
 	var wsMux *http.ServeMux
@@ -594,7 +594,7 @@ func main() {
 	// *http.ServeMux the already-running *http.Server uses (Go's ServeMux is
 	// safe for concurrent register+read).
 	if needWS && wsMux != nil {
-		wc := webchat.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
+		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
 		wc.SetCreateEngineFn(func(name string) (string, error) {
 			currentProvider, currentModel := "", model
 			if vs := engineMgr.Active(); vs != nil {
@@ -607,9 +607,9 @@ func main() {
 			}
 			return createEngineForWebchat(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
 		})
-		webchat.RegisterStaticRoutes(wsMux)
-		webchat.RegisterChatWS(wsMux, wc)
-		slog.Info("webchat: mounted on ws mux", "engines", engineMgr.Count())
+		wui.RegisterStaticRoutes(wsMux)
+		wui.RegisterChatWS(wsMux, wc)
+		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
 	}
 
 	// Estimate initial context usage
@@ -970,7 +970,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 }
 
 // createEngineForWebchat builds a new engine via engineFactory, registers it
-// in the manager, subscribes the webchat connector to its hub, and wires
+// in the manager, subscribes the wui connector to its hub, and wires
 // OnStreamDone. Returns the new engine ID. Called by the connector's
 // engine_new handler via the closure injected by SetCreateEngineFn.
 func createEngineForWebchat(
@@ -979,7 +979,7 @@ func createEngineForWebchat(
 	factory tui.EngineFactoryFn,
 	store *short.Store,
 	projectDir string,
-	connector *webchat.WebChatConnector,
+	connector *wui.WUIConnector,
 	currentProvider string,
 	currentModel string,
 ) (string, error) {
@@ -1014,7 +1014,7 @@ func createEngineForWebchat(
 	mgr.Add(vs)
 	connector.RegisterEngine(vs)
 	if err := mgr.PersistMeta(projectDir); err != nil {
-		slog.Warn("webchat: persist meta after engine new", "error", err)
+		slog.Warn("wui: persist meta after engine new", "error", err)
 	}
 	return id, nil
 }
@@ -1076,7 +1076,7 @@ func startPprofServer(cfgAddr string) {
 }
 
 // buildProviderConfigMap converts cfg.Providers ([]Provider) into the
-// map[string]*Provider shape used by TUI and webchat for model listing +
+// map[string]*Provider shape used by TUI and wui for model listing +
 // capability resolution. Mirrors tui.App.SetProviders.
 func buildProviderConfigMap(cfg *config.Config) map[string]*config.Provider {
 	m := make(map[string]*config.Provider, len(cfg.Providers))

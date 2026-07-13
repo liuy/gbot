@@ -49,7 +49,7 @@ export function stripAnsi(s: string): string {
 
 // Extracts the [Tool spent Xs] prefix that pkg/engine/runTools.go:prependDuration
 // adds to tool_result Output JSON. Returns the duration in nanoseconds, or 0 if
-// no prefix is present. Mirrors renderToolOutput in pkg/connector/webchat/connector.go.
+// no prefix is present. Mirrors renderToolOutput in pkg/connector/wui/connector.go.
 export function parseDurationFromOutput(output: unknown): number {
 	if (typeof output !== 'string') return 0
 	let s = output

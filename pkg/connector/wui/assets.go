@@ -1,4 +1,4 @@
-package webchat
+package wui
 
 import (
 	"embed"
@@ -13,7 +13,7 @@ var embeddedAssets embed.FS
 func assetFS() fs.FS {
 	sub, err := fs.Sub(embeddedAssets, "assets")
 	if err != nil {
-		panic("webchat: assets subdir missing: " + err.Error())
+		panic("wui: assets subdir missing: " + err.Error())
 	}
 	return sub
 }

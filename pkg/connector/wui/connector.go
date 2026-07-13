@@ -6,7 +6,7 @@
 // The connector subscribes to the main engine's hub (the same engine the TUI
 // drives). It is request-driven: inbound WS messages trigger queries; the
 // connector itself owns no polling loop.
-package webchat
+package wui
 
 import (
 	"bufio"
@@ -166,12 +166,12 @@ type engineSlot struct {
 	taskToolIDs map[string]bool
 }
 
-// WebChatConnector implements connector.Connector for the web chat. It owns
+// WUIConnector implements connector.Connector for the web chat. It owns
 // an EngineManager, subscribes to every engine's hub, and routes events to
 // the single active WS connection. Inbound WS messages operate on the
 // active engine; engine_switch swaps the active engine and replays its
 // buffered in-flight stream.
-type WebChatConnector struct {
+type WUIConnector struct {
 	mgr    *engine.EngineManager
 	slots  map[string]*engineSlot // keyed by engine ID
 	active string                 // active engine ID; cached for lock-free reads under writeMu
@@ -214,12 +214,12 @@ type WebChatConnector struct {
 	testMock any
 }
 
-// New builds a WebChatConnector bound to an EngineManager. The connector
+// New builds a WUIConnector bound to an EngineManager. The connector
 // subscribes to every engine's hub immediately. The active engine is set
 // from mgr.ActiveID(). main.go must call SetCreateEngineFn to enable
 // engine_new.
-func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
-	c := &WebChatConnector{
+func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WUIConnector {
+	c := &WUIConnector{
 		mgr:             mgr,
 		slots:           make(map[string]*engineSlot),
 		pendingAsks:     make(map[string]*types.AskEvent),
@@ -236,14 +236,14 @@ func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerC
 // activeSlot returns the slot for the active engine. Caller must hold writeMu
 // OR be in a single-goroutine test context. Returns nil if active is unset or
 // the slot is missing (e.g. during init before any engine is registered).
-func (c *WebChatConnector) activeSlot() *engineSlot {
+func (c *WUIConnector) activeSlot() *engineSlot {
 	return c.slots[c.active]
 }
 
 // activeEngine returns the active engine's engineClient (may be nil during
 // init). Convenience wrapper for inbound WS handlers that always operate on
 // the active engine.
-func (c *WebChatConnector) activeEngine() engineClient {
+func (c *WUIConnector) activeEngine() engineClient {
 	if s := c.activeSlot(); s != nil {
 		return s.engine
 	}
@@ -255,7 +255,7 @@ func (c *WebChatConnector) activeEngine() engineClient {
 // is created per registered engine and subscribed to that engine's hub.
 type engineHubShim struct {
 	engineID string
-	c        *WebChatConnector
+	c        *WUIConnector
 }
 
 func (s *engineHubShim) Handle(event hub.Event) {
@@ -267,25 +267,25 @@ func (s *engineHubShim) Handle(event hub.Event) {
 // returns without re-subscribing (re-subscribing would double-deliver every
 // event). Exported as RegisterEngine so main.go can add engines created
 // outside the connector (engine_new flow).
-func (c *WebChatConnector) registerEngine(vs *engine.EngineViewState) {
+func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 	// webchat subscribes only to fully materialized engines. Every engine is
 	// built by restoreEngines (boot) or createEngineForWebchat (engine_new)
 	// before reaching here, so Engine must be non-nil. A nil Engine is a
 	// wiring bug — panic so it surfaces immediately.
 	if vs.Engine == nil {
-		panic(fmt.Sprintf("webchat: registerEngine called with nil Engine for %q", vs.ID))
+		panic(fmt.Sprintf("wui: registerEngine called with nil Engine for %q", vs.ID))
 	}
 	c.writeMu.Lock()
 	if _, exists := c.slots[vs.ID]; exists {
 		c.writeMu.Unlock()
-		slog.Warn("webchat: registerEngine called twice for same engine, ignoring", "id", vs.ID)
+		slog.Warn("wui: registerEngine called twice for same engine, ignoring", "id", vs.ID)
 		return
 	}
 	c.writeMu.Unlock()
 
 	h, ok := vs.Engine.Dispatcher().(*hub.Hub)
 	if !ok {
-		slog.Warn("webchat: engine dispatcher is not *hub.Hub, skipping", "id", vs.ID)
+		slog.Warn("wui: engine dispatcher is not *hub.Hub, skipping", "id", vs.ID)
 		return
 	}
 	slot := &engineSlot{
@@ -304,7 +304,7 @@ func (c *WebChatConnector) registerEngine(vs *engine.EngineViewState) {
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
 // main.go's createEngineForWebchat to register engines created after boot.
-func (c *WebChatConnector) RegisterEngine(vs *engine.EngineViewState) {
+func (c *WUIConnector) RegisterEngine(vs *engine.EngineViewState) {
 	c.registerEngine(vs)
 }
 
@@ -312,25 +312,25 @@ func (c *WebChatConnector) RegisterEngine(vs *engine.EngineViewState) {
 // OnStreamDone — when the assistant response is committed to
 // engine.Messages(), the buffer's events are now in history and replay
 // would duplicate.
-func (c *WebChatConnector) clearStreamBuf(engineID string) {
+func (c *WUIConnector) clearStreamBuf(engineID string) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if slot := c.slots[engineID]; slot != nil {
 		frames := len(slot.streamBuf)
 		slot.streamBuf = nil
 		slot.taskToolIDs = make(map[string]bool)
-		slog.Info("webchat:stream done, buffer cleared", "engine", engineID, "frames", frames)
+		slog.Info("wui:stream done, buffer cleared", "engine", engineID, "frames", frames)
 	}
 }
 
 // Start is a no-op: the HTTP/WS server is registered separately via
 // RegisterChatWS in main.go, and the connector is request-driven.
-func (c *WebChatConnector) Start(ctx context.Context) error { return nil }
+func (c *WUIConnector) Start(ctx context.Context) error { return nil }
 
 // Stop unsubscribes from all engine hubs, aborts any pending asks, and clears
 // the active WS. Does NOT abort the active query — a brief disconnect (e.g.
 // mobile browser backgrounding) should not interrupt the LLM.
-func (c *WebChatConnector) Stop() {
+func (c *WUIConnector) Stop() {
 	c.writeMu.Lock()
 	for _, slot := range c.slots {
 		if slot.unsubscribe != nil {
@@ -344,13 +344,13 @@ func (c *WebChatConnector) Stop() {
 // Send is an interface no-op: webchat has no outbound platform. Nobody calls
 // Send on the webchat connector; it exists solely to satisfy the
 // connector.Connector contract.
-func (c *WebChatConnector) Send(userID, text string) error { return nil }
+func (c *WUIConnector) Send(userID, text string) error { return nil }
 
 // wsSend writes a text message to ws with a 30s deadline, logging failures.
 func wsSend(ws *websocket.Conn, label string, payload []byte) {
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("webchat:ws write failed", "frame", label, "error", err)
+		slog.Warn("wui:ws write failed", "frame", label, "error", err)
 	}
 }
 
@@ -364,7 +364,7 @@ func wsSend(ws *websocket.Conn, label string, payload []byte) {
 // from background engines are preserved for takeover replay. Only the active
 // engine's events are written to the WS in real-time; background engines
 // buffer only. writePayloadAndClearTo (turn_end/query_end) resets the buffer.
-func (c *WebChatConnector) writePayloadTo(slot *engineSlot, event types.QueryEvent, payload []byte) error {
+func (c *WUIConnector) writePayloadTo(slot *engineSlot, event types.QueryEvent, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	slot.streamBuf = append(slot.streamBuf, streamEntry{event: event, payload: payload})
@@ -377,7 +377,7 @@ func (c *WebChatConnector) writePayloadTo(slot *engineSlot, event types.QueryEve
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("webchat:ws write failed", "frame", "stream:"+event.Type, "error", err)
+		slog.Warn("wui:ws write failed", "frame", "stream:"+event.Type, "error", err)
 		c.activeWS.Store(nil) // mark inactive
 		return err
 	}
@@ -388,14 +388,14 @@ func (c *WebChatConnector) writePayloadTo(slot *engineSlot, event types.QueryEve
 // slot.taskToolIDs, and slot.queryStats. For turn_end / query_end — the turn
 // is now committed to engine.Messages(), so the buffer is reset to avoid
 // duplicate replay on the next takeover.
-func (c *WebChatConnector) writePayloadAndClearTo(slot *engineSlot, payload []byte) error {
+func (c *WUIConnector) writePayloadAndClearTo(slot *engineSlot, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	bufFrames := len(slot.streamBuf)
 	slot.streamBuf = nil
 	slot.taskToolIDs = make(map[string]bool)
 	slot.queryStats = queryStats{}
-	slog.Info("webchat:turnbuf cleared", "frames", bufFrames)
+	slog.Info("wui:turnbuf cleared", "frames", bufFrames)
 	if slot.engineID != c.active {
 		return nil
 	}
@@ -405,7 +405,7 @@ func (c *WebChatConnector) writePayloadAndClearTo(slot *engineSlot, payload []by
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("webchat:ws write failed", "frame", "turn_end/query_end", "error", err)
+		slog.Warn("wui:ws write failed", "frame", "turn_end/query_end", "error", err)
 		c.activeWS.Store(nil)
 		return err
 	}
@@ -414,7 +414,7 @@ func (c *WebChatConnector) writePayloadAndClearTo(slot *engineSlot, payload []by
 
 // writeDirect writes to activeWS without touching streamBuf. For ask
 // events (must NOT be buffered) and error events (ephemeral, not replayed).
-func (c *WebChatConnector) writeDirect(payload []byte) error {
+func (c *WUIConnector) writeDirect(payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	ws := c.activeWS.Load()
@@ -423,7 +423,7 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 	}
 	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("webchat:ws write failed", "frame", "direct", "error", err)
+		slog.Warn("wui:ws write failed", "frame", "direct", "error", err)
 		c.activeWS.Store(nil)
 		return err
 	}
@@ -433,7 +433,7 @@ func (c *WebChatConnector) writeDirect(payload []byte) error {
 // Handle dispatches an event to the active engine. It is kept for test
 // compatibility: existing tests call c.Handle(event) to simulate hub dispatch.
 // Production code routes events through engineHubShim → handleForEngine.
-func (c *WebChatConnector) Handle(event hub.Event) {
+func (c *WUIConnector) Handle(event hub.Event) {
 	c.writeMu.Lock()
 	active := c.active
 	c.writeMu.Unlock()
@@ -449,7 +449,7 @@ func (c *WebChatConnector) Handle(event hub.Event) {
 // Ask events from inactive engines are silently dropped: an Ask demands a UI
 // prompt, and only the active engine's UI is visible. The engine's own Ask
 // timeout (if any) will eventually fire.
-func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
+func (c *WUIConnector) handleForEngine(engineID string, event hub.Event) {
 	// Ask routing — active engine only. Must happen before slot lookup so
 	// we don't touch the buffer for a dropped Ask.
 	if event.Type == types.EventAsk {
@@ -496,7 +496,7 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 	}
 	c.writeMu.Unlock()
 
-	slog.Info("webchat:event", "type", event.Type, "engine", engineID,
+	slog.Info("wui:event", "type", event.Type, "engine", engineID,
 		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
 
 	aborted := false
@@ -504,7 +504,7 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
 			rewind := c.shouldAutoRewindFor(slot.engine)
-			slog.Info("webchat:abort", "engine", engineID, "shouldAutoRewind", rewind, "msgs", len(slot.engine.Messages()))
+			slog.Info("wui:abort", "engine", engineID, "shouldAutoRewind", rewind, "msgs", len(slot.engine.Messages()))
 			if !rewind {
 				interruptPayload, _ := json.Marshal(struct {
 					Type  string           `json:"type"`
@@ -523,7 +523,7 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 		Event queryEventWithAbort `json:"event"`
 	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted}})
 	if err != nil {
-		slog.Warn("webchat: marshal event failed", "type", event.Type, "error", err)
+		slog.Warn("wui: marshal event failed", "type", event.Type, "error", err)
 		return
 	}
 
@@ -555,7 +555,7 @@ func (c *WebChatConnector) handleForEngine(engineID string, event hub.Event) {
 
 // shouldAutoRewindFor checks whether autoRewindOnAbortFor would rewind, using
 // the given engine (per-engine, not global).
-func (c *WebChatConnector) shouldAutoRewindFor(eng engineClient) bool {
+func (c *WUIConnector) shouldAutoRewindFor(eng engineClient) bool {
 	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
@@ -565,7 +565,7 @@ func (c *WebChatConnector) shouldAutoRewindFor(eng engineClient) bool {
 }
 
 // autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given engine.
-func (c *WebChatConnector) autoRewindOnAbortFor(eng engineClient) {
+func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) {
 	if !c.shouldAutoRewindFor(eng) {
 		return
 	}
@@ -575,7 +575,7 @@ func (c *WebChatConnector) autoRewindOnAbortFor(eng engineClient) {
 		return
 	}
 	if err := eng.RewindTo(lastUserIdx); err != nil {
-		slog.Warn("webchat: autoRewind failed", "idx", lastUserIdx, "error", err)
+		slog.Warn("wui: autoRewind failed", "idx", lastUserIdx, "error", err)
 	}
 }
 
@@ -589,7 +589,7 @@ type inputHistoryEntry struct {
 // inputHistoryPath returns the shared per-engine input history JSONL path,
 // mirroring pkg/tui/app.go historyPathFor. Returns "" when projectDir or
 // engineID is empty (connector has no engine bound).
-func (c *WebChatConnector) inputHistoryPath() string {
+func (c *WUIConnector) inputHistoryPath() string {
 	eng := c.activeEngine()
 	if eng == nil {
 		return ""
@@ -598,7 +598,7 @@ func (c *WebChatConnector) inputHistoryPath() string {
 }
 
 // inputHistoryPathFor computes the history path for a specific engine.
-func (c *WebChatConnector) inputHistoryPathFor(eng engineClient) string {
+func (c *WUIConnector) inputHistoryPathFor(eng engineClient) string {
 	dir := eng.ProjectDir()
 	id := eng.EngineID()
 	if dir == "" || id == "" {
@@ -612,7 +612,7 @@ func (c *WebChatConnector) inputHistoryPathFor(eng engineClient) string {
 // skip, empty-display skip, malformed-line skip, and maxSize cap as
 // pkg/tui/history.go load(). Returns nil (not an empty slice) when the file
 // doesn't exist or yields no entries so the JSON field can be omitempty.
-func (c *WebChatConnector) loadInputHistory() []string {
+func (c *WUIConnector) loadInputHistory() []string {
 	path := c.inputHistoryPath()
 	return loadInputHistoryFromFile(path)
 }
@@ -620,7 +620,7 @@ func (c *WebChatConnector) loadInputHistory() []string {
 // loadInputHistoryFor reads input history for a specific engine (used by
 // buildConnectStatusMessageForSlot during engine_switch, when the slot is not
 // yet the active engine).
-func (c *WebChatConnector) loadInputHistoryFor(eng engineClient) []string {
+func (c *WUIConnector) loadInputHistoryFor(eng engineClient) []string {
 	path := c.inputHistoryPathFor(eng)
 	return loadInputHistoryFromFile(path)
 }
@@ -666,7 +666,7 @@ func loadInputHistoryFromFile(path string) []string {
 // history JSONL, mirroring pkg/tui/history.go save(). The file is purely
 // append-only; consecutive-duplicate skip and cap happen on read. Errors are
 // swallowed — history is best-effort and never blocks the query path.
-func (c *WebChatConnector) appendInputHistory(cmd string) {
+func (c *WUIConnector) appendInputHistory(cmd string) {
 	path := c.inputHistoryPath()
 	if path == "" {
 		return
@@ -699,7 +699,7 @@ func (c *WebChatConnector) appendInputHistory(cmd string) {
 // handleAsk stores the AskEvent under a fresh id, builds the askOutbound
 // struct (NOT marshalling *types.AskEvent directly — its fields have no json
 // tags), and writes it directly to the active WS via writeDirect.
-func (c *WebChatConnector) handleAsk(event hub.Event) {
+func (c *WUIConnector) handleAsk(event hub.Event) {
 	if event.Ask == nil {
 		return
 	}
@@ -726,7 +726,7 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 	}
 	payload, err := json.Marshal(out)
 	if err != nil {
-		slog.Warn("webchat: marshal ask failed", "id", id, "error", err)
+		slog.Warn("wui: marshal ask failed", "id", id, "error", err)
 		return
 	}
 	_ = c.writeDirect(payload)
@@ -744,7 +744,7 @@ func (c *WebChatConnector) handleAsk(event hub.Event) {
 // cross-references); only the serialized payload shrinks. Tool summaries and
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
-func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte {
+func (c *WUIConnector) buildHistoryMessage(cursor string, limit int) []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
@@ -754,7 +754,7 @@ func (c *WebChatConnector) buildHistoryMessage(cursor string, limit int) []byte 
 
 // buildHistoryMessageForSlot is the per-slot core of buildHistoryMessage. It
 // is called directly by handleEngineSwitch to build history for the target slot.
-func (c *WebChatConnector) buildHistoryMessageForSlot(slot *engineSlot, cursor string, limit int) []byte {
+func (c *WUIConnector) buildHistoryMessageForSlot(slot *engineSlot, cursor string, limit int) []byte {
 	msgs := slot.engine.Messages()
 	if len(msgs) == 0 {
 		return nil
@@ -1139,7 +1139,7 @@ type taskListWireItem struct {
 
 // buildTaskListMessage reads the active engine's task list. Delegates to
 // buildTaskListMessageFor with the active slot.
-func (c *WebChatConnector) buildTaskListMessage() []byte {
+func (c *WUIConnector) buildTaskListMessage() []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
@@ -1150,7 +1150,7 @@ func (c *WebChatConnector) buildTaskListMessage() []byte {
 // buildTaskListMessageFor reads the slot's engine task list, filters internal
 // tasks, resolves blockedBy from task IDs to subjects, and returns the JSON
 // task_list payload. Returns nil when there are no user-visible tasks.
-func (c *WebChatConnector) buildTaskListMessageFor(slot *engineSlot) []byte {
+func (c *WUIConnector) buildTaskListMessageFor(slot *engineSlot) []byte {
 	if slot == nil {
 		return nil
 	}
@@ -1231,7 +1231,7 @@ type configCurrent struct {
 }
 
 // buildConfigMessage returns a JSON "config" message for the active engine.
-func (c *WebChatConnector) buildConfigMessage() []byte {
+func (c *WUIConnector) buildConfigMessage() []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
@@ -1241,7 +1241,7 @@ func (c *WebChatConnector) buildConfigMessage() []byte {
 
 // buildConfigMessageForSlot is the per-slot config builder, used by
 // handleEngineSwitch for non-active slots.
-func (c *WebChatConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
+func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 	var currentProvider string
 	if p := slot.engine.Provider(); p != nil {
 		currentProvider = p.Name()
@@ -1268,7 +1268,7 @@ func (c *WebChatConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 
 // buildConnectStatusMessage returns a connect_status payload for the active
 // engine. Delegates to buildConnectStatusMessageForSlot.
-func (c *WebChatConnector) buildConnectStatusMessage() []byte {
+func (c *WUIConnector) buildConnectStatusMessage() []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
@@ -1285,7 +1285,7 @@ func (c *WebChatConnector) buildConnectStatusMessage() []byte {
 // double-counting (connect_status arrives before replay, so including stats
 // here would cause the client to restore them and then re-accumulate the
 // same deltas from replayed events).
-func (c *WebChatConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte {
+func (c *WUIConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte {
 	eng := slot.engine
 	engineName := c.engineNameForSlot(slot)
 	inputHistory := c.loadInputHistoryFor(eng)
@@ -1316,7 +1316,7 @@ func (c *WebChatConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []
 // which already hold the lock — building stats inside the lock ensures the
 // values are consistent with the replayed buffer (no events can arrive between
 // stats read and replay send).
-func (c *WebChatConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []byte {
+func (c *WUIConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []byte {
 	qs := slot.queryStats
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
@@ -1336,7 +1336,7 @@ func (c *WebChatConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []by
 
 // buildStatsMessage returns the stats payload for the active engine's slot.
 // Acquires writeMu for a consistent read. Returns nil if no active slot.
-func (c *WebChatConnector) buildStatsMessage() []byte {
+func (c *WUIConnector) buildStatsMessage() []byte {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	slot := c.activeSlot()
@@ -1348,7 +1348,7 @@ func (c *WebChatConnector) buildStatsMessage() []byte {
 
 // engineNameForSlot resolves the engine's display name from the manager. Falls
 // back to the engine ID if the manager lookup fails.
-func (c *WebChatConnector) engineNameForSlot(slot *engineSlot) string {
+func (c *WUIConnector) engineNameForSlot(slot *engineSlot) string {
 	if c.mgr != nil {
 		if vs := c.mgr.Get(slot.engineID); vs != nil {
 			return vs.Name
@@ -1359,7 +1359,7 @@ func (c *WebChatConnector) engineNameForSlot(slot *engineSlot) string {
 
 // buildSessionListMessage returns a session_list payload for the active engine
 // with up to 50 sessions, or nil when the store returns none.
-func (c *WebChatConnector) buildSessionListMessage() []byte {
+func (c *WUIConnector) buildSessionListMessage() []byte {
 	eng := c.activeEngine()
 	if eng == nil {
 		return nil
@@ -1391,7 +1391,7 @@ type engineListItem struct {
 	Model string `json:"model"`
 }
 
-func (c *WebChatConnector) buildEngineListMessage() []byte {
+func (c *WUIConnector) buildEngineListMessage() []byte {
 	var views []engine.EngineViewSnapshot
 	activeID := c.active
 	if c.mgr != nil {
@@ -1427,7 +1427,7 @@ func buildSessionBusyMessage() []byte {
 // is streaming so the active turn is never disturbed.
 // stats is built outside the lock (no in-flight query after session switch),
 // and resets the client's stats variables to zero.
-func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
+func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
@@ -1462,7 +1462,7 @@ func (c *WebChatConnector) handleSessionSwitch(sessionID string) {
 // handleSessionNew creates a fresh session on the active engine, then pushes
 // connect_status + config + stats. Rejects when the engine is streaming.
 // stats resets the client's stats variables to zero.
-func (c *WebChatConnector) handleSessionNew() {
+func (c *WUIConnector) handleSessionNew() {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
@@ -1496,7 +1496,7 @@ func (c *WebChatConnector) handleSessionNew() {
 // handleModelSwitch switches the active engine's provider + model, syncs
 // capabilities, then pushes fresh connect_status + config so the header
 // updates immediately.
-func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
+func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
@@ -1532,17 +1532,17 @@ func (c *WebChatConnector) handleModelSwitch(providerName, modelName string) {
 		fullModel := providerName + "/" + modelName
 		c.mgr.SetActiveModel(fullModel)
 		if err := c.mgr.PersistMeta(eng.ProjectDir()); err != nil {
-			slog.Warn("webchat: failed to persist model selection", "error", err)
+			slog.Warn("wui: failed to persist model selection", "error", err)
 		}
 	}
 
-	slog.Info("webchat:model switched", "provider", providerName, "model", modelName)
+	slog.Info("wui:model switched", "provider", providerName, "model", modelName)
 }
 
 // SetCreateEngineFn injects the engine creation closure used by engine_new.
 // main.go calls this to wire engineFactory + engineMgr + store into the
 // connector.
-func (c *WebChatConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
+func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 	c.createEngine = fn
 }
 
@@ -1558,7 +1558,7 @@ func (c *WebChatConnector) SetCreateEngineFn(fn func(name string) (string, error
 //
 // stats is built inside the lock (after replay) so the values are consistent
 // with the replayed buffer.
-func (c *WebChatConnector) handleEngineSwitch(engineID string) {
+func (c *WUIConnector) handleEngineSwitch(engineID string) {
 	c.writeMu.Lock()
 	slot, ok := c.slots[engineID]
 	if !ok {
@@ -1597,7 +1597,7 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 		for i, entry := range slot.streamBuf {
 			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-				slog.Warn("webchat:ws write failed", "frame", fmt.Sprintf("engine_switch:replay[%d]", i), "error", err)
+				slog.Warn("wui:ws write failed", "frame", fmt.Sprintf("engine_switch:replay[%d]", i), "error", err)
 				break
 			}
 		}
@@ -1610,7 +1610,7 @@ func (c *WebChatConnector) handleEngineSwitch(engineID string) {
 
 // handleEngineNew creates a new engine via the injected createEngine closure,
 // then switches to it. If createEngine is nil (not configured), sends an error.
-func (c *WebChatConnector) handleEngineNew(name string) {
+func (c *WUIConnector) handleEngineNew(name string) {
 	if c.createEngine == nil {
 		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("engine creation not configured")))
 		return

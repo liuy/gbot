@@ -1,4 +1,4 @@
-package webchat
+package wui
 
 import (
 	"context"
@@ -296,24 +296,24 @@ func (m *mockEngine) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	}
 }
 
-// newTestConnectorWithHub builds a WebChatConnector with a mockEngine and the
+// newTestConnectorWithHub builds a WUIConnector with a mockEngine and the
 // given hub (for hub-routed dispatch tests). Tests configure the mock's
 // function fields to control behavior.
-func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WebChatConnector {
+func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WUIConnector {
 	t.Helper()
 	return newTestConnectorWithConfig(t, h, nil, nil)
 }
 
-// newTestConnectorWithConfig builds a WebChatConnector with providers and
+// newTestConnectorWithConfig builds a WUIConnector with providers and
 // providerConfigs for config/model_switch tests. The connector is constructed
 // directly (not via New) because mockEngine is not a *engine.Engine; the slot
 // map and active field are set up manually. The mock's onQueryDoneFn is wired
 // to clearStreamBuf so tests that trigger Query get realistic buffer cleanup.
-func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WebChatConnector {
+func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WUIConnector {
 	t.Helper()
 	mock := &mockEngine{}
 	const engineID = "main"
-	c := &WebChatConnector{
+	c := &WUIConnector{
 		mgr:             nil, // tests that need engine_list set this manually
 		slots:           make(map[string]*engineSlot),
 		active:          engineID,
@@ -338,7 +338,7 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 }
 
 // newTestConnector returns a connector with a fresh hub.
-func newTestConnector(t *testing.T) *WebChatConnector {
+func newTestConnector(t *testing.T) *WUIConnector {
 	t.Helper()
 	return newTestConnectorWithHub(t, hub.NewHub())
 }
@@ -347,7 +347,7 @@ func newTestConnector(t *testing.T) *WebChatConnector {
 // (set by newTestConnector*) for lock-free access. Falls back to activeSlot's
 // engine for connectors built via the real New(). Panics if neither holds a
 // *mockEngine.
-func (c *WebChatConnector) mock() *mockEngine {
+func (c *WUIConnector) mock() *mockEngine {
 	if c.testMock != nil {
 		return c.testMock.(*mockEngine)
 	}
@@ -360,7 +360,7 @@ func (c *WebChatConnector) mock() *mockEngine {
 }
 
 // firstPendingAskIDTest returns the id of the first stored pending ask.
-func (c *WebChatConnector) firstPendingAskIDTest(t *testing.T) string {
+func (c *WUIConnector) firstPendingAskIDTest(t *testing.T) string {
 	t.Helper()
 	deadline := time.Now().Add(time.Second) // REAL-TIME
 	for time.Now().Before(deadline) {       // REAL-TIME
@@ -376,7 +376,7 @@ func (c *WebChatConnector) firstPendingAskIDTest(t *testing.T) string {
 }
 
 // respondToAskTest writes a response to the pending ask with the given id.
-func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.AskResponse) {
+func (c *WUIConnector) respondToAskTest(t *testing.T, id string, resp types.AskResponse) {
 	t.Helper()
 	c.pendingMu.Lock()
 	ask := c.pendingAsks[id]
@@ -397,7 +397,7 @@ func (c *WebChatConnector) respondToAskTest(t *testing.T, id string, resp types.
 // replay, stats) so the caller can read events/responses immediately. Returns
 // the client conn with all initial frames consumed.
 // Tests that don't need history must set mock().messagesFn to return nil.
-func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
+func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 	t.Helper()
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -410,7 +410,7 @@ func dialAndStore(t *testing.T, c *WebChatConnector) *websocket.Conn {
 
 // activeStreamBufLen returns the number of buffered entries in the active
 // engine's slot. Test accessor that acquires writeMu for a consistent read.
-func (c *WebChatConnector) activeStreamBufLen() int {
+func (c *WUIConnector) activeStreamBufLen() int {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if s := c.activeSlot(); s != nil {
@@ -421,12 +421,12 @@ func (c *WebChatConnector) activeStreamBufLen() int {
 
 // clearStreamBufTest exposes clearStreamBuf for test-driven buffer cleanup
 // (replaces the old c.OnStreamDone() test call).
-func (c *WebChatConnector) clearStreamBufTest(engineID string) {
+func (c *WUIConnector) clearStreamBufTest(engineID string) {
 	c.clearStreamBuf(engineID)
 }
 
 // activeEngineTest returns the active engine's engineClient for test use.
-func (c *WebChatConnector) activeEngineTest() engineClient {
+func (c *WUIConnector) activeEngineTest() engineClient {
 	return c.activeEngine()
 }
 

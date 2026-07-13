@@ -1,4 +1,4 @@
-package webchat
+package wui
 
 import (
 	"encoding/json"
@@ -16,7 +16,7 @@ import (
 
 // addMockEngine registers a second mock engine on the connector. Returns
 // the mock and the hub for injecting events to the engine.
-func addMockEngine(t *testing.T, c *WebChatConnector, engineID string) (*mockEngine, *hub.Hub) {
+func addMockEngine(t *testing.T, c *WUIConnector, engineID string) (*mockEngine, *hub.Hub) {
 	t.Helper()
 	h := hub.NewHub()
 	mock := &mockEngine{}

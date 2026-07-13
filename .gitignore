@@ -36,7 +36,7 @@ vendor/
 # MCP user config (per-user, not committed)
 .mcp.json
 
-# Web chat (React client) — build output is checked into pkg/connector/webchat/assets/
+# Web UI (React client) — build output is checked into pkg/connector/wui/assets/
 web/chat/node_modules/
 prototype/
 web/chat/tsconfig.tsbuildinfo

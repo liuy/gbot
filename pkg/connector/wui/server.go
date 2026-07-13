@@ -1,4 +1,4 @@
-package webchat
+package wui
 
 import (
 	"context"
@@ -18,7 +18,7 @@ var chatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { re
 // RegisterChatWS mounts the chat WebSocket endpoint at /ws/chat on mux. The
 // handler upgrades the connection, emits connect_status, then runs a readLoop
 // (inbound: message / ask_response / stop / cancel_queued / history_request).
-func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
+func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 	mux.HandleFunc("/ws/chat", func(w http.ResponseWriter, r *http.Request) {
 		ws, err := chatUpgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -39,7 +39,7 @@ func RegisterChatWS(mux *http.ServeMux, c *WebChatConnector) {
 // server-side values that overwrite any replay-accumulated deltas. This
 // avoids double-counting (the original bug where connect_status carried stats
 // before replay, causing the client to restore them and then re-accumulate).
-func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
+func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	// Pre-construct connect_status outside the lock (reads engine state).
 	connectMsg := c.buildConnectStatusMessage()
 
@@ -68,7 +68,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	if slot != nil {
 		bufLen = len(slot.streamBuf)
 	}
-	slog.Info("webchat:takeover", "hasHistory", histMsg != nil, "bufFrames", bufLen)
+	slog.Info("wui:takeover", "hasHistory", histMsg != nil, "bufFrames", bufLen)
 	c.activeWS.Store(nil) // 1. old conn invalidated
 
 	// 2. connect_status (metadata only — no stats)
@@ -108,14 +108,14 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 		for i, entry := range slot.streamBuf {
 			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-				slog.Warn("webchat:ws write failed", "frame", fmt.Sprintf("takeover:replay[%d]", i), "error", err)
+				slog.Warn("wui:ws write failed", "frame", fmt.Sprintf("takeover:replay[%d]", i), "error", err)
 				break
 			}
 			replayed++
 		}
 	}
 	if replayed > 0 {
-		slog.Info("webchat:takeover replay", "frames", replayed)
+		slog.Info("wui:takeover replay", "frames", replayed)
 	}
 
 	// 8. stats — authoritative server-side stats sent AFTER replay.
@@ -138,7 +138,7 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 
 	c.activeWS.Store(ws) // 9. new connection becomes the sink
 	c.writeMu.Unlock()
-	slog.Info("webchat:takeover complete")
+	slog.Info("wui:takeover complete")
 
 	// readLoop owns the read side and dispatches inbound (query/ask/stop/
 	// cancel_queued/history_request). Blocks until read error (client gone).
@@ -148,15 +148,15 @@ func serveChatWS(ws *websocket.Conn, c *WebChatConnector) {
 	// takeover may have already swapped in its own ws — don't clobber it).
 	c.clearActiveIfCurrent(ws)
 	c.abortPendingAsksOnDisconnect()
-	slog.Info("webchat:disconnect")
+	slog.Info("wui:disconnect")
 }
 
 // readLoop processes inbound JSON messages until the connection closes.
-func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
+func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
-			slog.Info("webchat:readLoop exit", "error", err)
+			slog.Info("wui:readLoop exit", "error", err)
 			return
 		}
 		// Peek type first, then unmarshal into the right shape. Using a single
@@ -271,7 +271,7 @@ func (c *WebChatConnector) readLoop(ws *websocket.Conn) {
 // query is already active, the message is enqueued via engine.EnqueueAttachment
 // (same path as TUI's handleEnqueueMessage) — the engine drains it
 // automatically after the current query finishes.
-func (c *WebChatConnector) handleMessageInbound(text string) {
+func (c *WUIConnector) handleMessageInbound(text string) {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
@@ -301,7 +301,7 @@ func (c *WebChatConnector) handleMessageInbound(text string) {
 // handleAskResponse looks up a pending ask by id and writes the response to
 // its ResponseCh. Permission asks carry decision; input asks carry text or
 // aborted.
-func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted bool) {
+func (c *WUIConnector) handleAskResponse(id, decision, text string, aborted bool) {
 	c.pendingMu.Lock()
 	ask := c.pendingAsks[id]
 	delete(c.pendingAsks, id)
@@ -324,7 +324,7 @@ func (c *WebChatConnector) handleAskResponse(id, decision, text string, aborted 
 // handleStop aborts the active query. Calls engine.Abort directly —
 // same path as TUI's ESC handler. This cancels the engine's internal
 // activeCancel which propagates to the LLM stream and all tool contexts.
-func (c *WebChatConnector) handleStop() {
+func (c *WUIConnector) handleStop() {
 	if eng := c.activeEngine(); eng != nil {
 		eng.Abort()
 	}
@@ -335,7 +335,7 @@ func (c *WebChatConnector) handleStop() {
 // query — a brief disconnect (e.g. mobile browser backgrounding) should not
 // interrupt the LLM. The query continues; results land in history and are
 // visible on reconnect. Called from Stop (which has no specific ws to clear).
-func (c *WebChatConnector) cleanupConn() {
+func (c *WUIConnector) cleanupConn() {
 	c.writeMu.Lock()
 	c.activeWS.Store(nil)
 	c.writeMu.Unlock()
@@ -344,7 +344,7 @@ func (c *WebChatConnector) cleanupConn() {
 
 // clearActiveIfCurrent atomically clears activeWS only if it still equals ws.
 // Prevents a stale readLoop-exit from clobbering a newer takeover's connection.
-func (c *WebChatConnector) clearActiveIfCurrent(ws *websocket.Conn) {
+func (c *WUIConnector) clearActiveIfCurrent(ws *websocket.Conn) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.activeWS.Load() == ws {
@@ -355,7 +355,7 @@ func (c *WebChatConnector) clearActiveIfCurrent(ws *websocket.Conn) {
 // abortPendingAsksOnDisconnect aborts pending asks on disconnect. Does NOT
 // abort the active query (engine keeps running; results land in history on
 // reconnect).
-func (c *WebChatConnector) abortPendingAsksOnDisconnect() {
+func (c *WUIConnector) abortPendingAsksOnDisconnect() {
 	c.pendingMu.Lock()
 	asks := c.pendingAsks
 	c.pendingAsks = make(map[string]*types.AskEvent)
@@ -368,5 +368,5 @@ func (c *WebChatConnector) abortPendingAsksOnDisconnect() {
 			}
 		}
 	}
-	slog.Debug("webchat: asks aborted on disconnect", "count", len(asks))
+	slog.Debug("wui: asks aborted on disconnect", "count", len(asks))
 }
