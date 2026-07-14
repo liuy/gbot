@@ -115,12 +115,12 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 				Limit  int    `json:"limit"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				if histMsg := c.buildHistoryMessage(msg.Cursor, msg.Limit); histMsg != nil {
+				if histMsg := c.buildHistory(msg.Cursor, msg.Limit); histMsg != nil {
 					c.sendWS(histMsg)
 				}
 			}
 		case "session_list_request":
-			if payload := c.buildSessionListMessage(); payload != nil {
+			if payload := c.buildSessionList(); payload != nil {
 				c.sendWS(payload)
 			}
 		case "session_switch":
@@ -139,7 +139,7 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 				if eng := c.activeEngine(); eng != nil {
 					_ = eng.UpdateSessionTitle(msg.SessionID, msg.Title)
 				}
-				if payload := c.buildSessionListMessage(); payload != nil {
+				if payload := c.buildSessionList(); payload != nil {
 					c.sendWS(payload)
 				}
 			}

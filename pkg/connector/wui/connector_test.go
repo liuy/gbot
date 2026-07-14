@@ -598,7 +598,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage("", 10)
+	payload := c.buildHistory("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -702,7 +702,7 @@ func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage("", 10)
+	payload := c.buildHistory("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -759,7 +759,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage("", 10)
+	payload := c.buildHistory("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -840,7 +840,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistoryMessage("", 10)
+	payload := c.buildHistory("", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -908,7 +908,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	// Page 1: latest 10 (msg-24 … msg-15)
-	payload := c.buildHistoryMessage("", 10)
+	payload := c.buildHistory("", 10)
 	if payload == nil {
 		t.Fatal("page 1 returned nil")
 	}
@@ -937,7 +937,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Page 2: next 10 (msg-14 … msg-5)
-	payload = c.buildHistoryMessage("10", 10)
+	payload = c.buildHistory("10", 10)
 	if payload == nil {
 		t.Fatal("page 2 returned nil")
 	}
@@ -966,7 +966,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Page 3: last 5 (msg-4 … msg-0)
-	payload = c.buildHistoryMessage("20", 10)
+	payload = c.buildHistory("20", 10)
 	if payload == nil {
 		t.Fatal("page 3 returned nil")
 	}
@@ -995,7 +995,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Cursor beyond total: empty page
-	payload = c.buildHistoryMessage("30", 10)
+	payload = c.buildHistory("30", 10)
 	if payload == nil {
 		t.Fatal("page beyond total returned nil")
 	}
@@ -1107,7 +1107,7 @@ func TestBuildStatsMessage_WithUsage(t *testing.T) {
 	c := newTestConnector(t)
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
-	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildStats(c.activeSlotTest(t))
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1136,7 +1136,7 @@ func TestBuildStatsMessage_WithUsage(t *testing.T) {
 func TestBuildStatsMessage_NoUsage(t *testing.T) {
 	c := newTestConnector(t)
 
-	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildStats(c.activeSlotTest(t))
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1163,7 +1163,7 @@ func TestBuildStatsMessage_ResetAfterQueryEnd(t *testing.T) {
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildStats(c.activeSlotTest(t))
 
 	var msg struct {
 		Usage *struct {
@@ -1311,7 +1311,7 @@ func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildStats(c.activeSlotTest(t))
 	var msg struct {
 		QueryStartMs int64 `json:"queryStartMs"`
 	}
@@ -1326,7 +1326,7 @@ func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
 func TestBuildErrorMessage_APIError(t *testing.T) {
 	t.Parallel()
 	err := fmt.Errorf("API Error 429: rate limited")
-	data := buildErrorMessage(err)
+	data := buildError(err)
 	var out struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
@@ -1345,7 +1345,7 @@ func TestBuildErrorMessage_APIError(t *testing.T) {
 func TestBuildErrorMessage_GenericError(t *testing.T) {
 	t.Parallel()
 	err := fmt.Errorf("connection refused")
-	data := buildErrorMessage(err)
+	data := buildError(err)
 	var out struct {
 		Message string `json:"message"`
 	}

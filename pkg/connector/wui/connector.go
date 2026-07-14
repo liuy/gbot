@@ -489,10 +489,10 @@ func updateStreamState(ss *streamState, event hub.Event) {
 	}
 }
 
-// serializeStreamState builds a "streamState" JSON message from the slot's
+// buildPendingBlocks builds a "streamState" JSON message from the slot's
 // current streamState. Sent by onEngineEvent after a switch to give the
 // client the in-flight content before live events start arriving.
-func serializeStreamState(ss streamState) []byte {
+func buildPendingBlocks(ss streamState) []byte {
 	type thinkingJSON struct {
 		Text     string `json:"text"`
 		Duration int64  `json:"duration_ns"`
@@ -600,7 +600,7 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	if !slot.snapshotSent.Load() {
 		slot.snapshotSent.Store(true)
 		if slot.streamState.text != "" || len(slot.streamState.tools) > 0 || slot.streamState.thinking != nil {
-			c.sendWS(serializeStreamState(slot.streamState))
+			c.sendWS(buildPendingBlocks(slot.streamState))
 		}
 	}
 
@@ -608,7 +608,7 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 
 	if isQueryEnd {
 		if event.Error != nil && !aborted {
-			c.sendWS(buildErrorMessage(event.Error))
+			c.sendWS(buildError(event.Error))
 		}
 		slot.streamState = streamState{}
 		resetQueryStats(&slot.queryStats)
@@ -617,7 +617,7 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 
 	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
 		if slot.taskToolIDs[event.ToolResult.ToolUseID] {
-			if taskPayload := c.buildTaskListMessageFor(slot); taskPayload != nil {
+			if taskPayload := c.buildTaskList(slot); taskPayload != nil {
 				c.sendWS(taskPayload)
 			}
 		}
@@ -803,7 +803,7 @@ func (c *WUIConnector) handleAsk(event hub.Event) {
 	c.sendWS(payload)
 }
 
-// buildHistoryMessage returns a JSON "history" message containing a PAGINATED
+// buildHistory returns a JSON "history" message containing a PAGINATED
 // slice of the engine's conversation, or nil if there are no messages at all.
 //
 // cursor is an opaque token encoding how many messages from the END have
@@ -815,17 +815,17 @@ func (c *WUIConnector) handleAsk(event hub.Event) {
 // cross-references); only the serialized payload shrinks. Tool summaries and
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
-func (c *WUIConnector) buildHistoryMessage(cursor string, limit int) []byte {
+func (c *WUIConnector) buildHistory(cursor string, limit int) []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
 	}
-	return c.buildHistoryMessageForSlot(slot, cursor, limit)
+	return c.engineMessagesToUI(slot, cursor, limit)
 }
 
-// buildHistoryMessageForSlot is the per-slot core of buildHistoryMessage. It
+// engineMessagesToUI is the per-slot core of buildHistoryMessage. It
 // is called directly by handleEngineSwitch to build history for the target slot.
-func (c *WUIConnector) buildHistoryMessageForSlot(slot *engineSlot, cursor string, limit int) []byte {
+func (c *WUIConnector) engineMessagesToUI(slot *engineSlot, cursor string, limit int) []byte {
 	msgs := slot.engine.Messages()
 	if len(msgs) == 0 {
 		return nil
@@ -1146,8 +1146,8 @@ type historyUsage struct {
 	CacheCreation int `json:"cacheCreation"`
 }
 
-// buildErrorMessage formats a query_end error payload for the WS client.
-func buildErrorMessage(err error) []byte {
+// buildError formats a query_end error payload for the WS client.
+func buildError(err error) []byte {
 	msg := "unknown error"
 	if err != nil {
 		msg = err.Error()
@@ -1208,10 +1208,10 @@ type taskListWireItem struct {
 	ActiveForm string   `json:"activeForm,omitempty"`
 }
 
-// buildTaskListMessageFor reads the slot's engine task list, filters internal
+// buildTaskList reads the slot's engine task list, filters internal
 // tasks, resolves blockedBy from task IDs to subjects, and returns the JSON
 // task_list payload. Returns nil when there are no user-visible tasks.
-func (c *WUIConnector) buildTaskListMessageFor(slot *engineSlot) []byte {
+func (c *WUIConnector) buildTaskList(slot *engineSlot) []byte {
 	if slot == nil {
 		return nil
 	}
@@ -1291,9 +1291,9 @@ type configCurrent struct {
 	Model    string `json:"model"`
 }
 
-// buildConfigMessageForSlot is the per-slot config builder, used by
+// buildConfig is the per-slot config builder, used by
 // handleEngineSwitch for non-active slots.
-func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
+func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 	var currentProvider string
 	if p := slot.engine.Provider(); p != nil {
 		currentProvider = p.Name()
@@ -1318,7 +1318,7 @@ func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 	return payload
 }
 
-// buildConnectStatusMessageForSlot builds connect_status for a specific slot.
+// buildConnectStatus builds connect_status for a specific slot.
 // The client calls resetAllState on every connect_status, then loads the
 // subsequent history frame. engineID and engineName are included so the
 // frontend can track which engine is active during a switch.
@@ -1327,7 +1327,7 @@ func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 // double-counting (connect_status arrives before replay, so including stats
 // here would cause the client to restore them and then re-accumulate the
 // same deltas from replayed events).
-func (c *WUIConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte {
+func (c *WUIConnector) buildConnectStatus(slot *engineSlot) []byte {
 	eng := slot.engine
 	engineName := c.engineNameForSlot(slot)
 	inputHistory := c.loadInputHistoryFor(eng)
@@ -1353,9 +1353,9 @@ func (c *WUIConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte
 	return payload
 }
 
-// buildStatsMessageForSlot builds the stats payload from the slot's atomic
+// buildStats builds the stats payload from the slot's atomic
 // queryStats. No lock needed — all fields are atomic.
-func (c *WUIConnector) buildStatsMessageForSlot(slot *engineSlot) []byte {
+func (c *WUIConnector) buildStats(slot *engineSlot) []byte {
 	qs := &slot.queryStats
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
@@ -1389,9 +1389,9 @@ func (c *WUIConnector) engineNameForSlot(slot *engineSlot) string {
 	return slot.engineID
 }
 
-// buildSessionListMessage returns a session_list payload for the active engine
+// buildSessionList returns a session_list payload for the active engine
 // with up to 50 sessions, or nil when the store returns none.
-func (c *WUIConnector) buildSessionListMessage() []byte {
+func (c *WUIConnector) buildSessionList() []byte {
 	eng := c.activeEngine()
 	if eng == nil {
 		return nil
@@ -1423,7 +1423,7 @@ type engineListItem struct {
 	Model string `json:"model"`
 }
 
-func (c *WUIConnector) buildEngineListMessage() []byte {
+func (c *WUIConnector) buildEngineList() []byte {
 	var views []engine.EngineViewSnapshot
 	activeID := c.ActiveID()
 	if c.mgr != nil {
@@ -1445,8 +1445,8 @@ func (c *WUIConnector) buildEngineListMessage() []byte {
 	return payload
 }
 
-// buildSessionBusyMessage is the fixed error frame for busy-guarded handlers.
-func buildSessionBusyMessage() []byte {
+// buildSessionBusy is the fixed error frame for busy-guarded handlers.
+func buildSessionBusy() []byte {
 	out, _ := json.Marshal(struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
@@ -1463,11 +1463,11 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 		return
 	}
 	if eng.IsBusy() {
-		c.sendWS(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusy())
 		return
 	}
 	if err := eng.SwitchSession(sessionID); err != nil {
-		c.sendWS(buildErrorMessage(err))
+		c.sendWS(buildError(err))
 		return
 	}
 	slot := c.activeSlot()
@@ -1487,11 +1487,11 @@ func (c *WUIConnector) handleSessionNew() {
 		return
 	}
 	if eng.IsBusy() {
-		c.sendWS(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusy())
 		return
 	}
 	if _, err := eng.NewSession(); err != nil {
-		c.sendWS(buildErrorMessage(err))
+		c.sendWS(buildError(err))
 		return
 	}
 	slot := c.activeSlot()
@@ -1501,7 +1501,7 @@ func (c *WUIConnector) handleSessionNew() {
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(slot)
 	}
-	if payload := c.buildSessionListMessage(); payload != nil {
+	if payload := c.buildSessionList(); payload != nil {
 		c.sendWS(payload)
 	}
 }
@@ -1515,21 +1515,21 @@ func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 		return
 	}
 	if eng.IsBusy() {
-		c.sendWS(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusy())
 		return
 	}
 	provider, ok := c.providers[providerName]
 	if !ok {
-		c.sendWS(buildErrorMessage(fmt.Errorf("unknown provider: %s", providerName)))
+		c.sendWS(buildError(fmt.Errorf("unknown provider: %s", providerName)))
 		return
 	}
 	cfgProv := c.providerConfigs[providerName]
 	if cfgProv == nil {
-		c.sendWS(buildErrorMessage(fmt.Errorf("no config for provider %s", providerName)))
+		c.sendWS(buildError(fmt.Errorf("no config for provider %s", providerName)))
 		return
 	}
 	if !cfgProv.HasModel(modelName) {
-		c.sendWS(buildErrorMessage(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
+		c.sendWS(buildError(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
 		return
 	}
 	eng.SetProvider(provider)
@@ -1575,12 +1575,12 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 
 	payload, _ := json.Marshal(metaPayload{
 		Type:    "metadata",
-		Connect: c.buildConnectStatusMessageForSlot(slot),
-		Config:  c.buildConfigMessageForSlot(slot),
-		Engines: c.buildEngineListMessage(),
-		Tasks:   c.buildTaskListMessageFor(slot),
-		History: c.buildHistoryMessageForSlot(slot, "", 30),
-		Stats:   c.buildStatsMessageForSlot(slot),
+		Connect: c.buildConnectStatus(slot),
+		Config:  c.buildConfig(slot),
+		Engines: c.buildEngineList(),
+		Tasks:   c.buildTaskList(slot),
+		History: c.engineMessagesToUI(slot, "", 30),
+		Stats:   c.buildStats(slot),
 	})
 	c.sendWS(payload)
 }
@@ -1597,7 +1597,7 @@ func (c *WUIConnector) switchEngine(newID string) {
 	newSlot := c.slots[newID]
 	c.slotsMu.RUnlock()
 	if newSlot == nil {
-		c.sendWS(buildErrorMessage(fmt.Errorf("unknown engine: %s", newID)))
+		c.sendWS(buildError(fmt.Errorf("unknown engine: %s", newID)))
 		return
 	}
 
@@ -1632,14 +1632,14 @@ func (c *WUIConnector) handleEngineSwitch(engineID string) {
 // then switches to it. If createEngine is nil (not configured), sends an error.
 func (c *WUIConnector) handleEngineNew(name string) {
 	if c.createEngine == nil {
-		c.sendWS(buildErrorMessage(fmt.Errorf("engine creation not configured")))
+		c.sendWS(buildError(fmt.Errorf("engine creation not configured")))
 		return
 	}
 	engineID, err := c.createEngine(name)
 	if err != nil {
-		c.sendWS(buildErrorMessage(err))
+		c.sendWS(buildError(err))
 		return
 	}
-	c.sendWS(c.buildEngineListMessage())
+	c.sendWS(c.buildEngineList())
 	c.switchEngine(engineID)
 }

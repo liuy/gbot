@@ -32,7 +32,7 @@ func TestBuildTaskListMessage_NilTaskList(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return nil }
 
-	if got := c.buildTaskListMessageFor(c.activeSlotTest(t)); got != nil {
+	if got := c.buildTaskList(c.activeSlotTest(t)); got != nil {
 		t.Fatalf("expected nil for nil TaskList, got %s", string(got))
 	}
 }
@@ -44,7 +44,7 @@ func TestBuildTaskListMessage_EmptyDir(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return task.NewList("") }
 
-	if got := c.buildTaskListMessageFor(c.activeSlotTest(t)); got != nil {
+	if got := c.buildTaskList(c.activeSlotTest(t)); got != nil {
 		t.Fatalf("expected nil for empty Dir(), got %s", string(got))
 	}
 }
@@ -61,7 +61,7 @@ func TestBuildTaskListMessage_WithTasks(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
+	payload := c.buildTaskList(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload")
 	}
@@ -99,7 +99,7 @@ func TestBuildTaskListMessage_FiltersInternalAndBlockedBy(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
+	payload := c.buildTaskList(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload")
 	}
@@ -129,7 +129,7 @@ func TestBuildTaskListMessage_BlockedByResolvesToSubjects(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
+	payload := c.buildTaskList(c.activeSlotTest(t))
 	var got taskListOutbound
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -410,7 +410,7 @@ func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
 	_, _, _ = tl.UpdateTask(id1, task.TaskUpdates{Status: new(task.StatusCompleted)})
 	_, _, _ = tl.UpdateTask(id2, task.TaskUpdates{Status: new(task.StatusCompleted)})
 
-	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
+	payload := c.buildTaskList(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload with completed tasks")
 	}
@@ -432,7 +432,7 @@ func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
 		t.Errorf("expected 0 tasks after cleanup, got %d", len(remaining))
 	}
 
-	payload2 := c.buildTaskListMessageFor(c.activeSlotTest(t))
+	payload2 := c.buildTaskList(c.activeSlotTest(t))
 	if payload2 != nil {
 		t.Errorf("expected nil on second call (disk empty), got %s", string(payload2))
 	}

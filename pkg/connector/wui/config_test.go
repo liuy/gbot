@@ -63,7 +63,7 @@ func TestBuildConfigMessage_Ordering(t *testing.T) {
 	c.mock().providerFn = func() llm.Provider { return &stubLLMProvider{name: "zhipu"} }
 	c.mock().modelFn = func() string { return "glm-5.2" }
 
-	payload := c.buildConfigMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildConfig(c.activeSlotTest(t))
 	var msg struct {
 		Type   string `json:"type"`
 		Models []struct {
@@ -106,7 +106,7 @@ func TestBuildConfigMessage_Ordering(t *testing.T) {
 func TestBuildConfigMessage_Empty(t *testing.T) {
 	c := newTestConnectorWithConfig(t, hub.NewHub(), nil, nil)
 
-	payload := c.buildConfigMessageForSlot(c.activeSlotTest(t))
+	payload := c.buildConfig(c.activeSlotTest(t))
 	var msg struct {
 		Type   string `json:"type"`
 		Models []struct {

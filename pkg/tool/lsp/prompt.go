@@ -26,7 +26,7 @@ Use ` + "`Lsp`" + ` INSTEAD of text-based tools (Grep, manual renames) when you 
 
 Position-based actions (definition, references, hover, rename, etc.) take a ` + "`symbol`" + ` parameter — the symbol NAME. The tool automatically resolves it to a position via the language server. You do NOT need to know line numbers.
 
-- ` + "`symbol`" + `: the identifier name (e.g. ` + "`callHierarchy`" + `, ` + "`Client.Request`" + `)
+- ` + "`symbol`" + `: the identifier name. For gopls (Go): methods require receiver type prefix (e.g. ` + "`WUIConnector.buildHistoryMessageForSlot`" + `), standalone functions use bare name (e.g. ` + "`buildErrorMessage`" + `). For typescript-language-server: just the identifier (e.g. ` + "`buildHistoryMessageForSlot`" + `).
 - ` + "`file`" + ` (optional): when provided, the tool searches within that file only (faster + disambiguates). When omitted, the tool searches the entire workspace.
 - For symbols that appear multiple times, append ` + "`#N`" + ` to select the Nth occurrence (e.g. ` + "`value#2`" + `). Default is ` + "`#1`" + `.
 
