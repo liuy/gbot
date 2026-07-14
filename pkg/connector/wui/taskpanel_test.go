@@ -32,7 +32,7 @@ func TestBuildTaskListMessage_NilTaskList(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return nil }
 
-	if got := c.buildTaskListMessage(); got != nil {
+	if got := c.buildTaskListMessageFor(c.activeSlotTest(t)); got != nil {
 		t.Fatalf("expected nil for nil TaskList, got %s", string(got))
 	}
 }
@@ -44,7 +44,7 @@ func TestBuildTaskListMessage_EmptyDir(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return task.NewList("") }
 
-	if got := c.buildTaskListMessage(); got != nil {
+	if got := c.buildTaskListMessageFor(c.activeSlotTest(t)); got != nil {
 		t.Fatalf("expected nil for empty Dir(), got %s", string(got))
 	}
 }
@@ -61,7 +61,7 @@ func TestBuildTaskListMessage_WithTasks(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessage()
+	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload")
 	}
@@ -99,7 +99,7 @@ func TestBuildTaskListMessage_FiltersInternalAndBlockedBy(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessage()
+	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload")
 	}
@@ -129,7 +129,7 @@ func TestBuildTaskListMessage_BlockedByResolvesToSubjects(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	payload := c.buildTaskListMessage()
+	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
 	var got taskListOutbound
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -221,8 +221,8 @@ func TestHandle_ToolEndNonTask_NoPush(t *testing.T) {
 }
 
 // TestTakeover_PushesTaskList verifies that on reconnect (WS takeover), the
-// client receives a task_list frame during takeover. This is the path that
-// populates the panel on page refresh.
+// client receives a task_list frame inside the metadata composite frame.
+// This is the path that populates the panel on page refresh.
 func TestTakeover_PushesTaskList(t *testing.T) {
 	tl := newRealTaskList(t)
 	_, _ = tl.CreateTask("Resume work", "desc", "", nil)
@@ -230,28 +230,35 @@ func TestTakeover_PushesTaskList(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 
-	// Use dialRaw (manual) + manual drain so we can assert task_list is sent
-	// during takeover. dialAndStore would drain through stats and consume it.
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	// Drain connect_status, config, engine_list, then read task_list.
-	_ = readWSMessage(t, ws)
-	_ = readWSMessage(t, ws)
-	_ = readWSMessage(t, ws)
 
-	// Next frame must be task_list (no history since messagesFn returns nil).
-	msg := readWSMessage(t, ws)
-	var env struct {
+	// The server sends a single metadata frame. task_list is nested inside.
+	data := readWSMessage(t, ws)
+	var meta struct {
+		Type  string          `json:"type"`
+		Tasks json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if meta.Type != "metadata" {
+		t.Fatalf("type = %q, want \"metadata\"", meta.Type)
+	}
+	if len(meta.Tasks) == 0 {
+		t.Fatal("metadata.tasks is empty, want non-nil task_list")
+	}
+	var tasks struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if err := json.Unmarshal(meta.Tasks, &tasks); err != nil {
+		t.Fatalf("unmarshal tasks: %v", err)
 	}
-	if env.Type != "task_list" {
-		t.Fatalf("type = %q, want \"task_list\"", env.Type)
+	if tasks.Type != "task_list" {
+		t.Fatalf("tasks.type = %q, want \"task_list\"", tasks.Type)
 	}
 }
 
@@ -303,10 +310,10 @@ func TestHandle_SubAgentTaskNotTracked(t *testing.T) {
 	}
 }
 
-// TestHandle_TaskToolIDsClearedOnStreamDone verifies that tracked Task
-// tool_use IDs do NOT leak across turns. After OnStreamDone clears the buffer,
+// TestHandle_TaskToolIDsClearedOnQueryEnd verifies that tracked Task
+// tool_use IDs do NOT leak across turns. After query_end clears the buffer,
 // a tool_end with the prior turn's tracked ID must NOT push task_list.
-func TestHandle_TaskToolIDsClearedOnStreamDone(t *testing.T) {
+func TestHandle_TaskToolIDsClearedOnQueryEnd(t *testing.T) {
 	tl := newRealTaskList(t)
 	_, _ = tl.CreateTask("Persist", "desc", "", nil)
 
@@ -319,8 +326,15 @@ func TestHandle_TaskToolIDsClearedOnStreamDone(t *testing.T) {
 		Type:    types.EventToolStart,
 		ToolUse: &types.ToolUseEvent{ID: "tu_leak", Name: "Task"},
 	})
-	// Engine commits the turn → OnStreamDone clears taskToolIDs.
-	c.clearStreamBufTest("main")
+	// Engine commits the turn → query_end clears taskToolIDs.
+	c.slotsMu.RLock()
+	slot := c.slots["main"]
+	c.slotsMu.RUnlock()
+	if slot != nil {
+		slot.streamState = streamState{}
+		resetQueryStats(&slot.queryStats)
+		slot.taskToolIDs = make(map[string]bool)
+	}
 
 	c.Handle(types.QueryEvent{
 		Type:       types.EventToolEnd,
@@ -396,7 +410,7 @@ func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
 	_, _, _ = tl.UpdateTask(id1, task.TaskUpdates{Status: new(task.StatusCompleted)})
 	_, _, _ = tl.UpdateTask(id2, task.TaskUpdates{Status: new(task.StatusCompleted)})
 
-	payload := c.buildTaskListMessage()
+	payload := c.buildTaskListMessageFor(c.activeSlotTest(t))
 	if payload == nil {
 		t.Fatal("expected non-nil payload with completed tasks")
 	}
@@ -418,7 +432,7 @@ func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
 		t.Errorf("expected 0 tasks after cleanup, got %d", len(remaining))
 	}
 
-	payload2 := c.buildTaskListMessage()
+	payload2 := c.buildTaskListMessageFor(c.activeSlotTest(t))
 	if payload2 != nil {
 		t.Errorf("expected nil on second call (disk empty), got %s", string(payload2))
 	}

@@ -138,43 +138,74 @@ func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 }
 
 // queryStats accumulates per-query stats (usage + start time + tool count +
-// thinking duration) for connect_status. Reset on EventQueryEnd.
+// thinking duration) for connect_status. All fields are atomic because they
+// are written by onEngineEvent (hub goroutine) and read by switchEngine/
+// sendMetadata (readLoop goroutine) without a lock. Reset on EventQueryEnd.
 type queryStats struct {
-	usage      types.Usage
-	startMs    int64
-	toolCount  int
-	thinkingMs int64
+	inputTokens              atomic.Int64
+	outputTokens             atomic.Int64
+	cacheReadInputTokens     atomic.Int64
+	cacheCreationInputTokens atomic.Int64
+	toolCount                atomic.Int64
+	thinkingMs               atomic.Int64
+	startMs                  atomic.Int64
 }
 
-// streamEntry stores a raw event for replay. payload is pre-serialized for
-// direct WS write; event is the original for future merge/filter operations.
-type streamEntry struct {
-	event   types.QueryEvent
-	payload []byte
+// toolSnapshot is the JSON-serializable state of a single in-flight tool call.
+type toolSnapshot struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+	Output string `json:"output,omitempty"`
+	Done   bool   `json:"done"`
+	Error  bool   `json:"error,omitempty"`
 }
 
-// engineSlot holds the per-engine state that was previously global on the
-// connector. Each engine gets its own streamBuf, queryStats, and taskToolIDs
-// so background engines accumulate state independently of the active one.
+// thinkingState tracks the in-flight thinking block.
+type thinkingState struct {
+	Text     string `json:"text"`
+	Duration int64  `json:"duration_ns"`
+	Done     bool   `json:"done"`
+}
+
+// streamState is the per-engine real-time streaming state, equivalent to TUI's
+// ReplState. Only accessed by the slot's own hub goroutine (onEngineEvent),
+// so no lock is needed. On query_end the state is reset to zero.
+type streamState struct {
+	text     string
+	tools    []toolSnapshot
+	thinking *thinkingState
+}
+
+// engineSlot holds the per-engine state. Each engine gets its own streamState,
+// queryStats, and taskToolIDs so background engines accumulate state
+// independently of the active one. The active flag and snapshotSent flag are
+// atomic because they are set by switchEngine (readLoop goroutine) and read
+// by onEngineEvent (hub goroutine).
 type engineSlot struct {
-	engineID    string
-	engine      engineClient
-	hub         *hub.Hub
-	unsubscribe func()
-	streamBuf   []streamEntry
-	queryStats  queryStats
-	taskToolIDs map[string]bool
+	engineID     string
+	engine       engineClient
+	hub          *hub.Hub
+	unsubscribe  func()
+	streamState  streamState
+	queryStats   queryStats
+	taskToolIDs  map[string]bool
+	active       atomic.Bool
+	snapshotSent atomic.Bool
 }
 
 // WUIConnector implements connector.Connector for the web chat. It owns
 // an EngineManager, subscribes to every engine's hub, and routes events to
 // the single active WS connection. Inbound WS messages operate on the
-// active engine; engine_switch swaps the active engine and replays its
-// buffered in-flight stream.
+// active engine; engine_switch swaps the active engine via atomic flag flip
+// and pushes metadata — onEngineEvent sends the streamState snapshot on the
+// next event.
 type WUIConnector struct {
-	mgr    *engine.EngineManager
-	slots  map[string]*engineSlot // keyed by engine ID
-	active string                 // active engine ID; cached for lock-free reads under writeMu
+	mgr   *engine.EngineManager
+	slots map[string]*engineSlot // keyed by engine ID
+
+	// active is the active engine ID. atomic.Pointer for lock-free reads.
+	active atomic.Pointer[string]
 
 	// Ask → ResponseCh plumbing. When the engine dispatches EventAsk, Handle
 	// stores evt.Ask under a fresh monotonic id and emits the ask outbound.
@@ -188,12 +219,16 @@ type WUIConnector struct {
 	// time; a new connection replaces the prior one via takeover.
 	activeWS atomic.Pointer[websocket.Conn]
 
-	// writeMu serializes all writes to the active WS. gorilla websocket does
-	// not support concurrent writers; every outbound path (Handle, serveChatWS
-	// takeover, readLoop responses) goes through writePayload or its variants.
-	// It also guards the slots map, the active field, and each slot's
-	// streamBuf/queryStats/taskToolIDs.
-	writeMu sync.Mutex
+	// wsCh is the single-consumer write queue for the WS writer goroutine.
+	// All WS writes go through sendWS → wsCh → wsWriter. This ensures
+	// gorilla's single-writer constraint without a mutex on the hot path.
+	wsCh chan []byte
+
+	// done signals the wsWriter goroutine to exit during shutdown.
+	done chan struct{}
+
+	// slotsMu guards only the slots map (registerEngine at runtime).
+	slotsMu sync.RWMutex
 
 	// providers + providerConfigs drive the model picker (config message +
 	// model_switch handler). providers maps provider name → llm.Provider
@@ -225,19 +260,63 @@ func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerC
 		pendingAsks:     make(map[string]*types.AskEvent),
 		providers:       providers,
 		providerConfigs: providerConfigs,
+		wsCh:            make(chan []byte, 1024),
+		done:            make(chan struct{}),
 	}
 	for _, vs := range mgr.List() {
 		c.registerEngine(vs)
 	}
-	c.active = mgr.ActiveID()
+	activeID := mgr.ActiveID()
+	c.active.Store(&activeID)
+	go c.wsWriter()
 	return c
 }
 
-// activeSlot returns the slot for the active engine. Caller must hold writeMu
-// OR be in a single-goroutine test context. Returns nil if active is unset or
-// the slot is missing (e.g. during init before any engine is registered).
+// ActiveID returns the active engine ID in a lock-free manner.
+func (c *WUIConnector) ActiveID() string {
+	p := c.active.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// wsWriter is the single WS writer goroutine. All WS writes go through wsCh.
+// Started in New(), stopped by closing done in Stop().
+func (c *WUIConnector) wsWriter() {
+	for {
+		select {
+		case payload := <-c.wsCh:
+			ws := c.activeWS.Load()
+			if ws != nil {
+				_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+				if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
+					c.activeWS.Store(nil)
+					slog.Warn("wui:ws write failed", "error", err)
+				}
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+// sendWS enqueues a payload for the wsWriter goroutine. Non-blocking: if wsCh
+// is full or done is closed, the payload is dropped. Backpressure prevents
+// overwhelming a slow WS client.
+func (c *WUIConnector) sendWS(payload []byte) {
+	select {
+	case c.wsCh <- payload:
+	case <-c.done:
+	}
+}
+
+// activeSlot returns the slot for the active engine. Uses ActiveID() for
+// lock-free read. Returns nil if active is unset or the slot is missing.
 func (c *WUIConnector) activeSlot() *engineSlot {
-	return c.slots[c.active]
+	c.slotsMu.RLock()
+	defer c.slotsMu.RUnlock()
+	return c.slots[c.ActiveID()]
 }
 
 // activeEngine returns the active engine's engineClient (may be nil during
@@ -251,7 +330,7 @@ func (c *WUIConnector) activeEngine() engineClient {
 }
 
 // engineHubShim is a per-engine hub.EventHandler that tags each event with
-// the engine ID so handleForEngine knows which slot to route to. One shim
+// the engine ID so onEngineEvent knows which slot to route to. One shim
 // is created per registered engine and subscribed to that engine's hub.
 type engineHubShim struct {
 	engineID string
@@ -259,7 +338,7 @@ type engineHubShim struct {
 }
 
 func (s *engineHubShim) Handle(event hub.Event) {
-	s.c.handleForEngine(s.engineID, event)
+	s.c.onEngineEvent(s.engineID, event)
 }
 
 // registerEngine subscribes the connector to vs.Engine's hub and creates a
@@ -268,20 +347,16 @@ func (s *engineHubShim) Handle(event hub.Event) {
 // event). Exported as RegisterEngine so main.go can add engines created
 // outside the connector (engine_new flow).
 func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
-	// webchat subscribes only to fully materialized engines. Every engine is
-	// built by restoreEngines (boot) or createEngineForWebchat (engine_new)
-	// before reaching here, so Engine must be non-nil. A nil Engine is a
-	// wiring bug — panic so it surfaces immediately.
 	if vs.Engine == nil {
 		panic(fmt.Sprintf("wui: registerEngine called with nil Engine for %q", vs.ID))
 	}
-	c.writeMu.Lock()
+	c.slotsMu.Lock()
 	if _, exists := c.slots[vs.ID]; exists {
-		c.writeMu.Unlock()
+		c.slotsMu.Unlock()
 		slog.Warn("wui: registerEngine called twice for same engine, ignoring", "id", vs.ID)
 		return
 	}
-	c.writeMu.Unlock()
+	c.slotsMu.Unlock()
 
 	h, ok := vs.Engine.Dispatcher().(*hub.Hub)
 	if !ok {
@@ -295,32 +370,16 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 		taskToolIDs: map[string]bool{},
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
-	vs.Engine.OnStreamDone = func() { c.clearStreamBuf(vs.ID) }
 
-	c.writeMu.Lock()
+	c.slotsMu.Lock()
 	c.slots[vs.ID] = slot
-	c.writeMu.Unlock()
+	c.slotsMu.Unlock()
 }
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
 // main.go's createEngineForWebchat to register engines created after boot.
 func (c *WUIConnector) RegisterEngine(vs *engine.EngineViewState) {
 	c.registerEngine(vs)
-}
-
-// clearStreamBuf clears the per-engine streamBuf and taskToolIDs. Called by
-// OnStreamDone — when the assistant response is committed to
-// engine.Messages(), the buffer's events are now in history and replay
-// would duplicate.
-func (c *WUIConnector) clearStreamBuf(engineID string) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if slot := c.slots[engineID]; slot != nil {
-		frames := len(slot.streamBuf)
-		slot.streamBuf = nil
-		slot.taskToolIDs = make(map[string]bool)
-		slog.Info("wui:stream done, buffer cleared", "engine", engineID, "frames", frames)
-	}
 }
 
 // Start is a no-op: the HTTP/WS server is registered separately via
@@ -331,13 +390,14 @@ func (c *WUIConnector) Start(ctx context.Context) error { return nil }
 // the active WS. Does NOT abort the active query — a brief disconnect (e.g.
 // mobile browser backgrounding) should not interrupt the LLM.
 func (c *WUIConnector) Stop() {
-	c.writeMu.Lock()
+	close(c.done)
+	c.slotsMu.Lock()
 	for _, slot := range c.slots {
 		if slot.unsubscribe != nil {
 			slot.unsubscribe()
 		}
 	}
-	c.writeMu.Unlock()
+	c.slotsMu.Unlock()
 	c.cleanupConn()
 }
 
@@ -346,161 +406,154 @@ func (c *WUIConnector) Stop() {
 // connector.Connector contract.
 func (c *WUIConnector) Send(userID, text string) error { return nil }
 
-// wsSend writes a text message to ws with a 30s deadline, logging failures.
-func wsSend(ws *websocket.Conn, label string, payload []byte) {
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("wui:ws write failed", "frame", label, "error", err)
-	}
-}
-
-// writePayloadTo writes a text message to the active WS under writeMu with a
-// 30s deadline. On failure (slow client, dead socket), stores nil so the
-// engine is never blocked by a wedged connection. Also appends the payload to
-// slot.streamBuf (inside the lock) so takeover replay is consistent.
-//
-// Buffer is appended UNCONDITIONALLY — even when activeWS is nil or write
-// fails, and even when this engine is not the active one — so that events
-// from background engines are preserved for takeover replay. Only the active
-// engine's events are written to the WS in real-time; background engines
-// buffer only. writePayloadAndClearTo (turn_end/query_end) resets the buffer.
-func (c *WUIConnector) writePayloadTo(slot *engineSlot, event types.QueryEvent, payload []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	slot.streamBuf = append(slot.streamBuf, streamEntry{event: event, payload: payload})
-	if slot.engineID != c.active {
-		return nil // background engine — buffer only, no WS write
-	}
-	ws := c.activeWS.Load()
-	if ws == nil {
-		return nil // inactive — buffer captures event, engine keeps running
-	}
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("wui:ws write failed", "frame", "stream:"+event.Type, "error", err)
-		c.activeWS.Store(nil) // mark inactive
-		return err
-	}
-	return nil
-}
-
-// writePayloadAndClearTo writes to activeWS then clears slot.streamBuf,
-// slot.taskToolIDs, and slot.queryStats. For turn_end / query_end — the turn
-// is now committed to engine.Messages(), so the buffer is reset to avoid
-// duplicate replay on the next takeover.
-func (c *WUIConnector) writePayloadAndClearTo(slot *engineSlot, payload []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	bufFrames := len(slot.streamBuf)
-	slot.streamBuf = nil
-	slot.taskToolIDs = make(map[string]bool)
-	slot.queryStats = queryStats{}
-	slog.Info("wui:turnbuf cleared", "frames", bufFrames)
-	if slot.engineID != c.active {
-		return nil
-	}
-	ws := c.activeWS.Load()
-	if ws == nil {
-		return nil
-	}
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("wui:ws write failed", "frame", "turn_end/query_end", "error", err)
-		c.activeWS.Store(nil)
-		return err
-	}
-	return nil
-}
-
-// writeDirect writes to activeWS without touching streamBuf. For ask
-// events (must NOT be buffered) and error events (ephemeral, not replayed).
-func (c *WUIConnector) writeDirect(payload []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	ws := c.activeWS.Load()
-	if ws == nil {
-		return nil
-	}
-	_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
-	if err := ws.WriteMessage(websocket.TextMessage, payload); err != nil {
-		slog.Warn("wui:ws write failed", "frame", "direct", "error", err)
-		c.activeWS.Store(nil)
-		return err
-	}
-	return nil
-}
-
-// Handle dispatches an event to the active engine. It is kept for test
+// Handle dispatches an event to the active engine. Kept for test
 // compatibility: existing tests call c.Handle(event) to simulate hub dispatch.
-// Production code routes events through engineHubShim → handleForEngine.
+// Production code routes events through engineHubShim → onEngineEvent.
 func (c *WUIConnector) Handle(event hub.Event) {
-	c.writeMu.Lock()
-	active := c.active
-	c.writeMu.Unlock()
-	c.handleForEngine(active, event)
+	c.onEngineEvent(c.ActiveID(), event)
 }
 
-// handleForEngine is the per-engine event handler. It is called by the
-// engineHubShim for each event dispatched on that engine's hub. All events
-// from all engines are processed here: stats accumulate into the per-engine
-// slot, streamBuf appends to the per-engine slot, and only the active
-// engine's events are written to the WS in real-time.
+// resetQueryStats zeros all atomic fields in queryStats.
+func resetQueryStats(qs *queryStats) {
+	qs.inputTokens.Store(0)
+	qs.outputTokens.Store(0)
+	qs.cacheReadInputTokens.Store(0)
+	qs.cacheCreationInputTokens.Store(0)
+	qs.toolCount.Store(0)
+	qs.thinkingMs.Store(0)
+	qs.startMs.Store(0)
+}
+
+// accumulateStats adds the event's usage/tool/thinking contributions into
+// the slot's atomic queryStats. Called by onEngineEvent for every event
+// (sub-agent events included so stats reflect the full query cost).
+func accumulateStats(qs *queryStats, event hub.Event) {
+	if event.Type == types.EventUsage && event.Usage != nil {
+		qs.inputTokens.Add(int64(event.Usage.InputTokens))
+		qs.outputTokens.Add(int64(event.Usage.OutputTokens))
+		qs.cacheReadInputTokens.Add(int64(event.Usage.CacheReadInputTokens))
+		qs.cacheCreationInputTokens.Add(int64(event.Usage.CacheCreationInputTokens))
+	}
+	if event.Type == types.EventQueryStart && event.Agent == nil {
+		qs.startMs.Store(time.Now().UnixMilli())
+	}
+	if event.Type == types.EventToolStart && event.ToolUse != nil {
+		qs.toolCount.Add(1)
+	}
+	if event.Type == types.EventThinkingEnd && event.Thinking != nil {
+		qs.thinkingMs.Add(event.Thinking.Duration.Milliseconds())
+	}
+}
+
+// updateStreamState mutates streamState from an event — equivalent to TUI's
+// AppendChunk/PendingToolStarted. Only called from the slot's own hub
+// goroutine (onEngineEvent), so no lock needed.
+func updateStreamState(ss *streamState, event hub.Event) {
+	switch event.Type {
+	case types.EventTextDelta:
+		ss.text += event.Text
+	case types.EventToolStart:
+		if event.ToolUse == nil {
+			break
+		}
+		input := ""
+		if len(event.ToolUse.Input) > 0 {
+			input = string(event.ToolUse.Input)
+		}
+		ss.tools = append(ss.tools, toolSnapshot{
+			ID:    event.ToolUse.ID,
+			Name:  event.ToolUse.Name,
+			Input: input,
+		})
+	case types.EventToolEnd:
+		for i := range ss.tools {
+			if event.ToolResult != nil && ss.tools[i].ID == event.ToolResult.ToolUseID {
+				ss.tools[i].Done = true
+				ss.tools[i].Output = string(event.ToolResult.DisplayOutput)
+				break
+			}
+		}
+	case types.EventThinkingStart:
+		if event.Thinking != nil {
+			ss.thinking = &thinkingState{}
+		}
+	case types.EventThinkingDelta:
+		if ss.thinking != nil && event.Thinking != nil {
+			ss.thinking.Text += event.Thinking.Text
+		}
+	case types.EventThinkingEnd:
+		if ss.thinking != nil && event.Thinking != nil {
+			ss.thinking.Done = true
+			ss.thinking.Duration = int64(event.Thinking.Duration)
+		}
+	}
+}
+
+// serializeStreamState builds a "streamState" JSON message from the slot's
+// current streamState. Sent by onEngineEvent after a switch to give the
+// client the in-flight content before live events start arriving.
+func serializeStreamState(ss streamState) []byte {
+	type thinkingJSON struct {
+		Text     string `json:"text"`
+		Duration int64  `json:"duration_ns"`
+		Done     bool   `json:"done"`
+	}
+	type payload struct {
+		Type     string         `json:"type"`
+		Text     string         `json:"text"`
+		Tools    []toolSnapshot `json:"tools"`
+		Thinking *thinkingJSON  `json:"thinking,omitempty"`
+	}
+	tools := make([]toolSnapshot, len(ss.tools))
+	copy(tools, ss.tools)
+	var think *thinkingJSON
+	if ss.thinking != nil {
+		think = &thinkingJSON{
+			Text: ss.thinking.Text, Duration: ss.thinking.Duration, Done: ss.thinking.Done,
+		}
+	}
+	out, _ := json.Marshal(payload{
+		Type: "streamState", Text: ss.text, Tools: tools, Thinking: think,
+	})
+	return out
+}
+
+// onEngineEvent is the per-engine event handler, called by engineHubShim for
+// each event on that engine's hub. All events from all engines are processed
+// here. Stats always accumulate (atomic). For the active engine, a
+// streamState snapshot is sent on the first event after a switch, then live
+// events go to wsCh. For inactive engines, streamState is updated in
+// real-time (like TUI's background drain).
 //
 // Ask events from inactive engines are silently dropped: an Ask demands a UI
-// prompt, and only the active engine's UI is visible. The engine's own Ask
-// timeout (if any) will eventually fire.
-func (c *WUIConnector) handleForEngine(engineID string, event hub.Event) {
-	// Ask routing — active engine only. Must happen before slot lookup so
-	// we don't touch the buffer for a dropped Ask.
+// prompt, and only the active engine's UI is visible.
+func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	if event.Type == types.EventAsk {
-		c.writeMu.Lock()
-		isActive := engineID == c.active
-		c.writeMu.Unlock()
-		if !isActive {
+		if engineID != c.ActiveID() {
 			return
 		}
 		c.handleAsk(event)
 		return
 	}
 
-	c.writeMu.Lock()
+	c.slotsMu.RLock()
 	slot := c.slots[engineID]
+	c.slotsMu.RUnlock()
 	if slot == nil {
-		c.writeMu.Unlock()
 		return
 	}
 
-	// Track Task tool calls started by the main agent so tool_end can trigger
-	// a task_list push. Sub-agent Task calls (Agent != nil) are not tracked.
-	if event.Type == types.EventToolStart && event.Agent == nil && event.ToolUse != nil && event.ToolUse.Name == "Task" {
+	if event.Type == types.EventToolStart && event.Agent == nil &&
+		event.ToolUse != nil && event.ToolUse.Name == "Task" {
 		slot.taskToolIDs[event.ToolUse.ID] = true
 	}
 
-	// Accumulate per-query stats into the per-engine slot. Reset on query_end.
-	// Sub-agent events are included so slot.queryStats reflects the full query
-	// cost (main + sub-agent tokens/tools/thinking).
-	if event.Type == types.EventUsage && event.Usage != nil {
-		slot.queryStats.usage.InputTokens += event.Usage.InputTokens
-		slot.queryStats.usage.OutputTokens += event.Usage.OutputTokens
-		slot.queryStats.usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
-		slot.queryStats.usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
-	}
-	if event.Type == types.EventQueryStart && event.Agent == nil {
-		slot.queryStats.startMs = time.Now().UnixMilli()
-	}
-	if event.Type == types.EventToolStart && event.ToolUse != nil {
-		slot.queryStats.toolCount++
-	}
-	if event.Type == types.EventThinkingEnd && event.Thinking != nil {
-		slot.queryStats.thinkingMs += event.Thinking.Duration.Milliseconds()
-	}
-	c.writeMu.Unlock()
+	accumulateStats(&slot.queryStats, event)
 
-	slog.Info("wui:event", "type", event.Type, "engine", engineID,
-		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
+	isQueryEnd := event.Type == types.EventQueryEnd && event.Agent == nil
 
 	aborted := false
-	if event.Type == types.EventQueryEnd && event.Error != nil && event.Agent == nil {
+	if isQueryEnd && event.Error != nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
 			rewind := c.shouldAutoRewindFor(slot.engine)
@@ -513,11 +566,15 @@ func (c *WUIConnector) handleForEngine(engineID string, event hub.Event) {
 					Type: types.EventTextDelta,
 					Text: types.InterruptMessage,
 				}})
-				_ = c.writePayloadTo(slot, types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage}, interruptPayload)
+				updateStreamState(&slot.streamState, types.QueryEvent{
+					Type: types.EventTextDelta, Text: types.InterruptMessage,
+				})
+				c.sendWS(interruptPayload)
 			}
 			c.autoRewindOnAbortFor(slot.engine)
 		}
 	}
+
 	payload, err := json.Marshal(struct {
 		Type  string              `json:"type"`
 		Event queryEventWithAbort `json:"event"`
@@ -527,28 +584,42 @@ func (c *WUIConnector) handleForEngine(engineID string, event hub.Event) {
 		return
 	}
 
-	// Check whether this tool_end is for a tracked Task tool call — push the
-	// task_list AFTER the event frame so the client receives tool_end first,
-	// then the updated task summary.
-	pushTaskList := false
-	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
-		c.writeMu.Lock()
-		pushTaskList = slot.taskToolIDs[event.ToolResult.ToolUseID]
-		c.writeMu.Unlock()
-	}
+	slog.Info("wui:event", "type", event.Type, "engine", engineID,
+		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
 
-	if event.Type == types.EventQueryEnd && event.Agent == nil {
-		_ = c.writePayloadAndClearTo(slot, payload)
-		if event.Error != nil && !aborted {
-			_ = c.writeDirect(buildErrorMessage(event.Error))
+	if !slot.active.Load() || c.activeWS.Load() == nil {
+		updateStreamState(&slot.streamState, event)
+		if isQueryEnd {
+			slot.streamState = streamState{}
+			resetQueryStats(&slot.queryStats)
+			slot.taskToolIDs = make(map[string]bool)
 		}
-	} else {
-		_ = c.writePayloadTo(slot, event, payload)
+		return
 	}
 
-	if pushTaskList {
-		if taskPayload := c.buildTaskListMessageFor(slot); taskPayload != nil {
-			_ = c.writePayloadTo(slot, types.QueryEvent{}, taskPayload)
+	if !slot.snapshotSent.Load() {
+		slot.snapshotSent.Store(true)
+		if slot.streamState.text != "" || len(slot.streamState.tools) > 0 || slot.streamState.thinking != nil {
+			c.sendWS(serializeStreamState(slot.streamState))
+		}
+	}
+
+	c.sendWS(payload)
+
+	if isQueryEnd {
+		if event.Error != nil && !aborted {
+			c.sendWS(buildErrorMessage(event.Error))
+		}
+		slot.streamState = streamState{}
+		resetQueryStats(&slot.queryStats)
+		slot.taskToolIDs = make(map[string]bool)
+	}
+
+	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
+		if slot.taskToolIDs[event.ToolResult.ToolUseID] {
+			if taskPayload := c.buildTaskListMessageFor(slot); taskPayload != nil {
+				c.sendWS(taskPayload)
+			}
 		}
 	}
 }
@@ -698,7 +769,7 @@ func (c *WUIConnector) appendInputHistory(cmd string) {
 
 // handleAsk stores the AskEvent under a fresh id, builds the askOutbound
 // struct (NOT marshalling *types.AskEvent directly — its fields have no json
-// tags), and writes it directly to the active WS via writeDirect.
+// tags), and writes it to the active WS via sendWS.
 func (c *WUIConnector) handleAsk(event hub.Event) {
 	if event.Ask == nil {
 		return
@@ -729,7 +800,7 @@ func (c *WUIConnector) handleAsk(event hub.Event) {
 		slog.Warn("wui: marshal ask failed", "id", id, "error", err)
 		return
 	}
-	_ = c.writeDirect(payload)
+	c.sendWS(payload)
 }
 
 // buildHistoryMessage returns a JSON "history" message containing a PAGINATED
@@ -1137,16 +1208,6 @@ type taskListWireItem struct {
 	ActiveForm string   `json:"activeForm,omitempty"`
 }
 
-// buildTaskListMessage reads the active engine's task list. Delegates to
-// buildTaskListMessageFor with the active slot.
-func (c *WUIConnector) buildTaskListMessage() []byte {
-	slot := c.activeSlot()
-	if slot == nil {
-		return nil
-	}
-	return c.buildTaskListMessageFor(slot)
-}
-
 // buildTaskListMessageFor reads the slot's engine task list, filters internal
 // tasks, resolves blockedBy from task IDs to subjects, and returns the JSON
 // task_list payload. Returns nil when there are no user-visible tasks.
@@ -1230,15 +1291,6 @@ type configCurrent struct {
 	Model    string `json:"model"`
 }
 
-// buildConfigMessage returns a JSON "config" message for the active engine.
-func (c *WUIConnector) buildConfigMessage() []byte {
-	slot := c.activeSlot()
-	if slot == nil {
-		return nil
-	}
-	return c.buildConfigMessageForSlot(slot)
-}
-
 // buildConfigMessageForSlot is the per-slot config builder, used by
 // handleEngineSwitch for non-active slots.
 func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
@@ -1264,16 +1316,6 @@ func (c *WUIConnector) buildConfigMessageForSlot(slot *engineSlot) []byte {
 	}
 	payload, _ := json.Marshal(out)
 	return payload
-}
-
-// buildConnectStatusMessage returns a connect_status payload for the active
-// engine. Delegates to buildConnectStatusMessageForSlot.
-func (c *WUIConnector) buildConnectStatusMessage() []byte {
-	slot := c.activeSlot()
-	if slot == nil {
-		return nil
-	}
-	return c.buildConnectStatusMessageForSlot(slot)
 }
 
 // buildConnectStatusMessageForSlot builds connect_status for a specific slot.
@@ -1311,13 +1353,10 @@ func (c *WUIConnector) buildConnectStatusMessageForSlot(slot *engineSlot) []byte
 	return payload
 }
 
-// buildStatsMessageForSlotLocked builds the stats payload without acquiring
-// writeMu. Caller MUST hold writeMu. Used by serveChatWS and handleEngineSwitch
-// which already hold the lock — building stats inside the lock ensures the
-// values are consistent with the replayed buffer (no events can arrive between
-// stats read and replay send).
-func (c *WUIConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []byte {
-	qs := slot.queryStats
+// buildStatsMessageForSlot builds the stats payload from the slot's atomic
+// queryStats. No lock needed — all fields are atomic.
+func (c *WUIConnector) buildStatsMessageForSlot(slot *engineSlot) []byte {
+	qs := &slot.queryStats
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
 		Usage        types.Usage `json:"usage"`
@@ -1325,25 +1364,18 @@ func (c *WUIConnector) buildStatsMessageForSlotLocked(slot *engineSlot) []byte {
 		ToolCount    int         `json:"toolCount"`
 		ThinkingMs   int64       `json:"thinkingMs"`
 	}{
-		Type:         "stats",
-		Usage:        qs.usage,
-		QueryStartMs: qs.startMs,
-		ToolCount:    qs.toolCount,
-		ThinkingMs:   qs.thinkingMs,
+		Type: "stats",
+		Usage: types.Usage{
+			InputTokens:              int(qs.inputTokens.Load()),
+			OutputTokens:             int(qs.outputTokens.Load()),
+			CacheReadInputTokens:     int(qs.cacheReadInputTokens.Load()),
+			CacheCreationInputTokens: int(qs.cacheCreationInputTokens.Load()),
+		},
+		QueryStartMs: qs.startMs.Load(),
+		ToolCount:    int(qs.toolCount.Load()),
+		ThinkingMs:   qs.thinkingMs.Load(),
 	})
 	return payload
-}
-
-// buildStatsMessage returns the stats payload for the active engine's slot.
-// Acquires writeMu for a consistent read. Returns nil if no active slot.
-func (c *WUIConnector) buildStatsMessage() []byte {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	slot := c.activeSlot()
-	if slot == nil {
-		return nil
-	}
-	return c.buildStatsMessageForSlotLocked(slot)
 }
 
 // engineNameForSlot resolves the engine's display name from the manager. Falls
@@ -1393,7 +1425,7 @@ type engineListItem struct {
 
 func (c *WUIConnector) buildEngineListMessage() []byte {
 	var views []engine.EngineViewSnapshot
-	activeID := c.active
+	activeID := c.ActiveID()
 	if c.mgr != nil {
 		views, activeID = c.mgr.Snapshot()
 	}
@@ -1425,71 +1457,52 @@ func buildSessionBusyMessage() []byte {
 // handleSessionSwitch loads the target session into the active engine, then
 // pushes connect_status + history + config + stats. Rejects when the engine
 // is streaming so the active turn is never disturbed.
-// stats is built outside the lock (no in-flight query after session switch),
-// and resets the client's stats variables to zero.
 func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
 	}
 	if eng.IsBusy() {
-		_ = c.writeDirect(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusyMessage())
 		return
 	}
 	if err := eng.SwitchSession(sessionID); err != nil {
-		_ = c.writeDirect(buildErrorMessage(err))
+		c.sendWS(buildErrorMessage(err))
 		return
 	}
-	connectMsg := c.buildConnectStatusMessage()
-	histMsg := c.buildHistoryMessage("", 10)
-	configMsg := c.buildConfigMessage()
-	statsMsg := c.buildStatsMessage()
-	c.writeMu.Lock()
-	ws := c.activeWS.Load()
-	if ws != nil {
-		wsSend(ws, "session_switch:connect_status", connectMsg)
-		if histMsg != nil {
-			wsSend(ws, "session_switch:history", histMsg)
-		}
-		wsSend(ws, "session_switch:config", configMsg)
-		if statsMsg != nil {
-			wsSend(ws, "session_switch:stats", statsMsg)
-		}
+	slot := c.activeSlot()
+	if slot == nil {
+		return
 	}
-	c.writeMu.Unlock()
+	if c.activeWS.Load() != nil {
+		c.sendMetadata(slot)
+	}
 }
 
 // handleSessionNew creates a fresh session on the active engine, then pushes
 // connect_status + config + stats. Rejects when the engine is streaming.
-// stats resets the client's stats variables to zero.
 func (c *WUIConnector) handleSessionNew() {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
 	}
 	if eng.IsBusy() {
-		_ = c.writeDirect(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusyMessage())
 		return
 	}
 	if _, err := eng.NewSession(); err != nil {
-		_ = c.writeDirect(buildErrorMessage(err))
+		c.sendWS(buildErrorMessage(err))
 		return
 	}
-	connectMsg := c.buildConnectStatusMessage()
-	configMsg := c.buildConfigMessage()
-	statsMsg := c.buildStatsMessage()
-	c.writeMu.Lock()
-	ws := c.activeWS.Load()
-	if ws != nil {
-		wsSend(ws, "session_new:connect_status", connectMsg)
-		wsSend(ws, "session_new:config", configMsg)
-		if statsMsg != nil {
-			wsSend(ws, "session_new:stats", statsMsg)
-		}
+	slot := c.activeSlot()
+	if slot == nil {
+		return
 	}
-	c.writeMu.Unlock()
+	if c.activeWS.Load() != nil {
+		c.sendMetadata(slot)
+	}
 	if payload := c.buildSessionListMessage(); payload != nil {
-		_ = c.writeDirect(payload)
+		c.sendWS(payload)
 	}
 }
 
@@ -1502,21 +1515,21 @@ func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 		return
 	}
 	if eng.IsBusy() {
-		_ = c.writeDirect(buildSessionBusyMessage())
+		c.sendWS(buildSessionBusyMessage())
 		return
 	}
 	provider, ok := c.providers[providerName]
 	if !ok {
-		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("unknown provider: %s", providerName)))
+		c.sendWS(buildErrorMessage(fmt.Errorf("unknown provider: %s", providerName)))
 		return
 	}
 	cfgProv := c.providerConfigs[providerName]
 	if cfgProv == nil {
-		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("no config for provider %s", providerName)))
+		c.sendWS(buildErrorMessage(fmt.Errorf("no config for provider %s", providerName)))
 		return
 	}
 	if !cfgProv.HasModel(modelName) {
-		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
+		c.sendWS(buildErrorMessage(fmt.Errorf("model %q not found in provider %s", modelName, providerName)))
 		return
 	}
 	eng.SetProvider(provider)
@@ -1546,80 +1559,87 @@ func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 	c.createEngine = fn
 }
 
-// handleEngineSwitch switches the active engine to engineID and replays the
-// target engine's takeover sequence (connect_status → config → engine_list →
-// task_list → history → streamBuf replay → stats).
-//
-// c.active is flipped in the FIRST writeMu.Lock() — before any build/send —
-// so concurrent writePayloadTo calls from the old engine immediately see
-// slot.engineID != c.active and skip WS writes (buffer-only). This prevents
-// the old engine from holding writeMu through slow WS sends while the user
-// waits for the switch to take effect.
-//
-// stats is built inside the lock (after replay) so the values are consistent
-// with the replayed buffer.
-func (c *WUIConnector) handleEngineSwitch(engineID string) {
-	c.writeMu.Lock()
-	slot, ok := c.slots[engineID]
-	if !ok {
-		c.writeMu.Unlock()
-		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("unknown engine: %s", engineID)))
+// sendMetadata sends a composite metadata message containing connect_status,
+// config, engine_list, task_list, history, and stats. Does NOT include
+// streamState — that is sent by onEngineEvent as a separate message.
+func (c *WUIConnector) sendMetadata(slot *engineSlot) {
+	type metaPayload struct {
+		Type    string          `json:"type"`
+		Connect json.RawMessage `json:"connect"`
+		Config  json.RawMessage `json:"config"`
+		Engines json.RawMessage `json:"engines"`
+		Tasks   json.RawMessage `json:"tasks,omitempty"`
+		History json.RawMessage `json:"history"`
+		Stats   json.RawMessage `json:"stats"`
+	}
+
+	payload, _ := json.Marshal(metaPayload{
+		Type:    "metadata",
+		Connect: c.buildConnectStatusMessageForSlot(slot),
+		Config:  c.buildConfigMessageForSlot(slot),
+		Engines: c.buildEngineListMessage(),
+		Tasks:   c.buildTaskListMessageFor(slot),
+		History: c.buildHistoryMessageForSlot(slot, "", 30),
+		Stats:   c.buildStatsMessageForSlot(slot),
+	})
+	c.sendWS(payload)
+}
+
+// switchEngine is the unified engine switch (pointer swap only). Deactivates
+// old engine (its events start updating streamState), flips active ID, syncs
+// EngineManager, sends metadata (reads engine state + atomic stats, NOT
+// streamState), resets snapshotSent flag, and activates new engine.
+// NEVER reads streamState — snapshot is deferred to onEngineEvent.
+func (c *WUIConnector) switchEngine(newID string) {
+	c.slotsMu.RLock()
+	oldID := c.ActiveID()
+	oldSlot := c.slots[oldID]
+	newSlot := c.slots[newID]
+	c.slotsMu.RUnlock()
+	if newSlot == nil {
+		c.sendWS(buildErrorMessage(fmt.Errorf("unknown engine: %s", newID)))
 		return
 	}
-	c.active = engineID
-	c.writeMu.Unlock()
+
+	if oldSlot != nil {
+		oldSlot.active.Store(false)
+	}
+
+	newIDCopy := newID
+	c.active.Store(&newIDCopy)
 
 	if c.mgr != nil {
-		if err := c.mgr.SetActive(engineID); err != nil {
-			_ = c.writeDirect(buildErrorMessage(err))
-			return
+		if err := c.mgr.SetActive(newID); err != nil {
+			slog.Warn("wui:switchEngine:SetActive failed", "error", err)
 		}
 	}
 
-	connectMsg := c.buildConnectStatusMessageForSlot(slot)
-	histMsg := c.buildHistoryMessageForSlot(slot, "", 30)
-	configMsg := c.buildConfigMessageForSlot(slot)
-	taskMsg := c.buildTaskListMessageFor(slot)
-	engineListMsg := c.buildEngineListMessage()
-
-	c.writeMu.Lock()
-	ws := c.activeWS.Load()
-	if ws != nil {
-		wsSend(ws, "engine_switch:connect_status", connectMsg)
-		wsSend(ws, "engine_switch:config", configMsg)
-		wsSend(ws, "engine_switch:engine_list", engineListMsg)
-		if taskMsg != nil {
-			wsSend(ws, "engine_switch:task_list", taskMsg)
-		}
-		if histMsg != nil {
-			wsSend(ws, "engine_switch:history", histMsg)
-		}
-		for i, entry := range slot.streamBuf {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-				slog.Warn("wui:ws write failed", "frame", fmt.Sprintf("engine_switch:replay[%d]", i), "error", err)
-				break
-			}
-		}
-		// stats built inside the lock, after replay, so values are consistent.
-		statsMsg := c.buildStatsMessageForSlotLocked(slot)
-		wsSend(ws, "engine_switch:stats", statsMsg)
+	if c.activeWS.Load() != nil {
+		c.sendMetadata(newSlot)
 	}
-	c.writeMu.Unlock()
+
+	newSlot.snapshotSent.Store(false)
+	newSlot.active.Store(true)
+}
+
+// handleEngineSwitch is kept for test compatibility and readLoop dispatch.
+// Delegates to switchEngine.
+func (c *WUIConnector) handleEngineSwitch(engineID string) {
+	c.switchEngine(engineID)
 }
 
 // handleEngineNew creates a new engine via the injected createEngine closure,
 // then switches to it. If createEngine is nil (not configured), sends an error.
 func (c *WUIConnector) handleEngineNew(name string) {
 	if c.createEngine == nil {
-		_ = c.writeDirect(buildErrorMessage(fmt.Errorf("engine creation not configured")))
+		c.sendWS(buildErrorMessage(fmt.Errorf("engine creation not configured")))
 		return
 	}
 	engineID, err := c.createEngine(name)
 	if err != nil {
-		_ = c.writeDirect(buildErrorMessage(err))
+		c.sendWS(buildErrorMessage(err))
 		return
 	}
-	_ = c.writeDirect(c.buildEngineListMessage())
-	c.handleEngineSwitch(engineID)
+	c.sendWS(c.buildEngineListMessage())
+	c.switchEngine(engineID)
 }

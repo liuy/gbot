@@ -3,7 +3,6 @@ package wui
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -29,124 +28,29 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 	})
 }
 
-// serveChatWS drives one WS connection to completion with a 3-step atomic
-// takeover under writeMu: (1) invalidate old connection, (2) push
-// connect_status + config + engine_list + task_list + history + streamBuf
-// replay + stats, (3) activate new connection. The readLoop blocks until the
-// client disconnects.
-//
-// Stats is sent LAST — after replay — so the client receives authoritative
-// server-side values that overwrite any replay-accumulated deltas. This
-// avoids double-counting (the original bug where connect_status carried stats
-// before replay, causing the client to restore them and then re-accumulate).
+// serveChatWS drives one WS connection to completion with a unified
+// takeover = swap WS + switchEngine. Deactivates old engine first (prevents
+// live events from reaching new WS before metadata), swaps activeWS, then
+// calls switchEngine which sends metadata + sets snapshotSent=false.
+// onEngineEvent will send the streamState snapshot on the next event.
 func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
-	// Pre-construct connect_status outside the lock (reads engine state).
-	connectMsg := c.buildConnectStatusMessage()
-
-	// Pre-compute history snapshot before writeMu (constraint: no engine
-	// state access under the lock).
-	histMsg := c.buildHistoryMessage("", 30)
-
-	// Pre-compute config before writeMu (reads engine + provider state).
-	configMsg := c.buildConfigMessage()
-
-	// Pre-compute engine_list before writeMu (reads mgr.Snapshot, lock-safe).
-	engineListMsg := c.buildEngineListMessage()
-
-	// Entire takeover sequence under writeMu: invalidate old, push frames,
-	// replay buffer, then activate new conn. The engine goroutine's
-	// handleForEngine blocks on writeMu during this window — it cannot race
-	// with the replay or with buildHistoryMessage's snapshot of
-	// engine.Messages().
-	//
-	// taskMsg is pre-computed before the lock (reads task list from disk).
-	// statsMsg is NOT pre-computed — it must be built inside the lock (after
-	// replay) so the values are consistent with what was replayed.
-	c.writeMu.Lock()
-	slot := c.activeSlot()
-	bufLen := 0
-	if slot != nil {
-		bufLen = len(slot.streamBuf)
+	c.slotsMu.RLock()
+	if oldSlot := c.slots[c.ActiveID()]; oldSlot != nil {
+		oldSlot.active.Store(false)
 	}
-	slog.Info("wui:takeover", "hasHistory", histMsg != nil, "bufFrames", bufLen)
-	c.activeWS.Store(nil) // 1. old conn invalidated
+	c.slotsMu.RUnlock()
 
-	// 2. connect_status (metadata only — no stats)
-	if connectMsg != nil {
-		wsSend(ws, "takeover:connect_status", connectMsg)
-	}
+	c.activeWS.Store(ws)
+	c.switchEngine(c.ActiveID())
 
-	// 3. config frame — model list + current selection so the frontend can
-	//    populate the model picker immediately on connect.
-	if configMsg != nil {
-		wsSend(ws, "takeover:config", configMsg)
-	}
-
-	// 4. engine_list frame — engine picker list + active marker.
-	wsSend(ws, "takeover:engine_list", engineListMsg)
-
-	// 5. task_list frame — current committed disk state. Sent before history
-	//    and replay so the panel can render immediately.
-	if slot != nil {
-		if taskMsg := c.buildTaskListMessageFor(slot); taskMsg != nil {
-			wsSend(ws, "takeover:task_list", taskMsg)
-		}
-	}
-
-	// 6. history page (committed messages only; in-flight not yet committed)
-	if histMsg != nil {
-		wsSend(ws, "takeover:history", histMsg)
-	}
-
-	// 7. replay current turn buffer — in-flight deltas that are NOT in
-	//    engine.Messages() yet (text_delta, thinking_delta, tool_start,
-	//    tool_output_delta, etc., accumulated since the last turn_end).
-	//    The buffer is under writeMu so handleForEngine's appends are
-	//    serialized.
-	replayed := 0
-	if slot != nil {
-		for i, entry := range slot.streamBuf {
-			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := ws.WriteMessage(websocket.TextMessage, entry.payload); err != nil {
-				slog.Warn("wui:ws write failed", "frame", fmt.Sprintf("takeover:replay[%d]", i), "error", err)
-				break
-			}
-			replayed++
-		}
-	}
-	if replayed > 0 {
-		slog.Info("wui:takeover replay", "frames", replayed)
-	}
-
-	// 8. stats — authoritative server-side stats sent AFTER replay.
-	//    Built inside the lock so values are consistent with the replayed
-	//    buffer. The client's stats handler overwrites any replay-accumulated
-	//    values with these authoritative ones.
-	var statsMsg []byte
-	if slot != nil {
-		statsMsg = c.buildStatsMessageForSlotLocked(slot)
-	} else {
-		statsMsg, _ = json.Marshal(struct {
-			Type         string      `json:"type"`
-			Usage        types.Usage `json:"usage"`
-			QueryStartMs int64       `json:"queryStartMs"`
-			ToolCount    int         `json:"toolCount"`
-			ThinkingMs   int64       `json:"thinkingMs"`
-		}{Type: "stats"})
-	}
-	wsSend(ws, "takeover:stats", statsMsg)
-
-	c.activeWS.Store(ws) // 9. new connection becomes the sink
-	c.writeMu.Unlock()
-	slog.Info("wui:takeover complete")
-
-	// readLoop owns the read side and dispatches inbound (query/ask/stop/
-	// cancel_queued/history_request). Blocks until read error (client gone).
 	c.readLoop(ws)
 
-	// Connection gone: clear activeWS only if it still points at us (a newer
-	// takeover may have already swapped in its own ws — don't clobber it).
-	c.clearActiveIfCurrent(ws)
+	c.activeWS.CompareAndSwap(ws, nil)
+	c.slotsMu.RLock()
+	if slot := c.slots[c.ActiveID()]; slot != nil {
+		slot.active.Store(false)
+	}
+	c.slotsMu.RUnlock()
 	c.abortPendingAsksOnDisconnect()
 	slog.Info("wui:disconnect")
 }
@@ -203,7 +107,7 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 					Type    string   `json:"type"`
 					Removed []string `json:"removed"`
 				}{Type: "cancel_result", Removed: removed})
-				_ = c.writeDirect(resp)
+				c.sendWS(resp)
 			}
 		case "history_request":
 			var msg struct {
@@ -212,12 +116,12 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				if histMsg := c.buildHistoryMessage(msg.Cursor, msg.Limit); histMsg != nil {
-					_ = c.writeDirect(histMsg)
+					c.sendWS(histMsg)
 				}
 			}
 		case "session_list_request":
 			if payload := c.buildSessionListMessage(); payload != nil {
-				_ = c.writeDirect(payload)
+				c.sendWS(payload)
 			}
 		case "session_switch":
 			var msg struct {
@@ -236,7 +140,7 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 					_ = eng.UpdateSessionTitle(msg.SessionID, msg.Title)
 				}
 				if payload := c.buildSessionListMessage(); payload != nil {
-					_ = c.writeDirect(payload)
+					c.sendWS(payload)
 				}
 			}
 		case "session_new":
@@ -292,7 +196,7 @@ func (c *WUIConnector) handleMessageInbound(text string) {
 			Type string `json:"type"`
 			UUID string `json:"uuid"`
 		}{Type: "queued", UUID: attachUUID})
-		_ = c.writeDirect(resp)
+		c.sendWS(resp)
 		return
 	}
 	go eng.Query(context.Background(), text, eng.SystemPrompt())
@@ -336,20 +240,8 @@ func (c *WUIConnector) handleStop() {
 // interrupt the LLM. The query continues; results land in history and are
 // visible on reconnect. Called from Stop (which has no specific ws to clear).
 func (c *WUIConnector) cleanupConn() {
-	c.writeMu.Lock()
 	c.activeWS.Store(nil)
-	c.writeMu.Unlock()
 	c.abortPendingAsksOnDisconnect()
-}
-
-// clearActiveIfCurrent atomically clears activeWS only if it still equals ws.
-// Prevents a stale readLoop-exit from clobbering a newer takeover's connection.
-func (c *WUIConnector) clearActiveIfCurrent(ws *websocket.Conn) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if c.activeWS.Load() == ws {
-		c.activeWS.Store(nil)
-	}
 }
 
 // abortPendingAsksOnDisconnect aborts pending asks on disconnect. Does NOT

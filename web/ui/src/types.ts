@@ -11,7 +11,7 @@ export type SessionListItem = {
 }
 
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[] }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
   | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
@@ -37,6 +37,21 @@ export type ServerMessage =
       type: 'config'
       models: { provider: string; model: string }[]
       current: { provider: string; model: string }
+    }
+  | {
+      type: 'metadata'
+      connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
+      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string } }
+      engines: { engines: EngineListItem[]; activeID: string }
+      tasks?: { tasks: TaskWireItem[] }
+      history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
+      stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
+    }
+  | {
+      type: 'streamState'
+      text: string
+      tools: { id: string; name: string; input: string; output?: string; done: boolean; error?: boolean }[]
+      thinking?: { text: string; duration_ns: number; done: boolean }
     }
 
 export type TaskWireItem = {

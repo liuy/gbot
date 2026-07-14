@@ -1299,6 +1299,69 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
     switch (msg.type) {
+      case 'metadata': {
+        const c = msg.connect
+        sidebar.closeImmediate()
+        header.setStatus(c.connected)
+        header.setModel(c.model ?? '')
+        inputBar.setConnected(c.connected)
+        resetAllState()
+        if (c.inputHistory) inputHistory.load(c.inputHistory)
+        taskPanel.setTasks([])
+        scrollBtn.classList.add('opacity-0', 'pointer-events-none')
+        if (c.sessionID) currentSessionID = c.sessionID
+        conn.send({ type: 'session_list_request' })
+
+        header.setModels(msg.config.models, msg.config.current.provider, msg.config.current.model)
+        header.setEngines(msg.engines.engines, msg.engines.activeID)
+        if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
+        loadHistory({ type: 'history', ...msg.history })
+
+        const s = msg.stats
+        progressUsage = {
+          inputTokens: s.usage?.input_tokens ?? s.usage?.InputTokens ?? 0,
+          outputTokens: s.usage?.output_tokens ?? s.usage?.OutputTokens ?? 0,
+          cacheRead: s.usage?.cache_read_input_tokens ?? s.usage?.CacheReadInputTokens ?? 0,
+          cacheCreation: s.usage?.cache_creation_input_tokens ?? s.usage?.CacheCreationInputTokens ?? 0,
+        }
+        if (s.queryStartMs) streamStartedAt = s.queryStartMs
+        committedToolCount = s.toolCount ?? 0
+        accumulatedThinkingMs = s.thinkingMs ?? 0
+        if (progressHandles) {
+          setProgressBarUsage(progressHandles, progressUsage)
+        }
+        return
+      }
+      case 'streamState': {
+        if (msg.text || msg.tools.length > 0 || msg.thinking) {
+          initStreaming('streamState')
+          if (msg.text) {
+            handleEvent({ type: 'text_delta', text: msg.text })
+          }
+          for (const tool of msg.tools) {
+            handleEvent({
+              type: 'tool_start',
+              tool_use: { id: tool.id, name: tool.name, input: tool.input },
+            })
+            if (tool.done) {
+              handleEvent({
+                type: 'tool_end',
+                tool_result: { tool_use_id: tool.id, output: tool.output ?? '', display_output: tool.output, is_error: tool.error },
+              })
+            }
+          }
+          if (msg.thinking) {
+            handleEvent({ type: 'thinking_start' })
+            if (msg.thinking.text) {
+              handleEvent({ type: 'thinking_delta', thinking: { text: msg.thinking.text } })
+            }
+            if (msg.thinking.done) {
+              handleEvent({ type: 'thinking_end', thinking: { duration: msg.thinking.duration_ns } })
+            }
+          }
+        }
+        return
+      }
       case 'connect_status':
         sidebar.closeImmediate()
         header.setStatus(msg.connected)

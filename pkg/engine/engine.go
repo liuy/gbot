@@ -194,11 +194,6 @@ type Engine struct {
 	// skillReg provides skill lookup for RunSkill (slash command dispatch).
 	skillReg *skills.Registry
 
-	// OnStreamDone is called after an assistant response is committed to
-	// engine.Messages(). Lets connectors (webchat) clear replay buffers so
-	// takeover does not duplicate events already reflected in history.
-	OnStreamDone func()
-
 	// hooks is the user-configurable lifecycle hooks system.
 	// Nil when no hooks are configured.
 	hooks *hooks.Hooks
@@ -1511,9 +1506,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 
 		// Add assistant message to history
 		e.appendMessage(*resp)
-		if e.OnStreamDone != nil {
-			e.OnStreamDone()
-		}
 
 		// Populate conversation history on the executor so tools
 		// (e.g. Agent tool) can access the full parent conversation.

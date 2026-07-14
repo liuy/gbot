@@ -63,7 +63,7 @@ func TestBuildConfigMessage_Ordering(t *testing.T) {
 	c.mock().providerFn = func() llm.Provider { return &stubLLMProvider{name: "zhipu"} }
 	c.mock().modelFn = func() string { return "glm-5.2" }
 
-	payload := c.buildConfigMessage()
+	payload := c.buildConfigMessageForSlot(c.activeSlotTest(t))
 	var msg struct {
 		Type   string `json:"type"`
 		Models []struct {
@@ -106,7 +106,7 @@ func TestBuildConfigMessage_Ordering(t *testing.T) {
 func TestBuildConfigMessage_Empty(t *testing.T) {
 	c := newTestConnectorWithConfig(t, hub.NewHub(), nil, nil)
 
-	payload := c.buildConfigMessage()
+	payload := c.buildConfigMessageForSlot(c.activeSlotTest(t))
 	var msg struct {
 		Type   string `json:"type"`
 		Models []struct {
@@ -146,35 +146,48 @@ func TestTakeover_PushesConfigAfterConnectStatus(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	defer ws.Close()
 
-	// Frame 1: connect_status
-	data1 := readWSMessage(t, ws)
-	var head1 struct {
-		Type string `json:"type"`
+	// The server now sends a single metadata frame containing connect, config,
+	// engines, history, stats as nested JSON fields.
+	data := readWSMessage(t, ws)
+	var meta struct {
+		Type    string          `json:"type"`
+		Connect json.RawMessage `json:"connect"`
+		Config  json.RawMessage `json:"config"`
 	}
-	if err := json.Unmarshal(data1, &head1); err != nil {
-		t.Fatalf("unmarshal frame1: %v", err)
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	if head1.Type != "connect_status" {
-		t.Fatalf("frame1 type = %q, want connect_status", head1.Type)
+	if meta.Type != "metadata" {
+		t.Fatalf("type = %q, want metadata", meta.Type)
 	}
 
-	// Frame 2: config (no history since messagesFn returns nil)
-	data2 := readWSMessage(t, ws)
-	var head2 struct {
+	// Verify connect field.
+	var connect struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(meta.Connect, &connect); err != nil {
+		t.Fatalf("unmarshal connect: %v", err)
+	}
+	if connect.Type != "connect_status" {
+		t.Fatalf("connect.type = %q, want connect_status", connect.Type)
+	}
+
+	// Verify config field.
+	var config struct {
 		Type   string `json:"type"`
 		Models []struct {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
 		} `json:"models"`
 	}
-	if err := json.Unmarshal(data2, &head2); err != nil {
-		t.Fatalf("unmarshal frame2: %v", err)
+	if err := json.Unmarshal(meta.Config, &config); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
 	}
-	if head2.Type != "config" {
-		t.Fatalf("frame2 type = %q, want config", head2.Type)
+	if config.Type != "config" {
+		t.Fatalf("config.type = %q, want config", config.Type)
 	}
-	if len(head2.Models) != 6 {
-		t.Fatalf("config models length = %d, want 6", len(head2.Models))
+	if len(config.Models) != 6 {
+		t.Fatalf("config models length = %d, want 6", len(config.Models))
 	}
 }
 

@@ -25,8 +25,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
-	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/connector/wechat"
+	"github.com/liuy/gbot/pkg/connector/wui"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hooks"

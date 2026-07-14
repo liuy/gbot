@@ -1022,18 +1022,19 @@ func TestCurrentUsage_AccumulatesEventUsage(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 200, OutputTokens: 30, CacheReadInputTokens: 80}})
 
-	c.writeMu.Lock()
-	got := c.slots["main"].queryStats.usage
-	c.writeMu.Unlock()
+	qs := &c.slots["main"].queryStats
+	inTokens := qs.inputTokens.Load()
+	outTokens := qs.outputTokens.Load()
+	cacheRead := qs.cacheReadInputTokens.Load()
 
-	if got.InputTokens != 300 {
-		t.Errorf("InputTokens = %d, want 300", got.InputTokens)
+	if inTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300", inTokens)
 	}
-	if got.OutputTokens != 80 {
-		t.Errorf("OutputTokens = %d, want 80", got.OutputTokens)
+	if outTokens != 80 {
+		t.Errorf("OutputTokens = %d, want 80", outTokens)
 	}
-	if got.CacheReadInputTokens != 80 {
-		t.Errorf("CacheReadInputTokens = %d, want 80", got.CacheReadInputTokens)
+	if cacheRead != 80 {
+		t.Errorf("CacheReadInputTokens = %d, want 80", cacheRead)
 	}
 }
 
@@ -1044,12 +1045,10 @@ func TestCurrentUsage_AccumulatesSubAgentUsage(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Agent: agent, Usage: &types.UsageEvent{InputTokens: 500}})
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 
-	c.writeMu.Lock()
-	got := c.slots["main"].queryStats.usage
-	c.writeMu.Unlock()
+	inTokens := c.slots["main"].queryStats.inputTokens.Load()
 
-	if got.InputTokens != 600 {
-		t.Errorf("InputTokens = %d, want 600 (sub-agent usage should be accumulated)", got.InputTokens)
+	if inTokens != 600 {
+		t.Errorf("InputTokens = %d, want 600 (sub-agent usage should be accumulated)", inTokens)
 	}
 }
 
@@ -1059,12 +1058,10 @@ func TestCurrentUsage_ResetsOnQueryEnd(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	c.writeMu.Lock()
-	got := c.slots["main"].queryStats.usage
-	c.writeMu.Unlock()
+	inTokens := c.slots["main"].queryStats.inputTokens.Load()
 
-	if got.InputTokens != 0 {
-		t.Errorf("InputTokens = %d, want 0 after query_end", got.InputTokens)
+	if inTokens != 0 {
+		t.Errorf("InputTokens = %d, want 0 after query_end", inTokens)
 	}
 }
 
@@ -1075,15 +1072,14 @@ func TestCurrentUsage_AccumulatesToolCountAndThinkingMs(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t2", Name: "Read"}})
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1500 * time.Millisecond}})
 
-	c.writeMu.Lock()
-	got := c.slots["main"].queryStats
-	c.writeMu.Unlock()
+	toolCount := c.slots["main"].queryStats.toolCount.Load()
+	thinkingMs := c.slots["main"].queryStats.thinkingMs.Load()
 
-	if got.toolCount != 2 {
-		t.Errorf("toolCount = %d, want 2", got.toolCount)
+	if toolCount != 2 {
+		t.Errorf("toolCount = %d, want 2", toolCount)
 	}
-	if got.thinkingMs != 1500 {
-		t.Errorf("thinkingMs = %d, want 1500", got.thinkingMs)
+	if thinkingMs != 1500 {
+		t.Errorf("thinkingMs = %d, want 1500", thinkingMs)
 	}
 }
 
@@ -1096,15 +1092,14 @@ func TestCurrentUsage_AccumulatesSubAgentToolAndThinking(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent, Thinking: &types.ThinkingEvent{Duration: 2000 * time.Millisecond}})
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 500 * time.Millisecond}})
 
-	c.writeMu.Lock()
-	got := c.slots["main"].queryStats
-	c.writeMu.Unlock()
+	toolCount := c.slots["main"].queryStats.toolCount.Load()
+	thinkingMs := c.slots["main"].queryStats.thinkingMs.Load()
 
-	if got.toolCount != 2 {
-		t.Errorf("toolCount = %d, want 2 (sub-agent tool should be accumulated)", got.toolCount)
+	if toolCount != 2 {
+		t.Errorf("toolCount = %d, want 2 (sub-agent tool should be accumulated)", toolCount)
 	}
-	if got.thinkingMs != 2500 {
-		t.Errorf("thinkingMs = %d, want 2500 (sub-agent thinking should be accumulated)", got.thinkingMs)
+	if thinkingMs != 2500 {
+		t.Errorf("thinkingMs = %d, want 2500 (sub-agent thinking should be accumulated)", thinkingMs)
 	}
 }
 
@@ -1112,7 +1107,7 @@ func TestBuildStatsMessage_WithUsage(t *testing.T) {
 	c := newTestConnector(t)
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}})
-	payload := c.buildStatsMessage()
+	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1141,7 +1136,7 @@ func TestBuildStatsMessage_WithUsage(t *testing.T) {
 func TestBuildStatsMessage_NoUsage(t *testing.T) {
 	c := newTestConnector(t)
 
-	payload := c.buildStatsMessage()
+	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
 
 	var msg struct {
 		Type  string `json:"type"`
@@ -1168,7 +1163,7 @@ func TestBuildStatsMessage_ResetAfterQueryEnd(t *testing.T) {
 
 	c.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100}})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	payload := c.buildStatsMessage()
+	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
 
 	var msg struct {
 		Usage *struct {
@@ -1202,34 +1197,20 @@ func TestTakeover_StatsMessageCarriesAccumulatedUsage(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 
-	// Drain all frames until we find the stats frame (last frame in new order).
-	var statsMsg []byte
-	for {
-		data := readWSMessage(t, ws2)
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
-			statsMsg = data
-			break
-		}
-	}
+	// The single metadata frame contains the stats.
+	meta := readMetadata(t, ws2)
 	var stats struct {
-		Type  string `json:"type"`
 		Usage *struct {
 			InputTokens          int `json:"input_tokens"`
 			OutputTokens         int `json:"output_tokens"`
 			CacheReadInputTokens int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(statsMsg, &stats); err != nil {
-		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
-	}
-	if stats.Type != "stats" {
-		t.Fatalf("type = %q, want stats", stats.Type)
+	if err := json.Unmarshal(meta.Stats, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, meta.Stats)
 	}
 	if stats.Usage == nil {
-		t.Fatalf("usage is nil — stats message did not carry accumulated usage.\nraw: %s", statsMsg)
+		t.Fatalf("usage is nil — stats message did not carry accumulated usage.\nraw: %s", meta.Stats)
 	}
 	if stats.Usage.InputTokens != 5000 {
 		t.Errorf("input_tokens = %d, want 5000", stats.Usage.InputTokens)
@@ -1257,27 +1238,13 @@ func TestTakeover_StatsMessageCarriesQueryStartMs(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 
-	// Drain all frames until we find the stats frame (last frame in new order).
-	var statsMsg []byte
-	for {
-		data := readWSMessage(t, ws2)
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
-			statsMsg = data
-			break
-		}
-	}
+	// The single metadata frame contains the stats.
+	meta := readMetadata(t, ws2)
 	var stats struct {
-		Type         string `json:"type"`
-		QueryStartMs int64  `json:"queryStartMs"`
+		QueryStartMs int64 `json:"queryStartMs"`
 	}
-	if err := json.Unmarshal(statsMsg, &stats); err != nil {
-		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
-	}
-	if stats.Type != "stats" {
-		t.Fatalf("type = %q, want stats", stats.Type)
+	if err := json.Unmarshal(meta.Stats, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, meta.Stats)
 	}
 	if stats.QueryStartMs == 0 {
 		t.Fatalf("queryStartMs = 0, want non-zero (EventQueryStart should have set it)")
@@ -1289,8 +1256,8 @@ func TestTakeover_StatsMessageCarriesQueryStartMs(t *testing.T) {
 }
 
 // TestEngineSwitch_SendsStatsMessage verifies that after engine switch, the
-// stats frame carries the target engine's stats. The main engine's stats are
-// not transferred — each engine has its own queryStats.
+// metadata frame's stats field carries the target engine's stats. The main
+// engine's stats are not transferred — each engine has its own queryStats.
 func TestEngineSwitch_SendsStatsMessage(t *testing.T) {
 	c := newTestConnector(t)
 	_, _ = addMockEngine(t, c, "engineB")
@@ -1308,36 +1275,23 @@ func TestEngineSwitch_SendsStatsMessage(t *testing.T) {
 	// Send engine_switch via WS.
 	sendJSON(t, ws, map[string]string{"type": "engine_switch", "engineID": "engineB"})
 
-	// Read all frames until stats (skip connect_status, config, engine_list,
-	// history, replay events).
-	var statsMsg []byte
-	for range 20 {
-		data := readWSMessage(t, ws)
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
-			statsMsg = data
-			break
-		}
-	}
-	if statsMsg == nil {
-		t.Fatal("did not receive stats frame after engine switch")
+	// Drain the event frames from usage/tool_start (sent before engine_switch).
+	for range 2 {
+		_ = readWSMessage(t, ws)
 	}
 
+	// The switch sends a single metadata frame.
+	meta := readMetadata(t, ws)
+
 	var stats struct {
-		Type  string `json:"type"`
 		Usage *struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 		ToolCount int `json:"toolCount"`
 	}
-	if err := json.Unmarshal(statsMsg, &stats); err != nil {
+	if err := json.Unmarshal(meta.Stats, &stats); err != nil {
 		t.Fatalf("unmarshal stats: %v", err)
-	}
-	if stats.Type != "stats" {
-		t.Fatalf("type = %q, want stats", stats.Type)
 	}
 	if stats.Usage == nil {
 		t.Fatal("stats.usage is nil")
@@ -1357,7 +1311,7 @@ func TestHandle_QueryEndResetsQueryStartMs(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	payload := c.buildStatsMessage()
+	payload := c.buildStatsMessageForSlot(c.activeSlotTest(t))
 	var msg struct {
 		QueryStartMs int64 `json:"queryStartMs"`
 	}

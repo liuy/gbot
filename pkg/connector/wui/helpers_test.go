@@ -52,7 +52,7 @@ type mockEngine struct {
 	systemPromptFn func() string
 	taskListFn     func() *task.List
 	// onQueryDoneFn simulates engine committing an assistant response.
-	// Called after queryFn finishes — mirrors real engine's appendMessage + OnStreamDone.
+	// Called after queryFn finishes — mirrors real engine's appendMessage.
 	onQueryDoneFn func()
 
 	switchSessionFn func(sessionID string) error
@@ -100,7 +100,7 @@ func (m *mockEngine) Query(ctx context.Context, userMessage, systemPrompt string
 		m.queryFn(ctx, userMessage, systemPrompt)
 	}
 	// Engine commits assistant response after streaming finishes.
-	// This mirrors real engine: appendMessage(*resp) → e.OnStreamDone().
+	// This mirrors real engine: appendMessage(*resp).
 	if m.onQueryDoneFn != nil {
 		m.onQueryDoneFn()
 	}
@@ -308,31 +308,39 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WUIConnector {
 // providerConfigs for config/model_switch tests. The connector is constructed
 // directly (not via New) because mockEngine is not a *engine.Engine; the slot
 // map and active field are set up manually. The mock's onQueryDoneFn is wired
-// to clearStreamBuf so tests that trigger Query get realistic buffer cleanup.
+// to reset streamState so tests that trigger Query get realistic buffer cleanup.
 func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WUIConnector {
 	t.Helper()
 	mock := &mockEngine{}
 	const engineID = "main"
 	c := &WUIConnector{
-		mgr:             nil, // tests that need engine_list set this manually
+		mgr:             nil,
 		slots:           make(map[string]*engineSlot),
-		active:          engineID,
 		pendingAsks:     make(map[string]*types.AskEvent),
 		providers:       providers,
 		providerConfigs: providerConfigs,
+		wsCh:            make(chan []byte, 1024),
+		done:            make(chan struct{}),
 		testMock:        mock,
 	}
+	activeID := engineID
+	c.active.Store(&activeID)
 	slot := &engineSlot{
 		engineID:    engineID,
 		engine:      mock,
 		hub:         h,
 		taskToolIDs: make(map[string]bool),
 	}
+	slot.active.Store(true)
 	if h != nil {
 		slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: engineID, c: c})
 	}
 	c.slots[engineID] = slot
-	mock.onQueryDoneFn = func() { c.clearStreamBuf(engineID) }
+	mock.onQueryDoneFn = func() {
+		slot.streamState = streamState{}
+		slot.taskToolIDs = make(map[string]bool)
+	}
+	go c.wsWriter()
 	t.Cleanup(c.Stop)
 	return c
 }
@@ -408,21 +416,41 @@ func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 	return ws
 }
 
-// activeStreamBufLen returns the number of buffered entries in the active
-// engine's slot. Test accessor that acquires writeMu for a consistent read.
+// activeStreamBufLen returns the number of tool snapshots + text length in the
+// active engine's streamState. Test accessor for verifying in-flight state.
 func (c *WUIConnector) activeStreamBufLen() int {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if s := c.activeSlot(); s != nil {
-		return len(s.streamBuf)
+	c.slotsMu.RLock()
+	defer c.slotsMu.RUnlock()
+	if s := c.slots[c.ActiveID()]; s != nil {
+		count := len(s.streamState.tools)
+		if s.streamState.text != "" {
+			count++
+		}
+		if s.streamState.thinking != nil {
+			count++
+		}
+		return count
 	}
 	return 0
 }
 
-// clearStreamBufTest exposes clearStreamBuf for test-driven buffer cleanup
-// (replaces the old c.OnStreamDone() test call).
-func (c *WUIConnector) clearStreamBufTest(engineID string) {
-	c.clearStreamBuf(engineID)
+// streamStateCount returns the number of state items (text + tools + thinking)
+// in the named engine's streamState. Test accessor for multi-engine tests.
+func streamStateCount(c *WUIConnector, engineID string) int {
+	c.slotsMu.RLock()
+	defer c.slotsMu.RUnlock()
+	s := c.slots[engineID]
+	if s == nil {
+		return 0
+	}
+	count := len(s.streamState.tools)
+	if s.streamState.text != "" {
+		count++
+	}
+	if s.streamState.thinking != nil {
+		count++
+	}
+	return count
 }
 
 // activeEngineTest returns the active engine's engineClient for test use.
@@ -430,11 +458,18 @@ func (c *WUIConnector) activeEngineTest() engineClient {
 	return c.activeEngine()
 }
 
-// drainInitialFrames reads takeover frames until the stats frame is consumed.
-// The takeover sequence is: connect_status, config, engine_list, task_list
-// (optional), history (optional), replay events, stats. drainInitialFrames
-// drains all of these and returns after stats — the LAST frame in the
-// takeover sequence.
+// activeSlotTest returns the active slot, fataling if nil.
+func (c *WUIConnector) activeSlotTest(t *testing.T) *engineSlot {
+	t.Helper()
+	slot := c.activeSlot()
+	if slot == nil {
+		t.Fatal("activeSlot() returned nil")
+	}
+	return slot
+}
+
+// drainInitialFrames reads takeover frames until the metadata frame is consumed.
+// The new takeover sequence sends a single "metadata" composite frame.
 func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 	t.Helper()
 	for {
@@ -442,8 +477,58 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 		var head struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "stats" {
+		if json.Unmarshal(data, &head) == nil && head.Type == "metadata" {
 			return
 		}
+	}
+}
+
+// readMetadata reads one WS message, asserts it is a metadata frame, and
+// returns the raw JSON of each sub-field. Tests use this to extract connect,
+// config, stats, etc. from the composite metadata frame.
+func readMetadata(t *testing.T, ws *websocket.Conn) struct {
+	Connect json.RawMessage
+	Config  json.RawMessage
+	Engines json.RawMessage
+	Tasks   json.RawMessage
+	History json.RawMessage
+	Stats   json.RawMessage
+} {
+	t.Helper()
+	data := readWSMessage(t, ws)
+	var head struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		t.Fatalf("unmarshal metadata head: %v", err)
+	}
+	if head.Type != "metadata" {
+		t.Fatalf("expected metadata frame, got type %q", head.Type)
+	}
+	var raw struct {
+		Connect json.RawMessage `json:"connect"`
+		Config  json.RawMessage `json:"config"`
+		Engines json.RawMessage `json:"engines"`
+		Tasks   json.RawMessage `json:"tasks"`
+		History json.RawMessage `json:"history"`
+		Stats   json.RawMessage `json:"stats"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal metadata body: %v", err)
+	}
+	return struct {
+		Connect json.RawMessage
+		Config  json.RawMessage
+		Engines json.RawMessage
+		Tasks   json.RawMessage
+		History json.RawMessage
+		Stats   json.RawMessage
+	}{
+		Connect: raw.Connect,
+		Config:  raw.Config,
+		Engines: raw.Engines,
+		Tasks:   raw.Tasks,
+		History: raw.History,
+		Stats:   raw.Stats,
 	}
 }

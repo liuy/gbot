@@ -37,8 +37,9 @@ func readWSMessage(t *testing.T, c *websocket.Conn) []byte {
 	return data
 }
 
-// TestRegisterChatWS_ConnectStatus asserts the server sends connect_status
-// immediately after the WS upgrade.
+// TestRegisterChatWS_ConnectStatus asserts the server sends a metadata
+// frame immediately after the WS upgrade, and the metadata's connect field
+// carries connected=true.
 func TestRegisterChatWS_ConnectStatus(t *testing.T) {
 	c := newTestConnector(t)
 	mux := http.NewServeMux()
@@ -49,15 +50,21 @@ func TestRegisterChatWS_ConnectStatus(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	data := readWSMessage(t, ws)
 
-	var got struct {
-		Type      string `json:"type"`
-		Connected bool   `json:"connected"`
+	var meta struct {
+		Type    string          `json:"type"`
+		Connect json.RawMessage `json:"connect"`
 	}
-	if err := json.Unmarshal(data, &got); err != nil {
+	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Type != "connect_status" {
-		t.Errorf("type = %q, want \"connect_status\"", got.Type)
+	if meta.Type != "metadata" {
+		t.Errorf("type = %q, want \"metadata\"", meta.Type)
+	}
+	var got struct {
+		Connected bool `json:"connected"`
+	}
+	if err := json.Unmarshal(meta.Connect, &got); err != nil {
+		t.Fatalf("unmarshal connect: %v", err)
 	}
 	if !got.Connected {
 		t.Error("connected = false, want true")
@@ -307,34 +314,7 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws) // drain connect_status
-	_ = readWSMessage(t, ws) // drain config
-	_ = readWSMessage(t, ws) // drain engine_list
-
-	// Initial history page: latest 30 messages (now 4th frame after connect_status/config/engine_list)
-	initData := readWSMessage(t, ws)
-	_ = readWSMessage(t, ws) // drain stats
-	var initEnv struct {
-		Type       string           `json:"type"`
-		Messages   []historyChatMsg `json:"messages"`
-		NextCursor string           `json:"nextCursor"`
-		HasMore    bool             `json:"hasMore"`
-	}
-	if err := json.Unmarshal(initData, &initEnv); err != nil {
-		t.Fatalf("unmarshal initial history: %v", err)
-	}
-	if initEnv.Type != "history" {
-		t.Errorf("initial type = %q, want \"history\"", initEnv.Type)
-	}
-	if len(initEnv.Messages) != 30 {
-		t.Errorf("initial messages = %d, want 30", len(initEnv.Messages))
-	}
-	if !initEnv.HasMore {
-		t.Error("initial hasMore = false, want true")
-	}
-	if initEnv.NextCursor != "30" {
-		t.Errorf("initial nextCursor = %q, want \"30\"", initEnv.NextCursor)
-	}
+	drainInitialFrames(t, ws) // drain the single metadata frame
 
 	// Request next page
 	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "30", "limit": 30})

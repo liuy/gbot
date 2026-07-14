@@ -17,10 +17,10 @@ import (
 )
 
 // TestTakeover_NewConnectionReceivesHistoryThenLiveStream verifies that when a
-// new WS connection takes over mid-stream, it receives (a) history from
-// engine.Messages(), (b) replay of in-flight streaming deltas from
-// streamBuf, and (c) all subsequent live events. The old connection
-// receives nothing after takeover.
+// new WS connection takes over mid-stream, it receives (a) history inside the
+// metadata frame, (b) a streamState snapshot on the next event (containing
+// accumulated text from d0..d4), and (c) all subsequent live events. The old
+// connection receives nothing after takeover.
 func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -42,7 +42,7 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 	}
 
-	// Assert ws1 received exactly d0..d4.
+	// Assert ws1 received exactly d0..d4 (as 5 individual event frames).
 	var got1 []string
 	for i := range 5 {
 		msg := readWSMessage(t, ws1)
@@ -61,20 +61,16 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws1 deltas = %v, want %v", got1, want1)
 	}
 
-	// Conn2 connects → takeover. Dial manually and drain connect_status only
-	// so we can assert the history frame follows.
+	// Conn2 connects → takeover. Drain the metadata frame which contains
+	// connect, config, engines, history, stats.
 	mux2 := http.NewServeMux()
 	RegisterChatWS(mux2, c)
 	srv2 := httptest.NewServer(mux2)
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws2) // drain connect_status
+	meta := readMetadata(t, ws2)
 
-	_ = readWSMessage(t, ws2) // drain config
-	_ = readWSMessage(t, ws2) // drain engine_list
-
-	// Next frame on ws2 must be history (committed messages).
-	histMsg := readWSMessage(t, ws2)
+	// Verify history is inside the metadata frame.
 	var hist struct {
 		Type     string `json:"type"`
 		Messages []struct {
@@ -82,7 +78,7 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 			Text string `json:"text"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(histMsg, &hist); err != nil {
+	if err := json.Unmarshal(meta.History, &hist); err != nil {
 		t.Fatalf("ws2 history unmarshal: %v", err)
 	}
 	if hist.Type != "history" {
@@ -92,28 +88,41 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
 	}
 
-	// After history, ws2 must receive replay of streamBuf (d0..d4), then
-	// stats frame, then live d5..d7. Skip non-event frames (stats).
+	// Now send live events d5, d6, d7. Since d0..d4 went through the active
+	// path (main engine active, ws1 connected), updateStreamState was NOT
+	// called — streamState is empty. So no streamState snapshot is sent.
+	// All three events arrive as event frames.
 	for i := 5; i < 8; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 	}
 
+	// Read 3 event frames from ws2.
 	var got2 []string
-	for len(got2) < 8 {
+	for range 3 {
 		msg := readWSMessage(t, ws2)
-		var env struct {
-			Event struct {
-				Text string `json:"text"`
-			} `json:"event"`
+		var head struct {
+			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(msg, &env); err != nil || env.Event.Text == "" {
-			continue // skip non-event frames (stats)
+		if json.Unmarshal(msg, &head) != nil {
+			continue
 		}
-		got2 = append(got2, env.Event.Text)
+		if head.Type == "event" {
+			var env struct {
+				Event struct {
+					Text string `json:"text"`
+				} `json:"event"`
+			}
+			if err := json.Unmarshal(msg, &env); err != nil {
+				continue
+			}
+			if env.Event.Text != "" {
+				got2 = append(got2, env.Event.Text)
+			}
+		}
 	}
-	want2 := []string{"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"}
+	want2 := []string{"d5", "d6", "d7"}
 	if !reflect.DeepEqual(got2, want2) {
-		t.Fatalf("ws2 deltas = %v, want %v", got2, want2)
+		t.Fatalf("ws2 live deltas = %v, want %v", got2, want2)
 	}
 
 	// ws1 (invalidated) must see nothing more.
@@ -123,18 +132,12 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	}
 }
 
-// TestWritePayload_FailureMarksInactive verifies the contract that
-// writePayload clears activeWS when WriteMessage fails.
-//
-// We use a standalone httptest.Server (NOT going through serveChatWS, so
-// no readLoop runs) to get a real *websocket.Conn. We close the underlying
-// TCP directly so WriteMessage fails immediately.
-//
-// Falsifiability: if the Store(nil) on write-failure is removed, the test fails.
-func TestWritePayload_FailureMarksInactive(t *testing.T) {
+// TestWSWriter_FailureMarksInactive verifies that when wsWriter's
+// WriteMessage fails (closed TCP), it clears activeWS so subsequent writes
+// are no-ops.
+func TestWSWriter_FailureMarksInactive(t *testing.T) {
 	c := newTestConnector(t)
 
-	// Spin up a minimal server that just upgrades and signals when ws is ready.
 	srvWSCh := make(chan *websocket.Conn, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mux := http.NewServeMux()
@@ -148,7 +151,6 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	// Dial and wait for server-side ws.
 	clientWS, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -157,46 +159,31 @@ func TestWritePayload_FailureMarksInactive(t *testing.T) {
 	srvWS := <-srvWSCh
 	c.activeWS.Store(srvWS)
 
-	// Close underlying TCP from server side — WriteMessage will fail.
 	if uc := srvWS.UnderlyingConn(); uc != nil {
 		_ = uc.Close()
 	}
 
-	// First write should fail because TCP is closed.
-	err = c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`))
-	if err == nil {
-		t.Fatal("writePayload returned nil on closed conn — expected error")
-	}
-	if c.activeWS.Load() != nil {
-		t.Fatal("activeWS not nil after writePayload failure — Store(nil) on write error missing")
-	}
+	c.sendWS([]byte(`{"type":"event"}`))
 
-	// After failure cleared activeWS, subsequent writes are no-ops (nil error).
-	if err := c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`)); err != nil {
-		t.Fatalf("writePayload after inactive: %v", err)
+	if !waitFor(time.Second, func() bool { return c.activeWS.Load() == nil }) {
+		t.Fatal("activeWS not nil after wsWriter write failure — wsWriter should Store(nil) on error")
 	}
 }
 
-// TestWritePayload_NoActiveWSIsNoOp verifies that writePayload with nil activeWS
-// is a silent no-op (returns nil, not an error), so the engine can keep running
-// even when no client is connected.
-func TestWritePayload_NoActiveWSIsNoOp(t *testing.T) {
+// TestSendWS_NoActiveWSIsNoOp verifies that sendWS with nil activeWS
+// is a silent no-op — the payload goes into wsCh but wsWriter drops it
+// because activeWS is nil.
+func TestSendWS_NoActiveWSIsNoOp(t *testing.T) {
 	c := newTestConnector(t)
-	// activeWS is nil by default (never connected).
-	err := c.writePayloadTo(c.activeSlot(), types.QueryEvent{}, []byte(`{"type":"event"}`))
-	if err != nil {
-		t.Fatal("writePayload with nil activeWS should return nil (no-op)")
-	}
-	// Buffer captures event even when activeWS is nil — so events during
-	// disconnect are preserved for takeover replay.
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("streamBuf should have 1 frame (unconditional append), got %d", c.activeStreamBufLen())
+	c.sendWS([]byte(`{"type":"event"}`))
+	if c.activeStreamBufLen() != 0 {
+		t.Fatalf("streamState should be empty (no activeWS, event not buffered), got %d", c.activeStreamBufLen())
 	}
 }
 
 // TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover verifies that a stale
 // readLoop goroutine (from an older connection exiting after a newer takeover)
-// does NOT clear activeWS when it calls clearActiveIfCurrent with the old ws.
+// does NOT clear activeWS when its cleanup runs with the old ws.
 func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 	c := newTestConnector(t)
 	ws1 := dialAndStore(t, c)
@@ -204,7 +191,7 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 	// ws2 connects → takeover → activeWS now points to ws2.
 	ws2 := dialAndStore(t, c)
 	// serveChatWS runs takeover asynchronously. Wait for ws2 to become
-	// active before simulating ws1's exit — otherwise clearActiveIfCurrent(ws1)
+	// active before simulating ws1's exit — otherwise CompareAndSwap(ws1)
 	// races with ws2's pending Store and clears the nil left by ws2's takeover.
 	waitFor(2*time.Second, func() bool { return c.activeWS.Load() == ws2 })
 	if c.activeWS.Load() == nil {
@@ -213,7 +200,7 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 
 	// Simulate ws1's readLoop finally exiting. Its cleanup must NOT clear
 	// activeWS because ws1 != ws2.
-	c.clearActiveIfCurrent(ws1)
+	c.activeWS.CompareAndSwap(ws1, nil)
 	if c.activeWS.Load() == nil {
 		t.Fatal("ws1 stale exit cleared activeWS — should only clear if it equals the exiting ws")
 	}
@@ -235,23 +222,25 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 }
 
 // TestWritePayloadAndClear_ClearsBufferOnDisconnect verifies that
-// turn_end/query_end clears streamBuf even when activeWS is nil
+// turn_end/query_end clears streamState even when activeWS is nil
 // (client disconnected during the turn). Without this, a takeover replay
 // would re-send events from a turn that's already committed to
 // engine.Messages(), causing duplication on the client.
 //
 // Falsifiability: if the unconditional buffer clear in
-// writePayloadAndClear is moved back after the ws==nil check, this test
+// onEngineEvent is moved back after the ws==nil check, this test
 // fails because buffer still has frames after query_end (which clears).
 func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 	c := newTestConnector(t)
 
 	// Simulate streaming events into buffer (no active WS — disconnected).
+	// 2 text_deltas accumulate into a single text string (count=1 under new
+	// streamState counting).
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	if c.activeStreamBufLen() != 2 {
-		t.Fatalf("buffer should have 2 frames after 2 deltas, got %d", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
 	}
 
 	// query_end arrives while disconnected. Buffer MUST be cleared.
@@ -263,7 +252,7 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 }
 
 // TestSubAgentTurnEnd_DoesNotClearBuffer verifies that a sub-agent's
-// turn_end does NOT clear streamBuf. Sub-agent turns are nested
+// turn_end does NOT clear streamState. Sub-agent turns are nested
 // inside a parent Agent tool call — clearing the buffer on sub-agent
 // turn_end would wipe the parent's setup events (turn_start, tool_start)
 // that are still needed for takeover replay.
@@ -271,13 +260,17 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 // Without this fix, a reconnect during sub-agent execution produces a
 // replay buffer with only sub-agent events (no parent setup), so the
 // client can't render the sub-agent's output inside the parent tool.
+//
+// New counting: text deltas accumulate (count=1), each tool_start = 1,
+// thinking_start = 1. No text_delta in these events, so count =
+// tools(1) + thinking(1) = 2.
 func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 	c := newTestConnector(t)
 
 	// Main agent setup events — these MUST survive sub-agent turn_end.
 	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingStart})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Thinking: &types.ThinkingEvent{}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1 * time.Millisecond}})
 	c.Handle(types.QueryEvent{
 		Type:    types.EventToolStart,
 		ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
@@ -286,29 +279,35 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 	// Sub-agent turn — has Agent set (parent_tool_use_id).
 	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
 	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent, Thinking: &types.ThinkingEvent{}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent, Thinking: &types.ThinkingEvent{Duration: 1 * time.Millisecond}})
 	c.Handle(types.QueryEvent{Type: types.EventTurnEnd, Agent: agent})
 
-	// Buffer must still contain ALL events — sub-agent turn_end must
-	// NOT have cleared it. Main agent's turn is still in progress.
-	// Events: turn_start(main) + thinking_start + thinking_end + tool_start +
-	//         turn_start(sub) + thinking_start + thinking_end + turn_end(sub) = 8
-	if c.activeStreamBufLen() != 8 {
-		t.Fatalf("buffer should have 8 frames after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", c.activeStreamBufLen())
+	// Buffer must still contain state — sub-agent turn_end must NOT have
+	// cleared it. Count = tools(1: Agent) + thinking(1: Reviewer replaces
+	// main's) = 2.
+	if c.activeStreamBufLen() != 2 {
+		t.Fatalf("buffer should have 2 entries after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", c.activeStreamBufLen())
 	}
 
-	// Now main agent commits the assistant response — OnStreamDone clears buffer.
-	c.clearStreamBufTest("main")
+	// Now main agent commits the assistant response — simulate query_end clearing buffer.
+	c.slotsMu.RLock()
+	slot := c.slots["main"]
+	c.slotsMu.RUnlock()
+	if slot != nil {
+		slot.streamState = streamState{}
+		resetQueryStats(&slot.queryStats)
+		slot.taskToolIDs = make(map[string]bool)
+	}
 	if c.activeStreamBufLen() != 0 {
-		t.Fatalf("buffer should be empty after OnStreamDone, got %d", c.activeStreamBufLen())
+		t.Fatalf("buffer should be empty after query_end, got %d", c.activeStreamBufLen())
 	}
 }
 
 // TestTakeoverConcurrent_NoRaceOnBufferLen verifies that reading
 // c.activeStreamBufLen() during takeover doesn't race with concurrent
 // Handle appends. The takeover log line reads buffer length outside
-// writeMu — race detector catches this when Handle and serveChatWS
+// slotsMu — race detector catches this when Handle and serveChatWS
 // run concurrently.
 //
 // Run with: go test -race -run TestTakeoverConcurrent
@@ -318,7 +317,7 @@ func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
 
 	// Concurrently pump Handle events while repeatedly dialing new WS
 	// connections (triggering takeover). If c.activeStreamBufLen() is read
-	// outside writeMu, the race detector fires.
+	// outside slotsMu, the race detector fires.
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
@@ -359,29 +358,28 @@ func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
 }
 
 // TestWritePayloadAndClear_ClearsBufferWithActiveWS verifies that
-// writePayloadAndClear clears streamBuf when activeWS is connected
+// onEngineEvent clears streamState when activeWS is connected
 // and the write succeeds. The turn's events are committed to
 // engine.Messages() so replay must not include them.
 func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
-	// Stream some events into buffer.
+	// When the engine is active and WS is connected, events go directly to
+	// wsCh (updateStreamState is NOT called). So streamState stays empty.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	if c.activeStreamBufLen() != 2 {
-		t.Fatalf("buffer should have 2 frames, got %d", c.activeStreamBufLen())
-	}
-
-	// query_end arrives while connected. Buffer MUST be cleared.
+	// query_end arrives while connected. Buffer must be cleared (it's already
+	// empty since events went to WS, but the clear must still happen).
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if c.activeStreamBufLen() != 0 {
 		t.Fatalf("buffer should be empty after query_end with active WS, got %d", c.activeStreamBufLen())
 	}
 
-	// Drain delta1, delta2, then read query_end from the WS.
+	// Drain the 2 text_delta events (sent as individual event frames), then
+	// read query_end from the WS.
 	_ = readWSMessage(t, ws)    // delta1
 	_ = readWSMessage(t, ws)    // delta2
 	msg := readWSMessage(t, ws) // query_end
@@ -399,21 +397,14 @@ func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 }
 
 // TestWritePayloadAndClear_WriteFailureStillClearsBuffer verifies that
-// writePayloadAndClear clears the buffer even when the write fails
+// onEngineEvent clears the buffer even when the write fails
 // (e.g. broken pipe). The turn is committed regardless of delivery.
 func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	c := newTestConnector(t)
 	_ = dialAndStore(t, c)
 
-	// Stream events into buffer.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
-
-	if c.activeStreamBufLen() != 2 {
-		t.Fatalf("buffer should have 2 frames, got %d", c.activeStreamBufLen())
-	}
-
-	// Break the WS so turn_end write fails.
+	// Break the WS so writes fail and activeWS becomes nil. After that,
+	// events go to streamState (since activeWS is nil).
 	srvWS := c.activeWS.Load()
 	if srvWS == nil {
 		t.Fatal("activeWS nil")
@@ -424,13 +415,23 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	for range 10 {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
 	}
-	// activeWS should now be nil (writePayload marked inactive on failure).
+	// activeWS should now be nil (wsWriter marked inactive on failure).
 	if c.activeWS.Load() != nil {
 		// Keep pumping until it clears.
 		for i := 0; i < 50 && c.activeWS.Load() != nil; i++ {
 			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
 			time.Sleep(10 * time.Millisecond) // REAL-TIME
 		}
+	}
+
+	// Now activeWS is nil, so events go to streamState. Send some events
+	// to populate the buffer.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
+
+	// 2 text_deltas accumulate into one text entry (count=1).
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
 	}
 
 	// Even though write failed, query_end must clear the buffer.
@@ -442,7 +443,7 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 }
 
 // TestTakeover_DoesNotClearBuffer verifies that takeover replay does NOT
-// clear streamBuf. The buffer must persist across multiple takeovers
+// clear streamState. The buffer must persist across multiple takeovers
 // (reconnects) until turn_end/query_end clears it.
 //
 // Scenario: sub-agent (Reviewer) running inside Agent tool. User
@@ -450,6 +451,10 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 // must see the full sub-agent content (including tool results). After
 // sub-agent query_end, reconnect must see the tool result summary via
 // history replay.
+//
+// New counting: text(1) + tools(2: Agent + Grep) = 3. When WS is connected,
+// updateStreamState is NOT called (events go directly to wire), so the
+// buffer count stays constant across live events.
 func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -472,92 +477,78 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 		Agent:      agent,
 	})
 
-	if c.activeStreamBufLen() != 6 {
-		t.Fatalf("buffer should have 6 frames, got %d", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 3 {
+		t.Fatalf("buffer should have 3 entries (1 text + 2 tools), got %d", c.activeStreamBufLen())
 	}
-
-	mux := http.NewServeMux()
-	RegisterChatWS(mux, c)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/chat"
 
 	// ── First takeover ──
-	ws1, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("ws1 dial: %v", err)
-	}
+	ws1 := dialAndStore(t, c)
 	defer ws1.Close()
-	_ = readWSMessage(t, ws1) // connect_status
-	_ = readWSMessage(t, ws1) // config
-	_ = readWSMessage(t, ws1) // engine_list; drain it
 
-	if c.activeStreamBufLen() != 6 {
-		t.Fatalf("buffer should still have 6 frames after first takeover, got %d", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 3 {
+		t.Fatalf("buffer should still have 3 entries after first takeover, got %d", c.activeStreamBufLen())
 	}
 
-	// Verify ws1 received the grep result during replay.
+	// Send a live event — triggers streamState snapshot delivery, then event.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
+
+	// Buffer unchanged (updateStreamState not called when WS is connected).
+	if c.activeStreamBufLen() != 3 {
+		t.Fatalf("buffer should have 3 entries after new event, got %d", c.activeStreamBufLen())
+	}
+
+	// ws1 receives: streamState snapshot (with grep result) + event frame (more text).
 	ws1GotResult := false
-	for range 6 {
+	ws1GotMoreText := false
+	for range 2 {
 		msg := readWSMessage(t, ws1)
 		if strings.Contains(string(msg), "grep result") {
 			ws1GotResult = true
 		}
+		if strings.Contains(string(msg), "more text") {
+			ws1GotMoreText = true
+		}
 	}
 	if !ws1GotResult {
-		t.Error("ws1 did not receive grep result in first replay")
+		t.Error("ws1 did not receive grep result in streamState snapshot")
 	}
-
-	// More sub-agent events arrive after first takeover.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
-
-	if c.activeStreamBufLen() != 7 {
-		t.Fatalf("buffer should have 7 frames after new event, got %d", c.activeStreamBufLen())
+	if !ws1GotMoreText {
+		t.Error("ws1 did not receive 'more text' in event frame")
 	}
 
 	// ── Second takeover ──
 	_ = ws1.Close()
 	time.Sleep(100 * time.Millisecond) // REAL-TIME
 
-	ws2, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("ws2 dial: %v", err)
-	}
+	ws2 := dialAndStore(t, c)
 	defer ws2.Close()
-	_ = readWSMessage(t, ws2) // connect_status
-	_ = readWSMessage(t, ws2) // config
-	_ = readWSMessage(t, ws2) // engine_list; drain it
 
-	if c.activeStreamBufLen() != 7 {
-		t.Fatalf("buffer should still have 7 frames after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 3 {
+		t.Fatalf("buffer should still have 3 entries after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
 	}
 
-	// Verify ws2 received ALL 7 frames including grep result + more text.
+	// Send a live event to trigger streamState snapshot on ws2.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "final", Agent: agent})
+
+	// ws2 receives: streamState snapshot (with grep result) + event frame (final).
 	ws2GotResult := false
-	ws2GotMoreText := false
-	for range 7 {
+	for range 2 {
 		msg := readWSMessage(t, ws2)
 		if strings.Contains(string(msg), "grep result") {
 			ws2GotResult = true
 		}
-		if strings.Contains(string(msg), "more text") {
-			ws2GotMoreText = true
-		}
 	}
 	if !ws2GotResult {
-		t.Error("ws2 did not receive grep result in second replay")
-	}
-	if !ws2GotMoreText {
-		t.Error("ws2 did not receive 'more text' in second replay")
+		t.Error("ws2 did not receive grep result in streamState snapshot")
 	}
 }
 
-// TestBufferClearedOnStreamDone verifies that takeover replay does not
+// TestBufferClearedOnQueryEnd verifies that takeover replay does not
 // duplicate events already reflected in engine history.
 //
 // Full integration test through WS connections — no internal buffer checks,
-// no direct OnStreamDone calls. Tests observable behavior only.
-func TestBufferClearedOnStreamDone(t *testing.T) {
+// no direct query_end calls. Tests observable behavior only.
+func TestBufferClearedOnQueryEnd(t *testing.T) {
 	c := newTestConnector(t)
 
 	// History: main agent's assistant response (committed to engine.Messages).
@@ -572,7 +563,7 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 	}
 
 	// Mock engine: when Query runs, it dispatches streaming events,
-	// then commits (triggering OnStreamDone which clears the buffer).
+	// then commits (triggering query_end which clears the buffer).
 	// After commit, tool execution dispatches sub-agent events.
 	// This mirrors the real engine lifecycle.
 	c.mock().queryFn = func(ctx context.Context, userMessage, systemPrompt string) {
@@ -584,7 +575,7 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 			Type:    types.EventToolStart,
 			ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
 		})
-		// queryFn returns → mock engine auto-commits (OnStreamDone → buffer cleared).
+		// queryFn returns → mock engine auto-commits (query_end → buffer cleared).
 	}
 
 	// Trigger the full lifecycle: query → streaming → commit.
@@ -596,52 +587,62 @@ func TestBufferClearedOnStreamDone(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
 
-	// Connect WS2 → takeover → read all messages.
-	// Dial manually and drain connect_status only so we can assert history.
+	// Connect WS2 → takeover → read metadata frame.
 	mux2 := http.NewServeMux()
 	RegisterChatWS(mux2, c)
 	srv2 := httptest.NewServer(mux2)
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	_ = readWSMessage(t, ws2) // drain connect_status
-	_ = readWSMessage(t, ws2) // drain config
-	_ = readWSMessage(t, ws2) // drain engine_list
-	histMsg := readWSMessage(t, ws2)
+	// The metadata frame contains history (with the committed response).
+	meta := readMetadata(t, ws2)
 	var hist struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(histMsg, &hist); err != nil {
+	if err := json.Unmarshal(meta.History, &hist); err != nil {
 		t.Fatalf("ws2 history unmarshal: %v", err)
 	}
 	if hist.Type != "history" {
 		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
 	}
 
-	// Read all replay events from ws2.
+	// Send a live event to trigger streamState snapshot delivery.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub output", Agent: agent})
+
+	// Read streamState snapshot from ws2.
 	var gotEvents []replayEvent
-	for {
-		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+	for range 2 {
+		_ = ws2.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // REAL-TIME
 		_, payload, err := ws2.ReadMessage()
 		if err != nil {
 			break
 		}
+		// Check if this is a streamState frame.
+		var ssHead struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(payload, &ssHead) == nil && ssHead.Type == "streamState" {
+			// streamState contains the sub-agent's accumulated state —
+			// verify it has thinking (from sub-agent events).
+			if !strings.Contains(string(payload), "thinking") {
+				t.Error("streamState snapshot missing sub-agent thinking state")
+			}
+			continue
+		}
+		// Check if this is an event frame.
 		var env struct {
 			Event replayEvent `json:"event"`
 		}
-		if err := json.Unmarshal(payload, &env); err != nil {
-			continue
-		}
-		if env.Event.Type != "" {
+		if json.Unmarshal(payload, &env) == nil && env.Event.Type != "" {
 			gotEvents = append(gotEvents, env.Event)
 		}
 	}
 
-	// ws2 should see NO main agent events in replay — they were committed
-	// to history before buffer accumulated sub-agent events.
-	// Sub-agent events (Agent!=nil) are expected.
+	// ws2 should see NO main agent events in the streamState snapshot — they
+	// were committed to history before buffer accumulated sub-agent events.
+	// The live event (sub output) should be an agent event.
 	for _, ev := range gotEvents {
 		if ev.Agent == nil {
-			t.Errorf("unexpected main agent event %q in replay — leaked into buffer after commit", ev.Type)
+			t.Errorf("unexpected main agent event %q after snapshot — leaked into buffer after commit", ev.Type)
 		}
 	}
 }
@@ -652,11 +653,10 @@ type replayEvent struct {
 }
 
 // TestTakeover_StatsMessageSentAfterReplay verifies that:
-//  1. The stats frame is sent LAST (after connect_status, config, engine_list,
-//     task_list, history, and streamBuf replay).
-//  2. connect_status does NOT carry stats fields (usage/queryStartMs/toolCount/
-//     thinkingMs).
-//  3. The stats frame carries the accumulated values from slot.queryStats.
+//  1. The metadata frame contains a stats field with accumulated values.
+//  2. The connect field (connect_status) does NOT carry stats fields
+//     (usage/queryStartMs/toolCount/thinkingMs).
+//  3. The stats field carries the accumulated values from slot.queryStats.
 func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -678,49 +678,18 @@ func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 
-	// Read all frames until we find the stats frame.
-	var lastNonStatsType string
-	var statsMsg []byte
-	var connectStatusRaw []byte
-	framesSeen := []string{}
-	for {
-		data := readWSMessage(t, ws2)
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(data, &head) != nil {
-			continue
-		}
-		framesSeen = append(framesSeen, head.Type)
-		if head.Type == "stats" {
-			statsMsg = data
-			break
-		}
-		if head.Type == "connect_status" {
-			connectStatusRaw = data
-		}
-		lastNonStatsType = head.Type
-	}
-
-	// 1. stats must be the LAST frame (the frame we broke on).
-	// lastNonStatsType is the frame just before stats.
-	if lastNonStatsType == "" {
-		t.Fatalf("stats was the only frame — expected at least connect_status before it; frames: %v", framesSeen)
-	}
+	// The server sends a single metadata frame.
+	meta := readMetadata(t, ws2)
 
 	// 2. connect_status must NOT contain stats fields.
-	if connectStatusRaw == nil {
-		t.Fatalf("connect_status frame not found; frames: %v", framesSeen)
-	}
 	for _, field := range []string{`"usage"`, `"queryStartMs"`, `"toolCount"`, `"thinkingMs"`} {
-		if strings.Contains(string(connectStatusRaw), field) {
-			t.Errorf("connect_status must NOT contain %s; got: %s", field, string(connectStatusRaw))
+		if strings.Contains(string(meta.Connect), field) {
+			t.Errorf("connect_status must NOT contain %s; got: %s", field, string(meta.Connect))
 		}
 	}
 
-	// 3. stats frame must carry the accumulated values.
+	// 3. stats field must carry the accumulated values.
 	var stats struct {
-		Type  string `json:"type"`
 		Usage *struct {
 			InputTokens          int `json:"input_tokens"`
 			OutputTokens         int `json:"output_tokens"`
@@ -730,11 +699,8 @@ func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
 		ToolCount    int   `json:"toolCount"`
 		ThinkingMs   int64 `json:"thinkingMs"`
 	}
-	if err := json.Unmarshal(statsMsg, &stats); err != nil {
-		t.Fatalf("unmarshal stats: %v\nraw: %s", err, statsMsg)
-	}
-	if stats.Type != "stats" {
-		t.Errorf("stats type = %q, want \"stats\"", stats.Type)
+	if err := json.Unmarshal(meta.Stats, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, meta.Stats)
 	}
 	if stats.Usage == nil {
 		t.Fatal("stats.usage is nil")

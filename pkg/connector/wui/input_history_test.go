@@ -273,7 +273,7 @@ func TestBuildConnectStatusMessage_InputHistory(t *testing.T) {
 	c.mock().projectDirFn = func() string { return dir }
 	c.mock().engineIDFn = func() string { return sid }
 
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildConnectStatusMessageForSlot(c.activeSlotTest(t))
 	var env struct {
 		Type         string   `json:"type"`
 		InputHistory []string `json:"inputHistory"`
@@ -296,7 +296,7 @@ func TestBuildConnectStatusMessage_InputHistoryOmitted(t *testing.T) {
 	c.mock().projectDirFn = func() string { return dir }
 	c.mock().engineIDFn = func() string { return sid }
 
-	payload := c.buildConnectStatusMessage()
+	payload := c.buildConnectStatusMessageForSlot(c.activeSlotTest(t))
 	if strings.Contains(string(payload), "inputHistory") {
 		t.Errorf("payload should omit inputHistory when empty; got: %s", string(payload))
 	}
