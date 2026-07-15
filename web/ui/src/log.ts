@@ -21,7 +21,9 @@ function formatArgs(args: unknown[]): string {
 }
 
 function capture(method: 'log' | 'debug' | 'info' | 'warn' | 'error', args: unknown[]) {
-  logBuffer.push(formatArgs(args))
+  const now = new Date()
+  const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}.${String(now.getMilliseconds()).padStart(3,'0')}`
+  logBuffer.push(`${ts} ${formatArgs(args)}`)
   if (logBuffer.length > MAX_LOGS) logBuffer.shift()
   logListeners.forEach(fn => fn())
 }

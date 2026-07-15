@@ -31,8 +31,7 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 // serveChatWS drives one WS connection to completion with a unified
 // takeover = swap WS + switchEngine. Deactivates old engine first (prevents
 // live events from reaching new WS before metadata), swaps activeWS, then
-// calls switchEngine which sends metadata + sets snapshotSent=false.
-// onEngineEvent will send the streamState snapshot on the next event.
+// calls switchEngine which sends metadata (with embedded streamState snapshot).
 func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	c.slotsMu.RLock()
 	if oldSlot := c.slots[c.ActiveID()]; oldSlot != nil {
@@ -115,7 +114,7 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 				Limit  int    `json:"limit"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				if histMsg := c.buildHistory(msg.Cursor, msg.Limit); histMsg != nil {
+				if histMsg := c.buildHistory(c.activeSlot(), msg.Cursor, msg.Limit); histMsg != nil {
 					c.sendWS(histMsg)
 				}
 			}

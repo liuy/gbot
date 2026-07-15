@@ -18,9 +18,9 @@ import (
 
 // TestTakeover_NewConnectionReceivesHistoryThenLiveStream verifies that when a
 // new WS connection takes over mid-stream, it receives (a) history inside the
-// metadata frame, (b) a streamState snapshot on the next event (containing
-// accumulated text from d0..d4), and (c) all subsequent live events. The old
-// connection receives nothing after takeover.
+// metadata frame, (b) a streamState snapshot embedded in the same metadata
+// frame (containing accumulated text from d0..d4), and (c) all subsequent live
+// events. The old connection receives nothing after takeover.
 func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -88,17 +88,25 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
 	}
 
-	// Now send live events d5, d6, d7. Since d0..d4 went through the active
-	// path (main engine active, ws1 connected), updateStreamState WAS called
-	// (new design: both paths call it). streamState has accumulated text.
-	// So d5 triggers a streamState snapshot, then d5/d6/d7 arrive as events.
+	// Verify snapshot is embedded in the metadata frame — d0..d4 accumulated
+	// into a single text block.
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	if len(snapBlocks) != 1 {
+		t.Fatalf("snapshot should have 1 text block (accumulated d0..d4), got %d", len(snapBlocks))
+	}
+	if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0d1d2d3d4" {
+		t.Errorf("snapshot text = kind=%s text=%q, want text 'd0d1d2d3d4'", snapBlocks[0].Kind, snapBlocks[0].Text)
+	}
+
+	// Now send live events d5, d6, d7. These arrive as plain event frames
+	// (snapshot was already in metadata).
 	for i := 5; i < 8; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 	}
 
-	// Read from ws2: streamState snapshot (1) + event frames (3).
+	// Read from ws2: 3 event frames (snapshot was in metadata, already drained).
 	var got2 []string
-	for range 4 {
+	for range 3 {
 		msg := readWSMessage(t, ws2)
 		var head struct {
 			Type string `json:"type"`
@@ -476,16 +484,12 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	// ── First takeover ──
 	ws1 := dialAndStore(t, c)
 	defer ws1.Close()
-	// Reset snapshotSent so the first live event triggers a streamState snapshot.
-	if s := c.activeSlot(); s != nil {
-		s.snapshotSent.Store(false)
-	}
 
 	if c.activeStreamBufLen() != 1 {
 		t.Fatalf("buffer should still have 1 root block after first takeover, got %d", c.activeStreamBufLen())
 	}
 
-	// Send a live event — triggers streamState snapshot delivery, then event.
+	// Send a live event — nests in children.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
 
 	// Root block count unchanged (live event nests in children).
@@ -493,20 +497,11 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 		t.Fatalf("buffer should still have 1 root block after new event, got %d", c.activeStreamBufLen())
 	}
 
-	// ws1 receives: streamState snapshot (with grep result) + event frame (more text).
-	ws1GotResult := false
+	// ws1 receives event frame (more text). Snapshot was in metadata (drained).
 	ws1GotMoreText := false
-	for range 2 {
-		msg := readWSMessage(t, ws1)
-		if strings.Contains(string(msg), "grep result") {
-			ws1GotResult = true
-		}
-		if strings.Contains(string(msg), "more text") {
-			ws1GotMoreText = true
-		}
-	}
-	if !ws1GotResult {
-		t.Error("ws1 did not receive grep result in streamState snapshot")
+	msg := readWSMessage(t, ws1)
+	if strings.Contains(string(msg), "more text") {
+		ws1GotMoreText = true
 	}
 	if !ws1GotMoreText {
 		t.Error("ws1 did not receive 'more text' in event frame")
@@ -518,28 +513,22 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 
 	ws2 := dialAndStore(t, c)
 	defer ws2.Close()
-	// Reset snapshotSent so the first live event triggers a streamState snapshot.
-	if s := c.activeSlot(); s != nil {
-		s.snapshotSent.Store(false)
-	}
 
 	if c.activeStreamBufLen() != 1 {
 		t.Fatalf("buffer should still have 1 root block after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
 	}
 
-	// Send a live event to trigger streamState snapshot on ws2.
+	// Send a live event.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "final", Agent: agent})
 
-	// ws2 receives: streamState snapshot (with grep result) + event frame (final).
-	ws2GotResult := false
-	for range 2 {
-		msg := readWSMessage(t, ws2)
-		if strings.Contains(string(msg), "grep result") {
-			ws2GotResult = true
-		}
+	// ws2 receives event frame (final). Snapshot (with grep result) was in metadata.
+	ws2GotFinal := false
+	msg = readWSMessage(t, ws2)
+	if strings.Contains(string(msg), "final") {
+		ws2GotFinal = true
 	}
-	if !ws2GotResult {
-		t.Error("ws2 did not receive grep result in streamState snapshot")
+	if !ws2GotFinal {
+		t.Error("ws2 did not receive 'final' in event frame")
 	}
 }
 

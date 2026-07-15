@@ -369,9 +369,6 @@ func TestBuildTaskListMessage_HubDispatchEndToEnd(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws) // drains everything including task_list
-	if s := c.activeSlot(); s != nil {
-		s.snapshotSent.Store(true)
-	}
 
 	h.Dispatch(types.QueryEvent{
 		Type:    types.EventToolStart,

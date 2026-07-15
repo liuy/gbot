@@ -426,4 +426,73 @@ describe('streamState block tree rendering', () => {
     expect(cmdIdx).toBeGreaterThan(firstIdx)
     expect(secondIdx).toBeGreaterThan(cmdIdx)
   })
+
+  it('streamState after metadata with running tool reuses existing container, does not create new message', () => {
+    mount()
+    // metadata with history: assistant response with Agent tool (running)
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true, model: 'test' },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: {
+        messages: [{
+          id: 'a1', role: 'assistant', startedAt: 1000, text: '', thinking: [], tools: [],
+          blocks: [
+            { kind: 'text', text: 'Let me review' },
+            { kind: 'tool', tool: { id: 'agent1', name: 'Agent', summary: 'Reviewer', isRunning: true } },
+          ],
+          usage: { inputTokens: 0, outputTokens: 0 },
+        }],
+        nextCursor: '', hasMore: false,
+      },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+
+    // history loaded — should have 1 assistant message with running Agent tool
+    const msgsBefore = document.querySelectorAll('.space-y-3')
+    expect(msgsBefore.length).toBe(1)
+
+    // streamState arrives with sub-agent data (text + tools nested in Agent)
+    dispatch({
+      type: 'streamState',
+      blocks: [{
+        kind: 'tool', id: 'agent1', name: 'Agent', state: 'running',
+        children: [
+          { kind: 'text', id: 't1', text: 'sub-agent text' },
+          { kind: 'tool', id: 'sub1', name: 'Grep', state: 'done', displayOutput: 'found 3 matches' },
+        ],
+      }],
+    })
+
+    // Should NOT create a new message — streamState should reuse the
+    // existing message (the one with the running Agent tool from history)
+    const msgsAfter = document.querySelectorAll('.space-y-3')
+    expect(msgsAfter.length).toBe(1)
+
+    // The sub-agent text should be visible inside the Agent tool
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('sub-agent text')
+    expect(allText).toContain('found 3 matches')
+  })
+
+  it('query_end after streamState with undefined children does not throw', () => {
+    mount()
+    // streamState with a tool block that has no children (JSON omitempty may omit it)
+    dispatch({
+      type: 'streamState',
+      blocks: [{
+        kind: 'tool', id: 'agent1', name: 'Agent', state: 'running',
+        summary: 'review', children: undefined,
+      }],
+    })
+
+    // Now dispatch query_end (aborted) — should NOT throw
+    expect(() => {
+      dispatch({
+        type: 'event',
+        event: { type: 'query_end', aborted: true },
+      })
+    }).not.toThrow()
+  })
 })

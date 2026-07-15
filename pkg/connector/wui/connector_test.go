@@ -598,7 +598,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistory("", 10)
+	payload := c.buildHistory(c.activeSlot(), "", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -702,7 +702,7 @@ func TestBuildHistoryMessage_BlocksSkipsWhitespaceText(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistory("", 10)
+	payload := c.buildHistory(c.activeSlot(), "", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -759,7 +759,7 @@ func TestBuildHistoryMessage_ToolBlockJSONWireFormat(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistory("", 10)
+	payload := c.buildHistory(c.activeSlot(), "", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -840,7 +840,7 @@ func TestBuildHistoryMessage_ThinkingBlockJSONWireFormat(t *testing.T) {
 	}
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
-	payload := c.buildHistory("", 10)
+	payload := c.buildHistory(c.activeSlot(), "", 10)
 	if payload == nil {
 		t.Fatal("buildHistoryMessage returned nil")
 	}
@@ -908,7 +908,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
 
 	// Page 1: latest 10 (msg-24 … msg-15)
-	payload := c.buildHistory("", 10)
+	payload := c.buildHistory(c.activeSlot(), "", 10)
 	if payload == nil {
 		t.Fatal("page 1 returned nil")
 	}
@@ -937,7 +937,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Page 2: next 10 (msg-14 … msg-5)
-	payload = c.buildHistory("10", 10)
+	payload = c.buildHistory(c.activeSlot(), "10", 10)
 	if payload == nil {
 		t.Fatal("page 2 returned nil")
 	}
@@ -966,7 +966,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Page 3: last 5 (msg-4 … msg-0)
-	payload = c.buildHistory("20", 10)
+	payload = c.buildHistory(c.activeSlot(), "20", 10)
 	if payload == nil {
 		t.Fatal("page 3 returned nil")
 	}
@@ -995,7 +995,7 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 
 	// Cursor beyond total: empty page
-	payload = c.buildHistory("30", 10)
+	payload = c.buildHistory(c.activeSlot(), "30", 10)
 	if payload == nil {
 		t.Fatal("page beyond total returned nil")
 	}
@@ -1012,6 +1012,113 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 	if p4.HasMore {
 		t.Error("page 4 hasMore = true, want false")
+	}
+}
+
+// TestBuildHistory_IsBusyExclusion verifies that when the engine is busy
+// (streaming), buildHistory excludes the current query — everything from the
+// last user text message onward. When idle, all messages are included.
+func TestBuildHistory_IsBusyExclusion(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().messagesFn = func() []types.Message {
+		return []types.Message{
+			{
+				ID:        "prev_user",
+				Role:      types.RoleUser,
+				Timestamp: time.Unix(1000, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "previous question"}},
+			},
+			{
+				ID:        "prev_asst",
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(1001, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "previous answer"}},
+			},
+			{
+				ID:        "cur_user",
+				Role:      types.RoleUser,
+				Timestamp: time.Unix(1002, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "current question"}},
+			},
+			{
+				ID:        "cur_asst",
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(1003, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "streaming answer"}},
+			},
+		}
+	}
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
+
+	// Idle: all 4 messages included
+	c.mock().isBusyFn = func() bool { return false }
+	payload := c.buildHistory(c.activeSlot(), "", 10)
+	var idle struct {
+		Messages []historyChatMsg `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &idle); err != nil {
+		t.Fatalf("idle unmarshal: %v", err)
+	}
+	if len(idle.Messages) != 4 {
+		t.Fatalf("idle messages = %d, want 4", len(idle.Messages))
+	}
+
+	// Busy: only messages before the last user text message
+	c.mock().isBusyFn = func() bool { return true }
+	payload = c.buildHistory(c.activeSlot(), "", 10)
+	var busy struct {
+		Messages []historyChatMsg `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &busy); err != nil {
+		t.Fatalf("busy unmarshal: %v", err)
+	}
+	if len(busy.Messages) != 2 {
+		t.Fatalf("busy messages = %d, want 2 (prev_user + prev_asst)", len(busy.Messages))
+	}
+	if busy.Messages[0].ID != "prev_user" {
+		t.Errorf("busy msg[0] = %q, want prev_user", busy.Messages[0].ID)
+	}
+	if busy.Messages[1].ID != "prev_asst" {
+		t.Errorf("busy msg[1] = %q, want prev_asst", busy.Messages[1].ID)
+	}
+
+	// Busy with only 1 user message: history is empty (query boundary at index 0)
+	c.mock().messagesFn = func() []types.Message {
+		return []types.Message{
+			{
+				ID:        "only_user",
+				Role:      types.RoleUser,
+				Timestamp: time.Unix(1000, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "only question"}},
+			},
+		}
+	}
+	payload = c.buildHistory(c.activeSlot(), "", 10)
+	if payload != nil {
+		t.Fatalf("busy with only 1 user msg: expected nil history, got %s", payload)
+	}
+}
+
+// TestHasTextContent verifies the helper used by IsBusy exclusion to find
+// the query boundary (last user message with text content).
+func TestHasTextContent(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  types.Message
+		want bool
+	}{
+		{"user with text", types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}, true},
+		{"user with empty text", types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: ""}}}, true},
+		{"user with only tool_result", types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "x"}}}, false},
+		{"user with no content", types.Message{Role: types.RoleUser, Content: nil}, false},
+		{"assistant with text", types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasTextContent(tt.msg); got != tt.want {
+				t.Errorf("hasTextContent(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
 	}
 }
 

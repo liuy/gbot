@@ -10,6 +10,17 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func buildPendingBlocks(ss streamState) []byte {
+	type payload struct {
+		Type   string        `json:"type"`
+		Blocks []streamBlock `json:"blocks"`
+	}
+	blocks := make([]streamBlock, len(ss.blocks))
+	copy(blocks, ss.blocks)
+	out, _ := json.Marshal(payload{Type: "streamState", Blocks: blocks})
+	return out
+}
+
 func TestUpdateStreamState_TextAccumulation(t *testing.T) {
 	var ss streamState
 	updateStreamState(&ss, types.QueryEvent{Type: types.EventTextDelta, Text: "hello "})

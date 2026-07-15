@@ -108,17 +108,13 @@ func TestMultiEngine_SwitchReplaysTargetStreamBuf(t *testing.T) {
 
 // TestMultiEngine_DualStreamSwitch verifies that when two engines are both
 // streaming, switching between them delivers the correct engine's live events
-// and streamState snapshot on each switch. The WS should never receive events
-// from a non-active engine in real-time.
-//
-// New protocol: engine switch sends a single metadata frame, then
-// onEngineEvent sends streamState snapshot on the first live event.
-// The streamState snapshot contains accumulated text (not individual deltas).
+// and streamState snapshot (embedded in metadata) on each switch. The WS
+// should never receive events from a non-active engine in real-time.
 //
 // Flow:
-//  1. Both main and engineB stream concurrently
-//  2. Switch main→engineB: WS gets metadata + streamState (b-1 text) + live events
-//  3. Switch engineB→main: WS gets metadata + streamState (main-1 text) + live events
+//  1. Both main and engineB buffer events while inactive
+//  2. Switch main→engineB: metadata snapshot contains "b-1b-2"
+//  3. Switch engineB→main: metadata snapshot contains "main-1main-2main-3"
 //  4. Verify no cross-contamination
 func TestMultiEngine_DualStreamSwitch(t *testing.T) {
 	// Create connector with an explicit hub for main engine events.
@@ -138,38 +134,38 @@ func TestMultiEngine_DualStreamSwitch(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	// main-1 is buffered but not yet on the WS (it was dispatched before
-	// takeover). The first live event to main triggers a streamState snapshot.
-
-	// Send a live event to main — should arrive on WS as streamState + event.
+	// main-1 is buffered in streamState. Send a live event to main.
 	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "main-2"})
-	// Read streamState snapshot (contains accumulated text "main-1main-2"),
-	// then the event frame for main-2.
+	// Read event frame for main-2 (snapshot was in initial metadata, already drained).
 	drainUntilEvent(t, ws, "main-2")
 
 	// While main is streaming, engineB also buffers events.
 	hubB.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "b-2"})
 
-	// Switch to engineB mid-stream. This sends a metadata frame.
+	// Switch to engineB. Metadata contains snapshot with accumulated "b-1b-2".
 	c.handleEngineSwitch("engineB")
-	// Drain the metadata frame.
-	readMetadata(t, ws)
+	metaB := readMetadata(t, ws)
+	snapB := extractSnapshotFromMetadata(t, metaB.Snapshot)
+	if len(snapB) != 1 || snapB[0].Text != "b-1b-2" {
+		t.Fatalf("engineB snapshot = %v, want 1 block with text 'b-1b-2'", snapB)
+	}
 
-	// Send a live event to engineB — triggers streamState snapshot (b-1b-2)
-	// then event frame for b-3.
+	// Send a live event to engineB.
 	hubB.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "b-3"})
-	// Read streamState snapshot + event frame.
 	drainUntilEvent(t, ws, "b-3")
 
 	// While engineB is active, main buffers events silently.
 	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "main-3"})
 
-	// Switch back to main. Sends metadata frame.
+	// Switch back to main. Metadata snapshot contains "main-1main-2main-3".
 	c.handleEngineSwitch("main")
-	readMetadata(t, ws)
+	metaMain := readMetadata(t, ws)
+	snapMain := extractSnapshotFromMetadata(t, metaMain.Snapshot)
+	if len(snapMain) != 1 || snapMain[0].Text != "main-1main-2main-3" {
+		t.Fatalf("main snapshot = %v, want 1 block with text 'main-1main-2main-3'", snapMain)
+	}
 
-	// Send live event to main — triggers streamState snapshot (main-1main-2main-3)
-	// then event frame for main-4.
+	// Send live event to main.
 	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "main-4"})
 	drainUntilEvent(t, ws, "main-4")
 }
@@ -461,23 +457,18 @@ func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
 		t.Fatal("sub-agent text should be buffered while inactive")
 	}
 
-	// Switch back to main — snapshot should contain nested children
+	// Switch back to main — metadata contains the snapshot with nested children.
 	c.handleEngineSwitch("main")
-	readMetadata(t, ws)
-
-	// Trigger snapshot by sending a live event
-	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "done"})
-
-	// Read snapshot frame
-	snap := readStreamStatePayload(t, ws)
-	// 3 root blocks: text "Let me check", Agent tool, text "done"
-	// (the final text_delta "done" creates a new root text block)
-	if len(snap.Blocks) != 3 {
-		t.Fatalf("snapshot should have 3 root blocks, got %d", len(snap.Blocks))
+	meta := readMetadata(t, ws)
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	// 2 root blocks: text "Let me check" + Agent tool.
+	// The "done" text_delta hasn't happened yet when the snapshot is taken.
+	if len(snapBlocks) != 2 {
+		t.Fatalf("snapshot should have 2 root blocks, got %d", len(snapBlocks))
 	}
-	// Find the Agent tool block (not at fixed index due to text block ordering)
+	// Find the Agent tool block.
 	var snapAgent streamBlock
-	for _, b := range snap.Blocks {
+	for _, b := range snapBlocks {
 		if b.Kind == "tool" && b.Name == "Agent" {
 			snapAgent = b
 			break
@@ -500,6 +491,10 @@ func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
 	if !found {
 		t.Error("snapshot missing sub-agent text 'Found issues' added while inactive")
 	}
+
+	// Dispatch a live event — arrives as a regular event frame (no separate snapshot).
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "done"})
+	drainUntilEvent(t, ws, "done")
 }
 
 // TestIntegration_QueryEndClearsMidQuery verifies that query_end
@@ -670,28 +665,4 @@ func TestIntegration_LiveEventsAfterSnapshotWithChildren(t *testing.T) {
 	if !found {
 		t.Error("live tool_end did not update nested tool r1 to done state with output")
 	}
-}
-
-// readStreamStatePayload reads WS messages until finding a streamState frame.
-func readStreamStatePayload(t *testing.T, ws *websocket.Conn) struct {
-	Type   string        `json:"type"`
-	Blocks []streamBlock `json:"blocks"`
-} {
-	t.Helper()
-	type snapType struct {
-		Type   string        `json:"type"`
-		Blocks []streamBlock `json:"blocks"`
-	}
-	for range 20 {
-		msg := readWSMessage(t, ws)
-		var snap snapType
-		if err := json.Unmarshal(msg, &snap); err != nil {
-			continue
-		}
-		if snap.Type == "streamState" {
-			return snap
-		}
-	}
-	t.Fatal("did not find streamState frame within 20 frames")
-	return snapType{}
 }

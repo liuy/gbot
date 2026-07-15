@@ -536,7 +536,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             })
           }
         }
-        if (b.children.length > 0) finalizeRunningBlocks(b.children, aborted)
+        if (b.children && b.children.length > 0) finalizeRunningBlocks(b.children, aborted)
       }
     }
   }
@@ -796,7 +796,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (b.kind === 'tool') {
         pendingToolByID.set(b.id, b)
         knownToolIDs.add(b.id)
-        if (b.children.length > 0) {
+        if (b.children && b.children.length > 0) {
           registerBlocksForStreamState(b.children, b.id)
         }
       }
@@ -838,7 +838,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           parentID,
           pendingBlock: block,
         })
-        if (block.children.length > 0) {
+        if (block.children && block.children.length > 0) {
           expandToolChildrenForRunning(handles)
         }
       } else {
@@ -849,7 +849,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           skipHighlight: true,
         })
       }
-      if (block.children.length > 0) {
+      if (block.children && block.children.length > 0) {
         const childContainer = appendToolChildrenContainer(handles)
         for (const child of block.children) {
           renderStreamBlock(childContainer, child, null, block.id)
@@ -887,6 +887,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'query_end': {
         if (e.agent) return
         const wasAborted = !!e.aborted
+        console.debug('[chat] query_end aborted=' + wasAborted)
         finalizeRunningBlocks(pendingBlocks, wasAborted)
 
         if (wasAborted) {
@@ -1224,7 +1225,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (
           entry &&
-          entry.pendingBlock.children.length > 0 &&
+          entry.pendingBlock.children && entry.pendingBlock.children.length > 0 &&
           entry.pendingBlock.state !== 'running'
         ) {
           collapseToolChildrenOnDone(entry.handles)
@@ -1395,6 +1396,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
         loadHistory({ type: 'history', ...msg.history })
 
+        if (msg.snapshot && msg.snapshot.blocks.length > 0) {
+          if (!streamContainer) {
+            initStreaming('snapshot')
+          }
+          renderStreamStateBlocks(msg.snapshot.blocks)
+        }
+
         const s = msg.stats
         progressUsage = {
           inputTokens: s.usage?.input_tokens ?? s.usage?.InputTokens ?? 0,
@@ -1412,7 +1420,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
       case 'streamState': {
         if (msg.blocks.length > 0) {
-          initStreaming('streamState')
+          if (!streamContainer) {
+            initStreaming('streamState')
+          }
           renderStreamStateBlocks(msg.blocks)
         }
         return

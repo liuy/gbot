@@ -412,12 +412,6 @@ func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
-	// Mark snapshot as already sent so the first event doesn't trigger a
-	// streamState snapshot frame. Tests that specifically test snapshot
-	// behavior can reset this flag.
-	if s := c.activeSlot(); s != nil {
-		s.snapshotSent.Store(true)
-	}
 	return ws
 }
 
@@ -476,14 +470,15 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 
 // readMetadata reads one WS message, asserts it is a metadata frame, and
 // returns the raw JSON of each sub-field. Tests use this to extract connect,
-// config, stats, etc. from the composite metadata frame.
+// config, stats, snapshot, etc. from the composite metadata frame.
 func readMetadata(t *testing.T, ws *websocket.Conn) struct {
-	Connect json.RawMessage
-	Config  json.RawMessage
-	Engines json.RawMessage
-	Tasks   json.RawMessage
-	History json.RawMessage
-	Stats   json.RawMessage
+	Connect  json.RawMessage
+	Config   json.RawMessage
+	Engines  json.RawMessage
+	Tasks    json.RawMessage
+	History  json.RawMessage
+	Snapshot json.RawMessage
+	Stats    json.RawMessage
 } {
 	t.Helper()
 	data := readWSMessage(t, ws)
@@ -497,29 +492,49 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 		t.Fatalf("expected metadata frame, got type %q", head.Type)
 	}
 	var raw struct {
-		Connect json.RawMessage `json:"connect"`
-		Config  json.RawMessage `json:"config"`
-		Engines json.RawMessage `json:"engines"`
-		Tasks   json.RawMessage `json:"tasks"`
-		History json.RawMessage `json:"history"`
-		Stats   json.RawMessage `json:"stats"`
+		Connect  json.RawMessage `json:"connect"`
+		Config   json.RawMessage `json:"config"`
+		Engines  json.RawMessage `json:"engines"`
+		Tasks    json.RawMessage `json:"tasks"`
+		History  json.RawMessage `json:"history"`
+		Snapshot json.RawMessage `json:"snapshot"`
+		Stats    json.RawMessage `json:"stats"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal metadata body: %v", err)
 	}
 	return struct {
-		Connect json.RawMessage
-		Config  json.RawMessage
-		Engines json.RawMessage
-		Tasks   json.RawMessage
-		History json.RawMessage
-		Stats   json.RawMessage
+		Connect  json.RawMessage
+		Config   json.RawMessage
+		Engines  json.RawMessage
+		Tasks    json.RawMessage
+		History  json.RawMessage
+		Snapshot json.RawMessage
+		Stats    json.RawMessage
 	}{
-		Connect: raw.Connect,
-		Config:  raw.Config,
-		Engines: raw.Engines,
-		Tasks:   raw.Tasks,
-		History: raw.History,
-		Stats:   raw.Stats,
+		Connect:  raw.Connect,
+		Config:   raw.Config,
+		Engines:  raw.Engines,
+		Tasks:    raw.Tasks,
+		History:  raw.History,
+		Snapshot: raw.Snapshot,
+		Stats:    raw.Stats,
 	}
+}
+
+// extractSnapshotFromMetadata parses the snapshot field (a json.RawMessage
+// already extracted by readMetadata) and returns the stream blocks.
+// Returns nil if the snapshot is empty or absent.
+func extractSnapshotFromMetadata(t *testing.T, snapshotRaw json.RawMessage) []streamBlock {
+	t.Helper()
+	if len(snapshotRaw) == 0 {
+		return nil
+	}
+	var snap struct {
+		Blocks []streamBlock `json:"blocks"`
+	}
+	if err := json.Unmarshal(snapshotRaw, &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	return snap.Blocks
 }

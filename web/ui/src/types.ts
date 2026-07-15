@@ -47,6 +47,7 @@ export type ServerMessage =
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
+      snapshot?: { blocks: Block[] }
       stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
     }
   | { type: 'streamState'; blocks: Block[] }
