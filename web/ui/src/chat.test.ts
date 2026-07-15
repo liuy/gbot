@@ -1230,7 +1230,7 @@ describe('chat integration', () => {
 
     // Sub-agent text should be rendered as markdown HTML, not raw textContent.
     // If rendered correctly, <h2> and <code> tags exist.
-    const agentTool = document.querySelector('[data-tool-name="Agent"]')
+    const agentTool = document.querySelector('[data-tool-name^="Agent"]')
     expect(agentTool).toBeTruthy()
     const toolRoot = agentTool!.closest('[data-tool-root]')
     const mdBody = toolRoot?.querySelector('.md-body')

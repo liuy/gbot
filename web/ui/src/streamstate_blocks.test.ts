@@ -495,4 +495,62 @@ describe('streamState block tree rendering', () => {
       })
     }).not.toThrow()
   })
+
+  it('Agent tool header shows agent type from sub-agent turn_start event', () => {
+    mount()
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'tool_start',
+        tool_use: { id: 'agent1', name: 'Agent', summary: '' },
+      },
+    })
+
+    const toolNames = document.querySelectorAll('[data-tool-name]')
+    expect(toolNames.length).toBe(1)
+    expect(toolNames[0].getAttribute('data-tool-name')).toBe('Agent')
+
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'turn_start',
+        agent: { parent_tool_use_id: 'agent1', agent_type: 'Reviewer' },
+      },
+    })
+
+    const nameEl = document.querySelector('.font-mono.text-blue') as HTMLElement
+    expect(nameEl).toBeTruthy()
+    expect(nameEl.textContent).toBe('Agent Reviewer')
+
+    // Second turn_start should be a no-op (no double append)
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'turn_start',
+        agent: { parent_tool_use_id: 'agent1', agent_type: 'Reviewer' },
+      },
+    })
+    expect(nameEl.textContent).toBe('Agent Reviewer')
+  })
+
+  it('Agent tool header ignores fork agent type', () => {
+    mount()
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'tool_start',
+        tool_use: { id: 'agent2', name: 'Agent', summary: '' },
+      },
+    })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'turn_start',
+        agent: { parent_tool_use_id: 'agent2', agent_type: 'fork' },
+      },
+    })
+    const nameEl = document.querySelector('.font-mono.text-blue') as HTMLElement
+    expect(nameEl).toBeTruthy()
+    expect(nameEl.textContent).toBe('Agent')
+  })
 })

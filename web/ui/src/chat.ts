@@ -573,6 +573,20 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     return parent.children
   }
 
+  function updateAgentToolName(parentID: string, agentType: string) {
+    if (!agentType || agentType === 'fork') return
+    const parent = pendingToolByID.get(parentID)
+    if (!parent || parent.name.includes(agentType)) return
+    parent.name = parent.name + ' ' + agentType
+    const entry = toolEntries.get(parentID)
+    if (entry) {
+      const root = entry.handles.root as HTMLElement
+      root.dataset.toolName = parent.name
+      const nameEl = root.querySelector('.font-mono.text-blue')
+      if (nameEl) nameEl.textContent = parent.name
+    }
+  }
+
   function subAgentContainer(parentID: string): HTMLElement | null {
     const entry = toolEntries.get(parentID)
     if (!entry) return null
@@ -878,7 +892,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'turn_start': {
-        if (e.agent) return
+        if (e.agent) {
+          updateAgentToolName(e.agent.parent_tool_use_id, e.agent.agent_type)
+          return
+        }
         if (streaming) return
         cleanupStreamingRefs()
         initStreaming('turn_start')
