@@ -71,7 +71,7 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 		}
 
 		if in.Symbol != "" {
-			_, pos, err := resolveSymbolPosition(ctx, reg, in.Symbol, resolvedFile, workingDir)
+			_, pos, err := resolveSymbolPosition(ctx, reg, in.Symbol, workingDir)
 			if err != nil {
 				return nil, err
 			}

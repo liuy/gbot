@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func newFakeEnv(t *testing.T, handlerFactory func(dir string) fakeHandler) (*lsp
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		serveFake(t, serverConn, handler)
+		serveFake(t, serverConn, handler, dir)
 	})
 
 	c := lsp.NewTestClient("fakels", clientConn)
@@ -72,7 +73,7 @@ func newFakeEnv(t *testing.T, handlerFactory func(dir string) fakeHandler) (*lsp
 	return reg, dir, cleanup
 }
 
-func serveFake(t *testing.T, conn net.Conn, handler fakeHandler) {
+func serveFake(t *testing.T, conn net.Conn, handler fakeHandler, dir string) {
 	t.Helper()
 	r := bufio.NewReader(conn)
 	for {
@@ -143,6 +144,16 @@ func serveFake(t *testing.T, conn net.Conn, handler fakeHandler) {
 				handled = true
 			}
 		}
+		// When the test's handler does not answer workspace/symbol, scan
+		// on-disk .go files in the test dir for the queried name. This lets
+		// integration tests get automatic symbol→position resolution via
+		// workspace/symbol without each providing a handler.
+		if !handled && req.Method == "workspace/symbol" {
+			if syms, ok := defaultWorkspaceSymbols(req.Params, dir); ok {
+				result = syms
+				handled = true
+			}
+		}
 		if !handled {
 			result = nil
 		}
@@ -195,6 +206,51 @@ func defaultDocumentSymbols(params json.RawMessage) ([]lsp.DocumentSymbol, bool)
 		return nil, false
 	}
 	path := lsp.URItoPath(p.TextDocument.URI)
+	return defaultDocumentSymbolsForFile(path, p.TextDocument.URI)
+}
+
+// defaultWorkspaceSymbols scans all .go files in dir for top-level declarations
+// matching the workspace/symbol query, returning SymbolInformation[] with
+// file URIs and positions. Lets integration tests resolve symbols via
+// workspace/symbol without each providing a handler.
+func defaultWorkspaceSymbols(params json.RawMessage, dir string) ([]lsp.SymbolInformation, bool) {
+	var p struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, false
+	}
+	query := p.Query
+	if idx := strings.LastIndex(query, "#"); idx > 0 {
+		query = query[:idx]
+	}
+	var result []lsp.SymbolInformation
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		uri := lsp.FileToURI(path)
+		syms, _ := defaultDocumentSymbolsForFile(path, uri)
+		for _, s := range syms {
+			if s.Name != query {
+				continue
+			}
+			result = append(result, lsp.SymbolInformation{
+				Name: s.Name,
+				Kind: s.Kind,
+				Location: lsp.Location{
+					URI:   uri,
+					Range: s.SelectionRange,
+				},
+			})
+		}
+		return nil
+	})
+	return result, true
+}
+
+// defaultDocumentSymbolsForFile reads a single file and returns its symbols.
+func defaultDocumentSymbolsForFile(path, uri string) ([]lsp.DocumentSymbol, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false

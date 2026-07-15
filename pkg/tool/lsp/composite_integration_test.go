@@ -317,40 +317,6 @@ func TestResolveInWorkspace_NoServers(t *testing.T) {
 	}
 }
 
-func TestResolveInFile_NotFound(t *testing.T) {
-	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
-		return func(method string, _ json.RawMessage) (any, bool) {
-			if method == "textDocument/documentSymbol" {
-				return []map[string]any{{
-					"name": "foo",
-					"kind": 12,
-					"range": map[string]any{
-						"start": map[string]any{"line": 0, "character": 5},
-						"end":   map[string]any{"line": 0, "character": 8},
-					},
-					"selectionRange": map[string]any{
-						"start": map[string]any{"line": 0, "character": 5},
-						"end":   map[string]any{"line": 0, "character": 8},
-					},
-				}}, true
-			}
-			return nil, false
-		}
-	})
-	defer cleanup()
-
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
-
-	c, _ := reg.ForFile(context.Background(), filepath.Join(dir, "foo.go"))
-	_, _, err := resolveInFile(context.Background(), c, "nonexistent", 1, filepath.Join(dir, "foo.go"), dir)
-	if err == nil {
-		t.Fatal("expected error for nonexistent symbol")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
 func TestFilterGitIgnored_Empty(t *testing.T) {
 	got := filterGitIgnored(context.Background(), nil, "/tmp")
 	if got != nil {

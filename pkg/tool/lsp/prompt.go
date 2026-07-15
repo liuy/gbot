@@ -24,30 +24,29 @@ Use ` + "`Lsp`" + ` INSTEAD of text-based tools (Grep, manual renames) when you 
 
 ### How to pass symbols
 
-Position-based actions (definition, references, hover, rename, etc.) take a ` + "`symbol`" + ` parameter — the symbol NAME. The tool automatically resolves it to a position via the language server. You do NOT need to know line numbers.
+Position-based actions (definition, references, hover, rename, etc.) take a ` + "`symbol`" + ` parameter — the symbol NAME. The tool always resolves it to a position via workspace/symbol search. You do NOT need to know line numbers or file paths.
 
-- ` + "`symbol`" + `: the identifier name. For gopls (Go): methods require receiver type prefix (e.g. ` + "`WUIConnector.buildHistoryMessageForSlot`" + `), standalone functions use bare name (e.g. ` + "`buildErrorMessage`" + `). For typescript-language-server: just the identifier (e.g. ` + "`buildHistoryMessageForSlot`" + `).
-- ` + "`file`" + ` (optional): when provided, the tool searches within that file only (faster + disambiguates). When omitted, the tool searches the entire workspace.
+- ` + "`symbol`" + `: the identifier name (e.g. ` + "`buildHistory`" + `, ` + "`WUIConnector`" + `). For Go methods, use the bare method name (e.g. ` + "`buildHistory`" + `).
 - For symbols that appear multiple times, append ` + "`#N`" + ` to select the Nth occurrence (e.g. ` + "`value#2`" + `). Default is ` + "`#1`" + `.
 
 ### Available actions
 
 | Action | symbol | file | Description |
 |--------|--------|------|-------------|
-| definition | yes | optional | Navigate to symbol definition |
-| type_definition | yes | optional | Navigate to type definition |
-| implementation | yes | optional | Find concrete implementations |
-| references | yes | optional | Find all usages |
-| hover | yes | optional | Get type information + docs |
-| callers | yes | optional | What calls this function |
-| callees | yes | optional | What this function calls |
-| source | yes | optional | Extract full source text of a symbol |
-| inspect | yes | optional | hover + definition + callers combined |
-| impact | yes | optional | references + callers + callees combined |
+| definition | yes | — | Navigate to symbol definition |
+| type_definition | yes | — | Navigate to type definition |
+| implementation | yes | — | Find concrete implementations |
+| references | yes | — | Find all usages |
+| hover | yes | — | Get type information + docs |
+| callers | yes | — | What calls this function |
+| callees | yes | — | What this function calls |
+| source | yes | — | Extract full source text of a symbol |
+| inspect | yes | — | hover + definition + callers combined |
+| impact | yes | — | references + callers + callees combined |
 | symbols | — | yes | List symbols in a file (hierarchical) |
 | workspace_symbol | — | — | Search symbols across project (uses query param) |
-| code_actions | yes | optional | List available quick-fixes |
-| rename | yes | optional | Rename a symbol (requires new_name) |
+| code_actions | yes | — | List available quick-fixes |
+| rename | yes | — | Rename a symbol (requires new_name) |
 | request | optional | optional | Raw LSP method call (query=method, payload=JSON params) |
 | status | — | — | Show active language servers |
 | capabilities | optional | — | Show what each server supports |

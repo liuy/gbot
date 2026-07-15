@@ -20,8 +20,6 @@ func emptyHandler() fakeHandler {
 			return []any{}, true
 		case "textDocument/prepareCallHierarchy":
 			return []any{}, true
-		case "workspace/symbol":
-			return []any{}, true
 		case "textDocument/codeAction":
 			return []any{}, true
 		}

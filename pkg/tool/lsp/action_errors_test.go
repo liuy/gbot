@@ -46,26 +46,23 @@ func TestSymbolsAction_UnknownLanguage(t *testing.T) {
 	}
 }
 
-// TestResolveAndOpen_NoServer covers the ForFile failure when no LSP server
-// matches the file extension.
+// TestResolveAndOpen_NoServer covers the case where workspace/symbol finds
+// no match because no server handles the file type.
 func TestResolveAndOpen_NoServer(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, nil)
 	defer cleanup()
 
-	src := filepath.Join(dir, "foo.go")
-	if err := os.WriteFile(src, []byte("package main\nfunc foo(){}\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Use a .ts file — fakels only handles .go, so ForFile should fail.
+	// .ts file — fakels only handles .go, so workspace/symbol fallback
+	// (which scans .go files) won't find this symbol.
 	tsFile := filepath.Join(dir, "x.ts")
 	if err := os.WriteFile(tsFile, []byte("function foo() {}\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := New(reg).Call(context.Background(), mustInput(t, Input{
-		Action: "definition", Symbol: "foo", File: tsFile,
+		Action: "definition", Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err == nil {
-		t.Fatalf("expected error for .ts with only-.go server, got nil")
+		t.Fatalf("expected error for .ts symbol with only-.go server, got nil")
 	}
 }
 

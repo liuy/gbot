@@ -43,8 +43,8 @@ var readonlyActions = map[string]bool{
 // Input is the LSP tool input schema.
 type Input struct {
 	Action  string `json:"action"`             // required: definition, references, hover, symbols, rename, etc.
-	File    string `json:"file,omitempty"`     // optional: file path (disambiguates + speeds up symbol resolution)
-	Symbol  string `json:"symbol,omitempty"`   // symbol name (resolved to position via documentSymbol or workspace_symbol)
+	File    string `json:"file,omitempty"`     // optional: file path (for symbols, rename_file, request actions)
+	Symbol  string `json:"symbol,omitempty"`   // symbol name (resolved to position via workspace_symbol)
 	NewName string `json:"new_name,omitempty"` // new name for rename / destination path for rename_file
 	Apply   *bool  `json:"apply,omitempty"`    // apply edits (default true for write actions)
 	Query   string `json:"query,omitempty"`    // query string for workspace_symbol / custom request
@@ -67,11 +67,11 @@ func New(reg *lsp.Registry) tool.Tool {
 			},
 			"file": {
 				"type": "string",
-				"description": "Optional. File path to disambiguate symbol resolution. When omitted, workspace_symbol is used to find the symbol across the project."
+				"description": "File path. Required for rename_file."
 			},
 			"symbol": {
 				"type": "string",
-				"description": "Symbol name (e.g. function/type/variable name). Required for position-based actions. Automatically resolved to a position via documentSymbol (if file given) or workspace_symbol. Use symbol#N to disambiguate the Nth occurrence."
+				"description": "Symbol name (e.g. function/type/variable name). Required for position-based actions. Always resolved to a position via workspace_symbol. Use symbol#N to disambiguate the Nth occurrence."
 			},
 			"new_name": {
 				"type": "string",
@@ -199,10 +199,9 @@ func dispatch(ctx context.Context, reg *lsp.Registry, in Input, workingDir strin
 	}
 }
 
-// fileOp is the dispatch for file-scoped actions.
-// Position-based actions resolve the symbol to a position via documentSymbol
-// (if file is given) or workspace_symbol (if not), so the LLM never needs
-// to pass line numbers.
+// fileOp is the dispatch for position-based and file-scoped actions.
+// Symbol-based actions resolve the symbol to a position via workspace_symbol,
+// so the LLM never needs to pass line numbers.
 func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (*tool.ToolResult, error) {
 	// rename validation early so the error is about new_name, not symbol resolution
 	if in.Action == "rename" && in.NewName == "" {
@@ -264,7 +263,7 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 // resolveAndOpen resolves the symbol to a position, ensures the file is open
 // in the LSP server, and returns everything the action handlers need.
 func resolveAndOpen(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (uri string, pos lsp.Position, c *lsp.Client, spec lsp.ServerSpec, err error) {
-	uri, pos, err = resolveSymbolPosition(ctx, reg, in.Symbol, in.File, workingDir)
+	uri, pos, err = resolveSymbolPosition(ctx, reg, in.Symbol, workingDir)
 	if err != nil {
 		return "", lsp.Position{}, nil, lsp.ServerSpec{}, err
 	}
@@ -570,14 +569,13 @@ func isMethodNotFoundError(err error) bool {
 // TUI tool header. Format: "<action> <target>".
 // Examples:
 //
-//	"definition pkg/foo.go:Bar"   // position-based, with file and symbol
-//	"definition Bar"             // position-based, symbol only
-//	"rename Bar → Baz"            // rename
-//	"rename_file old.go → new.go" // rename_file
-//	"symbols pkg/foo.go"          // file-scoped
-//	"workspace_symbol Foo"        // query-driven
-//	"request textDocument/hover"  // raw method
-//	"status"                      // no params
+//	"definition Bar"               // position-based, symbol only
+//	"rename Bar → Baz"             // rename
+//	"rename_file old.go → new.go"  // rename_file
+//	"symbols pkg/foo.go"           // file-scoped
+//	"workspace_symbol Foo"         // query-driven
+//	"request textDocument/hover"   // raw method
+//	"status"                       // no params
 func formatLspDescription(in Input) string {
 	switch in.Action {
 	case "rename":
