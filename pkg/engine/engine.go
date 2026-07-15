@@ -1110,6 +1110,8 @@ func (e *Engine) emitEvent(event types.QueryEvent) {
 	case types.EventToolParamDelta:
 		if event.PartialInput != nil && event.PartialInput.Delta != "" {
 			e.paramCoalesce.write(event.PartialInput.ID, event.PartialInput.Delta, event.PartialInput, e.effectiveWindow(), e.flushParamBuf)
+		} else if event.PartialInput != nil && event.PartialInput.Summary != "" {
+			e.dispatcher.Dispatch(event)
 		}
 		return
 
@@ -1362,6 +1364,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				}
 				e.mu.Unlock()
 				e.emitEvent(types.QueryEvent{
+					Type: types.EventToolParamDelta,
+					PartialInput: &types.PartialInputEvent{
+						ID:      compactID,
+						Summary: CompactSummaryLine(result),
+					},
+				})
+				e.emitEvent(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
@@ -1440,6 +1449,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					result, compactErr := e.runCompact(ctx)
 					if compactErr == nil {
 						e.fireCompactHooks(ctx, "auto", "post")
+						e.emitEvent(types.QueryEvent{
+							Type: types.EventToolParamDelta,
+							PartialInput: &types.PartialInputEvent{
+								ID:      compactID,
+								Summary: CompactSummaryLine(result),
+							},
+						})
 						e.emitEvent(types.QueryEvent{
 							Type: types.EventToolEnd,
 							ToolResult: &types.ToolResultEvent{
@@ -1574,6 +1590,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 							// Compact failed — fall through to existing terminal path.
 						} else {
 							e.fireCompactHooks(ctx, "auto", "post")
+							e.emitEvent(types.QueryEvent{
+								Type: types.EventToolParamDelta,
+								PartialInput: &types.PartialInputEvent{
+									ID:      compactID,
+									Summary: CompactSummaryLine(result),
+								},
+							})
 							e.emitEvent(types.QueryEvent{
 								Type: types.EventToolEnd,
 								ToolResult: &types.ToolResultEvent{

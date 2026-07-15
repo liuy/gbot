@@ -2720,19 +2720,19 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 
 	eng.QuerySync(ctx, "do something", "")
 
-	for _, ev := range tc.FindEvents(types.EventToolEnd) {
-		if ev.ToolResult != nil && strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
-			compactDisplayOutput = ev.ToolResult.DisplayOutput
+	for _, ev := range tc.FindEvents(types.EventToolParamDelta) {
+		if ev.PartialInput != nil && strings.Contains(ev.PartialInput.Summary, "compacted") {
+			compactDisplayOutput = ev.PartialInput.Summary
 		}
 	}
 
 	if compactDisplayOutput == "" {
-		t.Fatal("expected compact output event")
+		t.Fatal("expected compact param delta with summary")
 	}
 
 	// runCompact uses compactor's BeforeTokens/AfterTokens directly (no delta).
 	if !strings.Contains(compactDisplayOutput, "token: 9.8k → 3.9k") {
-		t.Errorf("expected compact output to show compactor tokens (9.8k → 3.9k), got:\n%s", compactDisplayOutput)
+		t.Errorf("expected compact summary to show compactor tokens (9.8k → 3.9k), got:\n%s", compactDisplayOutput)
 	}
 
 	eng.mu.RLock()

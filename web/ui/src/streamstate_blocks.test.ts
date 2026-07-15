@@ -496,6 +496,25 @@ describe('streamState block tree rendering', () => {
     }).not.toThrow()
   })
 
+  it('tool_start with summary renders it immediately (compact virtual tool)', () => {
+    mount()
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'tool_start',
+        tool_use: { id: 'compact1', name: 'Compact', summary: 'Compacting conversation...' },
+      },
+    })
+
+    // The tool header should show the summary from tool_start
+    const summaryEls = document.querySelectorAll('.text-t2')
+    let found = false
+    summaryEls.forEach(el => {
+      if (el.textContent && el.textContent.includes('Compacting')) found = true
+    })
+    expect(found).toBe(true)
+  })
+
   it('Agent tool header shows agent type from sub-agent turn_start event', () => {
     mount()
     dispatch({

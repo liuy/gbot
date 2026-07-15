@@ -103,13 +103,28 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 			if evt.ToolResult.IsError {
 				t.Error("compact end should not be an error")
 			}
-			if !strings.Contains(evt.ToolResult.DisplayOutput, "compacted") {
-				t.Errorf("expected 'compacted' in display output, got %q", evt.ToolResult.DisplayOutput)
-			}
 		}
 	}
 	if !foundCompactEnd {
 		t.Error("expected compact end event with 'Context compacted' message")
+	}
+
+	// Verify tool_param_delta emitted with compact summary before tool_end.
+	paramDeltaEvents := tc.FindEvents(types.EventToolParamDelta)
+	var foundCompactParamDelta bool
+	for _, evt := range paramDeltaEvents {
+		if evt.PartialInput != nil && strings.HasPrefix(evt.PartialInput.ID, "compact-recovery-") {
+			foundCompactParamDelta = true
+			if !strings.Contains(evt.PartialInput.Summary, "compacted") {
+				t.Errorf("expected 'compacted' in param delta summary, got %q", evt.PartialInput.Summary)
+			}
+			if !strings.Contains(evt.PartialInput.Summary, "[msg:") {
+				t.Errorf("expected '[msg:' in param delta summary, got %q", evt.PartialInput.Summary)
+			}
+		}
+	}
+	if !foundCompactParamDelta {
+		t.Error("expected tool_param_delta with compact summary before tool_end")
 	}
 
 	// Verify NO continuation meta message (context_window_exceeded just compacts and retries).

@@ -62,10 +62,20 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 				IsError:   true,
 			}
 		}
-		return toolEndMsg{
-			ToolUseID: toolID,
-			Output:    engine.FormatCompactOutput(result),
-		}
+		return tea.Batch(
+			func() tea.Msg {
+				return toolParamDeltaMsg{
+					ID:      toolID,
+					Summary: engine.CompactSummaryLine(result),
+				}
+			},
+			func() tea.Msg {
+				return toolEndMsg{
+					ToolUseID: toolID,
+					Output:    engine.FormatCompactOutput(result),
+				}
+			},
+		)()
 	}
 
 	// spinnerTickMsg is self-perpetuating only after the first tick fires.

@@ -545,6 +545,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   function buildToolBlock(tu: {
     id: string
     name: string
+    summary?: string
     is_search?: boolean
     is_read?: boolean
     is_list?: boolean
@@ -554,7 +555,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       kind: 'tool',
       id: tu.id,
       name: tu.name,
-      summary: '',
+      summary: tu.summary ?? '',
       isSearch: !!tu.is_search,
       isRead: !!tu.is_read,
       isList: !!tu.is_list,
@@ -1170,6 +1171,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             progressAnchor(),
             collapsible,
           )
+          if (tu.summary) {
+            setToolSummary(handles, tu.summary, tu.name)
+          }
           toolEntries.set(tu.id, {
             handles,
             startedAt: block.startedAt,

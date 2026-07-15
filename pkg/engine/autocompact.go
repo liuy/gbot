@@ -18,15 +18,20 @@ import (
 )
 
 // FormatCompactOutput builds the display text for a successful compact result.
-// Structure: stats line first (fills collapse preview), then summary content.
+// Returns only the LLM summary — the stats line goes to header via CompactSummaryLine.
 func FormatCompactOutput(result *short.CompactResult) string {
-	output := fmt.Sprintf("Conversation compacted (msg: %d → %d, token: %s → %s)",
+	if result.Summary != "" {
+		return result.Summary
+	}
+	return ""
+}
+
+// CompactSummaryLine returns the stats line from FormatCompactOutput (first line),
+// used as the header summary for compact tool_param_delta events.
+func CompactSummaryLine(result *short.CompactResult) string {
+	return fmt.Sprintf("Conversation compacted [msg: %d → %d, token: %s → %s]",
 		result.BeforeMessages, len(result.Messages),
 		types.FormatTokenCount(result.BeforeTokens), types.FormatTokenCount(result.AfterTokens))
-	if result.Summary != "" {
-		output += "\n" + result.Summary
-	}
-	return output
 }
 
 // EngineCompactorMeta is the interface AutoCompactor needs from Engine to
