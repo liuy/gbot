@@ -87,7 +87,7 @@ app-check:
 	$(MAKE) -C app/android check
 
 # web-build regenerates the React SPA embedded into the Go binary.
-# Assets are checked into pkg/connector/webchat/assets/ so go build works
+# Assets are checked into pkg/connector/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
 web-build:
 	cd web/ui && npm install && npm run build

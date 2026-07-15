@@ -367,7 +367,7 @@ func TestHandleMessageInbound_BusyStillAppendsHistory(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // EngineID vs SessionID: history file must use EngineID (e.g. "main"),
-// NOT SessionID (e.g. a UUID). This is the key for TUI↔webchat sync.
+// NOT SessionID (e.g. a UUID). This is the key for TUI↔wui sync.
 // ---------------------------------------------------------------------------
 
 func TestInputHistoryPath_UsesEngineID(t *testing.T) {
@@ -391,7 +391,7 @@ func TestLoadInputHistory_ReadsEngineIDFile(t *testing.T) {
 		`{"display":"from-tui-1","timestamp":1}`,
 		`{"display":"from-tui-2","timestamp":2}`,
 	})
-	// webchat session uses a different UUID
+	// wui session uses a different UUID
 	c := newTestConnector(t)
 	c.mock().projectDirFn = func() string { return dir }
 	c.mock().engineIDFn = func() string { return "main" }
@@ -413,7 +413,7 @@ func TestAppendInputHistory_WritesToEngineIDFile(t *testing.T) {
 	c.mock().engineIDFn = func() string { return "main" }
 	c.mock().sessionIDFn = func() string { return "d210b02c-uuid-here" }
 
-	c.appendInputHistory("from-webchat")
+	c.appendInputHistory("from-wui")
 
 	// File must be main.jsonl (EngineID), not d210b02c-uuid-here.jsonl (SessionID)
 	mainPath := filepath.Join(dir, "history", "main.jsonl")
@@ -426,7 +426,7 @@ func TestAppendInputHistory_WritesToEngineIDFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read main.jsonl: %v", err)
 	}
-	if !strings.Contains(string(data), `"display":"from-webchat"`) {
-		t.Errorf("main.jsonl = %q, want display from-webchat", string(data))
+	if !strings.Contains(string(data), `"display":"from-wui"`) {
+		t.Errorf("main.jsonl = %q, want display from-wui", string(data))
 	}
 }

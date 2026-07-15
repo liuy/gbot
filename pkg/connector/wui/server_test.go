@@ -211,7 +211,7 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 
 // TestRegisterChatWS_CancelQueuedBatch verifies that a cancel_queued inbound
 // message with a UUID array invokes engine.RemoveAttachment once per UUID in
-// order. Replaces the prior single-UUID contract — webchat now sends the
+// order. Replaces the prior single-UUID contract — wui now sends the
 // full queued UUID list for batch cancellation (TUI popAllQueuedToInput parity).
 func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
 	c := newTestConnector(t)

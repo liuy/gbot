@@ -588,7 +588,7 @@ func main() {
 	app.SetStore(store, sessionID, projectDir)
 	app.SetEngineFactory(engineFactory)
 
-	// Webchat wiring: the connector owns the EngineManager and subscribes to
+	// WUI wiring: the connector owns the EngineManager and subscribes to
 	// every engine's hub. engine_new is wired via a closure that captures
 	// engineFactory + engineMgr + store. Routes are added to the same
 	// *http.ServeMux the already-running *http.Server uses (Go's ServeMux is
@@ -605,7 +605,7 @@ func main() {
 					currentModel = vs.Engine.Model()
 				}
 			}
-			return createEngineForWebchat(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
+			return createEngineForWUI(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
 		})
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
@@ -969,11 +969,11 @@ func restoreEngines(d restoreEnginesDeps) string {
 	return ""
 }
 
-// createEngineForWebchat builds a new engine via engineFactory, registers it
+// createEngineForWUI builds a new engine via engineFactory, registers it
 // in the manager, subscribes the wui connector to its hub, and wires
 // OnStreamDone. Returns the new engine ID. Called by the connector's
 // engine_new handler via the closure injected by SetCreateEngineFn.
-func createEngineForWebchat(
+func createEngineForWUI(
 	name string,
 	mgr *engine.EngineManager,
 	factory tui.EngineFactoryFn,

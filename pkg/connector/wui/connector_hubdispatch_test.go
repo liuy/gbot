@@ -13,7 +13,7 @@ import (
 // TestHubDispatch_SubAgentEvent_PreservesAgentMeta verifies the full
 // hub → connector → wire JSON pipeline preserves agent meta on sub-agent
 // events. This is the minimal reproduction for "Reviewer output not visible
-// in webchat" — if agent meta is lost, the frontend cannot route sub-agent
+// in wui" — if agent meta is lost, the frontend cannot route sub-agent
 // events to the parent tool block's children.
 func TestHubDispatch_SubAgentEvent_PreservesAgentMeta(t *testing.T) {
 	h := hub.NewHub()

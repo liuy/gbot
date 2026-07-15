@@ -1,4 +1,4 @@
-// Package webchat implements the gbot web chat connector: an HTTP+WS server
+// Package wui implements the gbot web chat connector: an HTTP+WS server
 // that serves a React SPA, bridges the engine's QueryEvent stream over
 // WebSocket to browser/WebView clients, and handles Ask (permission)
 // interactions via a request/response WS protocol.
@@ -379,7 +379,7 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 }
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
-// main.go's createEngineForWebchat to register engines created after boot.
+// main.go's createEngineForWUI to register engines created after boot.
 func (c *WUIConnector) RegisterEngine(vs *engine.EngineViewState) {
 	c.registerEngine(vs)
 }
@@ -403,8 +403,8 @@ func (c *WUIConnector) Stop() {
 	c.cleanupConn()
 }
 
-// Send is an interface no-op: webchat has no outbound platform. Nobody calls
-// Send on the webchat connector; it exists solely to satisfy the
+// Send is an interface no-op: wui has no outbound platform. Nobody calls
+// Send on the wui connector; it exists solely to satisfy the
 // connector.Connector contract.
 func (c *WUIConnector) Send(userID, text string) error { return nil }
 

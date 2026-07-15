@@ -13,7 +13,7 @@ import (
 
 // TestModelSwitch_PersistsToMetaJSON verifies that handleModelSwitch writes
 // the new provider/model to .gbot/meta.json via EngineManager.PersistMeta,
-// mirroring the TUI's persistModelSelection. Without this, webchat model
+// mirroring the TUI's persistModelSelection. Without this, wui model
 // switches are lost on restart.
 func TestModelSwitch_PersistsToMetaJSON(t *testing.T) {
 	dir := t.TempDir()

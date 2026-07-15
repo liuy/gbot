@@ -664,7 +664,7 @@ func TestEmitEvent_WindowExpiredMidStream(t *testing.T) {
 
 // TestEmitEvent_E2E_ToolParamDeltaPreservesMetadata verifies that coalesced
 // tool_param_delta events preserve Name and Summary from the original stream.
-// This is the observable behavior downstream consumers (TUI, webchat) rely on.
+// This is the observable behavior downstream consumers (TUI, wui) rely on.
 func TestEmitEvent_E2E_ToolParamDeltaPreservesMetadata(t *testing.T) {
 	md := &mockDispatcher{}
 	eng := New(&Params{

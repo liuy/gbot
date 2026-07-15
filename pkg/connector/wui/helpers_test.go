@@ -22,7 +22,7 @@ import (
 )
 
 // waitFor polls cond until it returns true or the timeout elapses.
-// The webchat WS tests use real TCP connections (httptest.Server + gorilla
+// The wui WS tests use real TCP connections (httptest.Server + gorilla
 // dialer), so there is no channel to select on — polling is the only option.
 func waitFor(timeout time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(timeout) // REAL-TIME

@@ -5279,7 +5279,7 @@ func TestEngineDefaultModalitiesStripsImage(t *testing.T) {
 
 // TestQuery_ThinkingDurationPersisted verifies that thinking block duration
 // is written into the ContentBlock after thinking_end, so it survives history
-// persistence (used by webchat/TUI history load to show "Thought for Xs").
+// persistence (used by wui/TUI history load to show "Thought for Xs").
 func TestQuery_ThinkingDurationPersisted(t *testing.T) {
 	t.Parallel()
 

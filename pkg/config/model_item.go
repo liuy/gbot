@@ -3,7 +3,7 @@ package config
 import "sort"
 
 // ModelItem represents a single provider/model entry in a model picker.
-// Shared by the TUI model picker and the webchat config message so both
+// Shared by the TUI model picker and the wui config message so both
 // surfaces use the same ordering logic.
 type ModelItem struct {
 	Provider string
