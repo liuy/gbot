@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/tool"
@@ -365,5 +367,94 @@ func TestIntegration_Impact_AllSubErrors(t *testing.T) {
 	got := fmt.Sprintf("%v", result.Data)
 	if !strings.Contains(got, "## References") || !strings.Contains(got, "No references found") {
 		t.Errorf("expected References section in impact output: %q", got)
+	}
+}
+
+// TestRename_SendsDidChange verifies that after a rename applies edits to disk,
+// textDocument/didChange is sent to the LSP server so its workspace index stays
+// in sync. Without this, subsequent workspace/symbol queries return stale results.
+func TestRename_SendsDidChange(t *testing.T) {
+	var mu sync.Mutex
+	var didChangeCount int
+	var didChangeURIs []string
+	didChangeCh := make(chan struct{}, 4)
+
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, params json.RawMessage) (any, bool) {
+			switch method {
+			case "workspace/symbol":
+				return []map[string]any{{
+					"name": "oldName",
+					"kind": 12,
+					"location": map[string]any{
+						"uri": "file://" + filepath.Join(d, "foo.go"),
+						"range": map[string]any{
+							"start": map[string]any{"line": 0, "character": 5},
+							"end":   map[string]any{"line": 0, "character": 11},
+						},
+					},
+				}}, true
+			case "textDocument/rename":
+				return map[string]any{
+					"documentChanges": []map[string]any{{
+						"textDocument": map[string]any{
+							"uri":     "file://" + filepath.Join(d, "foo.go"),
+							"version": 1,
+						},
+						"edits": []map[string]any{{
+							"range": map[string]any{
+								"start": map[string]any{"line": 0, "character": 5},
+								"end":   map[string]any{"line": 0, "character": 11},
+							},
+							"newText": "newName",
+						}},
+					}},
+				}, true
+			case "textDocument/didChange":
+				mu.Lock()
+				didChangeCount++
+				var p struct {
+					TextDocument struct {
+						URI string `json:"uri"`
+					} `json:"textDocument"`
+				}
+				_ = json.Unmarshal(params, &p)
+				didChangeURIs = append(didChangeURIs, p.TextDocument.URI)
+				mu.Unlock()
+				didChangeCh <- struct{}{}
+				return nil, false
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc oldName() {}\n"), 0644)
+
+	tt := New(reg)
+	_, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "rename", Symbol: "oldName", NewName: "newName",
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// Wait for the didChange notification to be processed.
+	var uriCount int
+	var firstURI string
+	select {
+	case <-didChangeCh:
+		mu.Lock()
+		uriCount = len(didChangeURIs)
+		if uriCount > 0 {
+			firstURI = didChangeURIs[0]
+		}
+		mu.Unlock()
+	case <-time.After(3 * time.Second):
+		t.Fatal("rename did not send textDocument/didChange within deadline — server index will be stale")
+	}
+
+	if uriCount == 0 || !strings.HasSuffix(firstURI, "foo.go") {
+		t.Errorf("didChange URI = %v, want foo.go", didChangeURIs)
 	}
 }

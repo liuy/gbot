@@ -100,7 +100,14 @@ func serveFake(t *testing.T, conn net.Conn, handler fakeHandler, dir string) {
 		if err := json.Unmarshal(body, &req); err != nil {
 			continue
 		}
-		if req.JSONRPC == "" || req.ID == 0 {
+		if req.JSONRPC == "" {
+			continue
+		}
+		if req.ID == 0 {
+			// Notification (no ID) — fire handler without sending response.
+			if handler != nil {
+				handler(req.Method, req.Params)
+			}
 			continue
 		}
 

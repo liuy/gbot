@@ -34,6 +34,7 @@ func rename(ctx context.Context, c *lsp.Client, uri string, pos lsp.Position, ne
 		for _, line := range changed {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
+		c.NotifyFilesChanged(ctx, changed)
 		return &tool.ToolResult{Data: b.String()}, nil
 	}
 

@@ -71,7 +71,11 @@ func codeActions(ctx context.Context, c *lsp.Client, uri string, pos lsp.Positio
 		}
 
 		applied, err := lsp.ApplyCodeAction(ctx, c, *selected, func(we *lsp.WorkspaceEdit) ([]string, error) {
-			return lsp.ApplyWorkspaceEdit(we)
+			changed, werr := lsp.ApplyWorkspaceEdit(we)
+			if werr == nil {
+				c.NotifyFilesChanged(ctx, changed)
+			}
+			return changed, werr
 		})
 		if err != nil {
 			return nil, fmt.Errorf("apply code action: %w", err)

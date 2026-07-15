@@ -431,6 +431,36 @@ func (c *Client) DidChange(ctx context.Context, uri, content string) error {
 	})
 }
 
+// NotifyFileChanged syncs the server's view of a file after an external edit.
+// Reads fresh disk content and sends didOpen (if not yet open) or didChange
+// (if already open), so the server's internal snapshot cache stays coherent.
+func (c *Client) NotifyFileChanged(ctx context.Context, uri string, languageID string) error {
+	path := URItoPath(uri)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("lsp %s: NotifyFileChanged read %s: %w", c.name, path, err)
+	}
+	c.mu.Lock()
+	_, open := c.openURIs[uri]
+	c.mu.Unlock()
+	if !open {
+		return c.EnsureFileOpen(ctx, uri, languageID, string(content))
+	}
+	return c.DidChange(ctx, uri, string(content))
+}
+
+// NotifyFilesChanged is a batch helper for NotifyFileChanged. It detects each
+// file's language from its extension and calls NotifyFileChanged for each.
+func (c *Client) NotifyFilesChanged(ctx context.Context, paths []string) {
+	for _, path := range paths {
+		uri := FileToURI(path)
+		langID := DetectLanguage(path)
+		if err := c.NotifyFileChanged(ctx, uri, langID); err != nil {
+			slog.Warn("lsp: notify change failed", "file", path, "error", err)
+		}
+	}
+}
+
 // Initialize sends the LSP initialize handshake. Call once after StartClient.
 func (c *Client) Initialize(ctx context.Context, rootURI string) error {
 	params := map[string]any{
