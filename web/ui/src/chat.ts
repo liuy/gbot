@@ -791,6 +791,84 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     console.debug('[chat] initStreaming reason=' + reason + ' streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
   }
 
+  function registerBlocksForStreamState(blocks: Block[], _parentID: string | null) {
+    for (const b of blocks) {
+      if (b.kind === 'tool') {
+        pendingToolByID.set(b.id, b)
+        knownToolIDs.add(b.id)
+        if (b.children.length > 0) {
+          registerBlocksForStreamState(b.children, b.id)
+        }
+      }
+    }
+  }
+
+  function renderStreamBlock(
+    parent: HTMLElement,
+    block: Block,
+    before: Node | null,
+    parentID: string | null,
+  ) {
+    if (block.kind === 'text') {
+      if (!block.text) return
+      const div = appendTextBlock(parent, before)
+      div.innerHTML = renderMarkdown(block.text)
+    } else if (block.kind === 'thinking') {
+      const startedAt = block.startedAt || Date.now()
+      const { p, labelEl } = appendThinkingBlock(parent, startedAt, before)
+      if (block.text) writeThinkingText(p, block.text)
+      if (block.active) {
+        const entry: ThinkingEntry = { p, labelEl, startedAt, pendingBlock: block }
+        if (parentID) {
+          currentSubAgentThinking.set(parentID, entry)
+        } else {
+          currentThinking = entry
+        }
+      } else {
+        finishThinking(p, labelEl, block.durationNs)
+      }
+    } else if (block.kind === 'tool') {
+      const collapsible = isCollapsibleToolName(block.name) || isCollapsibleToolBlock(block)
+      const handles = appendToolBlock(parent, block.name, before, collapsible)
+      if (block.summary) setToolSummary(handles, block.summary, block.name)
+      if (block.state === 'running') {
+        toolEntries.set(block.id, {
+          handles,
+          startedAt: block.startedAt || Date.now(),
+          parentID,
+          pendingBlock: block,
+        })
+        if (block.children.length > 0) {
+          expandToolChildrenForRunning(handles)
+        }
+      } else {
+        finishTool(handles, {
+          isError: block.state === 'error',
+          durationNs: block.timingNs,
+          output: block.displayOutput,
+          skipHighlight: true,
+        })
+      }
+      if (block.children.length > 0) {
+        const childContainer = appendToolChildrenContainer(handles)
+        for (const child of block.children) {
+          renderStreamBlock(childContainer, child, null, block.id)
+        }
+      }
+    }
+  }
+
+  function renderStreamStateBlocks(blocks: Block[]) {
+    if (!streamContainer) return
+    pendingBlocks.length = 0
+    pendingBlocks.push(...blocks)
+    registerBlocksForStreamState(blocks, null)
+    const anchor = progressAnchor()
+    for (const b of blocks) {
+      renderStreamBlock(streamContainer, b, anchor, null)
+    }
+  }
+
   function handleEvent(e: QueryEvent) {
     switch (e.type) {
       case 'query_start': {
@@ -1333,32 +1411,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'streamState': {
-        if (msg.text || msg.tools.length > 0 || msg.thinking) {
+        if (msg.blocks.length > 0) {
           initStreaming('streamState')
-          if (msg.text) {
-            handleEvent({ type: 'text_delta', text: msg.text })
-          }
-          for (const tool of msg.tools) {
-            handleEvent({
-              type: 'tool_start',
-              tool_use: { id: tool.id, name: tool.name, input: tool.input },
-            })
-            if (tool.done) {
-              handleEvent({
-                type: 'tool_end',
-                tool_result: { tool_use_id: tool.id, output: tool.output ?? '', display_output: tool.output, is_error: tool.error },
-              })
-            }
-          }
-          if (msg.thinking) {
-            handleEvent({ type: 'thinking_start' })
-            if (msg.thinking.text) {
-              handleEvent({ type: 'thinking_delta', thinking: { text: msg.thinking.text } })
-            }
-            if (msg.thinking.done) {
-              handleEvent({ type: 'thinking_end', thinking: { duration: msg.thinking.duration_ns } })
-            }
-          }
+          renderStreamStateBlocks(msg.blocks)
         }
         return
       }

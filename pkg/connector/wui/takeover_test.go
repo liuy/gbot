@@ -89,16 +89,16 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 	}
 
 	// Now send live events d5, d6, d7. Since d0..d4 went through the active
-	// path (main engine active, ws1 connected), updateStreamState was NOT
-	// called — streamState is empty. So no streamState snapshot is sent.
-	// All three events arrive as event frames.
+	// path (main engine active, ws1 connected), updateStreamState WAS called
+	// (new design: both paths call it). streamState has accumulated text.
+	// So d5 triggers a streamState snapshot, then d5/d6/d7 arrive as events.
 	for i := 5; i < 8; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 	}
 
-	// Read 3 event frames from ws2.
+	// Read from ws2: streamState snapshot (1) + event frames (3).
 	var got2 []string
-	for range 3 {
+	for range 4 {
 		msg := readWSMessage(t, ws2)
 		var head struct {
 			Type string `json:"type"`
@@ -222,20 +222,15 @@ func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
 }
 
 // TestWritePayloadAndClear_ClearsBufferOnDisconnect verifies that
-// turn_end/query_end clears streamState even when activeWS is nil
+// query_end clears streamState even when activeWS is nil
 // (client disconnected during the turn). Without this, a takeover replay
 // would re-send events from a turn that's already committed to
 // engine.Messages(), causing duplication on the client.
-//
-// Falsifiability: if the unconditional buffer clear in
-// onEngineEvent is moved back after the ws==nil check, this test
-// fails because buffer still has frames after query_end (which clears).
 func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 	c := newTestConnector(t)
 
 	// Simulate streaming events into buffer (no active WS — disconnected).
-	// 2 text_deltas accumulate into a single text string (count=1 under new
-	// streamState counting).
+	// 2 text_deltas accumulate into a single text block (count=1).
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
@@ -243,11 +238,11 @@ func TestWritePayloadAndClear_ClearsBufferOnDisconnect(t *testing.T) {
 		t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
 	}
 
-	// query_end arrives while disconnected. Buffer MUST be cleared.
+	// query_end arrives while disconnected. Resets streamState.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if c.activeStreamBufLen() != 0 {
-		t.Fatalf("buffer should be empty after query_end (even with nil activeWS), got %d frames — replay would duplicate committed turn", c.activeStreamBufLen())
+		t.Fatalf("buffer should be empty after query_end, got %d frames — replay would duplicate committed turn", c.activeStreamBufLen())
 	}
 }
 
@@ -284,20 +279,17 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTurnEnd, Agent: agent})
 
 	// Buffer must still contain state — sub-agent turn_end must NOT have
-	// cleared it. Count = tools(1: Agent) + thinking(1: Reviewer replaces
-	// main's) = 2.
+	// cleared it. Root blocks: [thinking, Agent-tool] = 2.
 	if c.activeStreamBufLen() != 2 {
 		t.Fatalf("buffer should have 2 entries after sub-agent turn_end (must not clear), got %d — sub-agent turn_end cleared parent setup events", c.activeStreamBufLen())
 	}
 
-	// Now main agent commits the assistant response — simulate query_end clearing buffer.
+	// Now main agent commits the assistant response — query_end resets streamState.
 	c.slotsMu.RLock()
 	slot := c.slots["main"]
 	c.slotsMu.RUnlock()
 	if slot != nil {
-		slot.streamState = streamState{}
-		resetQueryStats(&slot.queryStats)
-		slot.taskToolIDs = make(map[string]bool)
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 	}
 	if c.activeStreamBufLen() != 0 {
 		t.Fatalf("buffer should be empty after query_end, got %d", c.activeStreamBufLen())
@@ -358,46 +350,46 @@ func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
 }
 
 // TestWritePayloadAndClear_ClearsBufferWithActiveWS verifies that
-// onEngineEvent clears streamState when activeWS is connected
-// and the write succeeds. The turn's events are committed to
-// engine.Messages() so replay must not include them.
+// updateStreamState is called on the active path (events go to both
+// streamState and WS), and query_end clears it.
 func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
-	// When the engine is active and WS is connected, events go directly to
-	// wsCh (updateStreamState is NOT called). So streamState stays empty.
+	// When the engine is active and WS is connected, events go to both
+	// streamState and WS (design decision 2: both paths call updateStreamState).
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	// query_end arrives while connected. Buffer must be cleared (it's already
-	// empty since events went to WS, but the clear must still happen).
+	// query_end clears streamState.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if c.activeStreamBufLen() != 0 {
-		t.Fatalf("buffer should be empty after query_end with active WS, got %d", c.activeStreamBufLen())
+		t.Fatalf("buffer should be empty after query_end, got %d", c.activeStreamBufLen())
 	}
 
-	// Drain the 2 text_delta events (sent as individual event frames), then
-	// read query_end from the WS.
-	_ = readWSMessage(t, ws)    // delta1
-	_ = readWSMessage(t, ws)    // delta2
-	msg := readWSMessage(t, ws) // query_end
-	var env struct {
-		Event struct {
-			Type string `json:"type"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal query_end: %v", err)
-	}
-	if env.Event.Type != "query_end" {
-		t.Errorf("expected query_end, got %q", env.Event.Type)
+	// Drain: streamState snapshot (with accumulated text), 2 event frames, query_end.
+	// The snapshot has 1 text block with "delta1delta2".
+	// Then event frames for delta1 and delta2, then query_end.
+	for {
+		msg := readWSMessage(t, ws)
+		var env struct {
+			Event struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if env.Event.Type == "query_end" {
+			break
+		}
 	}
 }
 
 // TestWritePayloadAndClear_WriteFailureStillClearsBuffer verifies that
-// onEngineEvent clears the buffer even when the write fails
+// query_end clears the buffer even when the write fails
 // (e.g. broken pipe). The turn is committed regardless of delivery.
 func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	c := newTestConnector(t)
@@ -429,12 +421,12 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	// 2 text_deltas accumulate into one text entry (count=1).
+	// 2 text_deltas accumulate into one text block (count=1).
 	if c.activeStreamBufLen() != 1 {
 		t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
 	}
 
-	// Even though write failed, query_end must clear the buffer.
+	// query_end clears streamState.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if c.activeStreamBufLen() != 0 {
@@ -444,7 +436,7 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 
 // TestTakeover_DoesNotClearBuffer verifies that takeover replay does NOT
 // clear streamState. The buffer must persist across multiple takeovers
-// (reconnects) until turn_end/query_end clears it.
+// (reconnects) until query_end clears it.
 //
 // Scenario: sub-agent (Reviewer) running inside Agent tool. User
 // reconnects multiple times during sub-agent execution. Each reconnect
@@ -452,9 +444,8 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 // sub-agent query_end, reconnect must see the tool result summary via
 // history replay.
 //
-// New counting: text(1) + tools(2: Agent + Grep) = 3. When WS is connected,
-// updateStreamState is NOT called (events go directly to wire), so the
-// buffer count stays constant across live events.
+// New counting: root blocks = [tool(Agent)] = 1. Sub-agent events nest
+// inside Agent's children, so root count stays at 1.
 func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -477,24 +468,29 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 		Agent:      agent,
 	})
 
-	if c.activeStreamBufLen() != 3 {
-		t.Fatalf("buffer should have 3 entries (1 text + 2 tools), got %d", c.activeStreamBufLen())
+	// Root has 1 block: Agent tool. Sub-agent events nest in children.
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should have 1 root block (Agent), got %d", c.activeStreamBufLen())
 	}
 
 	// ── First takeover ──
 	ws1 := dialAndStore(t, c)
 	defer ws1.Close()
+	// Reset snapshotSent so the first live event triggers a streamState snapshot.
+	if s := c.activeSlot(); s != nil {
+		s.snapshotSent.Store(false)
+	}
 
-	if c.activeStreamBufLen() != 3 {
-		t.Fatalf("buffer should still have 3 entries after first takeover, got %d", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should still have 1 root block after first takeover, got %d", c.activeStreamBufLen())
 	}
 
 	// Send a live event — triggers streamState snapshot delivery, then event.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
 
-	// Buffer unchanged (updateStreamState not called when WS is connected).
-	if c.activeStreamBufLen() != 3 {
-		t.Fatalf("buffer should have 3 entries after new event, got %d", c.activeStreamBufLen())
+	// Root block count unchanged (live event nests in children).
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should still have 1 root block after new event, got %d", c.activeStreamBufLen())
 	}
 
 	// ws1 receives: streamState snapshot (with grep result) + event frame (more text).
@@ -522,9 +518,13 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 
 	ws2 := dialAndStore(t, c)
 	defer ws2.Close()
+	// Reset snapshotSent so the first live event triggers a streamState snapshot.
+	if s := c.activeSlot(); s != nil {
+		s.snapshotSent.Store(false)
+	}
 
-	if c.activeStreamBufLen() != 3 {
-		t.Fatalf("buffer should still have 3 entries after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
+	if c.activeStreamBufLen() != 1 {
+		t.Fatalf("buffer should still have 1 root block after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
 	}
 
 	// Send a live event to trigger streamState snapshot on ws2.
@@ -563,9 +563,8 @@ func TestBufferClearedOnQueryEnd(t *testing.T) {
 	}
 
 	// Mock engine: when Query runs, it dispatches streaming events,
-	// then commits (triggering query_end which clears the buffer).
-	// After commit, tool execution dispatches sub-agent events.
-	// This mirrors the real engine lifecycle.
+	// then query_end clears streamState. After commit, tool execution
+	// dispatches sub-agent events. This mirrors the real engine lifecycle.
 	c.mock().queryFn = func(ctx context.Context, userMessage, systemPrompt string) {
 		// LLM streaming: main agent response events.
 		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
@@ -575,13 +574,17 @@ func TestBufferClearedOnQueryEnd(t *testing.T) {
 			Type:    types.EventToolStart,
 			ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
 		})
-		// queryFn returns → mock engine auto-commits (query_end → buffer cleared).
+		// query_end clears streamState after the LLM turn finishes.
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 	}
 
-	// Trigger the full lifecycle: query → streaming → commit.
+	// Trigger the full lifecycle: query → streaming → query_end (streamState cleared).
 	c.mock().Query(context.Background(), "test", "")
 
-	// Sub-agent events arrive AFTER commit (tool execution phase).
+	// Sub-agent events arrive AFTER query_end (tool execution phase).
+	// With the new tree model, tu1 was cleared by query_end.
+	// These sub-agent events target tu1's children but tu1 doesn't exist,
+	// so they are dropped (matching the "unknown parent" behavior).
 	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
 	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
 	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
@@ -605,30 +608,18 @@ func TestBufferClearedOnQueryEnd(t *testing.T) {
 		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
 	}
 
-	// Send a live event to trigger streamState snapshot delivery.
+	// Send a live event. Since tu1 was cleared, the event targets a
+	// non-existent parent and is dropped. No snapshot is sent.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub output", Agent: agent})
 
-	// Read streamState snapshot from ws2.
+	// Read from ws2: just the event frame (no snapshot since blocks is empty).
 	var gotEvents []replayEvent
-	for range 2 {
+	for range 1 {
 		_ = ws2.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // REAL-TIME
 		_, payload, err := ws2.ReadMessage()
 		if err != nil {
 			break
 		}
-		// Check if this is a streamState frame.
-		var ssHead struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(payload, &ssHead) == nil && ssHead.Type == "streamState" {
-			// streamState contains the sub-agent's accumulated state —
-			// verify it has thinking (from sub-agent events).
-			if !strings.Contains(string(payload), "thinking") {
-				t.Error("streamState snapshot missing sub-agent thinking state")
-			}
-			continue
-		}
-		// Check if this is an event frame.
 		var env struct {
 			Event replayEvent `json:"event"`
 		}
@@ -637,9 +628,8 @@ func TestBufferClearedOnQueryEnd(t *testing.T) {
 		}
 	}
 
-	// ws2 should see NO main agent events in the streamState snapshot — they
-	// were committed to history before buffer accumulated sub-agent events.
-	// The live event (sub output) should be an agent event.
+	// ws2 should see NO main agent events — they were committed to history
+	// and cleared from streamState by query_end.
 	for _, ev := range gotEvents {
 		if ev.Agent == nil {
 			t.Errorf("unexpected main agent event %q after snapshot — leaked into buffer after commit", ev.Type)

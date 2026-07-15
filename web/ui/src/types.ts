@@ -1,3 +1,5 @@
+import type { Block } from './model'
+
 export type EngineListItem = {
   id: string
   name: string
@@ -47,12 +49,7 @@ export type ServerMessage =
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
       stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
     }
-  | {
-      type: 'streamState'
-      text: string
-      tools: { id: string; name: string; input: string; output?: string; done: boolean; error?: boolean }[]
-      thinking?: { text: string; duration_ns: number; done: boolean }
-    }
+  | { type: 'streamState'; blocks: Block[] }
 
 export type TaskWireItem = {
   id: string

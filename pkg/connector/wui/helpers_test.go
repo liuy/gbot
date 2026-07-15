@@ -337,7 +337,6 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 	}
 	c.slots[engineID] = slot
 	mock.onQueryDoneFn = func() {
-		slot.streamState = streamState{}
 		slot.taskToolIDs = make(map[string]bool)
 	}
 	go c.wsWriter()
@@ -413,29 +412,28 @@ func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
+	// Mark snapshot as already sent so the first event doesn't trigger a
+	// streamState snapshot frame. Tests that specifically test snapshot
+	// behavior can reset this flag.
+	if s := c.activeSlot(); s != nil {
+		s.snapshotSent.Store(true)
+	}
 	return ws
 }
 
-// activeStreamBufLen returns the number of tool snapshots + text length in the
-// active engine's streamState. Test accessor for verifying in-flight state.
+// activeStreamBufLen returns the number of blocks in the active engine's
+// streamState. Test accessor for verifying in-flight state.
 func (c *WUIConnector) activeStreamBufLen() int {
 	c.slotsMu.RLock()
 	defer c.slotsMu.RUnlock()
 	if s := c.slots[c.ActiveID()]; s != nil {
-		count := len(s.streamState.tools)
-		if s.streamState.text != "" {
-			count++
-		}
-		if s.streamState.thinking != nil {
-			count++
-		}
-		return count
+		return len(s.streamState.blocks)
 	}
 	return 0
 }
 
-// streamStateCount returns the number of state items (text + tools + thinking)
-// in the named engine's streamState. Test accessor for multi-engine tests.
+// streamStateCount returns the number of blocks in the named engine's
+// streamState. Test accessor for multi-engine tests.
 func streamStateCount(c *WUIConnector, engineID string) int {
 	c.slotsMu.RLock()
 	defer c.slotsMu.RUnlock()
@@ -443,14 +441,7 @@ func streamStateCount(c *WUIConnector, engineID string) int {
 	if s == nil {
 		return 0
 	}
-	count := len(s.streamState.tools)
-	if s.streamState.text != "" {
-		count++
-	}
-	if s.streamState.thinking != nil {
-		count++
-	}
-	return count
+	return len(s.streamState.blocks)
 }
 
 // activeEngineTest returns the active engine's engineClient for test use.

@@ -151,30 +151,33 @@ type queryStats struct {
 	startMs                  atomic.Int64
 }
 
-// toolSnapshot is the JSON-serializable state of a single in-flight tool call.
-type toolSnapshot struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Input  string `json:"input"`
-	Output string `json:"output,omitempty"`
-	Done   bool   `json:"done"`
-	Error  bool   `json:"error,omitempty"`
-}
-
-// thinkingState tracks the in-flight thinking block.
-type thinkingState struct {
-	Text     string `json:"text"`
-	Duration int64  `json:"duration_ns"`
-	Done     bool   `json:"done"`
+// streamBlock is one node in the streaming Block[] tree, matching client
+// model.ts Block type. JSON tags produce the exact field names the client expects.
+type streamBlock struct {
+	Kind          string        `json:"kind"`                    // "text" | "thinking" | "tool"
+	ID            string        `json:"id"`                      // all kinds
+	Text          string        `json:"text,omitempty"`          // kind == "text" | "thinking"
+	Name          string        `json:"name,omitempty"`          // kind == "tool"
+	Summary       string        `json:"summary,omitempty"`       // kind == "tool"
+	IsSearch      bool          `json:"isSearch,omitempty"`      // kind == "tool"
+	IsRead        bool          `json:"isRead,omitempty"`        // kind == "tool"
+	IsList        bool          `json:"isList,omitempty"`        // kind == "tool"
+	IsLsp         bool          `json:"isLsp,omitempty"`         // kind == "tool"
+	IsWeb         bool          `json:"isWeb,omitempty"`         // kind == "tool"
+	State         string        `json:"state,omitempty"`         // kind == "tool": "running" | "done" | "error"
+	DisplayOutput string        `json:"displayOutput,omitempty"` // kind == "tool"
+	TimingNs      int64         `json:"timingNs,omitempty"`      // kind == "tool"
+	DurationNs    int64         `json:"durationNs,omitempty"`    // kind == "thinking"
+	Active        bool          `json:"active,omitempty"`        // kind == "thinking"
+	StartedAt     int64         `json:"startedAt,omitempty"`     // kind == "thinking" | "tool"
+	Children      []streamBlock `json:"children,omitempty"`      // kind == "tool"
 }
 
 // streamState is the per-engine real-time streaming state, equivalent to TUI's
 // ReplState. Only accessed by the slot's own hub goroutine (onEngineEvent),
-// so no lock is needed. On query_end the state is reset to zero.
+// so no lock is needed. Reset on query_end.
 type streamState struct {
-	text     string
-	tools    []toolSnapshot
-	thinking *thinkingState
+	blocks []streamBlock
 }
 
 // engineSlot holds the per-engine state. Each engine gets its own streamState,
@@ -445,46 +448,169 @@ func accumulateStats(qs *queryStats, event hub.Event) {
 	}
 }
 
-// updateStreamState mutates streamState from an event — equivalent to TUI's
-// AppendChunk/PendingToolStarted. Only called from the slot's own hub
-// goroutine (onEngineEvent), so no lock needed.
+// findBlock searches the block tree depth-first for a tool block with the
+// given ID. Returns nil if not found.
+func findBlock(blocks []streamBlock, id string) *streamBlock {
+	for i := range blocks {
+		if blocks[i].Kind == "tool" && blocks[i].ID == id {
+			return &blocks[i]
+		}
+		if len(blocks[i].Children) > 0 {
+			if found := findBlock(blocks[i].Children, id); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// targetList returns the block slice that an event should append to.
+// For sub-agent events (Agent != nil), it finds the parent tool's children.
+// For top-level events, it returns the root blocks slice.
+func targetList(ss *streamState, event hub.Event) *[]streamBlock {
+	if event.Agent != nil && event.Agent.ParentToolUseID != "" {
+		parent := findBlock(ss.blocks, event.Agent.ParentToolUseID)
+		if parent != nil {
+			return &parent.Children
+		}
+		return nil
+	}
+	return &ss.blocks
+}
+
+// updateStreamState mutates streamState from an event. Tree-aware: sub-agent
+// events nest into the parent tool's children. Only called from the slot's
+// own hub goroutine (onEngineEvent), so no lock needed.
 func updateStreamState(ss *streamState, event hub.Event) {
 	switch event.Type {
 	case types.EventTextDelta:
-		ss.text += event.Text
+		list := targetList(ss, event)
+		if list == nil {
+			return
+		}
+		if n := len(*list); n > 0 && (*list)[n-1].Kind == "text" {
+			(*list)[n-1].Text += event.Text
+		} else {
+			*list = append(*list, streamBlock{Kind: "text", Text: event.Text})
+		}
+
 	case types.EventToolStart:
 		if event.ToolUse == nil {
-			break
+			return
 		}
-		input := ""
-		if len(event.ToolUse.Input) > 0 {
-			input = string(event.ToolUse.Input)
+		list := targetList(ss, event)
+		if list == nil {
+			return
 		}
-		ss.tools = append(ss.tools, toolSnapshot{
-			ID:    event.ToolUse.ID,
-			Name:  event.ToolUse.Name,
-			Input: input,
+		*list = append(*list, streamBlock{
+			Kind:      "tool",
+			ID:        event.ToolUse.ID,
+			Name:      event.ToolUse.Name,
+			Summary:   event.ToolUse.Summary,
+			IsSearch:  event.ToolUse.IsSearch,
+			IsRead:    event.ToolUse.IsRead,
+			IsList:    event.ToolUse.IsList,
+			IsLsp:     event.ToolUse.IsLsp,
+			IsWeb:     event.ToolUse.Name == "Web",
+			State:     "running",
+			StartedAt: time.Now().UnixMilli(),
 		})
+
+	case types.EventToolParamDelta:
+		if event.PartialInput == nil {
+			return
+		}
+		b := findBlock(ss.blocks, event.PartialInput.ID)
+		if b == nil {
+			return
+		}
+		if event.PartialInput.Summary != "" {
+			b.Summary = event.PartialInput.Summary
+		}
+		if event.PartialInput.IsSearch {
+			b.IsSearch = true
+		}
+		if event.PartialInput.IsRead {
+			b.IsRead = true
+		}
+		if event.PartialInput.IsList {
+			b.IsList = true
+		}
+		if event.PartialInput.IsLsp {
+			b.IsLsp = true
+		}
+
 	case types.EventToolEnd:
-		for i := range ss.tools {
-			if event.ToolResult != nil && ss.tools[i].ID == event.ToolResult.ToolUseID {
-				ss.tools[i].Done = true
-				ss.tools[i].Output = string(event.ToolResult.DisplayOutput)
-				break
-			}
+		if event.ToolResult == nil {
+			return
 		}
+		b := findBlock(ss.blocks, event.ToolResult.ToolUseID)
+		if b == nil {
+			return
+		}
+		if event.ToolResult.IsError {
+			b.State = "error"
+		} else {
+			b.State = "done"
+		}
+		b.DisplayOutput = event.ToolResult.DisplayOutput
+		if event.ToolResult.IsSearch {
+			b.IsSearch = true
+		}
+		if event.ToolResult.IsRead {
+			b.IsRead = true
+		}
+		if event.ToolResult.IsList {
+			b.IsList = true
+		}
+		if event.ToolResult.IsLsp {
+			b.IsLsp = true
+		}
+
+	case types.EventToolOutputDelta:
+		if event.ToolResult == nil {
+			return
+		}
+		b := findBlock(ss.blocks, event.ToolResult.ToolUseID)
+		if b == nil {
+			return
+		}
+		b.DisplayOutput = event.ToolResult.DisplayOutput
+
 	case types.EventThinkingStart:
-		if event.Thinking != nil {
-			ss.thinking = &thinkingState{}
+		list := targetList(ss, event)
+		if list == nil {
+			return
 		}
+		*list = append(*list, streamBlock{
+			Kind:      "thinking",
+			Active:    true,
+			StartedAt: time.Now().UnixMilli(),
+		})
+
 	case types.EventThinkingDelta:
-		if ss.thinking != nil && event.Thinking != nil {
-			ss.thinking.Text += event.Thinking.Text
+		if event.Thinking == nil {
+			return
 		}
+		list := targetList(ss, event)
+		if list == nil {
+			return
+		}
+		if n := len(*list); n > 0 && (*list)[n-1].Kind == "thinking" {
+			(*list)[n-1].Text += event.Thinking.Text
+		}
+
 	case types.EventThinkingEnd:
-		if ss.thinking != nil && event.Thinking != nil {
-			ss.thinking.Done = true
-			ss.thinking.Duration = int64(event.Thinking.Duration)
+		if event.Thinking == nil {
+			return
+		}
+		list := targetList(ss, event)
+		if list == nil {
+			return
+		}
+		if n := len(*list); n > 0 && (*list)[n-1].Kind == "thinking" {
+			(*list)[n-1].Active = false
+			(*list)[n-1].DurationNs = int64(event.Thinking.Duration)
 		}
 	}
 }
@@ -493,28 +619,13 @@ func updateStreamState(ss *streamState, event hub.Event) {
 // current streamState. Sent by onEngineEvent after a switch to give the
 // client the in-flight content before live events start arriving.
 func buildPendingBlocks(ss streamState) []byte {
-	type thinkingJSON struct {
-		Text     string `json:"text"`
-		Duration int64  `json:"duration_ns"`
-		Done     bool   `json:"done"`
-	}
 	type payload struct {
-		Type     string         `json:"type"`
-		Text     string         `json:"text"`
-		Tools    []toolSnapshot `json:"tools"`
-		Thinking *thinkingJSON  `json:"thinking,omitempty"`
+		Type   string        `json:"type"`
+		Blocks []streamBlock `json:"blocks"`
 	}
-	tools := make([]toolSnapshot, len(ss.tools))
-	copy(tools, ss.tools)
-	var think *thinkingJSON
-	if ss.thinking != nil {
-		think = &thinkingJSON{
-			Text: ss.thinking.Text, Duration: ss.thinking.Duration, Done: ss.thinking.Done,
-		}
-	}
-	out, _ := json.Marshal(payload{
-		Type: "streamState", Text: ss.text, Tools: tools, Thinking: think,
-	})
+	blocks := make([]streamBlock, len(ss.blocks))
+	copy(blocks, ss.blocks)
+	out, _ := json.Marshal(payload{Type: "streamState", Blocks: blocks})
 	return out
 }
 
@@ -566,9 +677,6 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 					Type: types.EventTextDelta,
 					Text: types.InterruptMessage,
 				}})
-				updateStreamState(&slot.streamState, types.QueryEvent{
-					Type: types.EventTextDelta, Text: types.InterruptMessage,
-				})
 				c.sendWS(interruptPayload)
 			}
 			c.autoRewindOnAbortFor(slot.engine)
@@ -597,9 +705,11 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		return
 	}
 
+	updateStreamState(&slot.streamState, event)
+
 	if !slot.snapshotSent.Load() {
 		slot.snapshotSent.Store(true)
-		if slot.streamState.text != "" || len(slot.streamState.tools) > 0 || slot.streamState.thinking != nil {
+		if len(slot.streamState.blocks) > 0 {
 			c.sendWS(buildPendingBlocks(slot.streamState))
 		}
 	}
@@ -815,21 +925,43 @@ func (c *WUIConnector) handleAsk(event hub.Event) {
 // cross-references); only the serialized payload shrinks. Tool summaries and
 // outputs are rendered via the tool's own Description/RenderResult — the same
 // path as TUI's engineMessagesToViews — so history looks identical to streaming.
+func hasTextContent(m types.Message) bool {
+	for _, b := range m.Content {
+		if b.Type == types.ContentTypeText {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *WUIConnector) buildHistory(cursor string, limit int) []byte {
 	slot := c.activeSlot()
 	if slot == nil {
 		return nil
 	}
-	return c.engineMessagesToUI(slot, cursor, limit)
+	msgs := slot.engine.Messages()
+
+	if slot.engine.IsBusy() && len(msgs) > 0 {
+		queryStart := -1
+		for i, m := range msgs {
+			if m.Role == types.RoleUser && hasTextContent(m) {
+				queryStart = i
+			}
+		}
+		if queryStart >= 0 {
+			msgs = msgs[:queryStart]
+		}
+	}
+
+	if len(msgs) == 0 {
+		return nil
+	}
+	return c.engineMessagesToUI(slot, cursor, limit, msgs)
 }
 
 // engineMessagesToUI is the per-slot core of buildHistoryMessage. It
 // is called directly by handleEngineSwitch to build history for the target slot.
-func (c *WUIConnector) engineMessagesToUI(slot *engineSlot, cursor string, limit int) []byte {
-	msgs := slot.engine.Messages()
-	if len(msgs) == 0 {
-		return nil
-	}
+func (c *WUIConnector) engineMessagesToUI(slot *engineSlot, cursor string, limit int, msgs []types.Message) []byte {
 	tools := slot.engine.Tools()
 
 	// First pass: collect all tool_results keyed by tool_use_id (same as TUI).
@@ -1579,7 +1711,7 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Config:  c.buildConfig(slot),
 		Engines: c.buildEngineList(),
 		Tasks:   c.buildTaskList(slot),
-		History: c.engineMessagesToUI(slot, "", 30),
+		History: c.engineMessagesToUI(slot, "", 30, slot.engine.Messages()),
 		Stats:   c.buildStats(slot),
 	})
 	c.sendWS(payload)

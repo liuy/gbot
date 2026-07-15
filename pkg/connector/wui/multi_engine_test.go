@@ -372,3 +372,326 @@ func TestMultiEngine_SwitchDuringActiveStreaming(t *testing.T) {
 		t.Error("post-switch event from old (inactive) engine leaked to WS — onEngineEvent did not check c.ActiveID() before writing")
 	}
 }
+
+// TestIntegration_SubAgentEventsSurviveEngineSwitch verifies the original bug:
+// sub-agent events (text, tools) are correctly preserved in the Block tree
+// during engine switch. When switching back, the snapshot contains the
+// full nested structure — sub-agent text inside Agent tool's children.
+//
+// Full chain: hub dispatch → updateStreamState (tree) → snapshot serialize → WS frame.
+func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
+	hubMain := hub.NewHub()
+	c := newTestConnectorWithHub(t, hubMain)
+	_, _ = addMockEngine(t, c, "engineB")
+
+	// Main agent starts streaming: text + Agent tool
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "Let me check"})
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{
+		ID: "agent1", Name: "Agent", Summary: "Reviewer",
+	}})
+
+	// Sub-agent events arrive (nested under agent1 via ParentToolUseID)
+	hubMain.Dispatch(types.QueryEvent{
+		Type:  types.EventTextDelta,
+		Text:  "Reviewing code",
+		Agent: &types.AgentMeta{ParentToolUseID: "agent1", AgentType: "Reviewer"},
+	})
+	hubMain.Dispatch(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "grep1", Name: "Grep", Summary: "streamState"},
+		Agent:   &types.AgentMeta{ParentToolUseID: "agent1", AgentType: "Reviewer"},
+	})
+	hubMain.Dispatch(types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "grep1", DisplayOutput: "found 5 matches"},
+		Agent:      &types.AgentMeta{ParentToolUseID: "agent1", AgentType: "Reviewer"},
+	})
+
+	// Wait for events to be processed
+	if !waitFor(time.Second, func() bool { return streamStateCount(c, "main") >= 2 }) {
+		t.Fatal("main should have buffered text + Agent tool")
+	}
+
+	// Verify streamState tree structure BEFORE switch
+	c.slotsMu.RLock()
+	mainSlot := c.slots["main"]
+	c.slotsMu.RUnlock()
+	if mainSlot == nil {
+		t.Fatal("main slot not found")
+	}
+
+	// Should have: [text:"Let me check", tool(agent1, children:[text, tool(grep1, done)])]
+	if len(mainSlot.streamState.blocks) != 2 {
+		t.Fatalf("expected 2 root blocks (text + Agent tool), got %d", len(mainSlot.streamState.blocks))
+	}
+	agentBlock := mainSlot.streamState.blocks[1]
+	if agentBlock.Kind != "tool" || agentBlock.Name != "Agent" {
+		t.Fatalf("expected Agent tool at index 1, got kind=%s name=%s", agentBlock.Kind, agentBlock.Name)
+	}
+	if len(agentBlock.Children) != 2 {
+		t.Fatalf("expected 2 children in Agent tool, got %d", len(agentBlock.Children))
+	}
+	if agentBlock.Children[0].Kind != "text" || agentBlock.Children[0].Text != "Reviewing code" {
+		t.Errorf("child[0] = %+v, want text 'Reviewing code'", agentBlock.Children[0])
+	}
+	if agentBlock.Children[1].Kind != "tool" || agentBlock.Children[1].Name != "Grep" {
+		t.Errorf("child[1] = %+v, want Grep tool", agentBlock.Children[1])
+	}
+	if agentBlock.Children[1].State != "done" {
+		t.Errorf("child[1].State = %s, want 'done'", agentBlock.Children[1].State)
+	}
+
+	// Connect WS + switch to engineB (main becomes inactive)
+	ws := dialAndStore(t, c)
+	c.handleEngineSwitch("engineB")
+	readMetadata(t, ws)
+
+	// More sub-agent events arrive while main is inactive
+	hubMain.Dispatch(types.QueryEvent{
+		Type:  types.EventTextDelta,
+		Text:  "Found issues",
+		Agent: &types.AgentMeta{ParentToolUseID: "agent1", AgentType: "Reviewer"},
+	})
+	if !waitFor(time.Second, func() bool {
+		c.slotsMu.RLock()
+		s := c.slots["main"]
+		c.slotsMu.RUnlock()
+		return s != nil && len(s.streamState.blocks) >= 2 && len(s.streamState.blocks[1].Children) >= 3
+	}) {
+		t.Fatal("sub-agent text should be buffered while inactive")
+	}
+
+	// Switch back to main — snapshot should contain nested children
+	c.handleEngineSwitch("main")
+	readMetadata(t, ws)
+
+	// Trigger snapshot by sending a live event
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "done"})
+
+	// Read snapshot frame
+	snap := readStreamStatePayload(t, ws)
+	// 3 root blocks: text "Let me check", Agent tool, text "done"
+	// (the final text_delta "done" creates a new root text block)
+	if len(snap.Blocks) != 3 {
+		t.Fatalf("snapshot should have 3 root blocks, got %d", len(snap.Blocks))
+	}
+	// Find the Agent tool block (not at fixed index due to text block ordering)
+	var snapAgent streamBlock
+	for _, b := range snap.Blocks {
+		if b.Kind == "tool" && b.Name == "Agent" {
+			snapAgent = b
+			break
+		}
+	}
+	if snapAgent.Kind != "tool" {
+		t.Fatal("snapshot missing Agent tool block")
+	}
+	if len(snapAgent.Children) != 3 {
+		t.Fatalf("snapshot Agent tool should have 3 children, got %d", len(snapAgent.Children))
+	}
+	// Third child (added while inactive) should have "Found issues"
+	found := false
+	for _, child := range snapAgent.Children {
+		if child.Kind == "text" && child.Text == "Found issues" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("snapshot missing sub-agent text 'Found issues' added while inactive")
+	}
+}
+
+// TestIntegration_QueryEndClearsMidQuery verifies that query_end
+// resets streamState at the end of a query. Mid-query (between turns),
+// streamState persists until query_end clears it.
+func TestIntegration_QueryEndClearsMidQuery(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Turn 1: text + tool_start
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "Let me search"})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{
+		ID: "g1", Name: "Grep", Summary: "pattern",
+	}})
+
+	if streamStateCount(c, "main") != 2 {
+		t.Fatalf("expected 2 blocks before query_end, got %d", streamStateCount(c, "main"))
+	}
+
+	// query_end clears streamState
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	if streamStateCount(c, "main") != 0 {
+		t.Fatalf("streamState should be empty after query_end, got %d blocks", streamStateCount(c, "main"))
+	}
+
+	// Tool results arrive — streamState is empty (query_end cleared it).
+	c.Handle(types.QueryEvent{Type: types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "g1", DisplayOutput: "results"}})
+
+	if streamStateCount(c, "main") != 0 {
+		t.Fatalf("streamState should still be empty after orphaned tool_end, got %d blocks", streamStateCount(c, "main"))
+	}
+
+	// query_end fires again for tool execution phase
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	if streamStateCount(c, "main") != 0 {
+		t.Fatalf("streamState should be empty after second query_end, got %d blocks", streamStateCount(c, "main"))
+	}
+
+	// Turn 2: fresh text — should start from empty
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "Based on results"})
+	if streamStateCount(c, "main") != 1 {
+		t.Fatalf("expected 1 block in turn 2, got %d", streamStateCount(c, "main"))
+	}
+	c.slotsMu.RLock()
+	mainSlot := c.slots["main"]
+	c.slotsMu.RUnlock()
+	if mainSlot.streamState.blocks[0].Text != "Based on results" {
+		t.Errorf("turn 2 text = %q, want 'Based on results'", mainSlot.streamState.blocks[0].Text)
+	}
+}
+
+// TestIntegration_SnapshotHasCorrectNestedJSON verifies that buildPendingBlocks
+// produces JSON with correct nesting structure matching client model.ts.
+func TestIntegration_SnapshotHasCorrectNestedJSON(t *testing.T) {
+	c := newTestConnector(t)
+
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "main text"})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{
+		ID: "a1", Name: "Agent", Summary: "Reviewer",
+	}})
+	c.Handle(types.QueryEvent{
+		Type:  types.EventTextDelta,
+		Text:  "sub text",
+		Agent: &types.AgentMeta{ParentToolUseID: "a1", AgentType: "Reviewer"},
+	})
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "r1", Name: "Read", Summary: "file.go"},
+		Agent:   &types.AgentMeta{ParentToolUseID: "a1", AgentType: "Reviewer"},
+	})
+
+	payload := buildPendingBlocks(c.slots["main"].streamState)
+
+	var snap struct {
+		Type   string        `json:"type"`
+		Blocks []streamBlock `json:"blocks"`
+	}
+	if err := json.Unmarshal(payload, &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+
+	if snap.Type != "streamState" {
+		t.Fatalf("type = %q, want 'streamState'", snap.Type)
+	}
+	if len(snap.Blocks) != 2 {
+		t.Fatalf("expected 2 root blocks, got %d", len(snap.Blocks))
+	}
+	if snap.Blocks[0].Kind != "text" || snap.Blocks[0].Text != "main text" {
+		t.Errorf("block[0] = %+v, want text 'main text'", snap.Blocks[0])
+	}
+	if snap.Blocks[1].Kind != "tool" || snap.Blocks[1].Name != "Agent" {
+		t.Errorf("block[1] = %+v, want Agent tool", snap.Blocks[1])
+	}
+
+	agent := snap.Blocks[1]
+	if len(agent.Children) != 2 {
+		t.Fatalf("Agent tool should have 2 children, got %d", len(agent.Children))
+	}
+	if agent.Children[0].Kind != "text" || agent.Children[0].Text != "sub text" {
+		t.Errorf("child[0] = %+v, want text 'sub text'", agent.Children[0])
+	}
+	if agent.Children[1].Kind != "tool" || agent.Children[1].Name != "Read" {
+		t.Errorf("child[1] = %+v, want Read tool", agent.Children[1])
+	}
+
+	// Verify JSON uses camelCase (matching client model.ts)
+	raw := string(payload)
+	if strings.Contains(raw, "is_search") || strings.Contains(raw, "is_read") {
+		t.Error("JSON should use camelCase field names, not snake_case")
+	}
+}
+
+// TestIntegration_LiveEventsAfterSnapshotWithChildren verifies recovery:
+// after snapshot restores nested structure, live events correctly find
+// and update the right block in the tree.
+func TestIntegration_LiveEventsAfterSnapshotWithChildren(t *testing.T) {
+	hubMain := hub.NewHub()
+	c := newTestConnectorWithHub(t, hubMain)
+	_, _ = addMockEngine(t, c, "engineB")
+
+	// Main: Agent tool + sub-agent tool_start (running)
+	hubMain.Dispatch(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{
+		ID: "a1", Name: "Agent", Summary: "Reviewer",
+	}})
+	hubMain.Dispatch(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "r1", Name: "Read", Summary: "file.go"},
+		Agent:   &types.AgentMeta{ParentToolUseID: "a1", AgentType: "Reviewer"},
+	})
+
+	if !waitFor(time.Second, func() bool { return streamStateCount(c, "main") >= 1 }) {
+		t.Fatal("should have Agent tool in streamState")
+	}
+
+	// Switch away then back
+	ws := dialAndStore(t, c)
+	c.handleEngineSwitch("engineB")
+	readMetadata(t, ws)
+	c.handleEngineSwitch("main")
+	readMetadata(t, ws)
+
+	// Live event: sub-agent tool_end should find r1 in the nested tree
+	hubMain.Dispatch(types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "r1", DisplayOutput: "file contents"},
+		Agent:      &types.AgentMeta{ParentToolUseID: "a1", AgentType: "Reviewer"},
+	})
+
+	// Verify the tree was updated
+	c.slotsMu.RLock()
+	mainSlot := c.slots["main"]
+	c.slotsMu.RUnlock()
+
+	agent := mainSlot.streamState.blocks[0]
+	if agent.Kind != "tool" || agent.Name != "Agent" {
+		t.Fatalf("expected Agent tool at root, got %+v", agent)
+	}
+
+	found := false
+	for _, child := range agent.Children {
+		if child.ID == "r1" && child.State == "done" && child.DisplayOutput == "file contents" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("live tool_end did not update nested tool r1 to done state with output")
+	}
+}
+
+// readStreamStatePayload reads WS messages until finding a streamState frame.
+func readStreamStatePayload(t *testing.T, ws *websocket.Conn) struct {
+	Type   string        `json:"type"`
+	Blocks []streamBlock `json:"blocks"`
+} {
+	t.Helper()
+	type snapType struct {
+		Type   string        `json:"type"`
+		Blocks []streamBlock `json:"blocks"`
+	}
+	for range 20 {
+		msg := readWSMessage(t, ws)
+		var snap snapType
+		if err := json.Unmarshal(msg, &snap); err != nil {
+			continue
+		}
+		if snap.Type == "streamState" {
+			return snap
+		}
+	}
+	t.Fatal("did not find streamState frame within 20 frames")
+	return snapType{}
+}
