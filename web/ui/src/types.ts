@@ -14,7 +14,7 @@ export type SessionListItem = {
 
 export type ServerMessage =
   | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
-  | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
+  | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed: string[] }
   | { type: 'event'; event: QueryEvent }
@@ -48,7 +48,7 @@ export type ServerMessage =
       tasks?: { tasks: TaskWireItem[] }
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
       snapshot?: { blocks: Block[] }
-      stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number }
+      stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
     }
   | { type: 'streamState'; blocks: Block[] }
 

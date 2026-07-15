@@ -325,6 +325,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let currentPendingText: { block: { kind: 'text'; id: string; text: string } } | null = null
   let currentThinking: ThinkingEntry | null = null
   let accumulatedThinkingMs = 0  // restored from connect_status, incremented by thinking_end
+  let contextTotal = 0
   const tokenRate = new TokenRate()
   let progressHandles: ProgressDomHandles | null = null
   let progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
@@ -1254,11 +1255,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'usage': {
         if (!e.usage_event) return
         const u = e.usage_event
-        // engine emits per-turn deltas; accumulate across the whole query.
         progressUsage.inputTokens += u.input_tokens
         progressUsage.outputTokens += u.output_tokens
         progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
         progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
+        // contextUsed = this turn's total tokens in context (not cumulative)
+        const ctxUsed = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + u.output_tokens
+        header.setContext(ctxUsed, contextTotal)
         if (progressHandles) {
           setProgressBarUsage(progressHandles, progressUsage)
         }
@@ -1431,6 +1434,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (s.queryStartMs) streamStartedAt = s.queryStartMs
         committedToolCount = s.toolCount ?? 0
         accumulatedThinkingMs = s.thinkingMs ?? 0
+        header.setContext(s.contextUsed ?? 0, s.contextTotal ?? 0)
+        contextTotal = s.contextTotal ?? 0
         if (progressHandles) {
           setProgressBarUsage(progressHandles, progressUsage)
         }

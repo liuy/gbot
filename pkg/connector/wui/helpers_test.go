@@ -244,6 +244,9 @@ func (m *mockEngine) ProjectDir() string {
 	return "/tmp/test"
 }
 
+func (m *mockEngine) ContextWindow() int    { return 200000 }
+func (m *mockEngine) GetContextTokens() int { return 0 }
+
 func (m *mockEngine) SetProvider(p llm.Provider) {
 	m.mu.Lock()
 	m.setProviderCalls = append(m.setProviderCalls, p.Name())

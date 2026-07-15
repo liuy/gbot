@@ -69,6 +69,8 @@ type engineClient interface {
 	EngineID() string
 	Model() string
 	ProjectDir() string
+	ContextWindow() int
+	GetContextTokens() int
 	SetProvider(provider llm.Provider)
 	SetModel(model string)
 	Provider() llm.Provider
@@ -123,10 +125,12 @@ func (a *engineAdapter) UpdateSessionTitle(sessionID, title string) error {
 	}
 	return store.UpdateSessionTitle(sessionID, title)
 }
-func (a *engineAdapter) SessionID() string  { return a.eng.SessionID() }
-func (a *engineAdapter) EngineID() string   { return a.eng.EngineID() }
-func (a *engineAdapter) Model() string      { return a.eng.Model() }
-func (a *engineAdapter) ProjectDir() string { return a.eng.ProjectDir() }
+func (a *engineAdapter) SessionID() string     { return a.eng.SessionID() }
+func (a *engineAdapter) EngineID() string      { return a.eng.EngineID() }
+func (a *engineAdapter) Model() string         { return a.eng.Model() }
+func (a *engineAdapter) ProjectDir() string    { return a.eng.ProjectDir() }
+func (a *engineAdapter) ContextWindow() int    { return a.eng.ContextWindow() }
+func (a *engineAdapter) GetContextTokens() int { return a.eng.GetContextTokens() }
 
 func (a *engineAdapter) SetProvider(p llm.Provider)    { a.eng.SetProvider(p) }
 func (a *engineAdapter) SetModel(m string)             { a.eng.SetModel(m) }
@@ -1469,12 +1473,18 @@ func (c *WUIConnector) buildConnectStatus(slot *engineSlot) []byte {
 // queryStats. No lock needed — all fields are atomic.
 func (c *WUIConnector) buildStats(slot *engineSlot) []byte {
 	qs := &slot.queryStats
+	ctxUsed := slot.engine.GetContextTokens()
+	if ctxUsed == 0 {
+		ctxUsed = engine.TokenCountWithEstimation(slot.engine.Messages())
+	}
 	payload, _ := json.Marshal(struct {
 		Type         string      `json:"type"`
 		Usage        types.Usage `json:"usage"`
 		QueryStartMs int64       `json:"queryStartMs"`
 		ToolCount    int         `json:"toolCount"`
 		ThinkingMs   int64       `json:"thinkingMs"`
+		ContextUsed  int         `json:"contextUsed"`
+		ContextTotal int         `json:"contextTotal"`
 	}{
 		Type: "stats",
 		Usage: types.Usage{
@@ -1486,6 +1496,8 @@ func (c *WUIConnector) buildStats(slot *engineSlot) []byte {
 		QueryStartMs: qs.startMs.Load(),
 		ToolCount:    int(qs.toolCount.Load()),
 		ThinkingMs:   qs.thinkingMs.Load(),
+		ContextUsed:  ctxUsed,
+		ContextTotal: slot.engine.ContextWindow(),
 	})
 	return payload
 }

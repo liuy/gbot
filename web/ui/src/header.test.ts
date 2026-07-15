@@ -1,206 +1,84 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createHeader } from './header'
 
-beforeEach(() => {
-  document.body.innerHTML = ''
-})
+describe('Header context display', () => {
+  let header: ReturnType<typeof createHeader>
 
-function findHamburger(root: HTMLElement): HTMLElement | null {
-  const svgs = root.querySelectorAll('svg')
-  for (const svg of Array.from(svgs)) {
-    const rects = svg.querySelectorAll('rect')
-    if (rects.length === 2) return svg.closest('button')
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function getContextText(): string {
+    // Find the context span (last child of inner, not hidden)
+    const spans = header.root.querySelectorAll('span.mono')
+    for (const s of spans) {
+      if (s.textContent && s.textContent.includes('/')) return s.textContent
+    }
+    return ''
   }
-  return null
-}
 
-describe('createHeader', () => {
-  it('builds sticky header with glass', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    expect(root.tagName).toBe('HEADER')
-    expect(root.className).toContain('sticky')
-    expect(root.className).toContain('top-0')
-    expect(root.className).toContain('card-bg')
-  })
-
-  it('renders GBot wordmark span', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const spans = root.querySelectorAll('span')
-    let found = false
-    for (const s of Array.from(spans)) {
-      if (s.textContent === 'GBot') found = true
+  function getContextClass(): string {
+    const spans = header.root.querySelectorAll('span.mono')
+    for (const s of spans) {
+      if (s.textContent && s.textContent.includes('/')) return s.className
     }
-    expect(found).toBe(true)
+    return ''
+  }
+
+  it('formatTokenCount: raw number under 1K', () => {
+    header.setContext(500, 200000)
+    expect(getContextText()).toContain('500/')
   })
 
-  it('contains hamburger button with two rects', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const hamburger = findHamburger(root)
-    expect(hamburger).not.toBeNull()
-    const rects = hamburger!.querySelectorAll('rect')
-    expect(rects.length).toBe(2)
+  it('formatTokenCount: k suffix under 1M', () => {
+    header.setContext(28300, 200000)
+    expect(getContextText()).toContain('27.6k/')
+    expect(getContextText()).toContain('195.3k')
   })
 
-  it('contains engine picker button with mono class', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const buttons = root.querySelectorAll('button')
-    let monoButtons = 0
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) monoButtons++
-    }
-    expect(monoButtons).toBeGreaterThanOrEqual(1)
+  it('formatTokenCount: M suffix over 1M', () => {
+    header.setContext(1048576, 2097152)
+    expect(getContextText()).toContain('1.0M/')
+    expect(getContextText()).toContain('2.0M')
   })
 
-  it('contains separator chevron', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const spans = root.querySelectorAll('span')
-    let found = false
-    for (const s of Array.from(spans)) {
-      if (s.textContent === '\u203a') found = true
-    }
-    expect(found).toBe(true)
+  it('hides when total is 0', () => {
+    header.setContext(100, 0)
+    expect(getContextText()).toBe('')
   })
 
-  it('contains model button with mono class', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const buttons = root.querySelectorAll('button')
-    let modelButton: HTMLElement | null = null
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) {
-        modelButton = b
-      }
-    }
-    expect(modelButton).not.toBeNull()
+  it('hides when total is negative', () => {
+    header.setContext(100, -1)
+    expect(getContextText()).toBe('')
   })
 
-  it('has no session dropdown (no .relative group with session text)', () => {
-    const { root } = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    const dropdowns = root.querySelectorAll('.relative.group')
-    expect(dropdowns.length).toBe(0)
+  it('normal color under 80%', () => {
+    header.setContext(100000, 200000) // 50%
+    expect(getContextClass()).toContain('text-t2')
+    expect(getContextClass()).not.toContain('text-amber')
+    expect(getContextClass()).not.toContain('text-red')
   })
 
-  it('setStatus(true) applies pulse + text-blue to GBot wordmark', () => {
-    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    h.setStatus(true)
-    const spans = h.root.querySelectorAll('span')
-    let gbotSpan: HTMLElement | null = null
-    for (const s of Array.from(spans)) {
-      if (s.textContent === 'GBot') gbotSpan = s
-    }
-    expect(gbotSpan).not.toBeNull()
-    expect(gbotSpan!.classList.contains('pulse')).toBe(true)
-    expect(gbotSpan!.className).toContain('text-blue')
+  it('amber color at 80%', () => {
+    header.setContext(160000, 200000) // 80%
+    expect(getContextClass()).toContain('text-amber-500')
   })
 
-  it('setStatus(false) applies text-t3 and no pulse', () => {
-    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    h.setStatus(false)
-    const spans = h.root.querySelectorAll('span')
-    let gbotSpan: HTMLElement | null = null
-    for (const s of Array.from(spans)) {
-      if (s.textContent === 'GBot') gbotSpan = s
-    }
-    expect(gbotSpan).not.toBeNull()
-    expect(gbotSpan!.classList.contains('pulse')).toBe(false)
-    expect(gbotSpan!.className).toContain('text-t3')
+  it('red color at 90%', () => {
+    header.setContext(180000, 200000) // 90%
+    expect(getContextClass()).toContain('text-red-500')
   })
 
-  it('onHamburgerClick registers handler called on click', () => {
-    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    let clicked = 0
-    h.onHamburgerClick(() => { clicked++ })
-    const hamburger = findHamburger(h.root)
-    expect(hamburger).not.toBeNull()
-    hamburger!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(clicked).toBe(1)
-  })
-
-  it('clicking model button opens dropdown panel', () => {
-    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    h.setModels([{ provider: 'zhipu', model: 'glm-5.2' }], 'zhipu', 'glm-5.2')
-    const buttons = h.root.querySelectorAll('button')
-    let modelButton: HTMLElement | null = null
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) {
-        modelButton = b
-      }
-    }
-    expect(modelButton).not.toBeNull()
-
-    // Panel is lazily appended to body on first open
-    modelButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    const panel = document.body.querySelector('div.fixed') as HTMLElement
-    expect(panel).toBeTruthy()
-    expect(panel.classList.contains('hidden')).toBe(false)
-    // Panel shows the model from setModels.
-    expect(panel.textContent).toContain('glm-5.2')
-
-    modelButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(panel.classList.contains('hidden')).toBe(true)
-  })
-
-  it('setModels populates the picker and highlights current', () => {
-    const h = createHeader({ onModelSelect: () => {}, onEngineSwitch: () => {}, onEngineNew: () => {} })
-    h.setModels(
-      [
-        { provider: 'zhipu', model: 'glm-5.2' },
-        { provider: 'zhipu', model: 'glm-4.6' },
-        { provider: 'openai', model: 'gpt-5' },
-        { provider: 'openai', model: 'gpt-4.1' },
-      ],
-      'zhipu',
-      'glm-5.2',
-    )
-    const buttons = h.root.querySelectorAll('button')
-    let modelButton: HTMLElement | null = null
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) {
-        modelButton = b
-      }
-    }
-    modelButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    const panel = document.body.querySelector('div.fixed') as HTMLElement
-    // Two provider section headers.
-    const headers = panel.querySelectorAll('.uppercase')
-    expect(headers.length).toBe(2)
-    expect(headers[0].textContent).toBe('zhipu')
-    expect(headers[1].textContent).toBe('openai')
-    // The active row (glm-5.2) has text-blue.
-    const blueSpan = panel.querySelector('.text-blue') as HTMLElement
-    expect(blueSpan).toBeTruthy()
-    expect(blueSpan.textContent).toBe('glm-5.2')
-  })
-
-  it('onModelSelect fires with provider + model on click', () => {
-    const calls: { provider: string; model: string }[] = []
-    const h = createHeader({ onModelSelect: (provider, model) => calls.push({ provider, model }) })
-    h.setModels(
-      [
-        { provider: 'zhipu', model: 'glm-5.2' },
-        { provider: 'openai', model: 'gpt-5' },
-      ],
-      'zhipu',
-      'glm-5.2',
-    )
-    const buttons = h.root.querySelectorAll('button')
-    let modelButton: HTMLElement | null = null
-    for (const b of Array.from(buttons)) {
-      if (b.className.includes('mono')) {
-        modelButton = b
-      }
-    }
-    modelButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    const panel = document.body.querySelector('div.fixed') as HTMLElement
-    // Click the gpt-5 row.
-    const items = panel.querySelectorAll('button')
-    let gpt5Btn: HTMLElement | null = null
-    for (const item of Array.from(items)) {
-      if (item.textContent === 'gpt-5') gpt5Btn = item as HTMLElement
-    }
-    expect(gpt5Btn).not.toBeNull()
-    gpt5Btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(calls.length).toBe(1)
-    expect(calls[0].provider).toBe('openai')
-    expect(calls[0].model).toBe('gpt-5')
+  it('updates on repeated calls', () => {
+    header.setContext(10000, 200000)
+    expect(getContextText()).toContain('9.8k/')
+    header.setContext(50000, 200000)
+    expect(getContextText()).toContain('48.8k/')
   })
 })

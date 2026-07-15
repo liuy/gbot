@@ -3,6 +3,12 @@ import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel } from './utils'
 import { getDebugLogs, onDebugLog } from './log'
 
+function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + 'k'
+  return (n / (1024 * 1024)).toFixed(1) + 'M'
+}
+
 export interface HeaderHandles {
   root: HTMLElement
   setStatus: (connected: boolean) => void
@@ -10,6 +16,7 @@ export interface HeaderHandles {
   onHamburgerClick: (handler: () => void) => void
   setModels: (models: { provider: string; model: string }[], curProvider: string, curModel: string) => void
   setEngines: (engines: EngineEntry[], activeID: string) => void
+  setContext: (used: number, total: number) => void
 }
 
 interface ModelEntry {
@@ -355,6 +362,10 @@ export function createHeader(opts: {
   spacer.className = 'flex-1'
   inner.appendChild(spacer)
 
+  const ctxSpan = document.createElement('span')
+  ctxSpan.className = 'mono text-[14px] text-t2 hidden'
+  inner.appendChild(ctxSpan)
+
   root.appendChild(inner)
 
   const setStatus = (connected: boolean) => {
@@ -382,5 +393,19 @@ export function createHeader(opts: {
     enginePicker.setEngines(engines, activeID)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines }
+  const setContext = (used: number, total: number) => {
+    if (total <= 0) {
+      ctxSpan.classList.add('hidden')
+      return
+    }
+    ctxSpan.classList.remove('hidden')
+    const pct = used * 100 / total
+    let color = 'text-t2'
+    if (pct >= 90) color = 'text-red-500'
+    else if (pct >= 80) color = 'text-amber-500'
+    ctxSpan.className = 'mono text-[14px] ' + color
+    ctxSpan.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
+  }
+
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines, setContext }
 }
