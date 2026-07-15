@@ -182,11 +182,13 @@ export function appendThinkingBlock(
   insertBefore(parent, wrap, before ?? null)
 
   // Auto-expand on creation (matches Thinking.tsx active → expanded).
-  header.addEventListener('click', () => {
+  const toggleThinking = () => {
     const collapsed = p.classList.toggle('hidden')
     const svg = chevron.querySelector('svg')
     if (svg) svg.setAttribute('class', collapsed ? chevronClass : chevronExpandedClass)
-  })
+  }
+  header.addEventListener('click', toggleThinking)
+  p.addEventListener('click', toggleThinking)
 
   return { p, labelEl }
 }
@@ -344,6 +346,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
       updateGroupSummary(sibling as HTMLElement)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
+      body.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
     }
     if (sibling?.dataset.collapsible === '1') {
@@ -359,6 +362,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
       updateGroupSummary(group)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
+      body.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
     }
   }
@@ -368,6 +372,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
 
   header.addEventListener('click', () => toggleToolExpanded(handles))
+  body.addEventListener('click', () => toggleToolExpanded(handles))
 
   return handles
 }
