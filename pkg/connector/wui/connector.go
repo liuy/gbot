@@ -916,9 +916,10 @@ func hasTextContent(m types.Message) bool {
 }
 
 // buildHistory returns a JSON "history" message for the given slot, applying
-// IsBusy exclusion when the engine is streaming. When busy, the current query
-// (everything from the last user text message onward) is omitted so the
-// snapshot/streamState provides that data instead (zero overlap).
+// IsBusy exclusion when the engine is streaming. When busy, the assistant's
+// streaming response (after the last user text message) is omitted so the
+// snapshot/streamState provides that data instead (zero overlap). The user's
+// query message itself is included in history.
 func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) []byte {
 	if slot == nil {
 		return nil
@@ -933,7 +934,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 			}
 		}
 		if queryStart >= 0 {
-			msgs = msgs[:queryStart]
+			msgs = msgs[:queryStart+1]
 		}
 	}
 

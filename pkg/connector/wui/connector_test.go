@@ -1072,8 +1072,8 @@ func TestBuildHistory_IsBusyExclusion(t *testing.T) {
 	if err := json.Unmarshal(payload, &busy); err != nil {
 		t.Fatalf("busy unmarshal: %v", err)
 	}
-	if len(busy.Messages) != 2 {
-		t.Fatalf("busy messages = %d, want 2 (prev_user + prev_asst)", len(busy.Messages))
+	if len(busy.Messages) != 3 {
+		t.Fatalf("busy messages = %d, want 3 (prev_user + prev_asst + cur_user)", len(busy.Messages))
 	}
 	if busy.Messages[0].ID != "prev_user" {
 		t.Errorf("busy msg[0] = %q, want prev_user", busy.Messages[0].ID)
@@ -1081,8 +1081,11 @@ func TestBuildHistory_IsBusyExclusion(t *testing.T) {
 	if busy.Messages[1].ID != "prev_asst" {
 		t.Errorf("busy msg[1] = %q, want prev_asst", busy.Messages[1].ID)
 	}
+	if busy.Messages[2].ID != "cur_user" {
+		t.Errorf("busy msg[2] = %q, want cur_user", busy.Messages[2].ID)
+	}
 
-	// Busy with only 1 user message: history is empty (query boundary at index 0)
+	// Busy with only 1 user message: history should include that user message
 	c.mock().messagesFn = func() []types.Message {
 		return []types.Message{
 			{
@@ -1094,8 +1097,17 @@ func TestBuildHistory_IsBusyExclusion(t *testing.T) {
 		}
 	}
 	payload = c.buildHistory(c.activeSlot(), "", 10)
-	if payload != nil {
-		t.Fatalf("busy with only 1 user msg: expected nil history, got %s", payload)
+	if payload == nil {
+		t.Fatal("busy with only user msg: expected history with that user msg, got nil")
+	}
+	var single struct {
+		Messages []historyChatMsg `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &single); err != nil {
+		t.Fatalf("single unmarshal: %v", err)
+	}
+	if len(single.Messages) != 1 || single.Messages[0].ID != "only_user" {
+		t.Fatalf("busy with only user msg = %v, want 1 message (only_user)", single.Messages)
 	}
 }
 
