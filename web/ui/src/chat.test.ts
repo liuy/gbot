@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createChat } from './chat'
+import { TokenRate } from './token_rate'
 
 // jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
 class MockIntersectionObserver {
@@ -2033,5 +2034,25 @@ describe('chat integration', () => {
     expect(inElAfter?.textContent).toBe('↑500')
 
     vi.useRealTimers()
+  })
+
+  it('tool_param_delta feeds tokenRate.add', () => {
+    const addSpy = vi.spyOn(TokenRate.prototype, 'add')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'hello' },
+    ])
+    addSpy.mockClear()
+
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'tool_param_delta', partial_input: { delta: '{"command":"ls"}', summary: 'ls' } },
+    ])
+
+    expect(addSpy).toHaveBeenCalledWith('{"command":"ls"}')
+    addSpy.mockRestore()
   })
 })

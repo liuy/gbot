@@ -1179,6 +1179,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'tool_param_delta': {
+        if (e.partial_input?.delta) tokenRate.add(e.partial_input.delta)
         if (!e.partial_input || !e.partial_input.summary) return
         const targetId = e.partial_input.id
         const summary = e.partial_input.summary
