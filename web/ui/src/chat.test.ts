@@ -29,6 +29,7 @@ vi.mock('./ws', () => ({
     },
     connected: true,
     onStateChange: (cb: (s: string) => void) => { stateCb = cb },
+    reconnect: () => { stateCb?.('reconnecting') },
   }),
 }))
 
@@ -2096,7 +2097,7 @@ describe('chat integration', () => {
     mount()
     stateCb!('disconnected')
     const banner = document.querySelector('.text-red') as HTMLElement
-    expect(banner?.textContent).toContain('refresh')
+    expect(banner?.textContent).toContain('Tap to retry')
   })
 
   it('disconnect banner hides on connected state', () => {

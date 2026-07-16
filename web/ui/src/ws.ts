@@ -9,6 +9,7 @@ export interface WebSocketConnection {
   send: (payload: object) => void
   connected: boolean
   onStateChange: (cb: (state: ConnState) => void) => void
+  reconnect: () => void
 }
 
 interface InternalState {
@@ -100,6 +101,13 @@ export function getConnection(): WebSocketConnection {
   return connFromState(s)
 }
 
+function manualReconnect() {
+  if (!state) return
+  state.reconnectCount = 0
+  const wsUrl = `ws://${location.host}/ws/chat`
+  connect(state, wsUrl)
+}
+
 function connFromState(s: InternalState): WebSocketConnection {
   return {
     subscribe: (listener: Listener) => {
@@ -120,5 +128,6 @@ function connFromState(s: InternalState): WebSocketConnection {
     onStateChange: (cb: (cs: ConnState) => void) => {
       s.stateCbs.add(cb)
     },
+    reconnect: manualReconnect,
   }
 }

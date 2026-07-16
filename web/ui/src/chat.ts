@@ -429,15 +429,22 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (cs === 'connected') {
       disconnectBanner.style.maxHeight = '0px'
       disconnectBanner.style.opacity = '0'
+      disconnectBanner.style.cursor = 'default'
     } else if (cs === 'reconnecting') {
+      disconnectBanner.style.cursor = 'default'
       startDots()
       disconnectBanner.style.maxHeight = '40px'
       disconnectBanner.style.opacity = '1'
     } else {
-      dcText.textContent = 'Reconnection failed, please refresh the page'
+      dcText.textContent = 'Reconnection failed. Tap to retry.'
+      disconnectBanner.style.cursor = 'pointer'
       disconnectBanner.style.maxHeight = '40px'
       disconnectBanner.style.opacity = '1'
     }
+  })
+
+  disconnectBanner.addEventListener('click', () => {
+    conn.reconnect?.()
   })
 
   let isNearBottom = true
