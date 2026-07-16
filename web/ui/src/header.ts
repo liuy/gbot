@@ -371,7 +371,8 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     const sec = createSection('Memory files')
     panel.appendChild(sec)
     for (const f of data.memoryFiles) {
-      panel.appendChild(createDetailRow(f.path, f.tokens))
+      const name = f.path.split('/').pop() ?? f.path
+      panel.appendChild(createDetailRow(name, f.tokens))
     }
   }
 

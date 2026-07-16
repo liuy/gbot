@@ -253,7 +253,7 @@ describe('Header context popover', () => {
   it('detail sections appear only when non-empty', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      memoryFiles: [{ path: 'CLAUDE.md', tokens: 1500 }],
+      memoryFiles: [{ path: '/home/user/.gbot/memory/user_name.md', tokens: 1500 }],
       agents: [],
       skills: [],
       mcpToolsLoaded: [],
@@ -261,7 +261,8 @@ describe('Header context popover', () => {
     clickTrigger()
     const panel = getPanel()
     expect(panel!.textContent).toContain('Memory files')
-    expect(panel!.textContent).toContain('CLAUDE.md')
+    expect(panel!.textContent).toContain('user_name.md')
+    expect(panel!.textContent).not.toContain('/home/user/.gbot/memory/user_name.md')
     expect(panel!.textContent).not.toContain('Agents')
     expect(panel!.textContent).not.toContain('Skills')
     expect(panel!.textContent).not.toContain('MCP tools loaded')
