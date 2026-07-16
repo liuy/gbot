@@ -358,6 +358,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   header.onHamburgerClick(() => sidebar.toggle())
   scroll.appendChild(header.root)
 
+  // ── Disconnect banner: slides in below header when WS is down.
+  const disconnectBanner = document.createElement('div')
+  disconnectBanner.className =
+    'absolute top-11 inset-x-0 z-50 ' +
+    'card-bg border-b border-hairline ' +
+    'px-4 py-1.5 flex items-center ' +
+    'transition-all duration-300 overflow-hidden max-h-0 opacity-0'
+
+  const dcText = document.createElement('span')
+  dcText.className = 'text-[12px] text-red'
+  disconnectBanner.appendChild(dcText)
+  mainContent.appendChild(disconnectBanner)
+
   const wrapper = document.createElement('div')
   wrapper.className = 'mx-auto max-w-2xl py-4'
 
@@ -395,6 +408,37 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   root.appendChild(sidebar.overlay)
 
   const conn = getConnection()
+
+  let dcDotTimer: ReturnType<typeof setTimeout> | null = null
+  const stopDots = () => {
+    if (dcDotTimer) { clearTimeout(dcDotTimer); dcDotTimer = null }
+  }
+  const startDots = () => {
+    let dots = 1
+    dcText.textContent = 'Connection lost, reconnecting.'
+    const tick = () => {
+      dcDotTimer = null
+      dots = (dots + 1) % 4
+      dcText.textContent = 'Connection lost, reconnecting' + '.'.repeat(dots)
+      dcDotTimer = setTimeout(tick, 1000)
+    }
+    dcDotTimer = setTimeout(tick, 1000)
+  }
+  conn.onStateChange?.((cs) => {
+    stopDots()
+    if (cs === 'connected') {
+      disconnectBanner.style.maxHeight = '0px'
+      disconnectBanner.style.opacity = '0'
+    } else if (cs === 'reconnecting') {
+      startDots()
+      disconnectBanner.style.maxHeight = '40px'
+      disconnectBanner.style.opacity = '1'
+    } else {
+      dcText.textContent = 'Reconnection failed, please refresh the page'
+      disconnectBanner.style.maxHeight = '40px'
+      disconnectBanner.style.opacity = '1'
+    }
+  })
 
   let isNearBottom = true
   let lastScrollHeight = 0

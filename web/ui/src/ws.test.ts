@@ -66,4 +66,68 @@ describe('ws reconnect backoff', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     expect(listener).toHaveBeenCalledWith({ type: 'error', message: 'test' })
   })
+
+  it('onStateChange fires connected on onopen', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    expect(states).toEqual(['connected'])
+  })
+
+  it('onStateChange fires reconnecting on onclose then connected on retry', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    MockWebSocket.instances[0].onclose!()
+    expect(states).toEqual(['connected', 'reconnecting'])
+
+    vi.advanceTimersByTime(1000)
+    MockWebSocket.instances[1].onopen!()
+    expect(states).toEqual(['connected', 'reconnecting', 'connected'])
+  })
+
+  it('onStateChange fires disconnected after 5 failed reconnects', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    // 5 failed reconnect attempts
+    for (let i = 0; i < 5; i++) {
+      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+      vi.advanceTimersByTime(1000)
+    }
+    // After 5th failure, reconnectCount=6 > 5 → disconnected
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+
+    const reconnectingCount = states.filter(s => s === 'reconnecting').length
+    expect(reconnectingCount).toBe(5)
+    expect(states[states.length - 1]).toBe('disconnected')
+  })
+
+  it('disconnected is not fired again after cap (stale onclose guard)', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    for (let i = 0; i < 5; i++) {
+      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+      vi.advanceTimersByTime(1000)
+    }
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+
+    const beforeLen = states.length
+    // Try triggering another onclose on the same socket
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose?.()
+    expect(states.length).toBe(beforeLen)
+  })
 })

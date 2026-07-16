@@ -173,10 +173,9 @@ describe('committed message layout (via loadHistory)', () => {
       nextCursor: '',
       hasMore: false,
     })
-    const red = document.querySelector('.text-red') as HTMLElement
-    expect(red).toBeTruthy()
-    expect(red.className).toContain('border-red/40')
-    expect(red.textContent).toBe('something broke')
+    const redEls = document.querySelectorAll('.text-red')
+    const red = Array.from(redEls).find(el => el.className.includes('border-red/40')) as HTMLElement
+    expect(red?.textContent).toBe('something broke')
   })
 
   it('tool block renders with data-tool-root + finishTool green dot', () => {

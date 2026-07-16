@@ -2,16 +2,18 @@ import type { ServerMessage } from './types'
 
 type Listener = (msg: ServerMessage) => void
 
+export type ConnState = 'connected' | 'reconnecting' | 'disconnected'
+
 export interface WebSocketConnection {
   subscribe: (listener: Listener) => () => void
   send: (payload: object) => void
   connected: boolean
+  onStateChange: (cb: (state: ConnState) => void) => void
 }
 
-// Listeners live in a Set, not state — streaming deltas arrive
-// synchronously from ws.onmessage and must be dispatched without batching.
-interface ConnState {
+interface InternalState {
   listeners: Set<Listener>
+  stateCbs: Set<(s: ConnState) => void>
   ws: WebSocket | null
   connected: boolean
   reconnectCount: number
@@ -19,11 +21,12 @@ interface ConnState {
   disposed: boolean
 }
 
-let state: ConnState | null = null
+let state: InternalState | null = null
 
-function createState(): ConnState {
+function createState(): InternalState {
   return {
     listeners: new Set(),
+    stateCbs: new Set(),
     ws: null,
     connected: false,
     reconnectCount: 0,
@@ -32,18 +35,27 @@ function createState(): ConnState {
   }
 }
 
-function scheduleReconnect(s: ConnState, wsUrl: string) {
+function notifyState(s: InternalState, cs: ConnState) {
+  s.stateCbs.forEach(cb => cb(cs))
+}
+
+function scheduleReconnect(s: InternalState, wsUrl: string) {
   s.connected = false
   if (s.disposed) return
   if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
   s.reconnectCount++
-  if (s.reconnectCount > 5) return
+  if (s.reconnectCount > 5) {
+    if (s.ws) s.ws.onclose = null
+    notifyState(s, 'disconnected')
+    return
+  }
+  notifyState(s, 'reconnecting')
   s.reconnectTimer = setTimeout(() => {
     connect(s, wsUrl)
   }, 1000)
 }
 
-function connect(s: ConnState, wsUrl: string) {
+function connect(s: InternalState, wsUrl: string) {
   if (s.disposed) return
   if (s.ws) {
     s.ws.onclose = null
@@ -57,6 +69,7 @@ function connect(s: ConnState, wsUrl: string) {
   ws.onopen = () => {
     s.reconnectCount = 0
     s.connected = true
+    notifyState(s, 'connected')
   }
 
   ws.onclose = () => {
@@ -78,8 +91,6 @@ function connect(s: ConnState, wsUrl: string) {
   }
 }
 
-// Lazily creates the singleton WS on first call. Idempotent — returns the
-// same instance on every subsequent call.
 export function getConnection(): WebSocketConnection {
   if (state) return connFromState(state)
   const s = createState()
@@ -89,7 +100,7 @@ export function getConnection(): WebSocketConnection {
   return connFromState(s)
 }
 
-function connFromState(s: ConnState): WebSocketConnection {
+function connFromState(s: InternalState): WebSocketConnection {
   return {
     subscribe: (listener: Listener) => {
       s.listeners.add(listener)
@@ -105,6 +116,9 @@ function connFromState(s: ConnState): WebSocketConnection {
     },
     get connected() {
       return s.connected
+    },
+    onStateChange: (cb: (cs: ConnState) => void) => {
+      s.stateCbs.add(cb)
     },
   }
 }

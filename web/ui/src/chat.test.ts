@@ -16,6 +16,8 @@ type Listener = (msg: unknown) => void
 const listeners: Set<Listener> = new Set()
 const sent: unknown[] = []
 
+let stateCb: ((s: string) => void) | null = null
+
 vi.mock('./ws', () => ({
   getConnection: () => ({
     subscribe: (fn: Listener) => {
@@ -26,6 +28,7 @@ vi.mock('./ws', () => ({
       sent.push(p)
     },
     connected: true,
+    onStateChange: (cb: (s: string) => void) => { stateCb = cb },
   }),
 }))
 
@@ -325,8 +328,9 @@ describe('chat integration', () => {
     pressEnter()
     dispatchEvents([{ type: 'query_start' }])
     dispatch({ type: 'error', message: 'boom' })
-    const red = document.querySelector('.text-red')
-    expect(red?.textContent).toContain('boom')
+    const red = document.querySelectorAll('.text-red')
+    const errorEl = Array.from(red).find(el => el.textContent?.includes('boom'))
+    expect(errorEl?.textContent).toContain('boom')
   })
 
   it('connect_status resets state for fresh history', () => {
@@ -2078,5 +2082,30 @@ describe('chat integration', () => {
 
     expect(addSpy).toHaveBeenCalledWith('{"command":"ls"}')
     addSpy.mockRestore()
+  })
+
+  it('disconnect banner shows reconnecting text on ws state change', () => {
+    mount()
+    expect(stateCb).toBeTruthy()
+    stateCb!('reconnecting')
+    const banner = document.querySelector('.text-red') as HTMLElement
+    expect(banner?.textContent).toContain('reconnecting')
+  })
+
+  it('disconnect banner shows failure text on disconnected state', () => {
+    mount()
+    stateCb!('disconnected')
+    const banner = document.querySelector('.text-red') as HTMLElement
+    expect(banner?.textContent).toContain('refresh')
+  })
+
+  it('disconnect banner hides on connected state', () => {
+    mount()
+    stateCb!('reconnecting')
+    const banner = document.querySelector('.absolute.top-11') as HTMLElement
+    expect(banner.style.opacity).toBe('1')
+
+    stateCb!('connected')
+    expect(banner.style.opacity).toBe('0')
   })
 })

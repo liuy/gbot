@@ -142,5 +142,13 @@ export function createTaskPanel(): TaskPanelHandles {
     label.textContent = `${doneStr}/${totalStr}`
   }
 
+  // Cleanup popover if root is removed from DOM.
+  new MutationObserver((_mutations, observer) => {
+    if (!root.isConnected) {
+      closePopover()
+      observer.disconnect()
+    }
+  }).observe(root.parentElement ?? document.body, { childList: true })
+
   return { root, setTasks }
 }
