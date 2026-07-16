@@ -353,6 +353,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }),
     onEngineSwitch: (engineID) => conn.send({ type: 'engine_switch', engineID }),
     onEngineNew: () => conn.send({ type: 'engine_new' }),
+    onContextRequest: () => conn.send({ type: 'context_request' }),
   })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
@@ -1456,6 +1457,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         sidebar.closeImmediate()
         header.setStatus(c.connected)
         header.setModel(c.model ?? '')
+        header.hideContextBreakdown()
         inputBar.setConnected(c.connected)
         resetAllState()
         if (c.inputHistory) inputHistory.load(c.inputHistory)
@@ -1506,6 +1508,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         sidebar.closeImmediate()
         header.setStatus(msg.connected)
         header.setModel(msg.model ?? '')
+        header.hideContextBreakdown()
         inputBar.setConnected(msg.connected)
         resetAllState()
         if (msg.inputHistory) inputHistory.load(msg.inputHistory)
@@ -1586,6 +1589,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       case 'session_list':
         sidebar.setSessions(msg.sessions, currentSessionID)
+        return
+      case 'context_breakdown':
+        if (msg.totalTokens === 0) {
+          header.setContextBreakdown(null)
+        } else {
+          header.setContextBreakdown(msg)
+        }
         return
     }
   })

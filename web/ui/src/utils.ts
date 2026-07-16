@@ -108,6 +108,23 @@ export function createPopupPanel(opts?: { bottom?: boolean; className?: string }
   return panel
 }
 
+// ── Outside-click dismiss ───────────────────────────────────────
+export function createOutsideClick(
+  trigger: HTMLElement,
+  panel: HTMLElement,
+  onClose: () => void,
+) {
+  const handler = (e: Event) => {
+    if (!trigger.contains(e.target as Node) && !panel.contains(e.target as Node)) {
+      onClose()
+    }
+  }
+  return {
+    add() { document.addEventListener('mousedown', handler) },
+    remove() { document.removeEventListener('mousedown', handler) },
+  }
+}
+
 // Group summary: "2 Searches, 1 Read, 1 LSP". Shared by ToolGroup.tsx and streamDom.ts.
 export function summarize(tools: { name: string; isList?: boolean }[]): string {
 	const counts = new Map<string, number>()

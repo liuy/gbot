@@ -166,6 +166,8 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleEngineNew(msg.Name)
 			}
+		case "context_request":
+			c.handleContextRequest()
 		}
 	}
 }

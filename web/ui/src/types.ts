@@ -51,6 +51,37 @@ export type ServerMessage =
       stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
     }
   | { type: 'streamState'; blocks: Block[] }
+  | { type: 'context_breakdown' } & ContextBreakdownData
+
+export type ContextCategoryData = {
+  name: string; tokens: number; percentage: number
+  color: string; isFree: boolean; isReserved: boolean
+}
+export type MCPToolDetailData = { name: string; serverName: string; tokens: number; isLoaded: boolean }
+export type SystemToolDetailData = { name: string; tokens: number }
+export type SystemPromptSectionData = { name: string; tokens: number }
+export type MemoryFileDetailData = { path: string; tokens: number }
+export type AgentDetailData = { agentType: string; source: string; tokens: number }
+export type SkillDetailData = { name: string; source: string; tokens: number }
+export type MessageBreakdownData = {
+  toolCallTokens: number; toolResultTokens: number; attachmentTokens: number
+  assistantTextTokens: number; userTextTokens: number
+  toolCallsByType: { name: string; callTokens: number; resultTokens: number }[]
+  attachmentsByType: { name: string; tokens: number }[]
+}
+export type APIUsageData = {
+  inputTokens: number; outputTokens: number
+  cacheCreationInputTokens: number; cacheReadInputTokens: number
+}
+export type ContextBreakdownData = {
+  model: string; contextWindow: number; totalTokens: number; percentage: number
+  isAutoCompact: boolean; categories: ContextCategoryData[]
+  mcpToolsLoaded: MCPToolDetailData[]; mcpToolsDeferred: MCPToolDetailData[]
+  deferredBuiltinTools: SystemToolDetailData[]; systemTools: SystemToolDetailData[]
+  systemPromptSections: SystemPromptSectionData[]; memoryFiles: MemoryFileDetailData[]
+  agents: AgentDetailData[]; skills: SkillDetailData[]
+  messageBreakdown: MessageBreakdownData | null; apiUsage: APIUsageData | null
+}
 
 export type TaskWireItem = {
   id: string

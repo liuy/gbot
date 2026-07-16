@@ -1,5 +1,5 @@
 import type { TaskWireItem } from './types'
-import { createPopupPanel } from './utils'
+import { createPopupPanel, createOutsideClick } from './utils'
 
 export interface TaskPanelHandles {
   root: HTMLElement
@@ -31,20 +31,14 @@ export function createTaskPanel(): TaskPanelHandles {
   const label = root.querySelector('.task-label') as SVGTextElement
 
   let popover: HTMLDivElement | null = null
+  let popoverClick: ReturnType<typeof createOutsideClick> | null = null
   let currentTasks: TaskWireItem[] = []
 
   function closePopover() {
     if (popover) {
       popover.remove()
       popover = null
-      document.removeEventListener('mousedown', onOutside)
-      document.removeEventListener('touchstart', onOutside)
-    }
-  }
-
-  function onOutside(ev: MouseEvent | TouchEvent) {
-    if (popover && !popover.contains(ev.target as Node) && !root.contains(ev.target as Node)) {
-      closePopover()
+      popoverClick = null
     }
   }
 
@@ -75,8 +69,8 @@ export function createTaskPanel(): TaskPanelHandles {
     popover.appendChild(list)
 
     document.body.appendChild(popover)
-    document.addEventListener('mousedown', onOutside)
-    document.addEventListener('touchstart', onOutside)
+    popoverClick = createOutsideClick(root, popover, closePopover)
+    popoverClick.add()
   })
 
   function renderRow(t: TaskWireItem): HTMLElement {

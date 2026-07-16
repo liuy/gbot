@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createHeader } from './header'
+import type { ContextBreakdownData } from './types'
 
 describe('Header context display', () => {
   let header: ReturnType<typeof createHeader>
@@ -14,21 +15,18 @@ describe('Header context display', () => {
     document.body.appendChild(header.root)
   })
 
+  function getContextTrigger(): HTMLButtonElement {
+    return header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+  }
+
   function getContextText(): string {
-    // Find the context span (last child of inner, not hidden)
-    const spans = header.root.querySelectorAll('span.mono')
-    for (const s of spans) {
-      if (s.textContent && s.textContent.includes('/')) return s.textContent
-    }
-    return ''
+    const el = getContextTrigger()
+    return el?.textContent ?? ''
   }
 
   function getContextClass(): string {
-    const spans = header.root.querySelectorAll('span.mono')
-    for (const s of spans) {
-      if (s.textContent && s.textContent.includes('/')) return s.className
-    }
-    return ''
+    const el = getContextTrigger()
+    return el?.className ?? ''
   }
 
   it('formatTokenCount: raw number under 1K', () => {
@@ -50,28 +48,30 @@ describe('Header context display', () => {
 
   it('hides when total is 0', () => {
     header.setContext(100, 0)
-    expect(getContextText()).toBe('')
+    const el = getContextTrigger()
+    expect(el.classList.contains('hidden')).toBe(true)
   })
 
   it('hides when total is negative', () => {
     header.setContext(100, -1)
-    expect(getContextText()).toBe('')
+    const el = getContextTrigger()
+    expect(el.classList.contains('hidden')).toBe(true)
   })
 
   it('normal color under 80%', () => {
-    header.setContext(100000, 200000) // 50%
+    header.setContext(100000, 200000)
     expect(getContextClass()).toContain('text-t2')
     expect(getContextClass()).not.toContain('text-amber')
     expect(getContextClass()).not.toContain('text-red')
   })
 
   it('amber color at 80%', () => {
-    header.setContext(160000, 200000) // 80%
+    header.setContext(160000, 200000)
     expect(getContextClass()).toContain('text-amber-500')
   })
 
   it('red color at 90%', () => {
-    header.setContext(180000, 200000) // 90%
+    header.setContext(180000, 200000)
     expect(getContextClass()).toContain('text-red-500')
   })
 
@@ -80,5 +80,285 @@ describe('Header context display', () => {
     expect(getContextText()).toContain('9.8k/')
     header.setContext(50000, 200000)
     expect(getContextText()).toContain('48.8k/')
+  })
+})
+
+function sampleBreakdown(overrides: Partial<ContextBreakdownData> = {}): ContextBreakdownData {
+  return {
+    model: 'test-model',
+    contextWindow: 200000,
+    totalTokens: 50000,
+    percentage: 25.0,
+    isAutoCompact: true,
+    categories: [
+      { name: 'System prompt', tokens: 5000, percentage: 2.5, color: '12', isFree: false, isReserved: false },
+      { name: 'Messages', tokens: 30000, percentage: 15.0, color: '255', isFree: false, isReserved: false },
+      { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+    ],
+    mcpToolsLoaded: [],
+    mcpToolsDeferred: [],
+    deferredBuiltinTools: [],
+    systemTools: [],
+    systemPromptSections: [],
+    memoryFiles: [],
+    agents: [],
+    skills: [],
+    messageBreakdown: null,
+    apiUsage: null,
+    ...overrides,
+  }
+}
+
+describe('Header context popover', () => {
+  let header: ReturnType<typeof createHeader>
+  let requestCalled: boolean
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    requestCalled = false
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onContextRequest: () => { requestCalled = true },
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function getTrigger(): HTMLButtonElement {
+    return header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+  }
+
+  function getPanel(): HTMLDivElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLDivElement
+    }
+    return null
+  }
+
+  function clickTrigger() {
+    const el = getTrigger()
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  it('calls onContextRequest when trigger clicked', () => {
+    header.setContext(500, 200000)
+    clickTrigger()
+    expect(requestCalled).toBe(true)
+  })
+
+  it('shows loading text when no data arrived yet', () => {
+    header.setContext(500, 200000)
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+    expect(panel!.textContent).toContain('Loading')
+  })
+
+  it('shows send-a-message hint when setContextBreakdown(null)', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(null)
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+    expect(panel!.textContent).toContain('Send a message first')
+  })
+
+  it('renders breakdown content after setContextBreakdown + click', () => {
+    header.setContext(500, 200000)
+    const bd = sampleBreakdown()
+    header.setContextBreakdown(bd)
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+    expect(panel!.textContent).toContain('Context Usage')
+    expect(panel!.textContent).toContain('System prompt')
+    expect(panel!.textContent).toContain('Messages')
+    expect(panel!.textContent).toContain('Free space')
+  })
+
+  it('segmented bar has segments with correct colors', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    const bar = panel!.querySelector('[data-testid="context-bar"]') as HTMLDivElement
+    expect(bar).not.toBeNull()
+    const segments = bar.querySelectorAll('[data-testid="context-segment"]')
+    expect(segments.length).toBe(3)
+    const seg0 = segments[0] as HTMLDivElement
+    expect(seg0.style.backgroundColor).toBe('var(--color-blue)')
+    const seg1 = segments[1] as HTMLDivElement
+    expect(seg1.style.backgroundColor).toBe('var(--color-t1)')
+    const seg2 = segments[2] as HTMLDivElement
+    expect(seg2.style.backgroundColor).toBe('var(--color-t3)')
+  })
+
+  it('segment width is percentage based', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    const segments = panel!.querySelectorAll('[data-testid="context-segment"]')
+    const seg0 = segments[0] as HTMLDivElement
+    expect(seg0.style.width).toBe('2.5%')
+    const seg1 = segments[1] as HTMLDivElement
+    expect(seg1.style.width).toBe('15%')
+  })
+
+  it('segmented bar maps all ANSI color codes to CSS variables', () => {
+    const codes: Record<string, string> = {
+      '12': 'var(--color-blue)', '39': '#38BDF8', '33': '#22D3EE',
+      '51': '#06B6D4', '201': 'var(--color-violet)', '220': 'var(--color-amber)',
+      '45': '#14B8A6', '46': 'var(--color-green)', '22': '#15803D',
+      '93': 'var(--color-violet)', '255': 'var(--color-t1)', '240': 'var(--color-t3)',
+      '160': 'var(--color-red)',
+    }
+    const cats = Object.entries(codes).map(([code], i) => ({
+      name: `Cat${i}`, tokens: 1000, percentage: 5.0, color: code,
+      isFree: false, isReserved: false,
+    }))
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({ categories: cats }))
+    clickTrigger()
+    const panel = getPanel()
+    const segments = panel!.querySelectorAll('[data-testid="context-segment"]')
+    for (let i = 0; i < cats.length; i++) {
+      const seg = segments[i] as HTMLDivElement
+      const expected = codes[cats[i].color]
+      if (expected.startsWith('var(')) {
+        expect(seg.style.backgroundColor).toBe(expected)
+      } else if (expected.startsWith('#')) {
+        // jsdom converts hex to rgb
+        expect(seg.style.backgroundColor).toMatch(/rgb/i)
+      }
+    }
+  })
+
+  it('category list shows formatted token count and percentage', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    const text = panel!.textContent ?? ''
+    expect(text).toContain('System prompt')
+    expect(text).toContain('4.9k')
+    expect(text).toContain('2.5%')
+    expect(text).toContain('Messages')
+    expect(text).toContain('29.3k')
+    expect(text).toContain('Free space')
+  })
+
+  it('detail sections appear only when non-empty', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      memoryFiles: [{ path: 'CLAUDE.md', tokens: 1500 }],
+      agents: [],
+      skills: [],
+      mcpToolsLoaded: [],
+    }))
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel!.textContent).toContain('Memory files')
+    expect(panel!.textContent).toContain('CLAUDE.md')
+    expect(panel!.textContent).not.toContain('Agents')
+    expect(panel!.textContent).not.toContain('Skills')
+    expect(panel!.textContent).not.toContain('MCP tools loaded')
+  })
+
+  it('message breakdown renders token summary', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      messageBreakdown: {
+        toolCallTokens: 5000,
+        toolResultTokens: 10000,
+        attachmentTokens: 0,
+        assistantTextTokens: 2000,
+        userTextTokens: 1000,
+        toolCallsByType: [
+          { name: 'Bash', callTokens: 3000, resultTokens: 6000 },
+          { name: 'Read', callTokens: 2000, resultTokens: 4000 },
+        ],
+        attachmentsByType: [],
+      },
+    }))
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel!.textContent).toContain('Message breakdown')
+    expect(panel!.textContent).toContain('Tool calls')
+    expect(panel!.textContent).toContain('Tool results')
+    expect(panel!.textContent).toContain('Top tools')
+    expect(panel!.textContent).toContain('Bash')
+    expect(panel!.textContent).toContain('Read')
+  })
+
+  it('closes on outside click', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('can open and close multiple times via outside click', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+
+    // First open — simulate real click sequence
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel!.classList.contains('hidden')).toBe(false)
+
+    // First close — mousedown
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+
+    // Second open
+    clickTrigger()
+    expect(panel!.classList.contains('hidden')).toBe(false)
+
+    // Second close — must still work
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('toggles closed on second trigger click', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+    clickTrigger()
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('updates content when setContextBreakdown called while open', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel!.textContent).toContain('System prompt')
+
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'Messages', tokens: 40000, percentage: 20.0, color: '255', isFree: false, isReserved: false },
+      ],
+    }))
+    expect(panel!.textContent).not.toContain('System prompt')
+    expect(panel!.textContent).toContain('Messages')
+  })
+
+  it('hideContextBreakdown closes the panel', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    expect(panel).not.toBeNull()
+    header.hideContextBreakdown()
+    expect(panel!.classList.contains('hidden')).toBe(true)
   })
 })

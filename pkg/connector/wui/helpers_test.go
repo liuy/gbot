@@ -55,20 +55,21 @@ type mockEngine struct {
 	// Called after queryFn finishes — mirrors real engine's appendMessage.
 	onQueryDoneFn func()
 
-	switchSessionFn func(sessionID string) error
-	listSessionsFn  func(limit int) ([]*short.Session, error)
-	newSessionFn    func() (string, error)
-	updateTitleFn   func(sessionID, title string) error
-	sessionIDFn     func() string
-	engineIDFn      func() string
-	modelFn         func() string
-	projectDirFn    func() string
-	setProviderFn   func(llm.Provider)
-	setModelFn      func(string)
-	providerFn      func() llm.Provider
-	setMaxTokensFn  func(int)
-	setInputModFn   func([]string)
-	updateAutoFn    func(engine.AutoCompactConfig)
+	switchSessionFn    func(sessionID string) error
+	listSessionsFn     func(limit int) ([]*short.Session, error)
+	newSessionFn       func() (string, error)
+	updateTitleFn      func(sessionID, title string) error
+	sessionIDFn        func() string
+	engineIDFn         func() string
+	modelFn            func() string
+	projectDirFn       func() string
+	contextBreakdownFn func() *engine.ContextBreakdown
+	setProviderFn      func(llm.Provider)
+	setModelFn         func(string)
+	providerFn         func() llm.Provider
+	setMaxTokensFn     func(int)
+	setInputModFn      func([]string)
+	updateAutoFn       func(engine.AutoCompactConfig)
 
 	// Recorded calls for assertions.
 	queryCalls         []queryCall
@@ -246,6 +247,12 @@ func (m *mockEngine) ProjectDir() string {
 
 func (m *mockEngine) ContextWindow() int    { return 200000 }
 func (m *mockEngine) GetContextTokens() int { return 0 }
+func (m *mockEngine) ContextBreakdown() *engine.ContextBreakdown {
+	if m.contextBreakdownFn != nil {
+		return m.contextBreakdownFn()
+	}
+	return nil
+}
 
 func (m *mockEngine) SetProvider(p llm.Provider) {
 	m.mu.Lock()

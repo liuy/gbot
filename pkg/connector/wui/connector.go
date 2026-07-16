@@ -71,6 +71,7 @@ type engineClient interface {
 	ProjectDir() string
 	ContextWindow() int
 	GetContextTokens() int
+	ContextBreakdown() *engine.ContextBreakdown
 	SetProvider(provider llm.Provider)
 	SetModel(model string)
 	Provider() llm.Provider
@@ -131,6 +132,9 @@ func (a *engineAdapter) Model() string         { return a.eng.Model() }
 func (a *engineAdapter) ProjectDir() string    { return a.eng.ProjectDir() }
 func (a *engineAdapter) ContextWindow() int    { return a.eng.ContextWindow() }
 func (a *engineAdapter) GetContextTokens() int { return a.eng.GetContextTokens() }
+func (a *engineAdapter) ContextBreakdown() *engine.ContextBreakdown {
+	return a.eng.ContextBreakdown()
+}
 
 func (a *engineAdapter) SetProvider(p llm.Provider)    { a.eng.SetProvider(p) }
 func (a *engineAdapter) SetModel(m string)             { a.eng.SetModel(m) }

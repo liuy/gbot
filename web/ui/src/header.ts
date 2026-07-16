@@ -1,13 +1,8 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
-import { createPopupPanel } from './utils'
+import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
 import { getDebugLogs, onDebugLog } from './log'
-
-function formatTokenCount(n: number): string {
-  if (n < 1000) return String(n)
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + 'k'
-  return (n / (1024 * 1024)).toFixed(1) + 'M'
-}
+import type { ContextBreakdownData } from './types'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -17,6 +12,8 @@ export interface HeaderHandles {
   setModels: (models: { provider: string; model: string }[], curProvider: string, curModel: string) => void
   setEngines: (engines: EngineEntry[], activeID: string) => void
   setContext: (used: number, total: number) => void
+  setContextBreakdown: (data: ContextBreakdownData | null) => void
+  hideContextBreakdown: () => void
 }
 
 interface ModelEntry {
@@ -112,11 +109,12 @@ function createModelPicker(
     open = false
     panel.classList.add('hidden')
     searchInput.value = ''
-    document.removeEventListener('mousedown', onDocClick)
   }
-  const onDocClick = (e: MouseEvent) => {
-    if (!wrap.contains(e.target as Node) && !panel.contains(e.target as Node)) closePanel()
-  }
+  const outside = createOutsideClick(wrap, panel, () => {
+    open = false
+    panel.classList.add('hidden')
+    searchInput.value = ''
+  })
   trigger.addEventListener('click', () => {
     open = !open
     if (open) {
@@ -125,8 +123,10 @@ function createModelPicker(
       searchInput.value = ''
       renderList()
       setTimeout(() => searchInput.focus(), 50)
-      document.addEventListener('mousedown', onDocClick)
-    } else closePanel()
+      outside.add()
+    } else {
+      closePanel()
+    }
   })
 
   trigger.textContent = ''
@@ -207,19 +207,21 @@ function createEnginePicker(
   const closePanel = () => {
     open = false
     panel.classList.add('hidden')
-    document.removeEventListener('mousedown', onDocClick)
   }
-  const onDocClick = (e: MouseEvent) => {
-    if (!wrap.contains(e.target as Node) && !panel.contains(e.target as Node)) closePanel()
-  }
+  const outside = createOutsideClick(wrap, panel, () => {
+    open = false
+    panel.classList.add('hidden')
+  })
   trigger.addEventListener('click', () => {
     open = !open
     if (open) {
       if (!panel.parentElement) document.body.appendChild(panel)
       panel.classList.remove('hidden')
       renderList()
-      document.addEventListener('mousedown', onDocClick)
-    } else closePanel()
+      outside.add()
+    } else {
+      closePanel()
+    }
   })
 
   trigger.textContent = ''
@@ -235,10 +237,287 @@ function createEnginePicker(
   return { wrap, setEngines }
 }
 
+const ANSI_TO_CSS: Record<string, string> = {
+  '12': 'var(--color-blue)',
+  '39': '#38BDF8',
+  '33': '#22D3EE',
+  '51': '#06B6D4',
+  '201': 'var(--color-violet)',
+  '220': 'var(--color-amber)',
+  '45': '#14B8A6',
+  '46': 'var(--color-green)',
+  '22': '#15803D',
+  '93': 'var(--color-violet)',
+  '255': 'var(--color-t1)',
+  '240': 'var(--color-t3)',
+  '160': 'var(--color-red)',
+}
+function ansiToCss(code: string): string {
+  return ANSI_TO_CSS[code] ?? 'var(--color-t3)'
+}
+
+function createSection(title: string): HTMLDivElement {
+  const sec = document.createElement('div')
+  sec.className = 'pt-2 pb-1 px-4'
+  const h = document.createElement('div')
+  h.className = 'mono text-[11px] text-t3 uppercase tracking-wider'
+  h.textContent = title
+  sec.appendChild(h)
+  return sec
+}
+
+function createDetailRow(name: string, tokens: number): HTMLDivElement {
+  const row = document.createElement('div')
+  row.className = 'flex items-center justify-between px-4 py-1'
+  const n = document.createElement('span')
+  n.className = 'text-[13px] text-t2 truncate'
+  n.textContent = name
+  row.appendChild(n)
+  const t = document.createElement('span')
+  t.className = 'mono text-[12px] text-t3 ml-2 shrink-0'
+  t.textContent = formatTokenCount(tokens)
+  row.appendChild(t)
+  return row
+}
+
+function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData) {
+  panel.innerHTML = ''
+
+  const titleBar = document.createElement('div')
+  titleBar.className = 'px-4 pt-3 pb-1'
+  const title = document.createElement('div')
+  title.className = 'text-[14px] font-semibold text-t1'
+  title.textContent = 'Context Usage'
+  titleBar.appendChild(title)
+  const total = document.createElement('div')
+  total.className = 'mono text-[12px] text-t3 mt-0.5'
+  total.textContent =
+    formatTokenCount(data.totalTokens) + ' / ' + formatTokenCount(data.contextWindow) +
+    ' (' + data.percentage.toFixed(1) + '%)'
+  titleBar.appendChild(total)
+  panel.appendChild(titleBar)
+
+  const barWrap = document.createElement('div')
+  barWrap.className = 'px-4 py-2'
+  const bar = document.createElement('div')
+  bar.className = 'flex h-2 rounded-full overflow-hidden bg-ink3/50'
+  bar.dataset.testid = 'context-bar'
+  for (const cat of data.categories) {
+    if (cat.tokens === 0) continue
+    const seg = document.createElement('div')
+    seg.style.width = cat.percentage + '%'
+    seg.style.backgroundColor = ansiToCss(cat.color)
+    seg.dataset.testid = 'context-segment'
+    seg.dataset.name = cat.name
+    bar.appendChild(seg)
+  }
+  barWrap.appendChild(bar)
+  panel.appendChild(barWrap)
+
+  const listWrap = document.createElement('div')
+  listWrap.className = 'pb-1'
+  for (const cat of data.categories) {
+    const row = document.createElement('div')
+    row.className = 'flex items-center gap-2 px-4 py-1'
+    const dot = document.createElement('span')
+    dot.className = 'h-2 w-2 rounded-full shrink-0'
+    dot.style.backgroundColor = ansiToCss(cat.color)
+    row.appendChild(dot)
+    const name = document.createElement('span')
+    name.className = 'text-[13px] text-t2 flex-1 truncate'
+    name.textContent = cat.name
+    row.appendChild(name)
+    const tok = document.createElement('span')
+    tok.className = 'mono text-[12px] text-t3'
+    tok.textContent = formatTokenCount(cat.tokens)
+    row.appendChild(tok)
+    const pct = document.createElement('span')
+    pct.className = 'text-[11px] text-t3 w-10 text-right'
+    pct.textContent = cat.percentage.toFixed(1) + '%'
+    row.appendChild(pct)
+    listWrap.appendChild(row)
+  }
+  panel.appendChild(listWrap)
+
+  if (data.messageBreakdown) {
+    const mb = data.messageBreakdown
+    const sec = createSection('Message breakdown')
+    panel.appendChild(sec)
+    panel.appendChild(createDetailRow('Tool calls', mb.toolCallTokens))
+    panel.appendChild(createDetailRow('Tool results', mb.toolResultTokens))
+    panel.appendChild(createDetailRow('Attachments', mb.attachmentTokens))
+    panel.appendChild(createDetailRow('Assistant text', mb.assistantTextTokens))
+    panel.appendChild(createDetailRow('User text', mb.userTextTokens))
+    if (mb.toolCallsByType.length > 0) {
+      const subSec = createSection('Top tools')
+      panel.appendChild(subSec)
+      for (const tc of mb.toolCallsByType) {
+        panel.appendChild(createDetailRow(tc.name, tc.callTokens + tc.resultTokens))
+      }
+    }
+  }
+
+  if (data.systemPromptSections.length > 0) {
+    const sec = createSection('System prompt')
+    panel.appendChild(sec)
+    for (const s of data.systemPromptSections) {
+      panel.appendChild(createDetailRow(s.name, s.tokens))
+    }
+  }
+
+  if (data.memoryFiles.length > 0) {
+    const sec = createSection('Memory files')
+    panel.appendChild(sec)
+    for (const f of data.memoryFiles) {
+      panel.appendChild(createDetailRow(f.path, f.tokens))
+    }
+  }
+
+  if (data.systemTools.length > 0) {
+    const sec = createSection('System tools')
+    panel.appendChild(sec)
+    for (const t of data.systemTools) {
+      panel.appendChild(createDetailRow(t.name, t.tokens))
+    }
+  }
+
+  if (data.mcpToolsLoaded.length > 0) {
+    const sec = createSection('MCP tools loaded')
+    panel.appendChild(sec)
+    for (const t of data.mcpToolsLoaded) {
+      panel.appendChild(createDetailRow(t.name + ' (' + t.serverName + ')', t.tokens))
+    }
+  }
+
+  if (data.mcpToolsDeferred.length > 0) {
+    const sec = createSection('MCP tools deferred')
+    panel.appendChild(sec)
+    for (const t of data.mcpToolsDeferred) {
+      const row = document.createElement('div')
+      row.className = 'flex items-center justify-between px-4 py-1'
+      const n = document.createElement('span')
+      n.className = 'text-[13px] text-t2 truncate'
+      n.textContent = t.name + ' (' + t.serverName + ')'
+      row.appendChild(n)
+      sec.appendChild(row)
+    }
+  }
+
+  if (data.agents.length > 0) {
+    const sec = createSection('Agents')
+    panel.appendChild(sec)
+    for (const a of data.agents) {
+      panel.appendChild(createDetailRow(a.agentType + ' (' + a.source + ')', a.tokens))
+    }
+  }
+
+  if (data.skills.length > 0) {
+    const sec = createSection('Skills')
+    panel.appendChild(sec)
+    for (const s of data.skills) {
+      panel.appendChild(createDetailRow(s.name + ' (' + s.source + ')', s.tokens))
+    }
+  }
+
+  if (data.apiUsage) {
+    const sec = createSection('API usage')
+    panel.appendChild(sec)
+    panel.appendChild(createDetailRow('Input', data.apiUsage.inputTokens))
+    panel.appendChild(createDetailRow('Output', data.apiUsage.outputTokens))
+    panel.appendChild(createDetailRow('Cache creation', data.apiUsage.cacheCreationInputTokens))
+    panel.appendChild(createDetailRow('Cache read', data.apiUsage.cacheReadInputTokens))
+  }
+}
+
+function createContextPopover(onRequest: () => void): {
+  trigger: HTMLButtonElement
+  setBreakdown: (data: ContextBreakdownData | null) => void
+  hide: () => void
+} {
+  const trigger = document.createElement('button')
+  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors cursor-pointer hidden'
+  trigger.dataset.testid = 'context-trigger'
+
+  const panel = createPopupPanel({ className: 'max-h-[60dvh] overflow-y-auto max-w-md' })
+
+  let breakdown: ContextBreakdownData | null = null
+  let dataReceived = false
+  let open = false
+
+  const outsideClick = createOutsideClick(trigger, panel, () => {
+    open = false
+    panel.classList.add('hidden')
+  })
+
+  const showPanel = () => {
+    open = true
+    if (!panel.parentElement) document.body.appendChild(panel)
+    panel.classList.remove('hidden')
+    panel.innerHTML = ''
+    if (breakdown) {
+      renderBreakdownContent(panel, breakdown)
+    } else {
+      const hint = document.createElement('div')
+      hint.className = 'px-4 py-6 text-center text-[13px] text-t3'
+      hint.textContent = 'Send a message first to see context usage.'
+      panel.appendChild(hint)
+    }
+  }
+
+  const showLoading = () => {
+    open = true
+    if (!panel.parentElement) document.body.appendChild(panel)
+    panel.classList.remove('hidden')
+    panel.innerHTML = ''
+    const loading = document.createElement('div')
+    loading.className = 'px-4 py-6 text-center text-[13px] text-t3'
+    loading.textContent = 'Loading...'
+    panel.appendChild(loading)
+  }
+
+  const closePanel = () => {
+    open = false
+    panel.classList.add('hidden')
+  }
+
+  trigger.addEventListener('click', () => {
+    onRequest()
+    if (open) {
+      closePanel()
+      return
+    }
+    if (dataReceived) {
+      showPanel()
+    } else {
+      showLoading()
+    }
+    outsideClick.add()
+  })
+
+  const setBreakdown = (data: ContextBreakdownData | null) => {
+    breakdown = data
+    dataReceived = true
+    if (open) {
+      if (data) {
+        renderBreakdownContent(panel, data)
+      } else {
+        panel.innerHTML = ''
+        const hint = document.createElement('div')
+        hint.className = 'px-4 py-6 text-center text-[13px] text-t3'
+        hint.textContent = 'Send a message first to see context usage.'
+        panel.appendChild(hint)
+      }
+    }
+  }
+
+  return { trigger, setBreakdown, hide: closePanel }
+}
+
 export function createHeader(opts: {
   onModelSelect: (provider: string, model: string) => void
   onEngineSwitch: (engineID: string) => void
   onEngineNew: () => void
+  onContextRequest?: () => void
 }): HeaderHandles {
   const root = document.createElement('header')
   root.className = 'sticky top-0 z-30 card-bg'
@@ -362,9 +641,8 @@ export function createHeader(opts: {
   spacer.className = 'flex-1'
   inner.appendChild(spacer)
 
-  const ctxSpan = document.createElement('span')
-  ctxSpan.className = 'mono text-[14px] text-t2 hidden'
-  inner.appendChild(ctxSpan)
+  const ctxPopover = createContextPopover(() => opts.onContextRequest?.())
+  inner.appendChild(ctxPopover.trigger)
 
   root.appendChild(inner)
 
@@ -395,17 +673,17 @@ export function createHeader(opts: {
 
   const setContext = (used: number, total: number) => {
     if (total <= 0) {
-      ctxSpan.classList.add('hidden')
+      ctxPopover.trigger.classList.add('hidden')
       return
     }
-    ctxSpan.classList.remove('hidden')
+    ctxPopover.trigger.classList.remove('hidden')
     const pct = used * 100 / total
     let color = 'text-t2'
     if (pct >= 90) color = 'text-red-500'
     else if (pct >= 80) color = 'text-amber-500'
-    ctxSpan.className = 'mono text-[14px] ' + color
-    ctxSpan.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
+    ctxPopover.trigger.className = 'mono text-[14px] hover:text-t1 transition-colors cursor-pointer ' + color
+    ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines, setContext }
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide }
 }
