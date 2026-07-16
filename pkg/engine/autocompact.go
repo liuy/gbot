@@ -20,14 +20,10 @@ import (
 // FormatCompactOutput builds the display text for a successful compact result.
 // Returns only the LLM summary — the stats line goes to header via CompactSummaryLine.
 func FormatCompactOutput(result *short.CompactResult) string {
-	if result.Summary != "" {
-		return result.Summary
-	}
-	return ""
+	return result.Summary
 }
 
-// CompactSummaryLine returns the stats line from FormatCompactOutput (first line),
-// used as the header summary for compact tool_param_delta events.
+// CompactSummaryLine formats the compact stats line for the tool_param_delta header summary.
 func CompactSummaryLine(result *short.CompactResult) string {
 	return fmt.Sprintf("Conversation compacted [msg: %d → %d, token: %s → %s]",
 		result.BeforeMessages, len(result.Messages),
