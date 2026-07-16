@@ -1,5 +1,6 @@
 import type { SessionListItem } from './types'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
+import { createOutsideClick } from './utils'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -179,23 +180,17 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
       row.addEventListener('click', () => {
         saveHljsTheme(theme.key)
         applyHljsTheme(theme.key, isDark)
-        closePopover()
+        popover.remove()
       })
       popover.appendChild(row)
     }
 
     document.body.appendChild(popover)
-
-    const closePopover = () => {
+    const oc = createOutsideClick(themeToggle, popover, () => {
       popover.remove()
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('touchstart', onDown)
-    }
-    const onDown = (ev: MouseEvent | TouchEvent) => {
-      if (!popover.contains(ev.target as Node)) closePopover()
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('touchstart', onDown)
+      oc.remove()
+    })
+    oc.add()
   }
   root.appendChild(themeToggle)
 

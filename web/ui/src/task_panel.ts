@@ -38,6 +38,9 @@ export function createTaskPanel(): TaskPanelHandles {
     if (popover) {
       popover.remove()
       popover = null
+    }
+    if (popoverClick) {
+      popoverClick.remove()
       popoverClick = null
     }
   }

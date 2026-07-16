@@ -109,6 +109,7 @@ function createModelPicker(
     open = false
     panel.classList.add('hidden')
     searchInput.value = ''
+    outside.remove()
   }
   const outside = createOutsideClick(wrap, panel, () => {
     open = false
@@ -207,6 +208,7 @@ function createEnginePicker(
   const closePanel = () => {
     open = false
     panel.classList.add('hidden')
+    outside.remove()
   }
   const outside = createOutsideClick(wrap, panel, () => {
     open = false
@@ -399,7 +401,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
       n.className = 'text-[13px] text-t2 truncate'
       n.textContent = t.name + ' (' + t.serverName + ')'
       row.appendChild(n)
-      sec.appendChild(row)
+      panel.appendChild(row)
     }
   }
 
@@ -478,6 +480,7 @@ function createContextPopover(onRequest: () => void): {
   const closePanel = () => {
     open = false
     panel.classList.add('hidden')
+    outsideClick.remove()
   }
 
   trigger.addEventListener('click', () => {
@@ -589,6 +592,11 @@ export function createHeader(opts: {
     debugList.scrollTop = debugList.scrollHeight
   }
 
+  const debugOutside = createOutsideClick(gbotWrap, debugPanel, () => {
+    debugOpen = false
+    debugPanel.classList.add('hidden')
+  })
+
   gbotWrap.addEventListener('dblclick', (e) => {
     e.stopPropagation()
     debugOpen = !debugOpen
@@ -596,19 +604,12 @@ export function createHeader(opts: {
       if (!debugPanel.parentElement) document.body.appendChild(debugPanel)
       debugPanel.classList.remove('hidden')
       renderDebugLogs()
-      document.addEventListener('mousedown', onDebugOutside)
+      debugOutside.add()
     } else {
       debugPanel.classList.add('hidden')
-      document.removeEventListener('mousedown', onDebugOutside)
+      debugOutside.remove()
     }
   })
-  const onDebugOutside = (ev: MouseEvent) => {
-    if (!gbotWrap.contains(ev.target as Node) && !debugPanel.contains(ev.target as Node)) {
-      debugOpen = false
-      debugPanel.classList.add('hidden')
-      document.removeEventListener('mousedown', onDebugOutside)
-    }
-  }
   onDebugLog(renderDebugLogs)
   const wordmark = document.createElement('span')
   wordmark.className =

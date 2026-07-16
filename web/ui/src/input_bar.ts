@@ -1,4 +1,4 @@
-import { createPopupPanel } from './utils'
+import { createPopupPanel, createOutsideClick } from './utils'
 
 export interface InputBarHandles {
   root: HTMLElement
@@ -108,7 +108,10 @@ export function createInputBar(initial: {
     histPanel.classList.add('hidden')
     histPanelOpen = false
     histSearch.value = ''
+    histOutside.remove()
   }
+
+  const histOutside = createOutsideClick(sendBtn, histPanel, closeHistPanel)
 
   const renderHistList = (items: string[]) => {
     histList.innerHTML = ''
@@ -155,19 +158,17 @@ export function createInputBar(initial: {
     renderHistList(items)
   })
 
-  const onHistDocClick = (e: MouseEvent) => {
-    if (
-      !histPanel.contains(e.target as Node) &&
-      !sendBtn.contains(e.target as Node)
-    )
-      closeHistPanel()
-  }
-  histPanel.addEventListener('click', (e) => e.stopPropagation())
-  histSearch.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
+  sendBtn.addEventListener('click', (e) => {
+    if (textarea.value.trim() === '') {
       e.preventDefault()
-      closeHistPanel()
-      textarea.focus()
+      if (histPanelOpen) {
+        closeHistPanel()
+      } else {
+        openHistPanel()
+        histOutside.add()
+      }
+    } else {
+      onSubmit(e)
     }
   })
 
@@ -180,21 +181,6 @@ export function createInputBar(initial: {
       sendBtn.classList.remove('opacity-50')
     }
   }
-
-  sendBtn.addEventListener('click', (e) => {
-    if (textarea.value.trim() === '') {
-      e.preventDefault()
-      if (histPanelOpen) {
-        closeHistPanel()
-        document.removeEventListener('mousedown', onHistDocClick)
-      } else {
-        openHistPanel()
-        document.addEventListener('mousedown', onHistDocClick)
-      }
-    } else {
-      onSubmit(e)
-    }
-  })
 
   const onSubmit = (e: Event) => {
     e.preventDefault()
