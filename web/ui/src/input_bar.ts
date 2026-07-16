@@ -65,6 +65,7 @@ export function createInputBar(initial: {
   textarea.disabled = !connected
   textarea.className =
     'bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40 w-fit max-w-full max-h-[120px] overflow-hidden'
+  textarea.style.wordBreak = 'break-all'
   // fieldSizing is non-standard TS lib type; cast via setProperty.
   ;(textarea.style as unknown as Record<string, string>).fieldSizing = 'content'
   taWrap.appendChild(textarea)

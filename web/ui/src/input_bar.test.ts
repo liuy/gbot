@@ -478,4 +478,15 @@ describe('createInputBar', () => {
     expect(items.length).toBe(2)
     expect((items[0] as HTMLElement).textContent).toContain('apple')
   })
+
+  it('textarea breaks long unbreakable strings (word-break)', () => {
+    mount()
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    const style = window.getComputedStyle(ta)
+    // Must have word-break or overflow-wrap to break long URLs/identifiers
+    const wb = style.wordBreak
+    const ow = style.overflowWrap
+    const ok = wb === 'break-all' || wb === 'break-word' || ow === 'anywhere' || ow === 'break-word'
+    expect(ok).toBe(true)
+  })
 })
