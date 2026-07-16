@@ -1,4 +1,5 @@
 import type { SessionListItem } from './types'
+import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -76,18 +77,126 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
   const onSystemChange = () => {
     const pref = localStorage.getItem('gbot-theme') as Theme || 'dark'
-    if (pref === 'system') document.documentElement.dataset.theme = resolveTheme('system')
+    if (pref === 'system') {
+      const resolved = resolveTheme('system')
+      document.documentElement.dataset.theme = resolved
+      applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
+    }
   }
   mediaQuery.addEventListener('change', onSystemChange)
+
+  // Apply saved hljs theme on load
+  applyHljsTheme(getSavedHljsTheme(), effectiveTheme === 'dark')
 
   themeToggle.addEventListener('click', () => {
     const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
     const idx = THEME_CYCLE.indexOf(current)
     const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
     localStorage.setItem('gbot-theme', next)
-    document.documentElement.dataset.theme = resolveTheme(next)
+    const resolved = resolveTheme(next)
+    document.documentElement.dataset.theme = resolved
     themeToggle.innerHTML = themeIcon(next)
+    applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
   })
+
+  // Long-press: open highlight theme selector
+  let themePressTimer: ReturnType<typeof setTimeout> | null = null
+  let themePressed = false
+  themeToggle.addEventListener('touchstart', () => {
+    themePressTimer = setTimeout(() => {
+      themePressed = true
+      openHljsPopover()
+    }, 500)
+  })
+  themeToggle.addEventListener('touchend', () => {
+    if (themePressTimer) clearTimeout(themePressTimer)
+  })
+  themeToggle.addEventListener('touchmove', () => {
+    if (themePressTimer) clearTimeout(themePressTimer)
+  })
+  // Mouse long-press for desktop
+  let mousePressTimer: ReturnType<typeof setTimeout> | null = null
+  themeToggle.addEventListener('mousedown', () => {
+    mousePressTimer = setTimeout(() => {
+      themePressed = true
+      openHljsPopover()
+    }, 500)
+  })
+  themeToggle.addEventListener('mouseup', () => {
+    if (mousePressTimer) clearTimeout(mousePressTimer)
+  })
+  themeToggle.addEventListener('mouseleave', () => {
+    if (mousePressTimer) clearTimeout(mousePressTimer)
+  })
+  // Prevent click from firing after long-press
+  themeToggle.addEventListener('click', (e) => {
+    if (themePressed) {
+      themePressed = false
+      e.preventDefault()
+      e.stopPropagation()
+    }
+  })
+
+  function openHljsPopover() {
+    // Remove existing popover if open
+    const existing = document.getElementById('hljs-popover')
+    if (existing) { existing.remove(); return }
+
+    const currentHljs = getSavedHljsTheme()
+    const currentTheme = (localStorage.getItem('gbot-theme') || 'dark') as Theme
+    const isDark = resolveTheme(currentTheme) === 'dark'
+
+    const popover = document.createElement('div')
+    popover.id = 'hljs-popover'
+    popover.className = 'fixed z-50 glass-solid border border-hairline rounded-xl p-2 shadow-2xl modal-enter'
+    popover.style.bottom = '60px'
+    popover.style.left = '20px'
+    popover.style.minWidth = '180px'
+
+    const title = document.createElement('div')
+    title.className = 'text-[11px] text-t3 px-2 py-1 font-medium'
+    title.textContent = 'Highlight Theme'
+    popover.appendChild(title)
+
+    for (const theme of HLJS_THEMES) {
+      const isSelected = theme.key === currentHljs
+      const row = document.createElement('div')
+      row.className =
+        'flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-[13px] ' +
+        (isSelected
+          ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
+          : 'hover:bg-ink3/50 text-t2')
+      const label = document.createElement('span')
+      label.className = 'flex-1'
+      label.textContent = theme.label
+      row.appendChild(label)
+      if (isSelected) {
+        const check = document.createElement('span')
+        check.className = 'text-blue text-[13px]'
+        check.textContent = '✓'
+        row.appendChild(check)
+      }
+      row.addEventListener('click', () => {
+        saveHljsTheme(theme.key)
+        applyHljsTheme(theme.key, isDark)
+        closePopover()
+      })
+      popover.appendChild(row)
+    }
+
+    document.body.appendChild(popover)
+
+    const closePopover = () => {
+      popover.remove()
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('touchstart', onDown)
+    }
+    const onDown = (ev: MouseEvent | TouchEvent) => {
+      if (!popover.contains(ev.target as Node)) closePopover()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('touchstart', onDown)
+  }
   root.appendChild(themeToggle)
 
   const overlay = document.createElement('div')

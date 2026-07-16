@@ -11,7 +11,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "allowImportingTsExtensions": false
+    "allowImportingTsExtensions": false,
+    "types": ["vite/client"]
   },
   "include": ["src", "src/types.d.ts"],
   "exclude": ["src/**/*.test.ts"]
