@@ -1678,6 +1678,25 @@ func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 	}
 
 	slog.Info("wui:model switched", "provider", providerName, "model", modelName)
+
+	ctxUsed := eng.GetContextTokens()
+	if ctxUsed == 0 {
+		ctxUsed = engine.TokenCountWithEstimation(eng.Messages())
+	}
+	c.sendWS(buildModelSwitched(ctxUsed, eng.ContextWindow()))
+}
+
+func buildModelSwitched(contextUsed, contextTotal int) []byte {
+	payload, _ := json.Marshal(struct {
+		Type         string `json:"type"`
+		ContextUsed  int    `json:"contextUsed"`
+		ContextTotal int    `json:"contextTotal"`
+	}{
+		Type:         "model_switched",
+		ContextUsed:  contextUsed,
+		ContextTotal: contextTotal,
+	})
+	return payload
 }
 
 // SetCreateEngineFn injects the engine creation closure used by engine_new.

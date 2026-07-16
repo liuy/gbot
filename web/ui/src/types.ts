@@ -52,6 +52,7 @@ export type ServerMessage =
     }
   | { type: 'streamState'; blocks: Block[] }
   | { type: 'context_breakdown' } & ContextBreakdownData
+  | { type: 'model_switched'; contextUsed: number; contextTotal: number }
 
 export type ContextCategoryData = {
   name: string; tokens: number; percentage: number

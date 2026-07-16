@@ -1529,12 +1529,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         committedToolCount = msg.toolCount ?? 0
         accumulatedThinkingMs = msg.thinkingMs ?? 0
+        header.setContext(msg.contextUsed ?? 0, msg.contextTotal ?? 0)
+        contextTotal = msg.contextTotal ?? 0
         if (progressHandles) {
           setProgressBarUsage(progressHandles, progressUsage)
         }
         return
       case 'config':
         header.setModels(msg.models, msg.current.provider, msg.current.model)
+        return
+      case 'model_switched':
+        contextTotal = msg.contextTotal
+        header.setContext(msg.contextUsed, msg.contextTotal)
         return
       case 'queued': {
         const uuid = msg.uuid

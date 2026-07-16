@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/config"
@@ -227,17 +226,23 @@ func TestModelSwitch_CallsSetProviderAndSetModel(t *testing.T) {
 	}
 
 	// Model switch must NOT push connect_status — that would trigger
-	// resetAllState on the client, wiping the chat. Frontend already
-	// updates the header text on selection.
-	done := make(chan struct{})
-	go func() {
-		_, _, _ = ws.ReadMessage()
-		close(done)
-	}()
-	select {
-	case <-done:
-		t.Fatal("expected no WS message after model switch, but got one")
-	case <-time.After(time.Millisecond * 300):
+	// resetAllState on the client, wiping the chat. It SHOULD respond with
+	// model_switched carrying contextUsed + contextTotal so the client
+	// header updates immediately.
+	data := readWSMessage(t, ws)
+	var resp struct {
+		Type         string `json:"type"`
+		ContextUsed  int    `json:"contextUsed"`
+		ContextTotal int    `json:"contextTotal"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Type != "model_switched" {
+		t.Fatalf("type = %q, want model_switched", resp.Type)
+	}
+	if resp.ContextTotal != 200000 {
+		t.Errorf("contextTotal = %d, want 200000 (mockEngine default)", resp.ContextTotal)
 	}
 }
 

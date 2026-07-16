@@ -1551,6 +1551,19 @@ describe('chat integration', () => {
     expect(progressBars.length).toBe(0)
   })
 
+  it('model_switched updates header context with used + total from server', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'stats', contextUsed: 5000, contextTotal: 200000 })
+    const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    expect(trigger.textContent).toContain('4.9k/195.3k')
+
+    // Switch to model with 500k context — server responds with current used + new total
+    dispatch({ type: 'model_switched', contextUsed: 5000, contextTotal: 500000 })
+    expect(trigger.textContent).toContain('4.9k/488.3k')
+    expect(trigger.textContent).not.toContain('195.3k')
+  })
+
   it('sub-agent usage events accumulate in progress bar', () => {
     vi.useFakeTimers()
     mount()
