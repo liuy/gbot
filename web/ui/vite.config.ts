@@ -1,20 +1,14 @@
 import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
+import { viteSingleFile } from 'vite-plugin-singlefile'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [tailwindcss()],
+  plugins: [tailwindcss(), viteSingleFile()],
   base: './',
   build: {
     outDir: path.resolve(__dirname, '../../pkg/connector/wui/assets'),
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        entryFileNames: 'index.js',
-        chunkFileNames: '[name].js',
-        assetFileNames: '[name].[ext]',
-      },
-    },
   },
   test: {
     environment: 'jsdom',

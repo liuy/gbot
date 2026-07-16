@@ -91,6 +91,7 @@ app-check:
 # without Node. Run this after changing web/ui source.
 web-build:
 	cd web/ui && npm install && npm run build
+	gzip -kf pkg/connector/wui/assets/index.html
 
 web-test:
 	cd web/ui && npm test
