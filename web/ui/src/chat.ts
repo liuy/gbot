@@ -381,16 +381,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.root.className = 'px-5 pb-3 pt-1'
 
   const taskPanel = createTaskPanel()
-  const taskPanelHost = document.createElement('div')
-  taskPanelHost.className = 'px-5 pb-1'
-  taskPanelHost.appendChild(taskPanel.root)
 
   const inputWrapper = document.createElement('div')
   inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10'
-  inputWrapper.appendChild(taskPanelHost)
   inputWrapper.appendChild(inputBar.bubbles)
   inputWrapper.appendChild(inputBar.root)
   mainContent.appendChild(inputWrapper)
+  mainContent.appendChild(taskPanel.root)
 
   root.appendChild(mainContent)
 

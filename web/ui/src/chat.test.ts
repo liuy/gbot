@@ -423,7 +423,7 @@ describe('chat integration', () => {
     }
 
     // scrollBtn should remain hidden (user is at bottom)
-    const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
+    const scrollBtn = chat.root.querySelector('.scroll-progress')?.closest('button') as HTMLElement
     expect(scrollBtn.classList.contains('opacity-0')).toBe(true)
   })
 
@@ -461,7 +461,7 @@ describe('chat integration', () => {
     // Simulate user scrolled up: scroll button should be visible
     chat.scrollEl.scrollTop = 0
     chat.scrollEl.dispatchEvent(new Event('scroll'))
-    const scrollBtn = chat.root.querySelector('button.absolute.bottom-24') as HTMLElement
+    const scrollBtn = chat.root.querySelector('.scroll-progress')?.closest('button') as HTMLElement
     expect(scrollBtn.classList.contains('opacity-0')).toBe(false)
 
     // Reconnect with history
@@ -1291,7 +1291,7 @@ describe('chat integration', () => {
     expect(historyReqs[0].cursor).toBe('c1')
   })
 
-  it('task_list message renders the task panel with summary', () => {
+  it('task_list message renders the task ring with count', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
@@ -1302,10 +1302,35 @@ describe('chat integration', () => {
         { id: '3', subject: 'Test', status: 'pending' },
       ],
     })
-    const body = document.body.textContent ?? ''
-    expect(body).toContain('1/3 Done')
-    expect(body).toContain('1 Running')
-    expect(body).toContain('1 Pending')
+    // Ring label shows completed/total.
+    const label = document.querySelector('.task-label') as SVGTextElement
+    expect(label).toBeTruthy()
+    expect(label.textContent).toBe('1/3')
+    // Ring is visible.
+    const ring = label.closest('button') as HTMLElement
+    expect(ring.style.display).not.toBe('none')
+  })
+
+  it('task ring popover shows full summary on click', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'task_list',
+      tasks: [
+        { id: '1', subject: 'Plan', status: 'completed' },
+        { id: '2', subject: 'Code', status: 'in_progress' },
+        { id: '3', subject: 'Test', status: 'pending' },
+      ],
+    })
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    ring.click()
+
+    const popover = document.getElementById('task-popover') as HTMLElement
+    expect(popover).toBeTruthy()
+    const text = popover.textContent ?? ''
+    expect(text).toContain('1/3 Done')
+    expect(text).toContain('1 Running')
+    expect(text).toContain('1 Pending')
   })
 
   it('connect_status hides the task panel', () => {
@@ -1315,12 +1340,11 @@ describe('chat integration', () => {
       type: 'task_list',
       tasks: [{ id: '1', subject: 'UniqueTaskSubject123', status: 'pending' }],
     })
-    // Panel root is the glass card; find it by its class.
-    const panel = document.querySelector('[class*="bg-ink2"][class*="border-hairline"]') as HTMLElement
-    expect(panel).toBeTruthy()
-    expect(panel.style.display).toBe('')
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    expect(ring).toBeTruthy()
+    expect(ring.style.display).not.toBe('none')
     dispatch({ type: 'connect_status', connected: true })
-    expect(panel.style.display).toBe('none')
+    expect(ring.style.display).toBe('none')
   })
 
   it('takeover does not reset cumulative usage for the whole query', () => {
