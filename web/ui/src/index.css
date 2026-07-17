@@ -4,6 +4,7 @@
 
 @theme {
   --color-bg: rgb(4 6 12);
+  --color-white: #FFFFFF;
   --color-ink: #06080F;
   --color-ink2: #0C1018;
   --color-ink3: #121826;
@@ -217,6 +218,7 @@ body {
   --color-t1: #111111;
   --color-t2: #666666;
   --color-t3: #999999;
+  --color-white: #333333;
   --color-blue: #333333;
   --color-green: #3DD68C;
   --color-red: #FF5C5C;
