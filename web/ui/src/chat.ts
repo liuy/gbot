@@ -307,6 +307,25 @@ function renderCommittedMessageDOM(
   return { outer, content, runningTools }
 }
 
+// buildCompactDivider returns the "compact" rule that visually separates
+// pre-compact (older) and post-compact (newer) messages. Container uses
+// flex with two flex-1 hairlines and a centered label so it scales to the
+// available width. Class names mirror design tokens already used elsewhere
+// in chat.ts (border-hairline, text-t3).
+function buildCompactDivider(): HTMLElement {
+  const container = document.createElement('div')
+  container.className = 'flex items-center gap-2 my-4 px-4'
+  const left = document.createElement('div')
+  left.className = 'flex-1 border-t border-hairline'
+  const label = document.createElement('span')
+  label.className = 'text-t3 text-[10px] shrink-0'
+  label.textContent = 'compact'
+  const right = document.createElement('div')
+  right.className = 'flex-1 border-t border-hairline'
+  container.append(left, label, right)
+  return container
+}
+
 export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Module-level state (persists across createChat calls in the same
   // session, mirroring persistedMessages in ChatInterface.tsx).
@@ -315,6 +334,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let nextCursor = ''
   let hasMore = false
   let loadingMore = false
+  // Tracks whether the compact divider has already been rendered so a second
+  // flagged final page (e.g. after a race) doesn't insert a duplicate.
+  let compactDividerInserted = false
 
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
@@ -566,6 +588,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     inputBar.setQueuedMsgs([])
     for (const m of messages) m.domRoot.remove()
     messages.length = 0
+    // Dividers are not tracked in messages[] (they aren't message roots) —
+    // replaceChildren after detaching tracked roots clears any stragglers.
+    messagesContainer.replaceChildren()
+    compactDividerInserted = false
     nextCursor = ''
     hasMore = false
     loadingMore = false
@@ -821,6 +847,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
       messages.unshift(m)
       frag.appendChild(outer)
+    }
+    if (msg.compactBoundary && !compactDividerInserted) {
+      frag.appendChild(buildCompactDivider())
+      compactDividerInserted = true
     }
     messagesContainer.insertBefore(frag, before)
     nextCursor = msg.nextCursor

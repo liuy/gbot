@@ -334,8 +334,8 @@ func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
 	// can decode it. A 4x4 solid-color JPEG is well under every cap, so the
 	// resizer returns it byte-identical and MediaType stays image/jpeg.
 	smallImg := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			smallImg.SetRGBA(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 		}
 	}

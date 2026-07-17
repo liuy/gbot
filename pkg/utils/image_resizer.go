@@ -379,10 +379,7 @@ func encodeInSourceFormat(src image.Image, normalizedMediaType string) ([]byte, 
 // threaded through to the returned Dimensions for caller coordinate mapping.
 func applyFinalFallback(src image.Image, width, height, originalWidth, originalHeight int) ResizeResult {
 	smallerWidth := min(width, 1000)
-	denom := width
-	if denom < 1 {
-		denom = 1
-	}
+	denom := max(width, 1)
 	// TS: Math.round((height * smallerWidth) / Math.max(width, 1)).
 	smallerHeight := (height*smallerWidth + denom/2) / denom
 	scaled := scaleImage(src, smallerWidth, smallerHeight)

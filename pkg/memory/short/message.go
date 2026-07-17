@@ -125,6 +125,38 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Transcr
 	return messages, nil
 }
 
+// LoadMessagesBeforeSeq loads messages with seq < beforeSeq in ascending order.
+// Used for paging pre-compact history: callers pass the boundary seq and get
+// back every store row strictly before it. Read-only path, so no preserved-
+// segment relink or snip removal is applied (those concern chain assembly,
+// not display). Empty result (including beforeSeq=0) returns (nil, nil).
+func (s *Store) LoadMessagesBeforeSeq(sessionID string, beforeSeq int) ([]*TranscriptMessage, error) {
+	query := `
+		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
+		       is_sidechain, type, subtype, content, metadata, created_at
+		FROM messages
+		WHERE session_id = ? AND seq < ?
+		ORDER BY seq ASC
+	`
+
+	rows, err := s.db.Query(query, sessionID, beforeSeq)
+	if err != nil {
+		return nil, fmt.Errorf("query messages before seq: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []*TranscriptMessage
+	for rows.Next() {
+		msg, err := s.scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
 // GetLastBoundary finds the last compact boundary message.
 // Returns the message, its seq, and error. Returns nil, 0, nil if none found.
 // TS align: findLastCompactBoundaryIndex (messages.ts:4618-4629)

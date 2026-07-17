@@ -266,6 +266,131 @@ func TestLoadMessagesAfterSeq(t *testing.T) {
 	}
 }
 
+func TestLoadMessagesBeforeSeq(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	// Insert 5 pre-compact user messages.
+	for i := range 5 {
+		msg := testMessage(0, "user", fmt.Sprintf("pre-%d", i), "", fmt.Sprintf(`[{"type":"text","text":"pre-%d"}]`, i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage pre %d: %v", i, err)
+		}
+	}
+
+	// Insert the compact boundary — AppendMessage advances the chain so it
+	// becomes a new chain root (parent_uuid="") with logical_parent_uuid set.
+	boundary := CreateCompactBoundaryMessage("tokens", 1000, "pre-4")
+	if err := store.AppendMessage(sessionID, boundary); err != nil {
+		t.Fatalf("AppendMessage boundary: %v", err)
+	}
+
+	// Capture the boundary seq for the Before query.
+	_, boundarySeq, err := store.GetLastBoundary(sessionID)
+	if err != nil {
+		t.Fatalf("GetLastBoundary: %v", err)
+	}
+	if boundarySeq == 0 {
+		t.Fatal("boundarySeq = 0, want non-zero")
+	}
+
+	// Insert 2 post-compact messages — they must NOT appear in the result.
+	for i := range 2 {
+		msg := testMessage(0, "assistant", fmt.Sprintf("post-%d", i), "", fmt.Sprintf(`[{"type":"text","text":"post-%d"}]`, i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage post %d: %v", i, err)
+		}
+	}
+
+	got, err := store.LoadMessagesBeforeSeq(sessionID, boundarySeq)
+	if err != nil {
+		t.Fatalf("LoadMessagesBeforeSeq: %v", err)
+	}
+
+	if len(got) != 5 {
+		t.Fatalf("got %d messages, want 5 pre-compact messages", len(got))
+	}
+
+	wantUUIDs := []string{"pre-0", "pre-1", "pre-2", "pre-3", "pre-4"}
+	for i, m := range got {
+		if m.UUID != wantUUIDs[i] {
+			t.Errorf("message %d UUID = %q, want %q", i, m.UUID, wantUUIDs[i])
+		}
+	}
+
+	// Boundary itself (type=system, subtype=compact_boundary) is excluded
+	// because the WHERE clause uses strict seq &lt; ?.
+	for _, m := range got {
+		if m.UUID == boundary.UUID {
+			t.Errorf("boundary UUID %q leaked into result", boundary.UUID)
+		}
+	}
+}
+
+func TestLoadMessagesBeforeSeq_NoBoundary(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("u-%d", i), "", fmt.Sprintf(`[{"type":"text","text":"u-%d"}]`, i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// boundarySeq=0 must return (nil, nil) — not an error and no rows.
+	got, err := store.LoadMessagesBeforeSeq(sessionID, 0)
+	if err != nil {
+		t.Fatalf("LoadMessagesBeforeSeq with boundarySeq=0: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d messages, want 0 for boundarySeq=0", len(got))
+	}
+}
+
+func TestLoadMessagesBeforeSeq_MultipleBoundaries(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	// First boundary + middle message + second boundary.
+	b1 := CreateCompactBoundaryMessage("tokens", 1000, "")
+	if err := store.AppendMessage(sessionID, b1); err != nil {
+		t.Fatalf("AppendMessage b1: %v", err)
+	}
+	middle := testMessage(0, "user", "middle", "", `[{"type":"text","text":"middle"}]`)
+	if err := store.AppendMessage(sessionID, middle); err != nil {
+		t.Fatalf("AppendMessage middle: %v", err)
+	}
+	b2 := CreateCompactBoundaryMessage("tokens", 2000, "")
+	if err := store.AppendMessage(sessionID, b2); err != nil {
+		t.Fatalf("AppendMessage b2: %v", err)
+	}
+
+	_, lastSeq, err := store.GetLastBoundary(sessionID)
+	if err != nil {
+		t.Fatalf("GetLastBoundary: %v", err)
+	}
+
+	got, err := store.LoadMessagesBeforeSeq(sessionID, lastSeq)
+	if err != nil {
+		t.Fatalf("LoadMessagesBeforeSeq: %v", err)
+	}
+	// Only messages strictly before the LAST boundary are returned: b1 + middle.
+	// b2 is the queried boundary; the result excludes b2.
+	if len(got) != 2 {
+		t.Fatalf("got %d messages, want 2 (b1 + middle)", len(got))
+	}
+	if got[0].UUID != b1.UUID {
+		t.Errorf("got[0].UUID = %q, want b1 %q", got[0].UUID, b1.UUID)
+	}
+	if got[1].UUID != middle.UUID {
+		t.Errorf("got[1].UUID = %q, want middle", got[1].UUID)
+	}
+}
+
 func TestGetLastBoundary_WithBoundary(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"

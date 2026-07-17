@@ -48,8 +48,8 @@ func encodeGIF(t *testing.T, img image.Image) []byte {
 
 func solidRGBA(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.SetRGBA(x, y, c)
 		}
 	}
@@ -72,14 +72,8 @@ func noiseRGBA(w, h int, seed int64) *image.RGBA {
 				B: uint8(r.Intn(256)),
 				A: 255,
 			}
-			yEnd := by + block
-			if yEnd > h {
-				yEnd = h
-			}
-			xEnd := bx + block
-			if xEnd > w {
-				xEnd = w
-			}
+			yEnd := min(by+block, h)
+			xEnd := min(bx+block, w)
 			for y := by; y < yEnd; y++ {
 				for x := bx; x < xEnd; x++ {
 					img.SetRGBA(x, y, c)

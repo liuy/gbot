@@ -79,6 +79,9 @@ type engineClient interface {
 	SetMaxTokens(n int)
 	SetInputModalities(modalities []string)
 	UpdateAutoCompactConfig(cfg engine.AutoCompactConfig)
+	// PreCompactMessages pages SQLite messages that live before the last
+	// compact boundary. See engineAdapter.PreCompactMessages for contract.
+	PreCompactMessages(delivered, limit int) (msgs []types.Message, total int, hasBoundary bool)
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -144,6 +147,18 @@ func (a *engineAdapter) SetMaxTokens(n int)            { a.eng.SetMaxTokens(n) }
 func (a *engineAdapter) SetInputModalities(m []string) { a.eng.SetInputModalities(m) }
 func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	a.eng.UpdateAutoCompactConfig(cfg)
+}
+
+// PreCompactMessages pages SQLite messages that live before the engine's last
+// compact boundary. Delegates to the standalone preCompactMessages helper so
+// the core logic can be tested without constructing a full *engine.Engine.
+// Returns nil/0/false when the engine has no store or no boundary exists.
+func (a *engineAdapter) PreCompactMessages(delivered, limit int) ([]types.Message, int, bool) {
+	store := a.eng.Store()
+	if store == nil {
+		return nil, 0, false
+	}
+	return preCompactMessages(store, a.eng.SessionID(), delivered, limit)
 }
 
 // queryStats accumulates per-query stats (usage + start time + tool count +
@@ -924,14 +939,136 @@ func hasTextContent(m types.Message) bool {
 	return false
 }
 
+// preCompactMessages pages SQLite messages that live before the last compact
+// boundary of sessionID. delivered is a head-relative offset: 0 means start
+// from the oldest pre-compact message; N means skip the first N filtered
+// messages. limit caps the returned page size.
+//
+// Returns (page, totalFiltered, hasBoundary). When limit==0 the function does
+// NOT load messages — it only probes whether a boundary exists
+// ((nil, 0, true) when one does). When no boundary exists the result is
+// (nil, 0, false).
+//
+// Filtering rules (same as buildHistory): drop RoleSystem, FlagMeta,
+// FlagCompactSummary. The total counts ONLY filtered messages so head offsets
+// stay stable across conversation growth (pre-compact slice is immutable
+// post-compact).
+func preCompactMessages(store *short.Store, sessionID string, delivered, limit int) ([]types.Message, int, bool) {
+	_, boundarySeq, err := store.GetLastBoundary(sessionID)
+	if err != nil || boundarySeq == 0 {
+		return nil, 0, false
+	}
+	if limit == 0 {
+		return nil, 0, true
+	}
+	pre, err := store.LoadMessagesBeforeSeq(sessionID, boundarySeq)
+	if err != nil {
+		return nil, 0, false
+	}
+	all, err := short.StoreMessagesToEngine(pre)
+	if err != nil {
+		return nil, 0, false
+	}
+	filtered := make([]types.Message, 0, len(all))
+	for _, m := range all {
+		if m.Role == types.RoleSystem {
+			continue
+		}
+		if m.HasFlag(types.FlagMeta) || m.HasFlag(types.FlagCompactSummary) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	if delivered >= len(filtered) {
+		return nil, len(filtered), true
+	}
+	end := min(delivered+limit, len(filtered))
+	return filtered[delivered:end], len(filtered), true
+}
+
+// buildHistoryChatMsg converts a single types.Message into the wire-shape
+// historyChatMsg. It runs the same per-block loop as TUI's
+// engineMessagesToViews so pre-compact and post-compact messages render
+// identically. toolResults maps tool_use_id → result block for cross-reference.
+func buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResults map[string]types.ContentBlock) historyChatMsg {
+	hm := historyChatMsg{
+		ID:        m.ID,
+		Role:      string(m.Role),
+		StartedAt: m.Timestamp.UnixMilli(),
+		Status:    "done",
+	}
+	for _, cb := range m.Content {
+		switch cb.Type {
+		case types.ContentTypeText:
+			hm.Text += cb.Text
+			// Match TUI's engineMessagesToViews: skip whitespace-only text
+			// blocks in the ordered array so they don't consume an
+			// eventIndex slot in the frontend. Legacy hm.Text concatenates
+			// all text including whitespace (unchanged behavior).
+			if strings.TrimSpace(cb.Text) != "" {
+				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "text", Text: cb.Text})
+			}
+		case types.ContentTypeThinking:
+			if strings.TrimSpace(cb.Thinking) != "" {
+				thinkingEntry := historyThinkingEntry{
+					Text:       cb.Thinking,
+					DurationNs: cb.ThinkingDurationNs,
+				}
+				hm.Thinking = append(hm.Thinking, thinkingEntry)
+				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "thinking", Thinking: &thinkingEntry})
+			}
+		case types.ContentTypeToolUse:
+			entry := historyToolEntry{
+				ID:      cb.ID,
+				Name:    formatToolDisplayName(cb.Name),
+				Summary: computeToolSummary(cb.Name, cb.Input, tools),
+			}
+			// Compute search/read/list classification from tool definition.
+			if t, ok := tools[cb.Name]; ok {
+				if ts, ok := t.(tool.ToolWithSearchOrRead); ok {
+					srk := ts.IsSearchOrRead(cb.Input)
+					entry.IsSearch = srk.IsSearch
+					entry.IsRead = srk.IsRead
+					entry.IsList = srk.IsList
+					entry.IsLsp = srk.IsLsp
+				}
+			}
+			if result, ok := toolResults[cb.ID]; ok {
+				entry.IsError = result.IsError
+				entry.DisplayOutput, entry.DurationNs = renderToolOutput(cb.Name, result.Content, tools)
+			} else {
+				entry.IsRunning = true
+			}
+			hm.Tools = append(hm.Tools, entry)
+			hm.Blocks = append(hm.Blocks, historyBlock{Kind: "tool", Tool: &entry})
+		}
+	}
+	if m.Usage != nil {
+		hm.Usage = historyUsage{
+			InputTokens:   m.Usage.InputTokens,
+			OutputTokens:  m.Usage.OutputTokens,
+			CacheRead:     m.Usage.CacheReadInputTokens,
+			CacheCreation: m.Usage.CacheCreationInputTokens,
+		}
+	}
+	return hm
+}
+
 // buildHistory returns a JSON "history" message for the given slot, applying
 // IsBusy exclusion when the engine is streaming. When busy, the assistant's
 // streaming response (after the last user text message) is omitted so the
 // snapshot/streamState provides that data instead (zero overlap). The user's
 // query message itself is included in history.
+//
+// cursor has two namespaces: "" or "N" for in-memory paging (current
+// behavior); "precompact:D" hands off to buildPreCompactHistory which reads
+// SQLite rows strictly before the last compact boundary.
 func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) []byte {
 	if slot == nil {
 		return nil
+	}
+	if strings.HasPrefix(cursor, "precompact:") {
+		return c.buildPreCompactHistory(slot, cursor, limit)
 	}
 	msgs := slot.engine.Messages()
 
@@ -971,67 +1108,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 		if m.HasFlag(types.FlagMeta) || m.HasFlag(types.FlagCompactSummary) {
 			continue
 		}
-		hm := historyChatMsg{
-			ID:        m.ID,
-			Role:      string(m.Role),
-			StartedAt: m.Timestamp.UnixMilli(),
-			Status:    "done",
-		}
-		for _, cb := range m.Content {
-			switch cb.Type {
-			case types.ContentTypeText:
-				hm.Text += cb.Text
-				// Match TUI's engineMessagesToViews: skip whitespace-only text
-				// blocks in the ordered array so they don't consume an
-				// eventIndex slot in the frontend. Legacy hm.Text concatenates
-				// all text including whitespace (unchanged behavior).
-				if strings.TrimSpace(cb.Text) != "" {
-					hm.Blocks = append(hm.Blocks, historyBlock{Kind: "text", Text: cb.Text})
-				}
-			case types.ContentTypeThinking:
-				if strings.TrimSpace(cb.Thinking) != "" {
-					thinkingEntry := historyThinkingEntry{
-						Text:       cb.Thinking,
-						DurationNs: cb.ThinkingDurationNs,
-					}
-					hm.Thinking = append(hm.Thinking, thinkingEntry)
-					hm.Blocks = append(hm.Blocks, historyBlock{Kind: "thinking", Thinking: &thinkingEntry})
-				}
-			case types.ContentTypeToolUse:
-				entry := historyToolEntry{
-					ID:      cb.ID,
-					Name:    formatToolDisplayName(cb.Name),
-					Summary: computeToolSummary(cb.Name, cb.Input, tools),
-				}
-				// Compute search/read/list classification from tool definition.
-				if t, ok := tools[cb.Name]; ok {
-					if ts, ok := t.(tool.ToolWithSearchOrRead); ok {
-						srk := ts.IsSearchOrRead(cb.Input)
-						entry.IsSearch = srk.IsSearch
-						entry.IsRead = srk.IsRead
-						entry.IsList = srk.IsList
-						entry.IsLsp = srk.IsLsp
-					}
-				}
-				if result, ok := toolResults[cb.ID]; ok {
-					entry.IsError = result.IsError
-					entry.DisplayOutput, entry.DurationNs = renderToolOutput(cb.Name, result.Content, tools)
-				} else {
-					entry.IsRunning = true
-				}
-				hm.Tools = append(hm.Tools, entry)
-				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "tool", Tool: &entry})
-			}
-		}
-		if m.Usage != nil {
-			hm.Usage = historyUsage{
-				InputTokens:   m.Usage.InputTokens,
-				OutputTokens:  m.Usage.OutputTokens,
-				CacheRead:     m.Usage.CacheReadInputTokens,
-				CacheCreation: m.Usage.CacheCreationInputTokens,
-			}
-		}
-		out = append(out, hm)
+		out = append(out, buildHistoryChatMsg(m, tools, toolResults))
 	}
 	if len(out) == 0 {
 		return nil
@@ -1062,12 +1139,96 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 		nextCursor = strconv.Itoa(offset + (end - start))
 	}
 
+	// When the in-memory top is reached AND the engine has a compact boundary,
+	// extend pagination into the SQLite pre-compact region. The limit=0 probe
+	// avoids loading any messages — preCompactMessages returns hasBoundary
+	// without touching the DB rows.
+	compactBoundary := false
+	if !hasMore {
+		_, _, hasBoundary := slot.engine.PreCompactMessages(0, 0)
+		if hasBoundary {
+			hasMore = true
+			nextCursor = "precompact:0"
+		}
+	}
+
 	payload, _ := json.Marshal(struct {
-		Type       string           `json:"type"`
-		Messages   []historyChatMsg `json:"messages"`
-		NextCursor string           `json:"nextCursor"`
-		HasMore    bool             `json:"hasMore"`
-	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore})
+		Type            string           `json:"type"`
+		Messages        []historyChatMsg `json:"messages"`
+		NextCursor      string           `json:"nextCursor"`
+		HasMore         bool             `json:"hasMore"`
+		CompactBoundary bool             `json:"compactBoundary,omitempty"`
+	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore, CompactBoundary: compactBoundary})
+	return payload
+}
+
+// buildPreCompactHistory serves the SQLite-side pre-compact page. Parses the
+// delivered offset from cursor "precompact:D" (malformed → 0), pages through
+// preCompactMessages, runs each message through buildHistoryChatMsg, and marks
+// the envelope with compactBoundary=true on the FINAL page (hasMore=false).
+func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, limit int) []byte {
+	if slot == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	delivered := 0
+	if rest, ok := strings.CutPrefix(cursor, "precompact:"); ok {
+		if n, err := strconv.Atoi(rest); err == nil && n > 0 {
+			delivered = n
+		} else if err != nil {
+			slog.Warn("wui: malformed precompact cursor, treating as 0", "cursor", cursor)
+		}
+	}
+
+	page, total, hasBoundary := slot.engine.PreCompactMessages(delivered, limit)
+	if !hasBoundary {
+		// Defensive: cursor pointed at pre-compact but the boundary vanished
+		// between requests (e.g. session switch). Return an empty page with
+		// hasMore=false so the client stops paging.
+		payload, _ := json.Marshal(struct {
+			Type            string           `json:"type"`
+			Messages        []historyChatMsg `json:"messages"`
+			NextCursor      string           `json:"nextCursor"`
+			HasMore         bool             `json:"hasMore"`
+			CompactBoundary bool             `json:"compactBoundary,omitempty"`
+		}{Type: "history", Messages: []historyChatMsg{}, NextCursor: "", HasMore: false})
+		return payload
+	}
+
+	tools := slot.engine.Tools()
+	// Pre-compact messages never see in-flight tool_results (they are
+	// immutable, persisted with their results). Re-scan blocks to populate the
+	// toolResults map so renderToolOutput can resolve them by tool_use_id.
+	toolResults := make(map[string]types.ContentBlock)
+	for _, m := range page {
+		for _, cb := range m.Content {
+			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
+				toolResults[cb.ToolUseID] = cb
+			}
+		}
+	}
+
+	out := make([]historyChatMsg, 0, len(page))
+	for _, m := range page {
+		out = append(out, buildHistoryChatMsg(m, tools, toolResults))
+	}
+
+	end := delivered + len(out)
+	hasMore := end < total
+	nextCursor := ""
+	if hasMore {
+		nextCursor = "precompact:" + strconv.Itoa(end)
+	}
+
+	payload, _ := json.Marshal(struct {
+		Type            string           `json:"type"`
+		Messages        []historyChatMsg `json:"messages"`
+		NextCursor      string           `json:"nextCursor"`
+		HasMore         bool             `json:"hasMore"`
+		CompactBoundary bool             `json:"compactBoundary,omitempty"`
+	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore, CompactBoundary: !hasMore})
 	return payload
 }
 
@@ -1480,10 +1641,7 @@ func formatQuota(info *quota.Info) string {
 		return ""
 	}
 	rem := info.Remaining()
-	left := time.Until(info.ResetAt)
-	if left < 0 {
-		left = 0
-	}
+	left := max(time.Until(info.ResetAt), 0)
 	hours := int(left.Hours())
 	if hours >= 24 {
 		days := hours / 24

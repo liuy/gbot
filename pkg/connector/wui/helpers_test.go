@@ -70,6 +70,7 @@ type mockEngine struct {
 	setMaxTokensFn     func(int)
 	setInputModFn      func([]string)
 	updateAutoFn       func(engine.AutoCompactConfig)
+	preCompactFn       func(delivered, limit int) ([]types.Message, int, bool)
 
 	// Recorded calls for assertions.
 	queryCalls         []queryCall
@@ -315,6 +316,16 @@ func (m *mockEngine) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	if m.updateAutoFn != nil {
 		m.updateAutoFn(cfg)
 	}
+}
+
+// PreCompactMessages delegates to preCompactFn when set; otherwise returns the
+// no-boundary shape so buildHistory treats the mock as having no pre-compact
+// history (preserving existing in-memory-only test behavior).
+func (m *mockEngine) PreCompactMessages(delivered, limit int) ([]types.Message, int, bool) {
+	if m.preCompactFn != nil {
+		return m.preCompactFn(delivered, limit)
+	}
+	return nil, 0, false
 }
 
 // newTestConnectorWithHub builds a WUIConnector with a mockEngine and the
