@@ -766,7 +766,6 @@ func TestHandle_QueryEndAbortErrorWithPartialContent(t *testing.T) {
 	abortErr := &engine.AbortError{Phase: "streaming", Err: ctx.Err()}
 
 	c := newTestConnector(t)
-	ws := dialAndStore(t, c)
 	mock := c.mock()
 	mock.messagesFn = func() []types.Message {
 		return []types.Message{
@@ -786,6 +785,7 @@ func TestHandle_QueryEndAbortErrorWithPartialContent(t *testing.T) {
 			},
 		}
 	}
+	ws := dialAndStore(t, c)
 
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 

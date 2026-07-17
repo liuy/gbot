@@ -40,7 +40,7 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 // guards the recorded slices so concurrent goroutines (Query runs in its own
 // goroutine) can safely append.
 type mockEngine struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	queryFn        func(ctx context.Context, userMessage, systemPrompt string)
 	isBusyFn       func() bool
@@ -115,10 +115,21 @@ func (m *mockEngine) IsBusy() bool {
 }
 
 func (m *mockEngine) Messages() []types.Message {
-	if m.messagesFn != nil {
-		return m.messagesFn()
+	m.mu.RLock()
+	fn := m.messagesFn
+	m.mu.RUnlock()
+	if fn != nil {
+		return fn()
 	}
 	return nil
+}
+
+// SetMessagesFn sets the messages function under the mock's lock so tests
+// can update it while a server goroutine may be reading.
+func (m *mockEngine) SetMessagesFn(fn func() []types.Message) {
+	m.mu.Lock()
+	m.messagesFn = fn
+	m.mu.Unlock()
 }
 
 func (m *mockEngine) Tools() map[string]tool.Tool {
@@ -417,11 +428,25 @@ func (c *WUIConnector) respondToAskTest(t *testing.T, id string, resp types.AskR
 func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterChatWS(mux, c)
+	var handlerWG sync.WaitGroup
+	mux.HandleFunc("/ws/chat", func(w http.ResponseWriter, r *http.Request) {
+		handlerWG.Add(1)
+		defer handlerWG.Done()
+		ws, err := chatUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			http.Error(w, "upgrade failed", http.StatusInternalServerError)
+			return
+		}
+		serveChatWS(ws, c)
+	})
 	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
+	t.Cleanup(func() {
+		_ = ws.Close()
+		handlerWG.Wait()
+		srv.Close()
+	})
 	return ws
 }
 

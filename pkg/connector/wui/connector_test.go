@@ -336,7 +336,6 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("rewinds_when_no_content", func(t *testing.T) {
 		c := newTestConnector(t)
-		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -356,6 +355,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 				},
 			}
 		}
+		ws := dialAndStore(t, c)
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 		_ = readWSMessage(t, ws) // drain query_end
@@ -372,7 +372,6 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("does_not_rewind_when_partial_text", func(t *testing.T) {
 		c := newTestConnector(t)
-		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -393,6 +392,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 				},
 			}
 		}
+		ws := dialAndStore(t, c)
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 		_ = readWSMessage(t, ws) // drain query_end
@@ -406,7 +406,6 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("does_not_rewind_when_tool_use", func(t *testing.T) {
 		c := newTestConnector(t)
-		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -426,6 +425,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 				},
 			}
 		}
+		ws := dialAndStore(t, c)
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 		_ = readWSMessage(t, ws) // drain query_end
@@ -439,7 +439,6 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 
 	t.Run("no_rewind_when_no_user_message", func(t *testing.T) {
 		c := newTestConnector(t)
-		ws := dialAndStore(t, c)
 		mock := c.mock()
 		mock.messagesFn = func() []types.Message {
 			return []types.Message{
@@ -451,6 +450,7 @@ func TestHandle_QueryEnd_AutoRewind(t *testing.T) {
 				},
 			}
 		}
+		ws := dialAndStore(t, c)
 
 		c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 		_ = readWSMessage(t, ws) // drain query_end

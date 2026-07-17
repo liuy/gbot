@@ -35,7 +35,7 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		{ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
 			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prior a"}}},
 	}
-	c.mock().messagesFn = func() []types.Message { return historyMsgs }
+	c.mock().SetMessagesFn(func() []types.Message { return historyMsgs })
 
 	// Engine streams 5 text_delta events to ws1.
 	for i := range 5 {

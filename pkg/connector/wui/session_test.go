@@ -80,9 +80,7 @@ func TestSessionListRequestEmpty(t *testing.T) {
 
 func TestSessionSwitch(t *testing.T) {
 	c := newTestConnector(t)
-	var switchedTo string
 	c.mock().switchSessionFn = func(sessionID string) error {
-		switchedTo = sessionID
 		return nil
 	}
 
@@ -112,14 +110,14 @@ func TestSessionSwitch(t *testing.T) {
 		t.Fatalf("expected model glm-5.2, got %s", cs.Model)
 	}
 
-	if switchedTo != "target-123" {
-		t.Fatalf("expected switchSession called with target-123, got %q", switchedTo)
-	}
 	c.mock().mu.Lock()
-	calls := len(c.mock().switchSessionCalls)
+	calls := c.mock().switchSessionCalls
 	c.mock().mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("expected 1 switchSession call, got %d", calls)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 switchSession call, got %d", len(calls))
+	}
+	if calls[0] != "target-123" {
+		t.Fatalf("expected switchSession called with target-123, got %q", calls[0])
 	}
 }
 
