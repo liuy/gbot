@@ -57,7 +57,7 @@ function messagesContainer(): HTMLElement {
 }
 
 function dividerElements(): HTMLElement[] {
-  const all = document.querySelectorAll('.text-t3.text-\\[10px\\]')
+  const all = document.querySelectorAll('.text-blue.text-\\[10px\\]')
   return Array.from(all).filter((el) => {
     return el.textContent === 'compact'
   }) as HTMLElement[]
@@ -160,7 +160,7 @@ describe('compact boundary divider (client)', () => {
     expect(dividerContainer.className).toBe('flex items-center gap-2 my-4 px-4')
     const lines = dividerContainer.querySelectorAll('.flex-1.border-t.border-hairline')
     expect(lines.length).toBe(2)
-    const label = dividerContainer.querySelector('.text-t3.text-\\[10px\\].shrink-0') as HTMLElement
+    const label = dividerContainer.querySelector('.text-blue.text-\\[10px\\].shrink-0') as HTMLElement
     expect(label).toBeTruthy()
     expect(label.textContent).toBe('compact')
   })

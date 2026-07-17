@@ -318,7 +318,7 @@ function buildCompactDivider(): HTMLElement {
   const left = document.createElement('div')
   left.className = 'flex-1 border-t border-hairline'
   const label = document.createElement('span')
-  label.className = 'text-t3 text-[10px] shrink-0'
+  label.className = 'text-blue text-[10px] shrink-0'
   label.textContent = 'compact'
   const right = document.createElement('div')
   right.className = 'flex-1 border-t border-hairline'
