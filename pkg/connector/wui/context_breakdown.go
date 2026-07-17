@@ -99,9 +99,6 @@ type apiUsageSnapshotWire struct {
 }
 
 func convertMCPTools(in []engine.MCPToolDetail) []mcpToolDetailWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]mcpToolDetailWire, len(in))
 	for i, t := range in {
 		out[i] = mcpToolDetailWire{
@@ -115,9 +112,6 @@ func convertMCPTools(in []engine.MCPToolDetail) []mcpToolDetailWire {
 }
 
 func convertSystemTools(in []engine.SystemToolDetail) []systemToolDetailWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]systemToolDetailWire, len(in))
 	for i, t := range in {
 		out[i] = systemToolDetailWire{Name: t.Name, Tokens: t.Tokens}
@@ -126,9 +120,6 @@ func convertSystemTools(in []engine.SystemToolDetail) []systemToolDetailWire {
 }
 
 func convertPromptSections(in []engine.SystemPromptSectionDetail) []systemPromptSectionWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]systemPromptSectionWire, len(in))
 	for i, t := range in {
 		out[i] = systemPromptSectionWire{Name: t.Name, Tokens: t.Tokens}
@@ -137,9 +128,6 @@ func convertPromptSections(in []engine.SystemPromptSectionDetail) []systemPrompt
 }
 
 func convertMemoryFiles(in []engine.MemoryFileDetail) []memoryFileDetailWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]memoryFileDetailWire, len(in))
 	for i, f := range in {
 		out[i] = memoryFileDetailWire{Path: f.Path, Tokens: f.Tokens}
@@ -148,9 +136,6 @@ func convertMemoryFiles(in []engine.MemoryFileDetail) []memoryFileDetailWire {
 }
 
 func convertAgents(in []engine.AgentDetail) []agentDetailWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]agentDetailWire, len(in))
 	for i, a := range in {
 		out[i] = agentDetailWire{AgentType: a.AgentType, Source: a.Source, Tokens: a.Tokens}
@@ -159,9 +144,6 @@ func convertAgents(in []engine.AgentDetail) []agentDetailWire {
 }
 
 func convertSkills(in []engine.SkillDetail) []skillDetailWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]skillDetailWire, len(in))
 	for i, s := range in {
 		out[i] = skillDetailWire{Name: s.Name, Source: s.Source, Tokens: s.Tokens}
@@ -170,9 +152,6 @@ func convertSkills(in []engine.SkillDetail) []skillDetailWire {
 }
 
 func convertCategories(in []engine.ContextCategory) []contextCategoryWire {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make([]contextCategoryWire, len(in))
 	for i, c := range in {
 		out[i] = contextCategoryWire{
@@ -191,23 +170,17 @@ func convertMessageBreakdown(mb *engine.MessageBreakdown) *messageBreakdownWire 
 	if mb == nil {
 		return nil
 	}
-	var calls []toolCallByTypeWire
-	if len(mb.ToolCallsByType) > 0 {
-		calls = make([]toolCallByTypeWire, len(mb.ToolCallsByType))
-		for i, c := range mb.ToolCallsByType {
-			calls[i] = toolCallByTypeWire{
-				Name:         c.Name,
-				CallTokens:   c.CallTokens,
-				ResultTokens: c.ResultTokens,
-			}
+	calls := make([]toolCallByTypeWire, len(mb.ToolCallsByType))
+	for i, c := range mb.ToolCallsByType {
+		calls[i] = toolCallByTypeWire{
+			Name:         c.Name,
+			CallTokens:   c.CallTokens,
+			ResultTokens: c.ResultTokens,
 		}
 	}
-	var atts []attachmentByTypeWire
-	if len(mb.AttachmentsByType) > 0 {
-		atts = make([]attachmentByTypeWire, len(mb.AttachmentsByType))
-		for i, a := range mb.AttachmentsByType {
-			atts[i] = attachmentByTypeWire{Name: a.Name, Tokens: a.Tokens}
-		}
+	atts := make([]attachmentByTypeWire, len(mb.AttachmentsByType))
+	for i, a := range mb.AttachmentsByType {
+		atts[i] = attachmentByTypeWire{Name: a.Name, Tokens: a.Tokens}
 	}
 	return &messageBreakdownWire{
 		ToolCallTokens:      mb.ToolCallTokens,
