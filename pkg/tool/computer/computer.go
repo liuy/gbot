@@ -2,6 +2,7 @@ package computer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // Action constants — the 15 actions routed by the Computer tool. connect and
@@ -245,6 +247,26 @@ func doScreenshot(ctx context.Context, b *AndroidBackend, _ Input) (*tool.ToolRe
 	if err != nil {
 		return notConnectedOrError(err), nil
 	}
+
+	// Decode base64 → raw bytes, run resize pipeline, re-encode. Mirrors TS
+	// computer tool path which emits the image through maybeResize*.
+	raw, decErr := base64.StdEncoding.DecodeString(shot.DataB64)
+	if decErr != nil {
+		return errorResponse(fmt.Sprintf("decode screenshot: %v", decErr)), nil
+	}
+	resized, resizeErr := utils.MaybeResizeAndDownsampleImageBuffer(raw, len(raw), "jpeg")
+	if resizeErr != nil {
+		// Propagate verbatim — no best-effort passthrough (any such policy
+		// would deviate from TS imageResizer.ts:414-431).
+		return errorResponse(fmt.Sprintf("resize screenshot: %v", resizeErr)), nil
+	}
+	// The resizer also returns *ImageDimensions for coordinate remapping;
+	// the Computer tool uses the device's true pixel bounds (shot.Width/
+	// shot.Height from the backend) for that, so the resizer's display
+	// dimensions are intentionally discarded here.
+	mediaType := "image/" + resized.MediaType
+	dataB64 := base64.StdEncoding.EncodeToString(resized.Buffer)
+
 	return &tool.ToolResult{
 		Data: shot,
 		NewMessages: []types.Message{{
@@ -253,8 +275,8 @@ func doScreenshot(ctx context.Context, b *AndroidBackend, _ Input) (*tool.ToolRe
 				types.NewTextBlock("Screenshot captured."),
 				types.NewImageBlock(types.ImageSource{
 					Type:      "base64",
-					MediaType: shot.MIMEType,
-					Data:      shot.DataB64,
+					MediaType: mediaType,
+					Data:      dataB64,
 				}),
 			},
 			Flags: types.FlagMeta,

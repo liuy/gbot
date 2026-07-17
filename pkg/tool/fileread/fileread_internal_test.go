@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -376,22 +377,88 @@ func TestCountTotalLines_Empty(t *testing.T) {
 	}
 }
 
-// --- getMimeType ---
-func TestGetMimeType(t *testing.T) {
+// --- byte-truthful MIME (replaces former TestGetMimeType) ---
+// executeImage must emit an ImageOutput.MimeType that matches the actual
+// bytes produced by utils.MaybeResizeAndDownsampleImageBuffer. The legacy
+// getMimeType(ext) derived MIME from the file extension; that path is gone.
+// This test pins the new contract: PNG/JPEG/GIF small images pass through
+// with their original MIME type.
+func TestExecute_ImageMimeTypeByteTruthful(t *testing.T) {
 	t.Parallel()
-	tests := []struct{ ext, want string }{
-		{".png", "image/png"},
-		{".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"},
-		{".gif", "image/gif"},
-		{".webp", "image/webp"},
-		{".unknown", "application/octet-stream"},
+	cases := []struct {
+		name       string
+		filename   string
+		encode     func(*testing.T, image.Image) []byte
+		wantMime   string
+		wantWidth  int
+		wantHeight int
+	}{
+		{
+			name:     "png",
+			filename: "img.png",
+			encode: func(t *testing.T, img image.Image) []byte {
+				var buf bytes.Buffer
+				if err := png.Encode(&buf, img); err != nil {
+					t.Fatalf("png.Encode: %v", err)
+				}
+				return buf.Bytes()
+			},
+			wantMime:   "image/png",
+			wantWidth:  50,
+			wantHeight: 50,
+		},
+		{
+			name:     "jpeg",
+			filename: "img.jpg",
+			encode: func(t *testing.T, img image.Image) []byte {
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+					t.Fatalf("jpeg.Encode: %v", err)
+				}
+				return buf.Bytes()
+			},
+			wantMime:   "image/jpeg",
+			wantWidth:  50,
+			wantHeight: 50,
+		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.ext, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := getMimeType(tc.ext); got != tc.want {
-				t.Errorf("getMimeType(%q) = %q, want %q", tc.ext, got, tc.want)
+			img := image.NewRGBA(image.Rect(0, 0, tc.wantWidth, tc.wantHeight))
+			for y := range tc.wantHeight {
+				for x := range tc.wantWidth {
+					img.SetRGBA(x, y, color.RGBA{R: 100, G: 150, B: 200, A: 255})
+				}
+			}
+			data := tc.encode(t, img)
+			dir := t.TempDir()
+			fp := filepath.Join(dir, tc.filename)
+			if err := os.WriteFile(fp, data, 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			info, err := os.Stat(fp)
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			res, err := executeImage(Input{FilePath: fp}, info)
+			if err != nil {
+				t.Fatalf("executeImage: %v", err)
+			}
+			out, ok := res.Data.(ImageOutput)
+			if !ok {
+				t.Fatalf("Data = %T, want ImageOutput", res.Data)
+			}
+			if out.MimeType != tc.wantMime {
+				t.Errorf("MimeType = %q, want %q", out.MimeType, tc.wantMime)
+			}
+			if out.OriginalWidth != tc.wantWidth || out.OriginalHeight != tc.wantHeight {
+				t.Errorf("Original = %dx%d, want %dx%d",
+					out.OriginalWidth, out.OriginalHeight, tc.wantWidth, tc.wantHeight)
+			}
+			if out.DisplayWidth != tc.wantWidth || out.DisplayHeight != tc.wantHeight {
+				t.Errorf("Display = %dx%d, want %dx%d (no resize expected)",
+					out.DisplayWidth, out.DisplayHeight, tc.wantWidth, tc.wantHeight)
 			}
 		})
 	}

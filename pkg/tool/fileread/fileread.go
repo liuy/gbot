@@ -12,10 +12,8 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
-	"image/jpeg"
 	_ "image/jpeg"
-	"image/png"
-	"math"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +23,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // Text file reading limits — TS aligned: FileReadTool/limits.ts
@@ -33,12 +32,6 @@ import (
 const (
 	MaxFileReadBytes  = 256 * 1024 // 256KB — TS: MAX_OUTPUT_SIZE
 	MaxFileReadTokens = 25000      // TS: DEFAULT_MAX_OUTPUT_TOKENS
-)
-
-// Source: FileReadTool.ts — apiLimits.ts IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHT
-const (
-	IMAGE_MAX_WIDTH  = 2000
-	IMAGE_MAX_HEIGHT = 2000
 )
 
 var imageExtensions = map[string]bool{
@@ -329,23 +322,9 @@ func expandPath(filePath string) string {
 	return abs
 }
 
-// getMimeType returns the MIME type for an image extension.
-func getMimeType(ext string) string {
-	switch ext {
-	case ".png":
-		return "image/png"
-	case ".jpg":
-		return "image/jpeg"
-	case ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	default:
-		return "application/octet-stream"
-	}
-}
+// getMimeType is intentionally absent — the byte-truthful media type is
+// derived from utils.MaybeResizeAndDownsampleImageBuffer's ResizeResult
+// (which carries the actual format of the bytes it emits).
 
 // Execute reads a file and returns its contents.
 // Source: FileReadTool.ts:call() — 1:1 port.
@@ -445,70 +424,38 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 		return nil, fmt.Errorf("empty image file: %s", in.FilePath)
 	}
 
-	// Decode full image to get dimensions and pixel data
-	img, format, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
+	// Pre-decode to (a) fail fast on undecodable inputs with a clear error
+	// and (b) keep parity with the legacy code path's "decode image" error.
+	// The resizer owns all downstream resize/compress/catch logic.
+	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
 		return nil, fmt.Errorf("decode image: %w", err)
 	}
 
-	origWidth := img.Bounds().Dx()
-	origHeight := img.Bounds().Dy()
-	displayWidth := origWidth
-	displayHeight := origHeight
-	outputData := data
-	wasResized := false
-
-	if origWidth > IMAGE_MAX_WIDTH || origHeight > IMAGE_MAX_HEIGHT {
-		wasResized = true
-		ratio := math.Min(float64(IMAGE_MAX_WIDTH)/float64(origWidth), float64(IMAGE_MAX_HEIGHT)/float64(origHeight))
-		displayWidth = int(float64(origWidth) * ratio)
-		displayHeight = int(float64(origHeight) * ratio)
-
-		resized := resizeImage(img, displayWidth, displayHeight)
-
-		var buf bytes.Buffer
-		switch format {
-		case "jpeg":
-			if err := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85}); err != nil {
-				return nil, fmt.Errorf("encode resized image: %w", err)
-			}
-		default: // png, gif, and everything else encode as png
-			if err := png.Encode(&buf, resized); err != nil {
-				return nil, fmt.Errorf("encode resized image: %w", err)
-			}
-		}
-		outputData = buf.Bytes()
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(in.FilePath), "."))
+	resized, resizeErr := utils.MaybeResizeAndDownsampleImageBuffer(data, len(data), ext)
+	if resizeErr != nil {
+		// Propagate — no best-effort passthrough (TS imageResizer.ts:414-431
+		// throws ImageResizeError rather than emitting oversized bytes).
+		return nil, fmt.Errorf("resize image: %w", resizeErr)
 	}
 
-	ext := strings.ToLower(filepath.Ext(in.FilePath))
+	// On the success path the resizer always populates Dimensions (the only
+	// nil-Dimensions sub-case lives in the catch path, which now propagates
+	// as an error). Build ImageOutput directly.
+	dims := resized.Dimensions
+	outputData := resized.Buffer
+	mediaType := "image/" + resized.MediaType
 
 	output := ImageOutput{
 		Type:           "image",
 		FilePath:       in.FilePath,
 		Base64:         base64.StdEncoding.EncodeToString(outputData),
-		MimeType:       getMimeType(ext),
+		MimeType:       mediaType,
 		OriginalSize:   info.Size(),
-		OriginalWidth:  origWidth,
-		OriginalHeight: origHeight,
-		DisplayWidth:   displayWidth,
-		DisplayHeight:  displayHeight,
-	}
-
-	// Emit the image as a native content block so it reaches the LLM.
-	// MediaType must reflect the true byte format of the base64 payload:
-	// - Non-resized: payload is the original bytes, so the type follows the
-	//   decoded `format` (e.g. "image/gif" for a small GIF passed through as-is).
-	// - Resized: the encode step re-encodes jpeg->jpeg and everything else
-	//   (gif/webp/...) as png, so the type follows that re-encoding.
-	var mediaType string
-	if wasResized {
-		if format == "jpeg" {
-			mediaType = "image/jpeg"
-		} else {
-			mediaType = "image/png"
-		}
-	} else {
-		mediaType = "image/" + format
+		OriginalWidth:  dims.OriginalWidth,
+		OriginalHeight: dims.OriginalHeight,
+		DisplayWidth:   dims.DisplayWidth,
+		DisplayHeight:  dims.DisplayHeight,
 	}
 
 	return &tool.ToolResult{
@@ -713,18 +660,5 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 	return &tool.ToolResult{Data: output}, nil
 }
 
-// resizeImage scales an image to the target dimensions using nearest-neighbor.
-// Source: FileReadTool.ts — imageResizer.ts resize logic (sharp replacement).
-func resizeImage(src image.Image, newWidth, newHeight int) *image.RGBA {
-	dst := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
-	srcW := src.Bounds().Dx()
-	srcH := src.Bounds().Dy()
-	for y := range newHeight {
-		for x := range newWidth {
-			srcX := x * srcW / newWidth
-			srcY := y * srcH / newHeight
-			dst.Set(x, y, src.At(srcX, srcY))
-		}
-	}
-	return dst
-}
+// resizeImage was removed: superseded by utils.MaybeResizeAndDownsampleImageBuffer,
+// which uses draw.CatmullRom.Scale (high-quality) instead of nearest-neighbor.

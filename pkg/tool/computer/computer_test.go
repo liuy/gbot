@@ -1,8 +1,13 @@
 package computer
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -325,8 +330,22 @@ func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
 	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	// Use a real base64-encoded JPEG so the resize pipeline in doScreenshot
+	// can decode it. A 4x4 solid-color JPEG is well under every cap, so the
+	// resizer returns it byte-identical and MediaType stays image/jpeg.
+	smallImg := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			smallImg.SetRGBA(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+		}
+	}
+	var jbuf bytes.Buffer
+	if err := jpeg.Encode(&jbuf, smallImg, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	b64 := base64.StdEncoding.EncodeToString(jbuf.Bytes())
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
-		"screenshot": json.RawMessage(`{"image":"BASE64","format":"jpeg","width":1080,"height":2400}`),
+		"screenshot": json.RawMessage(`{"image":"` + b64 + `","format":"jpeg","width":4,"height":4}`),
 	}
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screenshot"}), &tool.ToolUseContext{})
 	if err != nil {
@@ -348,8 +367,17 @@ func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
 	if msg.Content[1].Source.MediaType != "image/jpeg" {
 		t.Errorf("MediaType = %q, want image/jpeg", msg.Content[1].Source.MediaType)
 	}
-	if msg.Content[1].Source.Data != "BASE64" {
-		t.Errorf("Data = %q, want BASE64", msg.Content[1].Source.Data)
+	// Payload must decode back to a valid JPEG and round-trip the pixels.
+	decoded, err := base64.StdEncoding.DecodeString(msg.Content[1].Source.Data)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	if cfg.Width != 4 || cfg.Height != 4 {
+		t.Errorf("decoded dims = %dx%d, want 4x4", cfg.Width, cfg.Height)
 	}
 }
 
