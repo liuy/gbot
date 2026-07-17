@@ -501,11 +501,27 @@ func classifyMessageBlock(
 		// Tool result doesn't carry the tool name; classify via message
 		// structure later if needed. For now, attribute to "results".
 	default:
+		// Compact summary is synthetic, not real user input.
+		if msg.HasFlag(types.FlagCompactSummary) {
+			return
+		}
+		// FlagMeta messages (tool screenshots, etc.) are tool products
+		// placed in user messages due to API constraints. Count them as
+		// tool result tokens, not user text.
+		if msg.HasFlag(types.FlagMeta) {
+			mb.ToolResultTokens += tokens
+			return
+		}
 		switch msg.Role {
 		case types.RoleAssistant:
 			mb.AssistantTextTokens += tokens
 		case types.RoleUser:
-			mb.UserTextTokens += tokens
+			switch block.Type {
+			case types.ContentTypeImage, types.ContentTypeVideo:
+				mb.AttachmentTokens += tokens
+			default:
+				mb.UserTextTokens += tokens
+			}
 		}
 	}
 }

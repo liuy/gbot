@@ -894,3 +894,45 @@ func TestContextBreakdown_ScaledCategoriesSumToTotalExact(t *testing.T) {
 		t.Errorf("free+reserved sum = %d, want %d (contextWindow - TotalTokens)", freeSum, window-bd.TotalTokens)
 	}
 }
+
+// TestMessageBreakdown_CompactSummaryNotUserText verifies that compact
+// summary messages (RoleUser + FlagCompactSummary) are NOT classified as
+// UserTextTokens — they are a separate category, not real user input.
+// Also verifies image blocks go to AttachmentTokens, not UserTextTokens.
+func TestMessageBreakdown_CompactSummaryNotUserText(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.messages = []types.Message{
+		// Compact summary — should NOT count as user text
+		{Role: types.RoleUser, Flags: types.FlagCompactSummary, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("summary content ", 1000)),
+		}},
+		// Image block — should count as attachment, not user text
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeImage},
+		}},
+		// Screenshot from Computer tool — RoleUser + FlagMeta, should NOT count as user text
+		{Role: types.RoleUser, Flags: types.FlagMeta, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("Screenshot captured. ", 500)),
+			{Type: types.ContentTypeImage},
+		}},
+		// Real user input
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("hi"),
+		}},
+	}
+	e.ContextTokens = 100_000
+
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	if bd.MessageBreakdown.UserTextTokens > 10 {
+		t.Errorf("UserTextTokens = %d, want <= 10 (compact summary + image should not count as user text)",
+			bd.MessageBreakdown.UserTextTokens)
+	}
+	// FlagMeta messages (tool screenshots) should be classified as tool
+	// result tokens, not silently dropped.
+	if bd.MessageBreakdown.ToolResultTokens == 0 {
+		t.Errorf("ToolResultTokens = 0, want > 0 (FlagMeta image should count as tool result)")
+	}
+}
