@@ -35,7 +35,7 @@ func resolveInWorkspace(ctx context.Context, reg *lsp.Registry, symbol string, o
 			continue
 		}
 		for _, s := range symbols {
-			if s.Name == symbol {
+			if symbolNameMatches(s.Name, symbol) {
 				matches = append(matches, symbolMatch{
 					uri: s.Location.URI,
 					pos: s.Location.Range.Start,
@@ -68,4 +68,17 @@ func parseSymbolOccurrence(symbol string) (name string, occurrence int) {
 		}
 	}
 	return symbol, 1
+}
+
+// symbolNameMatches checks if the returned symbol name matches the query.
+// gopls returns qualified names like "Store.LoadMessagesAfterSeq" or
+// "(*mockEngine).Messages". Match the last dot-separated component.
+func symbolNameMatches(returned, query string) bool {
+	if returned == query {
+		return true
+	}
+	if last := returned[strings.LastIndex(returned, ".")+1:]; last != returned && last == query {
+		return true
+	}
+	return false
 }

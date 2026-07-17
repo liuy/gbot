@@ -180,6 +180,62 @@ func TestIntegration_ResolveSymbolInWorkspace_NotFound(t *testing.T) {
 	}
 }
 
+func TestIntegration_ResolveQualifiedSymbolName(t *testing.T) {
+	// gopls returns qualified names like "Store.LoadMessagesAfterSeq" but
+	// users search for the unqualified name "LoadMessagesAfterSeq". The
+	// exact match (s.Name == symbol) must handle this.
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "workspace/symbol" {
+				return []map[string]any{
+					{
+						"name": "Store.LoadMessagesAfterSeq",
+						"kind": 6,
+						"location": map[string]any{
+							"uri": "file://" + filepath.Join(d, "store.go"),
+							"range": map[string]any{
+								"start": map[string]any{"line": 5, "character": 0},
+								"end":   map[string]any{"line": 5, "character": 20},
+							},
+						},
+					},
+					{
+						"name": "(*mockEngine).Messages",
+						"kind": 6,
+						"location": map[string]any{
+							"uri": "file://" + filepath.Join(d, "mock.go"),
+							"range": map[string]any{
+								"start": map[string]any{"line": 10, "character": 0},
+								"end":   map[string]any{"line": 10, "character": 20},
+							},
+						},
+					},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	// Unqualified name should match qualified return
+	uri, _, err := resolveSymbolPosition(context.Background(), reg, "LoadMessagesAfterSeq", dir)
+	if err != nil {
+		t.Fatalf("expected LoadMessagesAfterSeq to resolve, got: %v", err)
+	}
+	if !strings.Contains(uri, "store.go") {
+		t.Errorf("uri = %q, want store.go", uri)
+	}
+
+	// (*Type).Method pattern: "Messages" should match "(*mockEngine).Messages"
+	uri2, _, err := resolveSymbolPosition(context.Background(), reg, "Messages", dir)
+	if err != nil {
+		t.Fatalf("expected Messages to resolve, got: %v", err)
+	}
+	if !strings.Contains(uri2, "mock.go") {
+		t.Errorf("uri = %q, want mock.go", uri2)
+	}
+}
+
 func TestIntegration_ResolveSymbolInWorkspace_OccurrenceOutOfRange(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
 		return func(method string, _ json.RawMessage) (any, bool) {
