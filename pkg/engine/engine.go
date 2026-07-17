@@ -100,27 +100,28 @@ var subEngineSeq atomic.Int64
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
-	provider       llm.Provider
-	tools          map[string]tool.Tool
-	toolOrder      []string
-	toolsProvider  func() map[string]tool.Tool
-	model          string
-	maxTokens      int
-	logger         *slog.Logger
-	mu             sync.RWMutex
-	messages       []types.Message
-	sessionID      string
-	tokenBudget    int
-	turnCount      int
-	dispatcher     types.EventDispatcher
-	workingDir     string
-	memoryDir      string // override for GetMemoryPath; empty = use workingDir-derived path
-	attachments    *attachment.Queue
-	reminderEngine *attachment.ReminderEngine
-	systemPrompt   string                   // stored system prompt for fork agent access
-	skillListing   string                   // formatted skill listing for /context breakdown
-	agentDefs      []*types.AgentDefinition // agent definitions for /context breakdown
-	queryActive    int32                    // atomic: 1 = query/turn loop running, 0 = idle
+	provider         llm.Provider
+	tools            map[string]tool.Tool
+	toolOrder        []string
+	toolsProvider    func() map[string]tool.Tool
+	model            string
+	maxTokens        int
+	logger           *slog.Logger
+	mu               sync.RWMutex
+	messages         []types.Message
+	sessionID        string
+	tokenBudget      int
+	turnCount        int
+	dispatcher       types.EventDispatcher
+	workingDir       string
+	memoryDir        string // override for GetMemoryPath; empty = use workingDir-derived path
+	attachments      *attachment.Queue
+	reminderEngine   *attachment.ReminderEngine
+	systemPrompt     string                   // stored system prompt for fork agent access
+	skillListing     string                   // formatted skill listing for /context breakdown
+	agentDefs        []*types.AgentDefinition // agent definitions for /context breakdown
+	queryActive      int32                    // atomic: 1 = query/turn loop running, 0 = idle
+	queryStartMsgIdx int
 
 	// activeCancel is the cancel function for the currently running query
 	// or attachment processing. Protected by activeCancelMu.
@@ -791,6 +792,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				Content:   []types.ContentBlock{types.NewTextBlock("/" + skillName)},
 				Timestamp: time.Now(),
 			}
+			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
@@ -854,6 +856,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				Content:   []types.ContentBlock{types.NewTextBlock(content)},
 				Timestamp: time.Now(),
 			}
+			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
@@ -1225,6 +1228,7 @@ func (e *Engine) queryLoopWithContent(ctx context.Context, content []types.Conte
 		Content:   content,
 		Timestamp: time.Now(),
 	}
+	e.snapshotQueryStart()
 	e.currentTurnMsgID = userMsg.ID
 	e.appendMessage(userMsg)
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
@@ -3014,6 +3018,21 @@ func (e *Engine) Messages() []types.Message {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return slices.Clone(e.messages)
+}
+
+func (e *Engine) snapshotQueryStart() {
+	e.mu.Lock()
+	e.queryStartMsgIdx = len(e.messages)
+	e.mu.Unlock()
+}
+
+func (e *Engine) QueryStartMsgIdx() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if atomic.LoadInt32(&e.queryActive) == 0 {
+		return -1
+	}
+	return e.queryStartMsgIdx
 }
 
 // Tools returns the tool map used by the engine.

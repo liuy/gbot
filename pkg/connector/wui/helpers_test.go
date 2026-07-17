@@ -42,15 +42,16 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 type mockEngine struct {
 	mu sync.RWMutex
 
-	queryFn        func(ctx context.Context, userMessage, systemPrompt string)
-	isBusyFn       func() bool
-	messagesFn     func() []types.Message
-	toolsFn        func() map[string]tool.Tool
-	enqueueFn      func(item types.QueuedItem)
-	abortFn        func()
-	rewindToFn     func(idx int) error
-	systemPromptFn func() string
-	taskListFn     func() *task.List
+	queryFn            func(ctx context.Context, userMessage, systemPrompt string)
+	isBusyFn           func() bool
+	queryStartMsgIdxFn func() int
+	messagesFn         func() []types.Message
+	toolsFn            func() map[string]tool.Tool
+	enqueueFn          func(item types.QueuedItem)
+	abortFn            func()
+	rewindToFn         func(idx int) error
+	systemPromptFn     func() string
+	taskListFn         func() *task.List
 	// onQueryDoneFn simulates engine committing an assistant response.
 	// Called after queryFn finishes — mirrors real engine's appendMessage.
 	onQueryDoneFn func()
@@ -113,6 +114,13 @@ func (m *mockEngine) IsBusy() bool {
 		return m.isBusyFn()
 	}
 	return false
+}
+
+func (m *mockEngine) QueryStartMsgIdx() int {
+	if m.queryStartMsgIdxFn != nil {
+		return m.queryStartMsgIdxFn()
+	}
+	return -1
 }
 
 func (m *mockEngine) Messages() []types.Message {

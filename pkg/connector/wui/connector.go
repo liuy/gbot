@@ -55,6 +55,7 @@ type engineClient interface {
 	Query(ctx context.Context, userMessage, systemPrompt string)
 	IsBusy() bool
 	Messages() []types.Message
+	QueryStartMsgIdx() int
 	Tools() map[string]tool.Tool
 	EnqueueAttachment(item types.QueuedItem)
 	Abort()
@@ -98,6 +99,7 @@ func (a *engineAdapter) Query(ctx context.Context, userMessage, systemPrompt str
 }
 func (a *engineAdapter) IsBusy() bool                { return a.eng.IsBusy() }
 func (a *engineAdapter) Messages() []types.Message   { return a.eng.Messages() }
+func (a *engineAdapter) QueryStartMsgIdx() int       { return a.eng.QueryStartMsgIdx() }
 func (a *engineAdapter) Tools() map[string]tool.Tool { return a.eng.Tools() }
 func (a *engineAdapter) EnqueueAttachment(item types.QueuedItem) {
 	a.eng.EnqueueAttachment(item)
@@ -1072,16 +1074,9 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 	}
 	msgs := slot.engine.Messages()
 
-	if slot.engine.IsBusy() && len(msgs) > 0 {
-		queryStart := -1
-		for i, m := range msgs {
-			if m.Role == types.RoleUser && hasTextContent(m) {
-				queryStart = i
-			}
-		}
-		if queryStart >= 0 {
-			msgs = msgs[:queryStart+1]
-		}
+	// Query in progress: exclude messages[idx:] (covered by snapshot + live events).
+	if idx := slot.engine.QueryStartMsgIdx(); idx >= 0 && idx < len(msgs) {
+		msgs = msgs[:idx]
 	}
 
 	if len(msgs) == 0 {

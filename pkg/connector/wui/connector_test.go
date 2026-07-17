@@ -1063,8 +1063,10 @@ func TestBuildHistory_IsBusyExclusion(t *testing.T) {
 		t.Fatalf("idle messages = %d, want 4", len(idle.Messages))
 	}
 
-	// Busy: only messages before the last user text message
+	// Busy: queryStartMsgIdx=2 means msgs[:2] (prev_user + prev_asst); query
+	// messages (cur_user, cur_asst) are excluded — covered by snapshot.
 	c.mock().isBusyFn = func() bool { return true }
+	c.mock().queryStartMsgIdxFn = func() int { return 2 }
 	payload = c.buildHistory(c.activeSlot(), "", 10)
 	var busy struct {
 		Messages []historyChatMsg `json:"messages"`
@@ -1072,17 +1074,14 @@ func TestBuildHistory_IsBusyExclusion(t *testing.T) {
 	if err := json.Unmarshal(payload, &busy); err != nil {
 		t.Fatalf("busy unmarshal: %v", err)
 	}
-	if len(busy.Messages) != 3 {
-		t.Fatalf("busy messages = %d, want 3 (prev_user + prev_asst + cur_user)", len(busy.Messages))
+	if len(busy.Messages) != 2 {
+		t.Fatalf("busy messages = %d, want 2 (prev_user + prev_asst; query excluded)", len(busy.Messages))
 	}
 	if busy.Messages[0].ID != "prev_user" {
 		t.Errorf("busy msg[0] = %q, want prev_user", busy.Messages[0].ID)
 	}
 	if busy.Messages[1].ID != "prev_asst" {
 		t.Errorf("busy msg[1] = %q, want prev_asst", busy.Messages[1].ID)
-	}
-	if busy.Messages[2].ID != "cur_user" {
-		t.Errorf("busy msg[2] = %q, want cur_user", busy.Messages[2].ID)
 	}
 
 	// Busy with only 1 user message: history should include that user message

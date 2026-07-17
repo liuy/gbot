@@ -735,3 +735,75 @@ func mustUnmarshalMessages(t *testing.T, data []byte) []map[string]any {
 	}
 	return env.Messages
 }
+
+// TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult verifies
+// buildHistory excludes in-flight query messages. queryStartMsgIdx=3 means
+// msgs[:3] is pre-query; msgs[3:] (goal, skill-a, tr, next-a) is produced
+// by the query and must be excluded (covered by snapshot + live events).
+func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
+	c := newTestConnector(t)
+	mock := c.mock()
+	mock.messagesFn = func() []types.Message {
+		return []types.Message{
+			{ID: "p1", Role: types.RoleAssistant, Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{types.NewTextBlock("prior-1")}},
+			{ID: "pq", Role: types.RoleUser, Timestamp: time.Unix(1001, 0),
+				Content: []types.ContentBlock{types.NewTextBlock("prior-q")}},
+			{ID: "pa", Role: types.RoleAssistant, Timestamp: time.Unix(1002, 0),
+				Content: []types.ContentBlock{types.NewTextBlock("prior-a")}},
+			{ID: "goal", Role: types.RoleUser, Timestamp: time.Unix(1003, 0),
+				Content: []types.ContentBlock{types.NewTextBlock("/goal")}},
+			{ID: "skill-a", Role: types.RoleAssistant, Timestamp: time.Unix(1004, 0),
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeToolUse, ID: "tu-skill", Name: "Skill", Input: json.RawMessage(`{}`)},
+				}},
+			{ID: "tr", Role: types.RoleUser, Timestamp: time.Unix(1005, 0),
+				Content: []types.ContentBlock{
+					types.NewTextBlock("skill done"),
+					{Type: types.ContentTypeToolResult, ToolUseID: "tu-skill", Content: json.RawMessage(`"ok"`)},
+				}},
+			{ID: "next-a", Role: types.RoleAssistant, Timestamp: time.Unix(1006, 0),
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeToolUse, ID: "tu-agent", Name: "Agent", Input: json.RawMessage(`{}`)},
+				}},
+		}
+	}
+	mock.isBusyFn = func() bool { return true }
+	mock.queryStartMsgIdxFn = func() int { return 3 } // index of "/goal"
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, ws)
+
+	// Explicitly request page 1 so we observe exactly what buildHistory returns.
+	req, err := json.Marshal(map[string]any{"type": "history_request", "cursor": "", "limit": 30})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data := readWSMessage(t, ws)
+	msgs := mustUnmarshalMessages(t, data)
+
+	ids := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if id, ok := m["id"].(string); ok {
+			ids[id] = true
+		}
+	}
+	for _, want := range []string{"p1", "pq", "pa"} {
+		if !ids[want] {
+			t.Errorf("history missing expected pre-query message %q", want)
+		}
+	}
+	for _, banned := range []string{"goal", "skill-a", "tr", "next-a"} {
+		if ids[banned] {
+			t.Errorf("history must NOT include current-query message %q (would overlap with snapshot)", banned)
+		}
+	}
+}
