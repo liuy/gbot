@@ -471,13 +471,14 @@ func TestPickMinimaxBucket_GeneralFirst(t *testing.T) {
 }
 
 func TestDetect_ZhipuByName(t *testing.T) {
-	// DISABLED 2026-06-20: zhipu quota endpoint disabled to prevent
-	// rate-limit triggers from background polling. Re-enable when safe.
 	t.Parallel()
 	p := &config.Provider{Name: "zhipu", URL: "https://open.bigmodel.cn/api/coding/paas/v4", Keys: []string{"k"}}
 	f := Detect(p)
-	if f != nil {
-		t.Errorf("Detect(zhipu) = %T, want nil (disabled)", f)
+	if f == nil {
+		t.Error("Detect(zhipu) = nil, want Fetcher")
+	}
+	if _, ok := f.(*ZhipuFetcher); !ok {
+		t.Errorf("Detect(zhipu) = %T, want *ZhipuFetcher", f)
 	}
 }
 
@@ -485,8 +486,11 @@ func TestDetect_ZhipuByZaiURL(t *testing.T) {
 	t.Parallel()
 	p := &config.Provider{Name: "intl", URL: "https://api.z.ai/v1/messages", Keys: []string{"k"}}
 	f := Detect(p)
-	if f != nil {
-		t.Errorf("Detect(z.ai url) = %T, want nil (disabled)", f)
+	if f == nil {
+		t.Error("Detect(z.ai url) = nil, want Fetcher")
+	}
+	if _, ok := f.(*ZhipuFetcher); !ok {
+		t.Errorf("Detect(z.ai url) = %T, want *ZhipuFetcher", f)
 	}
 }
 

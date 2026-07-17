@@ -9,7 +9,7 @@ export interface HeaderHandles {
   setStatus: (connected: boolean) => void
   setModel: (model: string) => void
   onHamburgerClick: (handler: () => void) => void
-  setModels: (models: { provider: string; model: string }[], curProvider: string, curModel: string) => void
+  setModels: (models: { provider: string; model: string; quota?: string }[], curProvider: string, curModel: string) => void
   setEngines: (engines: EngineEntry[], activeID: string) => void
   setContext: (used: number, total: number) => void
   setContextBreakdown: (data: ContextBreakdownData | null) => void
@@ -19,6 +19,7 @@ export interface HeaderHandles {
 interface ModelEntry {
   provider: string
   model: string
+  quota?: string
 }
 
 interface EngineEntry {
@@ -92,6 +93,12 @@ function createModelPicker(
       span.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
       span.textContent = entry.model
       item.appendChild(span)
+      if (entry.quota) {
+        const q = document.createElement('span')
+        q.className = 'text-[10px] text-t3 ml-auto'
+        q.textContent = entry.quota
+        item.appendChild(q)
+      }
       item.addEventListener('click', () => {
         currentProvider = entry.provider
         currentModel = entry.model

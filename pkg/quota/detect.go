@@ -12,11 +12,8 @@ import (
 //
 // Detection logic:
 //   - provider name or URL contains "minimax"  → MinimaxFetcher
+//   - provider name or URL contains "zhipu" or "z.ai" → ZhipuFetcher
 //   - otherwise                                → nil (no quota shown)
-//
-// DISABLED 2026-06-20: Zhipu quota endpoint triggers rate-limit detection.
-// Re-enable when zhipu adds explicit rate-limit headers or the endpoint
-// is proven safe for background polling.
 func Detect(p *config.Provider) Fetcher {
 	if p == nil {
 		return nil
@@ -33,6 +30,9 @@ func Detect(p *config.Provider) Fetcher {
 	switch {
 	case strings.Contains(name, "minimax") || strings.Contains(host, "minimax"):
 		return NewMinimaxFetcher(host, key)
+	case strings.Contains(name, "zhipu") || strings.Contains(host, "zhipu") ||
+		strings.Contains(name, "z.ai") || strings.Contains(host, "z.ai"):
+		return NewZhipuFetcher(host, key)
 	default:
 		return nil
 	}

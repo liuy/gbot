@@ -29,6 +29,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
@@ -1403,6 +1404,7 @@ type sessionListItem struct {
 type configModelItem struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	Quota    string `json:"quota,omitempty"`
 }
 
 // configCurrent is the active provider/model in the config message.
@@ -1432,10 +1434,44 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Current: configCurrent{Provider: currentProvider, Model: currentModel},
 	}
 	for _, it := range items {
-		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
+		item := configModelItem{Provider: it.Provider, Model: it.Model}
+		if q, ok := c.providerConfigs[it.Provider]; ok {
+			if f := quota.Detect(q); f != nil {
+				if info, err := f.Fetch(context.Background()); err == nil {
+					item.Quota = formatQuota(&info)
+				}
+			}
+		}
+		out.Models = append(out.Models, item)
 	}
 	payload, _ := json.Marshal(out)
 	return payload
+}
+
+// formatQuota formats quota.Info into a compact display string like "85%/2h30m".
+func formatQuota(info *quota.Info) string {
+	if info == nil {
+		return ""
+	}
+	rem := info.Remaining()
+	left := time.Until(info.ResetAt)
+	if left < 0 {
+		left = 0
+	}
+	hours := int(left.Hours())
+	if hours >= 24 {
+		days := hours / 24
+		return fmt.Sprintf("%d%%/%dd", rem, days)
+	}
+	if hours > 0 {
+		mins := int(left.Minutes()) % 60
+		return fmt.Sprintf("%d%%/%dh%dm", rem, hours, mins)
+	}
+	mins := int(left.Minutes())
+	if mins > 0 {
+		return fmt.Sprintf("%d%%/%dm", rem, mins)
+	}
+	return fmt.Sprintf("%d%%/0m", rem)
 }
 
 // buildConnectStatus builds connect_status for a specific slot.
