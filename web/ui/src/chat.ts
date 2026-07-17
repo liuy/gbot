@@ -1121,6 +1121,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'text_delta': {
         if (!e.text) return
         if (e.agent) {
+          tokenRate.add(e.text)
           const parentID = e.agent.parent_tool_use_id
           const container = pendingChildrenFor(parentID)
           if (!container) return

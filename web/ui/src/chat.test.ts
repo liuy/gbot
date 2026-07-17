@@ -875,6 +875,41 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it('sub-agent text_delta updates token rate', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('research something')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+
+    const agent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent },
+    ])
+
+    const longText = 'B'.repeat(200)
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(100)
+      dispatchEvents([
+        { type: 'text_delta', agent, text: longText },
+      ])
+    }
+
+    const allSpans2 = document.querySelectorAll('span')
+    let rateEl2: HTMLElement | null = null
+    allSpans2.forEach(s => {
+      if (s.textContent && s.textContent.includes('t/s')) rateEl2 = s as HTMLElement
+    })
+    expect(rateEl2).toBeTruthy()
+    expect(rateEl2!.textContent).not.toMatch(/^0\.0 t\/s$/)
+    vi.useRealTimers()
+  })
+
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
