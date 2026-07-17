@@ -861,3 +861,36 @@ func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
 }
+
+// TestContextBreakdown_ScaledCategoriesSumToTotalExact verifies that the
+// scaled (non-free, non-reserved) categories sum to TotalTokens — the
+// API-reported actual usage. Autocompact buffer (reserved) is part of
+// free space, not part of used tokens.
+func TestContextBreakdown_ScaledCategoriesSumToTotalExact(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.systemPrompt = strings.Repeat("word ", 1000)
+	e.ContextTokens = 50_000
+
+	bd := e.ContextBreakdown()
+	if bd.TotalTokens != 50_000 {
+		t.Fatalf("TotalTokens = %d, want 50000", bd.TotalTokens)
+	}
+
+	scaledSum := 0
+	freeSum := 0
+	for _, c := range bd.Categories {
+		if c.IsFree || c.IsReserved {
+			freeSum += c.Tokens
+		} else {
+			scaledSum += c.Tokens
+		}
+	}
+	if scaledSum != bd.TotalTokens {
+		t.Errorf("scaled categories sum = %d, want %d (TotalTokens = used). reserved is leaking into used.",
+			scaledSum, bd.TotalTokens)
+	}
+	window := e.autoCompactConfig.ContextWindow
+	if freeSum != window-bd.TotalTokens {
+		t.Errorf("free+reserved sum = %d, want %d (contextWindow - TotalTokens)", freeSum, window-bd.TotalTokens)
+	}
+}

@@ -217,9 +217,11 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 		return breakdown
 	}
 
-	// Reserved is capped at totalExact (cannot exceed total usage).
-	reserved := min(computeReservedTokens(contextWindow, maxTokens), totalExact)
+	// Reserved (autocompact buffer) is part of free space — it is the
+	// portion of unused tokens set aside for autocompact. Cap at free so
+	// it never exceeds what's actually available.
 	freeTokens := contextWindow - totalExact
+	reserved := min(computeReservedTokens(contextWindow, maxTokens), max(freeTokens, 0))
 
 	// Compute expensive data once, shared by estimates and details.
 	sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, e.memoryDir)
@@ -230,8 +232,10 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 		agentDefs, messages, mcpReg, reserved,
 	)
 
-	contentTarget := max(totalExact-reserved, 0)
-	scaled := scaleProportionally(estimates, contentTarget)
+	// Scale categories to sum to the full TotalTokens (API-reported actual
+	// usage). Reserved (Autocompact buffer) is part of free space, not
+	// used tokens, so it must not be subtracted from the scaling target.
+	scaled := scaleProportionally(estimates, totalExact)
 
 	detailSlices := e.buildDetails(
 		sections, memFiles, toolsSnapshot, toolSearchSnap,
@@ -243,7 +247,9 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	}
 
 	// Assemble categories in the canonical order matching the TS source.
-	breakdown.Categories = buildCategories(scaled, freeTokens, reserved, contextWindow)
+	// Free space is the remaining unused tokens after subtracting the
+	// autocompact buffer (reserved is part of free, shown separately).
+	breakdown.Categories = buildCategories(scaled, freeTokens-reserved, reserved, contextWindow)
 	breakdown.GridRows = BuildGrid(breakdown.Categories, contextWindow)
 	breakdown.MCPToolsLoaded = detailSlices.mcpLoaded
 	breakdown.MCPToolsDeferred = detailSlices.mcpDeferred
