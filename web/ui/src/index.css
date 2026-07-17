@@ -3,7 +3,6 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 @theme {
-  --color-primary: #00B4FF;
   --color-bg: rgb(4 6 12);
   --color-ink: #06080F;
   --color-ink2: #0C1018;
@@ -219,11 +218,10 @@ body {
   --color-t2: #666666;
   --color-t3: #999999;
   --color-blue: #333333;
-  --color-green: #333333;
-  --color-red: #333333;
-  --color-amber: #333333;
-  --color-violet: #333333;
-  --color-primary: #333333;
+  --color-green: #3DD68C;
+  --color-red: #FF5C5C;
+  --color-amber: #FFB547;
+  --color-violet: #9D5CFF;
   --color-hairline: rgba(0, 0, 0, 0.08);
   --color-line2: rgba(0, 0, 0, 0.04);
   --bg-page: #F5F5F5;
