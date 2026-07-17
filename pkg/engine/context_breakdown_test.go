@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/mcp"
@@ -848,5 +849,15 @@ func TestContextBreakdown_BuildDetails_MultipleToolCallsTruncation(t *testing.T)
 	}
 	if len(bd.MessageBreakdown.ToolCallsByType) > 5 {
 		t.Errorf("ToolCallsByType should be truncated to 5, got %d", len(bd.MessageBreakdown.ToolCallsByType))
+	}
+}
+
+func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	raw := strings.Repeat("word ", 500) // ~500 tokens
+	sections := estimateSystemPromptSections(raw, tmpDir, "", nil, "")
+	if sections.base < 400 {
+		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
 }

@@ -367,8 +367,10 @@ func estimateSystemPromptSections(
 	builder.MemoryDirOverride = memoryDir
 	builder.SkillListing = skillListing
 
-	baseStr := builder.BaseSystemPrompt()
-	base := types.EstimateTokens(baseStr)
+	// Estimate base from the actual system prompt content. Using a fresh
+	// Builder here would miss runtime additions (SOUL.md, skills, agents,
+	// memory index, etc.), severely underestimating the base section.
+	base := types.EstimateTokens(systemPromptRaw)
 
 	platformStr := builder.RuntimeInfo()
 	platform := types.EstimateTokens(platformStr)
