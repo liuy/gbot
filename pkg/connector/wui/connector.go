@@ -1404,7 +1404,6 @@ type sessionListItem struct {
 type configModelItem struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	Quota    string `json:"quota,omitempty"`
 }
 
 // configCurrent is the active provider/model in the config message.
@@ -1434,18 +1433,45 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Current: configCurrent{Provider: currentProvider, Model: currentModel},
 	}
 	for _, it := range items {
-		item := configModelItem{Provider: it.Provider, Model: it.Model}
-		if q, ok := c.providerConfigs[it.Provider]; ok {
-			if f := quota.Detect(q); f != nil {
-				if info, err := f.Fetch(context.Background()); err == nil {
-					item.Quota = formatQuota(&info)
-				}
-			}
-		}
-		out.Models = append(out.Models, item)
+		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
 	}
 	payload, _ := json.Marshal(out)
 	return payload
+}
+
+// buildQuota fetches quota for all providers and sends the result as a
+// quota_result WS message. Called on demand (not during metadata) so the
+// quota API is only hit when the model picker is open.
+func (c *WUIConnector) buildQuota() {
+	ws := c.activeWS.Load()
+	if ws == nil {
+		return
+	}
+	type quotaEntry struct {
+		Provider string `json:"provider"`
+		Quota    string `json:"quota"`
+	}
+	var entries []quotaEntry
+	for name := range c.providerConfigs {
+		p := c.providerConfigs[name]
+		f := quota.Detect(p)
+		if f == nil {
+			continue
+		}
+		info, err := f.Fetch(context.Background())
+		if err != nil {
+			continue
+		}
+		entries = append(entries, quotaEntry{Provider: name, Quota: formatQuota(&info)})
+	}
+	if len(entries) == 0 {
+		return
+	}
+	payload, _ := json.Marshal(struct {
+		Type    string       `json:"type"`
+		Entries []quotaEntry `json:"entries"`
+	}{Type: "quota_result", Entries: entries})
+	c.sendWS(payload)
 }
 
 // formatQuota formats quota.Info into a compact display string like "85%/2h30m".

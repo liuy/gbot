@@ -356,6 +356,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     onEngineSwitch: (engineID) => conn.send({ type: 'engine_switch', engineID }),
     onEngineNew: () => conn.send({ type: 'engine_new' }),
     onContextRequest: () => conn.send({ type: 'context_request' }),
+    onRequestQuota: () => conn.send({ type: 'quota_request' }),
   })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
@@ -1604,6 +1605,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           header.setContextBreakdown(null)
         } else {
           header.setContextBreakdown(msg)
+        }
+        return
+      case 'quota_result':
+        for (const entry of msg.entries) {
+          header.setQuota(entry.provider, entry.quota)
         }
         return
     }

@@ -9243,8 +9243,11 @@ func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	if a.CurrentProvider() != "zhipu" {
 		t.Errorf("currentProvider = %q, want %q", a.CurrentProvider(), "zhipu")
 	}
-	if a.quotaFetcher != nil {
-		t.Fatalf("quotaFetcher = %T, want nil — zhipu disabled, must not get minimax fetcher from Providers[0]", a.quotaFetcher)
+	if a.quotaFetcher == nil {
+		t.Fatalf("quotaFetcher = nil, want *quota.ZhipuFetcher (zhipu quota detection re-enabled)")
+	}
+	if _, ok := a.quotaFetcher.(*quota.ZhipuFetcher); !ok {
+		t.Fatalf("quotaFetcher = %T, want *quota.ZhipuFetcher (must not get minimax fetcher from Providers[0])", a.quotaFetcher)
 	}
 }
 

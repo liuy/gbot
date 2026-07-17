@@ -10,6 +10,7 @@ export interface HeaderHandles {
   setModel: (model: string) => void
   onHamburgerClick: (handler: () => void) => void
   setModels: (models: { provider: string; model: string; quota?: string }[], curProvider: string, curModel: string) => void
+  setQuota: (provider: string, quota: string) => void
   setEngines: (engines: EngineEntry[], activeID: string) => void
   setContext: (used: number, total: number) => void
   setContextBreakdown: (data: ContextBreakdownData | null) => void
@@ -30,7 +31,8 @@ interface EngineEntry {
 
 function createModelPicker(
   onSelect: (provider: string, model: string) => void,
-): { wrap: HTMLElement; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void } {
+  onRequestQuota?: () => void,
+): { wrap: HTMLElement; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
   const wrap = document.createElement('div')
   wrap.className = 'relative'
 
@@ -60,6 +62,7 @@ function createModelPicker(
   let currentProvider = ''
   let currentModel = ''
   let open = false
+  const quotaByProvider = new Map<string, string>()
 
   const renderList = () => {
     listContainer.innerHTML = ''
@@ -93,10 +96,11 @@ function createModelPicker(
       span.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
       span.textContent = entry.model
       item.appendChild(span)
-      if (entry.quota) {
+      const qText = entry.quota ?? quotaByProvider.get(entry.provider)
+      if (qText) {
         const q = document.createElement('span')
         q.className = 'text-[10px] text-t3 ml-auto'
-        q.textContent = entry.quota
+        q.textContent = qText
         item.appendChild(q)
       }
       item.addEventListener('click', () => {
@@ -132,6 +136,7 @@ function createModelPicker(
       renderList()
       setTimeout(() => searchInput.focus(), 50)
       outside.add()
+      onRequestQuota?.()
     } else {
       closePanel()
     }
@@ -146,8 +151,13 @@ function createModelPicker(
     if (curModel) trigger.textContent = curModel
   }
 
+  const setQuota = (provider: string, quota: string) => {
+    quotaByProvider.set(provider, quota)
+    if (open) renderList()
+  }
+
   wrap.appendChild(trigger)
-  return { wrap, setModels }
+  return { wrap, setModels, setQuota }
 }
 
 function createEnginePicker(
@@ -529,6 +539,7 @@ export function createHeader(opts: {
   onEngineSwitch: (engineID: string) => void
   onEngineNew: () => void
   onContextRequest?: () => void
+  onRequestQuota?: () => void
 }): HeaderHandles {
   const root = document.createElement('header')
   root.className = 'sticky top-0 z-30 card-bg'
@@ -625,7 +636,7 @@ export function createHeader(opts: {
   wordmark.textContent = 'GBot'
   gbotWrap.appendChild(wordmark)
 
-  const modelPicker = createModelPicker(opts.onModelSelect)
+  const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
   const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
 
   const sep = () => {
@@ -694,5 +705,5 @@ export function createHeader(opts: {
     ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide }
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide }
 }

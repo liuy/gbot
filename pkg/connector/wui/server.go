@@ -168,6 +168,8 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			}
 		case "context_request":
 			c.handleContextRequest()
+		case "quota_request":
+			go c.buildQuota()
 		}
 	}
 }
