@@ -110,8 +110,8 @@ func TestPreCompactMessages_FirstPage(t *testing.T) {
 	if len(page) != 2 {
 		t.Fatalf("len(page) = %d, want 2", len(page))
 	}
-	if page[0].ID != "pre-0" || page[1].ID != "pre-1" {
-		t.Errorf("page IDs = %q,%q; want pre-0,pre-1", page[0].ID, page[1].ID)
+	if page[0].UUID != "pre-3" || page[1].UUID != "pre-4" {
+		t.Errorf("page IDs = %q,%q; want pre-3,pre-4 (newest, ASC within page)", page[0].UUID, page[1].UUID)
 	}
 }
 
@@ -125,10 +125,10 @@ func TestPreCompactMessages_LastPartialPage(t *testing.T) {
 		t.Errorf("total = %d, want 5", total)
 	}
 	if len(page) != 1 {
-		t.Fatalf("len(page) = %d, want 1 (last message)", len(page))
+		t.Fatalf("len(page) = %d, want 1 (oldest single item, tail-relative)", len(page))
 	}
-	if page[0].ID != "pre-4" {
-		t.Errorf("page[0].ID = %q, want pre-4", page[0].ID)
+	if page[0].UUID != "pre-0" {
+		t.Errorf("page[0].UUID = %q, want pre-0 (oldest; tail-relative with delivered=4)", page[0].UUID)
 	}
 }
 
@@ -196,7 +196,7 @@ func TestPreCompactMessages_FiltersFlagCompactSummary(t *testing.T) {
 		t.Fatalf("len(page) = %d, want 2", len(page))
 	}
 	for _, m := range page {
-		if m.ID == "summary-leak" {
+		if m.UUID == "summary-leak" {
 			t.Errorf("FlagCompactSummary message leaked into page")
 		}
 	}
@@ -213,5 +213,146 @@ func TestPreCompactMessages_DeliveredBeyondTotal(t *testing.T) {
 	}
 	if len(page) != 0 {
 		t.Errorf("len(page) = %d, want 0 when delivered >= total", len(page))
+	}
+}
+
+// seedMultiEpochStore builds a store with multiple compact epochs:
+//   - epochMsgs[0] regular user messages, then boundary 1,
+//   - epochMsgs[1] regular user messages, then boundary 2,
+//   - ...
+//   - epochMsgs[N-1] regular user messages, then boundary N (the LAST),
+//   - `post` regular assistant messages (live, post-compact).
+//
+// All messages use distinct IDs ("e<i>-<j>") and strictly increasing
+// timestamps so ASC order is unambiguous.
+func seedMultiEpochStore(t *testing.T, sid string, epochMsgs []int, post int) *short.Store {
+	t.Helper()
+	dbPath := t.TempDir() + "/test.db"
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.DB().Exec(
+		"INSERT INTO sessions (session_id, project_dir) VALUES (?, '')",
+		sid,
+	); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tick := 0
+	nextTime := func() time.Time {
+		ts := base.Add(time.Duration(tick) * time.Second)
+		tick++
+		return ts
+	}
+
+	var lastUUID string
+	for epochIdx, n := range epochMsgs {
+		for j := range n {
+			id := fmt.Sprintf("e%d-%d", epochIdx, j)
+			em := types.Message{
+				ID:        id,
+				Role:      types.RoleUser,
+				Timestamp: nextTime(),
+				Content:   []types.ContentBlock{types.NewTextBlock(id)},
+			}
+			ts, err := short.EngineMessagesToStore([]types.Message{em})
+			if err != nil {
+				t.Fatalf("EngineMessagesToStore %s: %v", id, err)
+			}
+			if err := store.AppendMessage(sid, ts[0]); err != nil {
+				t.Fatalf("AppendMessage %s: %v", id, err)
+			}
+			lastUUID = id
+		}
+		boundary := short.CreateCompactBoundaryMessage("auto", 1000, lastUUID)
+		// Force deterministic CreatedAt so ASC order across epochs is unambiguous.
+		boundary.CreatedAt = nextTime()
+		if err := store.AppendMessage(sid, boundary); err != nil {
+			t.Fatalf("AppendMessage boundary %d: %v", epochIdx, err)
+		}
+		lastUUID = boundary.UUID
+	}
+
+	for i := range post {
+		id := fmt.Sprintf("post-%d", i)
+		em := types.Message{
+			ID:        id,
+			Role:      types.RoleAssistant,
+			Timestamp: nextTime(),
+			Content:   []types.ContentBlock{types.NewTextBlock(id)},
+		}
+		ts, err := short.EngineMessagesToStore([]types.Message{em})
+		if err != nil {
+			t.Fatalf("EngineMessagesToStore %s: %v", id, err)
+		}
+		if err := store.AppendMessage(sid, ts[0]); err != nil {
+			t.Fatalf("AppendMessage %s: %v", id, err)
+		}
+	}
+
+	return store
+}
+
+func TestPreCompactMessages_BoundaryAdjacentFirstPage(t *testing.T) {
+	store := seedPreCompactStore(t, "s1", 5, false, 1)
+	page, total, hasBoundary := preCompactMessages(store, "s1", 0, 2)
+	if !hasBoundary {
+		t.Fatal("hasBoundary = false, want true")
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5", total)
+	}
+	if len(page) != 2 {
+		t.Fatalf("len(page) = %d, want 2", len(page))
+	}
+	if page[0].UUID != "pre-3" || page[1].UUID != "pre-4" {
+		t.Errorf("page IDs = %q,%q; want pre-3,pre-4 (boundary-adjacent, ASC)", page[0].UUID, page[1].UUID)
+	}
+}
+
+func TestPreCompactMessages_NextPage(t *testing.T) {
+	store := seedPreCompactStore(t, "s1", 5, false, 1)
+	page, total, hasBoundary := preCompactMessages(store, "s1", 2, 2)
+	if !hasBoundary {
+		t.Fatal("hasBoundary = false, want true")
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5", total)
+	}
+	if len(page) != 2 {
+		t.Fatalf("len(page) = %d, want 2", len(page))
+	}
+	if page[0].UUID != "pre-1" || page[1].UUID != "pre-2" {
+		t.Errorf("page IDs = %q,%q; want pre-1,pre-2 (next page after pre-3,pre-4)", page[0].UUID, page[1].UUID)
+	}
+}
+
+func TestPreCompactMessages_CrossEpochWithMarkers(t *testing.T) {
+	store := seedMultiEpochStore(t, "s1", []int{3, 4, 5}, 1)
+	page, total, hasBoundary := preCompactMessages(store, "s1", 0, 100)
+	if !hasBoundary {
+		t.Fatal("hasBoundary = false, want true")
+	}
+	if total != 14 {
+		t.Errorf("total = %d, want 14 (3 + 1 boundary + 4 + 1 boundary + 5)", total)
+	}
+	if len(page) != 14 {
+		t.Fatalf("len(page) = %d, want 14", len(page))
+	}
+	if page[0].UUID != "e0-0" {
+		t.Errorf("page[0].UUID = %q, want e0-0 (oldest)", page[0].UUID)
+	}
+	if page[13].UUID != "e2-4" {
+		t.Errorf("page[13].UUID = %q, want e2-4 (newest before last boundary)", page[13].UUID)
+	}
+	if page[3].Type != "system" || page[3].Subtype != "compact_boundary" {
+		t.Errorf("page[3] = type=%q subtype=%q, want system/compact_boundary (first intermediate)", page[3].Type, page[3].Subtype)
+	}
+	if page[8].Type != "system" || page[8].Subtype != "compact_boundary" {
+		t.Errorf("page[8] = type=%q subtype=%q, want system/compact_boundary (second intermediate)", page[8].Type, page[8].Subtype)
 	}
 }

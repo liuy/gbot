@@ -11,8 +11,23 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 )
+
+// makeTM is a test helper for buildPreCompactHistory tests: it builds a
+// *short.TranscriptMessage from a minimal types.Message via the production
+// EngineMessagesToStore round-trip so it matches real persisted rows.
+func makeTM(id string, role types.Role) *short.TranscriptMessage {
+	em := types.Message{
+		ID:        id,
+		Role:      role,
+		Timestamp: time.Unix(900, 0),
+		Content:   []types.ContentBlock{types.NewTextBlock(id)},
+	}
+	ts, _ := short.EngineMessagesToStore([]types.Message{em})
+	return ts[0]
+}
 
 // dialChatWS dials the chat WS endpoint exposed by RegisterChatWS and returns
 // the connected client.
@@ -360,11 +375,12 @@ func requestHistory(t *testing.T, ws *websocket.Conn, cursor string, limit int) 
 	return readWSMessage(t, ws)
 }
 
-// TestBuildHistory_PreCompactInitialPage verifies that when the in-memory
+// TestBuildHistory_PreCompactTransitionPage verifies that when the in-memory
 // page reaches the top AND a compact boundary exists, buildHistory sets
-// hasMore=true and nextCursor="precompact:0" without emitting an envelope
-// compactBoundary flag (the flag belongs only to the final pre-compact page).
-func TestBuildHistory_PreCompactInitialPage(t *testing.T) {
+// hasMore=true, nextCursor="precompact:0", AND the envelope-level
+// compactBoundary=true (the divider belongs at the END of the in-memory
+// fragment so the client renders it before loading pre-compact pages).
+func TestBuildHistory_PreCompactTransitionPage(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
 	mock.messagesFn = func() []types.Message {
@@ -374,12 +390,12 @@ func TestBuildHistory_PreCompactInitialPage(t *testing.T) {
 			{ID: "in-mem-1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0), Content: []types.ContentBlock{types.NewTextBlock("there")}},
 		}
 	}
-	mock.preCompactFn = func(delivered, limit int) ([]types.Message, int, bool) {
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 		if limit == 0 {
 			return nil, 0, true
 		}
-		// Only the probe call (limit=0) is expected for the initial page.
-		t.Errorf("unexpected preCompactFn(%d, %d) on initial page", delivered, limit)
+		// Only the probe call (limit=0) is expected for the transition page.
+		t.Errorf("unexpected preCompactFn(%d, %d) on transition page", delivered, limit)
 		return nil, 0, true
 	}
 
@@ -413,8 +429,8 @@ func TestBuildHistory_PreCompactInitialPage(t *testing.T) {
 	if env.NextCursor != "precompact:0" {
 		t.Errorf("NextCursor = %q, want \"precompact:0\"", env.NextCursor)
 	}
-	if env.CompactBoundary {
-		t.Error("CompactBoundary = true on initial page, want false (intermediate page)")
+	if !env.CompactBoundary {
+		t.Error("CompactBoundary = false on in-memory → precompact transition, want true (divider sits at end of in-memory page)")
 	}
 }
 
@@ -437,14 +453,15 @@ func TestBuildHistory_PreCompactFinalPage(t *testing.T) {
 			Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("pre-%d", i))},
 		})
 	}
-	mock.preCompactFn = func(delivered, limit int) ([]types.Message, int, bool) {
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 		if limit == 0 {
 			return nil, 0, true
 		}
 		if delivered != 0 {
 			t.Errorf("delivered = %d, want 0", delivered)
 		}
-		return preMsgs[:], 3, true
+		ts, _ := short.EngineMessagesToStore(preMsgs[:])
+		return ts, 3, true
 	}
 
 	mux := http.NewServeMux()
@@ -482,8 +499,8 @@ func TestBuildHistory_PreCompactFinalPage(t *testing.T) {
 	if env.NextCursor != "" {
 		t.Errorf("NextCursor = %q, want empty", env.NextCursor)
 	}
-	if !env.CompactBoundary {
-		t.Error("CompactBoundary = false on final pre-compact page, want true")
+	if env.CompactBoundary {
+		t.Error("CompactBoundary = true on precompact page, want false (envelope flag belongs to in-memory transition only)")
 	}
 	// Per-message compactBoundary must NOT appear on any message.
 	for i, raw := range mustUnmarshalMessages(t, data) {
@@ -504,7 +521,7 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 		}
 	}
 	// Pre-compact total = 50; page 1 returns 30 (limit=30), final returns 20.
-	mock.preCompactFn = func(delivered, limit int) ([]types.Message, int, bool) {
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 		if limit == 0 {
 			return nil, 0, true
 		}
@@ -519,7 +536,8 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("pre-%d", i))},
 			})
 		}
-		return out, total, true
+		ts, _ := short.EngineMessagesToStore(out)
+		return ts, total, true
 	}
 
 	mux := http.NewServeMux()
@@ -575,8 +593,8 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 	if env2.NextCursor != "" {
 		t.Errorf("page 2 nextCursor = %q, want empty", env2.NextCursor)
 	}
-	if !env2.CompactBoundary {
-		t.Error("page 2 CompactBoundary = false, want true (final page)")
+	if env2.CompactBoundary {
+		t.Error("page 2 CompactBoundary = true, want false (precompact pages never set envelope flag)")
 	}
 }
 
@@ -632,16 +650,17 @@ func TestBuildHistory_PreCompactMalformedCursor(t *testing.T) {
 			{ID: "in-mem", Role: types.RoleAssistant, Timestamp: time.Unix(1000, 0), Content: []types.ContentBlock{types.NewTextBlock("post")}},
 		}
 	}
-	mock.preCompactFn = func(delivered, limit int) ([]types.Message, int, bool) {
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 		if limit == 0 {
 			return nil, 0, true
 		}
 		if delivered != 0 {
 			t.Errorf("delivered = %d, want 0 (malformed → 0)", delivered)
 		}
-		return []types.Message{
+		ts, _ := short.EngineMessagesToStore([]types.Message{
 			{ID: "pre-0", Role: types.RoleUser, Timestamp: time.Unix(900, 0), Content: []types.ContentBlock{types.NewTextBlock("pre-0")}},
-		}, 1, true
+		})
+		return ts, 1, true
 	}
 
 	mux := http.NewServeMux()
@@ -671,8 +690,8 @@ func TestBuildHistory_PreCompactMalformedCursor(t *testing.T) {
 	if env.HasMore {
 		t.Error("HasMore = true, want false")
 	}
-	if !env.CompactBoundary {
-		t.Error("CompactBoundary = false, want true (final page)")
+	if env.CompactBoundary {
+		t.Error("CompactBoundary = true, want false (precompact pages never set envelope flag)")
 	}
 }
 
@@ -686,7 +705,7 @@ func TestBuildHistory_PreCompactEmptyPage(t *testing.T) {
 			{ID: "in-mem", Role: types.RoleAssistant, Timestamp: time.Unix(1000, 0), Content: []types.ContentBlock{types.NewTextBlock("post")}},
 		}
 	}
-	mock.preCompactFn = func(delivered, limit int) ([]types.Message, int, bool) {
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 		if limit == 0 {
 			return nil, 0, true
 		}
@@ -717,8 +736,100 @@ func TestBuildHistory_PreCompactEmptyPage(t *testing.T) {
 	if env.HasMore {
 		t.Error("HasMore = true, want false")
 	}
-	if !env.CompactBoundary {
-		t.Error("CompactBoundary = false, want true (final page, even empty)")
+	if env.CompactBoundary {
+		t.Error("CompactBoundary = true, want false (precompact pages never set envelope flag)")
+	}
+}
+
+// TestBuildPreCompactHistory_InPageBoundaryMarker verifies that an in-page
+// compact_boundary marker (Type=system, Subtype=compact_boundary) returned by
+// preCompactMessages serializes as a historyChatMsg with role="system",
+// compactBoundary=true, NO body — and that regular messages around it remain
+// normal (compactBoundary=false, omitted via omitempty).
+func TestBuildPreCompactHistory_InPageBoundaryMarker(t *testing.T) {
+	c := newTestConnector(t)
+	mock := c.mock()
+	mock.messagesFn = func() []types.Message {
+		return []types.Message{
+			{ID: "in-mem", Role: types.RoleAssistant, Timestamp: time.Unix(1000, 0), Content: []types.ContentBlock{types.NewTextBlock("post")}},
+		}
+	}
+	makeBoundary := func(id string) *short.TranscriptMessage {
+		return &short.TranscriptMessage{
+			UUID:      id,
+			Type:      string(types.RoleSystem),
+			Subtype:   "compact_boundary",
+			Content:   "[]", // empty content block array; marker has no body
+			CreatedAt: time.Unix(950, 0),
+		}
+	}
+	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
+		if limit == 0 {
+			return nil, 0, true
+		}
+		return []*short.TranscriptMessage{
+			makeTM("pre-0", types.RoleUser),
+			makeTM("pre-1", types.RoleUser),
+			makeBoundary("boundary-A"),
+			makeTM("pre-2", types.RoleUser),
+		}, 4, true
+	}
+
+	mux := http.NewServeMux()
+	RegisterChatWS(mux, c)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, ws)
+
+	data := requestHistory(t, ws, "precompact:0", 30)
+	var env struct {
+		Type            string           `json:"type"`
+		Messages        []historyChatMsg `json:"messages"`
+		NextCursor      string           `json:"nextCursor"`
+		HasMore         bool             `json:"hasMore"`
+		CompactBoundary bool             `json:"compactBoundary"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(env.Messages) != 4 {
+		t.Fatalf("messages = %d, want 4", len(env.Messages))
+	}
+	if env.Messages[2].Role != "system" {
+		t.Errorf("messages[2].Role = %q, want \"system\" (in-page marker)", env.Messages[2].Role)
+	}
+	if !env.Messages[2].CompactBoundary {
+		t.Errorf("messages[2].CompactBoundary = false, want true (in-page marker)")
+	}
+	if env.Messages[2].ID != "boundary-A" {
+		t.Errorf("messages[2].ID = %q, want \"boundary-A\"", env.Messages[2].ID)
+	}
+	for i, m := range env.Messages {
+		if i == 2 {
+			continue
+		}
+		if m.CompactBoundary {
+			t.Errorf("messages[%d].CompactBoundary = true, want false (only markers flag)", i)
+		}
+	}
+	if env.CompactBoundary {
+		t.Error("envelope CompactBoundary = true, want false (precompact page never sets envelope flag)")
+	}
+
+	// Raw map cross-check: marker serializes compactBoundary:true, others omit it.
+	rawMsgs := mustUnmarshalMessages(t, data)
+	markerRaw, ok := rawMsgs[2]["compactBoundary"].(bool)
+	if !ok || !markerRaw {
+		t.Errorf("raw messages[2] compactBoundary = %v, want true", rawMsgs[2]["compactBoundary"])
+	}
+	for i, raw := range rawMsgs {
+		if i == 2 {
+			continue
+		}
+		if _, present := raw["compactBoundary"]; present {
+			t.Errorf("raw messages[%d] has compactBoundary key, want omitted (omitempty on false)", i)
+		}
 	}
 }
 

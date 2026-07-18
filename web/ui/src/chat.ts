@@ -100,10 +100,11 @@ function classifyToolName(name: string): {
   }
 }
 
-function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
+export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   const merged: HistoryChatMsg[] = []
   for (const h of histMsgs) {
     if (h.role === 'user' && (!h.text || h.text.trim() === '')) continue
+    if (h.role === 'system') continue  // markers intercepted in loadHistory; defense-in-depth
     const last = merged[merged.length - 1]
     if (last && last.role === 'assistant' && h.role === 'assistant') {
       last.text += h.text ?? ''
@@ -122,6 +123,7 @@ function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   }
   const result: ChatMessage[] = []
   for (const h of merged) {
+    if (h.role === 'system') continue  // narrows h.role to 'user' | 'assistant' for the assignment below
     const m: ChatMessage = {
       id: h.id || '',
       role: h.role,
@@ -319,7 +321,7 @@ function buildCompactDivider(): HTMLElement {
   left.className = 'flex-1 border-t border-hairline'
   const label = document.createElement('span')
   label.className = 'text-blue text-[10px] shrink-0'
-  label.textContent = 'compact'
+  label.textContent = 'Compact'
   const right = document.createElement('div')
   right.className = 'flex-1 border-t border-hairline'
   container.append(left, label, right)
@@ -334,9 +336,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let nextCursor = ''
   let hasMore = false
   let loadingMore = false
-  // Tracks whether the compact divider has already been rendered so a second
-  // flagged final page (e.g. after a race) doesn't insert a duplicate.
-  let compactDividerInserted = false
 
   // ── Streaming refs (cleared on query_end).
   let streamContainer: HTMLDivElement | null = null
@@ -591,7 +590,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // Dividers are not tracked in messages[] (they aren't message roots) —
     // replaceChildren after detaching tracked roots clears any stragglers.
     messagesContainer.replaceChildren()
-    compactDividerInserted = false
     nextCursor = ''
     hasMore = false
     loadingMore = false
@@ -803,61 +801,78 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   function loadHistory(msg: Extract<ServerMessage, { type: 'history' }>) {
-    const newMsgs = mapHistoryToChatMessages(msg.messages)
-
     const prevScrollHeight = scroll.scrollHeight
     const prevScrollTop = scroll.scrollTop
     const before = messagesContainer.firstChild
+    const wasEmpty = messages.length === 0
     const frag = document.createDocumentFragment()
-    for (const chat of newMsgs) {
-      const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
-      // Register running tools so replay events (sub-agent thinking, tool
-      // output, etc.) can find their parent tool via pendingToolByID.
-      for (const rt of runningTools) {
-        toolEntries.set(rt.id, {
-          handles: rt.handles,
-          startedAt: Date.now(),
-          parentID: null,
-          pendingBlock: rt.block,
-        })
-        pendingToolByID.set(rt.id, rt.block)
-        knownToolIDs.add(rt.id)
-      }
-      // Running tool means streaming is in progress — show STOP button.
-      if (runningTools.length > 0 && !streaming) {
-        streaming = true
-        inputBar.setStreaming(true)
-        streamContainer = content
-        if (streamStartedAt === 0) {
-          streamStartedAt = Date.now()
+
+    let batch: HistoryChatMsg[] = []
+    const flushBatch = () => {
+      if (batch.length === 0) return
+      const chats = mapHistoryToChatMessages(batch)
+      for (const chat of chats) {
+        const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
+        for (const rt of runningTools) {
+          toolEntries.set(rt.id, {
+            handles: rt.handles,
+            startedAt: Date.now(),
+            parentID: null,
+            pendingBlock: rt.block,
+          })
+          pendingToolByID.set(rt.id, rt.block)
+          knownToolIDs.add(rt.id)
         }
-        setupStreaming()
-        console.debug('[chat] initStreaming reason=loadHistory_runningTool streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
+        if (runningTools.length > 0 && !streaming) {
+          streaming = true
+          inputBar.setStreaming(true)
+          streamContainer = content
+          if (streamStartedAt === 0) {
+            streamStartedAt = Date.now()
+          }
+          setupStreaming()
+          console.debug('[chat] initStreaming reason=loadHistory_runningTool streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
+        }
+        const m: MessageState = {
+          id: chat.id,
+          role: chat.role,
+          blocks: chat.blocks,
+          usage: chat.usage,
+          error: chat.error,
+          status: chat.status,
+          startedAt: chat.startedAt,
+          domRoot: outer,
+          contentDiv: content,
+        }
+        messages.unshift(m)
+        frag.appendChild(outer)
       }
-      const m: MessageState = {
-        id: chat.id,
-        role: chat.role,
-        blocks: chat.blocks,
-        usage: chat.usage,
-        error: chat.error,
-        status: chat.status,
-        startedAt: chat.startedAt,
-        domRoot: outer,
-        contentDiv: content,
-      }
-      messages.unshift(m)
-      frag.appendChild(outer)
+      batch = []
     }
-    if (msg.compactBoundary && !compactDividerInserted) {
+
+    for (const h of msg.messages) {
+      if (h.compactBoundary === true) {
+        flushBatch()
+        frag.appendChild(buildCompactDivider())
+        continue
+      }
+      batch.push(h)
+    }
+    flushBatch()
+
+    // Envelope-level compactBoundary (in-memory → precompact transition).
+    // Rendered at END of frag so the divider sits between the in-memory
+    // messages and whatever the client loads next.
+    if (msg.compactBoundary === true) {
       frag.appendChild(buildCompactDivider())
-      compactDividerInserted = true
     }
+
     messagesContainer.insertBefore(frag, before)
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
     maybePrefetchHistory()
-    if (messages.length === newMsgs.length) {
+    if (wasEmpty) {
       scroll.scrollTop = scroll.scrollHeight
       isNearBottom = true
       lastScrollHeight = scroll.scrollHeight

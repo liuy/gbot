@@ -120,7 +120,8 @@ export type HistoryBlock =
 
 export type HistoryChatMsg = {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
+  compactBoundary?: boolean
   text: string
   thinking: { text: string; durationNs: number }[]
   tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; isRunning?: boolean; durationNs?: number; is_search?: boolean; is_read?: boolean; is_list?: boolean; is_lsp?: boolean }[]

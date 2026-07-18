@@ -59,7 +59,7 @@ function messagesContainer(): HTMLElement {
 function dividerElements(): HTMLElement[] {
   const all = document.querySelectorAll('.text-blue.text-\\[10px\\]')
   return Array.from(all).filter((el) => {
-    return el.textContent === 'compact'
+    return el.textContent === 'Compact'
   }) as HTMLElement[]
 }
 
@@ -162,7 +162,7 @@ describe('compact boundary divider (client)', () => {
     expect(lines.length).toBe(2)
     const label = dividerContainer.querySelector('.text-blue.text-\\[10px\\].shrink-0') as HTMLElement
     expect(label).toBeTruthy()
-    expect(label.textContent).toBe('compact')
+    expect(label.textContent).toBe('Compact')
   })
 
   it('empty page with compactBoundary still renders exactly one divider', () => {
@@ -181,22 +181,80 @@ describe('compact boundary divider (client)', () => {
     expect(container.children.length).toBe(1)
   })
 
-  it('two consecutive flagged pages render only ONE divider (guard)', () => {
+  it('in-page compactBoundary marker renders divider at marker position', () => {
     mount()
     dispatch({
       type: 'history',
-      messages: [userMsg('a', 'a')],
+      messages: [
+        userMsg('pre-1', 'a'),
+        { id: 'b1', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+        userMsg('pre-0', 'b'),
+      ],
       nextCursor: '',
       hasMore: false,
-      compactBoundary: true,
     })
+    const dividers = dividerElements()
+    expect(dividers.length).toBe(1)
+    const container = messagesContainer()
+    const dividerContainer = dividers[0].parentElement as HTMLElement
+    const children = Array.from(container.children)
+    const dividerIdx = children.indexOf(dividerContainer)
+    expect(dividerIdx).toBe(1) // between userMsg('pre-1') at 0 and userMsg('pre-0') at 2
+  })
+
+  it('multiple in-page markers each render their own divider', () => {
+    mount()
     dispatch({
       type: 'history',
-      messages: [userMsg('b', 'b')],
+      messages: [
+        userMsg('m1', 'a'),
+        { id: 'b1', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+        userMsg('m2', 'b'),
+        { id: 'b2', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+        userMsg('m3', 'c'),
+        { id: 'b3', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+        userMsg('m4', 'd'),
+      ],
       nextCursor: '',
       hasMore: false,
-      compactBoundary: true,
     })
-    expect(dividerElements().length).toBe(1)
+    expect(dividerElements().length).toBe(3)
+  })
+
+  it('in-page marker at start of page renders divider as first child', () => {
+    mount()
+    dispatch({
+      type: 'history',
+      messages: [
+        { id: 'b1', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+        userMsg('pre-0', 'a'),
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+    const dividers = dividerElements()
+    expect(dividers.length).toBe(1)
+    const container = messagesContainer()
+    const dividerContainer = dividers[0].parentElement as HTMLElement
+    expect(Array.from(container.children).indexOf(dividerContainer)).toBe(0)
+  })
+
+  it('in-page marker at end of page renders divider as last child', () => {
+    mount()
+    dispatch({
+      type: 'history',
+      messages: [
+        userMsg('pre-0', 'a'),
+        { id: 'b1', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 0 },
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+    const dividers = dividerElements()
+    expect(dividers.length).toBe(1)
+    const container = messagesContainer()
+    const dividerContainer = dividers[0].parentElement as HTMLElement
+    const children = Array.from(container.children)
+    expect(children.indexOf(dividerContainer)).toBe(children.length - 1)
   })
 })

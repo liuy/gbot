@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createChat } from './chat'
+import { createChat, mapHistoryToChatMessages } from './chat'
 import { TokenRate } from './token_rate'
 
 // jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
@@ -2156,5 +2156,29 @@ describe('chat integration', () => {
 
     stateCb!('connected')
     expect(banner.style.opacity).toBe('0')
+  })
+})
+
+describe('mapHistoryToChatMessages', () => {
+  const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+  const user = (id: string, text: string) => ({ id, role: 'user' as const, text, thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0 })
+  const marker = (id: string) => ({ id, role: 'system' as const, compactBoundary: true, text: '', thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0 })
+
+  it('filters out system-role markers between regular messages', () => {
+    const result = mapHistoryToChatMessages([
+      user('u1', 'hello'),
+      marker('b1'),
+      user('u2', 'world'),
+    ])
+    expect(result.length).toBe(2)
+    expect(result[0].id).toBe('u1')
+    expect(result[0].role).toBe('user')
+    expect(result[1].id).toBe('u2')
+    expect(result[1].role).toBe('user')
+  })
+
+  it('returns empty array when all inputs are system markers', () => {
+    const result = mapHistoryToChatMessages([marker('b1'), marker('b2')])
+    expect(result).toEqual([])
   })
 })

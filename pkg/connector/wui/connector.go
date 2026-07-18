@@ -82,7 +82,7 @@ type engineClient interface {
 	UpdateAutoCompactConfig(cfg engine.AutoCompactConfig)
 	// PreCompactMessages pages SQLite messages that live before the last
 	// compact boundary. See engineAdapter.PreCompactMessages for contract.
-	PreCompactMessages(delivered, limit int) (msgs []types.Message, total int, hasBoundary bool)
+	PreCompactMessages(delivered, limit int) (msgs []*short.TranscriptMessage, total int, hasBoundary bool)
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -155,7 +155,7 @@ func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 // compact boundary. Delegates to the standalone preCompactMessages helper so
 // the core logic can be tested without constructing a full *engine.Engine.
 // Returns nil/0/false when the engine has no store or no boundary exists.
-func (a *engineAdapter) PreCompactMessages(delivered, limit int) ([]types.Message, int, bool) {
+func (a *engineAdapter) PreCompactMessages(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 	store := a.eng.Store()
 	if store == nil {
 		return nil, 0, false
@@ -942,20 +942,27 @@ func hasTextContent(m types.Message) bool {
 }
 
 // preCompactMessages pages SQLite messages that live before the last compact
-// boundary of sessionID. delivered is a head-relative offset: 0 means start
-// from the oldest pre-compact message; N means skip the first N filtered
-// messages. limit caps the returned page size.
+// boundary of sessionID. delivered is TAIL-RELATIVE: 0 returns the limit
+// messages immediately preceding the LAST boundary (boundary-adjacent); each
+// subsequent request advances delivered by the previous page length. The
+// returned slice is ASC (chronological) so the client's prepend logic is
+// unchanged.
+//
+// Cross-epoch: rows strictly before the LAST boundary include intermediate
+// compact_boundary markers (one per prior compact). Those markers are kept
+// (Subtype=="compact_boundary") and returned in-line; other system subtypes
+// (informational, transient, error_notification, etc.) and attachments are
+// dropped.
 //
 // Returns (page, totalFiltered, hasBoundary). When limit==0 the function does
 // NOT load messages — it only probes whether a boundary exists
 // ((nil, 0, true) when one does). When no boundary exists the result is
-// (nil, 0, false).
+// (nil, 0, false). When delivered >= total the result is (nil, total, true)
+// so the client sees a final empty page with hasMore=false.
 //
-// Filtering rules (same as buildHistory): drop RoleSystem, FlagMeta,
-// FlagCompactSummary. The total counts ONLY filtered messages so head offsets
-// stay stable across conversation growth (pre-compact slice is immutable
-// post-compact).
-func preCompactMessages(store *short.Store, sessionID string, delivered, limit int) ([]types.Message, int, bool) {
+// The total counts ONLY filtered messages so tail offsets stay stable across
+// conversation growth (pre-compact slice is immutable post-compact).
+func preCompactMessages(store *short.Store, sessionID string, delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
 	_, boundarySeq, err := store.GetLastBoundary(sessionID)
 	if err != nil || boundarySeq == 0 {
 		return nil, 0, false
@@ -967,16 +974,15 @@ func preCompactMessages(store *short.Store, sessionID string, delivered, limit i
 	if err != nil {
 		return nil, 0, false
 	}
-	all, err := short.StoreMessagesToEngine(pre)
-	if err != nil {
-		return nil, 0, false
-	}
-	filtered := make([]types.Message, 0, len(all))
-	for _, m := range all {
-		if m.Role == types.RoleSystem {
+	filtered := make([]*short.TranscriptMessage, 0, len(pre))
+	for _, m := range pre {
+		if m.Type == string(types.RoleSystem) && m.Subtype != "compact_boundary" {
 			continue
 		}
-		if m.HasFlag(types.FlagMeta) || m.HasFlag(types.FlagCompactSummary) {
+		if m.Type == "attachment" {
+			continue
+		}
+		if hasFilteredFlag(m) {
 			continue
 		}
 		filtered = append(filtered, m)
@@ -984,8 +990,25 @@ func preCompactMessages(store *short.Store, sessionID string, delivered, limit i
 	if delivered >= len(filtered) {
 		return nil, len(filtered), true
 	}
-	end := min(delivered+limit, len(filtered))
-	return filtered[delivered:end], len(filtered), true
+	end := len(filtered) - delivered
+	start := max(end-limit, 0)
+	return filtered[start:end], len(filtered), true
+}
+
+// hasFilteredFlag decodes the message's metadata JSON and reports whether
+// FlagMeta or FlagCompactSummary is set. Markers (compact_boundary) carry no
+// Metadata and pass; compact summaries and meta-tagged rows are dropped.
+func hasFilteredFlag(m *short.TranscriptMessage) bool {
+	if m.Metadata == "" {
+		return false
+	}
+	var meta struct {
+		Flags types.MessageFlag `json:"flags,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(m.Metadata), &meta); err != nil {
+		return false
+	}
+	return meta.Flags&(types.FlagMeta|types.FlagCompactSummary) != 0
 }
 
 // buildHistoryChatMsg converts a single types.Message into the wire-shape
@@ -1137,13 +1160,16 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 	// When the in-memory top is reached AND the engine has a compact boundary,
 	// extend pagination into the SQLite pre-compact region. The limit=0 probe
 	// avoids loading any messages — preCompactMessages returns hasBoundary
-	// without touching the DB rows.
+	// without touching the DB rows. compactBoundary=true tells the client to
+	// render a divider at the END of the in-memory page's fragment (between
+	// the in-memory messages and whatever loads next from the precompact pages).
 	compactBoundary := false
 	if !hasMore {
 		_, _, hasBoundary := slot.engine.PreCompactMessages(0, 0)
 		if hasBoundary {
 			hasMore = true
 			nextCursor = "precompact:0"
+			compactBoundary = true
 		}
 	}
 
@@ -1159,8 +1185,11 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 
 // buildPreCompactHistory serves the SQLite-side pre-compact page. Parses the
 // delivered offset from cursor "precompact:D" (malformed → 0), pages through
-// preCompactMessages, runs each message through buildHistoryChatMsg, and marks
-// the envelope with compactBoundary=true on the FINAL page (hasMore=false).
+// preCompactMessages, runs each non-marker message through buildHistoryChatMsg,
+// and emits in-page compact_boundary markers as synthetic
+// historyChatMsg{role:"system", compactBoundary:true}. The envelope
+// compactBoundary flag is owned by buildHistory (in-memory → pre-compact
+// transition) — this function never sets it.
 func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, limit int) []byte {
 	if slot == nil {
 		return nil
@@ -1198,7 +1227,7 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 	// toolResults map so renderToolOutput can resolve them by tool_use_id.
 	toolResults := make(map[string]types.ContentBlock)
 	for _, m := range page {
-		for _, cb := range m.Content {
+		for _, cb := range short.ParseContentBlocks(m.Content) {
 			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
 				toolResults[cb.ToolUseID] = cb
 			}
@@ -1206,8 +1235,19 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 	}
 
 	out := make([]historyChatMsg, 0, len(page))
-	for _, m := range page {
-		out = append(out, buildHistoryChatMsg(m, tools, toolResults))
+	for _, tm := range page {
+		if tm.Type == string(types.RoleSystem) && tm.Subtype == "compact_boundary" {
+			out = append(out, historyChatMsg{
+				ID:              tm.UUID,
+				Role:            string(types.RoleSystem),
+				StartedAt:       tm.CreatedAt.UnixMilli(),
+				Status:          "done",
+				CompactBoundary: true,
+			})
+			continue
+		}
+		em := short.StoreMessageToEngine(tm)
+		out = append(out, buildHistoryChatMsg(em, tools, toolResults))
 	}
 
 	end := delivered + len(out)
@@ -1223,7 +1263,7 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 		NextCursor      string           `json:"nextCursor"`
 		HasMore         bool             `json:"hasMore"`
 		CompactBoundary bool             `json:"compactBoundary,omitempty"`
-	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore, CompactBoundary: !hasMore})
+	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore})
 	return payload
 }
 
@@ -1373,16 +1413,17 @@ func extractPersistedPreview(s string) string {
 
 // historyChatMsg is the wire shape for a single history message.
 type historyChatMsg struct {
-	ID        string                 `json:"id"`
-	Role      string                 `json:"role"`
-	Text      string                 `json:"text"`
-	Thinking  []historyThinkingEntry `json:"thinking"`
-	Tools     []historyToolEntry     `json:"tools"`
-	Blocks    []historyBlock         `json:"blocks,omitempty"`
-	Usage     historyUsage           `json:"usage"`
-	Error     string                 `json:"error"`
-	Status    string                 `json:"status"`
-	StartedAt int64                  `json:"startedAt"`
+	ID              string                 `json:"id"`
+	Role            string                 `json:"role"`
+	CompactBoundary bool                   `json:"compactBoundary,omitempty"`
+	Text            string                 `json:"text"`
+	Thinking        []historyThinkingEntry `json:"thinking"`
+	Tools           []historyToolEntry     `json:"tools"`
+	Blocks          []historyBlock         `json:"blocks,omitempty"`
+	Usage           historyUsage           `json:"usage"`
+	Error           string                 `json:"error"`
+	Status          string                 `json:"status"`
+	StartedAt       int64                  `json:"startedAt"`
 }
 
 // historyBlock is one entry in the ordered Blocks array. It mirrors a single
