@@ -2282,6 +2282,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							Text: event.Delta.Thinking,
 						},
 					})
+				case "signature_delta":
+					if event.Index < len(contentBlocks) {
+						cb := &contentBlocks[event.Index]
+						if cb.Type == types.ContentTypeThinking {
+							cb.Signature = event.Delta.Signature
+						}
+					}
 				}
 			}
 

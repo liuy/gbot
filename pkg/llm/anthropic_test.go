@@ -1983,6 +1983,45 @@ func TestParseEvent_ThinkingDelta(t *testing.T) {
 	}
 }
 
+func TestParseEvent_SignatureDelta(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	data := `{"index":0,"delta":{"type":"signature_delta","signature":"EqMAC..."}}`
+	event := p.ParseEvent("content_block_delta", data, nil)
+
+	if event.Delta == nil {
+		t.Fatal("expected non-nil Delta")
+	}
+	if event.Delta.Type != "signature_delta" {
+		t.Errorf("expected type 'signature_delta', got %s", event.Delta.Type)
+	}
+	if event.Delta.Signature != "EqMAC..." {
+		t.Errorf("expected signature 'EqMAC...', got %s", event.Delta.Signature)
+	}
+	if event.Index != 0 {
+		t.Errorf("expected Index 0, got %d", event.Index)
+	}
+}
+
+func TestParseEvent_SignatureDelta_EmptySignature(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	data := `{"index":0,"delta":{"type":"signature_delta","signature":""}}`
+	event := p.ParseEvent("content_block_delta", data, nil)
+
+	if event.Delta == nil {
+		t.Fatal("expected non-nil Delta")
+	}
+	if event.Delta.Type != "signature_delta" {
+		t.Errorf("expected type 'signature_delta', got %s", event.Delta.Type)
+	}
+	if event.Delta.Signature != "" {
+		t.Errorf("expected empty signature, got %s", event.Delta.Signature)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // setHeaders verification
 // ---------------------------------------------------------------------------
@@ -2770,5 +2809,88 @@ func TestRequestToToolMaps_Empty(t *testing.T) {
 	result := llm.RequestToToolMaps(req)
 	if result != nil {
 		t.Errorf("expected nil for empty tools, got %v", result)
+	}
+}
+
+func TestAnthropicRequest_ThinkingSignatureSerialized(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		Model:     "claude-opus-4-7",
+		MaxTokens: 2048,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{
+						Type:      types.ContentTypeThinking,
+						Thinking:  "reasoning blob",
+						Signature: "sig-xyz",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	raw := string(data)
+	if !strings.Contains(raw, `"signature":"sig-xyz"`) {
+		t.Errorf("JSON missing signature field, got: %s", raw)
+	}
+	if !strings.Contains(raw, `"thinking":"reasoning blob"`) {
+		t.Errorf("JSON missing thinking field, got: %s", raw)
+	}
+
+	// Verify the field is at the content-block level (not escaped elsewhere).
+	var parsed struct {
+		Messages []struct {
+			Content []map[string]json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(parsed.Messages) != 1 || len(parsed.Messages[0].Content) != 1 {
+		t.Fatalf("expected 1 message with 1 block, got %+v", parsed)
+	}
+	block := parsed.Messages[0].Content[0]
+	if _, ok := block["signature"]; !ok {
+		t.Errorf("signature key missing from block: %+v", block)
+	}
+	if _, ok := block["thinking"]; !ok {
+		t.Errorf("thinking key missing from block: %+v", block)
+	}
+}
+
+func TestAnthropicRequest_EmptySignatureOmitted(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		Model:     "claude-opus-4-7",
+		MaxTokens: 2048,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{
+						Type:      types.ContentTypeThinking,
+						Thinking:  "reasoning blob",
+						Signature: "",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	raw := string(data)
+	if strings.Contains(raw, "signature") {
+		t.Errorf("omitempty should drop empty signature, got: %s", raw)
 	}
 }

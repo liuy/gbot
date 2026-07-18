@@ -152,6 +152,12 @@ type StreamDelta struct {
 	// thinking_delta
 	Thinking string `json:"thinking,omitempty"`
 
+	// Anthropic streams signature_delta once per thinking block at its end;
+	// the engine applies it to the matching block. Unlike thinking_delta
+	// (incremental text that needs buffering until content_block_stop),
+	// signature_delta is single-shot — apply directly to the block.
+	Signature string `json:"signature,omitempty"`
+
 	// Stop reason (in message_delta event)
 	StopReason string `json:"stop_reason,omitempty"`
 }

@@ -3884,6 +3884,108 @@ func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*sh
 	return nil, ctx.Err()
 }
 
+func TestEngine_ThinkingSignature_Persisted(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx := t.Context()
+
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: "Let me analyze"}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "signature_delta", Signature: "sig-abc"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("QuerySync error: %v", result.Error)
+	}
+
+	var assistant *types.Message
+	for i := range result.Messages {
+		if result.Messages[i].Role == types.RoleAssistant {
+			assistant = &result.Messages[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant message in result")
+	}
+	if len(assistant.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(assistant.Content))
+	}
+	cb := assistant.Content[0]
+	if cb.Type != types.ContentTypeThinking {
+		t.Fatalf("block type = %q, want thinking", cb.Type)
+	}
+	if cb.Thinking != "Let me analyze" {
+		t.Errorf("Thinking = %q, want %q", cb.Thinking, "Let me analyze")
+	}
+	if cb.Signature != "sig-abc" {
+		t.Errorf("Signature = %q, want %q", cb.Signature, "sig-abc")
+	}
+}
+
+func TestEngine_SignatureDelta_OutOfRangeIndex(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx := t.Context()
+
+	// signature_delta arrives for index 0 but no content_block_start has
+	// been emitted yet — must not panic, stream continues normally.
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "signature_delta", Signature: "orphan"}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "ok"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("QuerySync error: %v", result.Error)
+	}
+	var assistant *types.Message
+	for i := range result.Messages {
+		if result.Messages[i].Role == types.RoleAssistant {
+			assistant = &result.Messages[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant message in result")
+	}
+	if len(assistant.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(assistant.Content))
+	}
+	if assistant.Content[0].Signature != "" {
+		t.Errorf("orphan signature_delta must not apply; got Signature = %q", assistant.Content[0].Signature)
+	}
+}
+
 // ---------------------------------------------------------------------------
 //  appendInlineInterruptMessage — verify [Request interrupted by user]
 // appears in the last assistant message for all 3 abort paths, and does NOT

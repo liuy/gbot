@@ -91,6 +91,11 @@ type openaiMessage struct {
 	Content    any              `json:"content,omitempty"` // string, nil, []any (vision content array), or omitted
 	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent is a GLM-style top-level assistant-message field
+	// (sibling of content/tool_calls, not inside the content array). GLM
+	// Preserved Thinking requires verbatim replay of the prior turn's
+	// reasoning; see https://docs.z.ai/guides/capabilities/thinking-mode.
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 // openaiTextContent is a text entry inside a vision content array.
@@ -707,6 +712,7 @@ func translateMessages(messages []types.Message) []openaiMessage {
 	for _, msg := range messages {
 		var assistantToolCalls []openaiToolCall
 		var assistantText strings.Builder
+		var assistantReasoning strings.Builder
 		var toolResults []openaiMessage
 		// For user messages: collect text and image content. If the message has
 		// any image blocks, OpenAI vision requires ONE message whose content is
@@ -752,13 +758,26 @@ func translateMessages(messages []types.Message) []openaiMessage {
 					Content:    content,
 				})
 
-			case types.ContentTypeThinking, types.ContentTypeRedacted:
-				// Skip — OpenAI doesn't support thinking blocks
+			case types.ContentTypeThinking:
+				// GLM Preserved Thinking requires the prior turn's reasoning
+				// to be replayed in a single top-level reasoning_content field.
+				// Multiple thinking blocks within one assistant turn (an
+				// Anthropic artifact) are concatenated with no separator.
+				assistantReasoning.WriteString(cb.Thinking)
+
+			case types.ContentTypeRedacted:
+				// Anthropic-only — OpenAI wire format has no equivalent of
+				// server-redacted reasoning. The signature-bound encrypted
+				// data cannot be reconstructed, so dropping is the only
+				// option. Emit a debug log so silent drops are traceable.
+				slog.Debug("openai: dropping redacted_thinking block — no OpenAI wire representation",
+					"data_len", len(cb.Data))
 			}
 		}
 
-		// Build assistant message if it has content or tool_calls
-		if msg.Role == types.RoleAssistant && (assistantText.String() != "" || len(assistantToolCalls) > 0) {
+		// Build assistant message if it has content, tool_calls, or reasoning.
+		hasReasoning := assistantReasoning.Len() > 0
+		if msg.Role == types.RoleAssistant && (assistantText.String() != "" || len(assistantToolCalls) > 0 || hasReasoning) {
 			om := openaiMessage{Role: "assistant"}
 			if assistantText.String() != "" {
 				om.Content = assistantText.String()
@@ -767,6 +786,10 @@ func translateMessages(messages []types.Message) []openaiMessage {
 			}
 			if len(assistantToolCalls) > 0 {
 				om.ToolCalls = assistantToolCalls
+			}
+			if hasReasoning {
+				r := assistantReasoning.String()
+				om.ReasoningContent = &r
 			}
 			result = append(result, om)
 		}

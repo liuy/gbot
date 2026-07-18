@@ -164,6 +164,11 @@ type ContentBlock struct {
 	// Thinking content (type == "thinking")
 	// Anthropic API requires "thinking" field (not "text") for thinking blocks.
 	Thinking string `json:"thinking,omitempty"`
+	// Signature is the Anthropic-issued opaque signature for thinking blocks.
+	// Must be replayed verbatim; the API rejects modified signatures.
+	// TS parity: claude.ts initializes signature: '' at content_block_start;
+	// Go's zero value for string is automatic, so we rely on omitempty on send.
+	Signature string `json:"signature,omitempty"`
 	// ThinkingDurationNs records wall-clock thinking time in nanoseconds.
 	// Set on thinking_end; not part of Anthropic API schema, not persisted.
 	ThinkingDurationNs int64 `json:"-"`

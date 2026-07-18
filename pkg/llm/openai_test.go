@@ -224,7 +224,7 @@ func TestTranslateMessages_ToolResult(t *testing.T) {
 	}
 }
 
-func TestTranslateMessages_ThinkingIgnored(t *testing.T) {
+func TestTranslateMessages_ThinkingBecomesReasoningContent(t *testing.T) {
 	t.Parallel()
 
 	msgs := []types.Message{
@@ -232,8 +232,8 @@ func TestTranslateMessages_ThinkingIgnored(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				{
-					Type: types.ContentTypeThinking,
-					Text: "internal reasoning here",
+					Type:     types.ContentTypeThinking,
+					Thinking: "internal reasoning here",
 				},
 			},
 		},
@@ -241,16 +241,29 @@ func TestTranslateMessages_ThinkingIgnored(t *testing.T) {
 
 	result := translateMessages(msgs)
 
-	// Thinking-only assistant produces no output because assistantText is ""
-	// and there are no tool_calls, so the assistant message is not emitted.
-	if len(result) != 0 {
-		t.Fatalf("len(result) = %d, want 0 (thinking blocks should be skipped)", len(result))
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1 (thinking block must emit assistant message)", len(result))
+	}
+	if result[0].Role != "assistant" {
+		t.Errorf("role = %q, want %q", result[0].Role, "assistant")
+	}
+	if result[0].Content != nil {
+		t.Errorf("Content = %v, want nil (no text content)", result[0].Content)
+	}
+	if result[0].ReasoningContent == nil {
+		t.Fatal("ReasoningContent = nil, want non-nil pointer")
+	}
+	if *result[0].ReasoningContent != "internal reasoning here" {
+		t.Errorf("*ReasoningContent = %q, want %q", *result[0].ReasoningContent, "internal reasoning here")
 	}
 }
 
-func TestTranslateMessages_RedactedIgnored(t *testing.T) {
+func TestTranslateMessages_RedactedDropped(t *testing.T) {
 	t.Parallel()
 
+	// Anthropic-only — OpenAI wire format has no equivalent of server-redacted
+	// reasoning. Dropping is the only option; the signature-bound data cannot
+	// be reconstructed.
 	msgs := []types.Message{
 		{
 			Role: types.RoleAssistant,
@@ -266,7 +279,176 @@ func TestTranslateMessages_RedactedIgnored(t *testing.T) {
 	result := translateMessages(msgs)
 
 	if len(result) != 0 {
-		t.Fatalf("len(result) = %d, want 0 (redacted blocks should be skipped)", len(result))
+		t.Fatalf("len(result) = %d, want 0 (redacted blocks must be dropped)", len(result))
+	}
+}
+
+func TestTranslateMessages_AssistantWithThinkingAndToolUse(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "plan"},
+				types.NewTextBlock("ok"),
+				{
+					Type:  types.ContentTypeToolUse,
+					ID:    "call_xyz",
+					Name:  "search",
+					Input: json.RawMessage(`{"q":"weather"}`),
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1 (single assistant turn → one message)", len(result))
+	}
+	if result[0].Role != "assistant" {
+		t.Errorf("role = %q, want %q", result[0].Role, "assistant")
+	}
+	if result[0].Content != "ok" {
+		t.Errorf("Content = %v, want %q", result[0].Content, "ok")
+	}
+	if len(result[0].ToolCalls) != 1 {
+		t.Fatalf("len(tool_calls) = %d, want 1", len(result[0].ToolCalls))
+	}
+	if result[0].ToolCalls[0].ID != "call_xyz" {
+		t.Errorf("tool_call ID = %q, want %q", result[0].ToolCalls[0].ID, "call_xyz")
+	}
+	if result[0].ReasoningContent == nil {
+		t.Fatal("ReasoningContent = nil, want non-nil pointer")
+	}
+	if *result[0].ReasoningContent != "plan" {
+		t.Errorf("*ReasoningContent = %q, want %q", *result[0].ReasoningContent, "plan")
+	}
+}
+
+func TestTranslateMessages_ThinkingOnlyAssistantEmitted(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "thought"},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].Content != nil {
+		t.Errorf("Content = %v, want nil", result[0].Content)
+	}
+	if result[0].ReasoningContent == nil {
+		t.Fatal("ReasoningContent = nil, want non-nil pointer")
+	}
+	if *result[0].ReasoningContent != "thought" {
+		t.Errorf("*ReasoningContent = %q, want %q", *result[0].ReasoningContent, "thought")
+	}
+}
+
+func TestTranslateMessages_MultipleThinkingBlocksConcatenated(t *testing.T) {
+	t.Parallel()
+
+	// Scenario: an assistant turn previously produced by the Anthropic provider
+	// (which may emit multiple thinking blocks per turn) is replayed against an
+	// OpenAI/GLM endpoint in a subsequent turn. GLM's native stream parser only
+	// produces one thinking block per turn, so this case does not arise in
+	// single-provider sessions; concatenation preserves content for cross-
+	// provider replays. GLM requires verbatim replay of the original reasoning
+	// sequence, so we join with empty string (no separator).
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "abc"},
+				{Type: types.ContentTypeThinking, Thinking: "def"},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].ReasoningContent == nil {
+		t.Fatal("ReasoningContent = nil, want non-nil pointer")
+	}
+	if *result[0].ReasoningContent != "abcdef" {
+		t.Errorf("*ReasoningContent = %q, want %q (no separator)", *result[0].ReasoningContent, "abcdef")
+	}
+}
+
+func TestTranslateMessages_EmptyThinkingOmitsReasoning(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: ""},
+				types.NewTextBlock("visible"),
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].ReasoningContent != nil {
+		t.Errorf("ReasoningContent = %v, want nil (empty thinking must omit)", result[0].ReasoningContent)
+	}
+	if result[0].Content != "visible" {
+		t.Errorf("Content = %v, want %q", result[0].Content, "visible")
+	}
+}
+
+func TestTranslateMessages_ThinkingWithToolUseMidSequence(t *testing.T) {
+	t.Parallel()
+
+	// [thinking("a"), tool_use, thinking("b")] — both thinking blocks
+	// contribute to the same reasoning_content ("ab") because they belong
+	// to one assistant turn.
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "a"},
+				{
+					Type:  types.ContentTypeToolUse,
+					ID:    "call_1",
+					Name:  "search",
+					Input: json.RawMessage(`{}`),
+				},
+				{Type: types.ContentTypeThinking, Thinking: "b"},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].ReasoningContent == nil {
+		t.Fatal("ReasoningContent = nil, want non-nil pointer")
+	}
+	if *result[0].ReasoningContent != "ab" {
+		t.Errorf("*ReasoningContent = %q, want %q", *result[0].ReasoningContent, "ab")
+	}
+	if len(result[0].ToolCalls) != 1 {
+		t.Fatalf("len(tool_calls) = %d, want 1", len(result[0].ToolCalls))
 	}
 }
 
@@ -1011,6 +1193,70 @@ func TestOpenAITranslateRequest_NoSystemPrompt(t *testing.T) {
 	if parsed.Messages[0].Role != "user" {
 		t.Errorf("messages[0].Role = %q, want %q", parsed.Messages[0].Role, "user")
 	}
+}
+
+// TestOpenAITranslateRequest_ThinkingAssistant_WireFormat verifies the
+// json tag on openaiMessage.ReasoningContent is exactly "reasoning_content"
+// by inspecting the marshaled request body — struct field-level tests
+// (TestTranslateMessages_ThinkingBecomesReasoningContent) cannot catch
+// a tag typo (e.g. "reasoning" instead of "reasoning_content").
+func TestOpenAITranslateRequest_ThinkingAssistant_WireFormat(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+
+	req := &Request{
+		Model:     "glm-5",
+		MaxTokens: 256,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeThinking, Thinking: "Let me analyze this."},
+					{Type: types.ContentTypeText, Text: "Answer."},
+				},
+			},
+			{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock("ok")},
+			},
+		},
+	}
+
+	body, err := p.translateRequest(req, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+
+	var parsed struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if len(parsed.Messages) < 1 {
+		t.Fatalf("no messages in request body")
+	}
+
+	reasoningRaw, ok := parsed.Messages[0]["reasoning_content"]
+	if !ok {
+		t.Fatalf("assistant message missing 'reasoning_content' key; got keys: %v", keys(parsed.Messages[0]))
+	}
+	var reasoning string
+	if err := json.Unmarshal(reasoningRaw, &reasoning); err != nil {
+		t.Fatalf("unmarshal reasoning_content: %v", err)
+	}
+	if reasoning != "Let me analyze this." {
+		t.Errorf("reasoning_content = %q, want %q", reasoning, "Let me analyze this.")
+	}
+}
+
+func keys(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
