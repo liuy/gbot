@@ -95,7 +95,11 @@ describe('committed message layout (via loadHistory)', () => {
     const messagesContainer = document.getElementsByClassName(
       'space-y-7',
     )[0] as HTMLElement
-    const outer = messagesContainer.firstElementChild as HTMLElement
+    // Skip the time-divider anchor (also a direct child) — its class signature
+    // differs from a message outer.
+    const outer = Array.from(messagesContainer.children).find((c) =>
+      (c as HTMLElement).className.includes('px-1.5'),
+    ) as HTMLElement
     expect(outer.className).toContain('px-1.5')
     const grid = outer.firstElementChild as HTMLElement
     expect(grid.className).toContain('grid-cols-[1.25rem_1fr_1.25rem]')
@@ -119,7 +123,9 @@ describe('committed message layout (via loadHistory)', () => {
     const messagesContainer = document.getElementsByClassName(
       'space-y-7',
     )[0] as HTMLElement
-    const outer = messagesContainer.firstElementChild as HTMLElement
+    const outer = Array.from(messagesContainer.children).find((c) =>
+      (c as HTMLElement).className.includes('px-1.5'),
+    ) as HTMLElement
     const grid = outer.firstElementChild as HTMLElement
     const rightCol = grid.children[2]
     expect(rightCol.querySelector('svg')).toBeTruthy()

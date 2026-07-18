@@ -82,15 +82,15 @@ describe('compact boundary divider (client)', () => {
     const dividers = dividerElements()
     expect(dividers.length).toBe(1)
     const divider = dividers[0]
-    // Divider must sit AFTER every prepended message DOM root. The container's
-    // first three children are the three pre-compact messages; the divider is
-    // the fourth.
+    // Container layout: [timeDiv(anchor), m1, m2, m3, compactDiv]. The anchor
+    // fires on the first message (prev=null); the Compact divider sits at the
+    // end as the fifth child (index 4).
     const container = messagesContainer()
     const dividerContainer = divider.parentElement as HTMLElement
     expect(dividerContainer.parentElement).toBe(container)
     const containerChildren = Array.from(container.children)
     const dividerIdx = containerChildren.indexOf(dividerContainer)
-    expect(dividerIdx).toBe(3)
+    expect(dividerIdx).toBe(4)
   })
 
   it('intermediate page without compactBoundary emits NO divider', () => {
@@ -152,9 +152,11 @@ describe('compact boundary divider (client)', () => {
       compactBoundary: true,
     })
     const container = messagesContainer()
+    // Time dividers share buildCompactDivider's class signature, so filter by
+    // label textContent to pick the Compact divider specifically.
     const dividerContainer = Array.from(container.children).find((c) => {
       const el = c as HTMLElement
-      return el.className.includes('flex items-center gap-2 my-4 px-4')
+      return el.querySelector('.text-blue')?.textContent === 'Compact'
     }) as HTMLElement
     expect(dividerContainer).toBeTruthy()
     expect(dividerContainer.className).toBe('flex items-center gap-2 my-4 px-4')
@@ -199,7 +201,8 @@ describe('compact boundary divider (client)', () => {
     const dividerContainer = dividers[0].parentElement as HTMLElement
     const children = Array.from(container.children)
     const dividerIdx = children.indexOf(dividerContainer)
-    expect(dividerIdx).toBe(1) // between userMsg('pre-1') at 0 and userMsg('pre-0') at 2
+    // Container layout: [timeDiv(anchor), userMsg('pre-1'), compactDiv, userMsg('pre-0')].
+    expect(dividerIdx).toBe(2)
   })
 
   it('multiple in-page markers each render their own divider', () => {

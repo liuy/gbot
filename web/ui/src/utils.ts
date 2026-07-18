@@ -138,3 +138,67 @@ export function summarize(tools: { name: string; isList?: boolean }[]): string {
 	}
 	return parts.join(', ')
 }
+
+// ── Time divider label (iMessage-style) ────────────────────────
+
+// Truncates a timestamp to local-calendar-day midnight. Using
+// new Date(y, m, d) rather than UTC math so DST transitions don't
+// shift the boundary (the local calendar day is what users perceive).
+function localDay(ts: number): Date {
+	const d = new Date(ts)
+	return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+// Whole-day difference between two timestamps, accounting for DST drift
+// via Math.round on the midnight-aligned diff.
+function dayDiff(a: number, b: number): number {
+	return Math.round((localDay(b).getTime() - localDay(a).getTime()) / 86400000)
+}
+
+// Picks a date label for `curr` based on its distance from today:
+// 0=Today, 1=Yesterday, 2..6=weekday, 7+=month-day. Latin-script labels
+// are capitalized; CJK labels are returned as-is (capitalize would corrupt them).
+function dateLabel(curr: number, locale: string): string {
+	const diff = dayDiff(curr, Date.now())
+	if (diff <= 1) {
+		const raw = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-diff, 'day')
+		return raw.charAt(0).toUpperCase() + raw.slice(1)
+	}
+	if (diff <= 6) {
+		return new Intl.DateTimeFormat(locale, { weekday: 'long' }).format(curr)
+	}
+	return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(curr)
+}
+
+function timeLabel(curr: number, locale: string): string {
+	return new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(curr)
+}
+
+// Date label + time, joined by a space. Used for anchor (first message)
+// and cross-day dividers so the user sees the actual time of day, not
+// just "Today" / "Yesterday" without context.
+function dateTimeLabel(curr: number, locale: string): string {
+	return dateLabel(curr, locale) + ' ' + timeLabel(curr, locale)
+}
+
+// Returns the label for an iMessage-style time divider between prev and curr,
+// or null when no divider should be shown.
+//
+// - prev=null → date+time label (first-message-of-session anchor).
+// - Same-day gap >= 15 min → time-only label for curr.
+// - Cross-day (>= 1 midnight) → date+time label for curr.
+// - Otherwise → null (no divider).
+//
+// Locale follows navigator.language (iMessage behavior); tests use regex
+// tolerance because zh-CN time strings vary across Node ICU builds
+// ("14:30" vs "下午2:30") and forcing hour12 would lose locale fidelity.
+export function timeDividerLabel(
+	prev: number | null,
+	curr: number,
+	locale: string = typeof navigator !== 'undefined' ? navigator.language : 'en-US',
+): string | null {
+	if (prev === null) return dateTimeLabel(curr, locale)
+	if (dayDiff(prev, curr) >= 1) return dateTimeLabel(curr, locale)
+	if (curr - prev >= 15 * 60 * 1000) return timeLabel(curr, locale)
+	return null
+}

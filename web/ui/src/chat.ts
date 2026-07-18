@@ -4,7 +4,7 @@ import {
   type ChatMessage,
   newAssistantMessage,
 } from './model'
-import { isCollapsibleToolName } from './utils'
+import { isCollapsibleToolName, timeDividerLabel } from './utils'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 import {
   type ToolDomHandles,
@@ -67,6 +67,12 @@ interface MessageState {
   error: string
   status: 'streaming' | 'done'
   startedAt: number
+  // Client-only: when the last activity on this message happened. For user
+  // messages this equals startedAt (send time). For assistant messages it
+  // starts at initStreaming and is updated to Date.now() on each completion
+  // (query_end / appendError first-branch) so the next user-send gap is
+  // measured from when the assistant finished, not when it started.
+  lastActivityAt: number
   domRoot: HTMLElement
   contentDiv: HTMLDivElement
 }
@@ -325,6 +331,20 @@ function buildCompactDivider(): HTMLElement {
   const right = document.createElement('div')
   right.className = 'flex-1 border-t border-hairline'
   container.append(left, label, right)
+  return container
+}
+
+// buildTimeDivider renders a bare centered time label — no hairlines — so
+// it stays visually quieter than buildCompactDivider (which marks a major
+// session break). The label text is the sole content; tests distinguish
+// time dividers from compact dividers by textContent ("Compact" vs not).
+function buildTimeDivider(label: string): HTMLElement {
+  const container = document.createElement('div')
+  container.className = 'flex justify-center items-center my-4 px-4'
+  const labelEl = document.createElement('span')
+  labelEl.className = 'text-blue text-[10px] shrink-0'
+  labelEl.textContent = label
+  container.appendChild(labelEl)
   return container
 }
 
@@ -762,11 +782,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }, 200)
   }
 
+  function maybeInsertTimeDividerBefore(): void {
+    const prev = messages[messages.length - 1] ?? null
+    const label = timeDividerLabel(prev ? prev.lastActivityAt : null, Date.now())
+    if (label) messagesContainer.appendChild(buildTimeDivider(label))
+  }
+
   function appendError(text: string) {
     const last = messages[messages.length - 1]
     if (last && last.role === 'assistant' && last.status === 'streaming') {
       last.error = text
       last.status = 'done'
+      last.lastActivityAt = Date.now()
       const err = document.createElement('div')
       err.className =
         'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
@@ -787,9 +814,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         error: text,
         status: 'done',
         startedAt: Date.now(),
+        lastActivityAt: Date.now(),
         domRoot: outer,
         contentDiv: content,
       }
+      maybeInsertTimeDividerBefore()
       messages.push(m)
       messagesContainer.appendChild(outer)
     }
@@ -805,7 +834,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const prevScrollTop = scroll.scrollTop
     const before = messagesContainer.firstChild
     const wasEmpty = messages.length === 0
+    // Capture before any unshift so the page→existing boundary check can
+    // compare the last prepended message against what was already on screen.
+    const preExistingOldest = messages[0] ?? null
     const frag = document.createDocumentFragment()
+    // Persists across flushBatch calls so compact markers don't reset the
+    // comparison cursor — the next real message after a marker still
+    // compares against the last real message before it.
+    let lastPushed: MessageState | null = null
 
     let batch: HistoryChatMsg[] = []
     const flushBatch = () => {
@@ -833,6 +869,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           setupStreaming()
           console.debug('[chat] initStreaming reason=loadHistory_runningTool streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
         }
+        const prev = lastPushed ?? preExistingOldest ?? null
+        const label = timeDividerLabel(prev ? prev.lastActivityAt : null, chat.startedAt)
+        if (label) frag.appendChild(buildTimeDivider(label))
         const m: MessageState = {
           id: chat.id,
           role: chat.role,
@@ -841,11 +880,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           error: chat.error,
           status: chat.status,
           startedAt: chat.startedAt,
+          lastActivityAt: chat.startedAt,
           domRoot: outer,
           contentDiv: content,
         }
         messages.unshift(m)
         frag.appendChild(outer)
+        lastPushed = m
       }
       batch = []
     }
@@ -865,6 +906,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // messages and whatever the client loads next.
     if (msg.compactBoundary === true) {
       frag.appendChild(buildCompactDivider())
+    }
+
+    // Page→existing boundary: insert a time divider between the oldest
+    // prepended message and whatever was already rendered. Suppressed when
+    // the envelope carries compactBoundary — the compact divider already
+    // serves as the visual separator, and stacking both looks noisy.
+    if (lastPushed !== null && preExistingOldest && msg.compactBoundary !== true) {
+      const prevAt: number = (lastPushed as MessageState).lastActivityAt
+      const label = timeDividerLabel(prevAt, preExistingOldest.startedAt)
+      if (label) frag.appendChild(buildTimeDivider(label))
     }
 
     messagesContainer.insertBefore(frag, before)
@@ -889,9 +940,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const { outer, content } = buildShell('assistant')
     const m: MessageState = {
       ...newAssistantMessage(''),
+      lastActivityAt: Date.now(),
       domRoot: outer,
       contentDiv: content,
     }
+    maybeInsertTimeDividerBefore()
     messages.push(m)
     messagesContainer.appendChild(outer)
     streamContainer = content
@@ -1023,6 +1076,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             if (last && last.role === 'assistant') {
               last.blocks = pendingBlocks.slice()
               last.status = 'done'
+              last.lastActivityAt = Date.now()
             }
           } else {
             // REWIND path: no content. Remove the empty assistant shell +
@@ -1049,6 +1103,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           if (last && last.role === 'assistant') {
             last.blocks = pendingBlocks.slice()
             last.status = 'done'
+            last.lastActivityAt = Date.now()
           }
         }
 
@@ -1405,9 +1460,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             error: '',
             status: 'done',
             startedAt: Date.now(),
+            lastActivityAt: Date.now(),
             domRoot: outer,
             contentDiv: content,
           }
+          maybeInsertTimeDividerBefore()
           messages.push(m)
           messagesContainer.appendChild(outer)
         }
@@ -1442,9 +1499,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       error: '',
       status: 'done',
       startedAt: Date.now(),
+      lastActivityAt: Date.now(),
       domRoot: outer,
       contentDiv: content,
     }
+    maybeInsertTimeDividerBefore()
     messages.push(m)
     messagesContainer.appendChild(outer)
     conn.send({ type: 'message', text })
