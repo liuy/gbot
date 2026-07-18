@@ -220,6 +220,69 @@ func TestHandle_ToolEndNonTask_NoPush(t *testing.T) {
 	}
 }
 
+// TestHandle_ToolEndTask_DeletesAll_PushesEmptyList verifies that when a Task
+// tool call deletes the LAST task, the client receives an empty task_list
+// payload (not silence). Returning nil here would leave stale tasks visible
+// on the panel until the next reconnect.
+func TestHandle_ToolEndTask_DeletesAll_PushesEmptyList(t *testing.T) {
+	tl := newRealTaskList(t)
+	id1, _ := tl.CreateTask("Solo", "desc", "", nil)
+
+	c := newTestConnector(t)
+	c.mock().taskListFn = func() *task.List { return tl }
+	ws := dialAndStore(t, c)
+
+	// First Task call creates the task — panel shows 1 task.
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_create", Name: "Task"},
+	})
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tu_create"},
+	})
+
+	// Drain: tool_start + tool_end + task_list.
+	for range 3 {
+		_ = readWSMessage(t, ws)
+	}
+
+	// Delete the only task on disk before the second Task tool_end.
+	if _, err := tl.DeleteTask(id1); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	// Second Task call (would delete, but disk is already empty) —
+	// the connector must still push an empty task_list so the client
+	// clears its panel.
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_delete", Name: "Task"},
+	})
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tu_delete"},
+	})
+
+	toolEndSeen := false
+	emptyTaskListSeen := false
+	for range 3 {
+		msg := readWSMessage(t, ws)
+		if strings.Contains(string(msg), "tool_end") {
+			toolEndSeen = true
+		}
+		if strings.Contains(string(msg), `"task_list"`) && strings.Contains(string(msg), `"tasks":[]`) {
+			emptyTaskListSeen = true
+		}
+	}
+	if !toolEndSeen {
+		t.Error("delete tool_end frame not received")
+	}
+	if !emptyTaskListSeen {
+		t.Error("after deleting all tasks, expected empty task_list push (client needs to clear panel); got silence")
+	}
+}
+
 // TestTakeover_PushesTaskList verifies that on reconnect (WS takeover), the
 // client receives a task_list frame inside the metadata composite frame.
 // This is the path that populates the panel on page refresh.
@@ -276,17 +339,18 @@ func TestTakeover_NoTaskListWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestHandle_SubAgentTaskNotTracked verifies that a Task tool call by a
-// sub-agent (Agent != nil) does NOT trigger a task_list push — the panel
-// reflects only the main engine's task list.
-func TestHandle_SubAgentTaskNotTracked(t *testing.T) {
+// TestHandle_SubAgentTaskTracked verifies that a Task tool call by a
+// sub-agent (Agent != nil) DOES trigger a task_list push — the sub-agent
+// shares the parent's task list (RunAgent passes e.taskList to CreateTools),
+// so any mutation must propagate to connected clients in real time.
+func TestHandle_SubAgentTaskTracked(t *testing.T) {
 	tl := newRealTaskList(t)
 	_, _ = tl.CreateTask("Main task", "desc", "", nil)
 
 	c := newTestConnector(t)
 	c.mock().taskListFn = func() *task.List { return tl }
 	ws := dialAndStore(t, c)
-	// dialAndStore now drains all takeover frames including task_list.
+	// dialAndStore drains all takeover frames including task_list.
 
 	agent := &types.AgentMeta{ParentToolUseID: "parent_tu", AgentType: "Executor"}
 	c.Handle(types.QueryEvent{
@@ -300,13 +364,23 @@ func TestHandle_SubAgentTaskNotTracked(t *testing.T) {
 		ToolResult: &types.ToolResultEvent{ToolUseID: "tu_sub_task"},
 	})
 
-	// Read the two event frames, then assert no task_list.
-	for range 2 {
-		_ = readWSMessage(t, ws)
+	// Expect: tool_start event, tool_end event, task_list — in that order.
+	toolEndSeen := false
+	taskListSeen := false
+	for range 3 {
+		msg := readWSMessage(t, ws)
+		if strings.Contains(string(msg), "tool_end") {
+			toolEndSeen = true
+		}
+		if strings.Contains(string(msg), "task_list") {
+			taskListSeen = true
+		}
 	}
-	_ = ws.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
-	if _, data, err := ws.ReadMessage(); err == nil {
-		t.Fatalf("unexpected task_list from sub-agent Task call: %s", string(data))
+	if !toolEndSeen {
+		t.Error("sub-agent tool_end frame not received")
+	}
+	if !taskListSeen {
+		t.Error("sub-agent Task tool call did NOT push task_list — expected real-time push since sub-agent shares parent task list")
 	}
 }
 
@@ -432,7 +506,18 @@ func TestBuildTaskListMessage_CleansUpDiskWhenAllCompleted(t *testing.T) {
 	}
 
 	payload2 := c.buildTaskList(c.activeSlotTest(t))
-	if payload2 != nil {
-		t.Errorf("expected nil on second call (disk empty), got %s", string(payload2))
+	// After disk cleanup, buildTaskList still returns a non-nil empty
+	// payload — clients rely on the push to hide the panel after the
+	// last task is completed/deleted. Returning nil would leave stale
+	// state visible until reconnect.
+	if payload2 == nil {
+		t.Fatal("expected empty payload on second call (disk empty), got nil")
+	}
+	var got2 taskListOutbound
+	if err := json.Unmarshal(payload2, &got2); err != nil {
+		t.Fatalf("unmarshal payload2: %v", err)
+	}
+	if len(got2.Tasks) != 0 {
+		t.Errorf("expected empty tasks slice, got %d items", len(got2.Tasks))
 	}
 }

@@ -666,8 +666,14 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		return
 	}
 
-	if event.Type == types.EventToolStart && event.Agent == nil &&
-		event.ToolUse != nil && event.ToolUse.Name == "Task" {
+	// Track Task tool calls so tool_end can push task_list. Sub-agents share
+	// the parent engine's task list (RunAgent passes e.taskList to CreateTools),
+	// so we MUST track sub-agent Task calls too — otherwise panel updates only
+	// arrive on reconnect. The Agent filter stays for query_end/stat resets
+	// below, which are per-engine; task tracking is shared.
+	if event.Type == types.EventToolStart &&
+		event.ToolUse != nil &&
+		event.ToolUse.Name == "Task" {
 		slot.taskToolIDs[event.ToolUse.ID] = true
 	}
 
@@ -732,7 +738,8 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	}
 	slot.ssMu.Unlock()
 
-	if event.Type == types.EventToolEnd && event.Agent == nil && event.ToolResult != nil {
+	// Sub-agent Task tool_end must also push task_list (see ToolStart comment).
+	if event.Type == types.EventToolEnd && event.ToolResult != nil {
 		if slot.taskToolIDs[event.ToolResult.ToolUseID] {
 			if taskPayload := c.buildTaskList(slot); taskPayload != nil {
 				c.sendWS(taskPayload)
@@ -1572,7 +1579,10 @@ func (c *WUIConnector) buildTaskList(slot *engineSlot) []byte {
 		})
 	}
 	if len(items) == 0 {
-		return nil
+		// Empty list still needs a push so the client clears its panel.
+		// Returning nil here would leave stale tasks visible until reconnect.
+		payload, _ := json.Marshal(taskListOutbound{Type: "task_list", Tasks: []taskListWireItem{}})
+		return payload
 	}
 
 	payload, _ := json.Marshal(taskListOutbound{Type: "task_list", Tasks: items})
