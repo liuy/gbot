@@ -35,7 +35,6 @@ export type ServerMessage =
   | { type: 'task_list'; tasks: TaskWireItem[] }
   | { type: 'engine_list'; engines: EngineListItem[]; activeID: string }
   | { type: 'session_list'; sessions: SessionListItem[] }
-  | { type: 'taken_over' }
   | {
       type: 'config'
       models: { provider: string; model: string }[]

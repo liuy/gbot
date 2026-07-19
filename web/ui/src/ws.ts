@@ -75,11 +75,17 @@ function connect(s: InternalState, wsUrl: string) {
     notifyState(s, 'connected')
   }
 
-  ws.onclose = () => {
-    // Auto-reconnect on close unless taken_over was received.
-    // The server sends an explicit "taken_over" message before
-    // closing during takeover; the onmessage handler sets
-    // disableReconnect to prevent the ping-pong loop.
+  ws.onclose = (ev: CloseEvent) => {
+    // Server sends close frame with code 1000 + reason "taken_over" when
+    // another client takes over this session. We must NOT auto-reconnect,
+    // otherwise the two clients ping-pong fighting for the slot. Any
+    // other close (1006 abnormal, etc.) is a real disconnect — reconnect.
+    if (ev.code === 1000 && ev.reason === 'taken_over') {
+      s.disableReconnect = true
+      s.connected = false
+      notifyState(s, 'disconnected')
+      return
+    }
     if (s.disableReconnect) return
     scheduleReconnect(s, wsUrl)
   }
@@ -93,14 +99,6 @@ function connect(s: InternalState, wsUrl: string) {
     try {
       msg = JSON.parse(ev.data) as ServerMessage
     } catch {
-      return
-    }
-    // Another client took over this session (e.g. phone takeover).
-    // Suppress auto-reconnect to avoid ping-pong between devices.
-    if (msg.type === 'taken_over') {
-      s.disableReconnect = true
-      s.connected = false
-      notifyState(s, 'disconnected')
       return
     }
     s.listeners.forEach((fn) => fn(msg))

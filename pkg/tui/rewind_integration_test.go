@@ -1152,12 +1152,13 @@ func TestIntegration_Rewind_AbortDuringToolUse(t *testing.T) {
 	// Now the user submits a new query. Engine appends it immediately (queryLoop line 379).
 	// Then tool use rounds happen. User presses ESC during streaming.
 	//
-	// Post-abort engine state (simulating callLLM ctx.Done path, lines 1029-1057):
+	// Post-abort engine state (engine's emit path appends interrupt to the
+	// last assistant message, not the user tool_result message):
 	// [2] user: "read main.go"           ← the interrupted query
 	// [3] assistant: [tool_use Read]      ← round 1 tool call
 	// [4] user: [tool_result]             ← round 1 result
-	// [5] assistant: [tool_use Grep]      ← round 2 tool call
-	// [6] user: [tool_result + interrupt] ← round 2 result + appendInlineInterruptMessage
+	// [5] assistant: [tool_use Grep, text "[Request interrupted by user]"]
+	// [6] user: [tool_result]             ← round 2 result
 	abortedMsgs := []types.Message{
 		{
 			ID:        "abort-user-1",
@@ -1186,6 +1187,7 @@ func TestIntegration_Rewind_AbortDuringToolUse(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				{Type: types.ContentTypeToolUse, ID: "tool-2", Name: "Grep", Input: json.RawMessage(`{"pattern":"func"}`)},
+				types.NewTextBlock(types.InterruptMessage), // appended by appendInlineInterruptMessage to assistant
 			},
 			Timestamp: testTime,
 		},
@@ -1194,7 +1196,6 @@ func TestIntegration_Rewind_AbortDuringToolUse(t *testing.T) {
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{
 				{Type: types.ContentTypeToolResult, ToolUseID: "tool-2", Text: "match1\nmatch2"},
-				types.NewTextBlock(types.InterruptMessage), // appended by appendInlineInterruptMessage
 			},
 			Timestamp: testTime,
 		},

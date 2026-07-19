@@ -32,10 +32,9 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 // takeover = swap WS + switchEngine. Deactivates old engine first (prevents
 // live events from reaching new WS before metadata), swaps activeWS, then
 // calls switchEngine which sends metadata (with embedded streamState snapshot).
-// The previous WS is notified with a "taken_over" message before close so
-// the old browser shows "disconnected" without auto-reconnecting — close
-// frame code detection is unreliable across browsers and gorilla versions;
-// an explicit application-level message is deterministic.
+// The previous WS is notified with a close frame (code 1000, reason
+// "taken_over") so the client suppresses auto-reconnect — the client's
+// onclose handler checks ev.code === 1000 && ev.reason === 'taken_over'.
 func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	c.slotsMu.RLock()
 	if oldSlot := c.slots[c.ActiveID()]; oldSlot != nil {
@@ -44,14 +43,14 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	c.slotsMu.RUnlock()
 
 	if oldWS := c.activeWS.Swap(ws); oldWS != nil {
-		// Notify the old client before closing. A short deadline avoids
-		// blocking takeover if the old connection is stuck.
-		oldWS.SetWriteDeadline(time.Now().Add(time.Second))
-		payload, _ := json.Marshal(struct {
-			Type string `json:"type"`
-		}{Type: "taken_over"})
-		_ = oldWS.WriteMessage(websocket.TextMessage, payload)
-		oldWS.Close()
+		// Send a close frame with code 1000 + reason "taken_over" so the
+		// old client knows not to auto-reconnect (avoids ping-pong between
+		// two clients). WriteControl is explicitly safe for concurrent use
+		// with the wsWriter goroutine's WriteMessage calls — gorilla
+		// documents this as the only concurrency-safe write method.
+		closeFrame := websocket.FormatCloseMessage(1000, "taken_over")
+		_ = oldWS.WriteControl(websocket.CloseMessage, closeFrame, time.Now().Add(time.Second))
+		_ = oldWS.Close()
 	}
 	c.switchEngine(c.ActiveID())
 

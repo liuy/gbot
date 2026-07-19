@@ -4117,8 +4117,9 @@ func TestInlineInterrupt_PostToolAbort(t *testing.T) {
 	}
 }
 
-func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.T) {
-	// Cancel during reactive compact — interrupt appended to user query (last message).
+func TestInlineInterrupt_ReactiveCompactAbort_NoInterruptMessage(t *testing.T) {
+	// Cancel during reactive compact — no LLM content produced, so the
+	// autoRewind path must skip both mutation and emit.
 	mp := &testProvider{}
 	overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
 	mp.addResponse(nil, overflowErr)
@@ -4142,14 +4143,208 @@ func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.
 	if result.Error == nil {
 		t.Fatal("expected abort error during compact")
 	}
-	// Interrupt appended to user query (last message in messages).
-	if !hasInterruptMessage(result.Messages) {
-		t.Error("reactive compact abort should have inline interrupt on user message")
+	if hasInterruptMessage(result.Messages) {
+		t.Error("reactive compact abort must not append interrupt text when no LLM content was produced")
 	}
 }
 
-func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
-	// Loop-top abort — interrupt message appended to user query message.
+func TestInlineInterrupt_LoopTopAbort_NoInterruptMessage(t *testing.T) {
+	// Loop-top abort — ctx already cancelled before any LLM call.
+	// autoRewind path: no mutation, no emit.
+	mp := &testProvider{}
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if hasInterruptMessage(result.Messages) {
+		t.Error("loop-top abort must not append interrupt text to any message")
+	}
+	for _, evt := range tc.Events() {
+		if evt.Type == types.EventTextDelta && evt.Text == types.InterruptMessage {
+			t.Errorf("loop-top abort must not emit interrupt text_delta; got %+v", evt)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unified interrupt emit-path tests (text_start + text_delta + text_end).
+// The engine appends [Request interrupted by user] to the last assistant
+// message and emits a contiguous text_start/delta/end triple. The autoRewind
+// path (no LLM content) skips both the append and the emit.
+// ---------------------------------------------------------------------------
+
+// TestAppendInlineInterrupt_EmitsTextEvents drives a partial text stream
+// that is cancelled mid-flight. The engine must:
+//   - emit EventTextStart immediately before the EventTextDelta carrying
+//     InterruptMessage, and EventTextEnd immediately after (contiguous triple)
+//   - append the interrupt text as a final text block on the last assistant
+//     message (not on a user tool_result message)
+func TestAppendInlineInterrupt_EmitsTextEvents(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		defer close(ch)
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		cancel()
+	}()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error == nil {
+		t.Fatal("expected abort error")
+	}
+
+	events := tc.Events()
+	// Find the EventTextDelta whose Text == InterruptMessage, then assert
+	// its neighbors form the contiguous triple start→delta→end.
+	deltaIdx := -1
+	for i, evt := range events {
+		if evt.Type == types.EventTextDelta && evt.Text == types.InterruptMessage {
+			deltaIdx = i
+			break
+		}
+	}
+	if deltaIdx == -1 {
+		t.Fatalf("expected EventTextDelta with Text == InterruptMessage; events: %+v", eventTypes(events))
+	}
+	if deltaIdx == 0 || events[deltaIdx-1].Type != types.EventTextStart {
+		t.Errorf("expected EventTextStart immediately before interrupt delta; got %v at idx %d", events[deltaIdx-1].Type, deltaIdx-1)
+	}
+	if deltaIdx == len(events)-1 || events[deltaIdx+1].Type != types.EventTextEnd {
+		t.Errorf("expected EventTextEnd immediately after interrupt delta; got %v at idx %d", safeEventType(events, deltaIdx+1), deltaIdx+1)
+	}
+
+	// Last assistant message's final text block must equal InterruptMessage.
+	var lastAsst *types.Message
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == types.RoleAssistant {
+			lastAsst = &result.Messages[i]
+			break
+		}
+	}
+	if lastAsst == nil {
+		t.Fatal("expected at least one assistant message")
+	}
+	if len(lastAsst.Content) == 0 {
+		t.Fatal("expected assistant message to have content blocks")
+	}
+	last := lastAsst.Content[len(lastAsst.Content)-1]
+	if last.Type != types.ContentTypeText || last.Text != types.InterruptMessage {
+		t.Errorf("last assistant block = {Type:%v, Text:%q}, want {text, %q}",
+			last.Type, last.Text, types.InterruptMessage)
+	}
+
+	// Regression: the very last message must NOT be a user text block carrying
+	// InterruptMessage (the original bug appended to the user query).
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role == types.RoleUser {
+		for _, b := range lastMsg.Content {
+			if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
+				t.Errorf("regression: interrupt text found on last USER message — engine must append to assistant only")
+			}
+		}
+	}
+}
+
+// TestAppendInlineInterrupt_PostToolAbort_AppendsToAssistant covers Stage 23
+// (cancel after tools completed). Interrupt text must land on the assistant
+// message (which is messages[len-2] after the tool_result user message), not
+// on the trailing user tool_result message.
+func TestAppendInlineInterrupt_PostToolAbort_AppendsToAssistant(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	toolEvents := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_post_1", Name: "test_tool"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(toolEvents, nil)
+	mp.addResponse(subTextEvents("done", ""), nil)
+
+	var ctxCancel context.CancelFunc
+	ct := &callbackTool{
+		name: "test_tool",
+		onCall: func() {
+			time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+			ctxCancel()
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, ToolsProvider: func() map[string]tool.Tool {
+		return map[string]tool.Tool{ct.Name(): ct}
+	}, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	ctxCancel = cancel
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error == nil {
+		t.Fatal("expected abort error after tool execution")
+	}
+
+	// Search backwards for the last assistant message — interrupt must be there.
+	var lastAsstIdx = -1
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == types.RoleAssistant {
+			lastAsstIdx = i
+			break
+		}
+	}
+	if lastAsstIdx < 0 {
+		t.Fatal("expected at least one assistant message")
+	}
+	lastAsst := result.Messages[lastAsstIdx]
+	if len(lastAsst.Content) == 0 {
+		t.Fatal("expected assistant message to have content blocks")
+	}
+	lastBlock := lastAsst.Content[len(lastAsst.Content)-1]
+	if lastBlock.Type != types.ContentTypeText || lastBlock.Text != types.InterruptMessage {
+		t.Errorf("last assistant block = %+v, want {text, %q}", lastBlock, types.InterruptMessage)
+	}
+
+	// The very last message is the tool_result user message — it must NOT
+	// carry the interrupt text.
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleUser {
+		t.Fatalf("expected last message to be user (tool_result), got %s", lastMsg.Role)
+	}
+	for _, b := range lastMsg.Content {
+		if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
+			t.Errorf("regression: interrupt text found on last USER tool_result message — engine must append to assistant only")
+		}
+	}
+}
+
+// TestAppendInlineInterrupt_AutoRewindPath_NoEmit covers the loop-top abort
+// (already-cancelled ctx before any LLM call). No content means no emit and
+// no message mutation.
+func TestAppendInlineInterrupt_AutoRewindPath_NoEmit(t *testing.T) {
+	t.Parallel()
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
 	t.Cleanup(func() { eng.Close() })
@@ -4165,18 +4360,59 @@ func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
 	if !errors.As(result.Error, &ae) {
 		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
 	}
-	// Last message should be the user query with interrupt appended.
-	msgs := result.Messages
-	if len(msgs) == 0 {
-		t.Fatal("expected at least one message")
+	if hasInterruptMessage(result.Messages) {
+		t.Errorf("autoRewind path must not append interrupt text to any message; got: %+v", result.Messages)
 	}
-	last := msgs[len(msgs)-1]
-	if last.Role != types.RoleUser {
-		t.Fatalf("expected last message to be user, got %s", last.Role)
+}
+
+// TestAppendInlineInterrupt_ReactiveCompactAbort_NoEmit mirrors the loop-top
+// test for the reactive-compact abort path (LLM hit overflow, compact ran,
+// ctx cancelled during compact).
+func TestAppendInlineInterrupt_ReactiveCompactAbort_NoEmit(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
+	mp.addResponse(nil, overflowErr)
+	ch := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{ContextWindow: 100000})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error == nil {
+		t.Fatal("expected abort error during compact")
 	}
-	if !hasInterruptMessage(msgs) {
-		t.Error("loop-top abort should have inline interrupt message on user message")
+	if hasInterruptMessage(result.Messages) {
+		t.Errorf("reactive compact abort must not append interrupt text when no LLM content was produced; got: %+v", result.Messages)
 	}
+}
+
+// eventTypes returns a slice of event types for debug logging.
+func eventTypes(events []types.QueryEvent) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = string(e.Type)
+	}
+	return out
+}
+
+// safeEventType returns the type of events[i], or "OOB" if out of bounds.
+func safeEventType(events []types.QueryEvent, i int) string {
+	if i < 0 || i >= len(events) {
+		return "OOB"
+	}
+	return string(events[i].Type)
 }
 
 // ---------------------------------------------------------------------------
@@ -6378,6 +6614,18 @@ func partialTextEvents(model, text string) []llm.StreamEvent {
 	}
 }
 
+// partialTextEventsNoStop streams text WITHOUT content_block_stop.
+// Required for the ctx-cancel close-blocks test because the existing
+// partialTextEvents helper already emits content_block_stop, which makes
+// the text-block sub-test green without exercising the close path.
+func partialTextEventsNoStop(model, text string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: text}},
+	}
+}
+
 // TestQuery_RetryStreamTimeout verifies retry on stream interrupted (idle timeout).
 // Mock sends partial content then closes channel (no message_stop).
 // First call → StreamInterruptedError → retry → second call succeeds with full response.
@@ -6574,6 +6822,144 @@ func TestRetry_ClosesOpenToolUse(t *testing.T) {
 		t.Fatal("expected EventToolEnd (close-on-error), got none")
 	}
 }
+
+// TestCallLLM_CtxCancel_ClosesOpenBlocks verifies that when ctx is cancelled
+// mid-stream, any content blocks that never received content_block_stop get
+// a corresponding *_end event emitted (text_end / thinking_end / tool_end).
+// Regression: before the fix, ctx-cancel paths only appended partial messages
+// and emitted no close events, leaving the frontend's "running" block stuck.
+func TestCallLLM_CtxCancel_ClosesOpenBlocks(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		events  []llm.StreamEvent
+		wantTyp types.QueryEventType
+		// minCount is the minimum number of wantTyp events. Text's total is 2
+		// (one from emitCloseEventsForOpenBlocks, one from the InterruptMessage
+		// triple); thinking/tool_use only emit the close-on-cancel event.
+		minCount int
+		// check receives all captured events so it can reason about ordering
+		// across event types — the text variant specifically needs to know
+		// whether the close-on-cancel EventTextEnd precedes the
+		// InterruptMessage triple.
+		check func(t *testing.T, all []types.QueryEvent)
+	}{
+		{
+			name:     "text",
+			events:   partialTextEventsNoStop("test", "partial"),
+			wantTyp:  types.EventTextEnd,
+			minCount: 2,
+			check: func(t *testing.T, all []types.QueryEvent) {
+				// Locate the InterruptMessage triple: contiguous
+				// text_start + text_delta{InterruptMessage} + text_end.
+				tripleIdx := -1
+				for i := 0; i+2 < len(all); i++ {
+					if all[i].Type != types.EventTextStart {
+						continue
+					}
+					if all[i+1].Type != types.EventTextDelta || all[i+1].Text != types.InterruptMessage {
+						continue
+					}
+					if all[i+2].Type != types.EventTextEnd {
+						continue
+					}
+					tripleIdx = i
+					break
+				}
+				if tripleIdx < 0 {
+					t.Fatal("text: InterruptMessage triple (text_start/delta{InterruptMessage}/end) not found")
+				}
+				// Regression guard: emitCloseEventsForOpenBlocks must run
+				// BEFORE appendInlineInterruptMessage emits its triple, so
+				// the partial text block opened by content_block_start gets
+				// a matching text_end. If the helper were deleted, the only
+				// EventTextEnd would be the triple's own end at tripleIdx+2.
+				for i := 0; i < tripleIdx; i++ {
+					if all[i].Type == types.EventTextEnd {
+						return
+					}
+				}
+				t.Fatalf("text: no EventTextEnd before InterruptMessage triple at index %d (emitCloseEventsForOpenBlocks not emitted)", tripleIdx)
+			},
+		},
+		{
+			name:     "thinking",
+			events:   partialThinkingEvents("test", "thought"),
+			wantTyp:  types.EventThinkingEnd,
+			minCount: 1,
+			check: func(t *testing.T, all []types.QueryEvent) {
+				count := 0
+				for _, e := range all {
+					if e.Type == types.EventThinkingEnd {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Fatalf("thinking: expected exactly 1 EventThinkingEnd, got %d", count)
+				}
+			},
+		},
+		{
+			name:     "tool_use",
+			events:   partialToolUseEventsNoStop("test", "tu_close_1", "Grep", `{}`),
+			wantTyp:  types.EventToolEnd,
+			minCount: 1,
+			check: func(t *testing.T, all []types.QueryEvent) {
+				var matched []types.QueryEvent
+				for _, e := range all {
+					if e.Type == types.EventToolEnd {
+						matched = append(matched, e)
+					}
+				}
+				if len(matched) != 1 {
+					t.Fatalf("tool_use: expected exactly 1 EventToolEnd, got %d", len(matched))
+				}
+				tr := matched[0].ToolResult
+				if tr == nil {
+					t.Fatal("tool_use: ToolResult field is nil on EventToolEnd")
+				}
+				if tr.ToolUseID != "tu_close_1" {
+					t.Errorf("tool_use: ToolUseID = %q, want tu_close_1", tr.ToolUseID)
+				}
+				if !tr.IsError {
+					t.Error("tool_use: IsError should be true on close-on-cancel")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mp := &testProvider{}
+			ch := make(chan llm.StreamEvent, 20)
+			mp.addChannelResponse(ch)
+
+			tc := newEventCollector()
+			eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+			t.Cleanup(func() { eng.Close() })
+			ctx, cancel := context.WithCancel(context.Background())
+
+			go func() {
+				defer close(ch)
+				for _, evt := range tt.events {
+					ch <- evt
+				}
+				time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+				cancel()
+			}()
+
+			result := eng.QuerySync(ctx, "test", "")
+			if result.Error == nil {
+				t.Fatal("expected abort error from cancelled ctx")
+			}
+			matched := tc.FindEvents(tt.wantTyp)
+			if len(matched) < tt.minCount {
+				t.Fatalf("%s: expected at least %d %s, got %d", tt.name, tt.minCount, tt.wantTyp, len(matched))
+			}
+			tt.check(t, tc.Events())
+		})
+	}
+}
+
 func TestQuery_NonRetryableTerminal(t *testing.T) {
 	t.Parallel()
 

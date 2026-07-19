@@ -5595,6 +5595,12 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 
+	// Engine now emits text_start/delta/end for the interrupt marker. Drive
+	// the text_delta path so AppendChunk appends the marker via the existing
+	// handler (the engine previously emitted nothing and the TUI appended
+	// the text directly from queryEndMsg).
+	app.updateRepl(textDeltaMsg{Text: types.InterruptMessage})
+
 	// Simulate query end with streaming-phase AbortError
 	abortErr := &engine.AbortError{Phase: "streaming", Err: context.Canceled}
 	app.updateRepl(queryEndMsg{Err: abortErr})
@@ -5623,6 +5629,8 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
+
+	app.updateRepl(textDeltaMsg{Text: types.InterruptMessage})
 
 	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
 	app.updateRepl(queryEndMsg{Err: abortErr})
@@ -6520,7 +6528,8 @@ func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.committedCount = 1
 
-	// Set up engine messages simulating: user query → tool_use → tool_result + interrupt
+	// Set up engine messages simulating: user query → tool_use → tool_result.
+	// Interrupt marker lives on the assistant message (engine's emit path).
 	app.engine.SetMessages([]types.Message{
 		{
 			Role:    types.RoleUser,
@@ -6530,13 +6539,13 @@ func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				types.NewToolUseBlock("tu_1", "Read", json.RawMessage(`{"file_path":"test.go"}`)),
+				types.NewTextBlock(types.InterruptMessage),
 			},
 		},
 		{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{
 				types.NewToolResultBlock("tu_1", json.RawMessage(`"file contents here"`), false),
-				types.NewTextBlock(types.InterruptMessage),
 			},
 		},
 	})

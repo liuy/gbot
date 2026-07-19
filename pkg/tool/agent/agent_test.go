@@ -192,6 +192,9 @@ func TestResultExtractionNoText(t *testing.T) {
 	}
 }
 
+// Legacy: engine no longer places the interrupt marker on user messages;
+// FinalizeResult's scan-all behavior is preserved for backward compatibility
+// with persisted sessions created before the unified-interrupt refactor.
 func TestResultExtractionInterruptOnUserMessage(t *testing.T) {
 	// Sub-agent was interrupted — interrupt marker is on user message (tool_result).
 	// FinalizeResult should detect it and return interrupted message, not "completed".

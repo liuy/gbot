@@ -32,6 +32,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -730,6 +731,25 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	}
 
 	toolUseCount := agenttool.CountToolUses(result.Messages)
+
+	// Sub-agent was cancelled and produced no real assistant content. The
+	// engine's autoRewind path skipped mutating messages (correctly), so
+	// FinalizeResult would fall through to "(agent completed with no text
+	// output)" — losing the cancellation signal in the parent's tool_result.
+	// Synthesize the interrupt result here, reusing the same predicate as
+	// appendInlineInterruptMessage so the two definitions cannot diverge.
+	if ctx.Err() != nil {
+		lastUserIdx := utils.LastSelectableUserMessageIndex(result.Messages)
+		if lastUserIdx < 0 || utils.MessagesAfterAreOnlySynthetic(result.Messages, lastUserIdx) {
+			return &types.SubQueryResult{
+				AgentType:         agentType,
+				Content:           "(agent interrupted by user)",
+				TotalDurationMs:   time.Since(startTime).Milliseconds(),
+				TotalTokens:       result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens,
+				TotalToolUseCount: toolUseCount,
+			}, nil
+		}
+	}
 	return agenttool.FinalizeResult(result.Messages, agentType, startTime, result.TotalUsage, toolUseCount), nil
 }
 
@@ -1947,6 +1967,38 @@ func (e *Engine) resolveThinking(model string) *llm.ThinkingConfig {
 	return llm.TranslateThinking(level)
 }
 
+// emitCloseEventsForOpenBlocks emits thinking_end/text_end/tool_end events
+// for contentBlocks that never received content_block_stop. Used by all three
+// exit paths inside callLLM (in-loop ctx.Done, post-loop ctx.Err, and
+// event.Error) so the frontend's "running" block doesn't get stuck open
+// when the stream is aborted mid-flight.
+func (e *Engine) emitCloseEventsForOpenBlocks(contentBlocks []types.ContentBlock, blockStopped map[int]bool, thinkingStart time.Time) {
+	for i, cb := range contentBlocks {
+		if blockStopped[i] {
+			continue
+		}
+		switch cb.Type {
+		case types.ContentTypeThinking:
+			e.emitEvent(types.QueryEvent{
+				Type:     types.EventThinkingEnd,
+				Thinking: &types.ThinkingEvent{Duration: time.Since(thinkingStart)},
+			})
+		case types.ContentTypeText:
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventTextEnd,
+			})
+		case types.ContentTypeToolUse:
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID: cb.ID,
+					IsError:   true,
+				},
+			})
+		}
+	}
+}
+
 func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 
@@ -2140,6 +2192,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 			//    ExecuteAll never runs after mid-stream abort, so even started tools
 			//    need synthetic results to prevent orphaned tool_use blocks.
 			// 2. Append partial assistant message for conversation consistency
+			e.emitCloseEventsForOpenBlocks(contentBlocks, blockStopped, thinkingStart)
 			var orphanedBlocks []types.ContentBlock
 			if streamingExecutor != nil {
 				orphanedBlocks = SyntheticToolResultsForBlocks(
@@ -2172,6 +2225,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 			// any tool_use blocks already accumulated, then append the
 			// partial assistant message so orphaned tool_use blocks
 			// don't cause API 400 errors on the next turn.
+			e.emitCloseEventsForOpenBlocks(contentBlocks, blockStopped, thinkingStart)
 			var orphanedBlocks []types.ContentBlock
 			if streamingExecutor != nil {
 				orphanedBlocks = SyntheticToolResultsForBlocks(
@@ -2433,6 +2487,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	if !streamComplete {
 		if ctx.Err() != nil {
 			// User cancelled — provider closed channel after detecting ctx cancellation.
+			e.emitCloseEventsForOpenBlocks(contentBlocks, blockStopped, thinkingStart)
 			var orphanedBlocks []types.ContentBlock
 			if streamingExecutor != nil {
 				orphanedBlocks = SyntheticToolResultsForBlocks(contentBlocks, nil, AbortReasonStreamingFallback)
@@ -2461,31 +2516,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 			// Close any open blocks (thinking/text/tool_use that never got
 			// content_block_stop) so the frontend doesn't leave them stuck
 			// in "running" state.
-			for i, cb := range contentBlocks {
-				if blockStopped[i] {
-					continue
-				}
-				switch cb.Type {
-				case types.ContentTypeThinking:
-					elapsed := time.Since(thinkingStart)
-					e.emitEvent(types.QueryEvent{
-						Type:     types.EventThinkingEnd,
-						Thinking: &types.ThinkingEvent{Duration: elapsed},
-					})
-				case types.ContentTypeText:
-					e.emitEvent(types.QueryEvent{
-						Type: types.EventTextEnd,
-					})
-				case types.ContentTypeToolUse:
-					e.emitEvent(types.QueryEvent{
-						Type: types.EventToolEnd,
-						ToolResult: &types.ToolResultEvent{
-							ToolUseID: cb.ID,
-							IsError:   true,
-						},
-					})
-				}
-			}
+			e.emitCloseEventsForOpenBlocks(contentBlocks, blockStopped, thinkingStart)
 			if streamingExecutor != nil {
 				streamingExecutor.Discard()
 			}
@@ -3495,33 +3526,64 @@ func (e *Engine) appendMessage(msg types.Message) {
 	e.mu.Unlock()
 }
 
-// appendInlineInterruptMessage appends the interrupt message to the last
-// assistant message's content, searching backwards. This handles the case
-// where tool results were appended after the assistant message.
-// Also generates synthetic tool_result blocks for any orphaned tool_use
-// blocks (tool_use without matching tool_result) to prevent API errors.
+// appendInlineInterruptMessage appends [Request interrupted by user] to the
+// last assistant message and emits text_start/delta/end so the frontend
+// renders the marker as an assistant text block (not a user bubble).
+//
+// Two paths:
+//   - autoRewind: when no real assistant content exists after the last
+//     selectable user message, skip both mutation and emit. The connector's
+//     autoRewind logic will rewind; appending the marker would pollute the
+//     user query.
+//   - emit: otherwise, find the last assistant message (searching backwards
+//     because tool_result user messages may follow), append a text block,
+//     run appendSyntheticToolResultsLocked for orphaned tool_use blocks,
+//     and emit the contiguous text_start → text_delta → text_end triple
+//     after releasing the mutex.
 //
 // Source: TS createUserInterruptionMessage + yieldMissingToolResultBlocks
 // (query.ts:1015-1029) — generates synthetic tool_result blocks for all
 // tool_use blocks in assistant messages when the abort signal fires.
 func (e *Engine) appendInlineInterruptMessage() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if len(e.messages) == 0 {
+		e.mu.Unlock()
 		return
 	}
-	last := &e.messages[len(e.messages)-1]
+	lastUserIdx := utils.LastSelectableUserMessageIndex(e.messages)
+	if lastUserIdx < 0 {
+		e.mu.Unlock()
+		return
+	}
+	if utils.MessagesAfterAreOnlySynthetic(e.messages, lastUserIdx) {
+		e.mu.Unlock()
+		return
+	}
+	var last *types.Message
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		if e.messages[i].Role == types.RoleAssistant {
+			last = &e.messages[i]
+			break
+		}
+	}
+	if last == nil {
+		e.mu.Unlock()
+		return
+	}
 	last.Content = append(last.Content, types.NewTextBlock(types.InterruptMessage))
 	e.logger.Info("engine:append_inline_interrupt",
-		"msg_index", len(e.messages)-1,
-		"role", last.Role,
 		"total_messages", len(e.messages),
 		"content_blocks", len(last.Content))
-
-	// TS align: yieldMissingToolResultBlocks (query.ts:123-149).
-	// For each assistant message, find tool_use blocks that lack a matching
-	// tool_result and generate synthetic error tool_results for them.
 	e.appendSyntheticToolResultsLocked()
+	e.mu.Unlock()
+
+	// Emit outside the lock — emitEvent takes coalesceMu (different mutex)
+	// but emitting under e.mu would interleave confusingly with concurrent
+	// readers. The text_end event flushes any pending textCoalesce buffer,
+	// so the three events dispatch in order before any subsequent query_end.
+	e.emitEvent(types.QueryEvent{Type: types.EventTextStart})
+	e.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage})
+	e.emitEvent(types.QueryEvent{Type: types.EventTextEnd})
 }
 
 // appendSyntheticToolResultsLocked generates synthetic tool_result blocks for

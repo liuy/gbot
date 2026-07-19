@@ -1129,16 +1129,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			return true, a.readEvents()
 		}
 
-		// For abort errors, append inline interrupt message and finish cleanly.
-		// The engine already added [Request interrupted by user] to the
-		// assistant message content; we mirror it in the TUI display.
+		// For abort errors, the engine already emitted the interrupt text
+		// via text_start/delta/end events; the existing textDeltaMsg handler
+		// appended it via AppendChunk. We only need to clear the error here
+		// so the TUI displays it as an assistant bubble, not an error card.
+		// Auto-rewind: if no meaningful response was produced, restore state.
 		displayErr := m.Err
 		if displayErr != nil {
 			if _, ok := errors.AsType[*engine.AbortError](displayErr); ok {
-				a.repl.AppendChunk(types.InterruptMessage)
 				displayErr = nil
 
-				// Auto-rewind: if no meaningful response was produced, restore state
 				if m.Agent == nil {
 					if a.tryAutoRewind() {
 						slog.Info("tui:auto_rewind", "reason", "no_meaningful_response")

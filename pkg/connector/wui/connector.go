@@ -250,6 +250,9 @@ type WUIConnector struct {
 	// wsCh is the single-consumer write queue for the WS writer goroutine.
 	// All WS writes go through sendWS → wsCh → wsWriter. This ensures
 	// gorilla's single-writer constraint without a mutex on the hot path.
+	// Takeover (serveChatWS) is the one exception: it uses WriteControl
+	// (gorilla's only concurrency-safe write method) to send a close frame
+	// directly, bypassing wsCh.
 	wsCh chan []byte
 
 	// done signals the wsWriter goroutine to exit during shutdown.
@@ -687,16 +690,8 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 			aborted = true
 			rewind := c.shouldAutoRewindFor(slot.engine)
 			slog.Debug("wui:abort", "engine", engineID, "shouldAutoRewind", rewind, "msgs", len(slot.engine.Messages()))
-			if !rewind {
-				interruptPayload, _ := json.Marshal(struct {
-					Type  string           `json:"type"`
-					Event types.QueryEvent `json:"event"`
-				}{Type: "event", Event: types.QueryEvent{
-					Type: types.EventTextDelta,
-					Text: types.InterruptMessage,
-				}})
-				c.sendWS(interruptPayload)
-			}
+			// Engine emits the interrupt text via text_start/delta/end on
+			// its own; the connector only needs to drive rewind here.
 			c.autoRewindOnAbortFor(slot.engine)
 		}
 	}

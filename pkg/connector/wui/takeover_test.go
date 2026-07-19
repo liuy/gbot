@@ -133,10 +133,12 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		t.Fatalf("ws2 live deltas = %v, want %v", got2, want2)
 	}
 
-	// ws1 (invalidated) must see nothing more.
+	// ws1 (invalidated) receives a close frame with code 1000 + reason
+	// "taken_over" from the server, then the connection closes. No other
+	// data messages should arrive.
 	_ = ws1.SetReadDeadline(time.Now().Add(200 * time.Millisecond)) // REAL-TIME
-	if _, _, err := ws1.ReadMessage(); err == nil {
-		t.Error("ws1 received a message after takeover — invalidated conn should be silent")
+	if _, data, err := ws1.ReadMessage(); err == nil {
+		t.Errorf("ws1 received unexpected data message after takeover: %s", string(data))
 	}
 }
 

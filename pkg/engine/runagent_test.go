@@ -451,3 +451,46 @@ func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
 			got)
 	}
 }
+
+// TestRunAgent_NoContentCancel_ReturnsInterrupted verifies RunAgent with a
+// cancelled ctx and no assistant content must return "(agent interrupted by user)".
+func TestRunAgent_NoContentCancel_ReturnsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	// Provider returns an empty (immediately closed) channel — no stream
+	// events, simulating ctx cancellation landing before the LLM started
+	// streaming any assistant content.
+	mp := &mockProvider{}
+	mp.addResponse(nil, nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := eng.RunAgent(ctx, agenttool.AgentOpts{
+		Prompt:    "do something",
+		AgentType: "General",
+	})
+	if err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("RunAgent returned nil result")
+	}
+	if result.Content != "(agent interrupted by user)" {
+		t.Errorf("Content = %q, want %q",
+			result.Content, "(agent interrupted by user)")
+	}
+}

@@ -757,9 +757,11 @@ func TestBuildEngineList_NilMgr(t *testing.T) {
 
 // ---- Section 16: errors.AsType coverage ----
 
-// TestHandle_QueryEndAbortErrorWithPartialContent verifies that an abort
-// error that does NOT auto-rewind (partial content present) still sends
-// the interrupt message to the client.
+// TestHandle_QueryEndAbortErrorWithPartialContent verifies that when an abort
+// arrives with partial assistant content present, the connector relays the
+// engine's emitted text_start/text_delta(InterruptMessage)/text_end triple
+// in order before query_end, and emits exactly one interrupt text_delta
+// (regression: catch double-emission if both engine and connector fire).
 func TestHandle_QueryEndAbortErrorWithPartialContent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -787,18 +789,31 @@ func TestHandle_QueryEndAbortErrorWithPartialContent(t *testing.T) {
 	}
 	ws := dialAndStore(t, c)
 
+	// Pre-feed the engine's interrupt triple before query_end.
+	c.Handle(types.QueryEvent{Type: types.EventTextStart})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: types.InterruptMessage})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 
-	// First message: interrupt text_delta (sent before query_end when
-	// auto-rewind is skipped because partial content exists).
-	msg1 := readWSMessage(t, ws)
-	if !strings.Contains(string(msg1), "interrupted") && !strings.Contains(string(msg1), types.InterruptMessage) {
-		t.Errorf("first message should be interrupt text_delta: %s", string(msg1))
+	// Walk the WS messages and count interrupt text_deltas; assert exactly 1.
+	var interruptDeltas int
+	var sawQueryEnd bool
+	for range 10 {
+		msg := readWSMessage(t, ws)
+		s := string(msg)
+		if strings.Contains(s, types.InterruptMessage) {
+			interruptDeltas++
+		}
+		if strings.Contains(s, "query_end") {
+			sawQueryEnd = true
+			break
+		}
 	}
-	// Second message: query_end event with aborted=true.
-	msg2 := readWSMessage(t, ws)
-	if !strings.Contains(string(msg2), "query_end") {
-		t.Errorf("second message should be query_end: %s", string(msg2))
+	if interruptDeltas != 1 {
+		t.Errorf("expected exactly 1 interrupt text_delta, got %d", interruptDeltas)
+	}
+	if !sawQueryEnd {
+		t.Error("expected query_end to be relayed")
 	}
 }
 
