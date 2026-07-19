@@ -158,6 +158,8 @@ function dayDiff(a: number, b: number): number {
 // Picks a date label for `curr` based on its distance from today:
 // 0=Today, 1=Yesterday, 2..6=weekday, 7+=month-day. Latin-script labels
 // are capitalized; CJK labels are returned as-is (capitalize would corrupt them).
+// Beyond a week, includes the year when the date is in a different calendar
+// year than today — "Dec 25" for same year, "Dec 25, 2025" for prior year.
 function dateLabel(curr: number, locale: string): string {
 	const diff = dayDiff(curr, Date.now())
 	if (diff <= 1) {
@@ -166,6 +168,11 @@ function dateLabel(curr: number, locale: string): string {
 	}
 	if (diff <= 6) {
 		return new Intl.DateTimeFormat(locale, { weekday: 'long' }).format(curr)
+	}
+	const now = new Date()
+	const currDate = new Date(curr)
+	if (currDate.getFullYear() !== now.getFullYear()) {
+		return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }).format(curr)
 	}
 	return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(curr)
 }
@@ -185,9 +192,13 @@ function dateTimeLabel(curr: number, locale: string): string {
 // or null when no divider should be shown.
 //
 // - prev=null → date+time label (first-message-of-session anchor).
-// - Same-day gap >= 15 min → time-only label for curr.
 // - Cross-day (>= 1 midnight) → date+time label for curr.
+// - Same-day gap >= 15 min → date+time label for curr.
 // - Otherwise → null (no divider).
+//
+// All dividers carry the date prefix (not just first-of-day) so historical
+// times can't be mistaken for today — without this, "21:30" after a
+// "Yesterday" divider looks like today's 21:30. Redundant but unambiguous.
 //
 // Locale follows navigator.language (iMessage behavior); tests use regex
 // tolerance because zh-CN time strings vary across Node ICU builds
@@ -199,6 +210,6 @@ export function timeDividerLabel(
 ): string | null {
 	if (prev === null) return dateTimeLabel(curr, locale)
 	if (dayDiff(prev, curr) >= 1) return dateTimeLabel(curr, locale)
-	if (curr - prev >= 15 * 60 * 1000) return timeLabel(curr, locale)
+	if (curr - prev >= 15 * 60 * 1000) return dateTimeLabel(curr, locale)
 	return null
 }

@@ -127,12 +127,12 @@ describe('time divider (loadHistory)', () => {
     })
     // baseline anchor + m1 (gap 1h) + m2 (gap 2h).
     expect(timeDividerElements().length).toBe(before + 2)
-    // The two NEW dividers must be time-format labels (the baseline anchor
-    // is a date label and could sit anywhere in DOM order due to prepend).
-    const timeFmtCount = timeDividerElements().filter((d) =>
-      /^\d{1,2}:\d{2}\s*(AM|PM)?$/.test(d.textContent || ''),
+    // All dividers (including anchor and intra-page) carry a date prefix
+    // — historical times can't be mistaken for today.
+    const dateTimeCount = timeDividerElements().filter((d) =>
+      /\d{1,2}:\d{2}/.test(d.textContent || ''),
     ).length
-    expect(timeFmtCount).toBe(2)
+    expect(dateTimeCount).toBe(before + 2)
   })
 
   it('does not render a divider for sub-15min gaps', () => {
@@ -206,34 +206,6 @@ describe('time divider (loadHistory)', () => {
     expect(timeDividerElements().length).toBe(1)
     // The Compact divider is still rendered.
     expect(dividerElements().length).toBe(1)
-  })
-
-  it('page-boundary divider accounts for negative-time-diff when prepending older pages', () => {
-    vi.useFakeTimers()
-    const now = new Date(2026, 6, 18, 12, 0).getTime()
-    vi.setSystemTime(now)
-    mount()
-    // First dispatch establishes existing message at now-2h. Anchor fires
-    // because prev=null (wasEmpty). 1 anchor divider.
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('existing', 'existing', now - 2 * HOUR)],
-      nextCursor: '',
-      hasMore: false,
-    })
-    expect(timeDividerElements().length).toBe(1)
-    // Second dispatch prepends a page with a single older message at now-3h.
-    // Batch-internal: prev=existing(now-2h), curr=newMsg(now-3h) → -1h diff →
-    // same day, no batch-internal divider.
-    // Page-boundary: prev=newMsg(now-3h), curr=existing(now-2h) → +1h → divider.
-    // Total: 1 anchor + 0 batch + 1 page-boundary = 2.
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('newMsg', 'older', now - 3 * HOUR)],
-      nextCursor: '',
-      hasMore: false,
-    })
-    expect(timeDividerElements().length).toBe(2)
   })
 
   it('page-boundary: no time divider when gap < 15min OR envelope carries compactBoundary', () => {
@@ -344,10 +316,11 @@ describe('time divider (streaming append)', () => {
     setTextarea('hello')
     pressEnter()
     expect(timeDividerElements().length).toBe(before + 1)
+    // New divider carries date prefix (Today/Yesterday/...) + time.
     const newDividers = timeDividerElements().filter((d) =>
-      /^\d{1,2}:\d{2}\s*(AM|PM)?$/.test(d.textContent || ''),
+      /^Today\b/.test(d.textContent || ''),
     )
-    expect(newDividers.length).toBe(1)
+    expect(newDividers.length).toBeGreaterThanOrEqual(1)
   })
 
   it('user send does not trigger divider after short gap', () => {

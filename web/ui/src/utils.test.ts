@@ -52,23 +52,25 @@ describe('timeDividerLabel', () => {
 		expect(timeDividerLabel(prev, now)).toBe(null)
 	})
 
-	it('returns time label for exactly 15 min gap (inclusive boundary)', () => {
+	it('returns date+time label for exactly 15 min gap (inclusive boundary)', () => {
 		vi.useFakeTimers()
 		const now = new Date(2026, 6, 18, 12, 30).getTime()
 		vi.setSystemTime(now)
 		const prev = now - 15 * 60 * 1000 // exactly 15 min
 		const label = timeDividerLabel(prev, now, 'en-US')
 		expect(label).not.toBe(null)
-		expect(label).toMatch(/^\d{1,2}:\d{2}\s*(AM|PM)?$/)
+		expect(label).toMatch(/^Today\b/)
+		expect(label).toMatch(/\d{1,2}:\d{2}/)
 	})
 
-	it('returns time label for 2-hour same-day gap in en-US', () => {
+	it('returns date+time label for 2-hour same-day gap in en-US', () => {
 		vi.useFakeTimers()
 		const now = new Date(2026, 6, 18, 14, 30).getTime()
 		vi.setSystemTime(now)
 		const prev = now - 2 * 3600 * 1000
 		const label = timeDividerLabel(prev, now, 'en-US')
-		expect(label).toMatch(/^\d{1,2}:\d{2}\s*(AM|PM)?$/)
+		expect(label).toMatch(/^Today\b/)
+		expect(label).toMatch(/\d{1,2}:\d{2}/)
 	})
 
 	it('returns "Today <time>" for cross-day gap to today', () => {
@@ -110,6 +112,17 @@ describe('timeDividerLabel', () => {
 		const prev = curr - 24 * 3600 * 1000
 		const label = timeDividerLabel(prev, curr, 'en-US')
 		expect(label).toMatch(/^[A-Z][a-z]{2} \d{1,2}\b/)
+		expect(label).toMatch(/\d{1,2}:\d{2}/)
+	})
+
+	it('includes year when curr is in a prior calendar year', () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date(2026, 0, 5, 10, 0).getTime()) // Jan 5, 2026
+		const curr = new Date(2025, 11, 25, 10, 0).getTime() // Dec 25, 2025
+		const prev = curr - 24 * 3600 * 1000
+		const label = timeDividerLabel(prev, curr, 'en-US')
+		// Must contain the year token — same-year would only show month+day.
+		expect(label).toMatch(/2025/)
 		expect(label).toMatch(/\d{1,2}:\d{2}/)
 	})
 
