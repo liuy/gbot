@@ -627,11 +627,13 @@ func CheckResponseForCacheBreak(key PromptStateKey, cacheReadTokens, cacheCreati
 		return
 	}
 
-	changes := prev.PendingChanges
-
-	// Cache deletions via cached microcompact are expected
-	// Source: TS lines 473-481
+	// Critical section: snapshot changes + handle cache-deletion + clear
+	// pending state atomically. Multiple CheckResponseForCacheBreak calls
+	// can run concurrently (Stream goroutine + next Complete call), so the
+	// whole read-modify-write on prev.* must be under one lock to avoid
+	// TOCTOU races between the snapshot and the clear.
 	muState.Lock()
+	changes := prev.PendingChanges
 	if prev.CacheDeletionsPending {
 		prev.CacheDeletionsPending = false
 		prev.PendingChanges = nil
