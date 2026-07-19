@@ -190,8 +190,8 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
 }
 
 const avatarSizeClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md'
-const avatarGExtra = 'text-[11px] font-bold text-white'
-const avatarGStyle = 'background: linear-gradient(to bottom right, #00B4FF, #9D5CFF);'
+const avatarGExtra = 'text-[11px] font-bold avatar-g-bg'
+const avatarGStyle = 'background: linear-gradient(to bottom right, #00B4FF, #9D5CFF);color:#FFFFFF'
 const avatarUExtra = 'bg-gradient-to-br from-t2 to-t3'
 const userAvatarSVG =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a8 8 0 0116 0v1" /></svg>'
