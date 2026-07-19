@@ -191,10 +191,15 @@ function dateTimeLabel(curr: number, locale: string): string {
 // Returns the label for an iMessage-style time divider between prev and curr,
 // or null when no divider should be shown.
 //
-// - prev=null → date+time label (first-message-of-session anchor).
-// - Cross-day (>= 1 midnight) → date+time label for curr.
-// - Same-day gap >= 15 min → date+time label for curr.
+// - prev=null → date+time label for curr (first-message-of-session anchor).
+// - |curr - prev| crosses a day boundary → date+time label for curr.
+// - |curr - prev| >= 15 min (same day) → date+time label for curr.
 // - Otherwise → null (no divider).
+//
+// Absolute value: direction-agnostic so the caller doesn't have to think
+// about whether prev or curr is older. loadHistory walks backward in time
+// (curr older than prev) while streaming walks forward (curr newer); both
+// share the same rule.
 //
 // All dividers carry the date prefix (not just first-of-day) so historical
 // times can't be mistaken for today — without this, "21:30" after a
@@ -209,7 +214,12 @@ export function timeDividerLabel(
 	locale: string = typeof navigator !== 'undefined' ? navigator.language : 'en-US',
 ): string | null {
 	if (prev === null) return dateTimeLabel(curr, locale)
-	if (dayDiff(prev, curr) >= 1) return dateTimeLabel(curr, locale)
-	if (curr - prev >= 15 * 60 * 1000) return dateTimeLabel(curr, locale)
+	// Normalize: earlier timestamp first so dayDiff / subtraction produce
+	// positive values. loadHistory (backward walk) passes prev=newer,
+	// curr=older; streaming passes prev=older, curr=newer. Same rule.
+	const earlier = Math.min(prev, curr)
+	const later = Math.max(prev, curr)
+	if (dayDiff(earlier, later) >= 1) return dateTimeLabel(curr, locale)
+	if (later - earlier >= 15 * 60 * 1000) return dateTimeLabel(curr, locale)
 	return null
 }

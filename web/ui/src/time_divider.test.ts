@@ -135,7 +135,33 @@ describe('time divider (loadHistory)', () => {
     expect(dateTimeCount).toBe(before + 2)
   })
 
-  it('does not render a divider for sub-15min gaps', () => {
+  it('6 queries over 48min + 1 late query produces 5 dividers', () => {
+    // Real-world scenario: a productive morning of frequent queries.
+    // 6 queries at 8min intervals span 40min (q1@0..q6@40), then q7 at
+    // +48 (8min after q6) extends span to 48min. Then q8 16min after q7.
+    // Expected dividers fire at: q1 (anchor), q3 (+16), q5 (+32), q7 (+48),
+    // q8 (+64) — every 15min wall-clock from the previous divider.
+    vi.useFakeTimers()
+    const t0 = new Date(2026, 6, 19, 10, 0).getTime()
+    vi.setSystemTime(t0)
+    mount()
+    const times = [0, 8, 16, 24, 32, 40, 48, 64].map((m) => t0 + m * MIN)
+    times.forEach((at, i) => {
+      vi.setSystemTime(at)
+      dispatch({
+        type: 'history',
+        messages: [userMsgAt(`u${i}`, `q${i}`, at)],
+        nextCursor: '',
+        hasMore: false,
+      })
+    })
+    expect(timeDividerElements().length).toBe(5)
+  })
+
+  it('inserts divider when wall-clock from last divider crosses 15min', () => {
+    // Rule A: at least one divider every 15min wall-clock. baseline at
+    // now-20min anchors, m1 at now-10 (10min from anchor → no), m2 at now
+    // (20min from anchor divider → yes, despite only 10min from m1).
     vi.useFakeTimers()
     const now = new Date(2026, 6, 18, 12, 0).getTime()
     vi.setSystemTime(now)
@@ -149,8 +175,7 @@ describe('time divider (loadHistory)', () => {
       nextCursor: '',
       hasMore: false,
     })
-    // Only the baseline anchor; no new dividers.
-    expect(timeDividerElements().length).toBe(1)
+    expect(timeDividerElements().length).toBe(2)
   })
 
   it('renders Today divider when a page crosses day boundary', () => {
@@ -208,12 +233,14 @@ describe('time divider (loadHistory)', () => {
     expect(dividerElements().length).toBe(1)
   })
 
-  it('page-boundary: no time divider when gap < 15min OR envelope carries compactBoundary', () => {
+  it('no divider when subsequent page has sub-15min gap from last divider', () => {
+    // page-boundary: second dispatch arrives 5min after the first anchor —
+    // the gap from lastDivAt is 5min, so no divider fires. (The old
+    // compactBoundary envelope suppression is gone; envelope markers no
+    // longer affect the divider rule.)
     vi.useFakeTimers()
     const now = new Date(2026, 6, 18, 12, 0).getTime()
     vi.setSystemTime(now)
-
-    // (a) small positive gap on page-boundary → no time divider.
     mount()
     dispatch({
       type: 'history',
@@ -227,32 +254,8 @@ describe('time divider (loadHistory)', () => {
       nextCursor: '',
       hasMore: false,
     })
-    // Only the anchor from the first dispatch.
     expect(timeDividerElements().length).toBe(1)
     expect(dividerElements().length).toBe(0)
-
-    // (b) envelope compactBoundary suppresses time divider even when gap
-    // would qualify.
-    document.body.innerHTML = ''
-    listeners.clear()
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('existing2', 'existing', now - 2 * HOUR)],
-      nextCursor: '',
-      hasMore: false,
-    })
-    expect(timeDividerElements().length).toBe(1)
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('newMsg2', 'older', now - 3 * HOUR)],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    // anchor + 0 time page-boundary (suppressed) + 1 compact.
-    expect(timeDividerElements().length).toBe(1)
-    expect(dividerElements().length).toBe(1)
   })
 
   it('renders multiple dividers when several gaps within one page qualify', () => {
@@ -345,14 +348,14 @@ describe('time divider (streaming append)', () => {
     expect(timeDividerElements()[0].textContent).toMatch(/^Today\b/)
   })
 
-  it('query_start triggers divider after long gap', () => {
+  it('query_start (assistant stream) never inserts a divider', () => {
     vi.useFakeTimers()
     const now = new Date(2026, 6, 18, 12, 0).getTime()
     vi.setSystemTime(now)
     mountWithBaseline(now - 2 * HOUR)
     const before = timeDividerElements().length
     dispatchEvent({ type: 'query_start' })
-    expect(timeDividerElements().length).toBe(before + 1)
+    expect(timeDividerElements().length).toBe(before)
   })
 
   it('query_start does not trigger divider after short gap', () => {
@@ -365,58 +368,9 @@ describe('time divider (streaming append)', () => {
     expect(timeDividerElements().length).toBe(before)
   })
 
-  it('query_end updates lastActivityAt so a 30s-later send does not insert a divider', () => {
-    vi.useFakeTimers()
-    const t0 = new Date(2026, 6, 18, 12, 0).getTime()
-    vi.setSystemTime(t0)
-    // baseline at t0-1000ms.
-    mountWithBaseline(t0 - 1000)
-    // Dispatch user msg at t0 via history (loads with prev=baseline, gap=1s → no).
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('u1', 'q', t0)],
-      nextCursor: '',
-      hasMore: false,
-    })
-    // query_start at t0+1s — assistant shell pushed, gap to user msg = 1s → no.
-    vi.setSystemTime(t0 + 1000)
-    dispatchEvent({ type: 'query_start' })
-    const afterQueryStart = timeDividerElements().length
-    // query_end at t0+35min — should update assistant.lastActivityAt.
-    vi.setSystemTime(t0 + 1000 + 35 * MIN)
-    dispatchEvent({ type: 'query_end' })
-    // User sends 30s after query_end — gap = 30s, no divider.
-    vi.setSystemTime(t0 + 1000 + 35 * MIN + 30 * 1000)
-    setTextarea('next')
-    pressEnter()
-    expect(timeDividerElements().length).toBe(afterQueryStart)
-  })
-
-  it('appendError first-branch updates lastActivityAt so a 10min-later send does not insert a divider', () => {
-    vi.useFakeTimers()
-    const t0 = new Date(2026, 6, 18, 12, 0).getTime()
-    vi.setSystemTime(t0)
-    mountWithBaseline(t0 - 1000)
-    dispatch({
-      type: 'history',
-      messages: [userMsgAt('u1', 'q', t0)],
-      nextCursor: '',
-      hasMore: false,
-    })
-    vi.setSystemTime(t0 + 1000)
-    dispatchEvent({ type: 'query_start' })
-    const afterQueryStart = timeDividerElements().length
-    // Error 25min into the stream — appendError first-branch updates
-    // lastActivityAt to t0+25min+1s.
-    vi.setSystemTime(t0 + 1000 + 25 * MIN)
-    dispatch({ type: 'error', message: 'boom' })
-    expect(document.body.textContent).toContain('boom')
-    // User sends 10min later — gap = 10min → no divider.
-    vi.setSystemTime(t0 + 1000 + 25 * MIN + 10 * MIN)
-    setTextarea('next')
-    pressEnter()
-    expect(timeDividerElements().length).toBe(afterQueryStart)
-  })
+  // query_end / appendError no longer have dedicated divider tests:
+  // assistant completion time is irrelevant under the single-cursor rule
+  // (only user-to-user wall-clock matters).
 
   it('attachment non-streaming branch creates anchor and later gap divider', () => {
     vi.useFakeTimers()

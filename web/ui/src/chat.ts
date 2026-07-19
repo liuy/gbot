@@ -610,7 +610,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // Dividers are not tracked in messages[] (they aren't message roots) —
     // replaceChildren after detaching tracked roots clears any stragglers.
     messagesContainer.replaceChildren()
-    lastRenderedMsgAt = null
+    lastUserAt = null
+    lastDivAt = null
     nextCursor = ''
     hasMore = false
     loadingMore = false
@@ -789,7 +790,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       last.error = text
       last.status = 'done'
       last.lastActivityAt = Date.now()
-      lastRenderedMsgAt = last.lastActivityAt
       const err = document.createElement('div')
       err.className =
         'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
@@ -814,7 +814,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         domRoot: outer,
         contentDiv: content,
       }
-      appendMsgWithDivider(messagesContainer, m.startedAt, m.lastActivityAt, outer)
+      appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
       messages.push(m)
     }
     streaming = false
@@ -824,21 +824,43 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     cleanupStreamingRefs()
   }
 
-  // Last rendered message's "last activity" timestamp — the cursor for
-  // deciding whether to insert a time divider before the next message.
-  // Updated by appendMsgWithDivider on every message render (history load
-  // and streaming). Reset to null by resetAllState.
-  let lastRenderedMsgAt: number | null = null
+  // Last user message's startedAt — the cursor for deciding whether to
+  // insert a time divider before the NEXT user message. Only user turns
+  // update this; assistant replies don't, so divider gaps measure
+  // user-to-user (burst boundaries) instead of wall-clock adjacency.
+  // Reset to null by resetAllState.
+  // Two cursors, one timeline:
+  //   lastUserAt  — previous user message (for first-message anchor check)
+  //   lastDivAt   — previous divider (for the 15min wall-clock guarantee)
+  // A divider fires before a user message when EITHER (a) lastUserAt is
+  // null (first message anchor) OR (b) the wall-clock gap from lastDivAt
+  // crosses 15min. Rule (b) guarantees a divider every 15min even when
+  // user queries arrive closer together (e.g., three queries 8min apart
+  // over 16min span → two dividers, not one). Assistant replies never
+  // touch either cursor — they belong to the same burst.
+  let lastUserAt: number | null = null
+  let lastDivAt: number | null = null
 
-  // appendMsgWithDivider inserts a time divider before `dom` if the gap from
-  // the last rendered message warrants one, then appends `dom` to `parent`
-  // and advances lastRenderedMsgAt. Single source of truth for divider
-  // placement — no page-boundary or per-path logic elsewhere.
-  function appendMsgWithDivider(parent: Node, startedAt: number, lastActivityAt: number, dom: HTMLElement) {
-    const label = timeDividerLabel(lastRenderedMsgAt, startedAt)
-    if (label) parent.appendChild(buildTimeDivider(label))
+  // appendMsgWithDivider inserts a time divider before `dom` when role is
+  // 'user' AND (lastUserAt is null OR |startedAt - lastDivAt| >= 15min).
+  // Absolute value so loadHistory (older) and streaming (newer) share the
+  // same cursors. Assistant replies never trigger a divider.
+  function appendMsgWithDivider(parent: Node, role: 'user' | 'assistant', startedAt: number, dom: HTMLElement) {
+    if (role === 'user') {
+      const shouldInsert = lastUserAt === null ||
+        (lastDivAt !== null && Math.abs(startedAt - lastDivAt) >= 15 * 60 * 1000)
+      if (shouldInsert) {
+        // Label uses lastDivAt (not lastUserAt) so the cross-day / time-only
+        // decision matches the 15min wall-clock rule that triggered the insert.
+        const label = timeDividerLabel(lastDivAt, startedAt)
+        if (label) {
+          parent.appendChild(buildTimeDivider(label))
+          lastDivAt = startedAt
+        }
+      }
+      lastUserAt = startedAt
+    }
     parent.appendChild(dom)
-    lastRenderedMsgAt = lastActivityAt
   }
 
   function loadHistory(msg: Extract<ServerMessage, { type: 'history' }>) {
@@ -847,12 +869,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const before = messagesContainer.firstChild
     const wasEmpty = messages.length === 0
     const frag = document.createDocumentFragment()
-    // Local cursor for this loadHistory call only. Starts at the currently-
-    // displayed oldest message (messages[0]) so the first prepended message
-    // can compare against what's already on screen. Does NOT touch the
-    // outer lastRenderedMsgAt — that one tracks the newest message for the
-    // streaming path.
-    let localCursor: number | null = wasEmpty ? null : (messages[0]?.lastActivityAt ?? null)
+    // loadHistory prepends OLDER messages. The single cursor lastUserAt
+    // already tracks the previous user message regardless of direction —
+    // loadHistory and streaming share it via abs-time-delta rule.
 
     let batch: HistoryChatMsg[] = []
     const flushBatch = () => {
@@ -880,10 +899,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           setupStreaming()
           console.debug('[chat] initStreaming reason=loadHistory_runningTool streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
         }
-        const label = timeDividerLabel(localCursor, chat.startedAt)
-        if (label) frag.appendChild(buildTimeDivider(label))
-        frag.appendChild(outer)
-        localCursor = chat.startedAt
+        appendMsgWithDivider(frag, chat.role, chat.startedAt, outer)
         const m: MessageState = {
           id: chat.id,
           role: chat.role,
@@ -919,11 +935,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
 
     messagesContainer.insertBefore(frag, before)
-    // If this was the first load, lastRenderedMsgAt is still null — set it
-    // from the newest message so streaming continues correctly.
-    if (wasEmpty && messages.length > 0) {
-      lastRenderedMsgAt = messages[messages.length - 1].lastActivityAt
-    }
+    // On first load, lastUserAt was advanced through the page and ended at
+    // the newest user message (page is ASC). That's exactly what streaming
+    // needs for the next user-send comparison — nothing to restore.
     nextCursor = msg.nextCursor
     hasMore = msg.hasMore
     loadingMore = false
@@ -949,7 +963,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       domRoot: outer,
       contentDiv: content,
     }
-    appendMsgWithDivider(messagesContainer, m.startedAt, m.lastActivityAt, outer)
+    appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
     messages.push(m)
     streamContainer = content
     if (streamStartedAt === 0) {
@@ -1081,7 +1095,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               last.blocks = pendingBlocks.slice()
               last.status = 'done'
               last.lastActivityAt = Date.now()
-              lastRenderedMsgAt = last.lastActivityAt
             }
           } else {
             // REWIND path: no content. Remove the empty assistant shell +
@@ -1109,7 +1122,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             last.blocks = pendingBlocks.slice()
             last.status = 'done'
             last.lastActivityAt = Date.now()
-            lastRenderedMsgAt = last.lastActivityAt
           }
         }
 
@@ -1470,7 +1482,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             domRoot: outer,
             contentDiv: content,
           }
-          appendMsgWithDivider(messagesContainer, m.startedAt, m.lastActivityAt, outer)
+          appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
           messages.push(m)
         }
         if (sourceUUID === '') return
@@ -1508,7 +1520,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       domRoot: outer,
       contentDiv: content,
     }
-    appendMsgWithDivider(messagesContainer, m.startedAt, m.lastActivityAt, outer)
+    appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
     messages.push(m)
     conn.send({ type: 'message', text })
   }

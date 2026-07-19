@@ -177,4 +177,17 @@ describe('timeDividerLabel', () => {
 		// Must NOT be a time-only label.
 		expect(label).not.toMatch(/^\d{1,2}:\d{2}\s*(AM|PM)?$/)
 	})
+
+	it('returns label when curr is OLDER than prev (loadHistory backward walk)', () => {
+		// loadHistory prepends older pages. The caller may pass prev=newer
+		// (lastDivAt from a forward walk) and curr=older (page-internal
+		// message). The gap rule must be direction-agnostic: any wall-clock
+		// delta >= 15min fires a divider.
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date(2026, 6, 19, 12, 0).getTime())
+		const newer = new Date(2026, 6, 19, 11, 50).getTime()
+		const older = newer - 20 * 60 * 1000 // 20min before newer
+		const label = timeDividerLabel(newer, older, 'en-US')
+		expect(label).not.toBe(null)
+	})
 })
