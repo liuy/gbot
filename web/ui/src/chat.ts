@@ -408,7 +408,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   disconnectBanner.className =
     'absolute top-11 inset-x-0 z-50 ' +
     'card-bg border-b border-hairline ' +
-    'px-4 py-1.5 flex items-center ' +
+    'px-4 py-1.5 flex items-center justify-center ' +
     'transition-all duration-300 overflow-hidden max-h-0 opacity-0'
 
   const dcText = document.createElement('span')
