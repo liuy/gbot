@@ -6349,6 +6349,25 @@ func toolUseEvents(model, toolID, toolName, inputJSON string) []llm.StreamEvent 
 	}
 }
 
+// partialThinkingEvents creates a stream that starts thinking but never completes it.
+// thinking_start + thinking_delta emitted, but NO content_block_stop and NO message_stop.
+func partialThinkingEvents(model, thought string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: thought}},
+	}
+}
+
+// partialToolUseEventsNoStop creates events that start a tool_use block but never completes it.
+func partialToolUseEventsNoStop(model, toolID, toolName, inputJSON string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: toolID, Name: toolName}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: inputJSON}},
+	}
+}
+
 func partialTextEvents(model, text string) []llm.StreamEvent {
 	return []llm.StreamEvent{
 		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
@@ -6490,6 +6509,71 @@ func TestQuery_RetryExhausted(t *testing.T) {
 
 // TestQuery_NonRetryableTerminal verifies that API-level errors (e.g. 400) are NOT retried.
 // Provider already handles HTTP-level retries; engine should not duplicate.
+
+func TestRetry_ClosesOpenThinking(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	mp.addResponse(partialThinkingEvents("test", "thinking hard..."), nil)
+	mp.addResponse(subTextEvents("test", "recovered!"), nil)
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.retryConfig = &llm.RetryConfig{MaxRetries: 1, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t.Cleanup(func() { eng.Close() })
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+	thinkingEnd := tc.FindEvents(types.EventThinkingEnd)
+	if len(thinkingEnd) == 0 {
+		t.Fatal("expected EventThinkingEnd (close-on-error), got none")
+	}
+	thinkingStart := tc.FindEvents(types.EventThinkingStart)
+	if len(thinkingStart) != 1 {
+		t.Fatalf("expected 1 EventThinkingStart, got %d", len(thinkingStart))
+	}
+}
+
+func TestRetry_ClosesOpenTextBlock(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	mp.addResponse(partialTextEvents("test", "partial text"), nil)
+	mp.addResponse(subTextEvents("test", "recovered!"), nil)
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.retryConfig = &llm.RetryConfig{MaxRetries: 1, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t.Cleanup(func() { eng.Close() })
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+	textEnd := tc.FindEvents(types.EventTextEnd)
+	if len(textEnd) < 1 {
+		t.Fatalf("expected at least 1 EventTextEnd, got %d", len(textEnd))
+	}
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) == 0 {
+		t.Fatal("expected retry attempt, got none")
+	}
+}
+
+func TestRetry_ClosesOpenToolUse(t *testing.T) {
+	t.Parallel()
+	mp := &testProvider{}
+	mp.addResponse(partialToolUseEventsNoStop("test", "tu_int", "Grep", `{}`), nil)
+	mp.addResponse(subTextEvents("test", "recovered!"), nil)
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.retryConfig = &llm.RetryConfig{MaxRetries: 1, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t.Cleanup(func() { eng.Close() })
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+	toolEnd := tc.FindEvents(types.EventToolEnd)
+	if len(toolEnd) == 0 {
+		t.Fatal("expected EventToolEnd (close-on-error), got none")
+	}
+}
 func TestQuery_NonRetryableTerminal(t *testing.T) {
 	t.Parallel()
 

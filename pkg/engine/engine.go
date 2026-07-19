@@ -2128,6 +2128,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	var streamingExecutor *StreamingToolExecutor
 	hasContent := false
 	streamComplete := false
+	// Track which content blocks received content_block_stop.
+	// Used by the error path to emit close events for blocks left open.
+	blockStopped := make(map[int]bool)
 
 	for event := range streamCh {
 		select {
@@ -2255,6 +2258,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						Text: event.Delta.Text,
 					})
 				case "input_json_delta":
+					hasContent = true
 					if event.Index < len(blockAcc) && blockAcc[event.Index] != nil {
 						acc := blockAcc[event.Index]
 						acc.toolInput.WriteString(event.Delta.PartialJSON)
@@ -2275,6 +2279,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						})
 					}
 				case "thinking_delta":
+					hasContent = true
 					currentText.WriteString(event.Delta.Thinking)
 					e.emitEvent(types.QueryEvent{
 						Type: types.EventThinkingDelta,
@@ -2294,6 +2299,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 
 		case "content_block_stop":
 			idx := event.Index
+			blockStopped[idx] = true
 			if idx < len(contentBlocks) {
 				cb := &contentBlocks[idx]
 				switch cb.Type {
@@ -2452,6 +2458,34 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		}
 		if hasContent {
 			// Genuine stream failure: content received but no stop signal.
+			// Close any open blocks (thinking/text/tool_use that never got
+			// content_block_stop) so the frontend doesn't leave them stuck
+			// in "running" state.
+			for i, cb := range contentBlocks {
+				if blockStopped[i] {
+					continue
+				}
+				switch cb.Type {
+				case types.ContentTypeThinking:
+					elapsed := time.Since(thinkingStart)
+					e.emitEvent(types.QueryEvent{
+						Type:     types.EventThinkingEnd,
+						Thinking: &types.ThinkingEvent{Duration: elapsed},
+					})
+				case types.ContentTypeText:
+					e.emitEvent(types.QueryEvent{
+						Type: types.EventTextEnd,
+					})
+				case types.ContentTypeToolUse:
+					e.emitEvent(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID: cb.ID,
+							IsError:   true,
+						},
+					})
+				}
+			}
 			if streamingExecutor != nil {
 				streamingExecutor.Discard()
 			}
