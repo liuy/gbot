@@ -6,7 +6,7 @@ class MockWebSocket {
   static CLOSED = 3
   readyState = MockWebSocket.OPEN
   onopen: (() => void) | null = null
-  onclose: (() => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
   onerror: (() => void) | null = null
   onmessage: ((ev: { data: string }) => void) | null = null
   sentMessages: string[] = []
@@ -26,6 +26,7 @@ describe('ws reconnect backoff', () => {
   beforeEach(() => {
     MockWebSocket.instances = []
     vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.stubGlobal('location', { host: 'localhost' })
     vi.useFakeTimers()
     vi.resetModules()
   })
@@ -40,13 +41,13 @@ describe('ws reconnect backoff', () => {
 
     MockWebSocket.instances[0].onopen!()
 
-    MockWebSocket.instances[0].onclose!()
+    MockWebSocket.instances[0].onclose!({ code: 1006 } as CloseEvent)
     vi.advanceTimersByTime(999)
     expect(MockWebSocket.instances.length).toBe(1)
     vi.advanceTimersByTime(1)
     expect(MockWebSocket.instances.length).toBe(2)
 
-    MockWebSocket.instances[1].onclose!()
+    MockWebSocket.instances[1].onclose!({ code: 1006 } as CloseEvent)
     vi.advanceTimersByTime(999)
     expect(MockWebSocket.instances.length).toBe(2)
     vi.advanceTimersByTime(1)
@@ -84,7 +85,7 @@ describe('ws reconnect backoff', () => {
     conn.onStateChange((s) => states.push(s))
 
     MockWebSocket.instances[0].onopen!()
-    MockWebSocket.instances[0].onclose!()
+    MockWebSocket.instances[0].onclose!({ code: 1006 } as CloseEvent)
     expect(states).toEqual(['connected', 'reconnecting'])
 
     vi.advanceTimersByTime(1000)
@@ -101,11 +102,11 @@ describe('ws reconnect backoff', () => {
     MockWebSocket.instances[0].onopen!()
     // 5 failed reconnect attempts
     for (let i = 0; i < 5; i++) {
-      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
       vi.advanceTimersByTime(1000)
     }
     // After 5th failure, reconnectCount=6 > 5 → disconnected
-    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
 
     const reconnectingCount = states.filter(s => s === 'reconnecting').length
     expect(reconnectingCount).toBe(5)
@@ -120,10 +121,10 @@ describe('ws reconnect backoff', () => {
 
     MockWebSocket.instances[0].onopen!()
     for (let i = 0; i < 5; i++) {
-      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
       vi.advanceTimersByTime(1000)
     }
-    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!()
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
 
     const beforeLen = states.length
     // Try triggering another onclose on the same socket

@@ -32,6 +32,10 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 // takeover = swap WS + switchEngine. Deactivates old engine first (prevents
 // live events from reaching new WS before metadata), swaps activeWS, then
 // calls switchEngine which sends metadata (with embedded streamState snapshot).
+// The previous WS is notified with a "taken_over" message before close so
+// the old browser shows "disconnected" without auto-reconnecting — close
+// frame code detection is unreliable across browsers and gorilla versions;
+// an explicit application-level message is deterministic.
 func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	c.slotsMu.RLock()
 	if oldSlot := c.slots[c.ActiveID()]; oldSlot != nil {
@@ -39,7 +43,16 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	}
 	c.slotsMu.RUnlock()
 
-	c.activeWS.Store(ws)
+	if oldWS := c.activeWS.Swap(ws); oldWS != nil {
+		// Notify the old client before closing. A short deadline avoids
+		// blocking takeover if the old connection is stuck.
+		oldWS.SetWriteDeadline(time.Now().Add(time.Second))
+		payload, _ := json.Marshal(struct {
+			Type string `json:"type"`
+		}{Type: "taken_over"})
+		_ = oldWS.WriteMessage(websocket.TextMessage, payload)
+		oldWS.Close()
+	}
 	c.switchEngine(c.ActiveID())
 
 	c.readLoop(ws)

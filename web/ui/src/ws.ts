@@ -20,6 +20,7 @@ interface InternalState {
   reconnectCount: number
   reconnectTimer: ReturnType<typeof setTimeout> | null
   disposed: boolean
+  disableReconnect: boolean
 }
 
 let state: InternalState | null = null
@@ -33,6 +34,7 @@ function createState(): InternalState {
     reconnectCount: 0,
     reconnectTimer: null,
     disposed: false,
+    disableReconnect: false,
   }
 }
 
@@ -74,6 +76,11 @@ function connect(s: InternalState, wsUrl: string) {
   }
 
   ws.onclose = () => {
+    // Auto-reconnect on close unless taken_over was received.
+    // The server sends an explicit "taken_over" message before
+    // closing during takeover; the onmessage handler sets
+    // disableReconnect to prevent the ping-pong loop.
+    if (s.disableReconnect) return
     scheduleReconnect(s, wsUrl)
   }
 
@@ -86,6 +93,14 @@ function connect(s: InternalState, wsUrl: string) {
     try {
       msg = JSON.parse(ev.data) as ServerMessage
     } catch {
+      return
+    }
+    // Another client took over this session (e.g. phone takeover).
+    // Suppress auto-reconnect to avoid ping-pong between devices.
+    if (msg.type === 'taken_over') {
+      s.disableReconnect = true
+      s.connected = false
+      notifyState(s, 'disconnected')
       return
     }
     s.listeners.forEach((fn) => fn(msg))
@@ -104,6 +119,7 @@ export function getConnection(): WebSocketConnection {
 function manualReconnect() {
   if (!state) return
   state.reconnectCount = 0
+  state.disableReconnect = false  // reset takeover guard — user explicitly wants back
   const wsUrl = `ws://${location.host}/ws/chat`
   connect(state, wsUrl)
 }
