@@ -37,7 +37,7 @@ type AnthropicConfig struct {
 // NewAnthropicProvider creates a new Anthropic provider.
 func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 300 * time.Second
+		cfg.Timeout = DefaultHTTPTimeout
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.anthropic.com"
@@ -46,7 +46,7 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 	return &AnthropicProvider{
 		BaseProvider: BaseProvider{
 			name:        cfg.Name,
-			httpClient:  &http.Client{Timeout: cfg.Timeout, Transport: newLLMTransport()},
+			httpClient:  newLLMHTTPClient(cfg.Timeout),
 			retryConfig: cfg.RetryConfig,
 			idleTimeout: DefaultSSETimeout,
 		},

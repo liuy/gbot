@@ -47,9 +47,9 @@ func TestOpenAIProvider_Defaults(t *testing.T) {
 	if p.httpClient == nil {
 		t.Fatal("httpClient is nil")
 	}
-	// Verify default timeout is 300s
-	if p.httpClient.Timeout != 300*time.Second {
-		t.Errorf("httpClient.Timeout = %v, want %v", p.httpClient.Timeout, 300*time.Second)
+	// Verify default timeout is 45min (DefaultHTTPTimeout)
+	if p.httpClient.Timeout != 45*time.Minute {
+		t.Errorf("httpClient.Timeout = %v, want %v", p.httpClient.Timeout, 45*time.Minute)
 	}
 }
 

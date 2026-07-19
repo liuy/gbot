@@ -49,18 +49,15 @@ type OpenAIConfig struct {
 // NewOpenAIProvider creates a new OpenAI provider.
 func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 300 * time.Second
+		cfg.Timeout = DefaultHTTPTimeout
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
 	return &OpenAIProvider{
 		BaseProvider: BaseProvider{
-			name: cfg.Name,
-			httpClient: &http.Client{
-				Timeout:   cfg.Timeout,
-				Transport: newLLMTransport(),
-			},
+			name:        cfg.Name,
+			httpClient:  newLLMHTTPClient(cfg.Timeout),
 			retryConfig: DefaultRetryConfig(),
 			idleTimeout: 60 * time.Second,
 		},

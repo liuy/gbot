@@ -268,6 +268,24 @@ type BaseProvider struct {
 	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider
 }
 
+// DefaultHTTPTimeout is the overall timeout for a single LLM HTTP request
+// (connect + send + stream the response body). Long thinking + long replies
+// + tool-input streaming (where the idle timeout is disabled) can run tens
+// of minutes; 45min catches truly stuck requests without interrupting
+// normal long responses. The per-read SSE idle timeout (DefaultSSETimeout)
+// still guards against hung connections at 90s.
+const DefaultHTTPTimeout = 45 * time.Minute
+
+// newLLMHTTPClient builds the shared http.Client used by all providers.
+// timeout=0 keeps Go's default (no overall timeout) — pass
+// DefaultHTTPTimeout for the standard behavior.
+func newLLMHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: newLLMTransport(),
+	}
+}
+
 // Name returns the provider's identifier.
 func (b *BaseProvider) Name() string {
 	return b.name
