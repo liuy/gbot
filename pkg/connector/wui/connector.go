@@ -1099,9 +1099,13 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 	}
 	msgs := slot.engine.Messages()
 
-	// Query in progress: exclude messages[idx:] (covered by snapshot + live events).
+	// Query in progress: exclude messages[idx+1:] (in-flight assistant
+	// streaming covered by snapshot + live events). The user query at
+	// messages[idx] MUST be included — snapshot only carries assistant
+	// streaming blocks, not the user's input. Without this, the current
+	// query vanishes from history (and on reconnect).
 	if idx := slot.engine.QueryStartMsgIdx(); idx >= 0 && idx < len(msgs) {
-		msgs = msgs[:idx]
+		msgs = msgs[:idx+1]
 	}
 
 	if len(msgs) == 0 {

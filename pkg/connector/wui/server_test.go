@@ -907,14 +907,14 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 			ids[id] = true
 		}
 	}
-	for _, want := range []string{"p1", "pq", "pa"} {
+	for _, want := range []string{"p1", "pq", "pa", "goal"} {
 		if !ids[want] {
-			t.Errorf("history missing expected pre-query message %q", want)
+			t.Errorf("history missing expected message %q (user query must be included so it shows in UI)", want)
 		}
 	}
-	for _, banned := range []string{"goal", "skill-a", "tr", "next-a"} {
+	for _, banned := range []string{"skill-a", "tr", "next-a"} {
 		if ids[banned] {
-			t.Errorf("history must NOT include current-query message %q (would overlap with snapshot)", banned)
+			t.Errorf("history must NOT include in-flight assistant/tool message %q (would overlap with snapshot)", banned)
 		}
 	}
 }
