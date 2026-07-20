@@ -59,15 +59,15 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Glob": &mockRenderTool{},
 	}
-	// valid JSON wrapper, but the inner content is not valid JSON for the tool.
-	// DecodeResult fails → renderViaTool falls back to RenderResult(string(raw)).
+	// Valid JSON wrapper, but the inner content is not valid JSON for the tool.
+	// DecodeResult is NOT called because the content doesn't start with '{' or '['.
+	// The plain text passes through unchanged (not wrapped in quotes).
 	content := "[Tool spent 0s]garbage"
 	wrapped, _ := json.Marshal(content)
 	got, _ := renderToolOutput("Glob", wrapped, tools)
-	// The mockRenderTool.RenderResult returns "" for non-*globResult types.
-	// The fallback passes string(raw) which is not *globResult, so "" is expected.
-	if got != "" {
-		t.Errorf("renderToolOutput decode-error fallback = %q, want empty (mock returns empty for non-decoded)", got)
+	// Plain text output: the duration prefix is stripped, content returned as-is.
+	if got != "garbage" {
+		t.Errorf("renderToolOutput plain-text passthrough = %q, want %q", got, "garbage")
 	}
 }
 

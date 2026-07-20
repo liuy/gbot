@@ -727,10 +727,15 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	}
 
 	// Try tool's RenderResult with the decoded concrete type.
-	// If the tool exists, its RenderResult is authoritative — even empty output
-	// means the tool handled it (e.g. Bash with no stdout). Don't fallback.
-	if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-		return r, elapsed
+	// Only call renderViaTool when rest looks like JSON — agent tool results
+	// are plain text (not SubQueryResult JSON), and passing plain text to
+	// renderViaTool triggers the fallback path that json.Marshal-wraps the
+	// string in quotes. Plain markdown should pass through unchanged.
+	trimmed := strings.TrimLeft(rest, " \t\n\r")
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
+			return r, elapsed
+		}
 	}
 
 	// Fallback: try unwrapping one more level (gbot's {"output":"..."} format).

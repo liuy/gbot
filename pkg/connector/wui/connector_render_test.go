@@ -151,3 +151,50 @@ func TestRenderToolOutput_EmptyContent(t *testing.T) {
 		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
+
+// TestRenderToolOutput_AgentMarkdownNotJSONWrapped reproduces the bug where
+// agent tool results (which are plain markdown text, not SubQueryResult JSON)
+// got double-JSON-encoded by renderViaTool's fallback path. The DB stores
+// the result as a JSON string wrapping plain text like
+// "[Tool spent Xs]## heading\n...". renderToolOutput unwraps the JSON string
+// to get the plain text, then passes it to renderViaTool. The bug: the plain
+// text is converted back to json.RawMessage, DecodeResult fails (it's not
+// JSON), and the fallback RenderResult(string) wraps it in quotes via
+// json.Marshal.
+//
+// Expected: the plain text passes through unchanged, no surrounding quotes.
+func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
+	t.Parallel()
+	agentTool := &decodeMockTool{
+		renderFn: func(data any) string {
+			// Mimic AgentTool.RenderResult: SubQueryResult returns Content;
+			// anything else falls back to json.Marshal which is the bug.
+			if r, ok := data.(*types.SubQueryResult); ok {
+				return r.Content
+			}
+			b, _ := json.Marshal(data)
+			return string(b)
+		},
+		decodeFn: func(raw json.RawMessage) (any, error) {
+			// Mimic AgentTool.DecodeResult: expects SubQueryResult JSON.
+			// Plain markdown text will fail to decode.
+			var r types.SubQueryResult
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return nil, err
+			}
+			return &r, nil
+		},
+	}
+	tools := map[string]tool.Tool{"Agent": agentTool}
+
+	// Simulate the persisted format: JSON string wrapping plain markdown.
+	plain := "[Tool spent 38.3s]## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
+	wrapped, _ := json.Marshal(plain)
+	got, _ := renderToolOutput("Agent", wrapped, tools)
+
+	// Expected: duration prefix stripped, markdown preserved verbatim.
+	want := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
+	if got != want {
+		t.Errorf("renderToolOutput agent markdown:\n got = %q\n want = %q", got, want)
+	}
+}
