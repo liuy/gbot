@@ -1428,11 +1428,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			// the model picker, not on a spinner tick)
 
 			return true, tea.Batch(
-			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-				return spinnerTickMsg{}
-			}),
-		)
-	}
+				tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+					return spinnerTickMsg{}
+				}),
+			)
+		}
 		return true, nil
 
 	case bgTickMsg:
@@ -1737,5 +1737,3 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 func (a *App) markViewportDirty() {
 	a.contentDirty = true
 }
-
-

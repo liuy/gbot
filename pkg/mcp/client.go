@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -554,53 +553,19 @@ func getConnectionTimeout() time.Duration {
 //
 // Total max: ~500ms. Source: client.ts:1445 — "rapid escalation to keep CLI responsive"
 // ---------------------------------------------------------------------------
-
-// ProcessCleanupEscalation ensures a process terminates via signal escalation.
-// Exported for testing. Source: client.ts:1428-1557
-func ProcessCleanupEscalation(proc *os.Process) {
-	if proc == nil {
-		return
-	}
-	pid := proc.Pid
-	if !processExists(pid) {
-		return
-	}
-
-	// Step 1: SIGINT — Source: client.ts:1438-1439
-	_ = syscall.Kill(pid, syscall.SIGINT)
-	if waitProcessGone(pid, 100*time.Millisecond) {
-		return
-	}
-
-	// Step 2: SIGTERM — Source: client.ts:1492-1493
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	if waitProcessGone(pid, 400*time.Millisecond) {
-		return
-	}
-
-	// Step 3: SIGKILL — Source: client.ts:1523-1524
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-}
-
-// processExists checks if a process with the given PID is still running.
-// Uses syscall.Kill(pid, 0) which checks existence without sending a signal.
-// Source: client.ts:1453 — process.kill(pid, 0)
-func processExists(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
-}
-
-// waitProcessGone polls until the process exits or timeout elapses.
-// Returns true if the process is gone within the timeout.
-func waitProcessGone(pid int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !processExists(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return !processExists(pid)
-}
+// Process cleanup escalation — Source: client.ts:1426-1557
+//
+// For stdio servers: after closing the transport, ensure the child process
+// terminates. Some MCP servers (especially Docker containers) ignore the
+// SDK's close signal, so we escalate:
+//   1. SIGINT (Ctrl+C — graceful)
+//   2. SIGTERM (after 100ms — force graceful)
+//   3. SIGKILL (after 400ms — uncatchable)
+//
+// Platform-specific implementations live in process_unix.go and
+// process_windows.go — Windows has no signal concept so it goes straight
+// to TerminateProcess.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Compile-time checks

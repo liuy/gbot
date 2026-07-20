@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/liuy/gbot/pkg/project"
 )
@@ -39,7 +38,7 @@ func acquirePID(projectDir string) (cleanup func(), err error) {
 }
 
 // isProcessAlive checks whether a process with the given PID exists.
+// Platform-specific: see pid_unix.go and pid_windows.go.
 func isProcessAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil
+	return isProcessAliveImpl(pid)
 }

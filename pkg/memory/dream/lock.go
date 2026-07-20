@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -148,9 +147,6 @@ func RecordConsolidation(memoryDir string) {
 }
 
 // isProcessRunning checks if a process with the given PID is alive.
-// Uses signal 0 (existence check without sending a signal).
+// Platform-specific implementations live in process_status_unix.go and
+// process_status_windows.go.
 // TS source: utils/genericProcessUtils.ts — isProcessRunning.
-func isProcessRunning(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil
-}

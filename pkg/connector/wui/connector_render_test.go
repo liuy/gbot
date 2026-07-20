@@ -152,17 +152,9 @@ func TestRenderToolOutput_EmptyContent(t *testing.T) {
 	}
 }
 
-// TestRenderToolOutput_AgentMarkdownNotJSONWrapped reproduces the bug where
-// agent tool results (which are plain markdown text, not SubQueryResult JSON)
-// got double-JSON-encoded by renderViaTool's fallback path. The DB stores
-// the result as a JSON string wrapping plain text like
-// "[Tool spent Xs]## heading\n...". renderToolOutput unwraps the JSON string
-// to get the plain text, then passes it to renderViaTool. The bug: the plain
-// text is converted back to json.RawMessage, DecodeResult fails (it's not
-// JSON), and the fallback RenderResult(string) wraps it in quotes via
-// json.Marshal.
-//
-// Expected: the plain text passes through unchanged, no surrounding quotes.
+// TestRenderToolOutput_AgentMarkdownNotJSONWrapped verifies that plain
+// markdown agent tool results pass through renderViaTool without being
+// re-encoded as JSON strings.
 func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 	t.Parallel()
 	agentTool := &decodeMockTool{

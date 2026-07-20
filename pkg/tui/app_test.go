@@ -9073,23 +9073,6 @@ func TestTextDelta_ClearsRetryActiveAfterRetry(t *testing.T) {
 	}
 }
 
-// TestTurnStart_QuotaCounterEvery3rdTurn verifies that main-engine turnStart
-// increments the quota turn counter and returns a fetch cmd only on every 3rd
-// turn (turns 1-2 return no fetch cmd; turn 3 and 6 do).
-// queryEndMsg's existing fetch is the final value per query and resets the counter.
-//
-// N=3 because a single LLM turn may batch multiple tool calls — a "9 tool
-// call" task is actually ~3 turns, and we want a mid-stream fetch there.
-// countingFetcher tracks how many times Fetch was called.
-type countingFetcher struct {
-	calls int
-}
-
-func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
-	c.calls++
-	return quota.Info{Used: 50}, nil
-}
-
 // ---------------------------------------------------------------------------
 // SetProviders: quota fetcher must match the resolved provider, not Providers[0]
 // ---------------------------------------------------------------------------
