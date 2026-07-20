@@ -19,7 +19,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
-	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
@@ -1213,22 +1212,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, a.readEvents()
 
-	case quotaUpdatedMsg:
-		// Drop stale fetches triggered before the current provider switch.
-		// Async fetches run in the background; if zhipu's HTTP reply arrives
-		// after we've switched to minimax, ignoring it preserves the fresh
-		// (or empty) state set by refreshQuotaFromProvider.
-		if m.seq != a.quotaFetchSeq {
-			return true, nil
-		}
-		// Update status bar with fresh quota. Errors are silent —
-		// the previous value (if any) stays until a successful fetch.
-		if m.err == nil {
-			info := m.info
-			a.status.SetQuota(&info)
-		}
-		return true, nil
-
 	case modelQuotaFetchedMsg:
 		if m.err != nil || a.activeDialog == nil || len(a.modelPickerItems) == 0 {
 			return true, nil
@@ -1441,20 +1424,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			outputTarget := max(a.repl.ResponseCharCount()/4, a.repl.outputTokenTarget)
 			a.repl.displayedOutputTokens = animateTokenValue(a.repl.displayedOutputTokens, outputTarget)
 
-			// Quota fetch piggybacks on the 100ms spinner tick: every 100
-			// ticks (~10s) fire one fetch.
-			var fetchCmd tea.Cmd
-			if a.toolBlinkTick%100 == 0 {
-				fetchCmd = a.fetchQuota()
-			}
+			// (no quota fetch here — quota is only refreshed on demand by
+			// the model picker, not on a spinner tick)
 
 			return true, tea.Batch(
-				tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-					return spinnerTickMsg{}
-				}),
-				fetchCmd,
-			)
-		}
+			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+				return spinnerTickMsg{}
+			}),
+		)
+	}
 		return true, nil
 
 	case bgTickMsg:
@@ -1760,34 +1738,4 @@ func (a *App) markViewportDirty() {
 	a.contentDirty = true
 }
 
-// quotaUpdatedMsg carries a fresh quota snapshot from the async fetcher.
-// seq ties the response to the provider context at the time of fetch —
-// if the user switches provider mid-flight, the stale response is dropped.
-type quotaUpdatedMsg struct {
-	info quota.Info
-	err  error
-	seq  int
-}
 
-// fetchQuota returns a tea.Cmd that queries the current provider's quota
-// endpoint and produces a quotaUpdatedMsg. Returns nil cmd if no fetcher.
-func (a *App) fetchQuota() tea.Cmd {
-	if a.quotaFetcher == nil {
-		return nil
-	}
-	seq := a.quotaFetchSeq
-	fetcher := a.quotaFetcher
-	provider := a.CurrentProvider()
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		info, err := fetcher.Fetch(ctx)
-		if err != nil {
-			slog.Error("quota: fetch failed", "provider", provider, "error", err)
-		} else {
-			slog.Info("quota: fetched", "provider", provider,
-				"used", info.Used, "remaining", info.Remaining(), "reset_at", info.ResetAt)
-		}
-		return quotaUpdatedMsg{info: info, err: err, seq: seq}
-	}
-}

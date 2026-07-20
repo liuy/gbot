@@ -1134,7 +1134,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		attachmentMsg, idleAbortedMsg,
 		infoMsg, submitMsg, spinnerTickMsg, bgTickMsg,
 		permissionAskMsg, inputAskMsg, retryAttemptMsg,
-		quotaUpdatedMsg, modelQuotaFetchedMsg, userMessageMsg:
+		modelQuotaFetchedMsg, userMessageMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd

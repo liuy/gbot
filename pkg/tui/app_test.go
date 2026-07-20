@@ -1142,47 +1142,6 @@ func TestApp_Update_SpinnerTick_NotStreaming_ReturnsNil(t *testing.T) {
 // the old turnStart per-3-turn approach.
 //
 // Strategy: two sub-tests.
-//  1. fetchUnit — fetchQuota() returns a cmd that, when executed,
-//     calls the quota fetcher exactly once.
-//  2. tickTrigger — after 100 spinner ticks, the returned cmd is non-nil
-//     (contains a fetch), proving the %100 gate works.
-func TestApp_QuotaFetch_PiggybacksOnSpinnerTick(t *testing.T) {
-	t.Run("fetchUnit", func(t *testing.T) {
-		app := newTestApp(&tuiMockProvider{})
-		fetcher := &countingFetcher{}
-		app.quotaFetcher = fetcher
-
-		cmd := app.fetchQuota()
-		if cmd == nil {
-			t.Fatal("fetchQuota() returned nil cmd")
-		}
-		msg := cmd()
-		if _, ok := msg.(quotaUpdatedMsg); !ok {
-			t.Fatalf("fetchQuota() cmd returned %T, want quotaUpdatedMsg", msg)
-		}
-		if fetcher.calls != 1 {
-			t.Errorf("fetcher.Fetch calls = %d, want 1", fetcher.calls)
-		}
-	})
-	t.Run("tickTrigger", func(t *testing.T) {
-		app := newTestApp(&tuiMockProvider{})
-		app.repl.StartStreamingForTest()
-		app.spinner.Start()
-		fetcher := &countingFetcher{}
-		app.quotaFetcher = fetcher
-
-		// 99 ticks → no fetch (toolBlinkTick=99, 99%100≠0)
-		for range 99 {
-			app.updateRepl(spinnerTickMsg{})
-		}
-		// 100th tick → fetch should fire
-		_, cmd := app.updateRepl(spinnerTickMsg{})
-		if cmd == nil {
-			t.Fatal("at tick 100: spinner tick returned nil cmd, expected Batch with fetch")
-		}
-	})
-}
-
 // ---------------------------------------------------------------------------
 // AppendChunk / AppendTextItem — nil lastMsg
 // ---------------------------------------------------------------------------
