@@ -127,7 +127,7 @@ function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
-  div.className = 'md-body md-text text-t1 text-[15px]'
+  div.className = 'md-body md-text text-t1 text-[15px] break-words'
   insertBefore(parent, div, before ?? null)
   return div
 }

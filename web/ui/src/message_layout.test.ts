@@ -145,6 +145,26 @@ describe('committed message layout (via loadHistory)', () => {
     expect(mdBody.querySelector('strong')?.textContent).toBe('bold')
   })
 
+  it('assistant md-body breaks long unbreakable strings (word-break)', () => {
+    mount()
+    dispatch({
+      type: 'history',
+      messages: [
+        assistantWithBlocks('a-1', [{
+          kind: 'text',
+          text: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        }]),
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+    const mdBody = document.querySelector('.md-body') as HTMLElement
+    // jsdom does not compute Tailwind utility classes, so we assert the
+    // class is present on the element (the CSS rule itself is verified
+    // visually in the browser).
+    expect(mdBody.className).toMatch(/break-words|break-all/)
+  })
+
   it('user and assistant avatars share the same size class for vertical alignment', () => {
     mount()
     dispatch({
