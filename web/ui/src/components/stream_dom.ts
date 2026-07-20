@@ -484,6 +484,7 @@ export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
 }
 
 export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
+  handles.childrenContainer.replaceChildren()
   handles.childrenContainer.classList.add('hidden')
   const svg = handles.header.querySelector('svg')
   if (svg) svg.setAttribute('class', chevronClass)

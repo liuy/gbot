@@ -185,7 +185,7 @@ describe('sub-agent nesting', () => {
     const children = a1.querySelector('[data-tool-children]') as HTMLElement
     // Running parent → auto-expanded.
     expect(children.classList.contains('hidden')).toBe(false)
-    // Finish agent-1: tool_end should auto-collapse.
+    // Finish agent-1: tool_end should auto-collapse AND clear children.
     dispatch({
       type: 'event',
       event: {
@@ -194,5 +194,8 @@ describe('sub-agent nesting', () => {
       },
     })
     expect(children.classList.contains('hidden')).toBe(true)
+    // Children content must be cleared (not just hidden) so re-expanding
+    // doesn't show stale streaming output from the sub-agent.
+    expect(children.children.length).toBe(0)
   })
 })
