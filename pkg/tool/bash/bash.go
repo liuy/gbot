@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/liuy/gbot/pkg/permission"
@@ -407,10 +406,10 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("command %q exceeded %s", in.Command, timeout))
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", in.Command)
+	cmd := exec.CommandContext(ctx, resolveShellCommand(), "-c", in.Command)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttrForGroup(cmd)
 
 	var stderr bytes.Buffer
 	cmd.Stdout = s
@@ -458,10 +457,10 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	taskCtx, taskCancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(taskCtx, "bash", "-c", in.Command)
+	cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", in.Command)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttrForGroup(cmd)
 
 	var stderr bytes.Buffer
 	cmd.Stdout = s
@@ -773,10 +772,10 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			defer taskCancel()
 			defer s.FinalUpdate()
 
-			cmd := exec.CommandContext(taskCtx, "bash", "-c", in.Command)
+			cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", in.Command)
 			cmd.Dir = cwd
 			cmd.Env = os.Environ()
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			setSysProcAttrForGroup(cmd)
 			cmd.Stdout = s
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr

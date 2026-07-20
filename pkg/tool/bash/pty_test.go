@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aymanbagabas/go-pty"
 	"github.com/liuy/gbot/pkg/tool"
 )
 
@@ -155,41 +157,7 @@ func TestExecuteNonPTY_GenericError(t *testing.T) {
 	}
 }
 
-// --- openPTY ---
-
-func TestOpenPTY_Success(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-
-	master, slave, err := openPTY()
-	if err != nil {
-		t.Fatalf("openPTY() error: %v", err)
-	}
-	if master == nil || slave == nil {
-		t.Fatal("openPTY() returned nil file")
-	}
-	_ = master.Close()
-	_ = slave.Close()
-}
-
-func TestOpenPTY_SlavePath(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-
-	master, slave, err := openPTY()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer master.Close()
-	defer slave.Close()
-
-	// Verify slave path is not empty
-	if slave.Name() == "" {
-		t.Error("slave.Name() returned empty string")
-	}
-}
+// --- openPTY removed: go-pty handles master/slave allocation internally. ---
 
 // --- PTY command tests ---
 
@@ -479,38 +447,7 @@ func TestEnsureSocketInitialized_ConcurrentInit(t *testing.T) {
 	}
 }
 
-// --- makeRaw / restoreTerminal ---
-
-func TestMakeRaw_RestoreTerminal(t *testing.T) {
-	state, err := makeRaw(0)
-	if err != nil {
-		t.Skipf("makeRaw failed: %v (not a terminal?)", err)
-	}
-	if err := restoreTerminal(0, state); err != nil {
-		t.Errorf("restoreTerminal() error: %v", err)
-	}
-}
-
-func TestMakeRaw_RestoreTerminal_WithPTY(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-
-	master, slave, err := openPTY()
-	if err != nil {
-		t.Fatalf("openPTY() error: %v", err)
-	}
-	defer master.Close()
-	defer slave.Close()
-
-	state, err := makeRaw(int(slave.Fd()))
-	if err != nil {
-		t.Fatalf("makeRaw on PTY slave: %v", err)
-	}
-	if err := restoreTerminal(int(slave.Fd()), state); err != nil {
-		t.Errorf("restoreTerminal on PTY slave: %v", err)
-	}
-}
+// --- makeRaw / restoreTerminal removed: go-pty sets raw mode internally. ---
 
 // --- applyEnvOverrides (PTY context) ---
 
@@ -570,20 +507,7 @@ func TestPtyCommand_StartError(t *testing.T) {
 	}
 }
 
-func TestOpenPTY_NoPtmx(t *testing.T) {
-	orig := ptmxPath
-	ptmxPath = "/nonexistent/ptmx/gbot-test"
-	defer func() { ptmxPath = orig }()
-
-	_, _, err := openPTY()
-	if err == nil {
-		t.Error("expected error with invalid ptmx path")
-	}
-	if !strings.Contains(err.Error(), "open /dev/ptmx") {
-		// The error message references the original path
-		t.Logf("error = %v", err)
-	}
-}
+// TestOpenPTY_NoPtmx removed: openPTY() is gone (go-pty handles ptmx internally).
 
 func TestIsPTYAvailable_NotLinux(t *testing.T) {
 	orig := checkIsLinux
@@ -605,11 +529,16 @@ func TestIsPTYAvailable_NoPtmx(t *testing.T) {
 	}
 }
 
-func TestPtyCommand_OpenPTYError(t *testing.T) {
-	// Trigger openPTY failure inside ptyCommand
-	orig := ptmxPath
-	ptmxPath = "/nonexistent/ptmx/gbot-test"
-	defer func() { ptmxPath = orig }()
+// TestRunPTYCommand_OpenPTYError exercises the ptyNew hook to verify that
+// a pty.New() failure is surfaced via openPTYSession's "open PTY" wrap.
+// Without this hook, the error path is unreachable from tests (real pty.New
+// only fails on exhausted fds / kernel PTY starvation).
+func TestRunPTYCommand_OpenPTYError(t *testing.T) {
+	orig := ptyNew
+	defer func() { ptyNew = orig }()
+	ptyNew = func() (pty.Pty, error) {
+		return nil, errors.New("synthetic pty.New failure")
+	}
 
 	_, _, err := runPTYCommand(
 		context.Background(),
@@ -621,10 +550,13 @@ func TestPtyCommand_OpenPTYError(t *testing.T) {
 		nil,
 	)
 	if err == nil {
-		t.Error("expected error when openPTY fails")
+		t.Fatal("expected error from openPTYSession, got nil")
 	}
 	if !strings.Contains(err.Error(), "open PTY") {
-		t.Errorf("error = %v, want open PTY error", err)
+		t.Errorf("error = %v, want 'open PTY' substring", err)
+	}
+	if !strings.Contains(err.Error(), "synthetic pty.New failure") {
+		t.Errorf("error = %v, want wrapped 'synthetic pty.New failure'", err)
 	}
 }
 
@@ -736,58 +668,7 @@ func TestExitCodeFromWait_NonExitError(t *testing.T) {
 	}
 }
 
-// --- openPTY hooks ---
-
-func TestOpenPTY_IoctlGetPtyNumError(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-	orig := ioctlGetPtyNum
-	ioctlGetPtyNum = func(fd int) (int, error) { return 0, fmt.Errorf("mock TIOCGPTN error") }
-	defer func() { ioctlGetPtyNum = orig }()
-
-	_, _, err := openPTY()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "TIOCGPTN") {
-		t.Errorf("error = %v, want TIOCGPTN error", err)
-	}
-}
-
-func TestOpenPTY_IoctlUnlockPtyError(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-	orig := ioctlUnlockPty
-	ioctlUnlockPty = func(fd int) error { return fmt.Errorf("mock TIOCSPTLCK error") }
-	defer func() { ioctlUnlockPty = orig }()
-
-	_, _, err := openPTY()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "TIOCSPTLCK") {
-		t.Errorf("error = %v, want TIOCSPTLCK error", err)
-	}
-}
-
-func TestOpenPTY_SlaveOpenError(t *testing.T) {
-	if !isPTYAvailable() {
-		t.Skip("PTY not available")
-	}
-	orig := openSlavePty
-	openSlavePty = func(path string) (*os.File, error) { return nil, fmt.Errorf("mock slave error") }
-	defer func() { openSlavePty = orig }()
-
-	_, _, err := openPTY()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "open slave") {
-		t.Errorf("error = %v, want open slave error", err)
-	}
-}
+// --- openPTY hook tests removed: openPTY and its ioctl hooks are gone. ---
 
 // --- exitCodeFromWait — signal-based exit codes ---
 
@@ -829,8 +710,8 @@ func TestPTYSession_WriteInput_Success(t *testing.T) {
 		t.Fatalf("WriteInput() error: %v", err)
 	}
 
-	// Close master to signal EOF to cat
-	_ = session.Master.Close()
+	// Close the PTY to signal EOF to cat
+	session.Close()
 
 	// Wait for process to exit — cat gets SIGHUP on master close, which is expected.
 	// Accept either clean exit (nil) or signal-terminated (*exec.ExitError).
@@ -851,8 +732,8 @@ func TestPTYSession_WriteInput_ClosedFD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openPTYSession() error: %v", err)
 	}
-	// Close master before writing
-	_ = session.Master.Close()
+	// Close the PTY before writing
+	session.Close()
 
 	err = session.WriteInput("hello\n")
 	if err == nil {

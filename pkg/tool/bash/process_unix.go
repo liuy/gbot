@@ -1,6 +1,9 @@
+//go:build !windows
+
 package bash
 
 import (
+	"os/exec"
 	"syscall"
 )
 
@@ -35,4 +38,15 @@ func killProcess(pid int) {
 		return
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+// setSysProcAttrForGroup sets Setpgid=true on cmd.SysProcAttr so the spawned
+// child becomes its own process-group leader. Required for killProcessTree's
+// negative-PID kill to reach the entire tree. Called from non-PTY spawn paths
+// in bash.go. On Windows this is a no-op (no process groups).
+func setSysProcAttrForGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 }

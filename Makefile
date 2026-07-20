@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak
+.PHONY: all build build-debug build-all build-windows debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -20,6 +20,14 @@ build: web-build
 
 build-debug:
 	go build $(DEBUG_GCFLAGS) -o $(BINARY_DEBUG) $(CMD)
+
+# build-windows cross-compiles for windows/amd64 from any OS.
+# Catches any Unix-only symbol leaking into shared bash code (kill path,
+# PTY session, syscall usage). Excluded from `build`/`all` so default builds
+# stay Linux-only — invoked explicitly via `make build-windows` or via
+# `make check`.
+build-windows:
+	GOOS=windows GOARCH=amd64 go build ./...
 
 # Alias for clarity when only one is wanted.
 build-all: build
@@ -45,7 +53,7 @@ test:
 lint:
 	golangci-lint run $(ALL)
 
-check: build test lint fix web-lint web-weak
+check: build build-windows test lint fix web-lint web-weak
 
 fix:
 	@gofmt -w $(shell find ./pkg ./cmd -name '*.go')

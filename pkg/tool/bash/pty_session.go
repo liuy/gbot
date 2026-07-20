@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
+	"github.com/aymanbagabas/go-pty"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 
@@ -17,56 +16,53 @@ import (
 )
 
 // PTYSession manages a PTY-based command execution.
-// Owns the master/slave fd pair, screen, and output state.
-// Methods follow the lifecycle: openPTYSession → Start → Drain → Wait → Close.
+// Wraps go-pty's Pty + Cmd so the layer above (bash.go) doesn't need to
+// know whether the runtime is Unix or Windows — go-pty abstracts both.
+//
+// Lifecycle: openPTYSession → Start → Drain → Wait → Close.
 type PTYSession struct {
-	Master    *os.File
-	Slave     *os.File
+	Pty       pty.Pty
+	Cmd       *pty.Cmd
 	Screen    *tool.Screen
-	Cmd       *exec.Cmd
 	Output    *StreamingOutput
 	StartedAt time.Time
+	closeOnce sync.Once
 }
 
-// openPTYSession opens a new PTY master/slave pair.
+// openPTYSession opens a new go-pty Pty.
 func openPTYSession() (*PTYSession, error) {
-	master, slave, err := openPTY()
+	p, err := ptyNew()
 	if err != nil {
 		return nil, fmt.Errorf("open PTY: %w", err)
 	}
 	return &PTYSession{
-		Master: master,
-		Slave:  slave,
+		Pty: p,
 	}, nil
 }
 
-// Start builds and starts the command in the PTY.
-// Closes slave in parent process after starting.
+// Start builds and starts the command attached to the PTY.
+// On Unix, closeSlaveAfterStart closes the parent's slave end so the master
+// receives EOF when the child exits — without this, Drain would block forever
+// on commands that exit naturally.
 func (s *PTYSession) Start(cmd string, dir string, env []string, screen *tool.Screen, onStart ...func(pid int)) error {
 	// Set initial window size from terminal
-	_ = setPTYWindowSize(s.Master.Fd())
+	_ = setPTYWindowSize(s.Pty)
 
 	s.Screen = screen
 
-	// Build command to run in PTY
-	s.Cmd = exec.Command(shellCommand, "-c", cmd)
+	// Build command attached to PTY. go-pty sets SysProcAttr (Setctty/Setsid
+	// on Unix, ConPTY pseudoconsole attribute on Windows) internally.
+	s.Cmd = s.Pty.Command(resolveShellCommand(), "-c", cmd)
 	s.Cmd.Dir = dir
 	s.Cmd.Env = env
-	s.Cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setctty: true,
-		Setsid:  true,
-	}
-	s.Cmd.Stdin = s.Slave
-	s.Cmd.Stdout = s.Slave
-	s.Cmd.Stderr = s.Slave
 
 	if err := s.Cmd.Start(); err != nil {
-		_ = s.Slave.Close()
 		return fmt.Errorf("start command: %w", err)
 	}
 
-	// Close slave in parent process — child has its own dup
-	_ = s.Slave.Close()
+	// Close slave end in parent on Unix so master receives EOF when child exits.
+	// No-op on Windows (ConPTY uses pipes, not master/slave).
+	closeSlaveAfterStart(s.Pty)
 
 	s.StartedAt = time.Now()
 
@@ -91,9 +87,6 @@ func (s *PTYSession) Drain(ctx context.Context, emitAskInput func(tail string, m
 	var partialLine bool
 	var lastLines []string
 
-	// Cache fd once to avoid data race with Close().
-	masterFd := int(s.Master.Fd())
-
 	// readCh receives PTY read results from a goroutine, allowing the main
 	// loop to select between data arrival and a stall timer.
 	type readResult struct {
@@ -103,7 +96,7 @@ func (s *PTYSession) Drain(ctx context.Context, emitAskInput func(tail string, m
 	readCh := make(chan readResult, 1)
 	go func() {
 		for {
-			n, err := syscall.Read(masterFd, buf)
+			n, err := s.Pty.Read(buf)
 			var data []byte
 			if n > 0 {
 				data = make([]byte, n)
@@ -231,29 +224,36 @@ func trackPartialLines(p []byte, partialLine bool, lastLines []string) (bool, []
 	return partialLine, lastLines
 }
 
-// WriteInput writes text to the PTY master fd.
+// WriteInput writes text to the PTY.
 // Serial model: only called from Drain after receiving user input.
 func (s *PTYSession) WriteInput(text string) error {
-	_, err := syscall.Write(int(s.Master.Fd()), []byte(text))
+	_, err := s.Pty.Write([]byte(text))
 	if err != nil {
 		return fmt.Errorf("pty write: %w", err)
 	}
 	return nil
 }
 
-// Close cleans up the PTY file descriptors.
+// Close cleans up the PTY. Safe to call multiple times — go-pty's unixPty
+// tracks a closed flag; ConPty's pipes are idempotent to close.
+// Close releases PTY resources. Safe to call multiple times (sync.Once);
+// go-pty's conPty.Close is not idempotent on Windows, so the once guard
+// prevents double-close races when waitAndCloseAfterExit and the deferred
+// session.Close in runPTYCommand both run.
 func (s *PTYSession) Close() {
-	if s.Master != nil {
-		_ = s.Master.Close()
-	}
+	s.closeOnce.Do(func() {
+		if s.Pty != nil {
+			_ = s.Pty.Close()
+		}
+	})
 }
 
 // Run executes a command in a PTY session with full lifecycle management.
 // This is the primary entry point replacing the old ptyCommand function.
 //
-// Timeout goroutines are started BEFORE Drain so that timeout/context cancellation
-// can kill the process (unblocking Drain's syscall.Read) even when the command
-// produces no output.
+// The deadline goroutine is started BEFORE Drain so the process is killed
+// on timeout (unblocking Drain's read) even when the command produces no
+// output. Context cancellation is handled by Drain itself via ctx.Done.
 //
 // If emitAskInput is non-nil, enables interactive input detection during Drain.
 func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []string,
@@ -266,15 +266,11 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
 	defer deadlineCancel()
 
-	// Ensure the ctx-cancel goroutine below always exits when Run returns.
-	runCtx, runCancel := context.WithCancel(ctx)
-	defer runCancel()
-
-	// Watch for SIGWINCH and forward to PTY (Linux only)
+	// Watch for SIGWINCH and forward to PTY (Unix only — no-op on Windows)
 	var stopSigwinch chan struct{}
 	if checkIsLinux() {
 		stopSigwinch = make(chan struct{})
-		go watchSigwinch(s.Master.Fd(), stopSigwinch)
+		go watchSigwinch(s.Pty, stopSigwinch)
 		defer func() {
 			if stopSigwinch != nil {
 				close(stopSigwinch)
@@ -282,10 +278,16 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 		}()
 	}
 
-	// Start the command (builds exec.Command and starts process)
+	// Start the command (builds pty.Cmd and starts process)
 	if err := s.Start(cmd, dir, env, screen, onStart...); err != nil {
 		return -1, false, err
 	}
+
+	// waitAndCloseAfterExit runs in a goroutine on Windows to work around
+	// ConPTY's lack of automatic EOF on child exit (microsoft/terminal#4564).
+	// On Unix, no-op: the kernel delivers EOF naturally via closeSlaveAfterStart.
+	// See pty_unix.go / pty_windows.go.
+	waitErrCh := waitAndCloseAfterExit(ctx, s)
 
 	// Timeout goroutine — fires killProcessTree on timeout
 	timeoutFired := false
@@ -299,19 +301,18 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 		close(graceCh)
 	}()
 
-	// Context cancellation goroutine (user interrupt / Ctrl+C)
-	go func() {
-		<-runCtx.Done()
-		if runCtx.Err() == context.Canceled && s.Cmd.Process != nil {
-			_ = killProcessTree(s.Cmd.Process.Pid)
-		}
-	}()
-
-	// Drain PTY output (blocks until EOF or process killed by timeout)
+	// Drain PTY output (blocks until EOF or process killed by timeout).
+	// On Windows, waitAndCloseAfterExit's goroutine closes the PTY after
+	// Wait() returns, which forces Drain's Read to unblock.
 	s.Drain(ctx, emitAskInput)
 
-	// Wait for process to exit
-	waitErr := s.Cmd.Wait()
+	// Wait for process to exit (or for Windows goroutine to have closed PTY).
+	var waitErr error
+	if waitErrCh != nil {
+		waitErr = <-waitErrCh
+	} else {
+		waitErr = s.Cmd.Wait()
+	}
 
 	// Cancel deadline context to ensure timeout goroutine exits
 	deadlineCancel()

@@ -1,6 +1,7 @@
 # Binaries
 /gbot
 /gbot-debug
+*.exe
 
 # Test/build artifacts
 *.out

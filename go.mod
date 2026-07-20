@@ -8,6 +8,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/alecthomas/chroma/v2 v2.24.1
+	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -22,7 +23,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/jezek/xgb v1.3.1
 	github.com/klippa-app/go-pdfium v1.19.4
 	github.com/lithammer/fuzzysearch v1.1.8
 	github.com/mattn/go-runewidth v0.0.23
@@ -35,7 +35,6 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.55.0
-	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.43.0
 	golang.org/x/text v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -60,6 +59,7 @@ require (
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dop251/base64dec v0.0.0-20231022112746-c6c9f9a96217 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
@@ -101,6 +101,7 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
+	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/vcaesar/cedar v0.30.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
@@ -111,6 +112,7 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	modernc.org/ccgo/v4 v4.34.0 // indirect
 	modernc.org/libc v1.72.1 // indirect

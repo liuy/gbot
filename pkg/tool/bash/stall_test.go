@@ -959,7 +959,7 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 			if !received.IsStall {
 				t.Error("notification should be stall")
 			}
-			if !contains(received.Summary, "test desc") {
+			if !strings.Contains(received.Summary, "test desc") {
 				t.Errorf("Summary should contain description, got %q", received.Summary)
 			}
 		default:
@@ -1031,7 +1031,7 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 
 		select {
 		case received := <-receivedCh:
-			if !contains(received.Summary, "my-command") {
+			if !strings.Contains(received.Summary, "my-command") {
 				t.Errorf("Summary should use command when no description, got %q", received.Summary)
 			}
 		default:
