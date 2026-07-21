@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
-	md "github.com/JohannesKaufmann/html-to-markdown"
-	"github.com/JohannesKaufmann/html-to-markdown/plugin"
-	"github.com/PuerkitoBio/goquery"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 	"golang.org/x/net/html"
 	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/transform"
@@ -338,43 +340,43 @@ func stripScriptsAndStyles(htmlStr string) string {
 	return s
 }
 
-var markdownConverter *md.Converter
+var markdownConverter *converter.Converter
 
 func init() {
-	markdownConverter = md.NewConverter("", true, &md.Options{
-		HeadingStyle:     "atx",
-		CodeBlockStyle:   "fenced",
-		BulletListMarker: "-",
-	})
-	markdownConverter.Use(plugin.GitHubFlavored())
+	markdownConverter = converter.NewConverter(
+		converter.WithPlugins(
+			base.NewBasePlugin(),
+			commonmark.NewCommonmarkPlugin(
+				commonmark.WithHeadingStyle("atx"),
+			),
+			strikethrough.NewStrikethroughPlugin(),
+			table.NewTablePlugin(),
+		),
+	)
 
-	// omp's Turndown escapes leading dots in headings; strip those.
-	markdownConverter.AddRules(md.Rule{
-		Filter: []string{"h1", "h2", "h3", "h4", "h5", "h6"},
-		Replacement: func(content string, selec *goquery.Selection, options *md.Options) *string {
-			node := selec.Get(0)
+	// Strip escaped leading dots in headings (carried over from v1 custom rule).
+	for _, tag := range []string{"h1", "h2", "h3", "h4", "h5", "h6"} {
+		markdownConverter.Register.RendererFor(tag, converter.TagTypeBlock, func(ctx converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
 			level := 1
-			if node != nil {
-				switch node.Data {
-				case "h2":
-					level = 2
-				case "h3":
-					level = 3
-				case "h4":
-					level = 4
-				case "h5":
-					level = 5
-				case "h6":
-					level = 6
-				}
+			switch n.Data {
+			case "h2":
+				level = 2
+			case "h3":
+				level = 3
+			case "h4":
+				level = 4
+			case "h5":
+				level = 5
+			case "h6":
+				level = 6
 			}
 			prefix := strings.Repeat("#", level)
-			cleaned := strings.ReplaceAll(content, `\.`, ".")
-			cleaned = strings.TrimSpace(cleaned)
-			result := fmt.Sprintf("\n\n%s %s\n\n", prefix, cleaned)
-			return &result
-		},
-	})
+			w.WriteRune('\n')
+			w.WriteString(prefix)
+			w.WriteRune(' ')
+			return converter.RenderTryNext
+		}, 0)
+	}
 }
 
 func HTMLToMarkdown(htmlStr string) (string, error) {

@@ -4,7 +4,6 @@ go 1.26.1
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0
-	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/alecthomas/chroma/v2 v2.24.1
@@ -35,6 +34,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.55.0
+	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.43.0
 	golang.org/x/text v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -112,8 +112,7 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
+	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 	modernc.org/ccgo/v4 v4.34.0 // indirect
 	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
