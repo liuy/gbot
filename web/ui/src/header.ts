@@ -1,6 +1,7 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
+import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
 
@@ -563,34 +564,8 @@ export function createHeader(opts: {
   gbotWrap.className = 'group flex items-center'
 
   const debugPanel = createPopupPanel({ className: 'flex flex-col h-[60vh]' })
-  const copyBtn = document.createElement('button')
-  copyBtn.className = 'absolute top-2 right-2 text-t3 z-10'
-  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
-  copyBtn.addEventListener('click', () => {
-    const logs = getDebugLogs()
-    const text = logs.join('\n')
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-      })
-    } else {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
-  })
+  const copyBtn = createCopyButton(() => getDebugLogs().join('\n'))
+  copyBtn.classList.add('absolute', 'top-2', 'right-2', 'text-t3', 'z-10')
   debugPanel.appendChild(copyBtn)
 
   const debugList = document.createElement('div')

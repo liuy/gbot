@@ -5,6 +5,7 @@ import {
   newAssistantMessage,
 } from './model'
 import { isCollapsibleToolName, timeDividerLabel } from './utils'
+import { copyText } from './utils/copy_button'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 import {
   type ToolDomHandles,
@@ -490,6 +491,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   disconnectBanner.addEventListener('click', () => {
     conn.reconnect?.()
+  })
+
+  messagesContainer.addEventListener('click', async (e: MouseEvent) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.copy-btn')
+    if (!btn) return
+    const wrapper = btn.closest('.code-block-wrapper')
+    const code = wrapper?.querySelector('code')
+    if (!code) return
+    await copyText(code.textContent ?? '')
+    btn.dataset.state = 'copied'
+    setTimeout(() => { btn.dataset.state = 'idle' }, 1500)
   })
 
   let isNearBottom = true
