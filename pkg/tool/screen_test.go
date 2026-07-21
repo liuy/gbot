@@ -466,6 +466,27 @@ func TestScreen_IncompleteCSIAcrossWrites(t *testing.T) {
 	}
 }
 
+// TestScreen_SGROnlyLineDoesNotEmit reproduces a Windows ConPTY bug where
+// bash emits \x1b[m (SGR reset) followed by \r\n before actual output.
+// The SGR-only line should NOT be emitted as a separate event — it produces
+// a spurious empty line in the tool output.
+func TestScreen_SGROnlyLineDoesNotEmit(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// ConPTY sends: SGR reset, CR, LF, then actual output
+	s.Write([]byte("\x1b[m\r\n/c/Users/PC/Desktop/gbot\r\n"))
+
+	// Should get exactly 1 event: the pwd output. NOT the \x1b[m line.
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (pwd output only), got %d: %+v", len(events), events)
+	}
+	want := "/c/Users/PC/Desktop/gbot"
+	if events[0].Content != want {
+		t.Errorf("content = %q, want %q", events[0].Content, want)
+	}
+}
+
 func assertEvent(t *testing.T, ev ScreenEvent, wantKind ScreenEventKind, wantContent string) {
 	t.Helper()
 	if ev.Kind != wantKind {

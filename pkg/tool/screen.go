@@ -4,9 +4,22 @@
 package tool
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
+
+// ansiPattern matches CSI and OSC escape sequences (including SGR).
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
+
+// hasVisibleContent returns true if s contains any characters outside of
+// ANSI escape sequences. Lines consisting of only SGR codes (e.g. \x1b[m
+// emitted by ConPTY at startup) have no visible content and should not
+// produce output events.
+func hasVisibleContent(s string) bool {
+	stripped := ansiPattern.ReplaceAllString(s, "")
+	return strings.TrimSpace(stripped) != ""
+}
 
 // ScreenEventKind distinguishes between a new line and an in-place line update.
 type ScreenEventKind int
@@ -110,7 +123,7 @@ func (s *Screen) Write(p []byte) {
 
 // handleCR processes a carriage return: emit current line if non-empty, then reset.
 func (s *Screen) handleCR() {
-	if s.line.Len() > 0 {
+	if s.line.Len() > 0 && hasVisibleContent(s.line.String()) {
 		kind := ScreenAppend
 		if s.lineEmitted {
 			kind = ScreenReplace
@@ -125,7 +138,7 @@ func (s *Screen) handleCR() {
 // Uses Replace if lineEmitted (content from a prior \r at this line position),
 // otherwise Append. Then resets for the next line.
 func (s *Screen) handleLF() {
-	if s.line.Len() > 0 {
+	if s.line.Len() > 0 && hasVisibleContent(s.line.String()) {
 		kind := ScreenAppend
 		if s.lineEmitted {
 			kind = ScreenReplace
