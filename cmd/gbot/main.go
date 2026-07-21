@@ -58,6 +58,8 @@ import (
 )
 
 func main() {
+	setupPortablePaths()
+
 	var mediaStores []*media.Store
 
 	// Parse -d/--daemon and -p/--port flags before anything else.

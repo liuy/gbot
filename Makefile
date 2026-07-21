@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all build-windows debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak
+.PHONY: all build build-debug build-all build-windows debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -6,6 +6,7 @@ CMD := ./cmd/gbot/
 PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
 GBOT_HOME := $(HOME)/.gbot
+VERSION ?= 0.0.0-dev
 
 # -N: disable optimization (keeps locals alive for inspection)
 # -l: disable inlining (preserves real call frames)
@@ -66,6 +67,13 @@ clean:
 	screen -S gbot -X quit 2>/dev/null || true
 	go clean
 	@echo "cleaned"
+
+# package builds the Windows portable zip into dist/.
+# Linux/macOS packaging is future work.
+package: package-windows
+
+package-windows:
+	bash scripts/package-windows.sh $(VERSION)
 
 # e2e
 agent-start: build

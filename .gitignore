@@ -9,6 +9,9 @@
 *.test
 coverage.out
 
+# GoReleaser output
+/dist/
+
 # IDE
 .idea/
 .vscode/
