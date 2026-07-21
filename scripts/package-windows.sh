@@ -86,6 +86,10 @@ cp "${RG_EXE}" "${STAGING}/bin/rg.exe"
 echo "Staging gbot.exe..."
 cp "${GBOT_EXE}" "${STAGING}/gbot.exe"
 
+echo "Staging install/uninstall scripts..."
+cp "${ROOT}/package/windows/install.bat" "${STAGING}/install.bat"
+cp "${ROOT}/package/windows/uninstall.bat" "${STAGING}/uninstall.bat"
+
 echo "Verifying bundle contents..."
 for f in \
     "gbot.exe" \
