@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -187,6 +188,53 @@ func TestPtyCommand_MultilineOutput(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "line1") || !strings.Contains(joined, "line2") || !strings.Contains(joined, "line3") {
 		t.Errorf("output = %q, want to contain line1, line2, line3", joined)
+	}
+}
+
+// TestPtyCommand_WorkingDirRespected reproduces a Windows bug where bash
+// ignored the cwd argument and ran in / (root) instead. The symptom was
+// Glob/Grep scanning the entire drive when invoked from the bundled gbot.exe.
+// On Linux this test should always pass; on Windows it exercises the path
+// translation in go-pty's CreateProcess call.
+func TestPtyCommand_WorkingDirRespected(t *testing.T) {
+	if !ptySupported {
+		t.Skip("PTY not available")
+	}
+
+	tmpDir := t.TempDir()
+	// Mark the dir with a sentinel file so we can distinguish "pwd is tmpDir"
+	// from "pwd is some other dir that happens to have the same name".
+	sentinel := filepath.Join(tmpDir, "gbot-cwd-test.marker")
+	if err := os.WriteFile(sentinel, []byte("ok"), 0644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	var lines []string
+	_, _, err := runPTYCommand(
+		context.Background(),
+		"pwd && ls gbot-cwd-test.marker",
+		tmpDir,
+		os.Environ(),
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
+		10*time.Second,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("runPTYCommand() error: %v", err)
+	}
+
+	joined := strings.Join(lines, "\n")
+	// Clean tmpDir for assertion: we expect pwd's output to appear and to
+	// mention the basename of tmpDir (not "/" or a Windows-drive-root form).
+	base := filepath.Base(tmpDir)
+	if !strings.Contains(joined, base) {
+		t.Errorf("output = %q, want pwd output containing %q", joined, base)
+	}
+	// The ls of the sentinel must succeed (file is listed by name).
+	if !strings.Contains(joined, "gbot-cwd-test.marker") {
+		t.Errorf("output = %q, want sentinel file to be listed by ls", joined)
 	}
 }
 
