@@ -3,8 +3,6 @@ package bash
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -47,219 +45,35 @@ func TestBuildCommand(t *testing.T) {
 		name      string
 		cmd       string
 		snapshot  *EnvSnapshot
-		cwdFile   string
 		wantParts []string
 	}{
 		{
 			name:      "basic command without snapshot",
 			cmd:       "echo hello",
 			snapshot:  nil,
-			cwdFile:   "/tmp/cwd.txt",
-			wantParts: []string{"shopt -u extglob", "eval 'echo hello'", "< /dev/null", "pwd -P >| /tmp/cwd.txt"},
+			wantParts: []string{"shopt -u extglob", "eval 'echo hello'", "< /dev/null"},
 		},
 		{
 			name:      "command with snapshot",
 			cmd:       "echo hello",
 			snapshot:  &EnvSnapshot{Path: "/tmp/snap.sh"},
-			cwdFile:   "/tmp/cwd.txt",
-			wantParts: []string{"source /tmp/snap.sh 2>/dev/null || true", "shopt -u extglob", "eval 'echo hello'", "< /dev/null", "pwd -P >| /tmp/cwd.txt"},
+			wantParts: []string{"source /tmp/snap.sh 2>/dev/null || true", "shopt -u extglob", "eval 'echo hello'", "< /dev/null"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildCommand(tc.cmd, tc.snapshot, tc.cwdFile)
+			got := buildCommand(tc.cmd, tc.snapshot)
 			for _, part := range tc.wantParts {
 				if !strings.Contains(got, part) {
 					t.Errorf("buildCommand() = %q, want to contain %q", got, part)
 				}
 			}
+			if strings.Contains(got, "pwd -P") {
+				t.Errorf("buildCommand() = %q, should NOT contain cwd tracking (pwd -P)", got)
+			}
 		})
-	}
-}
-
-func TestBuildCwdFilePath(t *testing.T) {
-	t.Parallel()
-
-	path := buildCwdFilePath("abcd")
-	if !strings.Contains(path, "gbot-abcd-cwd") {
-		t.Errorf("buildCwdFilePath(\"abcd\") = %q, want to contain 'gbot-abcd-cwd'", path)
-	}
-	if !strings.HasPrefix(path, os.TempDir()) {
-		t.Errorf("buildCwdFilePath() = %q, want prefix %q", path, os.TempDir())
-	}
-}
-
-func TestTrackCwd(t *testing.T) {
-	t.Parallel()
-
-	t.Run("valid cwd file", func(t *testing.T) {
-		t.Parallel()
-		tmpDir := os.TempDir()
-		f, err := os.CreateTemp("", "gbot-test-cwd-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.WriteString(tmpDir); err != nil {
-			t.Fatalf("WriteString() error: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("Close() error: %v", err)
-		}
-		defer func() { _ = os.Remove(f.Name()) }()
-
-		got := trackCwd(f.Name(), "/original")
-		if got != tmpDir {
-			t.Errorf("trackCwd() = %q, want %q", got, tmpDir)
-		}
-	})
-
-	t.Run("missing cwd file", func(t *testing.T) {
-		t.Parallel()
-		got := trackCwd("/nonexistent/file", "/original")
-		if got != "/original" {
-			t.Errorf("trackCwd() = %q, want /original", got)
-		}
-	})
-
-	t.Run("deleted directory", func(t *testing.T) {
-		t.Parallel()
-		f, err := os.CreateTemp("", "gbot-test-cwd-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.WriteString("/nonexistent/directory/path"); err != nil {
-			t.Fatalf("WriteString() error: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("Close() error: %v", err)
-		}
-		defer func() { _ = os.Remove(f.Name()) }()
-
-		got := trackCwd(f.Name(), "/original")
-		if got != "/original" {
-			t.Errorf("trackCwd() = %q, want /original (dir does not exist)", got)
-		}
-	})
-
-	t.Run("empty cwd content", func(t *testing.T) {
-		t.Parallel()
-		f, err := os.CreateTemp("", "gbot-test-cwd-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.WriteString("  "); err != nil {
-			t.Fatalf("WriteString() error: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("Close() error: %v", err)
-		}
-		defer func() { _ = os.Remove(f.Name()) }()
-
-		got := trackCwd(f.Name(), "/original")
-		if got != "/original" {
-			t.Errorf("trackCwd() = %q, want /original (empty content)", got)
-		}
-	})
-}
-
-func TestDirExists(t *testing.T) {
-	t.Parallel()
-
-	t.Run("existing directory", func(t *testing.T) {
-		t.Parallel()
-		if !dirExists(os.TempDir()) {
-			t.Errorf("dirExists(%q) = false, want true", os.TempDir())
-		}
-	})
-
-	t.Run("nonexistent directory", func(t *testing.T) {
-		t.Parallel()
-		if dirExists("/nonexistent/path/that/does/not/exist") {
-			t.Error("dirExists() = true for nonexistent path")
-		}
-	})
-
-	t.Run("file is not directory", func(t *testing.T) {
-		t.Parallel()
-		f, err := os.CreateTemp("", "gbot-test-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("Close() error: %v", err)
-		}
-		defer func() { _ = os.Remove(f.Name()) }()
-
-		if dirExists(f.Name()) {
-			t.Errorf("dirExists(%q) = true, want false (it's a file)", f.Name())
-		}
-	})
-}
-
-func TestBuildCommand_Order(t *testing.T) {
-	t.Parallel()
-
-	cmd := buildCommand("ls", nil, "/tmp/cwd")
-	parts := strings.Split(cmd, " && ")
-
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 parts, got %d: %v", len(parts), parts)
-	}
-	if !strings.Contains(parts[0], "extglob") {
-		t.Errorf("part[0] = %q, want extglob", parts[0])
-	}
-	if !strings.Contains(parts[1], "eval") {
-		t.Errorf("part[1] = %q, want eval", parts[1])
-	}
-	if !strings.Contains(parts[2], "pwd") {
-		t.Errorf("part[2] = %q, want pwd", parts[2])
-	}
-}
-
-func TestBuildCommand_WithSnapshot(t *testing.T) {
-	t.Parallel()
-
-	snap := &EnvSnapshot{Path: "/tmp/snapshot-test.sh"}
-	cmd := buildCommand("echo hi", snap, "/tmp/cwd")
-
-	if !strings.HasPrefix(cmd, "source /tmp/snapshot-test.sh") {
-		t.Errorf("expected command to start with source, got: %q", cmd[:50])
-	}
-}
-
-func TestBuildCwdFilePath_Unique(t *testing.T) {
-	t.Parallel()
-
-	path1 := buildCwdFilePath("aaaa")
-	path2 := buildCwdFilePath("bbbb")
-	if path1 == path2 {
-		t.Errorf("different IDs should produce different paths: %q == %q", path1, path2)
-	}
-}
-
-func TestBuildCwdFilePath_InTempDir(t *testing.T) {
-	t.Parallel()
-
-	path := buildCwdFilePath("test123")
-	expectedPrefix := filepath.Join(os.TempDir(), "gbot-")
-	if !strings.HasPrefix(path, expectedPrefix) {
-		t.Errorf("buildCwdFilePath() = %q, want prefix %q", path, expectedPrefix)
-	}
-}
-
-// SessionEnvScript branch in buildCommand is unreachable since SessionEnvScript() returns ""
-func TestBuildCommand_SessionEnvBranch(t *testing.T) {
-	t.Parallel()
-
-	cmd := buildCommand("echo test", nil, "/tmp/cwd")
-	parts := strings.Split(cmd, " && ")
-	if len(parts) != 3 {
-		t.Errorf("expected 3 parts, got %d: %v", len(parts), parts)
-	}
-	if !strings.Contains(parts[0], "extglob") {
-		t.Errorf("part[0] = %q, want extglob", parts[0])
 	}
 }
 
@@ -282,19 +96,61 @@ func TestExecute_ForceNonPTY(t *testing.T) {
 	}
 }
 
+func TestBuildCommand_Order(t *testing.T) {
+	t.Parallel()
+
+	cmd := buildCommand("ls", nil)
+	parts := strings.Split(cmd, " && ")
+
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d: %v", len(parts), parts)
+	}
+	if !strings.Contains(parts[0], "extglob") {
+		t.Errorf("part[0] = %q, want extglob", parts[0])
+	}
+	if !strings.Contains(parts[1], "eval") {
+		t.Errorf("part[1] = %q, want eval", parts[1])
+	}
+}
+
+func TestBuildCommand_WithSnapshot(t *testing.T) {
+	t.Parallel()
+
+	snap := &EnvSnapshot{Path: "/tmp/snapshot-test.sh"}
+	cmd := buildCommand("echo hi", snap)
+
+	if !strings.HasPrefix(cmd, "source /tmp/snapshot-test.sh") {
+		t.Errorf("expected command to start with source, got: %q", cmd[:50])
+	}
+}
+
+// SessionEnvScript branch in buildCommand is unreachable since SessionEnvScript() returns ""
+func TestBuildCommand_SessionEnvBranch(t *testing.T) {
+	t.Parallel()
+
+	cmd := buildCommand("echo test", nil)
+	parts := strings.Split(cmd, " && ")
+	if len(parts) != 2 {
+		t.Errorf("expected 2 parts, got %d: %v", len(parts), parts)
+	}
+	if !strings.Contains(parts[0], "extglob") {
+		t.Errorf("part[0] = %q, want extglob", parts[0])
+	}
+}
+
 func TestBuildCommand_WithSessionEnv(t *testing.T) {
 	// Override sessionEnvScript to test the buildCommand branch
 	orig := sessionEnvScript
 	sessionEnvScript = func() string { return "export GBOT_TEST_HOOK=1" }
 	defer func() { sessionEnvScript = orig }()
 
-	cmd := buildCommand("echo", nil, "/tmp/cwd")
+	cmd := buildCommand("echo", nil)
 	if !strings.Contains(cmd, "export GBOT_TEST_HOOK=1") {
 		t.Errorf("missing session env script in command: %q", cmd)
 	}
 	parts := strings.Split(cmd, " && ")
-	if len(parts) != 4 {
-		t.Errorf("expected 4 parts with session env, got %d: %v", len(parts), parts)
+	if len(parts) != 3 {
+		t.Errorf("expected 3 parts with session env, got %d: %v", len(parts), parts)
 	}
 }
 
