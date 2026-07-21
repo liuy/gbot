@@ -266,10 +266,10 @@ func TestBuildCommand_SessionEnvBranch(t *testing.T) {
 // --- Execute dispatch and executePTY error paths ---
 
 func TestExecute_ForceNonPTY(t *testing.T) {
-	// Make isPTYAvailable return false → Execute dispatches to executeNonPTY
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	input := json.RawMessage(`{"command":"echo hello"}`)
 	result, err := Execute(context.Background(), input, nil)
@@ -412,9 +412,10 @@ func TestExecute_NilContext_NoPanic(t *testing.T) {
 
 func TestExecute_RunInBackground_NonPTY(t *testing.T) {
 	// Force non-PTY mode for deterministic testing
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo bg-hello","run_in_background":true}`), nil)
 	if err != nil {
@@ -467,9 +468,10 @@ func TestExecute_RunInBackground_NonPTY(t *testing.T) {
 }
 
 func TestExecute_RunInBackground_CompletesWithOutput(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg2")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo bg-output-123","run_in_background":true}`), nil)
 	if err != nil {
@@ -502,9 +504,10 @@ func TestExecute_RunInBackground_CompletesWithOutput(t *testing.T) {
 }
 
 func TestExecute_RunInBackground_ExitError(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg3")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 7","run_in_background":true}`), nil)
 	if err != nil {
@@ -572,9 +575,10 @@ func TestExecute_RunInBackground_PTY(t *testing.T) {
 
 func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 	// Force non-PTY for deterministic behavior
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-id-match")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	registry := DefaultRegistry()
 	// Clean slate
@@ -673,11 +677,10 @@ func extractBgID(s string) string {
 // ---------------------------------------------------------------------------
 
 func TestExecute_NonPTY(t *testing.T) {
-	t.Parallel()
-	// Force non-PTY by overriding PTY check path
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-nonpty")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	var updates []tool.ProgressUpdate
 	tctx := &tool.ToolUseContext{
@@ -773,10 +776,10 @@ func TestExecute_ToolUseContextCWD2(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteNonPTY_TimedOut(t *testing.T) {
-	t.Parallel()
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/nonpty-timeout")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil)
 	if err != nil {
@@ -789,10 +792,10 @@ func TestExecuteNonPTY_TimedOut(t *testing.T) {
 }
 
 func TestExecuteNonPTY_ExitError(t *testing.T) {
-	t.Parallel()
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/nonpty-exit")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 5"}`), nil)
 	if err != nil {
@@ -809,10 +812,10 @@ func TestExecuteNonPTY_ExitError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpawnBackground_NonPTY(t *testing.T) {
-	t.Parallel()
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/spawn-nonpty")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo spawn-nonpty","run_in_background":true}`), nil)
 	if err != nil {
@@ -838,9 +841,10 @@ func TestSpawnBackground_NonPTY(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecutePTY_CwdFileError(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/pty-cwd-err")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo pty-cwd"}`), nil)
 	if err != nil {
@@ -954,9 +958,10 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteNonPTY_NonExitError(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/non-exit-err")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo test"}`), nil)
 	if err != nil {
@@ -973,9 +978,10 @@ func TestExecuteNonPTY_NonExitError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/spawn-start-err")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	// spawnBackground with a command that should start successfully
 	result, err := spawnBackground(context.Background(), Input{Command: "echo spawn"}, "", 10*time.Second, DefaultRegistry(), nil)
@@ -1203,9 +1209,10 @@ func TestIsAutobackgroundingAllowed(t *testing.T) {
 // The command will be killed (TimedOut=true) instead of being backgrounded.
 func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 	// Force non-PTY mode
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/autobg-nonpty")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	// Fresh registry for isolation
 	origReg := defaultRegistry
@@ -1308,9 +1315,10 @@ func TestAutoBackground_FastCommandNotBackgrounded(t *testing.T) {
 // Source: BashTool.tsx:219-221 — DISALLOWED_AUTO_BACKGROUND_COMMANDS
 func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 	// Force non-PTY for deterministic behavior
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/autobg-sleep")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(),
 		json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil)
@@ -1333,9 +1341,10 @@ func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 
 func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 	// Force non-PTY mode
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-spawn-start-err")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	// Use a fresh registry
 	origReg := defaultRegistry
@@ -1375,9 +1384,10 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 
 func TestExecuteNonPTYAutoBg_StartError(t *testing.T) {
 	// Force non-PTY mode
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-autobg-start")
-	defer func() { SetPtmxCheckPath(orig) }()
+	// no t.Parallel: mutates package var ptySupported
+	orig := ptySupported
+	ptySupported = false
+	defer func() { ptySupported = orig }()
 
 	s := NewStreamingOutput(nil)
 	// Use a non-existent working directory to trigger cmd.Start() error
@@ -1407,7 +1417,7 @@ func TestIsAutobackgroundingAllowed_TabOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecutePTY_TmuxOverrides(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -1443,7 +1453,7 @@ func TestExecutePTY_TmuxOverrides(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 

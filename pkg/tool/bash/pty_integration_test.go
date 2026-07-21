@@ -26,7 +26,7 @@ func init() {
 // Skipped on non-Linux systems or when PTY is unavailable.
 
 func TestPTYIntegration_CarriageReturn(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -77,7 +77,7 @@ func TestPTYIntegration_CarriageReturn(t *testing.T) {
 //	found 0 vulnerabilities
 //	Done!
 func TestPTYIntegration_NpmSpinner(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -131,7 +131,7 @@ func TestPTYIntegration_NpmSpinner(t *testing.T) {
 }
 
 func TestPTYIntegration_AnsiColor(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -166,7 +166,7 @@ func TestPTYIntegration_AnsiColor(t *testing.T) {
 }
 
 func TestPTYIntegration_UTF8Chinese(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -208,7 +208,7 @@ func TestPTYIntegration_UTF8Chinese(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPTYIntegration_Drain_UnblocksOnCtxCancel(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -263,7 +263,7 @@ func TestPTYIntegration_Drain_UnblocksOnCtxCancel(t *testing.T) {
 
 // Fix 3: emitAskInput returning nil (expired deadline) should not deadlock Drain
 func TestPTYIntegration_Drain_NilChannelSkipsPrompt(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -313,7 +313,7 @@ func TestPTYIntegration_Drain_NilChannelSkipsPrompt(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPTYIntegration_InteractivePromptDetected(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -363,7 +363,7 @@ func TestPTYIntegration_InteractivePromptDetected(t *testing.T) {
 
 // Test actual sudo prompt format: "[sudo] password for user:"
 func TestPTYIntegration_SudoPromptDetected(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -416,7 +416,7 @@ func TestPTYIntegration_SudoPromptDetected(t *testing.T) {
 
 // Abort sends [Interaction cancelled by user] to Screen output
 func TestPTYIntegration_AbortWritesInteractionMessage(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -453,7 +453,7 @@ func TestPTYIntegration_AbortWritesInteractionMessage(t *testing.T) {
 
 // Timeout abort sends [Interaction timed out] to Screen output
 func TestPTYIntegration_TimeoutWritesInteractionMessage(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 

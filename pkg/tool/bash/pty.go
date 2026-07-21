@@ -2,12 +2,9 @@ package bash
 
 import (
 	"fmt"
-	"os"
+	"log/slog"
 	"os/exec"
-	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/aymanbagabas/go-pty"
@@ -27,28 +24,7 @@ type ptyPty interface {
 // Default values match production behavior.
 var (
 	shellCommand = "bash"
-	checkIsLinux = isLinux
-
-	ptmxMu         sync.Mutex
-	ptmxCheckValue atomic.Value // holds string, protected by ptmxMu
 )
-
-// init sets the default PTY check path.
-func init() {
-	ptmxCheckValue.Store("/dev/ptmx")
-}
-
-// PtmxCheckPath returns the current PTY check path (thread-safe).
-func PtmxCheckPath() string {
-	return ptmxCheckValue.Load().(string)
-}
-
-// SetPtmxCheckPath sets the PTY check path (thread-safe, for tests).
-func SetPtmxCheckPath(path string) {
-	ptmxMu.Lock()
-	defer ptmxMu.Unlock()
-	ptmxCheckValue.Store(path)
-}
 
 // exitCodeFromWait determines the exit code from a cmd.Wait() error.
 // Source: ShellCommand.ts:196-202 — #exitHandler
@@ -73,32 +49,6 @@ func exitCodeFromWait(waitErr error) int {
 	default:
 		return 128 + int(sig)
 	}
-}
-
-// isPTYAvailable checks if PTY allocation is possible on this system.
-//
-// Windows: ConPTY ships in Windows 10 1809+ (the minimum version Microsoft
-// recommends for new development), so we treat it as always available.
-// Without this branch, the runtime would fall through to executeNonPTY
-// and leave the ConPTY-backed shell_windows.go / pty_windows.go code dead.
-//
-// macOS and other Unix: conservatively disabled. /dev/ptmx exists on macOS
-// but the package's PTY path is Linux-tested only; the non-PTY fallback
-// covers macOS adequately.
-//
-// Linux: keep the existing /dev/ptmx stat so tests can flip PtmxCheckPath
-// to a nonexistent path and exercise the non-PTY fallback.
-func isPTYAvailable() bool {
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	if !checkIsLinux() {
-		return false
-	}
-	if _, err := os.Stat(PtmxCheckPath()); err != nil {
-		return false
-	}
-	return true
 }
 
 // applyEnvOverrides applies the given overrides to the environment slice.
@@ -131,4 +81,24 @@ func applyEnvOverrides(env []string, overrides map[string]string) []string {
 // ptyNew is a test hook wrapping go-pty's pty.New so tests can inject a fake.
 var ptyNew = func() (pty.Pty, error) {
 	return pty.New()
+}
+
+// ptySupported caches whether go-pty.Pty allocation works in this process.
+// Probed once at package init via detectPTYSupport; production code reads it
+// directly. Tests that override it MUST NOT call t.Parallel(): concurrent
+// writes race with readers and trip the race detector.
+var ptySupported = detectPTYSupport()
+
+// detectPTYSupport probes go-pty.Pty allocation once at package load. On
+// failure, logs a warning and disables the PTY path; the non-PTY fallback
+// handles command execution correctly, just without interactive features
+// (input prompts, SIGWINCH resize forwarding).
+func detectPTYSupport() bool {
+	p, err := ptyNew()
+	if err != nil {
+		slog.Warn("pty:unavailable_falling_back_to_nonpty", "err", err)
+		return false
+	}
+	_ = p.Close()
+	return true
 }

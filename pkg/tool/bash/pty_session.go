@@ -266,17 +266,12 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
 	defer deadlineCancel()
 
-	// Watch for SIGWINCH and forward to PTY (Unix only — no-op on Windows)
-	var stopSigwinch chan struct{}
-	if checkIsLinux() {
-		stopSigwinch = make(chan struct{})
-		go watchSigwinch(s.Pty, stopSigwinch)
-		defer func() {
-			if stopSigwinch != nil {
-				close(stopSigwinch)
-			}
-		}()
-	}
+	// watchSigwinch is a no-op on Windows; on Unix it polls terminal size and
+	// forwards resizes to the PTY. Unconditional call is safe — session.Run is
+	// only reached when ptySupported=true.
+	stopSigwinch := make(chan struct{})
+	go watchSigwinch(s.Pty, stopSigwinch)
+	defer close(stopSigwinch)
 
 	// Start the command (builds pty.Cmd and starts process)
 	if err := s.Start(cmd, dir, env, screen, onStart...); err != nil {

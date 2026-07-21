@@ -162,7 +162,7 @@ func TestExecuteNonPTY_GenericError(t *testing.T) {
 // --- PTY command tests ---
 
 func TestPtyCommand_MultilineOutput(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -191,7 +191,7 @@ func TestPtyCommand_MultilineOutput(t *testing.T) {
 }
 
 func TestPtyCommand_Environment(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -224,7 +224,7 @@ func TestPtyCommand_Environment(t *testing.T) {
 }
 
 func TestPtyCommand_PartialLineFlush(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -253,7 +253,7 @@ func TestPtyCommand_PartialLineFlush(t *testing.T) {
 }
 
 func TestPtyCommand_PartialLine(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -282,7 +282,7 @@ func TestPtyCommand_PartialLine(t *testing.T) {
 }
 
 func TestPtyCommand_ExitBySignal(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -312,7 +312,7 @@ func TestPtyCommand_ExitBySignal(t *testing.T) {
 }
 
 func TestPtyCommand_NonExitErrorPath(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -335,7 +335,7 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 }
 
 func TestPtyCommand_LongLine(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -365,7 +365,7 @@ func TestPtyCommand_LongLine(t *testing.T) {
 }
 
 func TestPtyCommand_ReadError(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -388,7 +388,7 @@ func TestPtyCommand_ReadError(t *testing.T) {
 }
 
 func TestPtyCommand_SigkillExit(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -507,28 +507,6 @@ func TestPtyCommand_StartError(t *testing.T) {
 	}
 }
 
-// TestOpenPTY_NoPtmx removed: openPTY() is gone (go-pty handles ptmx internally).
-
-func TestIsPTYAvailable_NotLinux(t *testing.T) {
-	orig := checkIsLinux
-	checkIsLinux = func() bool { return false }
-	defer func() { checkIsLinux = orig }()
-
-	if isPTYAvailable() {
-		t.Error("expected false on non-Linux")
-	}
-}
-
-func TestIsPTYAvailable_NoPtmx(t *testing.T) {
-	orig := PtmxCheckPath()
-	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test")
-	defer func() { SetPtmxCheckPath(orig) }()
-
-	if isPTYAvailable() {
-		t.Error("expected false without /dev/ptmx")
-	}
-}
-
 // TestRunPTYCommand_OpenPTYError exercises the ptyNew hook to verify that
 // a pty.New() failure is surfaced via openPTYSession's "open PTY" wrap.
 // Without this hook, the error path is unreachable from tests (real pty.New
@@ -557,6 +535,34 @@ func TestRunPTYCommand_OpenPTYError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "synthetic pty.New failure") {
 		t.Errorf("error = %v, want wrapped 'synthetic pty.New failure'", err)
+	}
+}
+
+// TestDetectPTYSupport_FailureReturnsFalse drives the ptyNew hook to fail and
+// confirms detectPTYSupport surfaces false rather than panicking. The branch
+// is otherwise unreachable: real pty.New only fails under kernel PTY
+// starvation, which CI cannot reproduce reliably.
+func TestDetectPTYSupport_FailureReturnsFalse(t *testing.T) {
+	// no t.Parallel: mutates the package-level ptyNew hook
+	orig := ptyNew
+	ptyNew = func() (pty.Pty, error) { return nil, errors.New("synthetic failure") }
+	defer func() { ptyNew = orig }()
+
+	if got := detectPTYSupport(); got != false {
+		t.Errorf("detectPTYSupport() = %v, want false", got)
+	}
+}
+
+// TestDetectPTYSupport_SuccessReturnsTrue covers the happy path where ptyNew
+// returns a usable pty; detectPTYSupport must Close it and return true.
+func TestDetectPTYSupport_SuccessReturnsTrue(t *testing.T) {
+	// no t.Parallel: mutates the package-level ptyNew hook
+	orig := ptyNew
+	ptyNew = func() (pty.Pty, error) { return newFakePty(nil), nil }
+	defer func() { ptyNew = orig }()
+
+	if got := detectPTYSupport(); got != true {
+		t.Errorf("detectPTYSupport() = %v, want true", got)
 	}
 }
 
@@ -689,7 +695,7 @@ func TestExitCodeFromWait_SignalSIGTERM(t *testing.T) {
 // --- WriteInput ---
 
 func TestPTYSession_WriteInput_Success(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 
@@ -724,7 +730,7 @@ func TestPTYSession_WriteInput_Success(t *testing.T) {
 }
 
 func TestPTYSession_WriteInput_ClosedFD(t *testing.T) {
-	if !isPTYAvailable() {
+	if !ptySupported {
 		t.Skip("PTY not available")
 	}
 

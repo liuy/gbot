@@ -42,6 +42,6 @@ func killProcess(pid int) {
 
 // setSysProcAttrForGroup is a no-op on Windows. Windows has no process-group
 // concept analogous to Unix's setpgid; tree kills go through taskkill /T
-// from killProcessTree instead. Non-PTY fallback is rare on Windows since
-// isPTYAvailable() returns true whenever ConPTY is available.
+// from killProcessTree instead. Non-PTY fallback is rare on Windows when
+// ConPTY is available (detectPTYSupport returns true at init).
 func setSysProcAttrForGroup(_ *exec.Cmd) {}

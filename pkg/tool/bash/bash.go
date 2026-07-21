@@ -247,7 +247,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 	}
 
 	// Run the command, capturing output into StreamingOutput
-	if isPTYAvailable() {
+	if ptySupported {
 		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
 	}
 	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
@@ -718,7 +718,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	// Source: LocalShellTask.tsx:221 — startStallWatchdog after registration
 	job.startStallWatchdog()
 
-	if isPTYAvailable() {
+	if ptySupported {
 		// PTY path: run in a goroutine with PTY
 		go func() {
 			defer taskCancel()

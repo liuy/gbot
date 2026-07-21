@@ -1,8 +1,6 @@
 package bash
 
 import (
-	"runtime"
-
 	"golang.org/x/term"
 )
 
@@ -23,10 +21,4 @@ func getTerminalSizeFd(fd int) (rows, cols int, err error) {
 		return 24, 80, nil // fallback
 	}
 	return rows, cols, nil
-}
-
-// isLinux returns true on Linux. Used by the checkIsLinux test hook.
-// PTY allocation (via go-pty) and SIGWINCH are gated to Linux.
-func isLinux() bool {
-	return runtime.GOOS == "linux"
 }

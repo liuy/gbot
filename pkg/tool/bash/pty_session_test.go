@@ -88,7 +88,7 @@ func TestTrackPartialLines_TrimsRollingWindow(t *testing.T) {
 	// streamingLastLines is the window cap. Inject streamingLastLines+2 lines
 	// and verify only the last streamingLastLines are kept.
 	input := make([]byte, 0, (streamingLastLines+2)*6)
-	for i := 0; i < streamingLastLines+2; i++ {
+	for range streamingLastLines + 2 {
 		input = append(input, []byte("aaaaa\n")...)
 	}
 	partial, lines := trackPartialLines(input, false, nil)
