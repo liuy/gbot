@@ -135,6 +135,7 @@ func logEngineEvent(event Event) {
 				"output", event.Usage.OutputTokens,
 				"cache_read", event.Usage.CacheReadInputTokens,
 				"cache_creation", event.Usage.CacheCreationInputTokens,
+				"stop_reason", event.Usage.StopReason,
 			)
 		}
 

@@ -438,10 +438,11 @@ type QueryEvent struct {
 
 // UsageEvent carries token usage from the LLM provider during streaming.
 type UsageEvent struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int    `json:"input_tokens"`
+	OutputTokens             int    `json:"output_tokens"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	StopReason               string `json:"stop_reason,omitempty"`
 }
 
 // ThinkingEvent carries thinking state information.

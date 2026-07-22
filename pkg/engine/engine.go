@@ -2454,6 +2454,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						OutputTokens:             usage.OutputTokens,
 						CacheReadInputTokens:     usage.CacheReadInputTokens,
 						CacheCreationInputTokens: usage.CacheCreationInputTokens,
+						StopReason:               stopReason,
 					},
 				})
 			}
