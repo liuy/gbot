@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -61,7 +62,7 @@ func (a *App) handleContext(args string, commitCmd tea.Cmd) tea.Cmd {
 
 func (a *App) handleContextDump(commitCmd tea.Cmd) tea.Cmd {
 	dump := a.engine.DumpAPIRequest()
-	outPath := "/tmp/gbot-context.txt"
+	outPath := filepath.Join(a.projectDir, "gbot-context.txt")
 	content := renderContextDump(dump)
 	if err := os.WriteFile(outPath, []byte(content), 0o644); err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to write dump: %v", err))
