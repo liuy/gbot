@@ -3,6 +3,7 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -953,7 +954,9 @@ func TestParseSSE_TrailingEventWithoutEmptyLine(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE happy path returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -980,7 +983,9 @@ func TestParseSSE_CommentsIgnored(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE happy path returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1004,7 +1009,9 @@ func TestParseSSE_MultipleDataLines(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE happy path returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1056,24 +1063,31 @@ func TestStream_ConnectionError(t *testing.T) {
 func TestParseSSE_ContextCancellation(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 
-	// Use a string reader with complete SSE data, then cancel context during processing.
-	// This tests that ParseSSE respects context cancellation between events.
-	sseInput := "event: message_start\ndata: {\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n"
+	// Two SSE events; ParseSSE will block sending the 2nd on an unbuffered channel.
+	sseInput := "event: message_start\ndata: {\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n" +
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n"
 
 	ctx, cancel := context.WithCancel(context.Background())
-	eventCh := make(chan llm.StreamEvent, 16)
+	eventCh := make(chan llm.StreamEvent) // unbuffered: 2nd send blocks
 
+	var parseErr error
+	done := make(chan struct{})
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
-		close(eventCh)
+		parseErr = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		close(done)
 	}()
 
-	// Receive the first event, then cancel
-	<-eventCh
+	<-eventCh // receive 1st; ParseSSE now blocks sending 2nd
 	cancel()
 
-	// Drain remaining events (should be empty or just the last event)
-	for range eventCh {
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ParseSSE did not exit after context cancellation")
+	}
+
+	if !errors.Is(parseErr, context.Canceled) {
+		t.Errorf("ParseSSE during cancellation should return context.Canceled, got: %v", parseErr)
 	}
 }
 
@@ -1524,7 +1538,9 @@ func TestParseSSE_EmptyInput(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(""), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(""), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE empty input returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1548,7 +1564,9 @@ func TestParseSSE_OnlyEmptyLines(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader("\n\n\n"), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader("\n\n\n"), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1575,7 +1593,9 @@ func TestParseSSE_EventWithoutData(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE happy path returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1603,7 +1623,9 @@ func TestParseSSE_DataWithoutEventType(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		if err := p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh); err != nil {
+			t.Errorf("ParseSSE happy path returned error: %v", err)
+		}
 		close(eventCh)
 	}()
 
@@ -1634,9 +1656,10 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 	// blocked on the send select and will exit via ctx.Done().
 	eventCh := make(chan llm.StreamEvent)
 
+	var parseErr error
 	done := make(chan struct{})
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		parseErr = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(done)
 	}()
 
@@ -1653,6 +1676,10 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("ParseSSE did not exit after context cancellation")
 	}
+
+	if !errors.Is(parseErr, context.Canceled) {
+		t.Errorf("ParseSSE during cancellation should return context.Canceled, got: %v", parseErr)
+	}
 }
 
 func TestParseSSE_TrailingEventCancellation(t *testing.T) {
@@ -1665,9 +1692,10 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 	// Unbuffered channel: ParseSSE will block on the final-event send
 	eventCh := make(chan llm.StreamEvent)
 
+	var parseErr error
 	unblock := make(chan struct{})
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+		parseErr = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(unblock)
 	}()
 
@@ -1684,6 +1712,10 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 		// good
 	case <-time.After(5 * time.Second):
 		t.Fatal("ParseSSE did not exit after context cancellation on trailing event")
+	}
+
+	if !errors.Is(parseErr, context.Canceled) {
+		t.Errorf("ParseSSE during cancellation should return context.Canceled, got: %v", parseErr)
 	}
 }
 
@@ -2192,7 +2224,7 @@ func BenchmarkParseSSE(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+			_ = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -2892,5 +2924,146 @@ func TestAnthropicRequest_EmptySignatureOmitted(t *testing.T) {
 	raw := string(data)
 	if strings.Contains(raw, "signature") {
 		t.Errorf("omitempty should drop empty signature, got: %s", raw)
+	}
+}
+
+// errorReader returns valid SSE data on first reads, then a permanent read
+// error. This simulates the real-world scenario where an LLM provider sends
+// a partial SSE stream (e.g. just ": PROCESSING\n\n") and then drops the
+// HTTP/2 connection with an INTERNAL_ERROR stream reset — Go's http2 layer
+// surfaces this as a scanner error mid-read.
+type errorReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// TestParseSSE_ScannerError verifies that when the underlying stream reader
+// returns a transport-level error (e.g. HTTP/2 RST_STREAM INTERNAL_ERROR),
+// ParseSSE returns it directly — it does NOT silently swallow it. The caller
+// (Stream) is responsible for wrapping it into an APIError.
+//
+// Regression: mimo's anthropic compat layer resets the HTTP/2 stream after
+// sending ": PROCESSING\n\n" when it fails on large context + image
+// tool_result. Previously scanner.Err() was only logged and the zero-event
+// stream was treated as a clean end → engine retried 3x, wasting ~40s.
+func TestParseSSE_ScannerError(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	readerErr := errors.New("stream error: stream ID 3; INTERNAL_ERROR; received from peer")
+	r := &errorReader{
+		data: []byte(": PROCESSING\n\n"),
+		err:  readerErr,
+	}
+
+	eventCh := make(chan llm.StreamEvent, 16)
+	go func() {
+		_ = p.ParseSSE(ctx, r, nil, eventCh)
+		close(eventCh)
+	}()
+
+	// No events should be emitted — the error is in the return value.
+	for evt := range eventCh {
+		t.Errorf("expected zero events, got %+v", evt)
+	}
+}
+
+// TestParseSSE_ScannerErrorReturnValue verifies the returned error is the
+// underlying scanner error verbatim, so Stream() can wrap it.
+func TestParseSSE_ScannerErrorReturnValue(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wantErr := errors.New("stream error: stream ID 3; INTERNAL_ERROR; received from peer")
+	r := &errorReader{
+		data: []byte(": PROCESSING\n\n"),
+		err:  wantErr,
+	}
+
+	eventCh := make(chan llm.StreamEvent, 16)
+	err := p.ParseSSE(ctx, r, nil, eventCh)
+	if err == nil {
+		t.Fatal("expected ParseSSE to return non-nil error")
+	}
+	if !strings.Contains(err.Error(), "INTERNAL_ERROR") {
+		t.Errorf("error should contain scanner error text, got: %q", err.Error())
+	}
+}
+
+// TestStream_SSETransportError verifies the full Stream() path: when the
+// provider sends HTTP 200 with text/event-stream but the connection drops
+// mid-stream with a transport error, Stream() must surface it through the
+// event channel as an *APIError, not silently close as if the stream ended
+// cleanly. This is the end-to-end guardrail for the ParseSSE fix above.
+func TestStream_SSETransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		// Mimic mimo: send a keep-alive comment then abort the connection.
+		_, _ = w.Write([]byte(": PROCESSING\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Hijack and close abruptly to trigger a read error on the client side.
+		hj, _ := w.(http.Hijacker)
+		if hj != nil {
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, err := p.Stream(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("test")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() initial error: %v", err)
+	}
+
+	var apiErr *llm.APIError
+	for evt := range eventCh {
+		if evt.Error != nil {
+			apiErr = evt.Error
+			break
+		}
+	}
+	if apiErr == nil {
+		t.Fatal("expected *llm.APIError in event stream; transport error was silently swallowed")
+	}
+	if apiErr.Retryable {
+		t.Error("transport/stream error must NOT be retryable")
 	}
 }

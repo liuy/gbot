@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -240,11 +241,21 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 			td = tr
 			defer td.SetTimeoutDisabled(false)
 		}
-		go func() {
-			defer close(sseCh)
-			p.ParseSSE(ctx, body, td, sseCh)
-			close(done)
-		}()
+	go func() {
+		defer close(sseCh)
+		if err := p.ParseSSE(ctx, body, td, sseCh); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("sse: scanner error", "error", err)
+			sseCh <- StreamEvent{
+				Type: "error",
+				Error: &APIError{
+					Type:      "transport_error",
+					Message:   err.Error(),
+					Retryable: false,
+				},
+			}
+		}
+		close(done)
+	}()
 
 		var cacheRead, cacheCreation int
 		for evt := range sseCh {
@@ -297,7 +308,9 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 // ParseSSE parses the Anthropic SSE stream. td, when non-nil, allows the
 // parser to disable idle timeout immediately when a tool_use block starts,
 // avoiding a race between the parser goroutine and the event processing goroutine.
-func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) {
+// Returns the underlying scanner error if the stream failed mid-read (e.g.
+// HTTP/2 RST_STREAM); nil on clean EOF.
+func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) error {
 	scanner := bufio.NewScanner(body)
 	// Increase buffer for large responses
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
@@ -315,7 +328,7 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, td Tim
 				select {
 				case eventCh <- event:
 				case <-ctx.Done():
-					return
+					return ctx.Err()
 				}
 			}
 			eventType = ""
@@ -347,8 +360,11 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, td Tim
 		select {
 		case eventCh <- event:
 		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
+
+	return scanner.Err()
 }
 
 // ParseEvent converts an SSE event type + data into a StreamEvent.

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -393,7 +394,17 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 			body = tr
 			td = tr
 		}
-		p.parseOpenAISSE(ctx, req, body, td, eventCh)
+		if err := p.parseOpenAISSE(ctx, req, body, td, eventCh); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("openai sse: scanner error", "error", err)
+			send(ctx, eventCh, StreamEvent{
+				Type: "error",
+				Error: &APIError{
+					Type:      "transport_error",
+					Message:   err.Error(),
+					Retryable: false,
+				},
+			})
+		}
 	}()
 
 	return eventCh, nil
@@ -401,7 +412,8 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 
 // parseOpenAISSE parses the OpenAI SSE stream and emits Anthropic-shaped StreamEvents.
 // td, when non-nil, allows the parser to disable idle timeout during tool input phase.
-func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) {
+// Returns the underlying scanner error if the stream failed mid-read; nil on clean EOF.
+func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) error {
 	// Safety net: if we return while still in tool input phase, re-enable timeout.
 	if td != nil {
 		defer td.SetTimeoutDisabled(false)
@@ -466,7 +478,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 				}
 			}
 			send(ctx, eventCh, StreamEvent{Type: "message_stop"})
-			return
+			return nil
 		}
 
 		var chunk openaiStreamChunk
@@ -588,10 +600,10 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 						})
 					}
 					if acc.arguments.Len()+len(tc.Function.Arguments) > maxToolArgumentsSize {
-						slog.Warn("openai sse: tool arguments exceed size limit",
-							"index", acc.contentIndex, "size", acc.arguments.Len())
-						return
-					}
+				slog.Warn("openai sse: tool arguments exceed size limit",
+						"index", acc.contentIndex, "size", acc.arguments.Len())
+					return nil
+				}
 					acc.arguments.WriteString(tc.Function.Arguments)
 					send(ctx, eventCh, StreamEvent{
 						Type:  "content_block_delta",
@@ -644,8 +656,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 
 	// Stream ended without [DONE]
 	if err := scanner.Err(); err != nil {
-		slog.Warn("openai sse: scanner error", "error", err)
-		return
+		return err
 	}
 	// Clean EOF without [DONE] — close gracefully.
 	if textBlockOpen {
@@ -657,6 +668,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 		}
 	}
 	send(ctx, eventCh, StreamEvent{Type: "message_stop"})
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,11 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1415,5 +1419,104 @@ func TestTranslateRequest_OmittedWhenNil(t *testing.T) {
 		if _, exists := parsed[field]; exists {
 			t.Errorf("%q should be omitted when not set, but was present", field)
 		}
+	}
+}
+
+// errorReader returns valid data first, then a permanent read error.
+type errorReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// TestParseOpenAISSE_ScannerError verifies parseOpenAISSE returns the
+// underlying scanner error (e.g. HTTP/2 RST_STREAM) rather than silently
+// swallowing it. Mirrors the Anthropic-side regression test.
+func TestParseOpenAISSE_ScannerError(t *testing.T) {
+	t.Parallel()
+
+	p := NewOpenAIProvider(&OpenAIConfig{APIKey: "key", Model: "m"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wantErr := errors.New("stream error: stream ID 7; INTERNAL_ERROR; received from peer")
+	r := &errorReader{
+		data: []byte(": ping\n\n"),
+		err:  wantErr,
+	}
+
+	eventCh := make(chan StreamEvent, 16)
+	err := p.parseOpenAISSE(ctx, &Request{Model: "m"}, r, nil, eventCh)
+	if err == nil {
+		t.Fatal("expected parseOpenAISSE to return non-nil error")
+	}
+	if !strings.Contains(err.Error(), "INTERNAL_ERROR") {
+		t.Errorf("error should contain scanner error text, got: %q", err.Error())
+	}
+}
+
+// TestOpenAIStream_SSETransportError verifies the full Stream() path:
+// when the provider sends HTTP 200 but the connection drops mid-stream,
+// Stream() surfaces it as a non-retryable *APIError via the event channel.
+func TestOpenAIStream_SSETransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(": ping\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		hj, _ := w.(http.Hijacker)
+		if hj != nil {
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	p := NewOpenAIProvider(&OpenAIConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, err := p.Stream(ctx, &Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("test")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() initial error: %v", err)
+	}
+
+	var apiErr *APIError
+	for evt := range eventCh {
+		if evt.Error != nil {
+			apiErr = evt.Error
+			break
+		}
+	}
+	if apiErr == nil {
+		t.Fatal("expected *APIError in event stream; transport error was silently swallowed")
+	}
+	if apiErr.Retryable {
+		t.Error("transport/stream error must NOT be retryable")
 	}
 }
