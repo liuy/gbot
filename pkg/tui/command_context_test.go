@@ -629,9 +629,11 @@ func newTestStoreForTUI(t *testing.T) *short.Store {
 // /context dump tests
 // -----------------------------------------------------------------------
 
-// TestHandleContext_Dump_WritesFile verifies /context dump writes to /tmp/gbot-context.txt.
+// TestHandleContext_Dump_WritesFile verifies /context dump writes to project dir.
 func TestHandleContext_Dump_WritesFile(t *testing.T) {
 	app := newAppWithEngineState(t)
+	tmpDir := t.TempDir()
+	app.projectDir = tmpDir
 	app.engine.SetContextTokens(48_000)
 	app.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -651,12 +653,13 @@ func TestHandleContext_Dump_WritesFile(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd() returned %T, want infoMsg", msg)
 	}
-	if !strings.Contains(string(info), "/tmp/gbot-context.txt") {
-		t.Errorf("expected path in message, got: %q", string(info))
+	dumpPath := filepath.Join(tmpDir, "gbot-context.txt")
+	if !strings.Contains(string(info), dumpPath) {
+		t.Errorf("expected path %q in message, got: %q", dumpPath, string(info))
 	}
 
 	// Verify file was written.
-	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	data, err := os.ReadFile(dumpPath)
 	if err != nil {
 		t.Fatalf("failed to read dump file: %v", err)
 	}
@@ -681,6 +684,8 @@ func TestHandleContext_Dump_WritesFile(t *testing.T) {
 // TestHandleContext_Dump_ContainsTools verifies tool definitions appear in dump.
 func TestHandleContext_Dump_ContainsTools(t *testing.T) {
 	app := newAppWithEngineState(t)
+	tmpDir := t.TempDir()
+	app.projectDir = tmpDir
 	app.engine.SetContextTokens(48_000)
 	app.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -689,7 +694,7 @@ func TestHandleContext_Dump_ContainsTools(t *testing.T) {
 	})
 
 	app.handleContext("dump", nil)
-	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	data, err := os.ReadFile(filepath.Join(tmpDir, "gbot-context.txt"))
 	if err != nil {
 		t.Fatalf("read dump: %v", err)
 	}
@@ -703,6 +708,8 @@ func TestHandleContext_Dump_ContainsTools(t *testing.T) {
 // TestHandleContext_Dump_ToolUseAndResult verifies tool_use and tool_result rendering.
 func TestHandleContext_Dump_ToolUseAndResult(t *testing.T) {
 	app := newAppWithEngineState(t)
+	tmpDir := t.TempDir()
+	app.projectDir = tmpDir
 	app.engine.SetContextTokens(48_000)
 	app.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -717,7 +724,7 @@ func TestHandleContext_Dump_ToolUseAndResult(t *testing.T) {
 	})
 
 	app.handleContext("dump", nil)
-	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	data, err := os.ReadFile(filepath.Join(tmpDir, "gbot-context.txt"))
 	if err != nil {
 		t.Fatalf("read dump: %v", err)
 	}

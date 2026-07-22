@@ -179,6 +179,9 @@ func (s *PTYSession) Drain(ctx context.Context, emitAskInput func(tail string, m
 		case res := <-readCh:
 			if len(res.data) > 0 {
 				resetStall()
+				if slog.Default().Enabled(ctx, slog.LevelDebug) {
+					slog.Debug("pty:read_chunk", "bytes", len(res.data), "hex", fmt.Sprintf("%x", res.data))
+				}
 				if emitAskInput != nil {
 					partialLine, lastLines = trackPartialLines(res.data, partialLine, lastLines)
 				}

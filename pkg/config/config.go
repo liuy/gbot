@@ -28,8 +28,7 @@ type Config struct {
 
 	Theme string `json:"theme,omitempty"`
 
-	Debug   bool `json:"debug,omitempty"`
-	Verbose bool `json:"verbose,omitempty"`
+	Debug bool `json:"debug,omitempty"`
 
 	APITimeoutMS int `json:"api_timeout_ms,omitempty"` // milliseconds
 

@@ -4,6 +4,7 @@
 package tool
 
 import (
+	"log/slog"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -156,6 +157,7 @@ func (s *Screen) handleLF() {
 
 // emit sends a ScreenEvent to the onEvent callback.
 func (s *Screen) emit(kind ScreenEventKind, content string) {
+	slog.Debug("screen:emit", "kind", kind, "content_len", len(content))
 	if s.onEvent != nil {
 		s.onEvent(ScreenEvent{Kind: kind, Content: content})
 	}

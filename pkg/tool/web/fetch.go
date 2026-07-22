@@ -371,9 +371,9 @@ func init() {
 				level = 6
 			}
 			prefix := strings.Repeat("#", level)
-			w.WriteRune('\n')
-			w.WriteString(prefix)
-			w.WriteRune(' ')
+			_, _ = w.WriteRune('\n')
+			_, _ = w.WriteString(prefix)
+			_, _ = w.WriteRune(' ')
 			return converter.RenderTryNext
 		}, 0)
 	}

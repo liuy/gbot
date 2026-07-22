@@ -65,17 +65,23 @@ func main() {
 	// Parse -d/--daemon and -p/--port flags before anything else.
 	var daemonMode bool
 	wsPort := "8765"
+	verbose := false
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-d", "--daemon":
 			daemonMode = true
+		case "-v", "--verbose":
+			verbose = true
 		case "-p", "--port":
 			if i+1 < len(args) {
 				wsPort = args[i+1]
 				i++
 			}
 		}
+	}
+	if !verbose && os.Getenv("GBOT_VERBOSE") != "" {
+		verbose = true
 	}
 
 	home, err := os.UserHomeDir()
@@ -115,11 +121,14 @@ func main() {
 	}()
 
 	// Debug logging: write info-level events to log file.
-	// This provides comprehensive observability for diagnosing token stats,
-	// event ordering, and rendering issues.
+	// -v / GBOT_VERBOSE enables Debug level for full observability.
+	logLevel := slog.LevelInfo
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
 	logPath := filepath.Join(projectDir, "gbot.log")
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
-		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})))
 	}
 
 	// WeChat login subcommand: `gbot wechat login` or `gbot -d wechat login`.
@@ -190,9 +199,6 @@ func main() {
 
 	// Create engine
 	logger := slog.Default()
-	if cfg.Verbose {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	}
 
 	h := hub.NewHub()
 
