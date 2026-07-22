@@ -201,7 +201,9 @@ export function createInputBar(initial: {
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
     // Mobile: Enter inserts newline (browser default). Send via button only.
     // Desktop: Enter sends, Shift+Enter for newline.
-    const isTouch = navigator.maxTouchPoints > 0
+    // (pointer: coarse) detects true touch devices; maxTouchPoints misreports
+    // on Windows laptops with precision touchpads.
+    const isTouch = window.matchMedia('(pointer: coarse)').matches
     if (isTouch) return
     // Enter — send (Shift+Enter for newline, handled by browser default)
     if (e.key === 'Enter' && !e.shiftKey) {
