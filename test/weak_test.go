@@ -636,7 +636,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// TestToolRegistrationOrder verifies that all MustRegister calls in cmd/gbot/main.go
+// TestToolRegistrationOrder verifies that all MustRegister calls in pkg/app/start.go
 // appear BEFORE the engine.New() call. This prevents the "11 tools vs 14 tools" bug
 // where tools registered after engine.New() are invisible to AllTools().
 func TestToolRegistrationOrder(t *testing.T) {
@@ -645,21 +645,21 @@ func TestToolRegistrationOrder(t *testing.T) {
 		t.Fatal("cannot find project root (go.mod)")
 	}
 
-	mainPath := filepath.Join(projectRoot, "cmd", "gbot", "main.go")
-	src, err := os.ReadFile(mainPath)
+	startPath := filepath.Join(projectRoot, "pkg", "app", "start.go")
+	src, err := os.ReadFile(startPath)
 	if err != nil {
-		t.Fatalf("cannot read %s: %v", mainPath, err)
+		t.Fatalf("cannot read %s: %v", startPath, err)
 	}
 
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, mainPath, src, 0)
+	f, err := parser.ParseFile(fset, startPath, src, 0)
 	if err != nil {
-		t.Fatalf("cannot parse %s: %v", mainPath, err)
+		t.Fatalf("cannot parse %s: %v", startPath, err)
 	}
 
 	// Walk the AST to find line numbers of:
-	//   - reg.MustRegister(...) calls in main() only
-	//   - engine.New(...) call in main() only
+	//   - reg.MustRegister(...) calls in Start() only
+	//   - engine.New(...) call in Start() only
 	type callInfo struct {
 		name string
 		line int
@@ -667,10 +667,11 @@ func TestToolRegistrationOrder(t *testing.T) {
 	var registers []callInfo
 	var engineNewLine int
 
-	// Scope to main() function only — ignore createTools() and other helpers.
+	// Scope to Start() function only — ignore helpers and the factory closure's
+	// inner scope is still walked because ast.Inspect is recursive.
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "main" {
+		if !ok || fn.Name.Name != "Start" {
 			continue
 		}
 		ast.Inspect(fn, func(n ast.Node) bool {
@@ -698,7 +699,7 @@ func TestToolRegistrationOrder(t *testing.T) {
 	}
 
 	if engineNewLine == 0 {
-		t.Fatal("engine.New() not found in main.go")
+		t.Fatal("engine.New() not found in start.go")
 	}
 
 	for _, r := range registers {
