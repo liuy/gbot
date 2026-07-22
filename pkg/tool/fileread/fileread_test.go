@@ -146,6 +146,38 @@ func TestExecute_ReadWholeFile(t *testing.T) {
 	}
 }
 
+// TestExecute_ReadCRLFFile verifies that CRLF line endings (Windows) are
+// normalized to LF. Without this, \r characters leak into the tool output
+// and cause visual artifacts in the TUI (cursor reset mid-line).
+func TestExecute_ReadCRLFFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "crlf.txt")
+	crlfContent := "line1\r\nline2\r\nline3\r\n"
+	lfContent := "line1\nline2\nline3\n"
+	if err := os.WriteFile(fp, []byte(crlfContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if output.Content != lfContent {
+		t.Errorf("Content = %q, want %q (CRLF should be normalized to LF)", output.Content, lfContent)
+	}
+	if strings.Contains(output.Content, "\r") {
+		t.Errorf("Content should not contain any \\r after normalization")
+	}
+}
+
 func TestExecute_ReadFileNoTrailingNewline(t *testing.T) {
 	t.Parallel()
 

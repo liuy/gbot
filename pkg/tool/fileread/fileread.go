@@ -288,6 +288,13 @@ func renderResult(data any) string {
 	}
 }
 
+// normalizeLineEndings converts CRLF to LF and strips lone CR.
+// Windows files checked out via git often have \r\n; the lone \r would
+// cause the TUI to reset the cursor mid-line when rendering tool output.
+func normalizeLineEndings(s string) string {
+	return strings.ReplaceAll(s, "\r", "")
+}
+
 // countLines returns total line count for a file path.
 func countTotalLines(filePath string) (int, error) {
 	data, err := os.ReadFile(filePath)
@@ -575,7 +582,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 			return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
 		}
 
-		content = string(data)
+		content = normalizeLineEndings(string(data))
 		totalLines = strings.Count(content, "\n")
 		if content != "" && !strings.HasSuffix(content, "\n") {
 			totalLines++
@@ -601,7 +608,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 			return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
 		}
 
-		text := string(data)
+		text := normalizeLineEndings(string(data))
 		allLines := strings.Split(text, "\n")
 
 		// Compute total lines (trailing empty from final newline doesn't count)
