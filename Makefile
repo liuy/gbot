@@ -1,6 +1,9 @@
 .PHONY: all build build-debug build-all build-windows debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows
 
 BINARY := gbot
+ifeq ($(OS),Windows_NT)
+	BINARY := gbot.exe
+endif
 BINARY_DEBUG := gbot-debug
 CMD := ./cmd/gbot/
 PKG := ./pkg/...
