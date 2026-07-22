@@ -487,6 +487,35 @@ func TestScreen_SGROnlyLineDoesNotEmit(t *testing.T) {
 	}
 }
 
+// TestScreen_CursorHomeActsAsCR reproduces a Windows winget bug where
+// progress bar updates use \x1b[H (cursor home) to redraw the same line.
+// Screen should treat \x1b[H like \r: emit current line, then reset for
+// overwrite. Without this, each progress update accumulates as a new line.
+func TestScreen_CursorHomeActsAsCR(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// Simulate winget-style progress updates:
+	// \x1b[H redraws the line in place (same semantics as \r)
+	s.Write([]byte("\x1b[H 25%\x1b[H 50%\x1b[H 75%\n"))
+
+	// Should get 3 events: 25% (append), 50% (replace), 75% (replace).
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
+	}
+	// First emit is an append.
+	if events[0].Kind != ScreenAppend || events[0].Content != " 25%" {
+		t.Errorf("events[0] = {%d, %q}, want {Append, \" 25%%\"}", events[0].Kind, events[0].Content)
+	}
+	// Subsequent emits are replaces (same line overwritten).
+	if events[1].Kind != ScreenReplace || events[1].Content != " 50%" {
+		t.Errorf("events[1] = {%d, %q}, want {Replace, \" 50%%\"}", events[1].Kind, events[1].Content)
+	}
+	if events[2].Kind != ScreenReplace || events[2].Content != " 75%" {
+		t.Errorf("events[2] = {%d, %q}, want {Replace, \" 75%%\"}", events[2].Kind, events[2].Content)
+	}
+}
+
 func assertEvent(t *testing.T, ev ScreenEvent, wantKind ScreenEventKind, wantContent string) {
 	t.Helper()
 	if ev.Kind != wantKind {

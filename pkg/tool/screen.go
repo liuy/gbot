@@ -226,6 +226,15 @@ func (s *Screen) parseCSI(p []byte) int {
 		// line is emitted as a Replace event.
 		s.handleCR()
 		s.crPending = true
+	} else if finalByte == 'H' {
+		// Cursor position (CUP). winget uses ESC[H (cursor home = row 1 col 1)
+		// to redraw progress bars in place — same semantics as \r.
+		// Only treat no-arg or 1;1 as CR; other row targets are ignored.
+		isHome := start == 0 || (start == 3 && p[0] == '1' && p[1] == ';' && p[2] == '1')
+		if isHome {
+			s.handleCR()
+			s.crPending = true
+		}
 	} else if finalByte == 'K' && s.crPending {
 		// Erase in line after ESC[1G — the spinner frame was emitted but
 		// is now erased. Track it so handleLF can create a blank line.
