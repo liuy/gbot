@@ -50,3 +50,7 @@ pkg/connector/wui/assets/index.html.gz
 /dist/
 /build/staging/
 /build/nsis-plugins/
+*.syso
+cmd/wails/icon.ico
+*.exe
+pkg/connector/wui/assets/

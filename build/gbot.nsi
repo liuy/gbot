@@ -7,6 +7,8 @@ OutFile "..\dist\gbot.exe"
 InstallDir "$PROGRAMFILES64\GBot"
 RequestExecutionLevel admin
 
+!define MUI_ICON "..\cmd\wails\icon.ico"
+!define MUI_UNICON "..\cmd\wails\icon.ico"
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !insertmacro MUI_PAGE_DIRECTORY

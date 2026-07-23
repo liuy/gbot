@@ -15,7 +15,7 @@ func runGUI(inst *app.Instance, wsPort string) {
 		Name: "GBot",
 	})
 	w := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:  "GBot",
+		Title:  "",
 		Width:  1200,
 		Height: 800,
 		URL:    fmt.Sprintf("http://localhost:%s/", wsPort),

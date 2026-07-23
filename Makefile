@@ -6,6 +6,7 @@ ifeq ($(OS),Windows_NT)
 endif
 BINARY_DEBUG := gbot-debug
 CMD := ./cmd/gbot/
+WCMD := ./cmd/wails/
 PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
 GBOT_HOME := $(HOME)/.gbot
@@ -34,8 +35,13 @@ build-windows:
 # May fail on non-Windows hosts due to Wails CGO/webkitgtk deps.
 # Uses leading '-' so failure is non-fatal in `make check`.
 build-windows-gui:
-	-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/wails/ 2>/dev/null || \
+	-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/wails/ 2>/dev/null || \
 		echo "NOTE: cmd/wails cross-compile skipped (build on Windows for production)"
+
+# icon.ico is auto-generated from icon.png so users only maintain one file.
+# PIL generates multi-resolution ICO with proper RGBA alpha and PNG frames.
+$(WCMD)/icon.ico $(WCMD)/rsrc_windows_amd64.syso: $(WCMD)/icon.png scripts/gen-ico.sh
+	bash scripts/gen-ico.sh
 
 # Alias for clarity when only one is wanted.
 build-all: build
@@ -79,7 +85,7 @@ clean:
 # Linux/macOS packaging is future work.
 package: package-windows
 
-package-windows:
+package-windows: $(WCMD)/icon.ico
 	bash scripts/package-wails.sh $(VERSION)
 
 wails-build: web-build
