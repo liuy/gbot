@@ -760,12 +760,15 @@ func translateMessages(messages []types.Message) []openaiMessage {
 				})
 
 			case types.ContentTypeToolResult:
-				content := extractToolResultText(cb.Content)
+				content, imageMessages := extractToolResultContent(cb.Content)
 				toolResults = append(toolResults, openaiMessage{
 					Role:       "tool",
 					ToolCallID: cb.ToolUseID,
 					Content:    content,
 				})
+				// OpenAI tool messages cannot carry images — surface them in
+				// a companion user message with image_url blocks.
+				toolResults = append(toolResults, imageMessages...)
 
 			case types.ContentTypeThinking:
 				// GLM Preserved Thinking requires the prior turn's reasoning
@@ -876,35 +879,53 @@ func extractSystemPrompt(raw json.RawMessage) string {
 	return ""
 }
 
-// extractToolResultText extracts text content from a tool result's Content field.
-// Handles: string, []ContentBlock with text fields, or raw JSON fallback.
-func extractToolResultText(raw json.RawMessage) string {
+// extractToolResultContent parses tool_result.content (an array of
+// ContentBlocks) and separates text from image blocks. Images cannot be
+// placed in OpenAI tool messages, so they are returned as companion user
+// messages with image_url blocks.
+func extractToolResultContent(raw json.RawMessage) (text string, imageMsgs []openaiMessage) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
 
-	// Try as string
+	// Try as string (legacy single-wrapped form).
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+		return s, nil
 	}
 
-	// Try as []ContentBlock
+	// Try as []ContentBlock (array form — the canonical shape).
 	var blocks []types.ContentBlock
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var texts []string
-		for _, b := range blocks {
-			if b.Text != "" {
-				texts = append(texts, b.Text)
-			}
-		}
-		if len(texts) > 0 {
-			return strings.Join(texts, "\n")
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		// Fallback: return raw as text, no images.
+		return string(raw), nil
+	}
+
+	var texts []string
+	var images []openaiImageURL
+	for _, b := range blocks {
+		switch {
+		case b.Text != "":
+			texts = append(texts, b.Text)
+		case b.Type == types.ContentTypeImage && b.Source != nil:
+			images = append(images, openaiImageURL{
+				Type: "image_url",
+				ImageURL: openaiImageURLData{
+					URL: "data:" + b.Source.MediaType + ";base64," + b.Source.Data,
+				},
+			})
 		}
 	}
 
-	// Fallback: raw JSON string
-	return string(raw)
+	var userMsgs []openaiMessage
+	if len(images) > 0 {
+		// OpenAI user messages accept image_url arrays directly.
+		userMsgs = append(userMsgs, openaiMessage{
+			Role:    "user",
+			Content: images,
+		})
+	}
+	return strings.Join(texts, "\n"), userMsgs
 }
 
 // ---------------------------------------------------------------------------

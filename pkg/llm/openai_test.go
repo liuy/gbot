@@ -854,66 +854,6 @@ func TestExtractSystemPrompt_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractToolResultText tests
-// ---------------------------------------------------------------------------
-
-func TestExtractToolResultText_String(t *testing.T) {
-	t.Parallel()
-
-	raw := json.RawMessage(`"file contents here"`)
-	got := extractToolResultText(raw)
-
-	if got != "file contents here" {
-		t.Errorf("got %q, want %q", got, "file contents here")
-	}
-}
-
-func TestExtractToolResultText_ContentBlockArray(t *testing.T) {
-	t.Parallel()
-
-	raw := json.RawMessage(`[
-		{"type":"text","text":"line 1"},
-		{"type":"text","text":"line 2"}
-	]`)
-	got := extractToolResultText(raw)
-
-	if !strings.Contains(got, "line 1") {
-		t.Errorf("result should contain 'line 1', got %q", got)
-	}
-	if !strings.Contains(got, "line 2") {
-		t.Errorf("result should contain 'line 2', got %q", got)
-	}
-	if !strings.Contains(got, "\n") {
-		t.Errorf("text blocks should be joined with newline, got %q", got)
-	}
-}
-
-func TestExtractToolResultText_RawFallback(t *testing.T) {
-	t.Parallel()
-
-	// Non-string, non-ContentBlock JSON → raw string fallback
-	raw := json.RawMessage(`{"lines":42,"ok":true}`)
-	got := extractToolResultText(raw)
-
-	if got != `{"lines":42,"ok":true}` {
-		t.Errorf("got %q, want raw JSON string %q", got, `{"lines":42,"ok":true}`)
-	}
-}
-
-func TestExtractToolResultText_Empty(t *testing.T) {
-	t.Parallel()
-
-	got := extractToolResultText(nil)
-	if got != "" {
-		t.Errorf("got %q, want empty string for nil", got)
-	}
-
-	got = extractToolResultText(json.RawMessage(""))
-	if got != "" {
-		t.Errorf("got %q, want empty string for empty raw", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // mapFinishReason tests
 // ---------------------------------------------------------------------------
@@ -1318,19 +1258,6 @@ func TestTranslateMessages_AssistantMultipleTextBlocks(t *testing.T) {
 	}
 }
 
-func TestExtractToolResultText_ContentBlockEmpty(t *testing.T) {
-	t.Parallel()
-
-	// ContentBlock array with no text → falls through to raw fallback
-	raw := json.RawMessage(`[{"type":"image","data":"base64..."}]`)
-	got := extractToolResultText(raw)
-
-	// No text blocks → falls through to raw string fallback
-	if got != `[{"type":"image","data":"base64..."}]` {
-		t.Errorf("got %q, want raw JSON fallback", got)
-	}
-}
-
 func TestTranslateRequest_TemperatureStopSequencesMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1518,5 +1445,241 @@ func TestOpenAIStream_SSETransportError(t *testing.T) {
 	}
 	if apiErr.Retryable {
 		t.Error("transport/stream error must NOT be retryable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// translateMessages: image-in-tool_result tests
+// ---------------------------------------------------------------------------
+
+func TestTranslateMessages_ToolResultWithImage(t *testing.T) {
+	t.Parallel()
+
+	toolResultContent := json.RawMessage(`[
+		{"type":"text","text":"Image read OK"},
+		{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+	]`)
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_img1",
+					Content:   toolResultContent,
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2 (tool + user)", len(result))
+	}
+	if result[0].Role != "tool" {
+		t.Errorf("result[0].role = %q, want %q", result[0].Role, "tool")
+	}
+	if result[0].ToolCallID != "call_img1" {
+		t.Errorf("result[0].tool_call_id = %q, want %q", result[0].ToolCallID, "call_img1")
+	}
+	if result[0].Content != "Image read OK" {
+		t.Errorf("result[0].content = %q, want %q", result[0].Content, "Image read OK")
+	}
+
+	if result[1].Role != "user" {
+		t.Errorf("result[1].role = %q, want %q", result[1].Role, "user")
+	}
+	images, ok := result[1].Content.([]openaiImageURL)
+	if !ok {
+		t.Fatalf("result[1].content type = %T, want []openaiImageURL", result[1].Content)
+	}
+	if len(images) != 1 {
+		t.Fatalf("len(images) = %d, want 1", len(images))
+	}
+	if images[0].Type != "image_url" {
+		t.Errorf("images[0].type = %q, want %q", images[0].Type, "image_url")
+	}
+	if !strings.HasPrefix(images[0].ImageURL.URL, "data:image/png;base64,") {
+		t.Errorf("images[0].url prefix = %q, want data:image/png;base64,", images[0].ImageURL.URL[:40])
+	}
+}
+
+func TestTranslateMessages_ToolResultImageOnly(t *testing.T) {
+	t.Parallel()
+
+	toolResultContent := json.RawMessage(`[
+		{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc123"}}
+	]`)
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_img2",
+					Content:   toolResultContent,
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2 (tool + user)", len(result))
+	}
+	if result[0].Role != "tool" {
+		t.Errorf("result[0].role = %q, want %q", result[0].Role, "tool")
+	}
+	if result[0].ToolCallID != "call_img2" {
+		t.Errorf("result[0].tool_call_id = %q, want %q", result[0].ToolCallID, "call_img2")
+	}
+
+	if result[1].Role != "user" {
+		t.Errorf("result[1].role = %q, want %q", result[1].Role, "user")
+	}
+	images, ok := result[1].Content.([]openaiImageURL)
+	if !ok {
+		t.Fatalf("result[1].content type = %T, want []openaiImageURL", result[1].Content)
+	}
+	if len(images) != 1 {
+		t.Fatalf("len(images) = %d, want 1", len(images))
+	}
+	if images[0].Type != "image_url" {
+		t.Errorf("images[0].type = %q, want %q", images[0].Type, "image_url")
+	}
+}
+
+func TestTranslateMessages_ToolResultTextOnlyUnchanged(t *testing.T) {
+	t.Parallel()
+
+	toolResultContent := json.RawMessage(`[
+		{"type":"text","text":"sunny 25\u00b0C"}
+	]`)
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_text1",
+					Content:   toolResultContent,
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1 (tool only, no user message)", len(result))
+	}
+	if result[0].Role != "tool" {
+		t.Errorf("result[0].role = %q, want %q", result[0].Role, "tool")
+	}
+	if result[0].Content != "sunny 25\u00b0C" {
+		t.Errorf("result[0].content = %q, want %q", result[0].Content, "sunny 25\u00b0C")
+	}
+}
+
+// TestOpenAITranslateRequest_ToolResultImageURL verifies that a tool_result
+// with image blocks serializes to a tool message + companion user message
+// with image_url in the actual JSON request body.
+func TestOpenAITranslateRequest_ToolResultImageURL(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+
+	req := &Request{
+		Model:     "gpt-4",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeToolUse, ID: "call_img", Name: "Read", Input: json.RawMessage(`{"file_path":"icon.png"}`)},
+				},
+			},
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					{
+						Type:      types.ContentTypeToolResult,
+						ToolUseID: "call_img",
+						Content: json.RawMessage(`[
+							{"type":"text","text":"Image read OK"},
+							{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+						]`),
+					},
+				},
+			},
+		},
+	}
+
+	body, err := p.translateRequest(req, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+
+	var root struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var msgs []struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCallID string          `json:"tool_call_id"`
+	}
+	if err := json.Unmarshal(root.Messages, &msgs); err != nil {
+		t.Fatalf("unmarshal messages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(messages) = %d, want 3 (assistant + tool + user)", len(msgs))
+	}
+
+	if msgs[1].Role != "tool" {
+		t.Errorf("messages[1].role = %q, want %q", msgs[1].Role, "tool")
+	}
+	if msgs[1].ToolCallID != "call_img" {
+		t.Errorf("messages[1].tool_call_id = %q, want %q", msgs[1].ToolCallID, "call_img")
+	}
+	var toolText string
+	if err := json.Unmarshal(msgs[1].Content, &toolText); err != nil {
+		t.Fatalf("messages[1].content is not a JSON string: %v", err)
+	}
+	if toolText != "Image read OK" {
+		t.Errorf("messages[1].content = %q, want %q", toolText, "Image read OK")
+	}
+
+	if msgs[2].Role != "user" {
+		t.Errorf("messages[2].role = %q, want %q", msgs[2].Role, "user")
+	}
+	var arr []struct {
+		Type     string `json:"type"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(msgs[2].Content, &arr); err != nil {
+		t.Fatalf("messages[2].content is not a JSON array: %v", err)
+	}
+	if len(arr) != 1 {
+		t.Fatalf("len(content) = %d, want 1 (image only)", len(arr))
+	}
+	if arr[0].Type != "image_url" {
+		t.Errorf("content[0].type = %q, want %q", arr[0].Type, "image_url")
+	}
+	if arr[0].ImageURL == nil {
+		t.Fatal("content[0].image_url is nil")
+	}
+	if !strings.HasPrefix(arr[0].ImageURL.URL, "data:image/png;base64,") {
+		t.Errorf("image_url.url prefix = %q, want %q", arr[0].ImageURL.URL[:40], "data:image/png;base64,")
 	}
 }

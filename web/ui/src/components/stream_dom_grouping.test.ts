@@ -222,20 +222,36 @@ describe('thinking absorption into tool groups', () => {
 		expect(container.querySelectorAll(':scope > [data-thinking]').length).toBe(1)
 	})
 
-	it('collapsed group hides absorbed thinking, expanded shows it', () => {
-		const container = setup()
-		appendThinking(container)
-		appendTool(container, 'Grep')
-		appendTool(container, 'Glob')
+  it('collapsed group hides absorbed thinking, expanded shows it', () => {
+    const container = setup()
+    appendThinking(container)
+    appendTool(container, 'Grep')
+    appendTool(container, 'Glob')
 
-		const group = container.querySelector('[data-tool-group]') as HTMLElement
-		const tc = toolsContainer(group)
-		expect(tc.classList.contains('hidden')).toBe(true)
-		expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
+    const group = container.querySelector('[data-tool-group]') as HTMLElement
+    const tc = toolsContainer(group)
+    expect(tc.classList.contains('hidden')).toBe(true)
+    expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
 
-		const header = group.querySelector('[data-group-header]') as HTMLElement
-		header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-		expect(tc.classList.contains('hidden')).toBe(false)
-		expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
-	})
+    const header = group.querySelector('[data-group-header]') as HTMLElement
+    header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(tc.classList.contains('hidden')).toBe(false)
+    expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
+  })
+
+  it('inter-tool thinking absorbed on group creation (two tools with thinking between)', () => {
+    const container = setup()
+    appendTool(container, 'Grep')
+    appendThinking(container)
+    appendTool(container, 'Glob')
+
+    const group = container.querySelector('[data-tool-group]') as HTMLElement
+    expect(group).toBeTruthy()
+    const tc = toolsContainer(group)
+    expect(tc.querySelectorAll('[data-tool-root]').length).toBe(2)
+    expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
+    expect((tc.children[0] as HTMLElement).dataset.toolName).toBe('Grep')
+    expect((tc.children[1] as HTMLElement).dataset.thinking).toBe('1')
+    expect((tc.children[2] as HTMLElement).dataset.toolName).toBe('Glob')
+  })
 })

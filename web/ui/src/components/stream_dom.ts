@@ -353,11 +353,16 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
       // Collect pre-group thinking BEFORE replaceChild detaches sibling; after
       // detach, sibling.previousElementSibling would return null.
       const preThinking = collectLeadingThinking(sibling)
+      // Also collect inter-tool thinking BEFORE replaceChild — the thinking
+      // blocks between sibling and the new tool; after detach, sibling's
+      // nextElementSibling is null.
+      const postThinking = collectTrailingThinking(sibling as HTMLElement)
       const group = createGroupContainer()
       parent.replaceChild(group, sibling)
       const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
       for (const th of preThinking) toolsContainer.appendChild(th)
       toolsContainer.appendChild(sibling)
+      for (const th of postThinking) toolsContainer.appendChild(th)
       toolsContainer.appendChild(root)
       updateGroupSummary(group)
       const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
