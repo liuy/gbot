@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 // Maximum number of files returned by a single glob call.
@@ -239,6 +240,7 @@ func rgRaw(ctx context.Context, args []string) ([]string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(rgCtx, "rg", args...)
+	proc.HideWindow(cmd)
 
 	// TS: ripgrep.ts:149-156 — capture stdout with 20MB buffer limit
 	var stdout, stderr bytes.Buffer

@@ -18,6 +18,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 func init() {
@@ -114,6 +115,7 @@ func shouldComputeGitDiff() bool {
 func getDefaultBranch(gitRoot string) string {
 	// Try reading origin/HEAD symref
 	cmd := exec.Command("git", "--no-optional-locks", "symbolic-ref", "refs/remotes/origin/HEAD")
+	proc.HideWindow(cmd)
 	cmd.Dir = gitRoot
 	output, err := cmd.Output()
 	if err == nil {
@@ -130,6 +132,7 @@ func getDefaultBranch(gitRoot string) string {
 	// Check if main or master exists on origin
 	for _, candidate := range []string{"main", "master"} {
 		cmd := exec.Command("git", "--no-optional-locks", "rev-parse", "--verify", "refs/remotes/origin/"+candidate)
+		proc.HideWindow(cmd)
 		cmd.Dir = gitRoot
 		if err := cmd.Run(); err == nil {
 			return candidate
@@ -152,6 +155,7 @@ func getDiffRef(gitRoot string) string {
 	}
 
 	cmd := exec.Command("git", "--no-optional-locks", "merge-base", "HEAD", baseBranch)
+	proc.HideWindow(cmd)
 	cmd.Dir = gitRoot
 	output, err := cmd.Output()
 	if err == nil {
@@ -208,6 +212,7 @@ func parseGitHubRemoteURL(url string) *string {
 // Source: detectRepository.ts — detectCurrentRepository + getCachedRepository
 func getRepository(gitRoot string) *string {
 	cmd := exec.Command("git", "--no-optional-locks", "remote", "get-url", "origin")
+	proc.HideWindow(cmd)
 	cmd.Dir = gitRoot
 	output, err := cmd.Output()
 	if err != nil {
@@ -235,6 +240,7 @@ func fetchGitDiffForFile(filePath string) (*GitDiff, error) {
 
 	// Check if file is tracked
 	cmd := exec.Command("git", "--no-optional-locks", "ls-files", "--error-unmatch", relPath)
+	proc.HideWindow(cmd)
 	cmd.Dir = gitRoot
 	if err := cmd.Run(); err != nil {
 		// File is untracked — generate synthetic diff with repository
@@ -250,6 +256,7 @@ func fetchGitDiffForFile(filePath string) (*GitDiff, error) {
 	// Get git diff — use merge-base for PR-like view
 	diffRef := getDiffRef(gitRoot)
 	cmd = exec.Command("git", "--no-optional-locks", "diff", diffRef, "--", relPath)
+	proc.HideWindow(cmd)
 	cmd.Dir = gitRoot
 	output, err := cmd.Output()
 	if err != nil || len(output) == 0 {

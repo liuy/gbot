@@ -7022,7 +7022,12 @@ func TestCallLLM_CtxCancel_ClosesOpenBlocks(t *testing.T) {
 				for _, evt := range tt.events {
 					ch <- evt
 				}
-				time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+				// Wait until the engine has consumed all buffered events from
+				// the channel, then cancel. On cancel, emitCloseEventsForOpenBlocks
+				// fires the close events for any open blocks.
+				for len(ch) > 0 {
+					runtime.Gosched()
+				}
 				cancel()
 			}()
 

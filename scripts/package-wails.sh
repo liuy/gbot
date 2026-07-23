@@ -58,7 +58,7 @@ gzip -kf "${ROOT}/pkg/connector/wui/assets/index.html"
 # 2. Build gbot.exe (cross-compile from Linux, or native on Windows)
 echo "Building gbot.exe..."
 cd "${ROOT}"
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "${STAGING}/gbot.exe" ./cmd/wails/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -H windowsgui" -o "${STAGING}/gbot.exe" ./cmd/wails/
 
 # 3. Download + extract PortableGit
 if [ ! -f "${PORTABLEGIT_CACHE}" ]; then

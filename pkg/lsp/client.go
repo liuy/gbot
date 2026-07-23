@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/liuy/gbot/pkg/utils/proc"
 	"io"
 	"log/slog"
 	"os"
@@ -112,6 +113,7 @@ func StartClient(ctx context.Context, name, command string, args []string, cwd s
 		return nil, fmt.Errorf("lsp %s: %w", name, err)
 	}
 	cmd := execCommand(command, args...)
+	proc.HideWindow(cmd)
 	cmd.Dir = cwd
 	cmd.Stderr = nil
 	if len(extraEnv) > 0 {

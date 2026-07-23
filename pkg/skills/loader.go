@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 // ---------------------------------------------------------------------------
@@ -368,6 +369,7 @@ const maxFrontmatterFileSize = 1 << 20
 func isPathGitignored(checkPath, cwd string) bool {
 	// #nosec G204 — checkPath is controlled by skill discovery
 	cmd := exec.Command("git", "-C", cwd, "check-ignore", "-q", checkPath)
+	proc.HideWindow(cmd)
 	cmd.Dir = cwd
 	err := cmd.Run()
 	if err != nil {

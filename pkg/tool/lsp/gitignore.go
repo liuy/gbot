@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/lsp"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 const gitIgnoreBatchSize = 50
@@ -56,6 +57,7 @@ func checkGitIgnore(ctx context.Context, paths []string, cwd string) map[string]
 		batch := paths[i:end]
 
 		cmd := exec.CommandContext(ctx, "git", append([]string{"check-ignore"}, batch...)...)
+		proc.HideWindow(cmd)
 		cmd.Dir = cwd
 		output, err := cmd.Output()
 		if err != nil {

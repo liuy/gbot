@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/liuy/gbot/pkg/utils/proc"
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -306,6 +307,7 @@ func newStdioTransport(name string, cfg *StdioConfig, scope ConfigScope, trusted
 	}
 
 	cmd := exec.Command(cfg.Command, cfg.Args...)
+	proc.HideWindow(cmd)
 
 	// Source: client.ts:953-956 — env is subprocessEnv() merged with server env.
 	// In Go, exec.Command inherits os.Environ by default. We only need to

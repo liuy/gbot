@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"github.com/liuy/gbot/pkg/utils/proc"
 	"log/slog"
 	"maps"
 	"os"
@@ -119,6 +120,7 @@ func executeHeadersHelper(ctx context.Context, serverName, serverURL, helper str
 
 	// Source: headersHelper.ts:62 — shell: true
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", helper)
+	proc.HideWindow(cmd)
 	// Ensure child processes are cleaned up on timeout.
 	cmd.WaitDelay = 2 * time.Second
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/markdown"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,7 @@ func projectAgentDir(cwd string) string {
 // Source: utils/git.ts — findGitRoot
 func findGitRoot(dir string) string {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	proc.HideWindow(cmd)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

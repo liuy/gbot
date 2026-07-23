@@ -2,6 +2,7 @@ package context
 
 import (
 	"fmt"
+	"github.com/liuy/gbot/pkg/utils/proc"
 	"os"
 	"os/exec"
 	"runtime"
@@ -164,7 +165,9 @@ func detectOS() string {
 		}
 	}
 	// Try sw_vers on macOS
-	if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+	swCmd := exec.Command("sw_vers", "-productVersion")
+	proc.HideWindow(swCmd)
+	if out, err := swCmd.Output(); err == nil {
 		return fmt.Sprintf("macOS %s (%s)", strings.TrimSpace(string(out)), arch)
 	}
 	// Fallback
@@ -172,7 +175,9 @@ func detectOS() string {
 }
 
 func detectRepoRoot(workingDir string) string {
-	out, err := exec.Command("git", "-C", workingDir, "rev-parse", "--show-toplevel").Output()
+	cmd := exec.Command("git", "-C", workingDir, "rev-parse", "--show-toplevel")
+	proc.HideWindow(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

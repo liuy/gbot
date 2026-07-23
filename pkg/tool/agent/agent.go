@@ -19,6 +19,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 // ---------------------------------------------------------------------------
@@ -531,7 +532,9 @@ func formatToolNamesList(tools map[string]tool.Tool) string {
 // Source: prompts.ts:610 — getUnameSR() returns "Linux 6.6.4" etc.
 // Cached with sync.OnceValue since OS version never changes during process lifetime.
 var getOSVersion = sync.OnceValue(func() string {
-	out, err := exec.Command("uname", "-sr").Output()
+	cmd := exec.Command("uname", "-sr")
+	proc.HideWindow(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

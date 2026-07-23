@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
 // Default cap on grep results when head_limit is unspecified.
@@ -309,6 +310,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	args = append(args, searchPath)
 
 	cmd := exec.CommandContext(ctx, "rg", args...)
+	proc.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		// rg returns exit code 1 when no matches — not an error

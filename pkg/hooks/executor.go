@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/liuy/gbot/pkg/utils/proc"
 	"os/exec"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input
 	// Build command.
 	// Source: hooks.ts — shell execution via $SHELL (bash).
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	proc.HideWindow(cmd)
 
 	// Set environment: inherit parent + inject extra vars + plugin extraEnv.
 	if len(e.Env) > 0 || len(extraEnv) > 0 {

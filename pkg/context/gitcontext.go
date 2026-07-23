@@ -1,6 +1,7 @@
 package context
 
 import (
+	"github.com/liuy/gbot/pkg/utils/proc"
 	"os/exec"
 	"strings"
 )
@@ -21,6 +22,7 @@ func LoadGitStatus(workingDir string) *GitStatusInfo {
 
 	// Check if we're in a git repo
 	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	proc.HideWindow(cmd)
 	cmd.Dir = workingDir
 	if output, err := cmd.Output(); err != nil || strings.TrimSpace(string(output)) != "true" {
 		return info
@@ -29,6 +31,7 @@ func LoadGitStatus(workingDir string) *GitStatusInfo {
 
 	// Get current branch
 	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	proc.HideWindow(cmd)
 	cmd.Dir = workingDir
 	if output, err := cmd.Output(); err == nil {
 		info.Branch = strings.TrimSpace(string(output))
@@ -36,6 +39,7 @@ func LoadGitStatus(workingDir string) *GitStatusInfo {
 
 	// Get default branch
 	cmd = exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	proc.HideWindow(cmd)
 	cmd.Dir = workingDir
 	if output, err := cmd.Output(); err == nil {
 		parts := strings.Split(strings.TrimSpace(string(output)), "/")
@@ -46,6 +50,7 @@ func LoadGitStatus(workingDir string) *GitStatusInfo {
 
 	// Check if dirty
 	cmd = exec.Command("git", "status", "--porcelain")
+	proc.HideWindow(cmd)
 	cmd.Dir = workingDir
 	if output, err := cmd.Output(); err == nil {
 		info.IsDirty = len(strings.TrimSpace(string(output))) > 0

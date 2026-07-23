@@ -747,21 +747,21 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					if r.Output != nil && r.Output.Decision == "allow" {
 						continue // hook approved, skip askUser — fall through to Phase 3
 					}
-				if r.Output != nil && r.Output.Decision == "block" {
-					errMsg := ruleDenyMessage(tt.Name)
-					errBlock := CreateToolErrorBlock(tt.ID, errMsg)
-					e.doEmit(types.QueryEvent{
-						Type: types.EventToolEnd,
-						ToolResult: &types.ToolResultEvent{
-							ToolUseID:     tt.ID,
-							Output:        errBlock.Content,
-							DisplayOutput: errMsg,
-							IsError:       true,
-						},
-					})
-					tt.resultBlocks = []types.ContentBlock{errBlock}
-					return
-				}
+					if r.Output != nil && r.Output.Decision == "block" {
+						errMsg := ruleDenyMessage(tt.Name)
+						errBlock := CreateToolErrorBlock(tt.ID, errMsg)
+						e.doEmit(types.QueryEvent{
+							Type: types.EventToolEnd,
+							ToolResult: &types.ToolResultEvent{
+								ToolUseID:     tt.ID,
+								Output:        errBlock.Content,
+								DisplayOutput: errMsg,
+								IsError:       true,
+							},
+						})
+						tt.resultBlocks = []types.ContentBlock{errBlock}
+						return
+					}
 				}
 			}
 			userDecision := e.askUser(tt, decision, "")
