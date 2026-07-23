@@ -81,42 +81,75 @@ func TestCreateToolErrorBlock(t *testing.T) {
 	if !block.IsError {
 		t.Error("expected IsError to be true")
 	}
-
+	if len(block.Content) == 0 || block.Content[0] != '[' {
+		t.Fatalf("expected array-form content starting with '[', got %q", string(block.Content))
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal as array: %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 inner block, got %d", len(parsed))
+	}
+	if parsed[0].Type != types.ContentTypeText {
+		t.Errorf("expected inner block Type text, got %s", parsed[0].Type)
+	}
+	if parsed[0].Text != "something broke" {
+		t.Errorf("expected inner text 'something broke', got %q", parsed[0].Text)
+	}
 }
 
 func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonUserInterrupted)
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed != "User rejected tool use" {
-		t.Errorf("unexpected error message: %q", parsed)
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 inner block, got %d", len(parsed))
+	}
+	if parsed[0].Type != types.ContentTypeText {
+		t.Errorf("expected inner Type text, got %s", parsed[0].Type)
+	}
+	if parsed[0].Text != "User rejected tool use" {
+		t.Errorf("unexpected error message: %q", parsed[0].Text)
 	}
 }
 
 func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonStreamingFallback)
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed != "Error: Streaming fallback - tool execution discarded" {
-		t.Errorf("unexpected error message: %q", parsed)
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 inner block, got %d", len(parsed))
+	}
+	if parsed[0].Type != types.ContentTypeText {
+		t.Errorf("expected inner Type text, got %s", parsed[0].Type)
+	}
+	if parsed[0].Text != "Error: Streaming fallback - tool execution discarded" {
+		t.Errorf("unexpected error message: %q", parsed[0].Text)
 	}
 }
 
 func TestCreateSyntheticErrorBlock_SiblingError(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonSiblingError)
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed != "Cancelled: parallel tool call errored" {
-		t.Errorf("unexpected error message: %q", parsed)
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 inner block, got %d", len(parsed))
+	}
+	if parsed[0].Type != types.ContentTypeText {
+		t.Errorf("expected inner Type text, got %s", parsed[0].Type)
+	}
+	if parsed[0].Text != "Cancelled: parallel tool call errored" {
+		t.Errorf("unexpected error message: %q", parsed[0].Text)
 	}
 }
 
@@ -349,6 +382,47 @@ func TestEnsureToolResultPairing(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestEnsureToolResultPairing_SyntheticBlockArrayForm(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("hi"),
+			{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read", Input: json.RawMessage(`{}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("no tool result")}},
+	}
+	result := EnsureToolResultPairing(msgs)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	userMsg := result[2]
+	var synth *types.ContentBlock
+	for i := range userMsg.Content {
+		b := &userMsg.Content[i]
+		if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_1" && b.IsError {
+			synth = b
+			break
+		}
+	}
+	if synth == nil {
+		t.Fatal("expected synthetic tool_result for tu_1")
+	}
+	if len(synth.Content) == 0 || synth.Content[0] != '[' {
+		t.Fatalf("expected array-form synthetic content, got %q", string(synth.Content))
+	}
+	var inner []types.ContentBlock
+	if err := json.Unmarshal(synth.Content, &inner); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(inner) != 1 || inner[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text inner block, got %+v", inner)
+	}
+	if inner[0].Text != syntheticToolResultPlaceholder {
+		t.Errorf("expected placeholder text, got %q", inner[0].Text)
+	}
 }
 
 func TestStripMediaFromMessages_TopLevelImage(t *testing.T) {

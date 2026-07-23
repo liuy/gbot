@@ -8922,12 +8922,15 @@ func TestResume_BashEmptyOutput_NoRawJSON(t *testing.T) {
 	bashTool := bash.New(nil)
 	tools := map[string]tool.Tool{"Bash": bashTool}
 
+	// Array-form content with empty-output Bash JSON.
+	textContent := `[Tool spent 0.3s]{"output":"","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
+	textJSON, _ := json.Marshal(textContent)
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
 			{Type: types.ContentTypeToolUse, ID: "bash_1", Name: "Bash", Input: json.RawMessage(`{"command":"git status --short"}`)},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolResult, ToolUseID: "bash_1", Content: json.RawMessage(`"[Tool spent 0.3s]{\"output\":\"\",\"exitCode\":0,\"cwd\":\"/home/yliu/repos/gbot\"}"`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "bash_1", Content: json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)},
 		}},
 	}
 

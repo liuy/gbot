@@ -671,72 +671,73 @@ func formatToolInput(raw json.RawMessage) string {
 
 // renderToolOutput renders persisted tool_result content using the tool's own
 // RenderResult logic. This produces the same display as normal streaming.
+//
+// Engine emits array-form content exclusively; legacy string-form sessions
+// replayed from disk hit the array parse failure and fall through to
+// string(raw) passthrough.
 func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, time.Duration) {
 	if len(raw) == 0 {
 		return "", 0
 	}
 
-	// Unwrap: tool_result content is a JSON string (gbot's double-wrapped format).
-	var s string
-	if json.Unmarshal(raw, &s) != nil {
-		// Try as array of content blocks (Anthropic format).
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(raw, &blocks) == nil {
-			var parts []string
-			for _, b := range blocks {
-				if b.Type == "text" && b.Text != "" {
-					parts = append(parts, b.Text)
-				}
-			}
-			if len(parts) > 0 {
-				joined := strings.Join(parts, "\n")
-				rest, elapsed := parseDurationPrefix(joined)
-				return rest, elapsed
-			}
-		}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		// Not array form (legacy string-form session or non-JSON bytes).
+		// Passthrough preserves the raw bytes for the caller to handle.
 		return string(raw), 0
 	}
 
-	rest, elapsed := parseDurationPrefix(s)
-	if rest == "" {
-		return "", elapsed
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
 	}
 
-	// Handle <persisted-output>: read file from disk, then render via tool.
-	if strings.HasPrefix(rest, "<persisted-output>") {
-		if data := readPersistedFile(rest); data != nil {
-			if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+	if len(parts) > 0 {
+		joined := strings.Join(parts, "\n")
+		rest, elapsed := parseDurationPrefix(joined)
+		if rest == "" {
+			return "", elapsed
+		}
+		// Handle <persisted-output>: read file from disk, then render via tool.
+		if strings.HasPrefix(rest, "<persisted-output>") {
+			if data := readPersistedFile(rest); data != nil {
+				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+					return r, elapsed
+				}
+			}
+			return extractPersistedPreview(rest), elapsed
+		}
+		// Try tool's RenderResult with the decoded concrete type.
+		// Only call renderViaTool when rest looks like JSON — agent tool results
+		// are plain text (not SubQueryResult JSON), and passing plain text to
+		// renderViaTool triggers the fallback path that json.Marshal-wraps the
+		// string in quotes. Plain markdown should pass through unchanged.
+		trimmed := strings.TrimLeft(rest, " \t\n\r")
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
 				return r, elapsed
 			}
 		}
-		// Fallback: show preview
-		return extractPersistedPreview(rest), elapsed
-	}
-
-	// Try tool's RenderResult with the decoded concrete type.
-	// Only call renderViaTool when rest looks like JSON — agent tool results
-	// are plain text (not SubQueryResult JSON), and passing plain text to
-	// renderViaTool triggers the fallback path that json.Marshal-wraps the
-	// string in quotes. Plain markdown should pass through unchanged.
-	trimmed := strings.TrimLeft(rest, " \t\n\r")
-	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
-		if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-			return r, elapsed
+		// Fallback: try unwrapping one more level (gbot's {"output":"..."} format).
+		var obj struct {
+			Output string `json:"output"`
 		}
+		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
+			return obj.Output, elapsed
+		}
+		return rest, elapsed
 	}
 
-	// Fallback: try unwrapping one more level (gbot's {"output":"..."} format).
-	var obj struct {
-		Output string `json:"output"`
+	// No text blocks (e.g. image-only): delegate to tool's DecodeResult.
+	if r, ok := renderViaTool(toolName, raw, tools); ok {
+		return r, 0
 	}
-	if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-		return obj.Output, elapsed
-	}
-
-	return rest, elapsed
+	return string(raw), 0
 }
 
 // parseDurationPrefix strips a leading "[Tool spent Xs]" prefix from s and

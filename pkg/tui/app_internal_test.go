@@ -42,9 +42,10 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 		"Glob": &mockRenderTool{},
 	}
 	inner := `{"filenames":["a.go","b.go"]}`
-	content := "[Tool spent 1.5s]" + inner
-	wrapped, _ := json.Marshal(content)
-	got, elapsed := renderToolOutput("Glob", wrapped, tools)
+	textContent := "[Tool spent 1.5s]" + inner
+	textJSON, _ := json.Marshal(textContent)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got, elapsed := renderToolOutput("Glob", raw, tools)
 	want := "a.go\nb.go"
 	if got != want {
 		t.Errorf("renderToolOutput = %q, want %q", got, want)
@@ -59,15 +60,41 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Glob": &mockRenderTool{},
 	}
-	// Valid JSON wrapper, but the inner content is not valid JSON for the tool.
-	// DecodeResult is NOT called because the content doesn't start with '{' or '['.
-	// The plain text passes through unchanged (not wrapped in quotes).
-	content := "[Tool spent 0s]garbage"
-	wrapped, _ := json.Marshal(content)
-	got, _ := renderToolOutput("Glob", wrapped, tools)
-	// Plain text output: the duration prefix is stripped, content returned as-is.
+	// Array form whose text content is not valid JSON for the tool.
+	// The plain text passes through unchanged after duration prefix is stripped.
+	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 0s]garbage"}]`)
+	got, _ := renderToolOutput("Glob", raw, tools)
 	if got != "garbage" {
 		t.Errorf("renderToolOutput plain-text passthrough = %q, want %q", got, "garbage")
+	}
+}
+
+func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{}
+	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]boom"}]`)
+	got, elapsed := renderToolOutput("Bash", raw, tools)
+	if got != "boom" {
+		t.Errorf("got %q, want %q", got, "boom")
+	}
+	if elapsed != 1500*time.Millisecond {
+		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
+	}
+}
+
+// TestRenderToolOutput_NoStringBranch proves the legacy string-form branch is
+// gone. The input is the bare 7-byte JSON string literal "hello" (with the
+// surrounding double-quote characters). With no string branch, the array
+// parse fails and the function falls through to string(raw), returning the
+// same 7 bytes back. If the string branch were re-added, it would strip the
+// duration prefix / try renderViaTool and return the 5-byte hello.
+func TestRenderToolOutput_NoStringBranch(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{}
+	raw := json.RawMessage(`"hello"`)
+	got, _ := renderToolOutput("Bash", raw, tools)
+	if got != `"hello"` {
+		t.Errorf("got %q (%d bytes), want %q (7 bytes — string(raw) passthrough)", got, len(got), `"hello"`)
 	}
 }
 

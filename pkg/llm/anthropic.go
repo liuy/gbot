@@ -241,21 +241,21 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 			td = tr
 			defer td.SetTimeoutDisabled(false)
 		}
-	go func() {
-		defer close(sseCh)
-		if err := p.ParseSSE(ctx, body, td, sseCh); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("sse: scanner error", "error", err)
-			sseCh <- StreamEvent{
-				Type: "error",
-				Error: &APIError{
-					Type:      "transport_error",
-					Message:   err.Error(),
-					Retryable: false,
-				},
+		go func() {
+			defer close(sseCh)
+			if err := p.ParseSSE(ctx, body, td, sseCh); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("sse: scanner error", "error", err)
+				sseCh <- StreamEvent{
+					Type: "error",
+					Error: &APIError{
+						Type:      "transport_error",
+						Message:   err.Error(),
+						Retryable: false,
+					},
+				}
 			}
-		}
-		close(done)
-	}()
+			close(done)
+		}()
 
 		var cacheRead, cacheCreation int
 		for evt := range sseCh {

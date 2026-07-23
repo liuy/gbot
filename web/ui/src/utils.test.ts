@@ -37,6 +37,17 @@ describe('parseDurationFromOutput', () => {
 		const wire = JSON.stringify('[Tool spent 1.2s result without bracket')
 		expect(parseDurationFromOutput(wire)).toBe(0)
 	})
+
+	it('parses array-form content with text block carrying the prefix', () => {
+		// Engine emits: json.Marshal([{type:"text",text:"[Tool spent Xs]..."}])
+		const wire = JSON.stringify([{ type: 'text', text: '[Tool spent 1.5s]result' }])
+		expect(parseDurationFromOutput(wire)).toBe(1.5 * 1e9)
+	})
+
+	it('returns 0 for array-form content with no duration prefix', () => {
+		const wire = JSON.stringify([{ type: 'text', text: 'no duration prefix' }])
+		expect(parseDurationFromOutput(wire)).toBe(0)
+	})
 })
 
 describe('timeDividerLabel', () => {

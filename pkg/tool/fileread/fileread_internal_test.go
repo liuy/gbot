@@ -904,11 +904,8 @@ func TestDecodeResult_TextOutputRoundTrip(t *testing.T) {
 func TestDecodeResult_ImageOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt := New()
-	original := &ImageOutput{Type: "image", FilePath: "/tmp/x.png", OriginalWidth: 100, OriginalHeight: 200}
-	raw, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	// Array form: image-only result, single image block.
+	raw := json.RawMessage(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -917,11 +914,22 @@ func TestDecodeResult_ImageOutputRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("DecodeResult returned %T, want *ImageOutput", v)
 	}
-	if got.FilePath != "/tmp/x.png" || got.OriginalWidth != 100 {
-		t.Errorf("round-trip lost fields: %+v", got)
+	if got.MimeType != "image/png" {
+		t.Errorf("MimeType = %q, want %q", got.MimeType, "image/png")
 	}
-	if tt.RenderResult(original) != tt.RenderResult(v) {
-		t.Error("stream and history render differ")
+	// FilePath/dims are NOT recoverable from the wire format (locked-in fact #2).
+	if got.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty (not recoverable from array form)", got.FilePath)
+	}
+}
+
+func TestRenderResult_ImageNoDims(t *testing.T) {
+	t.Parallel()
+	// ImageOutput with no FilePath/dims (the shape DecodeResult recovers from
+	// array form) renders as "Image (<mime>)" rather than the dim path.
+	result := renderResult(&ImageOutput{Type: "image", MimeType: "image/png"})
+	if result != "Image (image/png)" {
+		t.Errorf("renderResult(no-dims ImageOutput) = %q, want %q", result, "Image (image/png)")
 	}
 }
 

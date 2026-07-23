@@ -44,13 +44,22 @@ func TestMaybePersistLargeToolResult_OverThreshold(t *testing.T) {
 		t.Error("FilePath should be set")
 	}
 
-	// Output should be valid JSON containing the persisted-output tag
-	var s string
-	if err := json.Unmarshal(result.Output, &s); err != nil {
-		t.Fatalf("output not valid JSON: %v", err)
+	// Output should be array form: single text block containing persisted-output tag.
+	if len(result.Output) == 0 || result.Output[0] != '[' {
+		t.Fatalf("expected array-form output, got %q", string(result.Output)[:min(80, len(result.Output))])
 	}
-	if !strings.Contains(s, PersistedOutputTag) {
-		t.Error("output missing persisted-output tag")
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result.Output, &blocks); err != nil {
+		t.Fatalf("output not valid JSON array: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, PersistedOutputTag) {
+		t.Errorf("output text missing persisted-output tag, got %q", blocks[0].Text)
 	}
 
 	// File should exist on disk
@@ -98,10 +107,16 @@ func TestMaybePersistLargeToolResult_OverMaxPersistSize(t *testing.T) {
 	output := mustMarshal(bigContent)
 
 	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-5", "test-session")
-	// Should not crash, output should be valid JSON
-	var s string
-	if err := json.Unmarshal(result.Output, &s); err != nil {
-		t.Fatalf("output not valid JSON: %v", err)
+	// Should not crash, output should be valid JSON array.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result.Output, &blocks); err != nil {
+		t.Fatalf("output not valid JSON array: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
 	}
 }
 
@@ -158,12 +173,18 @@ func TestIsToolResultContentEmpty(t *testing.T) {
 func TestMaybePersistLargeToolResult_EmptyOutput(t *testing.T) {
 	output := mustMarshal("")
 	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-empty", "test-session")
-	var s string
-	if err := json.Unmarshal(result.Output, &s); err != nil {
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result.Output, &blocks); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(s, "completed with no output") {
-		t.Errorf("expected empty output message, got %q", s)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, "completed with no output") {
+		t.Errorf("expected empty output message, got %q", blocks[0].Text)
 	}
 }
 
@@ -262,15 +283,22 @@ func TestMaybePersistLargeToolResult_EmptyOutput_VerifyToolName(t *testing.T) {
 	// Verify the empty output message includes the tool name
 	output := mustMarshal("")
 	result := MaybePersistLargeToolResult(output, "MyTool", 50000, "tool-ename", "test-session")
-	var s string
-	if err := json.Unmarshal(result.Output, &s); err != nil {
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result.Output, &blocks); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(s, "MyTool") {
-		t.Errorf("empty output message should contain tool name, got: %q", s)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
 	}
-	if !strings.Contains(s, "completed with no output") {
-		t.Errorf("expected 'completed with no output', got: %q", s)
+	text := blocks[0].Text
+	if !strings.Contains(text, "MyTool") {
+		t.Errorf("empty output message should contain tool name, got: %q", text)
+	}
+	if !strings.Contains(text, "completed with no output") {
+		t.Errorf("expected 'completed with no output', got: %q", text)
 	}
 }
 
@@ -360,4 +388,3 @@ func TestMaybePersistLargeToolResult_ArrayFormImageNotPersisted(t *testing.T) {
 		t.Errorf("Output was modified: got %q, want %q", string(result.Output)[:50], string(arrayInput)[:50])
 	}
 }
-

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,9 +48,7 @@ func CreateToolResultMessage(blocks []types.ContentBlock) types.Message {
 // Source: StreamingToolExecutor.ts:86-99 — createSyntheticErrorMessage().
 // Unknown tools get: "Error: No such tool available: <name>"
 func CreateToolErrorBlock(toolUseID string, errMsg string) types.ContentBlock {
-	// Error content must be a JSON string for Anthropic API compatibility.
-	errJSON, _ := json.Marshal(errMsg)
-	return types.NewToolResultBlock(toolUseID, errJSON, true)
+	return types.NewToolResultBlock(toolUseID, marshalBlocks([]types.ContentBlock{types.NewTextBlock(errMsg)}), true)
 }
 
 // Abort reason constants for synthetic error blocks.
@@ -75,9 +72,7 @@ func CreateSyntheticErrorBlock(toolUseID, reason string) types.ContentBlock {
 	default:
 		msg = "Cancelled: parallel tool call errored"
 	}
-	// Error content must be a JSON string for Anthropic API compatibility.
-	errJSON, _ := json.Marshal(msg)
-	return types.NewToolResultBlock(toolUseID, errJSON, true)
+	return types.NewToolResultBlock(toolUseID, marshalBlocks([]types.ContentBlock{types.NewTextBlock(msg)}), true)
 }
 
 // SyntheticToolResultsForBlocks generates synthetic tool_result error blocks
@@ -262,9 +257,9 @@ func EnsureToolResultPairing(messages []types.Message) []types.Message {
 		// Build synthetic error tool_result blocks for missing IDs.
 		syntheticBlocks := make([]types.ContentBlock, 0, len(missingIDs))
 		for _, id := range missingIDs {
-			errJSON, _ := json.Marshal(syntheticToolResultPlaceholder)
+			placeholder := marshalBlocks([]types.ContentBlock{types.NewTextBlock(syntheticToolResultPlaceholder)})
 			syntheticBlocks = append(syntheticBlocks,
-				types.NewToolResultBlock(id, errJSON, true))
+				types.NewToolResultBlock(id, placeholder, true))
 		}
 
 		if nextIdx < len(messages) && messages[nextIdx].Role == types.RoleUser {

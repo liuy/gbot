@@ -177,13 +177,19 @@ func TestEnforceToolResultBudget_OverLimit(t *testing.T) {
 	if records[0].ToolUseID != "tr-1" {
 		t.Errorf("replacement ToolUseID = %q, want %q", records[0].ToolUseID, "tr-1")
 	}
-	// Output should contain persisted-output tag
-	var s string
-	if err := json.Unmarshal(result[1].Content[0].Content, &s); err != nil {
+	// Replacement content must be array form containing persisted-output tag.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result[1].Content[0].Content, &blocks); err != nil {
 		t.Fatalf("unmarshal content: %v", err)
 	}
-	if !strings.Contains(s, PersistedOutputTag) {
-		t.Error("output should contain persisted-output tag")
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, PersistedOutputTag) {
+		t.Errorf("output text should contain persisted-output tag, got %q", blocks[0].Text)
 	}
 }
 
@@ -202,13 +208,19 @@ func TestEnforceToolResultBudget_MustReapply(t *testing.T) {
 	if len(records) != 0 {
 		t.Errorf("no new replacements expected, got %d", len(records))
 	}
-	// Content should be the cached replacement
-	var s string
-	if err := json.Unmarshal(result[1].Content[0].Content, &s); err != nil {
+	// Content should be the cached replacement, in array form.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result[1].Content[0].Content, &blocks); err != nil {
 		t.Fatalf("unmarshal content: %v", err)
 	}
-	if s != "cached preview" {
-		t.Errorf("content = %q, want cached preview", s)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if blocks[0].Text != "cached preview" {
+		t.Errorf("content = %q, want cached preview", blocks[0].Text)
 	}
 }
 
@@ -481,12 +493,18 @@ func TestEnforceToolResultBudget_FrozenAndFresh(t *testing.T) {
 	if records[0].ToolUseID != "tr-2" {
 		t.Errorf("expected tr-2 to be replaced, got %q", records[0].ToolUseID)
 	}
-	var s string
-	if err := json.Unmarshal(result[1].Content[1].Content, &s); err != nil {
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result[1].Content[1].Content, &blocks); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(s, PersistedOutputTag) {
-		t.Error("tr-2 output should contain persisted-output tag")
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, PersistedOutputTag) {
+		t.Errorf("tr-2 output text should contain persisted-output tag, got %q", blocks[0].Text)
 	}
 	if !state.SeenIDs["tr-2"] {
 		t.Error("tr-2 should be in SeenIDs")
@@ -564,6 +582,23 @@ func TestIsContentAlreadyCompacted_NotString(t *testing.T) {
 	content := json.RawMessage(`[{"type":"text","text":"hello"}]`)
 	if IsContentAlreadyCompacted(content) {
 		t.Error("block array should not be detected as compacted")
+	}
+}
+
+func TestIsContentAlreadyCompacted_ArrayForm(t *testing.T) {
+	// Array-form persisted content → true.
+	persisted := json.RawMessage(`[{"type":"text","text":"<persisted-output>some preview</persisted-output>"}]`)
+	if !IsContentAlreadyCompacted(persisted) {
+		t.Error("array-form persisted-output content should be detected as compacted")
+	}
+	// Array-form normal text → false.
+	normal := json.RawMessage(`[{"type":"text","text":"normal text"}]`)
+	if IsContentAlreadyCompacted(normal) {
+		t.Error("array-form normal text should not be detected as compacted")
+	}
+	// Empty content → false.
+	if IsContentAlreadyCompacted(json.RawMessage(``)) {
+		t.Error("empty content should not be detected as compacted")
 	}
 }
 

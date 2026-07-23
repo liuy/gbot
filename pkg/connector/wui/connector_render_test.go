@@ -129,10 +129,12 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 			},
 		},
 	}
-	// Simulate persisted tool_result content: JSON string with [Tool spent] prefix.
+	// Array-form content: JSON string with [Tool spent] prefix in the text.
 	inner := `{"text":"hello"}`
-	wrapped, _ := json.Marshal("[Tool spent 1.5s]" + inner)
-	got, elapsed := renderToolOutput("Bash", wrapped, tools)
+	textContent := "[Tool spent 1.5s]" + inner
+	textJSON, _ := json.Marshal(textContent)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got, elapsed := renderToolOutput("Bash", raw, tools)
 	if got != "hello" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello")
 	}
@@ -210,8 +212,9 @@ func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 
 	// Simulate the persisted format: JSON string wrapping plain markdown.
 	plain := "[Tool spent 38.3s]## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
-	wrapped, _ := json.Marshal(plain)
-	got, _ := renderToolOutput("Agent", wrapped, tools)
+	textJSON, _ := json.Marshal(plain)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got, _ := renderToolOutput("Agent", raw, tools)
 
 	// Expected: duration prefix stripped, markdown preserved verbatim.
 	want := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"

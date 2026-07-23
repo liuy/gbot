@@ -858,15 +858,19 @@ func TestPermissionDeny_UserRejectMessage(t *testing.T) {
 		t.Fatalf("expected 1 result block, got %d", len(result.ToolResultBlocks))
 	}
 
-	var content string
+	var content []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &content); err != nil {
 		t.Fatalf("unmarshal content: %v", err)
 	}
-	if !strings.Contains(content, "The user doesn't want to proceed") {
-		t.Errorf("user reject should contain user-facing message, got: %q", content)
+	if len(content) != 1 || content[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", content)
 	}
-	if strings.Contains(content, "IMPORTANT") {
-		t.Errorf("user reject should NOT contain workaround guidance, got: %q", content)
+	text := content[0].Text
+	if !strings.Contains(text, "The user doesn't want to proceed") {
+		t.Errorf("user reject should contain user-facing message, got: %q", text)
+	}
+	if strings.Contains(text, "IMPORTANT") {
+		t.Errorf("user reject should NOT contain workaround guidance, got: %q", text)
 	}
 }
 

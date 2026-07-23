@@ -600,10 +600,10 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 						})
 					}
 					if acc.arguments.Len()+len(tc.Function.Arguments) > maxToolArgumentsSize {
-				slog.Warn("openai sse: tool arguments exceed size limit",
-						"index", acc.contentIndex, "size", acc.arguments.Len())
-					return nil
-				}
+						slog.Warn("openai sse: tool arguments exceed size limit",
+							"index", acc.contentIndex, "size", acc.arguments.Len())
+						return nil
+					}
 					acc.arguments.WriteString(tc.Function.Arguments)
 					send(ctx, eventCh, StreamEvent{
 						Type:  "content_block_delta",

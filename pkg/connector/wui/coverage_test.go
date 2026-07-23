@@ -241,10 +241,8 @@ func TestRenderToolOutput_PersistedOutputValidFile(t *testing.T) {
 		},
 	}
 	input := "<persisted-output>\nFull output saved to: " + filePath + "\nPreview (first 5 lines):\nline1"
-	raw, err := json.Marshal(input)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	textJSON, _ := json.Marshal(input)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, elapsed := renderToolOutput("Bash", raw, tools)
 	want := "rendered from file"
 	if got != want {
@@ -258,10 +256,8 @@ func TestRenderToolOutput_PersistedOutputValidFile(t *testing.T) {
 func TestRenderToolOutput_PersistedOutputInvalidFile(t *testing.T) {
 	t.Parallel()
 	input := "<persisted-output>\nFull output saved to: /nonexistent/path.txt\nPreview (first 3 lines):\nprev1\nprev2\nprev3"
-	raw, err := json.Marshal(input)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	textJSON, _ := json.Marshal(input)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, elapsed := renderToolOutput("Bash", raw, nil)
 	want := "prev1\nprev2\nprev3"
 	if got != want {
@@ -275,10 +271,8 @@ func TestRenderToolOutput_PersistedOutputInvalidFile(t *testing.T) {
 func TestRenderToolOutput_JSONOutputField(t *testing.T) {
 	t.Parallel()
 	inner := `{"output":"hello world"}`
-	raw, err := json.Marshal(inner)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	textJSON, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, elapsed := renderToolOutput("Bash", raw, nil)
 	want := "hello world"
 	if got != want {
@@ -316,10 +310,8 @@ func TestRenderToolOutput_ToolSpentPrefix(t *testing.T) {
 	t.Parallel()
 	inner := "plain result text"
 	wrapped := "[Tool spent 2.5s]" + inner
-	raw, err := json.Marshal(wrapped)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	textJSON, _ := json.Marshal(wrapped)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, elapsed := renderToolOutput("Unknown", raw, nil)
 	if got != inner {
 		t.Errorf("renderToolOutput(spent prefix) = %q, want %q", got, inner)
@@ -333,10 +325,8 @@ func TestRenderToolOutput_ToolSpentPrefix(t *testing.T) {
 func TestRenderToolOutput_EmptyStringAfterSpent(t *testing.T) {
 	t.Parallel()
 	wrapped := "[Tool spent 1.0s]"
-	raw, err := json.Marshal(wrapped)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	textJSON, _ := json.Marshal(wrapped)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, elapsed := renderToolOutput("Bash", raw, nil)
 	if got != "" {
 		t.Errorf("renderToolOutput(empty after spent) = %q, want empty", got)
@@ -344,6 +334,32 @@ func TestRenderToolOutput_EmptyStringAfterSpent(t *testing.T) {
 	wantNs := int64(1.0 * float64(time.Second))
 	if elapsed != wantNs {
 		t.Errorf("elapsed = %d, want %d", elapsed, wantNs)
+	}
+}
+
+func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]boom"}]`)
+	got, elapsed := renderToolOutput("Bash", raw, nil)
+	if got != "boom" {
+		t.Errorf("got %q, want %q", got, "boom")
+	}
+	wantNs := int64(1.5 * float64(time.Second))
+	if elapsed != wantNs {
+		t.Errorf("elapsed = %d, want %d", elapsed, wantNs)
+	}
+}
+
+// TestRenderToolOutput_NoStringBranch proves the legacy string-form branch is
+// gone. The bare 7-byte JSON string literal "hello" (with surrounding quotes)
+// fails the array parse and falls through to string(raw), returning the same
+// 7 bytes back.
+func TestRenderToolOutput_NoStringBranch(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`"hello"`)
+	got, _ := renderToolOutput("Bash", raw, nil)
+	if got != `"hello"` {
+		t.Errorf("got %q (%d bytes), want %q (7 bytes — string(raw) passthrough)", got, len(got), `"hello"`)
 	}
 }
 

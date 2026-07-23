@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"maps"
 	"sort"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // MaxToolResultsPerMessageChars is the per-message aggregate budget.
@@ -133,8 +135,31 @@ func ContentSize(content json.RawMessage) int {
 
 // IsContentAlreadyCompacted checks if content starts with <persisted-output>.
 // TS: isContentAlreadyCompacted (toolResultStorage.ts:517-519)
+//
+// Handles both string form (`"<persisted-output>..."`) and array form
+// (`[{"type":"text","text":"<persisted-output>..."}]`). The array-form branch
+// is required because persisted sessions loaded from disk may contain either
+// shape depending on when they were written; the string-form branch stays for
+// transitional compatibility.
 func IsContentAlreadyCompacted(content json.RawMessage) bool {
 	if len(content) == 0 {
+		return false
+	}
+	if content[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(content, &blocks) != nil {
+			return false
+		}
+		for _, b := range blocks {
+			if b.Type != "text" {
+				continue
+			}
+			return len(b.Text) >= len(PersistedOutputTag) &&
+				b.Text[:len(PersistedOutputTag)] == PersistedOutputTag
+		}
 		return false
 	}
 	var s string
@@ -454,7 +479,7 @@ func replaceToolResultContents(messages []BudgetMessage, replacementMap map[stri
 			newContent[j] = block
 			if block.Type == "tool_result" {
 				if replacement, ok := replacementMap[block.ToolUseID]; ok {
-					encoded, _ := json.Marshal(replacement)
+					encoded, _ := json.Marshal([]types.ContentBlock{types.NewTextBlock(replacement)})
 					newContent[j].Content = json.RawMessage(encoded)
 					touched = true
 				}

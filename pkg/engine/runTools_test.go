@@ -161,12 +161,15 @@ func TestConcurrentToolLoop_UnknownTool(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error for unknown tool")
 	}
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &parsed); err != nil {
 		t.Fatalf("failed to parse error content: %v", err)
 	}
-	if !strings.Contains(parsed, "No such tool available") {
-		t.Errorf("error should mention 'No such tool available', got: %q", parsed)
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if !strings.Contains(parsed[0].Text, "No such tool available") {
+		t.Errorf("error should mention 'No such tool available', got: %q", parsed[0].Text)
 	}
 }
 
@@ -192,17 +195,20 @@ func TestConcurrentToolLoop_ToolError(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error result")
 	}
-	// Error content is a JSON string for Anthropic API compatibility.
-	var errMsg string
+	// Error content is array form: single text block with the error message.
+	var errMsg []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &errMsg); err != nil {
-		t.Fatalf("failed to parse error content as string: %v", err)
+		t.Fatalf("failed to parse error content as array: %v", err)
 	}
-	if !strings.Contains(errMsg, "tool crashed") {
-		t.Errorf("expected 'tool crashed', got %q", errMsg)
+	if len(errMsg) != 1 || errMsg[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", errMsg)
+	}
+	if !strings.Contains(errMsg[0].Text, "tool crashed") {
+		t.Errorf("expected 'tool crashed', got %q", errMsg[0].Text)
 	}
 }
 
-func TestConcurrentToolLoop_ToolErrorContentIsString(t *testing.T) {
+func TestConcurrentToolLoop_ToolErrorContentIsArray(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
 		"fail": &concurrentTool{
@@ -226,17 +232,20 @@ func TestConcurrentToolLoop_ToolErrorContentIsString(t *testing.T) {
 	}
 
 	content := result.ToolResultBlocks[0].Content
-	// Error content must be a JSON string (Anthropic API compatibility).
-	if len(content) == 0 || content[0] != '"' {
-		t.Errorf("error content should be a JSON string, got: %s", content)
+	// Error content must be array form (single text block).
+	if len(content) == 0 || content[0] != '[' {
+		t.Errorf("error content should be a JSON array, got: %s", content)
 	}
 
-	var errMsg string
-	if err := json.Unmarshal(content, &errMsg); err != nil {
-		t.Fatalf("failed to unmarshal error content as string: %v", err)
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal error content as array: %v", err)
 	}
-	if !strings.Contains(errMsg, "tool crashed") {
-		t.Errorf("error message should contain 'tool crashed', got: %q", errMsg)
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if !strings.Contains(parsed[0].Text, "tool crashed") {
+		t.Errorf("error message should contain 'tool crashed', got %q", parsed[0].Text)
 	}
 }
 
@@ -476,22 +485,28 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected Bash error")
 	}
-	var bashParsed string
+	var bashParsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &bashParsed); err != nil {
 		t.Fatalf("failed to parse Bash error content: %v", err)
 	}
-	if !strings.Contains(bashParsed, "command failed") {
-		t.Errorf("error should mention 'command failed', got: %q", bashParsed)
+	if len(bashParsed) != 1 || bashParsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", bashParsed)
+	}
+	if !strings.Contains(bashParsed[0].Text, "command failed") {
+		t.Errorf("error should mention 'command failed', got: %q", bashParsed[0].Text)
 	}
 	if !result.ToolResultBlocks[1].IsError {
 		t.Fatal("expected safe_tool to be cancelled by sibling error")
 	}
-	var safeParsed string
+	var safeParsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[1].Content, &safeParsed); err != nil {
 		t.Fatalf("failed to parse safe_tool error content: %v", err)
 	}
-	if !strings.Contains(safeParsed, "context canceled") && !strings.Contains(safeParsed, "Cancelled") {
-		t.Errorf("error should mention cancellation, got: %q", safeParsed)
+	if len(safeParsed) != 1 || safeParsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", safeParsed)
+	}
+	if !strings.Contains(safeParsed[0].Text, "context canceled") && !strings.Contains(safeParsed[0].Text, "Cancelled") {
+		t.Errorf("error should mention cancellation, got: %q", safeParsed[0].Text)
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("sibling cancellation should be fast, took %v", elapsed)
@@ -531,12 +546,15 @@ func TestConcurrentToolLoop_NonBashErrorNoKill(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected fail_tool error")
 	}
-	var failParsed string
+	var failParsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &failParsed); err != nil {
 		t.Fatalf("failed to parse fail_tool error content: %v", err)
 	}
-	if !strings.Contains(failParsed, "non-bash failure") {
-		t.Errorf("error should mention 'non-bash failure', got: %q", failParsed)
+	if len(failParsed) != 1 || failParsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", failParsed)
+	}
+	if !strings.Contains(failParsed[0].Text, "non-bash failure") {
+		t.Errorf("error should mention 'non-bash failure', got: %q", failParsed[0].Text)
 	}
 	if result.ToolResultBlocks[1].IsError {
 		t.Error("safe_tool should NOT be cancelled by non-Bash error")
@@ -562,12 +580,15 @@ func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error for cancelled context")
 	}
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed != "User rejected tool use" {
-		t.Errorf("expected 'User rejected tool use', got %q", parsed)
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if parsed[0].Text != "User rejected tool use" {
+		t.Errorf("expected 'User rejected tool use', got %q", parsed[0].Text)
 	}
 }
 
@@ -767,23 +788,29 @@ func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected Bash error")
 	}
-	var bashParsed string
+	var bashParsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &bashParsed); err != nil {
 		t.Fatalf("failed to parse Bash error content: %v", err)
 	}
-	if !strings.Contains(bashParsed, "command failed") {
-		t.Errorf("error should mention 'command failed', got: %q", bashParsed)
+	if len(bashParsed) != 1 || bashParsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", bashParsed)
+	}
+	if !strings.Contains(bashParsed[0].Text, "command failed") {
+		t.Errorf("error should mention 'command failed', got: %q", bashParsed[0].Text)
 	}
 	if !result.ToolResultBlocks[1].IsError {
 		t.Fatal("expected safe_tool to be cancelled (sibling error)")
 	}
 	// Verify safe_tool got sibling error message, not its own output.
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[1].Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if !strings.Contains(parsed, "Cancelled") {
-		t.Errorf("expected sibling error message, got %q", parsed)
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if !strings.Contains(parsed[0].Text, "Cancelled") {
+		t.Errorf("expected sibling error message, got %q", parsed[0].Text)
 	}
 }
 
@@ -808,12 +835,15 @@ func TestConcurrentToolLoop_UnknownToolDisplayOutput(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error result")
 	}
-	var unkParsed string
+	var unkParsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &unkParsed); err != nil {
 		t.Fatalf("failed to parse error content: %v", err)
 	}
-	if !strings.Contains(unkParsed, "No such tool available") {
-		t.Errorf("error should mention 'No such tool available', got: %q", unkParsed)
+	if len(unkParsed) != 1 || unkParsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", unkParsed)
+	}
+	if !strings.Contains(unkParsed[0].Text, "No such tool available") {
+		t.Errorf("error should mention 'No such tool available', got: %q", unkParsed[0].Text)
 	}
 
 	// Event must have non-empty DisplayOutput
@@ -866,13 +896,16 @@ func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error result")
 	}
-	// Error content is a JSON string for Anthropic API compatibility.
-	var errMsg string
+	// Error content is array form: single text block.
+	var errMsg []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &errMsg); err != nil {
-		t.Fatalf("failed to parse error content as string: %v", err)
+		t.Fatalf("failed to parse error content as array: %v", err)
 	}
-	if !strings.Contains(errMsg, "specific failure X") {
-		t.Errorf("error should mention 'specific failure X', got: %q", errMsg)
+	if len(errMsg) != 1 || errMsg[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", errMsg)
+	}
+	if !strings.Contains(errMsg[0].Text, "specific failure X") {
+		t.Errorf("error should mention 'specific failure X', got: %q", errMsg[0].Text)
 	}
 
 	// Verify DisplayOutput in event
@@ -935,11 +968,18 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 	var slowResult *types.ContentBlock
 	for _, r := range result.ToolResultBlocks {
 		if r.IsError {
-			var m string
-			if err := json.Unmarshal(r.Content, &m); err != nil {
+			var text string
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(r.Content, &blocks); err != nil {
 				t.Fatalf("failed to parse error block: %v", err)
 			}
-			if strings.Contains(m, "Cancelled") {
+			for _, b := range blocks {
+				if b.Type == types.ContentTypeText {
+					text = b.Text
+					break
+				}
+			}
+			if strings.Contains(text, "Cancelled") {
 				slowResult = &r
 			}
 		}
@@ -1072,16 +1112,19 @@ func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error for deferred tool")
 	}
-	var parsed string
+	var parsed []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &parsed); err != nil {
 		t.Fatalf("failed to parse error content: %v", err)
 	}
-	// Should hint to use ToolSearch
-	if !strings.Contains(parsed, "ToolSearch") {
-		t.Errorf("error should mention ToolSearch, got: %q", parsed)
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
 	}
-	if !strings.Contains(parsed, "select:mcp__fetch__get_markdown") {
-		t.Errorf("error should suggest select:tool_name, got: %q", parsed)
+	// Should hint to use ToolSearch
+	if !strings.Contains(parsed[0].Text, "ToolSearch") {
+		t.Errorf("error should mention ToolSearch, got: %q", parsed[0].Text)
+	}
+	if !strings.Contains(parsed[0].Text, "select:mcp__fetch__get_markdown") {
+		t.Errorf("error should suggest select:tool_name, got: %q", parsed[0].Text)
 	}
 }
 
@@ -1101,24 +1144,28 @@ func TestToolNotFound_GlobHint(t *testing.T) {
 	if !result.ToolResultBlocks[0].IsError {
 		t.Fatal("expected error for unknown tool")
 	}
-	var msg string
+	var msg []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &msg); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
+	if len(msg) != 1 || msg[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", msg)
+	}
+	text := msg[0].Text
 	// Must mention Grep (the replacement tool) and concrete JSON syntax
 	// so the LLM sees `glob` as a field name in the input JSON, not
 	// a CLI flag or shorthand.
-	if !strings.Contains(msg, "Grep") {
-		t.Errorf("hint should mention Grep, got: %q", msg)
+	if !strings.Contains(text, "Grep") {
+		t.Errorf("hint should mention Grep, got: %q", text)
 	}
-	if !strings.Contains(msg, `"glob"`) {
-		t.Errorf("hint should show `glob` as a JSON field name, got: %q", msg)
+	if !strings.Contains(text, `"glob"`) {
+		t.Errorf("hint should show `glob` as a JSON field name, got: %q", text)
 	}
-	if !strings.Contains(msg, "*.go") {
-		t.Errorf("hint should show a concrete glob example, got: %q", msg)
+	if !strings.Contains(text, "*.go") {
+		t.Errorf("hint should show a concrete glob example, got: %q", text)
 	}
-	if strings.Contains(msg, "No such tool available") {
-		t.Errorf("hint should replace the generic 'no such tool' message, got: %q", msg)
+	if strings.Contains(text, "No such tool available") {
+		t.Errorf("hint should replace the generic 'no such tool' message, got: %q", text)
 	}
 }
 
@@ -1134,12 +1181,15 @@ func TestToolNotFound_UnknownTool_NoHint(t *testing.T) {
 	if len(result.ToolResultBlocks) != 1 || !result.ToolResultBlocks[0].IsError {
 		t.Fatalf("expected 1 error result, got %+v", result.ToolResultBlocks)
 	}
-	var msg string
+	var msg []types.ContentBlock
 	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &msg); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if !strings.Contains(msg, "No such tool available: SomeRandomName") {
-		t.Errorf("expected generic message, got: %q", msg)
+	if len(msg) != 1 || msg[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", msg)
+	}
+	if !strings.Contains(msg[0].Text, "No such tool available: SomeRandomName") {
+		t.Errorf("expected generic message, got: %q", msg[0].Text)
 	}
 }
 
@@ -2462,7 +2512,7 @@ func TestExecuteTool_EventToolEndOutputIsArray(t *testing.T) {
 	}
 }
 
-func TestExecuteTool_ErrorPathStaysStringForm(t *testing.T) {
+func TestExecuteTool_ErrorPathUsesArrayForm(t *testing.T) {
 	t.Parallel()
 
 	wt := &wireBlocksTestTool{
@@ -2487,10 +2537,123 @@ func TestExecuteTool_ErrorPathStaysStringForm(t *testing.T) {
 	if len(block.Content) == 0 {
 		t.Fatal("block.Content is empty")
 	}
-	if block.Content[0] != '"' {
-		t.Fatalf("error-path block.Content[0] = %q, want '\"' (string form). Full: %s", string(block.Content[0]), string(block.Content))
+	if block.Content[0] != '[' {
+		t.Fatalf("error-path block.Content[0] = %q, want '[' (array form). Full: %s", string(block.Content[0]), string(block.Content))
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if !strings.Contains(parsed[0].Text, "boom") {
+		t.Errorf("error text should contain 'boom', got %q", parsed[0].Text)
 	}
 	if wt.callCount != 0 {
 		t.Errorf("FormatWireBlocks call count = %d, want 0 (error path must bypass)", wt.callCount)
+	}
+}
+
+// TestEmitToolError_UsesArrayForm drives a tool that returns an error with a
+// non-zero elapsed time. The result block content must be array form, with the
+// single text block prefixed by "[Tool spent Xs]" and ending with the error
+// message.
+func TestEmitToolError_UsesArrayForm(t *testing.T) {
+	t.Parallel()
+
+	wt := &wireBlocksTestTool{
+		testTool: testTool{
+			name: "BoomTool",
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("boom")
+			},
+		},
+		blocks: []types.ContentBlock{types.NewTextBlock("should-not-be-used")},
+	}
+	toolMap := map[string]tool.Tool{"BoomTool": wt}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_1", Name: "BoomTool", Input: json.RawMessage(`{}`)},
+	})
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if len(block.Content) == 0 || block.Content[0] != '[' {
+		t.Fatalf("error block.Content should start with '[', got %q", string(block.Content))
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	text := parsed[0].Text
+	if !strings.HasPrefix(text, "[Tool spent ") {
+		t.Errorf("error text should start with '[Tool spent ', got %q", text)
+	}
+	if !strings.HasSuffix(text, "boom") {
+		t.Errorf("error text should end with 'boom', got %q", text)
+	}
+	if wt.callCount != 0 {
+		t.Errorf("FormatWireBlocks call count = %d, want 0 (error path must bypass)", wt.callCount)
+	}
+}
+
+func TestExecuteTool_NilResultUsesArrayForm(t *testing.T) {
+	t.Parallel()
+	nt := &testTool{
+		name: "NilTool",
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+	}
+	toolMap := map[string]tool.Tool{"NilTool": nt}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_nil", Name: "NilTool", Input: json.RawMessage(`{}`)},
+	})
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if block.IsError {
+		t.Error("nil result should not be IsError")
+	}
+	if len(block.Content) == 0 || block.Content[0] != '[' {
+		t.Fatalf("nil-result block.Content should start with '[', got %q", string(block.Content))
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	if parsed[0].Text != "null" {
+		t.Errorf("expected inner text 'null', got %q", parsed[0].Text)
+	}
+}
+
+func TestExtractErrMsg_ArrayForm(t *testing.T) {
+	t.Parallel()
+	// Array form: should return the inner text block's Text.
+	arrayIn := json.RawMessage(`[{"type":"text","text":"User rejected tool use"}]`)
+	if got := extractErrMsg(arrayIn); got != "User rejected tool use" {
+		t.Errorf("array form: got %q, want %q", got, "User rejected tool use")
+	}
+	// Map form: existing behavior preserved.
+	mapIn := json.RawMessage(`{"error":"something"}`)
+	if got := extractErrMsg(mapIn); got != "something" {
+		t.Errorf("map form: got %q, want %q", got, "something")
+	}
+	// Plain JSON string form: existing fallback returns raw bytes.
+	strIn := json.RawMessage(`"plain string"`)
+	if got := extractErrMsg(strIn); got != `"plain string"` {
+		t.Errorf("string form: got %q, want %q", got, `"plain string"`)
 	}
 }

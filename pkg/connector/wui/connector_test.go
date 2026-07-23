@@ -580,7 +580,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 				Role:      types.RoleUser,
 				Timestamp: time.Unix(1000, 0),
 				Content: []types.ContentBlock{
-					{Type: types.ContentTypeToolResult, ToolUseID: "toolX", Content: json.RawMessage(`"[Tool spent 1.5s]result-output"`)},
+					{Type: types.ContentTypeToolResult, ToolUseID: "toolX", Content: json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]result-output"}]`)},
 				},
 			},
 			{

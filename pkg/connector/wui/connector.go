@@ -1300,65 +1300,71 @@ func computeToolSummary(name string, input json.RawMessage, tools map[string]too
 
 // renderToolOutput renders persisted tool_result content via the tool's
 // RenderResult — same logic as TUI's renderToolOutput in app.go.
+//
+// Engine emits array-form content exclusively; legacy string-form sessions
+// replayed from disk hit the array parse failure and fall through to
+// string(raw) passthrough.
 func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, int64) {
 	if len(raw) == 0 {
 		return "", 0
 	}
-	var s string
-	if json.Unmarshal(raw, &s) != nil {
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(raw, &blocks) == nil {
-			var parts []string
-			for _, b := range blocks {
-				if b.Type == "text" && b.Text != "" {
-					parts = append(parts, b.Text)
-				}
-			}
-			if len(parts) > 0 {
-				joined := strings.Join(parts, "\n")
-				rest, elapsed := parseDurationPrefixMillis(joined)
-				return rest, elapsed
-			}
-		}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
 		return string(raw), 0
 	}
 
-	rest, elapsed := parseDurationPrefixMillis(s)
-	if rest == "" {
-		return "", elapsed
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
 	}
 
-	if strings.HasPrefix(rest, "<persisted-output>") {
-		if data := readPersistedFile(rest); data != nil {
-			if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+	if len(parts) > 0 {
+		joined := strings.Join(parts, "\n")
+		rest, elapsed := parseDurationPrefixMillis(joined)
+		if rest == "" {
+			return "", elapsed
+		}
+		if strings.HasPrefix(rest, "<persisted-output>") {
+			if data := readPersistedFile(rest); data != nil {
+				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
+					return r, elapsed
+				}
+			}
+			return extractPersistedPreview(rest), elapsed
+		}
+
+		// Only call renderViaTool when rest looks like JSON — agent tool results
+		// are plain text (not SubQueryResult JSON), and passing plain text to
+		// renderViaTool triggers the fallback path that json.Marshal-wraps the
+		// string in quotes. Plain markdown should pass through unchanged so the
+		// frontend renders it as markdown.
+		trimmed := strings.TrimLeft(rest, " \t\n\r")
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
 				return r, elapsed
 			}
 		}
-		return extractPersistedPreview(rest), elapsed
-	}
 
-	// Only call renderViaTool when rest looks like JSON — agent tool results
-	// are plain text (not SubQueryResult JSON), and passing plain text to
-	// renderViaTool triggers the fallback path that json.Marshal-wraps the
-	// string in quotes. Plain markdown should pass through unchanged so the
-	// frontend renders it as markdown.
-	trimmed := strings.TrimLeft(rest, " \t\n\r")
-	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
-		if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-			return r, elapsed
+		var obj struct {
+			Output string `json:"output"`
 		}
+		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
+			return obj.Output, elapsed
+		}
+		return rest, elapsed
 	}
 
-	var obj struct {
-		Output string `json:"output"`
+	// No text blocks (e.g. image-only): delegate to tool's DecodeResult.
+	if r, ok := renderViaTool(toolName, raw, tools); ok {
+		return r, 0
 	}
-	if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-		return obj.Output, elapsed
-	}
-	return rest, elapsed
+	return string(raw), 0
 }
 
 // parseDurationPrefixMillis strips a leading "[Tool spent Xs]" prefix from s

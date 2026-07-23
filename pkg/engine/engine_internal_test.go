@@ -2224,13 +2224,15 @@ func TestPersistLargeToolResult_OverThreshold(t *testing.T) {
 		t.Error("FilePath should be set when persisted")
 	}
 
-	// Preview should contain the tag
-	var preview string
-	if err := json.Unmarshal(pr.Output, &preview); err != nil {
-		t.Fatalf("unmarshal preview: %v", err)
+	// Preview should be array form with persisted-output tag inside the text block
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(pr.Output, &blocks); err != nil {
+		t.Fatalf("unmarshal preview as blocks: %v", err)
 	}
-	if !strings.Contains(preview, "<persisted-output>") {
-		t.Error("preview should contain <persisted-output> tag")
+	if len(blocks) == 0 || blocks[0].Text == "" {
+		t.Error("preview blocks should contain a text block")
+	} else if !strings.Contains(blocks[0].Text, "<persisted-output>") {
+		t.Error("preview text should contain <persisted-output> tag")
 	}
 
 	// File should exist on disk
@@ -3359,12 +3361,12 @@ func TestSyntheticToolResultsForBlocks(t *testing.T) {
 		if cb.Type != types.ContentTypeToolResult {
 			t.Errorf("results[%d].Type = %q, want %q", i, cb.Type, types.ContentTypeToolResult)
 		}
-		var parsed string
+		var parsed []types.ContentBlock
 		if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 			t.Fatalf("results[%d]: failed to parse content: %v", i, err)
 		}
-		if parsed == "" {
-			t.Errorf("results[%d]: expected non-empty error content", i)
+		if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText || parsed[0].Text == "" {
+			t.Errorf("results[%d]: expected single non-empty text block, got %+v", i, parsed)
 		}
 	}
 
@@ -3571,12 +3573,15 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 			if cb.ToolUseID != "tu_1" {
 				t.Errorf("tool_result ToolUseID = %q, want %q", cb.ToolUseID, "tu_1")
 			}
-			var parsed string
+			var parsed []types.ContentBlock
 			if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 				t.Fatalf("failed to parse tool_result content: %v", err)
 			}
-			if !strings.Contains(parsed, "User rejected") {
-				t.Errorf("error = %q, want to contain 'User rejected'", parsed)
+			if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+				t.Fatalf("expected single text block, got %+v", parsed)
+			}
+			if !strings.Contains(parsed[0].Text, "User rejected") {
+				t.Errorf("error = %q, want to contain 'User rejected'", parsed[0].Text)
 			}
 		}
 	}
@@ -3698,12 +3703,15 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 		for _, cb := range msg.Content {
 			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
 				hasSyntheticResult = true
-				var parsed string
+				var parsed []types.ContentBlock
 				if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 					t.Fatalf("failed to parse synthetic tool_result: %v", err)
 				}
-				if !strings.Contains(parsed, "discarded") {
-					t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed)
+				if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+					t.Fatalf("expected single text block, got %+v", parsed)
+				}
+				if !strings.Contains(parsed[0].Text, "discarded") {
+					t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed[0].Text)
 				}
 			}
 		}
@@ -5606,8 +5614,12 @@ func TestExecuteTool_NonStreamingNilResult(t *testing.T) {
 	if tt.resultBlocks[0].IsError {
 		t.Error("nil result should not be an error")
 	}
-	if string(tt.resultBlocks[0].Content) != "null" {
-		t.Errorf("expected 'null' content for nil result, got %q", string(tt.resultBlocks[0].Content))
+	var nilParsed []types.ContentBlock
+	if err := json.Unmarshal(tt.resultBlocks[0].Content, &nilParsed); err != nil {
+		t.Fatalf("unmarshal nil-result content: %v", err)
+	}
+	if len(nilParsed) != 1 || nilParsed[0].Type != types.ContentTypeText || nilParsed[0].Text != "null" {
+		t.Errorf("expected single text block with 'null', got %+v", nilParsed)
 	}
 }
 

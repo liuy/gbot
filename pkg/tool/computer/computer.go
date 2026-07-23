@@ -6,12 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
+
+// screenshotDimsRe extracts the (width, height) dimensions embedded in the
+// FormatWireBlocks text companion ("Screenshot captured (WxH)."). Used by
+// DecodeResult to recover dims from the wire format.
+var screenshotDimsRe = regexp.MustCompile(`Screenshot captured \((\d+)x(\d+)\)\.`)
 
 // Action constants — the 15 actions routed by the Computer tool. connect and
 // disconnect are the only actions that bypass the connection gate (they must
@@ -98,57 +105,82 @@ func New(b *AndroidBackend) tool.Tool {
 		MaxResultSizeChars: 50000,
 		Prompt_:            computerPrompt(),
 		RenderResult_:      renderResult,
-		// DecodeResult probes the JSON keys to recover the concrete struct.
-		// The probe keys ("MIMEType", "Elements", "Manufacturer") are the raw
-		// Go field names — Screenshot/ScreenResult/DeviceInfo have NO json tags,
-		// so the persisted wire format uses field names as JSON keys. If json
-		// tags are ever added to these structs, the probe keys MUST be updated
-		// in lockstep (adding tags also invalidates existing SQLite rows).
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
-			var probe map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &probe); err != nil {
+			// Array form: [{type:text,text:"..."}{type:image,source:{...}}] is
+			// the only supported shape now. Struct-form sessions replay as raw
+			// JSON via renderToolOutput's string(raw) fallback.
+			if len(raw) == 0 || raw[0] != '[' {
+				return nil, fmt.Errorf("computer: DecodeResult expects array-form content, got %q", string(raw)[:min(80, len(raw))])
+			}
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(raw, &blocks); err != nil {
 				return nil, err
 			}
-			if _, ok := probe["MIMEType"]; ok {
-				var s Screenshot
-				if err := json.Unmarshal(raw, &s); err != nil {
-					return nil, err
+			// First pass: if any block is an image, this is a Screenshot result.
+			for _, b := range blocks {
+				if b.Type == types.ContentTypeImage {
+					shot := &Screenshot{}
+					for _, tb := range blocks {
+						if tb.Type == types.ContentTypeText {
+							if m := screenshotDimsRe.FindStringSubmatch(tb.Text); m != nil {
+								shot.Width, _ = strconv.Atoi(m[1])
+								shot.Height, _ = strconv.Atoi(m[2])
+							}
+						}
+						if tb.Type == types.ContentTypeImage && tb.Source != nil {
+							shot.MIMEType = tb.Source.MediaType
+							shot.DataB64 = tb.Source.Data
+						}
+					}
+					return shot, nil
 				}
-				return &s, nil
 			}
-			if _, ok := probe["Elements"]; ok {
-				var s ScreenResult
-				if err := json.Unmarshal(raw, &s); err != nil {
-					return nil, err
+			// No image block: text-only result. Unwrap the JSON-string-wrapped
+			// content (FormatWireBlocksOrDefault double-wraps non-Screenshot
+			// results) and dispatch on the inner JSON's keys.
+			for _, b := range blocks {
+				if b.Type != types.ContentTypeText || b.Text == "" {
+					continue
 				}
-				return &s, nil
-			}
-			if _, ok := probe["Manufacturer"]; ok {
-				var d DeviceInfo
-				if err := json.Unmarshal(raw, &d); err != nil {
-					return nil, err
+				var inner string
+				if json.Unmarshal([]byte(b.Text), &inner) != nil {
+					inner = b.Text
 				}
-				return &d, nil
-			}
-			if _, ok := probe["host"]; ok {
-				var c ConnectResult
-				if err := json.Unmarshal(raw, &c); err != nil {
-					return nil, err
+				probeRaw := json.RawMessage(inner)
+				var probe map[string]json.RawMessage
+				if json.Unmarshal(probeRaw, &probe) != nil {
+					continue
 				}
-				return &c, nil
-			}
-			if _, ok := probe["error"]; ok {
-				var e ErrorResult
-				if err := json.Unmarshal(raw, &e); err != nil {
-					return nil, err
+				if _, ok := probe["Elements"]; ok {
+					var s ScreenResult
+					if err := json.Unmarshal(probeRaw, &s); err == nil {
+						return &s, nil
+					}
 				}
-				return &e, nil
+				if _, ok := probe["Manufacturer"]; ok {
+					var d DeviceInfo
+					if err := json.Unmarshal(probeRaw, &d); err == nil {
+						return &d, nil
+					}
+				}
+				if _, ok := probe["host"]; ok {
+					var c ConnectResult
+					if err := json.Unmarshal(probeRaw, &c); err == nil {
+						return &c, nil
+					}
+				}
+				if _, ok := probe["error"]; ok {
+					var e ErrorResult
+					if err := json.Unmarshal(probeRaw, &e); err == nil {
+						return &e, nil
+					}
+				}
+				var a ActionResult
+				if err := json.Unmarshal(probeRaw, &a); err == nil {
+					return &a, nil
+				}
 			}
-			var a ActionResult
-			if err := json.Unmarshal(raw, &a); err != nil {
-				return nil, err
-			}
-			return &a, nil
+			return nil, fmt.Errorf("computer: no decodable block in array form")
 		},
 		FormatWireBlocks_: func(data any) []types.ContentBlock {
 			shot, ok := data.(*Screenshot)
@@ -158,7 +190,7 @@ func New(b *AndroidBackend) tool.Tool {
 				return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
 			}
 			return []types.ContentBlock{
-				types.NewTextBlock("Screenshot captured."),
+				types.NewTextBlock(fmt.Sprintf("Screenshot captured (%dx%d).", shot.Width, shot.Height)),
 				types.NewImageBlock(types.ImageSource{
 					Type:      "base64",
 					MediaType: shot.MIMEType,

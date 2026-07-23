@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // MaybePersistLargeToolResult checks if tool output exceeds the threshold.
@@ -22,7 +24,7 @@ func MaybePersistLargeToolResult(
 	// Step 9: Empty result handling (TS: isToolResultContentEmpty + empty message)
 	if IsToolResultContentEmpty(output) {
 		emptyMsg := fmt.Sprintf("(%s completed with no output)", toolName)
-		b, _ := json.Marshal(emptyMsg)
+		b, _ := json.Marshal([]types.ContentBlock{types.NewTextBlock(emptyMsg)})
 		return PersistResult{Output: b}
 	}
 
@@ -84,7 +86,7 @@ func MaybePersistLargeToolResult(
 		// Return error hint instead of persisting.
 		hint := fmt.Sprintf("[Output too large to persist (%s). Consider using a more targeted command.]",
 			FormatFileSize(len(content)))
-		b, _ := json.Marshal(hint)
+		b, _ := json.Marshal([]types.ContentBlock{types.NewTextBlock(hint)})
 		return PersistResult{Output: b}
 	}
 
@@ -95,11 +97,11 @@ func MaybePersistLargeToolResult(
 		return PersistResult{Output: output}
 	}
 
-	// Build preview message and re-encode as JSON string.
+	// Build preview message and re-encode as array form.
 	msg := BuildLargeToolResultMessage(result)
 
 	// Correction 11: safe JSON re-encoding.
-	newOutput, err := json.Marshal(msg)
+	newOutput, err := json.Marshal([]types.ContentBlock{types.NewTextBlock(msg)})
 	if err != nil {
 		slog.Warn("toolresult: marshal preview failed", "error", err)
 		return PersistResult{Output: output}

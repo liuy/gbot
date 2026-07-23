@@ -367,8 +367,8 @@ func TestComputer_FormatWireBlocks_Screenshot(t *testing.T) {
 	if blocks[0].Type != types.ContentTypeText {
 		t.Errorf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
 	}
-	if blocks[0].Text != "Screenshot captured." {
-		t.Errorf("blocks[0].Text = %q, want %q", blocks[0].Text, "Screenshot captured.")
+	if blocks[0].Text != "Screenshot captured (4x4)." {
+		t.Errorf("blocks[0].Text = %q, want %q", blocks[0].Text, "Screenshot captured (4x4).")
 	}
 	if blocks[1].Type != types.ContentTypeImage {
 		t.Errorf("blocks[1].Type = %q, want %q", blocks[1].Type, types.ContentTypeImage)
@@ -389,6 +389,69 @@ func TestComputer_FormatWireBlocks_Screenshot(t *testing.T) {
 	}
 	if cfg.Width != 4 || cfg.Height != 4 {
 		t.Errorf("decoded dims = %dx%d, want 4x4", cfg.Width, cfg.Height)
+	}
+}
+
+func TestComputer_DecodeResult_ScreenshotArrayForm(t *testing.T) {
+	t.Parallel()
+	tt := New(nil)
+	// Build the wire format inline (cannot use pkg/engine's marshalBlocks —
+	// it is unexported and pkg/engine imports pkg/tool, so importing it
+	// back from package computer would form a cycle).
+	raw, err := json.Marshal([]types.ContentBlock{
+		types.NewTextBlock("Screenshot captured (1080x2400)."),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "abc"}),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	shot, ok := v.(*Screenshot)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *Screenshot", v)
+	}
+	if shot.Width != 1080 || shot.Height != 2400 {
+		t.Errorf("dims = %dx%d, want 1080x2400", shot.Width, shot.Height)
+	}
+	if shot.MIMEType != "image/jpeg" {
+		t.Errorf("MIMEType = %q, want %q", shot.MIMEType, "image/jpeg")
+	}
+	if shot.DataB64 != "abc" {
+		t.Errorf("DataB64 = %q, want %q", shot.DataB64, "abc")
+	}
+}
+
+func TestComputer_DecodeResult_NoDimsGraceful(t *testing.T) {
+	t.Parallel()
+	tt := New(nil)
+	// Text block does not match the dimension regex — dims stay 0/0 but
+	// MIMEType and DataB64 are still populated from the image block.
+	raw, err := json.Marshal([]types.ContentBlock{
+		types.NewTextBlock("no dimensions here"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "xyz"}),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	shot, ok := v.(*Screenshot)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *Screenshot", v)
+	}
+	if shot.Width != 0 || shot.Height != 0 {
+		t.Errorf("dims = %dx%d, want 0x0 (regex didn't match)", shot.Width, shot.Height)
+	}
+	if shot.MIMEType != "image/jpeg" {
+		t.Errorf("MIMEType = %q, want %q", shot.MIMEType, "image/jpeg")
+	}
+	if shot.DataB64 != "xyz" {
+		t.Errorf("DataB64 = %q, want %q", shot.DataB64, "xyz")
 	}
 }
 
@@ -929,7 +992,8 @@ func TestComputer_RenderResult_UnknownType(t *testing.T) {
 func TestComputer_RenderResult_JSONRawMessage_Screenshot(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	raw := json.RawMessage(`{"Width":1256,"Height":2760,"MIMEType":"image/jpeg","DataB64":"abc"}`)
+	// Array form: text block with dims + image block.
+	raw := json.RawMessage(`[{"type":"text","text":"Screenshot captured (1256x2760)."},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc"}}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -944,7 +1008,10 @@ func TestComputer_RenderResult_JSONRawMessage_Screenshot(t *testing.T) {
 func TestComputer_RenderResult_JSONRawMessage_Action(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	raw := json.RawMessage(`{"action":"click","ok":true}`)
+	// Array form: text block with double-wrapped JSON content.
+	innerJSON, _ := json.Marshal(map[string]any{"action": "click", "ok": true})
+	doubleWrapped, _ := json.Marshal(string(innerJSON))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(doubleWrapped) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1344,7 +1411,11 @@ func TestComputer_DecodeResult_ScreenshotRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	original := &Screenshot{MIMEType: "image/jpeg", Width: 100, Height: 200, DataB64: "abc"}
-	raw, err := json.Marshal(original)
+	// Array form: text block + image block (FormatWireBlocks output shape).
+	raw, err := json.Marshal([]types.ContentBlock{
+		types.NewTextBlock("Screenshot captured (100x200)."),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "abc"}),
+	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -1371,10 +1442,10 @@ func TestComputer_DecodeResult_ScreenResultRoundTrip(t *testing.T) {
 	tt, _, _ := newTestTool()
 	// Ref has json:"-" so it is excluded from persisted JSON by design.
 	original := &ScreenResult{Width: 1080, Height: 2400, Elements: []ElementRef{{Text: "button"}}}
-	raw, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	// Wrap as array form: text block containing JSON-string-wrapped struct.
+	innerJSON, _ := json.Marshal(original)
+	doubleWrapped, _ := json.Marshal(string(innerJSON))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(doubleWrapped) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -1397,10 +1468,9 @@ func TestComputer_DecodeResult_DeviceInfoRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	original := &DeviceInfo{Manufacturer: "Google", Model: "Pixel 8", SDK: 34}
-	raw, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	innerJSON, _ := json.Marshal(original)
+	doubleWrapped, _ := json.Marshal(string(innerJSON))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(doubleWrapped) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -1422,7 +1492,9 @@ func TestComputer_DecodeResult_DeviceInfoRoundTrip(t *testing.T) {
 func TestComputer_DecodeResult_ActionResult(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	raw := json.RawMessage(`{"action":"click","ok":true}`)
+	innerJSON, _ := json.Marshal(map[string]any{"action": "click", "ok": true})
+	doubleWrapped, _ := json.Marshal(string(innerJSON))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(doubleWrapped) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)

@@ -69,15 +69,19 @@ func TestConcurrentToolLoop_PanicRecovery_ToolResult(t *testing.T) {
 		t.Error("expected IsError=true for panicked tool")
 	}
 	// Content must contain the panic message so the LLM can understand what happened
-	var content string
+	var content []types.ContentBlock
 	if err := json.Unmarshal(rb.Content, &content); err != nil {
-		t.Fatalf("content is not a JSON string: %v", err)
+		t.Fatalf("content is not a JSON array: %v", err)
 	}
-	if !strings.Contains(content, "internal error") {
-		t.Errorf("error content should mention 'internal error', got: %q", content)
+	if len(content) != 1 || content[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", content)
 	}
-	if !strings.Contains(content, "test panic in tool") {
-		t.Errorf("error content should contain panic message, got: %q", content)
+	text := content[0].Text
+	if !strings.Contains(text, "internal error") {
+		t.Errorf("error content should mention 'internal error', got: %q", text)
+	}
+	if !strings.Contains(text, "test panic in tool") {
+		t.Errorf("error content should contain panic message, got: %q", text)
 	}
 }
 
@@ -280,12 +284,15 @@ func TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds(t *testing.T) {
 		t.Error("turn 1: expected IsError=true for panicked tool")
 	}
 	// Verify error message contains panic info
-	var errMsg1 string
+	var errMsg1 []types.ContentBlock
 	if err := json.Unmarshal(rb1.Content, &errMsg1); err != nil {
-		t.Fatalf("turn 1: content is not JSON string: %v", err)
+		t.Fatalf("turn 1: content is not JSON array: %v", err)
 	}
-	if !strings.Contains(errMsg1, "internal error") {
-		t.Errorf("turn 1: error should mention 'internal error', got: %q", errMsg1)
+	if len(errMsg1) != 1 || errMsg1[0].Type != types.ContentTypeText {
+		t.Fatalf("turn 1: expected single text block, got %+v", errMsg1)
+	}
+	if !strings.Contains(errMsg1[0].Text, "internal error") {
+		t.Errorf("turn 1: error should mention 'internal error', got: %q", errMsg1[0].Text)
 	}
 	// Verify ToolEnd event was emitted
 	var foundToolEnd bool

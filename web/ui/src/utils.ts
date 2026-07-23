@@ -50,12 +50,25 @@ export function stripAnsi(s: string): string {
 // Extracts the [Tool spent Xs] prefix that pkg/engine/runTools.go:prependDuration
 // adds to tool_result Output JSON. Returns the duration in nanoseconds, or 0 if
 // no prefix is present. Mirrors renderToolOutput in pkg/connector/wui/connector.go.
+//
+// Handles both string form (legacy: JSON-encoded string) and array form
+// (current: [{type:"text",text:"[Tool spent Xs]..."}]). Legacy string-form
+// branch stays for any persisted sessions that reach the frontend unchanged.
 export function parseDurationFromOutput(output: unknown): number {
 	if (typeof output !== 'string') return 0
 	let s = output
 	try {
 		const decoded = JSON.parse(s)
-		if (typeof decoded === 'string') s = decoded
+		if (Array.isArray(decoded)) {
+			// Array form: find first text block.
+			const textBlock = decoded.find(
+				(b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string'
+			) as { text: string } | undefined
+			if (!textBlock) return 0
+			s = textBlock.text
+		} else if (typeof decoded === 'string') {
+			s = decoded
+		}
 	} catch {
 		// Not JSON — try the raw string (defensive; should not normally happen).
 	}

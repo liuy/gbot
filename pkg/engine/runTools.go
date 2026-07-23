@@ -632,17 +632,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		if r := recover(); r != nil {
 			slog.Error("engine: panic in executeTool", "tool", tt.Name, "error", r, "stack", string(debug.Stack()))
 			errMsg := fmt.Sprintf("internal error in tool %s: %v", tt.Name, r)
-			errBytes, _ := json.Marshal(errMsg)
+			errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 			e.doEmit(types.QueryEvent{
 				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     tt.ID,
-					Output:        errBytes,
+					Output:        errBlock.Content,
 					DisplayOutput: errMsg,
 					IsError:       true,
 				},
 			})
-			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+			tt.resultBlocks = []types.ContentBlock{errBlock}
 		}
 	}()
 
@@ -720,17 +720,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		// Phase 1: bare-tool deny (rule-based, no user interaction)
 		if decision.Action == permission.ActionDeny {
 			errMsg := ruleDenyMessage(tt.Name)
-			errBytes, _ := json.Marshal(errMsg)
+			errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 			e.doEmit(types.QueryEvent{
 				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     tt.ID,
-					Output:        errBytes,
+					Output:        errBlock.Content,
 					DisplayOutput: errMsg,
 					IsError:       true,
 				},
 			})
-			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+			tt.resultBlocks = []types.ContentBlock{errBlock}
 			return
 		}
 
@@ -747,37 +747,37 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					if r.Output != nil && r.Output.Decision == "allow" {
 						continue // hook approved, skip askUser — fall through to Phase 3
 					}
-					if r.Output != nil && r.Output.Decision == "block" {
-						errMsg := ruleDenyMessage(tt.Name)
-						errBytes, _ := json.Marshal(errMsg)
-						e.doEmit(types.QueryEvent{
-							Type: types.EventToolEnd,
-							ToolResult: &types.ToolResultEvent{
-								ToolUseID:     tt.ID,
-								Output:        errBytes,
-								DisplayOutput: errMsg,
-								IsError:       true,
-							},
-						})
-						tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
-						return
-					}
+				if r.Output != nil && r.Output.Decision == "block" {
+					errMsg := ruleDenyMessage(tt.Name)
+					errBlock := CreateToolErrorBlock(tt.ID, errMsg)
+					e.doEmit(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     tt.ID,
+							Output:        errBlock.Content,
+							DisplayOutput: errMsg,
+							IsError:       true,
+						},
+					})
+					tt.resultBlocks = []types.ContentBlock{errBlock}
+					return
+				}
 				}
 			}
 			userDecision := e.askUser(tt, decision, "")
 			if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
 				errMsg := e.userOrSubRejectMessage()
-				errBytes, _ := json.Marshal(errMsg)
+				errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     tt.ID,
-						Output:        errBytes,
+						Output:        errBlock.Content,
 						DisplayOutput: errMsg,
 						IsError:       true,
 					},
 				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+				tt.resultBlocks = []types.ContentBlock{errBlock}
 				return
 			}
 		}
@@ -787,17 +787,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
 			if action == permission.ActionDeny {
 				errMsg := ruleDenyMessage(tt.Name)
-				errBytes, _ := json.Marshal(errMsg)
+				errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     tt.ID,
-						Output:        errBytes,
+						Output:        errBlock.Content,
 						DisplayOutput: errMsg,
 						IsError:       true,
 					},
 				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+				tt.resultBlocks = []types.ContentBlock{errBlock}
 				return
 			}
 			if action == permission.ActionAsk {
@@ -809,17 +809,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				}, matchedContent)
 				if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
 					errMsg := e.userOrSubRejectMessage()
-					errBytes, _ := json.Marshal(errMsg)
+					errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 					e.doEmit(types.QueryEvent{
 						Type: types.EventToolEnd,
 						ToolResult: &types.ToolResultEvent{
 							ToolUseID:     tt.ID,
-							Output:        errBytes,
+							Output:        errBlock.Content,
 							DisplayOutput: errMsg,
 							IsError:       true,
 						},
 					})
-					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+					tt.resultBlocks = []types.ContentBlock{errBlock}
 					return
 				}
 			}
@@ -839,17 +839,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
 		if decision == hooks.HookDecisionBlock {
 			errMsg := fmt.Sprintf("Execution stopped by PreToolUse hook for tool %s", tt.Name)
-			errBytes, _ := json.Marshal(errMsg)
+			errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 			e.doEmit(types.QueryEvent{
 				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     tt.ID,
-					Output:        errBytes,
+					Output:        errBlock.Content,
 					DisplayOutput: errMsg,
 					IsError:       true,
 				},
 			})
-			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+			tt.resultBlocks = []types.ContentBlock{errBlock}
 			return
 		}
 	}
@@ -930,7 +930,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 	if result == nil {
 		// Tool returned nil result without error — treat as empty.
-		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte("null"), false)}
+		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, marshalBlocks([]types.ContentBlock{types.NewTextBlock("null")}), false)}
 		return
 	}
 
@@ -1036,11 +1036,10 @@ func marshalBlocks(blocks []types.ContentBlock) json.RawMessage {
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
 func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err error, elapsed time.Duration) {
 	e.firePostToolUseHook(tt, true)
-	// Error content must be a JSON string (not object) for Anthropic API compatibility.
-	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
 	fullErr := err.Error()
-	errJSON, _ := json.Marshal(fullErr)
-	errJSON = prependDuration(errJSON, elapsed)
+	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
+	blocks := prependDurationToBlocks([]types.ContentBlock{types.NewTextBlock(fullErr)}, elapsed)
+	errJSON := marshalBlocks(blocks)
 	// Let the tool decide how to display its own errors via RenderResult.
 	// Tools like Edit override this to show short summaries instead of
 	// dumping the full search string. The full error is still sent to
@@ -1151,8 +1150,21 @@ func (e *StreamingToolExecutor) checkContentPermissions(toolName string, input j
 }
 
 // extractErrMsg extracts the human-readable error message from a tool result
-// block's JSON content (format: {"error":"message"}).
+// block's JSON content. Handles three shapes: array form
+// ([{"type":"text","text":"..."}]) returns the first text block's Text; map
+// form ({"error":"..."}) returns the value of the "error" key; anything else
+// returns the raw bytes (preserves prior fallback behavior).
 func extractErrMsg(content json.RawMessage) string {
+	if len(content) > 0 && content[0] == '[' {
+		var blocks []types.ContentBlock
+		if json.Unmarshal(content, &blocks) == nil {
+			for _, b := range blocks {
+				if b.Type == types.ContentTypeText {
+					return b.Text
+				}
+			}
+		}
+	}
 	var m map[string]string
 	if json.Unmarshal(content, &m) == nil {
 		if msg, ok := m["error"]; ok {
@@ -1225,19 +1237,4 @@ func extractFilePathFromInput(input json.RawMessage) string {
 		return ""
 	}
 	return parsed.FilePath
-}
-
-// prependDuration adds a [spent Xs] prefix to tool result content for LLM context.
-// outputJSON is a JSON-encoded string like "some output" — we decode, prepend, re-encode.
-func prependDuration(outputJSON json.RawMessage, d time.Duration) json.RawMessage {
-	var s string
-	if json.Unmarshal(outputJSON, &s) != nil {
-		return outputJSON
-	}
-	prefix := fmt.Sprintf("[Tool spent %.1fs]", d.Seconds())
-	prefixed, err := json.Marshal(prefix + s)
-	if err != nil {
-		return outputJSON
-	}
-	return prefixed
 }

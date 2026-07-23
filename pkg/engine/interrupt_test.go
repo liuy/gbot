@@ -172,12 +172,15 @@ func TestAppendInlineInterruptMessage_AddsSyntheticToolResults(t *testing.T) {
 			if !block.IsError {
 				t.Error("synthetic tool_result should have IsError=true")
 			}
-			var content string
+			var content []types.ContentBlock
 			if err := json.Unmarshal(block.Content, &content); err != nil {
 				t.Fatalf("failed to parse tool_result content: %v", err)
 			}
-			if !strings.Contains(content, "User rejected tool use") {
-				t.Errorf("tool_result content = %q, want interrupt message", content)
+			if len(content) != 1 || content[0].Type != types.ContentTypeText {
+				t.Fatalf("expected single text block, got %+v", content)
+			}
+			if !strings.Contains(content[0].Text, "User rejected tool use") {
+				t.Errorf("tool_result content = %q, want interrupt message", content[0].Text)
 			}
 		}
 	}

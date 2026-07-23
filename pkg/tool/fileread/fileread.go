@@ -232,6 +232,31 @@ func New() tool.Tool {
 		Prompt_:       fileReadPrompt(),
 		RenderResult_: renderResult,
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			// Array form: [{...}] — locate the first block and dispatch on Type.
+			if len(raw) > 0 && raw[0] == '[' {
+				var blocks []types.ContentBlock
+				if err := json.Unmarshal(raw, &blocks); err != nil {
+					return nil, err
+				}
+				for _, b := range blocks {
+					switch b.Type {
+					case "image":
+						return &ImageOutput{Type: "image", MimeType: b.Source.MediaType}, nil
+					case "file_unchanged":
+						var o FileUnchangedOutput
+						if err := json.Unmarshal(raw, &o); err == nil {
+							return &o, nil
+						}
+					case "text":
+						var o TextOutput
+						if err := json.Unmarshal(raw, &o); err == nil {
+							return &o, nil
+						}
+					}
+				}
+				return nil, fmt.Errorf("fileread: no decodable block in array form")
+			}
+			// Legacy struct-form probe (single object).
 			var probe struct {
 				Type string `json:"type"`
 			}
@@ -292,8 +317,14 @@ func renderResult(data any) string {
 	case TextOutput:
 		return out.Content
 	case *ImageOutput:
+		if out.FilePath == "" {
+			return fmt.Sprintf("Image (%s)", out.MimeType)
+		}
 		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
 	case ImageOutput:
+		if out.FilePath == "" {
+			return fmt.Sprintf("Image (%s)", out.MimeType)
+		}
 		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
 	case *FileUnchangedOutput:
 		return fmt.Sprintf("File unchanged: %s", out.FilePath)
