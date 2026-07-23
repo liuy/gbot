@@ -71,6 +71,45 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 	}
 }
 
+// TestRenderToolOutput_ArrayFormDuration verifies that the array-form fallback
+// (new wire-blocks shape) extracts the duration prefix from the first text
+// block and strips it from the displayed text. Bug-catch: previous code
+// returned ("[Tool spent 1.5s]hello", 0) — no extraction, no stripping.
+func TestRenderToolOutput_ArrayFormDuration(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	// Array form (NOT a JSON string). First text block carries the duration
+	// prefix. The function must extract elapsed=1.5s AND return "hello"
+	// (prefix stripped).
+	arrayInput := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]hello"}]`)
+	got, elapsed := renderToolOutput("Glob", arrayInput, tools)
+	if got != "hello" {
+		t.Errorf("renderToolOutput array-form = %q, want %q (prefix must be stripped)", got, "hello")
+	}
+	if elapsed != 1500*time.Millisecond {
+		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
+	}
+}
+
+// TestRenderToolOutput_ArrayFormNoPrefix verifies the array-form path returns
+// elapsed=0 when no duration prefix is present.
+func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
+	got, elapsed := renderToolOutput("Glob", arrayInput, tools)
+	if got != "hello world" {
+		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
+	}
+	if elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0", elapsed)
+	}
+}
+
 func TestReadPersistedFile_Valid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

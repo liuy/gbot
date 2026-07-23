@@ -9,6 +9,7 @@ import (
 
 	gbotmcp "github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -394,34 +395,46 @@ func TestRenderResourceResult_ResourceContentWithData(t *testing.T) {
 	}
 }
 
-func TestListMcpResources_FormatWireResult(t *testing.T) {
+func TestListMcpResources_FormatWireBlocks(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	tt := NewListMcpResources(reg)
 
-	wf, ok := tt.(tool.ToolWithWireFormat)
+	wb, ok := tt.(tool.ToolWithWireBlocks)
 	if !ok {
-		t.Fatal("ListMcpResources should implement ToolWithWireFormat")
+		t.Fatal("ListMcpResources should implement ToolWithWireBlocks")
 	}
 
 	// nil data with isEmptyFriendly → friendly message
-	result := wf.FormatWireResult(nil)
+	blocks := wb.FormatWireBlocks(nil)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+	}
 	expected := "No resources found. MCP servers may still provide tools even if they have no resources."
-	if result != expected {
-		t.Errorf("FormatWireResult(nil) = %q, want %q", result, expected)
+	if blocks[0].Text != expected {
+		t.Errorf("FormatWireBlocks(nil).Text = %q, want %q", blocks[0].Text, expected)
 	}
 
 	// empty slice with isEmptyFriendly → friendly message
-	result = wf.FormatWireResult([]gbotmcp.ServerResource{})
-	if result != expected {
-		t.Errorf("FormatWireResult(empty) = %q, want %q", result, expected)
+	blocks = wb.FormatWireBlocks([]gbotmcp.ServerResource{})
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Text != expected {
+		t.Errorf("FormatWireBlocks(empty).Text = %q, want %q", blocks[0].Text, expected)
 	}
 
 	// non-empty slice → JSON
-	result = wf.FormatWireResult([]gbotmcp.ServerResource{
+	blocks = wb.FormatWireBlocks([]gbotmcp.ServerResource{
 		{URI: "test://1", Name: "res1", Server: "s1"},
 	})
-	if !strings.Contains(result, "test://1") {
-		t.Errorf("should contain URI, got: %q", result)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if !strings.Contains(blocks[0].Text, "test://1") {
+		t.Errorf("should contain URI, got: %q", blocks[0].Text)
 	}
 }
 
@@ -858,36 +871,48 @@ func TestRenderReadResourceTUI_JSONRawMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FormatWireResult for ReadMcpResource (line 166-168)
+// FormatWireBlocks for ReadMcpResource (line 166-168)
 // ---------------------------------------------------------------------------
 
-func TestReadMcpResource_FormatWireResult(t *testing.T) {
+func TestReadMcpResource_FormatWireBlocks(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	tt := NewReadMcpResource(reg)
 
-	wf, ok := tt.(tool.ToolWithWireFormat)
+	wb, ok := tt.(tool.ToolWithWireBlocks)
 	if !ok {
-		t.Fatal("ReadMcpResource should implement ToolWithWireFormat")
+		t.Fatal("ReadMcpResource should implement ToolWithWireBlocks")
 	}
 
 	// nil data → emptyResourcesMessage (from renderResourceResultJSON)
-	got := wf.FormatWireResult(nil)
-	if got != emptyResourcesMessage {
-		t.Errorf("FormatWireResult(nil) = %q, want %q", got, emptyResourcesMessage)
+	blocks := wb.FormatWireBlocks(nil)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+	}
+	if blocks[0].Text != emptyResourcesMessage {
+		t.Errorf("FormatWireBlocks(nil).Text = %q, want %q", blocks[0].Text, emptyResourcesMessage)
 	}
 
 	// empty ResourceContent → "[]"
-	got = wf.FormatWireResult([]gbotmcp.ResourceContent{})
-	if got != "[]" {
-		t.Errorf("FormatWireResult(empty ResourceContent) = %q, want %q", got, "[]")
+	blocks = wb.FormatWireBlocks([]gbotmcp.ResourceContent{})
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Text != "[]" {
+		t.Errorf("FormatWireBlocks(empty ResourceContent).Text = %q, want %q", blocks[0].Text, "[]")
 	}
 
 	// non-empty ResourceContent → JSON
-	got = wf.FormatWireResult([]gbotmcp.ResourceContent{
+	blocks = wb.FormatWireBlocks([]gbotmcp.ResourceContent{
 		{URI: "test://1", Text: "hello"},
 	})
-	if !strings.Contains(got, "test://1") {
-		t.Errorf("FormatWireResult with content should contain URI, got: %q", got)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if !strings.Contains(blocks[0].Text, "test://1") {
+		t.Errorf("FormatWireBlocks with content should contain URI, got: %q", blocks[0].Text)
 	}
 }
 

@@ -150,6 +150,22 @@ func New(b *AndroidBackend) tool.Tool {
 			}
 			return &a, nil
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			shot, ok := data.(*Screenshot)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				wrapped, _ := json.Marshal(string(raw))
+				return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+			}
+			return []types.ContentBlock{
+				types.NewTextBlock("Screenshot captured."),
+				types.NewImageBlock(types.ImageSource{
+					Type:      "base64",
+					MediaType: shot.MIMEType,
+					Data:      shot.DataB64,
+				}),
+			}
+		},
 	})
 }
 
@@ -267,21 +283,13 @@ func doScreenshot(ctx context.Context, b *AndroidBackend, _ Input) (*tool.ToolRe
 	mediaType := "image/" + resized.MediaType
 	dataB64 := base64.StdEncoding.EncodeToString(resized.Buffer)
 
-	return &tool.ToolResult{
-		Data: shot,
-		NewMessages: []types.Message{{
-			Role: types.RoleUser,
-			Content: []types.ContentBlock{
-				types.NewTextBlock("Screenshot captured."),
-				types.NewImageBlock(types.ImageSource{
-					Type:      "base64",
-					MediaType: mediaType,
-					Data:      dataB64,
-				}),
-			},
-			Flags: types.FlagMeta,
-		}},
-	}, nil
+	// Shallow-copy the backend's Screenshot so we don't mutate its struct;
+	// overwrite DataB64/MIMEType with the RESIZED payload so FormatWireBlocks
+	// emits the post-resize bytes (Width/Height stay as backend device bounds).
+	resizedShot := *shot
+	resizedShot.DataB64 = dataB64
+	resizedShot.MIMEType = mediaType
+	return &tool.ToolResult{Data: &resizedShot}, nil
 }
 
 // doCoordinateAction handles click/open_menu/zoom, which all require a

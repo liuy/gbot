@@ -119,15 +119,17 @@ func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		// Wire format: what the LLM sees as tool_result content.
 		// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
-		FormatWireResult_: func(data any) string {
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
 			out, ok := data.(skillOutput)
 			if !ok {
-				return fmt.Sprintf("%v", data)
+				raw, _ := json.Marshal(data)
+				wrapped, _ := json.Marshal(string(raw))
+				return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
 			}
 			if out.Status == "forked" {
-				return fmt.Sprintf("Skill \"%s\" completed (forked execution).\n\nResult:\n%s", out.CommandName, out.Result)
+				return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("Skill \"%s\" completed (forked execution).\n\nResult:\n%s", out.CommandName, out.Result))}
 			}
-			return "Launching skill: " + out.CommandName
+			return []types.ContentBlock{types.NewTextBlock("Launching skill: " + out.CommandName)}
 		},
 		// TUI render: what the user sees in the terminal.
 		// Source: UI.tsx:20-46 — renderToolResultMessage

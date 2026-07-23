@@ -262,6 +262,23 @@ func New() tool.Tool {
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsRead: true}
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(ImageOutput)
+			if !ok {
+				if p, ok := data.(*ImageOutput); ok {
+					out = *p
+				} else {
+					raw, _ := json.Marshal(data)
+					wrapped, _ := json.Marshal(string(raw))
+					return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+				}
+			}
+			return []types.ContentBlock{types.NewImageBlock(types.ImageSource{
+				Type:      "base64",
+				MediaType: out.MimeType,
+				Data:      out.Base64,
+			})}
+		},
 	})
 }
 
@@ -465,20 +482,7 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 		DisplayHeight:  dims.DisplayHeight,
 	}
 
-	return &tool.ToolResult{
-		Data: output,
-		NewMessages: []types.Message{{
-			Role: types.RoleUser,
-			Content: []types.ContentBlock{
-				types.NewImageBlock(types.ImageSource{
-					Type:      "base64",
-					MediaType: mediaType,
-					Data:      output.Base64,
-				}),
-			},
-			Flags: types.FlagMeta,
-		}},
-	}, nil
+	return &tool.ToolResult{Data: output}, nil
 }
 
 // executeDocument converts binary documents (docx, xlsx, pptx, epub, csv, ipynb)

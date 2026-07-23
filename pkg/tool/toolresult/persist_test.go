@@ -301,3 +301,63 @@ func mustMarshal(s string) []byte {
 	}
 	return b
 }
+
+// ---------------------------------------------------------------------------
+// Array-form input tests (Step 9)
+// ---------------------------------------------------------------------------
+
+func TestMaybePersistLargeToolResult_ArrayFormTextContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	// Array form: a single text block whose Text is over the threshold.
+	// Input mimics the wire-blocks shape produced by executeTool.
+	rawText := strings.Repeat("x", 60000)
+	textJSON, _ := json.Marshal(rawText)
+	arrayInput := []byte(`[{"type":"text","text":` + string(textJSON) + `}]`)
+
+	result := MaybePersistLargeToolResult(arrayInput, "Bash", 50000, "tool-arr-1", "test-session")
+	if !result.Persisted {
+		t.Fatal("should persist array-form text content over threshold")
+	}
+	if result.FilePath == "" {
+		t.Fatal("FilePath should be set")
+	}
+
+	// Persisted file MUST contain the RAW text (60000 x's), NOT the JSON
+	// array wrapper. This preserves replay via DecodeResult.
+	saved, err := os.ReadFile(result.FilePath)
+	if err != nil {
+		t.Fatalf("read persisted file: %v", err)
+	}
+	if string(saved) != rawText {
+		t.Errorf("persisted content = %q (len %d), want raw text (len %d)", string(saved)[:min(50, len(saved))], len(saved), len(rawText))
+	}
+}
+
+func TestMaybePersistLargeToolResult_ArrayFormImageNotPersisted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	// Array form with an image block alongside an oversized text block —
+	// HasImageBlock short-circuits and persistence is skipped. This is the
+	// side-benefit noted in the task: images never hit disk.
+	rawText := strings.Repeat("x", 60000)
+	textJSON, _ := json.Marshal(rawText)
+	arrayInput := []byte(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},{"type":"text","text":` + string(textJSON) + `}]`)
+
+	result := MaybePersistLargeToolResult(arrayInput, "Bash", 50000, "tool-arr-2", "test-session")
+	if result.Persisted {
+		t.Fatal("array-form input with image block must NOT persist (HasImageBlock short-circuit)")
+	}
+	if result.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty", result.FilePath)
+	}
+	// Output should be unchanged.
+	if string(result.Output) != string(arrayInput) {
+		t.Errorf("Output was modified: got %q, want %q", string(result.Output)[:50], string(arrayInput)[:50])
+	}
+}
+

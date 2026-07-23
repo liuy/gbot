@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // MaybePersistLargeToolResult checks if tool output exceeds the threshold.
@@ -49,7 +50,26 @@ func MaybePersistLargeToolResult(
 	// Correction 4: if decode fails, persist raw bytes directly.
 	var content string
 	decoded := false
-	if len(output) >= 2 && output[0] == '"' {
+	// Array form: [{"type":"text","text":"..."}] — extract text blocks, join,
+	// persist as raw string (mirrors renderToolOutput's array branch).
+	if len(output) > 0 && output[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(output, &blocks) == nil {
+			var parts []string
+			for _, b := range blocks {
+				if b.Type == "text" && b.Text != "" {
+					parts = append(parts, b.Text)
+				}
+			}
+			content = strings.Join(parts, "\n")
+			decoded = true
+		}
+		// If unmarshal failed, fall through to the raw-bytes path below.
+	}
+	if !decoded && len(output) >= 2 && output[0] == '"' {
 		if err := json.Unmarshal(output, &content); err == nil {
 			decoded = true
 		}

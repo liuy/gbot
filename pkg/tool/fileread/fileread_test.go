@@ -578,10 +578,11 @@ func TestExecute_ImageNotResizedWhenWithinLimits(t *testing.T) {
 	}
 }
 
-func TestExecute_ImageEmitsNewMessagesWithImageBlock(t *testing.T) {
+func TestExecute_ImageNewMessagesIsEmpty(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// 100x100 PNG (within limits, no resize). Decoded format is "png".
+	// 100x100 PNG (within limits, no resize). Image moves entirely to
+	// FormatWireBlocks; NewMessages must be empty for ALL images (resized or not).
 	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -597,34 +598,77 @@ func TestExecute_ImageEmitsNewMessagesWithImageBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	if len(result.NewMessages) != 1 {
-		t.Fatalf("NewMessages len = %d, want 1", len(result.NewMessages))
+	if len(result.NewMessages) != 0 {
+		t.Fatalf("NewMessages len = %d, want 0 (image moved to FormatWireBlocks)", len(result.NewMessages))
 	}
-	m := result.NewMessages[0]
-	if m.Role != types.RoleUser {
-		t.Errorf("role = %q, want user", m.Role)
+
+	// Also verify the oversized/resized path drops NewMessages. 2500x2500 RGBA
+	// PNG exceeds the 2000x2000 resize threshold while keeping test memory small.
+	big := image.NewRGBA(image.Rect(0, 0, 2500, 2500))
+	var bigBuf bytes.Buffer
+	if err := png.Encode(&bigBuf, big); err != nil {
+		t.Fatal(err)
 	}
-	if len(m.Content) != 1 {
-		t.Fatalf("content blocks = %d, want 1", len(m.Content))
+	bigFp := filepath.Join(dir, "big.png")
+	if err := os.WriteFile(bigFp, bigBuf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
 	}
-	block := m.Content[0]
-	if block.Type != types.ContentTypeImage {
-		t.Fatalf("block type = %q, want image", block.Type)
+	bigInput := json.RawMessage(`{"file_path":"` + bigFp + `"}`)
+	bigResult, err := fileread.Execute(context.Background(), bigInput, nil)
+	if err != nil {
+		t.Fatalf("Execute(big) error: %v", err)
 	}
-	if block.Source == nil {
-		t.Fatal("Source = nil, want non-nil")
+	if len(bigResult.NewMessages) != 0 {
+		t.Fatalf("resized NewMessages len = %d, want 0", len(bigResult.NewMessages))
 	}
-	// PNG decodes/re-encodes as png -> MediaType must be image/png.
-	if block.Source.Type != "base64" {
-		t.Errorf("Source.Type = %q, want base64", block.Source.Type)
+}
+
+func TestFileread_FormatWireBlocks_Image(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
 	}
-	if block.Source.MediaType != "image/png" {
-		t.Errorf("Source.MediaType = %q, want image/png (re-encoded format)", block.Source.MediaType)
+	fp := filepath.Join(dir, "pic.png")
+	if err := os.WriteFile(fp, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
 	}
-	// Data must equal the ImageOutput Base64 payload.
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
 	imgOut := result.Data.(fileread.ImageOutput)
-	if block.Source.Data != imgOut.Base64 {
-		t.Errorf("Source.Data != ImageOutput.Base64 (mismatch)")
+
+	// fileread.New() returns a built tool implementing ToolWithWireBlocks.
+	tk := fileread.New()
+	wb, ok := tk.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatal("fileread tool should implement ToolWithWireBlocks")
+	}
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeImage {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeImage)
+	}
+	if blocks[0].Source == nil {
+		t.Fatal("blocks[0].Source is nil")
+	}
+	if blocks[0].Source.Type != "base64" {
+		t.Errorf("blocks[0].Source.Type = %q, want %q", blocks[0].Source.Type, "base64")
+	}
+	if blocks[0].Source.MediaType != imgOut.MimeType {
+		t.Errorf("blocks[0].Source.MediaType = %q, want %q", blocks[0].Source.MediaType, imgOut.MimeType)
+	}
+	// Load-bearing anti-leak assertion: wire-block Data MUST equal ImageOutput.Base64.
+	if blocks[0].Source.Data != imgOut.Base64 {
+		t.Errorf("blocks[0].Source.Data mismatch: len(wire)=%d, len(imgOut)=%d", len(blocks[0].Source.Data), len(imgOut.Base64))
 	}
 }
 
@@ -647,9 +691,20 @@ func TestExecute_JPEGEmitsJPEGMediaType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	block := result.NewMessages[0].Content[0]
-	if block.Source.MediaType != "image/jpeg" {
-		t.Errorf("MediaType = %q, want image/jpeg", block.Source.MediaType)
+	tk := fileread.New()
+	wb, ok := tk.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatal("fileread tool should implement ToolWithWireBlocks")
+	}
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Source == nil {
+		t.Fatal("blocks[0].Source is nil")
+	}
+	if blocks[0].Source.MediaType != "image/jpeg" {
+		t.Errorf("MediaType = %q, want image/jpeg", blocks[0].Source.MediaType)
 	}
 }
 
@@ -672,9 +727,20 @@ func TestExecute_GIFEmitsGIFMediaType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	block := result.NewMessages[0].Content[0]
-	if block.Source.MediaType != "image/gif" {
-		t.Errorf("MediaType = %q, want image/gif (non-resized format)", block.Source.MediaType)
+	tk := fileread.New()
+	wb, ok := tk.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatal("fileread tool should implement ToolWithWireBlocks")
+	}
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Source == nil {
+		t.Fatal("blocks[0].Source is nil")
+	}
+	if blocks[0].Source.MediaType != "image/gif" {
+		t.Errorf("MediaType = %q, want image/gif (non-resized format)", blocks[0].Source.MediaType)
 	}
 }
 

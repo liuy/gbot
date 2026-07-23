@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // newTestTool builds a Computer tool over a backend with an injectable fake
@@ -325,7 +326,7 @@ func TestComputer_Execute_ScreenRenders(t *testing.T) {
 	}
 }
 
-func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
+func TestComputer_FormatWireBlocks_Screenshot(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
@@ -351,24 +352,34 @@ func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if len(res.NewMessages) != 1 {
-		t.Fatalf("NewMessages len = %d, want 1", len(res.NewMessages))
+	if len(res.NewMessages) != 0 {
+		t.Fatalf("NewMessages len = %d, want 0 (image moved to FormatWireBlocks)", len(res.NewMessages))
 	}
-	msg := res.NewMessages[0]
-	if len(msg.Content) != 2 {
-		t.Fatalf("Content blocks = %d, want 2 (text + image)", len(msg.Content))
+
+	wb, ok := tt.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatal("Computer tool should implement ToolWithWireBlocks")
 	}
-	if msg.Content[1].Type != "image" {
-		t.Errorf("Content[1] Type = %q, want image", msg.Content[1].Type)
+	blocks := wb.FormatWireBlocks(res.Data)
+	if len(blocks) != 2 {
+		t.Fatalf("len(blocks) = %d, want 2", len(blocks))
 	}
-	if msg.Content[1].Source == nil {
-		t.Fatal("Content[1] Source = nil")
+	if blocks[0].Type != types.ContentTypeText {
+		t.Errorf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
 	}
-	if msg.Content[1].Source.MediaType != "image/jpeg" {
-		t.Errorf("MediaType = %q, want image/jpeg", msg.Content[1].Source.MediaType)
+	if blocks[0].Text != "Screenshot captured." {
+		t.Errorf("blocks[0].Text = %q, want %q", blocks[0].Text, "Screenshot captured.")
 	}
-	// Payload must decode back to a valid JPEG and round-trip the pixels.
-	decoded, err := base64.StdEncoding.DecodeString(msg.Content[1].Source.Data)
+	if blocks[1].Type != types.ContentTypeImage {
+		t.Errorf("blocks[1].Type = %q, want %q", blocks[1].Type, types.ContentTypeImage)
+	}
+	if blocks[1].Source == nil {
+		t.Fatal("blocks[1].Source = nil")
+	}
+	if blocks[1].Source.MediaType != "image/jpeg" {
+		t.Errorf("blocks[1].Source.MediaType = %q, want image/jpeg", blocks[1].Source.MediaType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(blocks[1].Source.Data)
 	if err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
@@ -378,6 +389,51 @@ func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
 	}
 	if cfg.Width != 4 || cfg.Height != 4 {
 		t.Errorf("decoded dims = %dx%d, want 4x4", cfg.Width, cfg.Height)
+	}
+}
+
+func TestComputer_Screenshot_DataB64_IsResized(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+
+	// Oversized JPEG: 2500x2500 forces the resizer to shrink it below the
+	// 2000x2000 threshold. The returned Screenshot.DataB64 must carry the
+	// RESIZED bytes (not the original), proving doScreenshot stores resized
+	// data back into the Screenshot struct. Kept small to avoid bloating
+	// `make check` runtime.
+	bigImg := image.NewRGBA(image.Rect(0, 0, 2500, 2500))
+	var jbuf bytes.Buffer
+	if err := jpeg.Encode(&jbuf, bigImg, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	origBytes := jbuf.Bytes()
+	b64 := base64.StdEncoding.EncodeToString(origBytes)
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"screenshot": json.RawMessage(`{"image":"` + b64 + `","format":"jpeg","width":2500,"height":2500}`),
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screenshot"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	shot, ok := res.Data.(*Screenshot)
+	if !ok {
+		t.Fatalf("res.Data type = %T, want *Screenshot", res.Data)
+	}
+	resizedBytes, err := base64.StdEncoding.DecodeString(shot.DataB64)
+	if err != nil {
+		t.Fatalf("decode DataB64: %v", err)
+	}
+	if len(resizedBytes) >= len(origBytes) {
+		t.Fatalf("resized bytes len = %d, original = %d; expected resized to be strictly smaller", len(resizedBytes), len(origBytes))
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(resizedBytes))
+	if err != nil {
+		t.Fatalf("decode resized: %v", err)
+	}
+	if cfg.Width >= 8000 || cfg.Height >= 8000 {
+		t.Errorf("resized dims = %dx%d, want both strictly < 8000", cfg.Width, cfg.Height)
 	}
 }
 

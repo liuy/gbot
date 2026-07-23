@@ -934,10 +934,11 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		return
 	}
 
-	outputJSON := marshalToolOutput(t, result.Data, true)
-	pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
-	outputJSON = pr.Output
-	outputJSON = prependDuration(outputJSON, elapsed)
+	wireBlocks := formatWireBlocksOrDefault(t, result.Data)
+	wireBlocks = prependDurationToBlocks(wireBlocks, elapsed)
+	resultContent := marshalBlocks(wireBlocks)
+	pr := toolresult.MaybePersistLargeToolResult(resultContent, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
+	resultContent = pr.Output
 	displayOutput := t.RenderResult(result.Data)
 	if displayOutput == "" {
 		if p := lastDisplayOutput.Load(); p != nil && *p != "" {
@@ -952,7 +953,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     tt.ID,
-			Output:        outputJSON,
+			Output:        resultContent,
 			DisplayOutput: displayOutput,
 			IsBackground:  isBackgroundResult(result.Data),
 			IsSearch:      srk.IsSearch,
@@ -977,7 +978,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			}
 		}
 	}
-	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
+	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, resultContent, false)}
 	if len(result.NewMessages) > 0 {
 		tt.newMessages = result.NewMessages
 	}
@@ -992,21 +993,42 @@ func isBackgroundResult(data any) bool {
 	return ok && sqr.AsyncLaunched
 }
 
-// marshalToolOutput serializes a tool result for sending to the LLM.
-// If the tool implements ToolWithWireFormat, its custom format is used.
-// Otherwise, doubleWrap=true wraps the result as a JSON string (streaming/concurrent),
-// and doubleWrap=false passes raw JSON (sequential).
-func marshalToolOutput(t tool.Tool, data any, doubleWrap bool) []byte {
-	if wf, ok := t.(tool.ToolWithWireFormat); ok {
-		b, _ := json.Marshal(wf.FormatWireResult(data))
-		return b
+// formatWireBlocksOrDefault returns the wire-format content blocks for a tool
+// result. If the tool implements ToolWithWireBlocks, its override is used;
+// otherwise a default single text block of JSON-encoded Data is returned.
+func formatWireBlocksOrDefault(t tool.Tool, data any) []types.ContentBlock {
+	if wb, ok := t.(tool.ToolWithWireBlocks); ok {
+		return wb.FormatWireBlocks(data)
 	}
-	if doubleWrap {
-		raw, _ := json.Marshal(data)
-		wrapped, _ := json.Marshal(string(raw))
-		return wrapped
+	raw, _ := json.Marshal(data)
+	wrapped, _ := json.Marshal(string(raw))
+	return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+}
+
+// prependDurationToBlocks mutates the FIRST text block of blocks in-place,
+// prefixing it with "[Tool spent Xs]". No-op when there are no text blocks
+// (e.g. image-only tool_result). Returns the same slice for chaining.
+func prependDurationToBlocks(blocks []types.ContentBlock, d time.Duration) []types.ContentBlock {
+	prefix := fmt.Sprintf("[Tool spent %.1fs]", d.Seconds())
+	for i := range blocks {
+		if blocks[i].Type == types.ContentTypeText {
+			blocks[i].Text = prefix + blocks[i].Text
+			return blocks
+		}
 	}
-	b, _ := json.Marshal(data)
+	return blocks
+}
+
+// marshalBlocks serializes a slice of ContentBlock to a JSON RawMessage.
+// Returns the literal `[]` for empty/nil slices or marshal failure.
+func marshalBlocks(blocks []types.ContentBlock) json.RawMessage {
+	if len(blocks) == 0 {
+		return json.RawMessage("[]")
+	}
+	b, err := json.Marshal(blocks)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
 	return b
 }
 

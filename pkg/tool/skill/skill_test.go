@@ -838,17 +838,17 @@ func TestFormatCommandLoadingMetadata_FallbackWithArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FormatWireResult + RenderResult tests
+// FormatWireBlocks + RenderResult tests
 // Source: SkillTool.ts:843-861 (mapToolResultToToolResultBlockParam)
 // Source: UI.tsx:20-46 (renderToolResultMessage)
 // ---------------------------------------------------------------------------
 
-func TestTool_FormatWireResult_Inline(t *testing.T) {
+func TestTool_FormatWireBlocks_Inline(t *testing.T) {
 	reg := setupRegistry(t)
 	tk := New(reg, nil)
-	wf, ok := tk.(interface{ FormatWireResult(data any) string })
+	wb, ok := tk.(tool.ToolWithWireBlocks)
 	if !ok {
-		t.Fatal("SkillTool should implement ToolWithWireFormat")
+		t.Fatal("SkillTool should implement ToolWithWireBlocks")
 	}
 
 	out := skillOutput{
@@ -856,19 +856,25 @@ func TestTool_FormatWireResult_Inline(t *testing.T) {
 		CommandName: "roast",
 		Status:      "inline",
 	}
-	got := wf.FormatWireResult(out)
+	blocks := wb.FormatWireBlocks(out)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+	}
 	want := "Launching skill: roast"
-	if got != want {
-		t.Errorf("FormatWireResult(inline) = %q, want %q", got, want)
+	if blocks[0].Text != want {
+		t.Errorf("FormatWireBlocks(inline).Text = %q, want %q", blocks[0].Text, want)
 	}
 }
 
-func TestTool_FormatWireResult_Forked(t *testing.T) {
+func TestTool_FormatWireBlocks_Forked(t *testing.T) {
 	reg := setupRegistry(t)
 	tk := New(reg, nil)
-	wf, ok := tk.(interface{ FormatWireResult(data any) string })
+	wb, ok := tk.(tool.ToolWithWireBlocks)
 	if !ok {
-		t.Fatal("SkillTool should implement ToolWithWireFormat")
+		t.Fatal("SkillTool should implement ToolWithWireBlocks")
 	}
 
 	out := skillOutput{
@@ -877,12 +883,18 @@ func TestTool_FormatWireResult_Forked(t *testing.T) {
 		Status:      "forked",
 		Result:      "LGTM",
 	}
-	got := wf.FormatWireResult(out)
-	if !strings.Contains(got, `Skill "review" completed (forked execution)`) {
-		t.Errorf("FormatWireResult(forked) should contain forked message, got %q", got)
+	blocks := wb.FormatWireBlocks(out)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
 	}
-	if !strings.Contains(got, "LGTM") {
-		t.Errorf("FormatWireResult(forked) should contain result, got %q", got)
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+	}
+	if !strings.Contains(blocks[0].Text, `Skill "review" completed (forked execution)`) {
+		t.Errorf("FormatWireBlocks(forked).Text should contain forked message, got %q", blocks[0].Text)
+	}
+	if !strings.Contains(blocks[0].Text, "LGTM") {
+		t.Errorf("FormatWireBlocks(forked).Text should contain result, got %q", blocks[0].Text)
 	}
 }
 

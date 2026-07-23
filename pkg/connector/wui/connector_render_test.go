@@ -152,6 +152,35 @@ func TestRenderToolOutput_EmptyContent(t *testing.T) {
 	}
 }
 
+// TestRenderToolOutput_ArrayFormDuration verifies the WUI connector's
+// array-form path extracts the duration prefix from the first text block
+// and strips it from the displayed text. Mirrors the TUI behavior in
+// pkg/tui/app_internal_test.go. Bug-catch: previous code returned
+// ("[Tool spent 1.5s]hello", 0).
+func TestRenderToolOutput_ArrayFormDuration(t *testing.T) {
+	t.Parallel()
+	arrayInput := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]hello"}]`)
+	got, elapsed := renderToolOutput("Bash", arrayInput, nil)
+	if got != "hello" {
+		t.Errorf("renderToolOutput array-form = %q, want %q (prefix stripped)", got, "hello")
+	}
+	if elapsed != int64(1500*time.Millisecond) {
+		t.Errorf("elapsed = %d, want %d", elapsed, int64(1500*time.Millisecond))
+	}
+}
+
+func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
+	t.Parallel()
+	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
+	got, elapsed := renderToolOutput("Bash", arrayInput, nil)
+	if got != "hello world" {
+		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
+	}
+	if elapsed != 0 {
+		t.Errorf("elapsed = %d, want 0", elapsed)
+	}
+}
+
 // TestRenderToolOutput_AgentMarkdownNotJSONWrapped verifies that plain
 // markdown agent tool results pass through renderViaTool without being
 // re-encoded as JSON strings.

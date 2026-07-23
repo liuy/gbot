@@ -24,7 +24,7 @@ func collectEvents(ctx context.Context, provider *OpenAIProvider, body io.Reader
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
 	go func() {
-		provider.parseOpenAISSE(ctx, req, body, nil, ch)
+		_ = provider.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 	var events []StreamEvent
@@ -778,7 +778,7 @@ func TestOpenAISSE_IdleTimeout(t *testing.T) {
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
 	go func() {
-		p.parseOpenAISSE(ctx, req, body, nil, ch)
+		_ = p.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 
@@ -980,7 +980,7 @@ func TestOpenAISSE_ContextCancellation(t *testing.T) {
 
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	go func() {
-		p.parseOpenAISSE(ctx, req, body, nil, ch)
+		_ = p.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 
@@ -1330,7 +1330,9 @@ func TestOpenAISSE_TimeoutDisablerToggle_MultipleToolCalls(t *testing.T) {
 	spy := &tdSpy{}
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
-	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	if err := p.parseOpenAISSE(ctx, req, body, spy, ch); err != nil {
+		t.Fatalf("parseOpenAISSE: %v", err)
+	}
 	close(ch)
 
 	// Expected toggle sequence:
@@ -1371,7 +1373,9 @@ func TestOpenAISSE_TimeoutDisablerToggle_SingleToolCall(t *testing.T) {
 	spy := &tdSpy{}
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
-	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	if err := p.parseOpenAISSE(ctx, req, body, spy, ch); err != nil {
+		t.Fatalf("parseOpenAISSE: %v", err)
+	}
 	close(ch)
 
 	want := []bool{true, false, false}
@@ -1405,7 +1409,9 @@ func TestOpenAISSE_TimeoutDisablerToggle_NoToolCall(t *testing.T) {
 	spy := &tdSpy{}
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
-	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	if err := p.parseOpenAISSE(ctx, req, body, spy, ch); err != nil {
+		t.Fatalf("parseOpenAISSE: %v", err)
+	}
 	close(ch)
 
 	// No tool_use in this response, so td should never be set to true.

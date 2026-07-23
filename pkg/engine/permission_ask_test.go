@@ -900,7 +900,7 @@ func TestPersistedOutput_ValidJSON(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 	defer toolresult.ResetDirCache()
 
-	// Simulate what marshalToolOutput produces: a valid JSON string
+	// Simulate a valid JSON string tool_result content
 	data := strings.Repeat("hello world ", 1000)
 	validJSON, err := json.Marshal(data)
 	if err != nil {

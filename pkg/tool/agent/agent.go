@@ -291,24 +291,26 @@ func (t *AgentTool) DecodeResult(raw json.RawMessage) (any, error) {
 	return &r, nil
 }
 
-// FormatWireResult formats the tool result for the LLM wire format.
+// FormatWireBlocks formats the tool result for the LLM wire format as an array
+// of ContentBlock (single text block in this case).
 // Source: AgentTool.tsx:1340-1374
-// Note: TS sends array-of-blocks, Go sends joined string. Valid per API.
+// Note: TS sends array-of-blocks; Go wraps the formatted string in a single
+// text block to match the array-of-blocks wire shape.
 // NOTE: When worktree support added, add !worktreeInfoText guard (TS line 1356).
-func (t *AgentTool) FormatWireResult(data any) string {
+func (t *AgentTool) FormatWireBlocks(data any) []types.ContentBlock {
 	result, ok := data.(*types.SubQueryResult)
 	if !ok {
 		b, _ := json.Marshal(data)
-		return string(b)
+		return []types.ContentBlock{types.NewTextBlock(string(b))}
 	}
 	// One-shot: skip trailer (TS: ONE_SHOT_BUILTIN_AGENT_TYPES + !worktreeInfoText)
 	// Also skip if async-launched (fork launch message already has agentId)
 	if IsOneShotAgent(result.AgentType) && result.AgentID == "" && !result.AsyncLaunched {
-		return result.Content
+		return []types.ContentBlock{types.NewTextBlock(result.Content)}
 	}
 	// Async-launched fork: just the launch message, no trailer
 	if result.AsyncLaunched {
-		return result.Content
+		return []types.ContentBlock{types.NewTextBlock(result.Content)}
 	}
 	var sb strings.Builder
 	sb.WriteString(result.Content)
@@ -316,7 +318,7 @@ func (t *AgentTool) FormatWireResult(data any) string {
 		fmt.Fprintf(&sb, "\n\nagentId: %s (use SendMessage with to: '%s' to continue this agent)", result.AgentID, result.AgentID)
 	}
 	fmt.Fprintf(&sb, "\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", result.TotalTokens, result.TotalToolUseCount, result.TotalDurationMs)
-	return sb.String()
+	return []types.ContentBlock{types.NewTextBlock(sb.String())}
 }
 
 // ---------------------------------------------------------------------------

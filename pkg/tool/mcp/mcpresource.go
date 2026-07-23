@@ -80,8 +80,8 @@ func NewListMcpResources(reg *gbotmcp.Registry) tool.Tool {
 		RenderResult_: func(data any) string {
 			return renderListResourcesTUI(data)
 		},
-		FormatWireResult_: func(data any) string {
-			return renderResourceResultJSON(data)
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			return []types.ContentBlock{types.NewTextBlock(renderResourceResultJSON(data))}
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
 			var resources []gbotmcp.ServerResource
@@ -174,8 +174,8 @@ func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 		RenderResult_: func(data any) string {
 			return renderReadResourceTUI(data)
 		},
-		FormatWireResult_: func(data any) string {
-			return renderResourceResultJSON(data)
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			return []types.ContentBlock{types.NewTextBlock(renderResourceResultJSON(data))}
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
 			var contents []gbotmcp.ResourceContent
@@ -198,7 +198,7 @@ func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 const emptyResourcesMessage = "No resources found. MCP servers may still provide tools even if they have no resources."
 
 // renderResourceResultJSON renders tool result data as JSON (pretty-printed).
-// Used by FormatWireResult_ for LLM consumption.
+// Used by FormatWireBlocks_ for LLM consumption.
 // For empty results, returns a friendly message instead.
 func renderResourceResultJSON(data any) string {
 	if data == nil {

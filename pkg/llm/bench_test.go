@@ -146,7 +146,7 @@ func BenchmarkParseSSE_SmallStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+			_ = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -164,7 +164,7 @@ func BenchmarkParseSSE_MediumStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+			_ = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -182,7 +182,7 @@ func BenchmarkParseSSE_LargeStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 1024)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+			_ = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -206,7 +206,7 @@ func BenchmarkParseSSE_ToolUseStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 64)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
+			_ = p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {

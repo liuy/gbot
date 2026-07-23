@@ -522,31 +522,67 @@ func (minimalTool) MaxResultSize() int                        { return 50000 }
 func (minimalTool) Prompt() string                            { return "" }
 func (minimalTool) RenderResult(any) string                   { return "" }
 
-func TestFormatWireResult(t *testing.T) {
+func TestBuildTool_FormatWireBlocks_Override(t *testing.T) {
 	t.Parallel()
 
+	wantBlock := types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: "image/png",
+		Data:      "abc",
+	})
 	def := tool.ToolDef{
-		Name_: "WireTool",
+		Name_: "WireBlocksTool",
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return nil, nil
 		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
-		FormatWireResult_: func(data any) string {
-			return "wire:" + data.(string)
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			return []types.ContentBlock{wantBlock}
 		},
 	}
 
 	tt := tool.BuildTool(def)
 
-	wf, ok := tt.(tool.ToolWithWireFormat)
+	wb, ok := tt.(tool.ToolWithWireBlocks)
 	if !ok {
-		t.Fatal("tool should implement ToolWithWireFormat when FormatWireResult_ is set")
+		t.Fatalf("tool should implement ToolWithWireBlocks when FormatWireBlocks_ is set; got %T", tt)
 	}
 
-	got := wf.FormatWireResult("test")
-	if got != "wire:test" {
-		t.Errorf("FormatWireResult() = %q, want %q", got, "wire:test")
+	blocks := wb.FormatWireBlocks("anything")
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeImage {
+		t.Errorf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeImage)
+	}
+	if blocks[0].Source == nil {
+		t.Fatalf("blocks[0].Source is nil")
+	}
+	if blocks[0].Source.Data != "abc" {
+		t.Errorf("blocks[0].Source.Data = %q, want %q", blocks[0].Source.Data, "abc")
+	}
+	if blocks[0].Source.MediaType != "image/png" {
+		t.Errorf("blocks[0].Source.MediaType = %q, want %q", blocks[0].Source.MediaType, "image/png")
+	}
+}
+
+func TestBuildTool_NoFormatWireBlocks_NotImplements(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_: "NoWireBlocksTool",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+
+	if _, ok := tt.(tool.ToolWithWireBlocks); ok {
+		t.Fatalf("tool should NOT implement ToolWithWireBlocks when FormatWireBlocks_ is not set; got %T", tt)
 	}
 }
 

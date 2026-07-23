@@ -692,25 +692,15 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 				}
 			}
 			if len(parts) > 0 {
-				return strings.Join(parts, "\n"), 0
+				joined := strings.Join(parts, "\n")
+				rest, elapsed := parseDurationPrefix(joined)
+				return rest, elapsed
 			}
 		}
 		return string(raw), 0
 	}
 
-	// Parse duration prefix: "[Tool spent Xs]"
-	rest := s
-	elapsed := time.Duration(0)
-	if strings.HasPrefix(rest, "[Tool spent ") {
-		if idx := strings.Index(rest, "]"); idx >= 0 {
-			inner := strings.TrimPrefix(rest[:idx+1], "[Tool spent ")
-			inner = strings.TrimSuffix(inner, "s]")
-			if sec, err := strconv.ParseFloat(inner, 64); err == nil {
-				elapsed = time.Duration(sec * float64(time.Second))
-			}
-			rest = rest[idx+1:]
-		}
-	}
+	rest, elapsed := parseDurationPrefix(s)
 	if rest == "" {
 		return "", elapsed
 	}
@@ -746,6 +736,25 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		return obj.Output, elapsed
 	}
 
+	return rest, elapsed
+}
+
+// parseDurationPrefix strips a leading "[Tool spent Xs]" prefix from s and
+// returns (rest, elapsed). Returns (s, 0) when no prefix is present. Shared
+// by both the string-form and array-form branches of renderToolOutput.
+func parseDurationPrefix(s string) (string, time.Duration) {
+	rest := s
+	elapsed := time.Duration(0)
+	if strings.HasPrefix(rest, "[Tool spent ") {
+		if idx := strings.Index(rest, "]"); idx >= 0 {
+			inner := strings.TrimPrefix(rest[:idx+1], "[Tool spent ")
+			inner = strings.TrimSuffix(inner, "s]")
+			if sec, err := strconv.ParseFloat(inner, 64); err == nil {
+				elapsed = time.Duration(sec * float64(time.Second))
+			}
+			rest = rest[idx+1:]
+		}
+	}
 	return rest, elapsed
 }
 

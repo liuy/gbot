@@ -208,12 +208,13 @@ type ProgressUpdate struct {
 	TotalBytes int64    `json:"total_bytes"`
 }
 
-// ToolWithWireFormat is an optional interface for tools that need custom
-// wire formatting of the result sent back to the LLM as tool_result content.
-// Source: AgentTool.tsx:1340-1374 — one-shot agents omit agentId/usage trailer.
-type ToolWithWireFormat interface {
+// ToolWithWireBlocks is an optional interface for tools that produce wire-format
+// content blocks for tool_result.content sent to the LLM. Tools implementing this
+// interface return an array of ContentBlock (text, image, ...). Tools that don't
+// implement it get a default single-text-block wrapping of JSON-encoded Data.
+type ToolWithWireBlocks interface {
 	Tool
-	FormatWireResult(data any) string
+	FormatWireBlocks(data any) []types.ContentBlock
 }
 
 // ToolWithSummary is an optional interface for tools that provide custom
@@ -306,10 +307,12 @@ type ToolDef struct {
 	// Default: generic json.Unmarshal to any (string/map/slice/float64).
 	DecodeResult_ func(raw json.RawMessage) (any, error)
 
-	// Optional wire format override for tool_result content sent to the LLM.
-	// If set, BuildTool returns a tool that also implements ToolWithWireFormat.
-	// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
-	FormatWireResult_ func(data any) string
+	// FormatWireBlocks_ overrides the default wire-blocks output (single text
+	// block of JSON-encoded data). Used by image-producing tools (fileread,
+	// computer) to emit image blocks, and by tools that need custom text
+	// (agent, skill, mcp). If set, BuildTool returns a tool that implements
+	// ToolWithWireBlocks.
+	FormatWireBlocks_ func(data any) []types.ContentBlock
 
 	// Search/read classification for TUI collapse behavior.
 	// If set, the built tool implements ToolWithSearchOrRead.
@@ -325,13 +328,13 @@ type builtTool struct {
 	def ToolDef
 }
 
-// builtWireFormatTool wraps a ToolDef and implements ToolWithWireFormat.
-type builtWireFormatTool struct {
+// builtWireBlocksTool wraps a ToolDef and implements ToolWithWireBlocks.
+type builtWireBlocksTool struct {
 	builtTool
 }
 
-func (t *builtWireFormatTool) FormatWireResult(data any) string {
-	return t.def.FormatWireResult_(data)
+func (t *builtWireBlocksTool) FormatWireBlocks(data any) []types.ContentBlock {
+	return t.def.FormatWireBlocks_(data)
 }
 
 // builtSearchReadTool wraps a ToolDef and implements ToolWithSearchOrRead.
@@ -343,13 +346,14 @@ func (t *builtSearchReadTool) IsSearchOrRead(input json.RawMessage) SearchReadKi
 	return t.def.IsSearchOrRead_(input)
 }
 
-// builtFullTool wraps a ToolDef and implements both ToolWithWireFormat and ToolWithSearchOrRead.
+// builtFullTool wraps a ToolDef and implements both ToolWithWireBlocks and
+// ToolWithSearchOrRead.
 type builtFullTool struct {
 	builtTool
 }
 
-func (t *builtFullTool) FormatWireResult(data any) string {
-	return t.def.FormatWireResult_(data)
+func (t *builtFullTool) FormatWireBlocks(data any) []types.ContentBlock {
+	return t.def.FormatWireBlocks_(data)
 }
 
 func (t *builtFullTool) IsSearchOrRead(input json.RawMessage) SearchReadKind {
@@ -395,11 +399,11 @@ func BuildTool(def ToolDef) Tool {
 			return v, nil
 		}
 	}
-	if def.FormatWireResult_ != nil && def.IsSearchOrRead_ != nil {
+	if def.FormatWireBlocks_ != nil && def.IsSearchOrRead_ != nil {
 		return &builtFullTool{builtTool{def: def}}
 	}
-	if def.FormatWireResult_ != nil {
-		return &builtWireFormatTool{builtTool{def: def}}
+	if def.FormatWireBlocks_ != nil {
+		return &builtWireBlocksTool{builtTool{def: def}}
 	}
 	if def.IsSearchOrRead_ != nil {
 		return &builtSearchReadTool{builtTool{def: def}}

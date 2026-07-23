@@ -423,12 +423,14 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	}
 }
 
-// TestQuery_ToolResultContentIsString verifies that tool_result content is
-// serialized as a JSON string (not a raw JSON object) in the API message.
-// The Anthropic API expects tool_result.content to be a string, so
-// {"files":["a.go"]} must become "\"{\\\"files\\\":[\\\"a.go\\\"]}\"".
-// If content is a raw object, the LLM cannot parse tool output.
-func TestQuery_ToolResultContentIsString(t *testing.T) {
+// TestQuery_ToolResultContentIsArray verifies that tool_result content is
+// serialized as a JSON array of ContentBlock in the API message. After the
+// FormatWireBlocks refactor, every successful tool_result.content is an
+// array form `[{"type":"text","text":"<JSON-string-of-data>"}]`.
+// Default tools (no FormatWireBlocks_) wrap their Data as a JSON string
+// inside a single text block, so the LLM still receives the same payload
+// as before — just nested one level deeper.
+func TestQuery_ToolResultContentIsArray(t *testing.T) {
 	t.Parallel()
 
 	toolID := "tool_glob_1"
@@ -485,8 +487,8 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 			}
 
 			// Serialize this content block to JSON and check that
-			// the "content" field is a JSON string (starts with "),
-			// not a raw JSON object (starts with {).
+			// the "content" field is a JSON array (starts with [),
+			// not a raw JSON object (starts with {) or a string (starts with ").
 			blockJSON, err := json.Marshal(block)
 			if err != nil {
 				t.Fatalf("marshal content block: %v", err)
@@ -503,22 +505,31 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 				t.Fatal("content field is empty")
 			}
 
-			// The content MUST be a JSON string (starts and ends with "),
-			// not a raw JSON object (starts with {).
-			if contentField[0] != '"' {
-				t.Errorf("tool_result.content should be a JSON string, got raw object: %s", contentField)
+			// The content MUST be a JSON array (starts with [).
+			if contentField[0] != '[' {
+				t.Errorf("tool_result.content should be a JSON array, got: %s", contentField)
 			}
 
-			// Additionally: the string value should contain the tool output
-			var contentStr string
-			if err := json.Unmarshal(raw["content"], &contentStr); err != nil {
-				t.Fatalf("content is not a valid JSON string: %v", err)
+			// The array must contain a single text block whose Text is the
+			// double-wrapped JSON string of the Data.
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(raw["content"], &blocks); err != nil {
+				t.Fatalf("content is not a valid JSON array: %v", err)
 			}
-			if !strings.Contains(contentStr, "files") {
-				t.Errorf("content string should contain 'files', got: %s", contentStr)
+			if len(blocks) != 1 {
+				t.Fatalf("len(blocks) = %d, want 1", len(blocks))
 			}
-			if !strings.Contains(contentStr, "cmd/gbot/main.go") {
-				t.Errorf("content string should contain file path, got: %s", contentStr)
+			if blocks[0].Type != types.ContentTypeText {
+				t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+			}
+			// blocks[0].Text is the JSON-encoded string form of the Data —
+			// it must still contain "files" and the file path so the LLM
+			// can parse tool output.
+			if !strings.Contains(blocks[0].Text, "files") {
+				t.Errorf("text block should contain 'files', got: %s", blocks[0].Text)
+			}
+			if !strings.Contains(blocks[0].Text, "cmd/gbot/main.go") {
+				t.Errorf("text block should contain file path, got: %s", blocks[0].Text)
 			}
 		}
 	}

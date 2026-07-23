@@ -1021,7 +1021,7 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ToolWithWireFormat tests
+// Deferred tool hint tests
 
 func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
 	// When ToolSearch is active, calling a deferred tool that hasn't been
@@ -2330,5 +2330,167 @@ func TestExecuteAll_BlocksOnStuckTool_AfterCtxCancel(t *testing.T) {
 		// ExecuteAll returned — good, context cancel worked.
 	case <-time.After(5 * time.Second):
 		t.Fatal("ExecuteAll did not return after rootCtx cancel — stuck tool blocked engine")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool → FormatWireBlocks integration tests (Step 8)
+// ---------------------------------------------------------------------------
+
+// wireBlocksTestTool implements tool.Tool AND tool.ToolWithWireBlocks.
+type wireBlocksTestTool struct {
+	testTool
+	blocks    []types.ContentBlock
+	callCount int
+}
+
+func (t *wireBlocksTestTool) FormatWireBlocks(_ any) []types.ContentBlock {
+	t.callCount++
+	return t.blocks
+}
+
+// runWireBlocksTool wires a wireBlocksTestTool through ExecuteAll and returns
+// the single tool_result ContentBlock + emitted EventToolEnd (if any).
+func runWireBlocksTool(t *testing.T, blocks []types.ContentBlock, callFn func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error)) (types.ContentBlock, types.QueryEvent) {
+	t.Helper()
+
+	wt := &wireBlocksTestTool{
+		testTool: testTool{name: "WireTool", callFn: callFn},
+		blocks:   blocks,
+	}
+	toolMap := map[string]tool.Tool{"WireTool": wt}
+	tctx := &tool.ToolUseContext{}
+
+	var capturedEvt types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		if evt.Type == types.EventToolEnd {
+			capturedEvt = evt
+		}
+	}
+	e := NewStreamingToolExecutor(toolMap, tctx, emit, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_1", Name: "WireTool", Input: json.RawMessage(`{}`)},
+	})
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	return res.ToolResultBlocks[0], capturedEvt
+}
+
+func TestExecuteTool_ResultContentIsArray_FormattedViaFormatWireBlocks(t *testing.T) {
+	t.Parallel()
+
+	block, _ := runWireBlocksTool(t,
+		[]types.ContentBlock{types.NewTextBlock("hello")},
+		func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ignored"}, nil
+		},
+	)
+	if len(block.Content) == 0 {
+		t.Fatal("block.Content is empty")
+	}
+	if block.Content[0] != '[' {
+		t.Fatalf("block.Content[0] = %q, want '[' (array form). Full: %s", string(block.Content[0]), string(block.Content))
+	}
+	var got []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &got); err != nil {
+		t.Fatalf("array unmarshal failed: %v (content=%s)", err, string(block.Content))
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Type != types.ContentTypeText {
+		t.Fatalf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeText)
+	}
+	if got[0].Text != "[Tool spent 0.0s]hello" {
+		t.Errorf("got[0].Text = %q, want %q", got[0].Text, "[Tool spent 0.0s]hello")
+	}
+}
+
+func TestExecuteTool_ResultContentImageViaFormatWireBlocks(t *testing.T) {
+	t.Parallel()
+
+	imgBlock := types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: "image/png",
+		Data:      "abc",
+	})
+	block, _ := runWireBlocksTool(t,
+		[]types.ContentBlock{imgBlock},
+		func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ignored"}, nil
+		},
+	)
+	if len(block.Content) == 0 {
+		t.Fatal("block.Content is empty")
+	}
+	if block.Content[0] != '[' {
+		t.Fatalf("block.Content[0] = %q, want '[' (array form)", string(block.Content[0]))
+	}
+	var got []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &got); err != nil {
+		t.Fatalf("array unmarshal failed: %v (content=%s)", err, string(block.Content))
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Type != types.ContentTypeImage {
+		t.Fatalf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeImage)
+	}
+}
+
+func TestExecuteTool_EventToolEndOutputIsArray(t *testing.T) {
+	t.Parallel()
+
+	_, evt := runWireBlocksTool(t,
+		[]types.ContentBlock{types.NewTextBlock("hello")},
+		func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ignored"}, nil
+		},
+	)
+	if evt.Type != types.EventToolEnd {
+		t.Fatalf("evt.Type = %q, want %q", evt.Type, types.EventToolEnd)
+	}
+	if evt.ToolResult == nil {
+		t.Fatal("evt.ToolResult is nil")
+	}
+	if len(evt.ToolResult.Output) == 0 {
+		t.Fatal("evt.ToolResult.Output is empty")
+	}
+	if evt.ToolResult.Output[0] != '[' {
+		t.Fatalf("Output[0] = %q, want '[' (array form). Full: %s", string(evt.ToolResult.Output[0]), string(evt.ToolResult.Output))
+	}
+}
+
+func TestExecuteTool_ErrorPathStaysStringForm(t *testing.T) {
+	t.Parallel()
+
+	wt := &wireBlocksTestTool{
+		testTool: testTool{
+			name: "ErrTool",
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("boom")
+			},
+		},
+		blocks: []types.ContentBlock{types.NewTextBlock("should-not-be-used")},
+	}
+	toolMap := map[string]tool.Tool{"ErrTool": wt}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_1", Name: "ErrTool", Input: json.RawMessage(`{}`)},
+	})
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if len(block.Content) == 0 {
+		t.Fatal("block.Content is empty")
+	}
+	if block.Content[0] != '"' {
+		t.Fatalf("error-path block.Content[0] = %q, want '\"' (string form). Full: %s", string(block.Content[0]), string(block.Content))
+	}
+	if wt.callCount != 0 {
+		t.Errorf("FormatWireBlocks call count = %d, want 0 (error path must bypass)", wt.callCount)
 	}
 }

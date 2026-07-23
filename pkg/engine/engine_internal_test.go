@@ -2240,42 +2240,186 @@ func TestPersistLargeToolResult_OverThreshold(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// marshalToolOutput tests
+// formatWireBlocksOrDefault + prependDurationToBlocks + marshalBlocks tests
 // ---------------------------------------------------------------------------
 
-type wireFormatTool struct {
+// wireBlocksTool implements ToolWithWireBlocks for testing.
+type wireBlocksTool struct {
 	minimalTool
+	blocks []types.ContentBlock
 }
 
-func (w *wireFormatTool) FormatWireResult(data any) string {
-	return fmt.Sprintf("custom:%v", data)
+func (w *wireBlocksTool) FormatWireBlocks(_ any) []types.ContentBlock {
+	return w.blocks
 }
 
-func TestMarshalToolOutput(t *testing.T) {
+func TestFormatWireBlocksOrDefault_Implements(t *testing.T) {
 	t.Parallel()
 
-	// ToolWithWireFormat: uses custom format
-	wfTool := &wireFormatTool{}
-	got := marshalToolOutput(wfTool, "result", false)
-	if string(got) != `"custom:result"` {
-		t.Errorf("wire format: got %q, want %q", string(got), `"custom:result"`)
+	wantBlock := types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: "image/png",
+		Data:      "abc",
+	})
+	tk := &wireBlocksTool{blocks: []types.ContentBlock{wantBlock}}
+	got := formatWireBlocksOrDefault(tk, "ignored")
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Type != types.ContentTypeImage {
+		t.Fatalf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeImage)
+	}
+	if got[0].Source == nil {
+		t.Fatal("got[0].Source is nil")
+	}
+	if got[0].Source.Data != "abc" {
+		t.Errorf("got[0].Source.Data = %q, want %q", got[0].Source.Data, "abc")
+	}
+	if got[0].Source.MediaType != "image/png" {
+		t.Errorf("got[0].Source.MediaType = %q, want %q", got[0].Source.MediaType, "image/png")
+	}
+}
+
+func TestFormatWireBlocksOrDefault_Default(t *testing.T) {
+	t.Parallel()
+
+	// Plain tool (NOT implementing ToolWithWireBlocks) → default single text block.
+	tk := &minimalTool{}
+	data := map[string]any{"k": "v"}
+	blocks := formatWireBlocksOrDefault(tk, data)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
+	}
+	// Outer Text is JSON-string form: "\"{\\\"k\\\":\\\"v\\\"}\""
+	var outer string
+	if err := json.Unmarshal([]byte(blocks[0].Text), &outer); err != nil {
+		t.Fatalf("outer unmarshal failed: %v (text=%q)", err, blocks[0].Text)
+	}
+	var inner map[string]string
+	if err := json.Unmarshal([]byte(outer), &inner); err != nil {
+		t.Fatalf("inner unmarshal failed: %v (outer=%q)", err, outer)
+	}
+	if inner["k"] != "v" {
+		t.Errorf("inner[k] = %q, want %q", inner["k"], "v")
+	}
+}
+
+func TestFormatWireBlocksOrDefault_NilData(t *testing.T) {
+	t.Parallel()
+
+	tk := &minimalTool{}
+	// Must not panic on nil Data.
+	blocks := formatWireBlocksOrDefault(tk, nil)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+}
+
+func TestPrependDurationToBlocks_FirstTextBlock(t *testing.T) {
+	t.Parallel()
+
+	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "x"})
+	blocks := []types.ContentBlock{types.NewTextBlock("out"), img}
+	got := prependDurationToBlocks(blocks, 1500*time.Millisecond)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Text != "[Tool spent 1.5s]out" {
+		t.Errorf("got[0].Text = %q, want %q", got[0].Text, "[Tool spent 1.5s]out")
+	}
+	if got[1].Type != types.ContentTypeImage {
+		t.Errorf("got[1].Type = %q, want %q", got[1].Type, types.ContentTypeImage)
+	}
+	if got[1].Source == nil || got[1].Source.Data != "x" {
+		t.Errorf("image block mutated: %+v", got[1])
+	}
+}
+
+func TestPrependDurationToBlocks_NoTextBlock_NoOp(t *testing.T) {
+	t.Parallel()
+
+	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "x"})
+	blocks := []types.ContentBlock{img}
+	got := prependDurationToBlocks(blocks, 1500*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Type != types.ContentTypeImage {
+		t.Errorf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeImage)
+	}
+	if got[0].Source == nil || got[0].Source.Data != "x" {
+		t.Errorf("image block mutated: %+v", got[0])
+	}
+}
+
+func TestPrependDurationToBlocks_Empty_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// nil slice — must not panic.
+	got := prependDurationToBlocks(nil, 1500*time.Millisecond)
+	if len(got) != 0 {
+		t.Errorf("len(got) = %d, want 0", len(got))
 	}
 
-	// doubleWrap=false: raw JSON
-	plainTool := &minimalTool{}
-	got = marshalToolOutput(plainTool, map[string]string{"key": "val"}, false)
-	if string(got) != `{"key":"val"}` {
-		t.Errorf("doubleWrap=false: got %q, want %q", string(got), `{"key":"val"}`)
+	// empty slice — must not panic.
+	got = prependDurationToBlocks([]types.ContentBlock{}, 1500*time.Millisecond)
+	if len(got) != 0 {
+		t.Errorf("len(got) = %d, want 0", len(got))
 	}
+}
 
-	// doubleWrap=true: double-wrapped JSON string
-	got = marshalToolOutput(plainTool, "hello", true)
-	var unwrapped string
-	if err := json.Unmarshal(got, &unwrapped); err != nil {
-		t.Fatalf("doubleWrap=true: outer unmarshal failed: %v", err)
+func TestMarshalBlocks(t *testing.T) {
+	t.Parallel()
+
+	imgSrc := types.ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}
+	in := []types.ContentBlock{
+		types.NewTextBlock("x"),
+		types.NewImageBlock(imgSrc),
 	}
-	if unwrapped != `"hello"` {
-		t.Errorf("doubleWrap=true inner: got %q, want %q", unwrapped, `"hello"`)
+	out := marshalBlocks(in)
+	if string(out) == "[]" {
+		t.Fatal("non-empty input should not marshal to []")
+	}
+	var back []types.ContentBlock
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(back) != 2 {
+		t.Fatalf("len(back) = %d, want 2", len(back))
+	}
+	if back[0].Type != types.ContentTypeText {
+		t.Errorf("back[0].Type = %q, want %q", back[0].Type, types.ContentTypeText)
+	}
+	if back[0].Text != "x" {
+		t.Errorf("back[0].Text = %q, want %q", back[0].Text, "x")
+	}
+	if back[1].Type != types.ContentTypeImage {
+		t.Errorf("back[1].Type = %q, want %q", back[1].Type, types.ContentTypeImage)
+	}
+	if back[1].Source == nil {
+		t.Fatal("back[1].Source is nil")
+	}
+	if back[1].Source.MediaType != "image/png" {
+		t.Errorf("back[1].Source.MediaType = %q, want %q", back[1].Source.MediaType, "image/png")
+	}
+	if back[1].Source.Data != "abc" {
+		t.Errorf("back[1].Source.Data = %q, want %q", back[1].Source.Data, "abc")
+	}
+}
+
+func TestMarshalBlocks_EmptyLiteral(t *testing.T) {
+	t.Parallel()
+
+	out := marshalBlocks(nil)
+	if string(out) != "[]" {
+		t.Errorf("nil input: got %q, want %q", string(out), "[]")
+	}
+	out = marshalBlocks([]types.ContentBlock{})
+	if string(out) != "[]" {
+		t.Errorf("empty slice: got %q, want %q", string(out), "[]")
 	}
 }
 
@@ -2500,83 +2644,6 @@ func TestQuery_SubAgent_OversizedContext(t *testing.T) {
 	result := eng.QuerySync(ctx, "do something", "")
 	if result.Error != nil {
 		t.Fatalf("sub-agent should complete with oversized context, got: %v", result.Error)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BuildTool with FormatWireResult_ — verifies ToolWithWireFormat via BuildTool factory
-// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
-// ---------------------------------------------------------------------------
-
-func TestMarshalToolOutput_BuildToolWithWireFormat(t *testing.T) {
-	t.Parallel()
-
-	tk := tool.BuildTool(tool.ToolDef{
-		Name_: "WireFactory",
-		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return nil, nil
-		},
-		InputSchema_: func() json.RawMessage { return nil },
-		Description_: func(json.RawMessage) (string, error) { return "", nil },
-		FormatWireResult_: func(data any) string {
-			return "wire: " + fmt.Sprint(data)
-		},
-	})
-
-	// Verify the tool implements ToolWithWireFormat
-	wf, ok := tk.(tool.ToolWithWireFormat)
-	if !ok {
-		t.Fatal("BuildTool with FormatWireResult_ should implement ToolWithWireFormat")
-	}
-
-	// Verify FormatWireResult works
-	got := wf.FormatWireResult("test")
-	if got != "wire: test" {
-		t.Errorf("FormatWireResult = %q, want %q", got, "wire: test")
-	}
-
-	// Verify marshalToolOutput uses it
-	output := marshalToolOutput(tk, "test-data", true)
-	var decoded string
-	if err := json.Unmarshal(output, &decoded); err != nil {
-		t.Fatalf("wire format output should be a JSON string, got %q: %v", string(output), err)
-	}
-	if decoded != "wire: test-data" {
-		t.Errorf("decoded = %q, want %q", decoded, "wire: test-data")
-	}
-}
-
-func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
-	t.Parallel()
-
-	// Standard tool without FormatWireResult_ uses double-wrapped JSON
-	tk := tool.BuildTool(tool.ToolDef{
-		Name_: "DefaultFactory",
-		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return nil, nil
-		},
-		InputSchema_: func() json.RawMessage { return nil },
-		Description_: func(json.RawMessage) (string, error) { return "", nil },
-	})
-
-	// Should NOT implement ToolWithWireFormat
-	if _, ok := tk.(tool.ToolWithWireFormat); ok {
-		t.Error("BuildTool without FormatWireResult_ should NOT implement ToolWithWireFormat")
-	}
-
-	// Default double-wrapped JSON
-	data := map[string]string{"key": "value"}
-	output := marshalToolOutput(tk, data, true)
-	var outer string
-	if err := json.Unmarshal(output, &outer); err != nil {
-		t.Fatalf("default output should be a JSON string, got %q: %v", string(output), err)
-	}
-	var inner map[string]string
-	if err := json.Unmarshal([]byte(outer), &inner); err != nil {
-		t.Fatalf("inner should be a JSON object, got %q: %v", outer, err)
-	}
-	if inner["key"] != "value" {
-		t.Errorf("inner[key] = %q, want %q", inner["key"], "value")
 	}
 }
 
