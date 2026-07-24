@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine/attachment"
@@ -4211,80 +4212,81 @@ func TestInlineInterrupt_LoopTopAbort_NoInterruptMessage(t *testing.T) {
 //   - append the interrupt text as a final text block on the last assistant
 //     message (not on a user tool_result message)
 func TestAppendInlineInterrupt_EmitsTextEvents(t *testing.T) {
-	t.Parallel()
-	mp := &testProvider{}
-	ch := make(chan llm.StreamEvent, 20)
-	mp.addChannelResponse(ch)
+	synctest.Test(t, func(t *testing.T) {
+		mp := &testProvider{}
+		ch := make(chan llm.StreamEvent, 20)
+		mp.addChannelResponse(ch)
 
-	tc := newEventCollector()
-	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
-	t.Cleanup(func() { eng.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
+		tc := newEventCollector()
+		eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+		t.Cleanup(func() { eng.Close() })
+		ctx, cancel := context.WithCancel(context.Background())
 
-	go func() {
-		defer close(ch)
-		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
-		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
-		cancel()
-	}()
+		go func() {
+			defer close(ch)
+			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
+			time.Sleep(5 * time.Millisecond)
+			cancel()
+		}()
 
-	result := eng.QuerySync(ctx, "test", "")
-	if result.Error == nil {
-		t.Fatal("expected abort error")
-	}
-
-	events := tc.Events()
-	// Find the EventTextDelta whose Text == InterruptMessage, then assert
-	// its neighbors form the contiguous triple start→delta→end.
-	deltaIdx := -1
-	for i, evt := range events {
-		if evt.Type == types.EventTextDelta && evt.Text == types.InterruptMessage {
-			deltaIdx = i
-			break
+		result := eng.QuerySync(ctx, "test", "")
+		if result.Error == nil {
+			t.Fatal("expected abort error")
 		}
-	}
-	if deltaIdx == -1 {
-		t.Fatalf("expected EventTextDelta with Text == InterruptMessage; events: %+v", eventTypes(events))
-	}
-	if deltaIdx == 0 || events[deltaIdx-1].Type != types.EventTextStart {
-		t.Errorf("expected EventTextStart immediately before interrupt delta; got %v at idx %d", events[deltaIdx-1].Type, deltaIdx-1)
-	}
-	if deltaIdx == len(events)-1 || events[deltaIdx+1].Type != types.EventTextEnd {
-		t.Errorf("expected EventTextEnd immediately after interrupt delta; got %v at idx %d", safeEventType(events, deltaIdx+1), deltaIdx+1)
-	}
 
-	// Last assistant message's final text block must equal InterruptMessage.
-	var lastAsst *types.Message
-	for i := len(result.Messages) - 1; i >= 0; i-- {
-		if result.Messages[i].Role == types.RoleAssistant {
-			lastAsst = &result.Messages[i]
-			break
-		}
-	}
-	if lastAsst == nil {
-		t.Fatal("expected at least one assistant message")
-	}
-	if len(lastAsst.Content) == 0 {
-		t.Fatal("expected assistant message to have content blocks")
-	}
-	last := lastAsst.Content[len(lastAsst.Content)-1]
-	if last.Type != types.ContentTypeText || last.Text != types.InterruptMessage {
-		t.Errorf("last assistant block = {Type:%v, Text:%q}, want {text, %q}",
-			last.Type, last.Text, types.InterruptMessage)
-	}
-
-	// Regression: the very last message must NOT be a user text block carrying
-	// InterruptMessage (the original bug appended to the user query).
-	lastMsg := result.Messages[len(result.Messages)-1]
-	if lastMsg.Role == types.RoleUser {
-		for _, b := range lastMsg.Content {
-			if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
-				t.Errorf("regression: interrupt text found on last USER message — engine must append to assistant only")
+		events := tc.Events()
+		// Find the EventTextDelta whose Text == InterruptMessage, then assert
+		// its neighbors form the contiguous triple start→delta→end.
+		deltaIdx := -1
+		for i, evt := range events {
+			if evt.Type == types.EventTextDelta && evt.Text == types.InterruptMessage {
+				deltaIdx = i
+				break
 			}
 		}
-	}
+		if deltaIdx == -1 {
+			t.Fatalf("expected EventTextDelta with Text == InterruptMessage; events: %+v", eventTypes(events))
+		}
+		if deltaIdx == 0 || events[deltaIdx-1].Type != types.EventTextStart {
+			t.Errorf("expected EventTextStart immediately before interrupt delta; got %v at idx %d", events[deltaIdx-1].Type, deltaIdx-1)
+		}
+		if deltaIdx == len(events)-1 || events[deltaIdx+1].Type != types.EventTextEnd {
+			t.Errorf("expected EventTextEnd immediately after interrupt delta; got %v at idx %d", safeEventType(events, deltaIdx+1), deltaIdx+1)
+		}
+
+		// Last assistant message's final text block must equal InterruptMessage.
+		var lastAsst *types.Message
+		for i := len(result.Messages) - 1; i >= 0; i-- {
+			if result.Messages[i].Role == types.RoleAssistant {
+				lastAsst = &result.Messages[i]
+				break
+			}
+		}
+		if lastAsst == nil {
+			t.Fatal("expected at least one assistant message")
+		}
+		if len(lastAsst.Content) == 0 {
+			t.Fatal("expected assistant message to have content blocks")
+		}
+		last := lastAsst.Content[len(lastAsst.Content)-1]
+		if last.Type != types.ContentTypeText || last.Text != types.InterruptMessage {
+			t.Errorf("last assistant block = {Type:%v, Text:%q}, want {text, %q}",
+				last.Type, last.Text, types.InterruptMessage)
+		}
+
+		// Regression: the very last message must NOT be a user text block carrying
+		// InterruptMessage (the original bug appended to the user query).
+		lastMsg := result.Messages[len(result.Messages)-1]
+		if lastMsg.Role == types.RoleUser {
+			for _, b := range lastMsg.Content {
+				if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
+					t.Errorf("regression: interrupt text found on last USER message — engine must append to assistant only")
+				}
+			}
+		}
+	})
 }
 
 // TestAppendInlineInterrupt_PostToolAbort_AppendsToAssistant covers Stage 23

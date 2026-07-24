@@ -778,6 +778,10 @@ type ToolCallView struct {
 	SearchRead    tool.SearchReadKind // classification for collapse behavior
 }
 
+func (tc ToolCallView) IsCollapsible() bool {
+	return tc.SearchRead.IsCollapsible()
+}
+
 // ThinkingView renders a thinking block within a message.
 type ThinkingView struct {
 	Text     string        // accumulated thinking text
@@ -1116,7 +1120,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			}
 		} else if tc.Output != "" {
 			// Search/read tools: collapsed view shows summary + ctrl+o.
-			if tc.SearchRead.IsCollapsible() && !toolExpand {
+			if tc.IsCollapsible() && !toolExpand {
 				summary := styleDim.Render(collapseSummary(tc.Output, tc.SearchRead) + " … ctrl+o to expand")
 				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, "| "+summary))
 			} else {
@@ -1810,7 +1814,7 @@ func detectToolGroups(blocks []ContentBlock) []toolGroup {
 		switch blk.Type {
 		case BlockTool:
 			tc := blk.ToolCall
-			if tc.SearchRead.IsCollapsible() {
+			if tc.IsCollapsible() {
 				current.indices = append(current.indices, i)
 				if tc.SearchRead.IsSearch {
 					current.searchCount++
