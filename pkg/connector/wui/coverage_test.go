@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -243,13 +242,10 @@ func TestRenderToolOutput_PersistedOutputValidFile(t *testing.T) {
 	input := "<persisted-output>\nFull output saved to: " + filePath + "\nPreview (first 5 lines):\nline1"
 	textJSON, _ := json.Marshal(input)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Bash", raw, tools)
+	got, _ := renderToolOutput("Bash", raw, tools)
 	want := "rendered from file"
 	if got != want {
 		t.Errorf("renderToolOutput(valid file) = %q, want %q", got, want)
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
 
@@ -258,13 +254,10 @@ func TestRenderToolOutput_PersistedOutputInvalidFile(t *testing.T) {
 	input := "<persisted-output>\nFull output saved to: /nonexistent/path.txt\nPreview (first 3 lines):\nprev1\nprev2\nprev3"
 	textJSON, _ := json.Marshal(input)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Bash", raw, nil)
+	got, _ := renderToolOutput("Bash", raw, nil)
 	want := "prev1\nprev2\nprev3"
 	if got != want {
 		t.Errorf("renderToolOutput(invalid file) = %q, want %q", got, want)
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
 
@@ -273,26 +266,20 @@ func TestRenderToolOutput_JSONOutputField(t *testing.T) {
 	inner := `{"output":"hello world"}`
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Bash", raw, nil)
+	got, _ := renderToolOutput("Bash", raw, nil)
 	want := "hello world"
 	if got != want {
 		t.Errorf("renderToolOutput(JSON output) = %q, want %q", got, want)
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
 
 func TestRenderToolOutput_BlocksArray(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`[{"type":"text","text":"block A"},{"type":"text","text":"block B"}]`)
-	got, elapsed := renderToolOutput("Bash", raw, nil)
+	got, _ := renderToolOutput("Bash", raw, nil)
 	want := "block A\nblock B"
 	if got != want {
 		t.Errorf("renderToolOutput(blocks) = %q, want %q", got, want)
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
 
@@ -306,47 +293,32 @@ func TestRenderToolOutput_RawFallback(t *testing.T) {
 	}
 }
 
-func TestRenderToolOutput_ToolSpentPrefix(t *testing.T) {
+func TestRenderToolOutput_PlainTextArrayForm(t *testing.T) {
 	t.Parallel()
 	inner := "plain result text"
-	wrapped := "[Tool spent 2.5s]" + inner
-	textJSON, _ := json.Marshal(wrapped)
+	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Unknown", raw, nil)
+	got, _ := renderToolOutput("Unknown", raw, nil)
 	if got != inner {
-		t.Errorf("renderToolOutput(spent prefix) = %q, want %q", got, inner)
-	}
-	wantNs := int64(2.5 * float64(time.Second))
-	if elapsed != wantNs {
-		t.Errorf("elapsed = %d, want %d", elapsed, wantNs)
+		t.Errorf("renderToolOutput(plain text) = %q, want %q", got, inner)
 	}
 }
 
-func TestRenderToolOutput_EmptyStringAfterSpent(t *testing.T) {
+func TestRenderToolOutput_RawStringForm(t *testing.T) {
 	t.Parallel()
-	wrapped := "[Tool spent 1.0s]"
-	textJSON, _ := json.Marshal(wrapped)
-	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Bash", raw, nil)
-	if got != "" {
-		t.Errorf("renderToolOutput(empty after spent) = %q, want empty", got)
-	}
-	wantNs := int64(1.0 * float64(time.Second))
-	if elapsed != wantNs {
-		t.Errorf("elapsed = %d, want %d", elapsed, wantNs)
+	raw := json.RawMessage(`"just a string"`)
+	got, _ := renderToolOutput("Bash", raw, nil)
+	if got != `"just a string"` {
+		t.Errorf("renderToolOutput(raw string) = %q, want %q", got, `"just a string"`)
 	}
 }
 
 func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
 	t.Parallel()
-	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]boom"}]`)
-	got, elapsed := renderToolOutput("Bash", raw, nil)
+	raw := json.RawMessage(`[{"type":"text","text":"boom"}]`)
+	got, _ := renderToolOutput("Bash", raw, nil)
 	if got != "boom" {
 		t.Errorf("got %q, want %q", got, "boom")
-	}
-	wantNs := int64(1.5 * float64(time.Second))
-	if elapsed != wantNs {
-		t.Errorf("elapsed = %d, want %d", elapsed, wantNs)
 	}
 }
 

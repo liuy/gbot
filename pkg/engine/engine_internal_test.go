@@ -2243,7 +2243,7 @@ func TestPersistLargeToolResult_OverThreshold(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// formatWireBlocksOrDefault + prependDurationToBlocks + marshalBlocks tests
+// formatWireBlocksOrDefault + marshalBlocks tests
 // ---------------------------------------------------------------------------
 
 // wireBlocksTool implements ToolWithWireBlocks for testing.
@@ -2314,59 +2314,6 @@ func TestFormatWireBlocksOrDefault_NilData(t *testing.T) {
 	blocks := formatWireBlocksOrDefault(tk, nil)
 	if len(blocks) != 1 {
 		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
-	}
-}
-
-func TestPrependDurationToBlocks_FirstTextBlock(t *testing.T) {
-	t.Parallel()
-
-	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "x"})
-	blocks := []types.ContentBlock{types.NewTextBlock("out"), img}
-	got := prependDurationToBlocks(blocks, 1500*time.Millisecond)
-	if len(got) != 2 {
-		t.Fatalf("len(got) = %d, want 2", len(got))
-	}
-	if got[0].Text != "[Tool spent 1.5s]out" {
-		t.Errorf("got[0].Text = %q, want %q", got[0].Text, "[Tool spent 1.5s]out")
-	}
-	if got[1].Type != types.ContentTypeImage {
-		t.Errorf("got[1].Type = %q, want %q", got[1].Type, types.ContentTypeImage)
-	}
-	if got[1].Source == nil || got[1].Source.Data != "x" {
-		t.Errorf("image block mutated: %+v", got[1])
-	}
-}
-
-func TestPrependDurationToBlocks_NoTextBlock_NoOp(t *testing.T) {
-	t.Parallel()
-
-	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "x"})
-	blocks := []types.ContentBlock{img}
-	got := prependDurationToBlocks(blocks, 1500*time.Millisecond)
-	if len(got) != 1 {
-		t.Fatalf("len(got) = %d, want 1", len(got))
-	}
-	if got[0].Type != types.ContentTypeImage {
-		t.Errorf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeImage)
-	}
-	if got[0].Source == nil || got[0].Source.Data != "x" {
-		t.Errorf("image block mutated: %+v", got[0])
-	}
-}
-
-func TestPrependDurationToBlocks_Empty_NoOp(t *testing.T) {
-	t.Parallel()
-
-	// nil slice — must not panic.
-	got := prependDurationToBlocks(nil, 1500*time.Millisecond)
-	if len(got) != 0 {
-		t.Errorf("len(got) = %d, want 0", len(got))
-	}
-
-	// empty slice — must not panic.
-	got = prependDurationToBlocks([]types.ContentBlock{}, 1500*time.Millisecond)
-	if len(got) != 0 {
-		t.Errorf("len(got) = %d, want 0", len(got))
 	}
 }
 

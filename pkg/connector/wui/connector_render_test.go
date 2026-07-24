@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -129,57 +128,41 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 			},
 		},
 	}
-	// Array-form content: JSON string with [Tool spent] prefix in the text.
+	// Array-form content: JSON string with tool result in the text.
 	inner := `{"text":"hello"}`
-	textContent := "[Tool spent 1.5s]" + inner
-	textJSON, _ := json.Marshal(textContent)
+	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Bash", raw, tools)
+	got, _ := renderToolOutput("Bash", raw, tools)
 	if got != "hello" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello")
-	}
-	if elapsed != int64(1500*time.Millisecond) {
-		t.Errorf("elapsed = %d, want %d", elapsed, int64(1500*time.Millisecond))
 	}
 }
 
 func TestRenderToolOutput_EmptyContent(t *testing.T) {
 	t.Parallel()
-	got, elapsed := renderToolOutput("Bash", nil, nil)
+	got, _ := renderToolOutput("Bash", nil, nil)
 	if got != "" {
 		t.Errorf("renderToolOutput(empty) = %q, want empty", got)
 	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
-	}
 }
 
-// TestRenderToolOutput_ArrayFormDuration verifies the WUI connector's
-// array-form path extracts the duration prefix from the first text block
-// and strips it from the displayed text. Mirrors the TUI behavior in
-// pkg/tui/app_internal_test.go. Bug-catch: previous code returned
-// ("[Tool spent 1.5s]hello", 0).
-func TestRenderToolOutput_ArrayFormDuration(t *testing.T) {
+// TestRenderToolOutput_ArrayFormTextBlock verifies the WUI connector's
+// array-form path passes through text blocks verbatim.
+func TestRenderToolOutput_ArrayFormTextBlock(t *testing.T) {
 	t.Parallel()
-	arrayInput := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]hello"}]`)
-	got, elapsed := renderToolOutput("Bash", arrayInput, nil)
+	arrayInput := json.RawMessage(`[{"type":"text","text":"hello"}]`)
+	got, _ := renderToolOutput("Bash", arrayInput, nil)
 	if got != "hello" {
-		t.Errorf("renderToolOutput array-form = %q, want %q (prefix stripped)", got, "hello")
-	}
-	if elapsed != int64(1500*time.Millisecond) {
-		t.Errorf("elapsed = %d, want %d", elapsed, int64(1500*time.Millisecond))
+		t.Errorf("renderToolOutput array-form = %q, want %q", got, "hello")
 	}
 }
 
 func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 	t.Parallel()
 	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
-	got, elapsed := renderToolOutput("Bash", arrayInput, nil)
+	got, _ := renderToolOutput("Bash", arrayInput, nil)
 	if got != "hello world" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %d, want 0", elapsed)
 	}
 }
 
@@ -211,12 +194,12 @@ func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 	tools := map[string]tool.Tool{"Agent": agentTool}
 
 	// Simulate the persisted format: JSON string wrapping plain markdown.
-	plain := "[Tool spent 38.3s]## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
+	plain := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
 	textJSON, _ := json.Marshal(plain)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got, _ := renderToolOutput("Agent", raw, tools)
 
-	// Expected: duration prefix stripped, markdown preserved verbatim.
+	// Expected: markdown preserved verbatim.
 	want := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
 	if got != want {
 		t.Errorf("renderToolOutput agent markdown:\n got = %q\n want = %q", got, want)

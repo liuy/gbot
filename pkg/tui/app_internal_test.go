@@ -42,16 +42,12 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 		"Glob": &mockRenderTool{},
 	}
 	inner := `{"filenames":["a.go","b.go"]}`
-	textContent := "[Tool spent 1.5s]" + inner
-	textJSON, _ := json.Marshal(textContent)
+	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, elapsed := renderToolOutput("Glob", raw, tools)
+	got, _ := renderToolOutput("Glob", raw, tools)
 	want := "a.go\nb.go"
 	if got != want {
 		t.Errorf("renderToolOutput = %q, want %q", got, want)
-	}
-	if elapsed != 1500*time.Millisecond {
-		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
 	}
 }
 
@@ -61,8 +57,8 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 		"Glob": &mockRenderTool{},
 	}
 	// Array form whose text content is not valid JSON for the tool.
-	// The plain text passes through unchanged after duration prefix is stripped.
-	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 0s]garbage"}]`)
+	// The plain text passes through unchanged.
+	raw := json.RawMessage(`[{"type":"text","text":"garbage"}]`)
 	got, _ := renderToolOutput("Glob", raw, tools)
 	if got != "garbage" {
 		t.Errorf("renderToolOutput plain-text passthrough = %q, want %q", got, "garbage")
@@ -72,13 +68,10 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{}
-	raw := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]boom"}]`)
-	got, elapsed := renderToolOutput("Bash", raw, tools)
+	raw := json.RawMessage(`[{"type":"text","text":"boom"}]`)
+	got, _ := renderToolOutput("Bash", raw, tools)
 	if got != "boom" {
 		t.Errorf("got %q, want %q", got, "boom")
-	}
-	if elapsed != 1500*time.Millisecond {
-		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
 	}
 }
 
@@ -98,25 +91,20 @@ func TestRenderToolOutput_NoStringBranch(t *testing.T) {
 	}
 }
 
-// TestRenderToolOutput_ArrayFormDuration verifies that the array-form fallback
-// (new wire-blocks shape) extracts the duration prefix from the first text
-// block and strips it from the displayed text. Bug-catch: previous code
-// returned ("[Tool spent 1.5s]hello", 0) — no extraction, no stripping.
-func TestRenderToolOutput_ArrayFormDuration(t *testing.T) {
+// TestRenderToolOutput_ArrayFormRenderViaTool verifies that the array-form
+// path correctly calls renderViaTool when text looks like JSON.
+func TestRenderToolOutput_ArrayFormRenderViaTool(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
 		"Glob": &mockRenderTool{},
 	}
-	// Array form (NOT a JSON string). First text block carries the duration
-	// prefix. The function must extract elapsed=1.5s AND return "hello"
-	// (prefix stripped).
-	arrayInput := json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]hello"}]`)
-	got, elapsed := renderToolOutput("Glob", arrayInput, tools)
-	if got != "hello" {
-		t.Errorf("renderToolOutput array-form = %q, want %q (prefix must be stripped)", got, "hello")
-	}
-	if elapsed != 1500*time.Millisecond {
-		t.Errorf("elapsed = %v, want %v", elapsed, 1500*time.Millisecond)
+	inner := `{"filenames":["a.go","b.go"]}`
+	textJSON, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got, _ := renderToolOutput("Glob", raw, tools)
+	want := "a.go\nb.go"
+	if got != want {
+		t.Errorf("renderToolOutput = %q, want %q", got, want)
 	}
 }
 
@@ -128,12 +116,9 @@ func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 		"Glob": &mockRenderTool{},
 	}
 	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
-	got, elapsed := renderToolOutput("Glob", arrayInput, tools)
+	got, _ := renderToolOutput("Glob", arrayInput, tools)
 	if got != "hello world" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
-	}
-	if elapsed != 0 {
-		t.Errorf("elapsed = %v, want 0", elapsed)
 	}
 }
 

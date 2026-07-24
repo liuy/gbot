@@ -592,9 +592,10 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		if event.ToolResult.IsList {
 			b.IsList = true
 		}
-		if event.ToolResult.IsLsp {
-			b.IsLsp = true
-		}
+	if event.ToolResult.IsLsp {
+		b.IsLsp = true
+	}
+	b.TimingNs = int64(event.ToolResult.Duration)
 
 	case types.EventToolOutputDelta:
 		if event.ToolResult == nil {
@@ -1325,29 +1326,20 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	}
 
 	if len(parts) > 0 {
-		joined := strings.Join(parts, "\n")
-		rest, elapsed := parseDurationPrefixMillis(joined)
-		if rest == "" {
-			return "", elapsed
-		}
+		rest := strings.Join(parts, "\n")
 		if strings.HasPrefix(rest, "<persisted-output>") {
 			if data := readPersistedFile(rest); data != nil {
 				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
-					return r, elapsed
+					return r, 0
 				}
 			}
-			return extractPersistedPreview(rest), elapsed
+			return extractPersistedPreview(rest), 0
 		}
 
-		// Only call renderViaTool when rest looks like JSON — agent tool results
-		// are plain text (not SubQueryResult JSON), and passing plain text to
-		// renderViaTool triggers the fallback path that json.Marshal-wraps the
-		// string in quotes. Plain markdown should pass through unchanged so the
-		// frontend renders it as markdown.
 		trimmed := strings.TrimLeft(rest, " \t\n\r")
 		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-				return r, elapsed
+				return r, 0
 			}
 		}
 
@@ -1355,9 +1347,9 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 			Output string `json:"output"`
 		}
 		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-			return obj.Output, elapsed
+			return obj.Output, 0
 		}
-		return rest, elapsed
+		return rest, 0
 	}
 
 	// No text blocks (e.g. image-only): delegate to tool's DecodeResult.
@@ -1365,25 +1357,6 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		return r, 0
 	}
 	return string(raw), 0
-}
-
-// parseDurationPrefixMillis strips a leading "[Tool spent Xs]" prefix from s
-// and returns (rest, elapsed_nanos). Returns (s, 0) when no prefix is present.
-// Shared by both the string-form and array-form branches of renderToolOutput.
-func parseDurationPrefixMillis(s string) (string, int64) {
-	rest := s
-	elapsed := int64(0)
-	if strings.HasPrefix(rest, "[Tool spent ") {
-		if idx := strings.Index(rest, "]"); idx >= 0 {
-			inner := strings.TrimPrefix(rest[:idx+1], "[Tool spent ")
-			inner = strings.TrimSuffix(inner, "s]")
-			if sec, err := strconv.ParseFloat(inner, 64); err == nil {
-				elapsed = int64(sec * float64(time.Second))
-			}
-			rest = rest[idx+1:]
-		}
-	}
-	return rest, elapsed
 }
 
 // renderViaTool finds the tool, decodes the raw JSON to its concrete result

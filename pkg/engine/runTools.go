@@ -924,7 +924,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	tt.Duration = elapsed
 
 	if err != nil {
-		e.emitToolError(t, tt, err, elapsed)
+		e.emitToolError(t, tt, err)
 		return
 	}
 
@@ -935,7 +935,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 
 	wireBlocks := formatWireBlocksOrDefault(t, result.Data)
-	wireBlocks = prependDurationToBlocks(wireBlocks, elapsed)
 	resultContent := marshalBlocks(wireBlocks)
 	pr := toolresult.MaybePersistLargeToolResult(resultContent, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
 	resultContent = pr.Output
@@ -960,6 +959,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			IsRead:        srk.IsRead,
 			IsList:        srk.IsList,
 			IsLsp:         srk.IsLsp,
+			Duration:      elapsed,
 		},
 	})
 	tt.Result = result
@@ -1004,20 +1004,6 @@ func formatWireBlocksOrDefault(t tool.Tool, data any) []types.ContentBlock {
 	return []types.ContentBlock{types.NewTextBlock(string(raw))}
 }
 
-// prependDurationToBlocks mutates the FIRST text block of blocks in-place,
-// prefixing it with "[Tool spent Xs]". No-op when there are no text blocks
-// (e.g. image-only tool_result). Returns the same slice for chaining.
-func prependDurationToBlocks(blocks []types.ContentBlock, d time.Duration) []types.ContentBlock {
-	prefix := fmt.Sprintf("[Tool spent %.1fs]", d.Seconds())
-	for i := range blocks {
-		if blocks[i].Type == types.ContentTypeText {
-			blocks[i].Text = prefix + blocks[i].Text
-			return blocks
-		}
-	}
-	return blocks
-}
-
 // marshalBlocks serializes a slice of ContentBlock to a JSON RawMessage.
 // Returns the literal `[]` for empty/nil slices or marshal failure.
 func marshalBlocks(blocks []types.ContentBlock) json.RawMessage {
@@ -1033,12 +1019,11 @@ func marshalBlocks(blocks []types.ContentBlock) json.RawMessage {
 
 // emitToolError emits error events and result blocks for a failed tool.
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
-func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err error, elapsed time.Duration) {
+func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err error) {
 	e.firePostToolUseHook(tt, true)
 	fullErr := err.Error()
 	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
-	blocks := prependDurationToBlocks([]types.ContentBlock{types.NewTextBlock(fullErr)}, elapsed)
-	errJSON := marshalBlocks(blocks)
+	errJSON := marshalBlocks([]types.ContentBlock{types.NewTextBlock(fullErr)})
 	// Let the tool decide how to display its own errors via RenderResult.
 	// Tools like Edit override this to show short summaries instead of
 	// dumping the full search string. The full error is still sent to

@@ -504,6 +504,7 @@ type ToolResultEvent struct {
 	IsRead        bool            `json:"is_read,omitempty"`
 	IsList        bool            `json:"is_list,omitempty"`
 	IsLsp         bool            `json:"is_lsp,omitempty"`
+	Duration      time.Duration   `json:"duration,omitempty"`
 }
 
 // ContinueReason indicates why the loop continues to another iteration.

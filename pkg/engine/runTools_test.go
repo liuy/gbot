@@ -2452,8 +2452,8 @@ func TestExecuteTool_ResultContentIsArray_FormattedViaFormatWireBlocks(t *testin
 	if got[0].Type != types.ContentTypeText {
 		t.Fatalf("got[0].Type = %q, want %q", got[0].Type, types.ContentTypeText)
 	}
-	if got[0].Text != "[Tool spent 0.0s]hello" {
-		t.Errorf("got[0].Text = %q, want %q", got[0].Text, "[Tool spent 0.0s]hello")
+	if got[0].Text != "hello" {
+		t.Errorf("got[0].Text = %q, want %q", got[0].Text, "hello")
 	}
 }
 
@@ -2555,10 +2555,8 @@ func TestExecuteTool_ErrorPathUsesArrayForm(t *testing.T) {
 	}
 }
 
-// TestEmitToolError_UsesArrayForm drives a tool that returns an error with a
-// non-zero elapsed time. The result block content must be array form, with the
-// single text block prefixed by "[Tool spent Xs]" and ending with the error
-// message.
+// TestEmitToolError_UsesArrayForm drives a tool that returns an error.
+// The result block content must be array form with the error message in a single text block.
 func TestEmitToolError_UsesArrayForm(t *testing.T) {
 	t.Parallel()
 
@@ -2592,9 +2590,6 @@ func TestEmitToolError_UsesArrayForm(t *testing.T) {
 		t.Fatalf("expected single text block, got %+v", parsed)
 	}
 	text := parsed[0].Text
-	if !strings.HasPrefix(text, "[Tool spent ") {
-		t.Errorf("error text should start with '[Tool spent ', got %q", text)
-	}
 	if !strings.HasSuffix(text, "boom") {
 		t.Errorf("error text should end with 'boom', got %q", text)
 	}

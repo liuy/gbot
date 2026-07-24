@@ -580,7 +580,7 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 				Role:      types.RoleUser,
 				Timestamp: time.Unix(1000, 0),
 				Content: []types.ContentBlock{
-					{Type: types.ContentTypeToolResult, ToolUseID: "toolX", Content: json.RawMessage(`[{"type":"text","text":"[Tool spent 1.5s]result-output"}]`)},
+					{Type: types.ContentTypeToolResult, ToolUseID: "toolX", Content: json.RawMessage(`[{"type":"text","text":"result-output"}]`)},
 				},
 			},
 			{
@@ -663,9 +663,8 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	if asst.Blocks[2].Tool.DisplayOutput == "" {
 		t.Error("Blocks[2].Tool.DisplayOutput is empty, want rendered from tool_result")
 	}
-	const wantNs int64 = int64(1.5 * float64(time.Second))
-	if asst.Blocks[2].Tool.DurationNs != wantNs {
-		t.Errorf("Blocks[2].Tool.DurationNs = %d, want %d (1.5s)", asst.Blocks[2].Tool.DurationNs, wantNs)
+	if asst.Blocks[2].Tool.DurationNs != 0 {
+		t.Errorf("Blocks[2].Tool.DurationNs = %d, want 0 (no duration prefix)", asst.Blocks[2].Tool.DurationNs)
 	}
 
 	// Legacy fields must stay populated exactly as before so older consumers

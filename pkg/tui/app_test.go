@@ -8922,8 +8922,8 @@ func TestResume_BashEmptyOutput_NoRawJSON(t *testing.T) {
 	bashTool := bash.New(nil)
 	tools := map[string]tool.Tool{"Bash": bashTool}
 
-	// Array-form content with empty-output Bash JSON.
-	textContent := `[Tool spent 0.3s]{"output":"","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
+	// Array-form content with empty-output Bash JSON (no duration prefix).
+	textContent := `{"output":"","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
 	textJSON, _ := json.Marshal(textContent)
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -8953,7 +8953,7 @@ func TestResume_TaskOutput_NotRawBytes(t *testing.T) {
 	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()))
 	tools := map[string]tool.Tool{"Task": taskTool}
 
-	taskResult := `[Tool spent 0.1s]{"updated":[{"success":true,"taskId":"34","updatedFields":["status"],"statusChange":{"from":"in_progress","to":"completed"}}]}`
+	taskResult := `{"updated":[{"success":true,"taskId":"34","updatedFields":["status"],"statusChange":{"from":"in_progress","to":"completed"}}]}`
 	taskResultJSON, _ := json.Marshal(taskResult)
 
 	msgs := []types.Message{
@@ -8984,7 +8984,7 @@ func TestResume_BashWithOutput_NoRawJSON(t *testing.T) {
 	bashTool := bash.New(nil)
 	tools := map[string]tool.Tool{"Bash": bashTool}
 
-	bashResult := `[Tool spent 0.3s]{"output":"0 issues.\ngo fix ./...\nmake[1]: Leaving directory","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
+	bashResult := `{"output":"0 issues.\ngo fix ./...\nmake[1]: Leaving directory","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
 	bashResultJSON, _ := json.Marshal(bashResult)
 
 	msgs := []types.Message{
@@ -9018,7 +9018,7 @@ func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
 			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"creates":[{"subject":"Read config","description":"read it"},{"subject":"Check git","description":"check it"},{"subject":"Build","description":"build it"}]}`)},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: json.RawMessage(`"[Tool spent 0.1s]{\"created\":[{\"id\":\"1\",\"subject\":\"Read config\"},{\"id\":\"2\",\"subject\":\"Check git\"},{\"id\":\"3\",\"subject\":\"Build\"}]}"`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: json.RawMessage(`"{\"created\":[{\"id\":\"1\",\"subject\":\"Read config\"},{\"id\":\"2\",\"subject\":\"Check git\"},{\"id\":\"3\",\"subject\":\"Build\"}]}"`)},
 		}},
 	}
 
