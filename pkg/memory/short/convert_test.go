@@ -222,3 +222,47 @@ func TestStoreMessagesToEngine(t *testing.T) {
 		}
 	})
 }
+
+// TestEngineMessagesToStore_PreservesDuration verifies the persistence path
+// (EngineMessagesToStore → DB string → StoreMessageToEngine) round-trips both
+// ThinkingDurationNs and ToolDurationNs with their exact integer values.
+// Guards against a regression where someone reverts Step 4 to plain json.Marshal,
+// which would silently drop the duration fields via the custom MarshalJSON.
+func TestEngineMessagesToStore_PreservesDuration(t *testing.T) {
+	t.Parallel()
+
+	em := types.Message{
+		ID:   "asst-dur",
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Thinking: "ponder", ThinkingDurationNs: 2_000_000_000},
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu1", Content: json.RawMessage(`"ok"`), ToolDurationNs: 4_000_000_000},
+		},
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	storeMsgs, err := EngineMessagesToStore([]types.Message{em})
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	if len(storeMsgs) != 1 {
+		t.Fatalf("expected 1 store message, got %d", len(storeMsgs))
+	}
+	if !strings.Contains(storeMsgs[0].Content, `"thinking_duration_ns":2000000000`) {
+		t.Errorf("store Content missing thinking_duration_ns=2000000000: %s", storeMsgs[0].Content)
+	}
+	if !strings.Contains(storeMsgs[0].Content, `"tool_duration_ns":4000000000`) {
+		t.Errorf("store Content missing tool_duration_ns=4000000000: %s", storeMsgs[0].Content)
+	}
+
+	back := StoreMessageToEngine(storeMsgs[0])
+	if len(back.Content) != 2 {
+		t.Fatalf("round-trip content len = %d, want 2", len(back.Content))
+	}
+	if back.Content[0].ThinkingDurationNs != 2_000_000_000 {
+		t.Errorf("back.Content[0].ThinkingDurationNs = %d, want 2000000000", back.Content[0].ThinkingDurationNs)
+	}
+	if back.Content[1].ToolDurationNs != 4_000_000_000 {
+		t.Errorf("back.Content[1].ToolDurationNs = %d, want 4000000000", back.Content[1].ToolDurationNs)
+	}
+}

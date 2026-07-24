@@ -77,6 +77,7 @@ type toolEndMsg struct {
 	IsRead    bool
 	IsList    bool
 	IsLsp     bool
+	Duration  time.Duration
 }
 
 // queryEndMsg signals that the engine has finished processing.

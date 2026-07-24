@@ -3067,3 +3067,52 @@ func TestStream_SSETransportError(t *testing.T) {
 		t.Error("transport/stream error must NOT be retryable")
 	}
 }
+
+// TestRequestMarshal_DurationNotOnWire proves the custom ContentBlock.MarshalJSON
+// flows through nested Message/Request marshaling: the LLM wire body produced
+// by json.Marshal(*llm.Request) must contain NO duration_ns substring even when
+// the input blocks carry non-zero ThinkingDurationNs and ToolDurationNs. The
+// negative control on "type":"thinking" guards against a buggy MarshalJSON
+// that emitted nothing at all slipping through.
+func TestRequestMarshal_DurationNotOnWire(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		Model:     "claude-test",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					{
+						Type:           types.ContentTypeToolResult,
+						ToolUseID:      "tu1",
+						Content:        json.RawMessage(`"ok"`),
+						ToolDurationNs: 9_000_000_000,
+					},
+				},
+			},
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{
+						Type:               types.ContentTypeThinking,
+						Thinking:           "ponder",
+						ThinkingDurationNs: 5_000_000_000,
+					},
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	got := string(body)
+	if strings.Contains(got, "duration_ns") {
+		t.Errorf("wire body must NOT contain duration_ns: %s", got)
+	}
+	if !strings.Contains(got, `"type":"thinking"`) {
+		t.Errorf("negative control failed: wire body must contain thinking block, got: %s", got)
+	}
+}

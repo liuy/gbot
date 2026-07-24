@@ -34,7 +34,7 @@ func TestReplState_NoDeadlock_NestedCalls(t *testing.T) {
 			s.PendingToolStarted(id, "Bash", "running", "{\"cmd\":\"ls\"}", tool.SearchReadKind{})
 			s.PendingToolDelta(id, "{\"a\":1}", "ls", tool.SearchReadKind{IsSearch: true})
 			s.PendingToolOutput(id, "line1\n")
-			s.PendingToolDone(id, "done", false, tool.SearchReadKind{IsRead: true})
+			s.PendingToolDone(id, "done", false, tool.SearchReadKind{IsRead: true}, 100*time.Millisecond)
 			s.AppendChunk("delta")
 			s.PendingThinkingStarted()
 			s.PendingThinkingDelta("thought")

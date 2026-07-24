@@ -1663,6 +1663,49 @@ func TestStripImagesFromMessages_ModifiedClone(t *testing.T) {
 	}
 }
 
+// TestStripImagesFromMessages_PreservesToolDuration verifies that a user
+// message containing both an image block (which triggers the modified→re-marshal
+// path) AND a tool_result block carrying tool_duration_ns retains the duration
+// through StripImagesFromMessages. Without routing the re-marshal through
+// MarshalContentBlocksForStorage, the custom MarshalJSON would drop the
+// duration key on the kept tool_result block.
+func TestStripImagesFromMessages_PreservesToolDuration(t *testing.T) {
+	msg := &TranscriptMessage{
+		Type: "user",
+		Content: `[` +
+			`{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc"}},` +
+			`{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"ok"}],"tool_duration_ns":2500000000}` +
+			`]`,
+	}
+
+	result := StripImagesFromMessages([]*TranscriptMessage{msg})
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1", len(result))
+	}
+
+	blocks := ParseContentBlocks(result[0].Content)
+	var imageSeen, toolSeen bool
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if b.Text == "[image]" {
+				imageSeen = true
+			}
+		case "tool_result":
+			toolSeen = true
+			if b.ToolDurationNs != 2_500_000_000 {
+				t.Errorf("tool_result ToolDurationNs = %d, want 2500000000", b.ToolDurationNs)
+			}
+		}
+	}
+	if !imageSeen {
+		t.Error("image block should have been replaced with [image] text placeholder")
+	}
+	if !toolSeen {
+		t.Error("tool_result block should have been preserved")
+	}
+}
+
 func TestCreatePostCompactFileAttachments_NoReadTools(t *testing.T) {
 	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},

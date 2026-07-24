@@ -328,6 +328,143 @@ func TestContentBlockJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestContentBlockMarshalJSON_DropsDuration verifies the custom MarshalJSON
+// removes ThinkingDurationNs and ToolDurationNs from the wire form for every
+// block type. The LLM API has no schema slot for these fields, so leaking
+// them is a wire violation. Round-trip proves the value never returns.
+func TestContentBlockMarshalJSON_DropsDuration(t *testing.T) {
+	t.Parallel()
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeThinking, Thinking: "ponder", ThinkingDurationNs: 5_000_000_000},
+		{Type: types.ContentTypeToolResult, ToolUseID: "tu1", Content: json.RawMessage(`"ok"`), ToolDurationNs: 3_000_000_000},
+		types.NewTextBlock("plain text"),
+	}
+	for i, b := range blocks {
+		data, err := json.Marshal(b)
+		if err != nil {
+			t.Fatalf("block[%d] marshal: %v", i, err)
+		}
+		if strings.Contains(string(data), "duration_ns") {
+			t.Errorf("block[%d] wire form contains duration_ns: %s", i, string(data))
+		}
+		var got types.ContentBlock
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("block[%d] unmarshal: %v", i, err)
+		}
+		if got.ThinkingDurationNs != 0 {
+			t.Errorf("block[%d] round-trip ThinkingDurationNs = %d, want 0 (duration must not survive)", i, got.ThinkingDurationNs)
+		}
+		if got.ToolDurationNs != 0 {
+			t.Errorf("block[%d] round-trip ToolDurationNs = %d, want 0 (duration must not survive)", i, got.ToolDurationNs)
+		}
+	}
+}
+
+// TestMarshalContentBlocksForStorage_PreservesDuration verifies the storage
+// helper produces JSON containing thinking_duration_ns and tool_duration_ns
+// with the exact integer values from the input blocks, and that the result
+// round-trips back into blocks with the same durations. This is the
+// persistence contract: the DB string is the source of truth for replay.
+func TestMarshalContentBlocksForStorage_PreservesDuration(t *testing.T) {
+	t.Parallel()
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeThinking, Thinking: "ponder", ThinkingDurationNs: 1_500_000_000},
+		{Type: types.ContentTypeToolResult, ToolUseID: "tu1", Content: json.RawMessage(`"ok"`), ToolDurationNs: 7_200_000_000},
+	}
+	data, err := types.MarshalContentBlocksForStorage(blocks)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"thinking_duration_ns":1500000000`) {
+		t.Errorf("storage form missing thinking_duration_ns=1500000000: %s", got)
+	}
+	if !strings.Contains(got, `"tool_duration_ns":7200000000`) {
+		t.Errorf("storage form missing tool_duration_ns=7200000000: %s", got)
+	}
+	var back []types.ContentBlock
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(back) != 2 {
+		t.Fatalf("round-trip len = %d, want 2", len(back))
+	}
+	if back[0].ThinkingDurationNs != 1_500_000_000 {
+		t.Errorf("back[0].ThinkingDurationNs = %d, want 1500000000", back[0].ThinkingDurationNs)
+	}
+	if back[1].ToolDurationNs != 7_200_000_000 {
+		t.Errorf("back[1].ToolDurationNs = %d, want 7200000000", back[1].ToolDurationNs)
+	}
+
+	// Empty input must produce literal "[]" so DB columns never see Go's
+	// default "null".
+	empty, err := types.MarshalContentBlocksForStorage(nil)
+	if err != nil {
+		t.Fatalf("nil marshal: %v", err)
+	}
+	if string(empty) != "[]" {
+		t.Errorf("nil marshal = %s, want []", string(empty))
+	}
+}
+
+// TestContentBlockMarshalJSON_WireStructMirror is a maintenance guard: it
+// verifies that every non-duration field of ContentBlock is present in the
+// wire projection produced by MarshalJSON. If a future field is added to
+// ContentBlock and intended for the wire but forgotten in the wire struct,
+// its substring assertion here must be added too — its absence during code
+// review is the red flag.
+func TestContentBlockMarshalJSON_WireStructMirror(t *testing.T) {
+	t.Parallel()
+
+	block := types.ContentBlock{
+		Type:               types.ContentTypeToolResult,
+		Text:               "T",
+		Thinking:           "Th",
+		Signature:          "S",
+		ID:                 "I",
+		Name:               "N",
+		Input:              json.RawMessage(`{}`),
+		ToolUseID:          "TUI",
+		Content:            json.RawMessage(`[]`),
+		IsError:            true,
+		Data:               "D",
+		Source:             &types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "x"},
+		CacheControl:       &types.CacheControlConfig{Type: "ephemeral"},
+		ThinkingDurationNs: 999,
+		ToolDurationNs:     999,
+	}
+	data, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	wantSubstrings := []string{
+		`"type":`,
+		`"text":"T"`,
+		`"thinking":"Th"`,
+		`"signature":"S"`,
+		`"id":"I"`,
+		`"name":"N"`,
+		`"input":`,
+		`"tool_use_id":"TUI"`,
+		`"content":`,
+		`"is_error":true`,
+		`"data":"D"`,
+		`"source":`,
+		`"cache_control":`,
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(got, s) {
+			t.Errorf("wire form missing substring %q: %s", s, got)
+		}
+	}
+	if strings.Contains(got, "duration_ns") {
+		t.Errorf("wire form must NOT contain duration_ns: %s", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Message JSON
 // ---------------------------------------------------------------------------

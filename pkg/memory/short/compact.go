@@ -315,8 +315,17 @@ func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage
 			continue
 		}
 
-		// Create new message with stripped content
-		contentBytes, _ := json.Marshal(newBlocks)
+		// Create new message with stripped content. Route through the
+		// storage helper so duration fields on tool_result blocks survive
+		// the re-marshal (the default MarshalJSON drops them).
+		contentBytes, err := types.MarshalContentBlocksForStorage(newBlocks)
+		if err != nil {
+			// Preserve historical best-effort behavior: on marshal failure,
+			// fall back to the original message content rather than crashing
+			// the compact pass.
+			result = append(result, msg)
+			continue
+		}
 		newMsg := *msg
 		newMsg.Content = string(contentBytes)
 		result = append(result, &newMsg)

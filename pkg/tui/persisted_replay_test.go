@@ -45,7 +45,7 @@ func TestRenderToolOutput_PersistedOutputReplayRenderOutput(t *testing.T) {
 	editTool := fileedit.New()
 	tools := map[string]tool.Tool{"Edit": editTool}
 
-	output, _ := renderToolOutput("Edit", toolResultContent, tools)
+	output := renderToolOutput("Edit", toolResultContent, tools)
 
 	if strings.Contains(output, `"filePath"`) {
 		t.Errorf("output contains raw JSON keys — renderViaTool failed:\n%s", output)

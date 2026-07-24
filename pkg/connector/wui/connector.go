@@ -592,10 +592,10 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		if event.ToolResult.IsList {
 			b.IsList = true
 		}
-	if event.ToolResult.IsLsp {
-		b.IsLsp = true
-	}
-	b.TimingNs = int64(event.ToolResult.Duration)
+		if event.ToolResult.IsLsp {
+			b.IsLsp = true
+		}
+		b.TimingNs = int64(event.ToolResult.Duration)
 
 	case types.EventToolOutputDelta:
 		if event.ToolResult == nil {
@@ -1063,7 +1063,8 @@ func buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResult
 			}
 			if result, ok := toolResults[cb.ID]; ok {
 				entry.IsError = result.IsError
-				entry.DisplayOutput, entry.DurationNs = renderToolOutput(cb.Name, result.Content, tools)
+				entry.DisplayOutput = renderToolOutput(cb.Name, result.Content, tools)
+				entry.DurationNs = result.ToolDurationNs
 			} else {
 				entry.IsRunning = true
 			}
@@ -1305,9 +1306,9 @@ func computeToolSummary(name string, input json.RawMessage, tools map[string]too
 // Engine emits array-form content exclusively; legacy string-form sessions
 // replayed from disk hit the array parse failure and fall through to
 // string(raw) passthrough.
-func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, int64) {
+func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) string {
 	if len(raw) == 0 {
-		return "", 0
+		return ""
 	}
 
 	var blocks []struct {
@@ -1315,7 +1316,7 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &blocks) != nil {
-		return string(raw), 0
+		return string(raw)
 	}
 
 	var parts []string
@@ -1330,16 +1331,16 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		if strings.HasPrefix(rest, "<persisted-output>") {
 			if data := readPersistedFile(rest); data != nil {
 				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
-					return r, 0
+					return r
 				}
 			}
-			return extractPersistedPreview(rest), 0
+			return extractPersistedPreview(rest)
 		}
 
 		trimmed := strings.TrimLeft(rest, " \t\n\r")
 		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-				return r, 0
+				return r
 			}
 		}
 
@@ -1347,16 +1348,15 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 			Output string `json:"output"`
 		}
 		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-			return obj.Output, 0
+			return obj.Output
 		}
-		return rest, 0
+		return rest
 	}
 
-	// No text blocks (e.g. image-only): delegate to tool's DecodeResult.
 	if r, ok := renderViaTool(toolName, raw, tools); ok {
-		return r, 0
+		return r
 	}
-	return string(raw), 0
+	return string(raw)
 }
 
 // renderViaTool finds the tool, decodes the raw JSON to its concrete result

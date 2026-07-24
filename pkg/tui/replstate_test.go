@@ -198,7 +198,7 @@ func TestPendingToolDone_UpdatesBlock(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
-	s.PendingToolDone("t1", "file1.txt\nfile2.txt", false, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "file1.txt\nfile2.txt", false, tool.SearchReadKind{}, 100*time.Millisecond)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -218,7 +218,7 @@ func TestPendingToolDone_MissingID_Noop(t *testing.T) {
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// Different ID — should not crash or change existing tool
-	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{})
+	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{}, 100*time.Millisecond)
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
 	if blk.ToolCall.Done {
@@ -226,18 +226,16 @@ func TestPendingToolDone_MissingID_Noop(t *testing.T) {
 	}
 }
 
-func TestPendingToolDone_PerceivesHigherElapsed(t *testing.T) {
+func TestPendingToolDone_UsesElapsedParam(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
-	// Wait a tiny bit so perceived > reported elapsed
-	time.Sleep(5 * time.Millisecond) // REAL-TIME: needed to test perceived elapsed time measurement
-	s.PendingToolDone("t1", "ok", false, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "ok", false, tool.SearchReadKind{}, 250*time.Millisecond)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if blk.ToolCall.Elapsed < 5*time.Millisecond {
-		t.Errorf("expected perceived elapsed >= 5ms, got %v", blk.ToolCall.Elapsed)
+	if blk.ToolCall.Elapsed != 250*time.Millisecond {
+		t.Errorf("Elapsed = %v, want exactly 250ms (passed elapsed param must win)", blk.ToolCall.Elapsed)
 	}
 }
 
@@ -255,7 +253,7 @@ func TestPendingToolDone_AccumulatesSubAgentToolCount(t *testing.T) {
 	tcv.AgentType = "Explore"
 	s.updateToolBlock("agent1", tcv)
 	// ToolCount from Blocks should be accumulated
-	s.PendingToolDone("agent1", "done", false, tool.SearchReadKind{})
+	s.PendingToolDone("agent1", "done", false, tool.SearchReadKind{}, 100*time.Millisecond)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -353,7 +351,7 @@ func TestPendingToolOutput_StreamingThenToolEnd(t *testing.T) {
 	}
 
 	// tool_end — now it's done
-	s.PendingToolDone("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", false, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", false, tool.SearchReadKind{}, 100*time.Millisecond)
 	blk = msgs[0].Blocks[0]
 	if !blk.ToolCall.Done {
 		t.Error("tool should be done after tool_end")
@@ -724,7 +722,7 @@ func TestUpdateToolBlock_NotFound_ReturnsFalse(t *testing.T) {
 	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// PendingToolDone with nonexistent ID → updateToolBlock returns false,
 	// but PendingToolDone itself just returns (no-op)
-	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{})
+	s.PendingToolDone("nonexistent", "output", false, tool.SearchReadKind{}, 100*time.Millisecond)
 
 	// Verify t1 is unchanged
 	msgs := s.Messages()
@@ -746,8 +744,8 @@ func TestMultipleToolsInQuery(t *testing.T) {
 	s.PendingToolStarted("t1", "Read", "main.go", "{}", tool.SearchReadKind{})
 	s.PendingToolStarted("t2", "Grep", "TODO", "{}", tool.SearchReadKind{})
 
-	s.PendingToolDone("t1", "package main...", false, tool.SearchReadKind{})
-	s.PendingToolDone("t2", "3 matches found", false, tool.SearchReadKind{})
+	s.PendingToolDone("t1", "package main...", false, tool.SearchReadKind{}, 100*time.Millisecond)
+	s.PendingToolDone("t2", "3 matches found", false, tool.SearchReadKind{}, 100*time.Millisecond)
 
 	msgs := s.Messages()
 	if len(msgs[0].Blocks) != 3 {
@@ -1078,7 +1076,7 @@ func TestUpdateRunningToolElapsed_UpdatesRunningBlocks(t *testing.T) {
 	// Backdate tool-2 start to simulate a 100ms tool.
 	s.pendingToolStart["tool-2"] = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	// Mark tool-2 as done — PendingToolDone now uses perceived time.
-	s.PendingToolDone("tool-2", "done", false, tool.SearchReadKind{})
+	s.PendingToolDone("tool-2", "done", false, tool.SearchReadKind{}, 100*time.Millisecond)
 
 	s.UpdateRunningToolElapsed()
 

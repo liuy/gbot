@@ -242,7 +242,7 @@ func TestRenderToolOutput_PersistedOutputValidFile(t *testing.T) {
 	input := "<persisted-output>\nFull output saved to: " + filePath + "\nPreview (first 5 lines):\nline1"
 	textJSON, _ := json.Marshal(input)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Bash", raw, tools)
+	got := renderToolOutput("Bash", raw, tools)
 	want := "rendered from file"
 	if got != want {
 		t.Errorf("renderToolOutput(valid file) = %q, want %q", got, want)
@@ -254,7 +254,7 @@ func TestRenderToolOutput_PersistedOutputInvalidFile(t *testing.T) {
 	input := "<persisted-output>\nFull output saved to: /nonexistent/path.txt\nPreview (first 3 lines):\nprev1\nprev2\nprev3"
 	textJSON, _ := json.Marshal(input)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	want := "prev1\nprev2\nprev3"
 	if got != want {
 		t.Errorf("renderToolOutput(invalid file) = %q, want %q", got, want)
@@ -266,7 +266,7 @@ func TestRenderToolOutput_JSONOutputField(t *testing.T) {
 	inner := `{"output":"hello world"}`
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	want := "hello world"
 	if got != want {
 		t.Errorf("renderToolOutput(JSON output) = %q, want %q", got, want)
@@ -276,7 +276,7 @@ func TestRenderToolOutput_JSONOutputField(t *testing.T) {
 func TestRenderToolOutput_BlocksArray(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`[{"type":"text","text":"block A"},{"type":"text","text":"block B"}]`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	want := "block A\nblock B"
 	if got != want {
 		t.Errorf("renderToolOutput(blocks) = %q, want %q", got, want)
@@ -286,7 +286,7 @@ func TestRenderToolOutput_BlocksArray(t *testing.T) {
 func TestRenderToolOutput_RawFallback(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`not json at all {`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	want := "not json at all {"
 	if got != want {
 		t.Errorf("renderToolOutput(raw fallback) = %q, want %q", got, want)
@@ -298,7 +298,7 @@ func TestRenderToolOutput_PlainTextArrayForm(t *testing.T) {
 	inner := "plain result text"
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Unknown", raw, nil)
+	got := renderToolOutput("Unknown", raw, nil)
 	if got != inner {
 		t.Errorf("renderToolOutput(plain text) = %q, want %q", got, inner)
 	}
@@ -307,7 +307,7 @@ func TestRenderToolOutput_PlainTextArrayForm(t *testing.T) {
 func TestRenderToolOutput_RawStringForm(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`"just a string"`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	if got != `"just a string"` {
 		t.Errorf("renderToolOutput(raw string) = %q, want %q", got, `"just a string"`)
 	}
@@ -316,7 +316,7 @@ func TestRenderToolOutput_RawStringForm(t *testing.T) {
 func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`[{"type":"text","text":"boom"}]`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	if got != "boom" {
 		t.Errorf("got %q, want %q", got, "boom")
 	}
@@ -329,7 +329,7 @@ func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
 func TestRenderToolOutput_NoStringBranch(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`"hello"`)
-	got, _ := renderToolOutput("Bash", raw, nil)
+	got := renderToolOutput("Bash", raw, nil)
 	if got != `"hello"` {
 		t.Errorf("got %q (%d bytes), want %q (7 bytes — string(raw) passthrough)", got, len(got), `"hello"`)
 	}

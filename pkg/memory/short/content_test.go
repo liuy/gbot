@@ -2,6 +2,7 @@ package short
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,7 +385,8 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 		messages      []*TranscriptMessage
 		wantLen       int
 		wantLastType  string
-		wantLastCount int // number of user messages (should be merged if adjacent)
+		wantLastCount int    // number of user messages (should be merged if adjacent)
+		wantContains  string // optional substring expected in the last message's Content
 	}{
 		{
 			name: "removes whitespace-only assistant",
@@ -432,6 +434,22 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 			wantLen:      2,
 			wantLastType: "assistant",
 		},
+		{
+			// End-to-end resume path: two user messages bracket a whitespace-only
+			// assistant, the second user carries a tool_result with duration.
+			// FilterWhitespaceOnlyAssistant → mergeUserMessages must propagate
+			// the routing through MarshalContentBlocksForStorage so the merged
+			// Content JSON still carries tool_duration_ns.
+			name: "preserves tool_duration_ns when merging around filtered assistant",
+			messages: []*TranscriptMessage{
+				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: now},
+				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"   \n  "}]`, CreatedAt: now},
+				{Seq: 3, Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"ok"}],"tool_duration_ns":4200000000}]`, CreatedAt: now},
+			},
+			wantLen:      1,
+			wantLastType: "user",
+			wantContains: `"tool_duration_ns":4200000000`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -444,6 +462,9 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 
 			if got[len(got)-1].Type != tt.wantLastType {
 				t.Errorf("last message type = %q, want %q", got[len(got)-1].Type, tt.wantLastType)
+			}
+			if tt.wantContains != "" && !strings.Contains(got[len(got)-1].Content, tt.wantContains) {
+				t.Errorf("last message Content = %s, want substring %q", got[len(got)-1].Content, tt.wantContains)
 			}
 		})
 	}
@@ -628,6 +649,45 @@ func TestContentBlockToolResult(t *testing.T) {
 	}
 	if blocks[0].IsError != false {
 		t.Errorf("block.IsError = %v, want false", blocks[0].IsError)
+	}
+}
+
+// TestMergeUserMessages_PreservesToolDuration verifies the merge path routes
+// its re-marshal through MarshalContentBlocksForStorage so tool_duration_ns
+// on a tool_result block survives into the merged Content JSON. Without the
+// routing, the custom MarshalJSON would drop the duration key and resume
+// replay would show 0 instead of the original value.
+func TestMergeUserMessages_PreservesToolDuration(t *testing.T) {
+	a := &TranscriptMessage{
+		Seq:     1,
+		UUID:    "u1",
+		Type:    "user",
+		Content: `[{"type":"text","text":"first"}]`,
+	}
+	b := &TranscriptMessage{
+		Seq:     2,
+		UUID:    "u2",
+		Type:    "user",
+		Content: `[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"ok"}],"tool_duration_ns":4200000000}]`,
+	}
+
+	got := mergeUserMessages(a, b)
+	blocks := ParseContentBlocks(got.Content)
+	if len(blocks) != 2 {
+		t.Fatalf("merged blocks len = %d, want 2", len(blocks))
+	}
+	var tool *types.ContentBlock
+	for i := range blocks {
+		if blocks[i].Type == "tool_result" {
+			tool = &blocks[i]
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatal("no tool_result block in merged content")
+	}
+	if tool.ToolDurationNs != 4_200_000_000 {
+		t.Errorf("tool_result ToolDurationNs = %d, want 4200000000", tool.ToolDurationNs)
 	}
 }
 

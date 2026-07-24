@@ -680,6 +680,82 @@ func TestBuildHistoryMessage_BlocksOrdering(t *testing.T) {
 	}
 }
 
+// TestBuildHistoryMessage_DurationReplayed verifies the replay path delivers
+// the exact ThinkingDurationNs / ToolDurationNs values that streaming would
+// have sent via EventThinkingEnd.Duration / EventToolEnd.Duration. Guards the
+// connector.go reads at line ~1043 (cb.ThinkingDurationNs) and line ~1067
+// (result.ToolDurationNs) so a future refactor that drops the wiring fails
+// this test.
+func TestBuildHistoryMessage_DurationReplayed(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().messagesFn = func() []types.Message {
+		return []types.Message{
+			{
+				ID:        "user1",
+				Role:      types.RoleUser,
+				Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{
+					{
+						Type:           types.ContentTypeToolResult,
+						ToolUseID:      "toolX",
+						Content:        json.RawMessage(`[{"type":"text","text":"result-output"}]`),
+						ToolDurationNs: 6_000_000_000,
+					},
+				},
+			},
+			{
+				ID:        "asst1",
+				Role:      types.RoleAssistant,
+				Timestamp: time.Unix(1001, 0),
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeText, Text: "A"},
+					{Type: types.ContentTypeThinking, Thinking: "T", ThinkingDurationNs: 1_000_000_000},
+					{Type: types.ContentTypeToolUse, ID: "toolX", Name: "Bash", Input: json.RawMessage(`{}`)},
+					{Type: types.ContentTypeText, Text: "B"},
+				},
+			},
+		}
+	}
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
+
+	payload := c.buildHistory(c.activeSlot(), "", 10)
+	if payload == nil {
+		t.Fatal("buildHistoryMessage returned nil")
+	}
+	var env struct {
+		Type     string           `json:"type"`
+		Messages []historyChatMsg `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var asst *historyChatMsg
+	for i := range env.Messages {
+		if env.Messages[i].Role == "assistant" {
+			asst = &env.Messages[i]
+			break
+		}
+	}
+	if asst == nil {
+		t.Fatal("no assistant message in history payload")
+	}
+	if len(asst.Blocks) != 4 {
+		t.Fatalf("assistant Blocks len = %d, want 4", len(asst.Blocks))
+	}
+	if asst.Blocks[1].Thinking == nil {
+		t.Fatal("Blocks[1].Thinking is nil, want non-nil")
+	}
+	if asst.Blocks[1].Thinking.DurationNs != 1_000_000_000 {
+		t.Errorf("Blocks[1].Thinking.DurationNs = %d, want 1000000000", asst.Blocks[1].Thinking.DurationNs)
+	}
+	if asst.Blocks[2].Tool == nil {
+		t.Fatal("Blocks[2].Tool is nil, want non-nil")
+	}
+	if asst.Blocks[2].Tool.DurationNs != 6_000_000_000 {
+		t.Errorf("Blocks[2].Tool.DurationNs = %d, want 6000000000", asst.Blocks[2].Tool.DurationNs)
+	}
+}
+
 // TestBuildHistoryMessage_BlocksSkipsWhitespaceText verifies the whitespace
 // filter matches TUI's engineMessagesToViews: whitespace-only text blocks are
 // skipped in the ordered Blocks array (so they don't consume an eventIndex

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ func stripBangPrefix(text string) string {
 // as model-initiated Bash calls).
 func (a *App) runBashShortcut(command string) tea.Cmd {
 	toolID := "bash-shortcut-" + uuid.New().String()[:8]
+	start := time.Now()
 
 	// Add user message and create the tool block.
 	a.repl.AddUserMessage("!" + command)
@@ -51,6 +53,7 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 				ToolUseID: toolID,
 				Output:    fmt.Sprintf("marshal bash input: %v", err),
 				IsError:   true,
+				Duration:  time.Since(start),
 			}
 		}
 
@@ -115,6 +118,7 @@ func (a *App) runBashShortcut(command string) tea.Cmd {
 			ToolUseID: toolID,
 			Output:    output,
 			IsError:   isError,
+			Duration:  time.Since(start),
 		}
 	}
 }

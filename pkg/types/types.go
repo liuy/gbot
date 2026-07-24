@@ -170,8 +170,10 @@ type ContentBlock struct {
 	// Go's zero value for string is automatic, so we rely on omitempty on send.
 	Signature string `json:"signature,omitempty"`
 	// ThinkingDurationNs records wall-clock thinking time in nanoseconds.
-	// Set on thinking_end; not part of Anthropic API schema, not persisted.
-	ThinkingDurationNs int64 `json:"-"`
+	// Persisted to storage via MarshalContentBlocksForStorage (so it survives
+	// restart) but dropped from the LLM wire body by MarshalJSON (Anthropic
+	// schema has no duration field).
+	ThinkingDurationNs int64 `json:"thinking_duration_ns,omitempty"`
 
 	// Tool use fields (type == "tool_use")
 	ID    string          `json:"id,omitempty"`
@@ -182,6 +184,11 @@ type ContentBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	// ToolDurationNs records wall-clock tool execution time in nanoseconds.
+	// Persisted to storage via MarshalContentBlocksForStorage (so it survives
+	// restart) but dropped from the LLM wire body by MarshalJSON (Anthropic
+	// schema has no duration field). Same semantics as ThinkingDurationNs.
+	ToolDurationNs int64 `json:"tool_duration_ns,omitempty"`
 
 	// Redacted thinking data (type == "redacted_thinking")
 	// Must be preserved verbatim and replayed to the API.
@@ -250,6 +257,50 @@ func NewFileImageBlock(mediaType, path string) ContentBlock {
 		Type:   ContentTypeImage,
 		Source: &ImageSource{Type: "file", MediaType: mediaType, Path: path},
 	}
+}
+
+// MarshalJSON projects ContentBlock onto the LLM wire shape, which is identical
+// to the struct's default marshal EXCEPT the duration fields are dropped:
+// ThinkingDurationNs and ToolDurationNs are gbot-internal metadata with no
+// Anthropic/OpenAI schema slot, so leaking them to the API would be a wire
+// violation. Field declaration order mirrors ContentBlock exactly (minus the
+// two duration fields) so existing byte-exact tests keep passing.
+//
+// Storage callers that need to preserve duration must use
+// MarshalContentBlocksForStorage instead, which bypasses this method via a
+// named-type conversion.
+func (cb ContentBlock) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Type         ContentType         `json:"type"`
+		Text         string              `json:"text,omitempty"`
+		Thinking     string              `json:"thinking,omitempty"`
+		Signature    string              `json:"signature,omitempty"`
+		ID           string              `json:"id,omitempty"`
+		Name         string              `json:"name,omitempty"`
+		Input        json.RawMessage     `json:"input,omitempty"`
+		ToolUseID    string              `json:"tool_use_id,omitempty"`
+		Content      json.RawMessage     `json:"content,omitempty"`
+		IsError      bool                `json:"is_error,omitempty"`
+		Data         string              `json:"data,omitempty"`
+		Source       *ImageSource        `json:"source,omitempty"`
+		CacheControl *CacheControlConfig `json:"cache_control,omitempty"`
+	}
+	w := wire{
+		Type:         cb.Type,
+		Text:         cb.Text,
+		Thinking:     cb.Thinking,
+		Signature:    cb.Signature,
+		ID:           cb.ID,
+		Name:         cb.Name,
+		Input:        cb.Input,
+		ToolUseID:    cb.ToolUseID,
+		Content:      cb.Content,
+		IsError:      cb.IsError,
+		Data:         cb.Data,
+		Source:       cb.Source,
+		CacheControl: cb.CacheControl,
+	}
+	return json.Marshal(w)
 }
 
 // ---------------------------------------------------------------------------

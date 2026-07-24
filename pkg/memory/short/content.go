@@ -293,7 +293,17 @@ func mergeUserMessages(a, b *TranscriptMessage) *TranscriptMessage {
 	blocksB := ParseContentBlocks(b.Content)
 
 	mergedBlocks := append(blocksA, blocksB...)
-	mergedContent, _ := json.Marshal(mergedBlocks)
+	// Route through the storage helper so duration fields on tool_result
+	// blocks survive the merge. The merged message's Content JSON is the
+	// source of truth for the resumed session (parsed back into blocks by
+	// StoreMessageToEngine and rendered by replay paths), so dropping
+	// duration here would silently strip it on resume.
+	mergedContent, err := types.MarshalContentBlocksForStorage(mergedBlocks)
+	if err != nil {
+		// Marshal failure on merged content is unexpected for valid blocks;
+		// fall back to the first message's content so the chain stays intact.
+		return a
+	}
 
 	return &TranscriptMessage{
 		Seq:               a.Seq,

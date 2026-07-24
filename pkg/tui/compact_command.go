@@ -53,6 +53,7 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 	ctx := context.Background()
 
 	asyncCmd := func() tea.Msg {
+		start := time.Now()
 		result, err := eng.ManualCompact(ctx, customInstructions)
 
 		if err != nil {
@@ -60,8 +61,10 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 				ToolUseID: toolID,
 				Output:    fmt.Sprintf("Compact failed: %v", err),
 				IsError:   true,
+				Duration:  time.Since(start),
 			}
 		}
+		elapsed := time.Since(start)
 		return tea.Batch(
 			func() tea.Msg {
 				return toolParamDeltaMsg{
@@ -73,6 +76,7 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 				return toolEndMsg{
 					ToolUseID: toolID,
 					Output:    engine.FormatCompactOutput(result),
+					Duration:  elapsed,
 				}
 			},
 		)()

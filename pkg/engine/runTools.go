@@ -978,7 +978,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			}
 		}
 	}
-	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, resultContent, false)}
+	successBlock := types.NewToolResultBlock(tt.ID, resultContent, false)
+	successBlock.ToolDurationNs = elapsed.Nanoseconds()
+	tt.resultBlocks = []types.ContentBlock{successBlock}
 	if len(result.NewMessages) > 0 {
 		tt.newMessages = result.NewMessages
 	}
@@ -1036,10 +1038,13 @@ func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err 
 			Output:        errJSON,
 			DisplayOutput: displayErr,
 			IsError:       true,
+			Duration:      tt.Duration,
 		},
 	})
 	tt.Err = err
-	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errJSON, true)}
+	errBlock := types.NewToolResultBlock(tt.ID, errJSON, true)
+	errBlock.ToolDurationNs = tt.Duration.Nanoseconds()
+	tt.resultBlocks = []types.ContentBlock{errBlock}
 
 	// Source: StreamingToolExecutor.ts:359 — BASH_TOOL_NAME check.
 	// Only Bash errors cancel siblings. Other tool failures are independent.

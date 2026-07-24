@@ -5347,3 +5347,140 @@ func TestQuery_ThinkingDurationPersisted(t *testing.T) {
 		t.Errorf("ThinkingDurationNs = 0, want > 0 (duration should be persisted on thinking_end)")
 	}
 }
+
+// TestQuery_ToolDurationPersisted verifies that the wall-clock tool execution
+// time is written into the tool_result block's ToolDurationNs field, so it
+// survives history persistence (used by wui/TUI history load to show the
+// per-tool duration). Mirrors TestQuery_ThinkingDurationPersisted's scaffolding
+// but exercises the tool_use → tool_result path instead.
+func TestQuery_ToolDurationPersisted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "toolu_x", "Bash", `{"command":"echo hi"}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	mt := &mockTool{
+		name:    "Bash",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "hi"}, nil
+		},
+	}
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	eng.Query(ctx, "call tool", "")
+	ec.WaitForResult()
+
+	msgs := eng.Messages()
+	var result *types.ContentBlock
+	for i := range msgs {
+		if msgs[i].Role != types.RoleUser {
+			continue
+		}
+		for j := range msgs[i].Content {
+			if msgs[i].Content[j].Type == types.ContentTypeToolResult {
+				result = &msgs[i].Content[j]
+				break
+			}
+		}
+		if result != nil {
+			break
+		}
+	}
+	if result == nil {
+		t.Fatal("no tool_result block in user messages")
+	}
+	if result.ToolDurationNs == 0 {
+		t.Errorf("ToolDurationNs = 0, want > 0 (duration should be persisted on tool_end)")
+	}
+}
+
+// TestQuery_ToolErrorDurationPersisted verifies that emitToolError writes
+// non-zero ToolDurationNs on error tool_result blocks, mirroring the success
+// path. Without this, error tools would show 0s on history replay.
+func TestQuery_ToolErrorDurationPersisted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	events := toolUseStreamEvents("test-model", "t1", "fail_tool", `{}`)
+	mp.addResponse(events, nil)
+	mp.addResponse(textStreamEvents("test-model", "Recovered."), nil)
+
+	mt := &mockTool{
+		name:    "fail_tool",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, errors.New("tool execution failed")
+		},
+	}
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	eng.Query(ctx, "call failing tool", "")
+	ec.WaitForResult()
+
+	// Verify event-level duration
+	toolEndEvents := ec.FindEvents(types.EventToolEnd)
+	var foundErrorEvt bool
+	for _, evt := range toolEndEvents {
+		if evt.ToolResult != nil && evt.ToolResult.IsError {
+			foundErrorEvt = true
+			if evt.ToolResult.Duration <= 0 {
+				t.Errorf("error EventToolEnd.Duration = %v, want > 0", evt.ToolResult.Duration)
+			}
+		}
+	}
+	if !foundErrorEvt {
+		t.Fatal("no error tool_end event found")
+	}
+
+	// Verify block-level duration (used for history replay)
+	msgs := eng.Messages()
+	var result *types.ContentBlock
+	for i := range msgs {
+		if msgs[i].Role != types.RoleUser {
+			continue
+		}
+		for j := range msgs[i].Content {
+			if msgs[i].Content[j].Type == types.ContentTypeToolResult && msgs[i].Content[j].IsError {
+				result = &msgs[i].Content[j]
+				break
+			}
+		}
+		if result != nil {
+			break
+		}
+	}
+	if result == nil {
+		t.Fatal("no error tool_result block in user messages")
+	}
+	if result.ToolDurationNs == 0 {
+		t.Errorf("error tool_result ToolDurationNs = 0, want > 0")
+	}
+}

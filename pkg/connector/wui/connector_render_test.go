@@ -132,7 +132,7 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 	inner := `{"text":"hello"}`
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Bash", raw, tools)
+	got := renderToolOutput("Bash", raw, tools)
 	if got != "hello" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello")
 	}
@@ -140,7 +140,7 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 
 func TestRenderToolOutput_EmptyContent(t *testing.T) {
 	t.Parallel()
-	got, _ := renderToolOutput("Bash", nil, nil)
+	got := renderToolOutput("Bash", nil, nil)
 	if got != "" {
 		t.Errorf("renderToolOutput(empty) = %q, want empty", got)
 	}
@@ -151,7 +151,7 @@ func TestRenderToolOutput_EmptyContent(t *testing.T) {
 func TestRenderToolOutput_ArrayFormTextBlock(t *testing.T) {
 	t.Parallel()
 	arrayInput := json.RawMessage(`[{"type":"text","text":"hello"}]`)
-	got, _ := renderToolOutput("Bash", arrayInput, nil)
+	got := renderToolOutput("Bash", arrayInput, nil)
 	if got != "hello" {
 		t.Errorf("renderToolOutput array-form = %q, want %q", got, "hello")
 	}
@@ -160,7 +160,7 @@ func TestRenderToolOutput_ArrayFormTextBlock(t *testing.T) {
 func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 	t.Parallel()
 	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
-	got, _ := renderToolOutput("Bash", arrayInput, nil)
+	got := renderToolOutput("Bash", arrayInput, nil)
 	if got != "hello world" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
 	}
@@ -197,7 +197,7 @@ func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 	plain := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
 	textJSON, _ := json.Marshal(plain)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Agent", raw, tools)
+	got := renderToolOutput("Agent", raw, tools)
 
 	// Expected: markdown preserved verbatim.
 	want := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"

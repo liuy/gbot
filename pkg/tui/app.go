@@ -602,8 +602,9 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 					isErr := false
 					elapsed := time.Duration(0)
 					if hasResult {
-						output, elapsed = renderToolOutput(block.Name, result.Content, tools)
+						output = renderToolOutput(block.Name, result.Content, tools)
 						isErr = result.IsError
+						elapsed = time.Duration(result.ToolDurationNs)
 					}
 					current.Blocks = append(current.Blocks, ContentBlock{
 						Type: BlockTool,
@@ -675,9 +676,9 @@ func formatToolInput(raw json.RawMessage) string {
 // Engine emits array-form content exclusively; legacy string-form sessions
 // replayed from disk hit the array parse failure and fall through to
 // string(raw) passthrough.
-func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, time.Duration) {
+func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) string {
 	if len(raw) == 0 {
-		return "", 0
+		return ""
 	}
 
 	var blocks []struct {
@@ -685,9 +686,7 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &blocks) != nil {
-		// Not array form (legacy string-form session or non-JSON bytes).
-		// Passthrough preserves the raw bytes for the caller to handle.
-		return string(raw), 0
+		return string(raw)
 	}
 
 	var parts []string
@@ -699,40 +698,33 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 
 	if len(parts) > 0 {
 		rest := strings.Join(parts, "\n")
-		// Handle <persisted-output>: read file from disk, then render via tool.
 		if strings.HasPrefix(rest, "<persisted-output>") {
 			if data := readPersistedFile(rest); data != nil {
 				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
-					return r, 0
+					return r
 				}
 			}
-			return extractPersistedPreview(rest), 0
+			return extractPersistedPreview(rest)
 		}
-		// Try tool's RenderResult with the decoded concrete type.
-		// Only call renderViaTool when rest looks like JSON — agent tool results
-		// are plain text (not SubQueryResult JSON), and passing plain text to
-		// renderViaTool triggers the fallback path that json.Marshal-wraps the
-		// string in quotes. Plain markdown should pass through unchanged.
 		trimmed := strings.TrimLeft(rest, " \t\n\r")
 		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
-				return r, 0
+				return r
 			}
 		}
 		var obj struct {
 			Output string `json:"output"`
 		}
 		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-			return obj.Output, 0
+			return obj.Output
 		}
-		return rest, 0
+		return rest
 	}
 
-	// No text blocks (e.g. image-only): delegate to tool's DecodeResult.
 	if r, ok := renderViaTool(toolName, raw, tools); ok {
-		return r, 0
+		return r
 	}
-	return string(raw), 0
+	return string(raw)
 }
 
 // renderViaTool finds the tool, decodes the raw JSON to its concrete result

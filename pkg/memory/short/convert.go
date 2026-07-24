@@ -20,9 +20,9 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]*TranscriptMessage, er
 		storeBlocks := make([]types.ContentBlock, 0, len(em.Content))
 		storeBlocks = append(storeBlocks, em.Content...)
 
-		contentBytes, err := json.Marshal(storeBlocks)
+		contentBytes, err := types.MarshalContentBlocksForStorage(storeBlocks)
 		if err != nil {
-			return nil, fmt.Errorf("marshal content blocks: %w", err)
+			return nil, fmt.Errorf("marshal content blocks for storage: %w", err)
 		}
 
 		msgUUID := em.ID

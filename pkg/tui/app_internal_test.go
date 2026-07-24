@@ -44,7 +44,7 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 	inner := `{"filenames":["a.go","b.go"]}`
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Glob", raw, tools)
+	got := renderToolOutput("Glob", raw, tools)
 	want := "a.go\nb.go"
 	if got != want {
 		t.Errorf("renderToolOutput = %q, want %q", got, want)
@@ -59,7 +59,7 @@ func TestRenderToolOutput_DecodeErrorFallback(t *testing.T) {
 	// Array form whose text content is not valid JSON for the tool.
 	// The plain text passes through unchanged.
 	raw := json.RawMessage(`[{"type":"text","text":"garbage"}]`)
-	got, _ := renderToolOutput("Glob", raw, tools)
+	got := renderToolOutput("Glob", raw, tools)
 	if got != "garbage" {
 		t.Errorf("renderToolOutput plain-text passthrough = %q, want %q", got, "garbage")
 	}
@@ -69,7 +69,7 @@ func TestRenderToolOutput_ErrorArrayForm(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{}
 	raw := json.RawMessage(`[{"type":"text","text":"boom"}]`)
-	got, _ := renderToolOutput("Bash", raw, tools)
+	got := renderToolOutput("Bash", raw, tools)
 	if got != "boom" {
 		t.Errorf("got %q, want %q", got, "boom")
 	}
@@ -85,7 +85,7 @@ func TestRenderToolOutput_NoStringBranch(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{}
 	raw := json.RawMessage(`"hello"`)
-	got, _ := renderToolOutput("Bash", raw, tools)
+	got := renderToolOutput("Bash", raw, tools)
 	if got != `"hello"` {
 		t.Errorf("got %q (%d bytes), want %q (7 bytes — string(raw) passthrough)", got, len(got), `"hello"`)
 	}
@@ -101,7 +101,7 @@ func TestRenderToolOutput_ArrayFormRenderViaTool(t *testing.T) {
 	inner := `{"filenames":["a.go","b.go"]}`
 	textJSON, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got, _ := renderToolOutput("Glob", raw, tools)
+	got := renderToolOutput("Glob", raw, tools)
 	want := "a.go\nb.go"
 	if got != want {
 		t.Errorf("renderToolOutput = %q, want %q", got, want)
@@ -116,7 +116,7 @@ func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 		"Glob": &mockRenderTool{},
 	}
 	arrayInput := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
-	got, _ := renderToolOutput("Glob", arrayInput, tools)
+	got := renderToolOutput("Glob", arrayInput, tools)
 	if got != "hello world" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
 	}
