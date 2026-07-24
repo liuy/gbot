@@ -1001,8 +1001,7 @@ func formatWireBlocksOrDefault(t tool.Tool, data any) []types.ContentBlock {
 		return wb.FormatWireBlocks(data)
 	}
 	raw, _ := json.Marshal(data)
-	wrapped, _ := json.Marshal(string(raw))
-	return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+	return []types.ContentBlock{types.NewTextBlock(string(raw))}
 }
 
 // prependDurationToBlocks mutates the FIRST text block of blocks in-place,

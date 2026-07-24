@@ -186,8 +186,8 @@ func New(b *AndroidBackend) tool.Tool {
 			shot, ok := data.(*Screenshot)
 			if !ok {
 				raw, _ := json.Marshal(data)
-				wrapped, _ := json.Marshal(string(raw))
-				return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+				raw2 := string(raw)
+				return []types.ContentBlock{types.NewTextBlock(raw2)}
 			}
 			return []types.ContentBlock{
 				types.NewTextBlock(fmt.Sprintf("Screenshot captured (%dx%d).", shot.Width, shot.Height)),

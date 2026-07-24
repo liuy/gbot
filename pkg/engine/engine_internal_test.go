@@ -28,6 +28,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
@@ -2295,14 +2296,10 @@ func TestFormatWireBlocksOrDefault_Default(t *testing.T) {
 	if blocks[0].Type != types.ContentTypeText {
 		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
 	}
-	// Outer Text is JSON-string form: "\"{\\\"k\\\":\\\"v\\\"}\""
-	var outer string
-	if err := json.Unmarshal([]byte(blocks[0].Text), &outer); err != nil {
-		t.Fatalf("outer unmarshal failed: %v (text=%q)", err, blocks[0].Text)
-	}
+	// Text is the raw JSON of Data (NOT double-wrapped).
 	var inner map[string]string
-	if err := json.Unmarshal([]byte(outer), &inner); err != nil {
-		t.Fatalf("inner unmarshal failed: %v (outer=%q)", err, outer)
+	if err := json.Unmarshal([]byte(blocks[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal text failed: %v (text=%q)", err, blocks[0].Text)
 	}
 	if inner["k"] != "v" {
 		t.Errorf("inner[k] = %q, want %q", inner["k"], "v")
@@ -8761,5 +8758,86 @@ func TestStreamErrorGeneratesSyntheticToolResults(t *testing.T) {
 	}
 	if !hasSynthResult {
 		t.Error("expected synthetic tool_result for tu_err with IsError=true")
+	}
+}
+
+// TestReplayChain_EditToolReplayRenderOutput is an end-to-end test for the
+// tool_result replay path. It verifies that content produced by
+// formatWireBlocksOrDefault, when fed through the same logic as
+// renderToolOutput (extract text → renderViaTool), produces the tool's
+// RenderResult output — not raw JSON.
+//
+// This catches the doubleWrap bug where text blocks contained
+// JSON-string-of-JSON (e.g. "\"{\\\"filePath\\\":...}\"") causing
+// renderToolOutput to skip renderViaTool (text starts with ", not {).
+func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
+	t.Parallel()
+
+	editTool := fileedit.New()
+	editData := &fileedit.Output{
+		FilePath:  "/tmp/test.go",
+		OldString: "old",
+		NewString: "new",
+	}
+
+	// Step 1: engine produces wire blocks from tool Data.
+	blocks := formatWireBlocksOrDefault(editTool, editData)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want text", blocks[0].Type)
+	}
+
+	// Step 2: marshalBlocks → tool_result.content (what gets stored/persisted).
+	content := marshalBlocks(blocks)
+
+	// Step 3: simulate renderToolOutput replay path.
+	var parsedBlocks []types.ContentBlock
+	if err := json.Unmarshal(content, &parsedBlocks); err != nil {
+		t.Fatalf("unmarshal content: %v", err)
+	}
+	var parts []string
+	for _, b := range parsedBlocks {
+		if b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	if len(parts) == 0 {
+		t.Fatal("no text blocks extracted from content")
+	}
+	text := parts[0]
+
+	// Step 4: renderToolOutput only calls renderViaTool when text starts
+	// with { or [. If it starts with " (doubleWrap bug), renderViaTool
+	// is skipped and the user sees raw JSON.
+	trimmed := strings.TrimLeft(text, " \t\n\r")
+	if len(trimmed) == 0 {
+		t.Fatal("text is empty after trim")
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		t.Fatalf("text starts with %q, expected '{' or '[' — "+
+			"renderViaTool would be skipped, showing raw JSON to user.\n"+
+			"text preview: %.80s", string(trimmed[0]), text)
+	}
+
+	// Step 5: renderViaTool → DecodeResult + RenderResult.
+	if dt, ok := editTool.(tool.ToolWithDecodeResult); ok {
+		decoded, err := dt.DecodeResult([]byte(trimmed))
+		if err != nil {
+			t.Fatalf("DecodeResult failed: %v (text=%.80s)", err, trimmed)
+		}
+		rendered := editTool.RenderResult(decoded)
+		if rendered == "" {
+			t.Fatal("RenderResult returned empty string")
+		}
+		// The rendered output must NOT contain raw JSON keys.
+		if strings.Contains(rendered, `"filePath"`) {
+			t.Errorf("RenderResult output contains raw JSON key: %s", rendered)
+		}
+		// The rendered output should contain the diff content, not JSON.
+		if !strings.Contains(rendered, "old") || !strings.Contains(rendered, "new") {
+			t.Errorf("RenderResult output missing diff content: %s", rendered)
+		}
 	}
 }

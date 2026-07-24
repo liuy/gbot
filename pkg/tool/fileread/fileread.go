@@ -294,8 +294,8 @@ func New() tool.Tool {
 					out = *p
 				} else {
 					raw, _ := json.Marshal(data)
-					wrapped, _ := json.Marshal(string(raw))
-					return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+					raw2 := string(raw)
+					return []types.ContentBlock{types.NewTextBlock(raw2)}
 				}
 			}
 			return []types.ContentBlock{types.NewImageBlock(types.ImageSource{

@@ -123,8 +123,8 @@ func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 			out, ok := data.(skillOutput)
 			if !ok {
 				raw, _ := json.Marshal(data)
-				wrapped, _ := json.Marshal(string(raw))
-				return []types.ContentBlock{types.NewTextBlock(string(wrapped))}
+				raw2 := string(raw)
+				return []types.ContentBlock{types.NewTextBlock(raw2)}
 			}
 			if out.Status == "forked" {
 				return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("Skill \"%s\" completed (forked execution).\n\nResult:\n%s", out.CommandName, out.Result))}
