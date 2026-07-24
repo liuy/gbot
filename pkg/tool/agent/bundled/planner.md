@@ -78,6 +78,14 @@ How to prove it works end-to-end. Include at least one check that exercises the 
 ### Assumptions
 Only decisions you made that the user might want to override. Never park decisions the implementer must make — those belong in Approach.
 
+### External Dependencies (if any)
+List third-party APIs, libraries, or external services the plan depends on. For each:
+- **Dependency**: name, version, URL
+- **Verification**: how you confirmed it exists and supports the claimed feature (e.g. "checked official docs", "verified via Web search")
+- **Status**: ✅ verified / ⚠️ assumed
+
+Skip this section if the plan has no external dependencies.
+
 ## Quality Bar
 
 A plan that forces the implementer to choose = FAILED plan.
