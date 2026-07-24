@@ -51,6 +51,48 @@ describe('createInputBar', () => {
     expect(ib.root.textContent).not.toContain('STOP')
   })
 
+  it('streaming + typing text flips button from Stop to Send', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    // Initially empty input → Stop button
+    expect(ib.root.querySelector('button[aria-label="Stop"]')).toBeTruthy()
+    // User types → button must flip to Send
+    ib.textarea.value = 'follow-up question'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    const sendBtn = ib.root.querySelector('button[aria-label="Send"]')
+    expect(sendBtn).toBeTruthy()
+    expect(sendBtn!.classList.contains('pulse-blue')).toBe(false)
+    expect(ib.root.querySelector('button[aria-label="Stop"]')).toBeNull()
+  })
+
+  it('streaming + clear text reverts button from Send back to Stop', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.textarea.value = 'x'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(ib.root.querySelector('button[aria-label="Send"]')).toBeTruthy()
+    // Clear the text → button flips back to Stop
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(ib.root.querySelector('button[aria-label="Stop"]')).toBeTruthy()
+    expect(ib.root.querySelector('button[aria-label="Send"]')).toBeNull()
+  })
+
+  it('streaming + text + Send click fires onSend (does NOT stop)', () => {
+    const ib = mount()
+    const sendSpy = vi.fn()
+    const stopSpy = vi.fn()
+    ib.onSend(sendSpy)
+    ib.onStop(stopSpy)
+    ib.setStreaming(true)
+    ib.textarea.value = 'follow-up'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    const sendBtn = ib.root.querySelector('button[aria-label="Send"]') as HTMLButtonElement
+    sendBtn.click()
+    expect(sendSpy).toHaveBeenCalledWith('follow-up')
+    expect(stopSpy).not.toHaveBeenCalled()
+  })
+
   it('setQueuedMsgs single shows Tap to CANCEL', () => {
     const ib = mount()
     ib.setStreaming(true)

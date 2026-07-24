@@ -179,6 +179,20 @@ export function createInputBar(initial: {
     } else {
       sendBtn.classList.remove('opacity-50')
     }
+    // During streaming, button shows Stop only when input is empty.
+    // Once the user types, it flips to Send so they can append a message
+    // without interrupting the current query.
+    if (streaming) {
+      if (hasText) {
+        sendBtn.innerHTML = sendIcon
+        sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
+        sendBtn.setAttribute('aria-label', 'Send')
+      } else {
+        sendBtn.innerHTML = stopIcon
+        sendBtn.classList.add('pulse-blue', 'bg-blue/12')
+        sendBtn.setAttribute('aria-label', 'Stop')
+      }
+    }
   }
 
   const onSubmit = (e: Event) => {
@@ -312,10 +326,9 @@ export function createInputBar(initial: {
     setStreaming: (s: boolean) => {
       streaming = s
       if (s) {
-        sendBtn.innerHTML = stopIcon
-        sendBtn.classList.add('pulse-blue', 'bg-blue/12')
-        sendBtn.classList.remove('opacity-50')
-        sendBtn.setAttribute('aria-label', 'Stop')
+        // Respect current input state: empty → Stop, non-empty → Send
+        // (recomputeCanSend handles the icon/aria-label flip).
+        recomputeCanSend()
       } else {
         sendBtn.innerHTML = sendIcon
         sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
