@@ -5612,11 +5612,11 @@ func TestQuery_ToolDurationIncludesStreamingTime(t *testing.T) {
 		// Chain mp then mp2 via a composite provider.
 		ec := newEventCollector()
 		eng := New(&Params{
-			Provider: &chainedProvider{providers: []llm.Provider{mp, mp2}},
-			Dispatcher: ec,
+			Provider:      &chainedProvider{providers: []llm.Provider{mp, mp2}},
+			Dispatcher:    ec,
 			ToolsProvider: func() map[string]tool.Tool { return toolsMap },
-			Model:  "test-model",
-			Logger: slog.Default(),
+			Model:         "test-model",
+			Logger:        slog.Default(),
 		})
 		t.Cleanup(func() { eng.Close() })
 

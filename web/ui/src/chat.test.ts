@@ -1053,6 +1053,26 @@ describe('chat integration', () => {
     expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
   })
 
+  it('tool_param_delta with is_list enables grouping for Bash ls (not just is_search)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash', input: {} } },
+      { type: 'tool_param_delta', partial_input: { id: 't1', name: 'Bash', delta: '', summary: 'ls /a', is_list: true } },
+      { type: 'tool_run', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'tool_start', tool_use: { id: 't2', name: 'Bash', input: {} } },
+      { type: 'tool_param_delta', partial_input: { id: 't2', name: 'Bash', delta: '', summary: 'ls /b', is_list: true } },
+      { type: 'tool_run', tool_use: { id: 't2', name: 'Bash' } },
+    ])
+    const toolRoots = document.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(2)
+    // Both Bash(ls) should be marked collapsible after tool_param_delta provides is_list
+    // and grouped together (matches committed-render behavior in isCollapsible).
+    const group = document.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
   it('reconnect after streaming does not duplicate', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

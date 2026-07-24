@@ -236,7 +236,7 @@ function buildShell(
   return { outer, content }
 }
 
-function isCollapsibleToolBlock(b: Block): boolean {
+function isCollapsible(b: Block): boolean {
   return (
     b.kind === 'tool' &&
     (b.isSearch ||
@@ -283,8 +283,7 @@ function renderCommittedMessageDOM(
       if (b.text) writeThinkingText(p, b.text)
       finishThinking(p, labelEl, b.durationNs)
     } else if (b.kind === 'tool') {
-      const collapsible = isCollapsibleToolName(b.name) || isCollapsibleToolBlock(b)
-      const handles = appendToolBlock(content, b.name, undefined, collapsible)
+      const handles = appendToolBlock(content, b.name, undefined, isCollapsible(b))
       if (b.summary) setToolSummary(handles, b.summary, b.name)
       if (b.state === 'running') {
         runningTools.push({ id: b.id, handles, block: b })
@@ -1024,8 +1023,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         finishThinking(p, labelEl, block.durationNs)
       }
     } else if (block.kind === 'tool') {
-      const collapsible = isCollapsibleToolName(block.name) || isCollapsibleToolBlock(block)
-      const handles = appendToolBlock(parent, block.name, before, collapsible)
+      const handles = appendToolBlock(parent, block.name, before, isCollapsible(block))
       if (block.summary) setToolSummary(handles, block.summary, block.name)
       if (block.state === 'running') {
         toolEntries.set(block.id, {
@@ -1319,12 +1317,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           container.push(block)
           pendingToolByID.set(tu.id, block)
           if (domContainer) {
-            const collapsible = isCollapsibleToolName(tu.name) || !!tu.is_search
             const handles = appendToolBlock(
               domContainer,
               tu.name,
               undefined,
-              collapsible,
+              isCollapsible(block),
             )
             toolEntries.set(tu.id, {
               handles,
@@ -1347,12 +1344,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         pendingBlocks.push(block)
         pendingToolByID.set(tu.id, block)
         if (streamContainer) {
-          const collapsible = isCollapsibleToolName(tu.name) || !!tu.is_search
           const handles = appendToolBlock(
             streamContainer,
             tu.name,
             progressAnchor(),
-            collapsible,
+            isCollapsible(block),
           )
           if (tu.summary) {
             setToolSummary(handles, tu.summary, tu.name)
@@ -1387,12 +1383,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!e.tool_use) return
         const ruEntry = toolEntries.get(e.tool_use.id)
         if (!ruEntry) return
-        // tool_start fires with empty input, so is_search is false.
-        // Now that tool_param_delta has populated the block flags,
-        // retroactively mark collapsible and trigger grouping.
-        const srk = classifyToolName(e.tool_use.name)
-        const shouldCollapse = srk.isSearch || ruEntry.pendingBlock.isSearch
-        if (shouldCollapse) markToolCollapsible(ruEntry.handles.root)
+        if (isCollapsible(ruEntry.pendingBlock)) {
+          markToolCollapsible(ruEntry.handles.root)
+        }
         return
       }
       case 'tool_output_delta': {
