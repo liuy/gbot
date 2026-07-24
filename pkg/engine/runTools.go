@@ -82,6 +82,11 @@ type TrackedTool struct {
 	Result            *tool.ToolResult
 	Err               error
 
+	// StartedAt records when EventToolStart fired (content_block_start).
+	// Used by executeTool to compute tt.Duration covering the full perceived
+	// window (LLM streaming input + tool execution), not just t.Call() time.
+	StartedAt time.Time
+
 	// done is closed when the tool completes (status → completed).
 	// Callers wait on this to be notified of completion.
 	done chan struct{}
@@ -303,7 +308,7 @@ func toolNotFoundHint(name string) string {
 // Public API
 // ---------------------------------------------------------------------------
 // Source: StreamingToolExecutor.ts:76-124 — addTool().
-func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
+func (e *StreamingToolExecutor) AddTool(block types.ContentBlock, startedAt time.Time) {
 	t, ok := e.toolMap[block.Name]
 	if !ok {
 		errMsg := fmt.Sprintf("No such tool available: %s", block.Name)
@@ -344,6 +349,7 @@ func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 			IsConcurrencySafe: true,
 			done:              make(chan struct{}),
 			resultBlocks:      []types.ContentBlock{errBlock},
+			StartedAt:         startedAt,
 		}
 		close(tt.done)
 		e.mu.Lock()
@@ -372,6 +378,7 @@ func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 		IsConcurrencySafe: isSafe,
 		FilePath:          extractFilePath(block.Name, block.Input),
 		done:              make(chan struct{}),
+		StartedAt:         startedAt,
 	}
 	e.mu.Lock()
 	e.tools = append(e.tools, tt)
@@ -418,7 +425,7 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 		if block.Type != types.ContentTypeToolUse {
 			continue
 		}
-		e.AddTool(block)
+		e.AddTool(block, time.Time{})
 	}
 
 	if len(e.tools) == 0 {
@@ -690,7 +697,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 
 	// Use siblingCtx so Bash errors can cancel siblings.
-	start := time.Now()
+	start := tt.StartedAt
+	if start.IsZero() {
+		start = time.Now()
+	}
 
 	toolCtx := e.buildToolCtx(tt.ID)
 

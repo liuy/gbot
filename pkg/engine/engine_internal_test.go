@@ -809,7 +809,7 @@ func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
 
 	started := make(chan struct{})
 	toolMap["slow"].(*slowCancelTool).onStarted = func() { close(started) }
-	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "slow"})
+	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "slow"}, time.Time{})
 
 	// Wait for the goroutine to start and enter tool.Call (blocking on ctx.Done)
 	// before Discard sets the flag. Without this, the early abort path wins.
@@ -832,7 +832,7 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 	}
 
 	executor := NewStreamingToolExecutor(toolMap, nil, func(types.QueryEvent) {}, context.Background())
-	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "never_run"})
+	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "never_run"}, time.Time{})
 	executor.Discard()
 
 	// Discard() is synchronous — no goroutine should start after it returns.

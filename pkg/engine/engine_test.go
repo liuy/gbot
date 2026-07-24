@@ -13,12 +13,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
+	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -5482,5 +5485,189 @@ func TestQuery_ToolErrorDurationPersisted(t *testing.T) {
 	}
 	if result.ToolDurationNs == 0 {
 		t.Errorf("error tool_result ToolDurationNs = 0, want > 0")
+	}
+}
+
+// streamingProviderWithDelay emits preconfigured events but inserts a real
+// time.Sleep between content_block_start (tool_use) and content_block_stop.
+// This simulates LLM streaming input_json_delta latency so tests can verify
+// duration is measured from content_block_start, not from executeTool entry.
+type streamingProviderWithDelay struct {
+	events []llm.StreamEvent
+	delay  time.Duration // sleep between content_block_start and content_block_stop
+	idx    int
+}
+
+func (p *streamingProviderWithDelay) Name() string { return "streaming-delay" }
+func (p *streamingProviderWithDelay) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, errors.New("not implemented")
+}
+func (p *streamingProviderWithDelay) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	ch := make(chan llm.StreamEvent, len(p.events))
+	go func() {
+		defer close(ch)
+		for _, ev := range p.events {
+			// Insert the streaming delay AFTER content_block_start for tool_use
+			// blocks, BEFORE content_block_stop — this is the wall-clock window
+			// the user perceives as "LLM is thinking about the tool call".
+			if ev.Type == "content_block_stop" && p.delay > 0 {
+				<-time.After(p.delay)
+			}
+			ch <- ev
+			p.idx++
+		}
+	}()
+	return ch, nil
+}
+
+// findToolResultBlock scans engine messages for the tool_result block of toolID.
+func findToolResultBlock(msgs []types.Message, toolID string) *types.ContentBlock {
+	for i := range msgs {
+		if msgs[i].Role != types.RoleUser {
+			continue
+		}
+		for j := range msgs[i].Content {
+			if msgs[i].Content[j].Type == types.ContentTypeToolResult &&
+				msgs[i].Content[j].ToolUseID == toolID {
+				return &msgs[i].Content[j]
+			}
+		}
+	}
+	return nil
+}
+
+// TestQuery_ToolDurationIncludesStreamingTime is the RED test for the bug
+// "tt.Duration only measures t.Call execution, not the perceived tool_use →
+// tool_end time". It drives the engine with a mock provider that sleeps 100ms
+// (synctest virtual time) between content_block_start and content_block_stop
+// to simulate LLM streaming the tool input. The actual tool execution is
+// instantaneous (Read just opens a file). The persisted ToolDurationNs MUST
+// be >= 100ms; if it only measures executeTool→t.Call, it will be ~0.
+//
+// Three tools are exercised in a single turn to also verify multi-tool timing:
+//   - Read on a real temp file (instant execution)
+//   - Read on a second real temp file (instant execution)
+//   - Edit on a real temp file (instant execution)
+//
+// All three should report duration >= streamingDelay.
+func TestQuery_ToolDurationIncludesStreamingTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tmpDir := t.TempDir()
+		file1 := filepath.Join(tmpDir, "a.txt")
+		file2 := filepath.Join(tmpDir, "b.txt")
+		file3 := filepath.Join(tmpDir, "c.txt")
+		mustWriteFile(t, file1, []byte("content-a"))
+		mustWriteFile(t, file2, []byte("content-b"))
+		mustWriteFile(t, file3, []byte("old"))
+
+		readTool := fileread.New()
+		editTool := fileedit.New()
+		toolsMap := map[string]tool.Tool{
+			"Read": readTool,
+			"Edit": editTool,
+		}
+
+		// Build a single assistant turn with 3 tool_use blocks.
+		// Each tool_use's content_block_start → content_block_stop will be
+		// separated by streamingDelay (simulated LLM streaming of input).
+		const streamingDelay = 100 * time.Millisecond
+		read1Input, _ := json.Marshal(map[string]string{"file_path": file1})
+		read2Input, _ := json.Marshal(map[string]string{"file_path": file2})
+		editInput, _ := json.Marshal(map[string]any{
+			"file_path":  file3,
+			"old_string": "old",
+			"new_string": "new",
+		})
+
+		events := []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 30}}},
+		}
+		// Helper to append a tool_use block (start → delta → stop). The delay
+		// is injected by streamingProviderWithDelay on every content_block_stop.
+		addToolUse := func(idx int, toolID, toolName string, input json.RawMessage) {
+			events = append(events,
+				llm.StreamEvent{Type: "content_block_start", Index: idx,
+					ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: toolID, Name: toolName}},
+				llm.StreamEvent{Type: "content_block_delta", Index: idx,
+					Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: string(input)}},
+				llm.StreamEvent{Type: "content_block_stop", Index: idx},
+			)
+		}
+		addToolUse(0, "toolu_read1", "Read", read1Input)
+		addToolUse(1, "toolu_read2", "Read", read2Input)
+		addToolUse(2, "toolu_edit1", "Edit", editInput)
+		events = append(events,
+			llm.StreamEvent{Type: "message_delta",
+				DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"},
+				Usage:    &types.Usage{OutputTokens: 30}},
+			llm.StreamEvent{Type: "message_stop"},
+		)
+
+		mp := &streamingProviderWithDelay{events: events, delay: streamingDelay}
+		// Second LLM response: short text to finish the turn.
+		finishEvents := textStreamEvents("test-model", "done")
+		mp2 := &mockProvider{}
+		mp2.addResponse(finishEvents, nil)
+
+		// Chain mp then mp2 via a composite provider.
+		ec := newEventCollector()
+		eng := New(&Params{
+			Provider: &chainedProvider{providers: []llm.Provider{mp, mp2}},
+			Dispatcher: ec,
+			ToolsProvider: func() map[string]tool.Tool { return toolsMap },
+			Model:  "test-model",
+			Logger: slog.Default(),
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		eng.Query(ctx, "read 2 files and edit a third", "")
+		ec.WaitForResult()
+
+		msgs := eng.Messages()
+		for _, toolID := range []string{"toolu_read1", "toolu_read2", "toolu_edit1"} {
+			blk := findToolResultBlock(msgs, toolID)
+			if blk == nil {
+				t.Errorf("%s: no tool_result block found", toolID)
+				continue
+			}
+			got := time.Duration(blk.ToolDurationNs)
+			// Expect >= streamingDelay because duration must include the
+			// simulated LLM streaming of input_json_delta.
+			if got < streamingDelay {
+				t.Errorf("%s ToolDurationNs = %v, want >= %v (must include streaming input time)",
+					toolID, got, streamingDelay)
+			} else {
+				t.Logf("%s ToolDurationNs = %v ✓", toolID, got)
+			}
+		}
+	})
+}
+
+// chainedProvider serves each provider's Stream response in sequence.
+type chainedProvider struct {
+	providers []llm.Provider
+	idx       int
+}
+
+func (c *chainedProvider) Name() string { return "chained" }
+func (c *chainedProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, errors.New("not implemented")
+}
+func (c *chainedProvider) Stream(ctx context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
+	if c.idx >= len(c.providers) {
+		return nil, errors.New("no more chained providers")
+	}
+	p := c.providers[c.idx]
+	c.idx++
+	return p.Stream(ctx, req)
+}
+
+// mustWriteFile is a test helper that writes data to a file and fails the test on error.
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

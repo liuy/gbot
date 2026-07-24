@@ -2168,9 +2168,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// OpenAI SSE can interleave input_json_delta across multiple tool_use
 	// blocks; each block's state must be isolated by event.Index.
 	type blockAccumulator struct {
-		toolInput strings.Builder
-		toolID    string
-		toolName  string
+		toolInput     strings.Builder
+		toolID        string
+		toolName      string
+		toolStartedAt time.Time // when EventToolStart fired (content_block_start)
 	}
 	var blockAcc []*blockAccumulator
 
@@ -2267,8 +2268,8 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 				cb := *event.ContentBlock
 				contentBlocks = append(contentBlocks, cb)
 				switch cb.Type {
-				case types.ContentTypeToolUse:
-					acc := &blockAccumulator{toolID: cb.ID, toolName: cb.Name}
+			case types.ContentTypeToolUse:
+				acc := &blockAccumulator{toolID: cb.ID, toolName: cb.Name, toolStartedAt: time.Now()}
 					bidx := event.Index
 					for len(blockAcc) <= bidx {
 						blockAcc = append(blockAcc, nil)
@@ -2413,8 +2414,8 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							Name: cb.Name,
 						},
 					})
-					streamingExecutor.SetAssistantContent(contentBlocks)
-					streamingExecutor.AddTool(*cb)
+				streamingExecutor.SetAssistantContent(contentBlocks)
+				streamingExecutor.AddTool(*cb, blockAcc[idx].toolStartedAt)
 				case types.ContentTypeThinking:
 					cb.Thinking = currentText.String()
 					currentText.Reset()
