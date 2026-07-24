@@ -897,3 +897,36 @@ func TestGrepTool_IsSearchOrRead(t *testing.T) {
 		t.Errorf("GrepTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)
 	}
 }
+
+func TestGrep_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	tt := grep.New()
+	inner := `{"mode":"files_with_matches","numFiles":2,"filenames":["a.go","b.go"]}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(*grep.Output)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *grep.Output", v)
+	}
+	if o.NumFiles != 2 {
+		t.Errorf("NumFiles = %d, want 2", o.NumFiles)
+	}
+	if len(o.Filenames) != 2 || o.Filenames[0] != "a.go" {
+		t.Errorf("Filenames = %v, want [a.go b.go]", o.Filenames)
+	}
+}
+
+func TestGrep_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := grep.New()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"mode":"files_with_matches"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
+	}
+}

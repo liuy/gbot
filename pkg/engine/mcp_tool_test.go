@@ -711,3 +711,33 @@ func TestMCPTool_IsSearchOrRead(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPTool_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	tl := NewMCPTool(mcp.DiscoveredTool{Name: "mcp__s__echo"}, nil)
+	inner := `"hello from MCP"`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tl.DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want string", v)
+	}
+	if s != "hello from MCP" {
+		t.Errorf("result = %q, want %q", s, "hello from MCP")
+	}
+}
+
+func TestMCPTool_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tl := NewMCPTool(mcp.DiscoveredTool{Name: "mcp__s__echo"}, nil)
+	_, err := tl.DecodeResult(json.RawMessage(`"hello from MCP"`))
+	if err == nil {
+		t.Error("DecodeResult must reject non-array-form input")
+	}
+}

@@ -1248,3 +1248,36 @@ func TestExecute_SequentialEdit_UpdatesReadFileState(t *testing.T) {
 		t.Errorf("final file = %q, old strings should be replaced", got)
 	}
 }
+
+func TestFileEdit_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	tt := fileedit.New()
+	inner := `{"filePath":"/tmp/x.go","oldString":"a","newString":"b","replaceAll":false}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(*fileedit.Output)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *fileedit.Output", v)
+	}
+	if o.FilePath != "/tmp/x.go" {
+		t.Errorf("FilePath = %q, want /tmp/x.go", o.FilePath)
+	}
+	if o.OldString != "a" || o.NewString != "b" {
+		t.Errorf("Old=%q New=%q, want a/b", o.OldString, o.NewString)
+	}
+}
+
+func TestFileEdit_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := fileedit.New()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"filePath":"/tmp/x.go"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
+	}
+}

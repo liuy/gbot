@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -55,15 +58,20 @@ func TestRenderViaTool_DecodeResultPath(t *testing.T) {
 				return out.Text
 			},
 			decodeFn: func(raw json.RawMessage) (any, error) {
+				text, err := tool.UnmarshalSingleBlock(raw)
+				if err != nil {
+					return nil, err
+				}
 				var r stringResult
-				if err := json.Unmarshal(raw, &r); err != nil {
+				if err := json.Unmarshal([]byte(text), &r); err != nil {
 					return nil, err
 				}
 				return &r, nil
 			},
 		},
 	}
-	got, ok := renderViaTool("Bash", json.RawMessage(`{"text":"hello world"}`), tools)
+	raw := json.RawMessage(`[{"type":"text","text":"{\"text\":\"hello world\"}"}]`)
+	got, ok := renderViaTool("Bash", raw, tools)
 	if !ok {
 		t.Fatal("renderViaTool(Bash) returned ok=false, want true")
 	}
@@ -83,28 +91,44 @@ func TestRenderViaTool_ToolNotInMap(t *testing.T) {
 	}
 }
 
-func TestRenderViaTool_DecodeError_FallsBackToString(t *testing.T) {
+func TestRenderViaTool_DecodeErrorReturnsFalse(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
 		"Bash": &decodeMockTool{
-			renderFn: func(data any) string {
-				s, ok := data.(string)
-				if !ok {
-					return "NON_STRING_FALLBACK"
-				}
-				return s
-			},
+			renderFn: func(data any) string { return "SHOULD_NOT_BE_CALLED" },
 			decodeFn: func(raw json.RawMessage) (any, error) {
 				return nil, errors.New("decode error")
 			},
 		},
 	}
 	got, ok := renderViaTool("Bash", json.RawMessage(`garbage`), tools)
-	if !ok {
-		t.Fatal("renderViaTool(Bash) returned ok=false, want true")
+	if ok {
+		t.Error("renderViaTool(Bash) returned ok=true, want false on decode error")
 	}
-	if got != "garbage" {
-		t.Errorf("renderViaTool(Bash, decode error) = %q, want %q", got, "garbage")
+	if got != "" {
+		t.Errorf("renderViaTool(Bash, decode error) = %q, want empty", got)
+	}
+}
+
+func TestRenderToolOutput_PassesRawArrayToDecodeResult(t *testing.T) {
+	t.Parallel()
+	var capturedRaw json.RawMessage
+	tools := map[string]tool.Tool{
+		"Bash": &decodeMockTool{
+			renderFn: func(data any) string { return "ok" },
+			decodeFn: func(raw json.RawMessage) (any, error) {
+				capturedRaw = append(capturedRaw[:0], raw...)
+				return &stringResult{Text: "ok"}, nil
+			},
+		},
+	}
+	input := json.RawMessage(`[{"type":"text","text":"hello"}]`)
+	if _, ok := renderViaTool("Bash", input, tools); !ok {
+		t.Fatal("renderViaTool returned ok=false")
+	}
+	// The mock must receive the raw array bytes verbatim — not unwrapped text.
+	if string(capturedRaw) != string(input) {
+		t.Errorf("DecodeResult received %q, want raw array %q", string(capturedRaw), string(input))
 	}
 }
 
@@ -120,8 +144,12 @@ func TestRenderToolOutput_DecodeResultPath(t *testing.T) {
 				return out.Text
 			},
 			decodeFn: func(raw json.RawMessage) (any, error) {
+				text, err := tool.UnmarshalSingleBlock(raw)
+				if err != nil {
+					return nil, err
+				}
 				var r stringResult
-				if err := json.Unmarshal(raw, &r); err != nil {
+				if err := json.Unmarshal([]byte(text), &r); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -166,6 +194,98 @@ func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 	}
 }
 
+// TestRenderToolOutput_ComputerDeviceInfoRenders verifies that a Computer
+// DeviceInfo payload (array-form) renders via DecodeResult and produces
+// friendly output instead of raw JSON.
+func TestRenderToolOutput_ComputerDeviceInfoRenders(t *testing.T) {
+	t.Parallel()
+	type deviceInfo struct {
+		Manufacturer string `json:"Manufacturer"`
+		Model        string `json:"Model"`
+	}
+	computerMock := &decodeMockTool{
+		renderFn: func(data any) string {
+			d, ok := data.(*deviceInfo)
+			if !ok {
+				return "FALLBACK"
+			}
+			return d.Manufacturer + " " + d.Model
+		},
+		decodeFn: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
+			var d deviceInfo
+			if err := json.Unmarshal([]byte(text), &d); err != nil {
+				return nil, err
+			}
+			return &d, nil
+		},
+	}
+	tools := map[string]tool.Tool{"Computer": computerMock}
+	inner := `{"action":"device_info","ok":true,"Manufacturer":"HONOR","Model":"BKQ-AN80"}`
+	textJSON, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got := renderToolOutput("Computer", raw, tools)
+	if got != "HONOR BKQ-AN80" {
+		t.Errorf("renderToolOutput(Computer) = %q, want friendly %q", got, "HONOR BKQ-AN80")
+	}
+	if strings.Contains(got, `"Manufacturer"`) {
+		t.Errorf("renderToolOutput(Computer) leaked raw JSON: %s", got)
+	}
+}
+
+// TestRenderToolOutput_PersistedFileWrapsContent verifies that persisted-file
+// content (bare inner text on disk) gets re-wrapped in array form before
+// being fed to DecodeResult.
+func TestRenderToolOutput_PersistedFileWrapsContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "result.json")
+	fileContent := `{"text":"rendered from file"}`
+	if err := os.WriteFile(filePath, []byte(fileContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var capturedRaw json.RawMessage
+	tools := map[string]tool.Tool{
+		"Bash": &decodeMockTool{
+			renderFn: func(data any) string {
+				out, ok := data.(*stringResult)
+				if !ok {
+					return "FALLBACK"
+				}
+				return out.Text
+			},
+			decodeFn: func(raw json.RawMessage) (any, error) {
+				capturedRaw = append(capturedRaw[:0], raw...)
+				text, err := tool.UnmarshalSingleBlock(raw)
+				if err != nil {
+					return nil, err
+				}
+				var r stringResult
+				if err := json.Unmarshal([]byte(text), &r); err != nil {
+					return nil, err
+				}
+				return &r, nil
+			},
+		},
+	}
+	input := "<persisted-output>\nFull output saved to: " + filePath + "\nPreview (first 5 lines):\nline1"
+	textJSON, _ := json.Marshal(input)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got := renderToolOutput("Bash", raw, tools)
+	if got != "rendered from file" {
+		t.Fatalf("renderToolOutput(persisted) = %q, want %q", got, "rendered from file")
+	}
+	// The mock must have received array form (with bare struct JSON inside the
+	// text block), not bare struct.
+	if len(capturedRaw) == 0 || capturedRaw[0] != '[' {
+		t.Errorf("DecodeResult received non-array input %q", string(capturedRaw))
+	}
+}
+
 // TestRenderToolOutput_AgentMarkdownNotJSONWrapped verifies that plain
 // markdown agent tool results pass through renderViaTool without being
 // re-encoded as JSON strings.
@@ -182,10 +302,12 @@ func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 			return string(b)
 		},
 		decodeFn: func(raw json.RawMessage) (any, error) {
-			// Mimic AgentTool.DecodeResult: expects SubQueryResult JSON.
-			// Plain markdown text will fail to decode.
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var r types.SubQueryResult
-			if err := json.Unmarshal(raw, &r); err != nil {
+			if err := json.Unmarshal([]byte(text), &r); err != nil {
 				return nil, err
 			}
 			return &r, nil
@@ -193,9 +315,12 @@ func TestRenderToolOutput_AgentMarkdownNotJSONWrapped(t *testing.T) {
 	}
 	tools := map[string]tool.Tool{"Agent": agentTool}
 
-	// Simulate the persisted format: JSON string wrapping plain markdown.
+	// Agent markdown wire format: text block wraps a JSON-encoded
+	// SubQueryResult whose Content is the markdown.
 	plain := "## 统计结果\n\n| package | lines |\n|---|---|\n| pkg/tui | 100 |"
-	textJSON, _ := json.Marshal(plain)
+	inner := map[string]any{"content": plain}
+	innerBytes, _ := json.Marshal(inner)
+	textJSON, _ := json.Marshal(string(innerBytes))
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
 	got := renderToolOutput("Agent", raw, tools)
 

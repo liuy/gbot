@@ -673,14 +673,23 @@ func formatToolInput(raw json.RawMessage) string {
 // renderToolOutput renders persisted tool_result content using the tool's own
 // RenderResult logic. This produces the same display as normal streaming.
 //
-// Engine emits array-form content exclusively; legacy string-form sessions
-// replayed from disk hit the array parse failure and fall through to
-// string(raw) passthrough.
+// After the array-form unification every DecodeResult strictly accepts the
+// wire array shape. We pass the raw array straight through; legacy
+// string-form sessions replayed from disk fail DecodeResult and fall through
+// to text extraction.
 func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) string {
 	if len(raw) == 0 {
 		return ""
 	}
 
+	// Pass the raw array straight through. After the array-form unification
+	// every DecodeResult accepts this shape; legacy string-form rows fail
+	// DecodeResult and fall through.
+	if r, ok := renderViaTool(toolName, raw, tools); ok {
+		return r
+	}
+
+	// DecodeResult unavailable or errored — extract text from blocks.
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -688,49 +697,36 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 	if json.Unmarshal(raw, &blocks) != nil {
 		return string(raw)
 	}
-
 	var parts []string
 	for _, b := range blocks {
 		if b.Type == "text" && b.Text != "" {
 			parts = append(parts, b.Text)
 		}
 	}
+	if len(parts) == 0 {
+		return string(raw)
+	}
+	rest := strings.Join(parts, "\n")
 
-	if len(parts) > 0 {
-		rest := strings.Join(parts, "\n")
-		if strings.HasPrefix(rest, "<persisted-output>") {
-			if data := readPersistedFile(rest); data != nil {
-				if r, ok := renderViaTool(toolName, data, tools); ok && r != "" {
-					return r
-				}
-			}
-			return extractPersistedPreview(rest)
-		}
-		trimmed := strings.TrimLeft(rest, " \t\n\r")
-		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
-			if r, ok := renderViaTool(toolName, json.RawMessage(rest), tools); ok {
+	// Persisted-output: file content is bare inner text. Re-wrap into the
+	// array form DecodeResult expects.
+	if strings.HasPrefix(rest, "<persisted-output>") {
+		if data := readPersistedFile(rest); data != nil {
+			wrapped := tool.WrapSingleBlock(string(data))
+			if r, ok := renderViaTool(toolName, wrapped, tools); ok {
 				return r
 			}
 		}
-		var obj struct {
-			Output string `json:"output"`
-		}
-		if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
-			return obj.Output
-		}
-		return rest
+		return extractPersistedPreview(rest)
 	}
 
-	if r, ok := renderViaTool(toolName, raw, tools); ok {
-		return r
-	}
-	return string(raw)
+	return rest
 }
 
 // renderViaTool finds the tool, decodes the raw JSON to its concrete result
 // type via DecodeResult, then calls RenderResult. This produces the same
 // display as the streaming path. Returns (rendered, false) if the tool is
-// not in the map so callers can apply their own fallback.
+// not in the map or DecodeResult errors — caller must apply its own fallback.
 func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, bool) {
 	t, ok := tools[toolName]
 	if !ok {
@@ -740,6 +736,7 @@ func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.T
 		if v, err := dt.DecodeResult(raw); err == nil {
 			return t.RenderResult(v), true
 		}
+		return "", false
 	}
 	return t.RenderResult(string(raw)), true
 }

@@ -1008,3 +1008,41 @@ func TestSkill_EngineWiredAfterConstruction(t *testing.T) {
 		t.Error("sub-agent RunAgent was not called — engine wiring did not propagate")
 	}
 }
+
+func TestSkill_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry("")
+	tt := New(reg, nil)
+	inner := `{"success":true,"commandName":"commit","status":"forked"}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(skillOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want skillOutput", v)
+	}
+	if !o.Success {
+		t.Errorf("Success = false, want true")
+	}
+	if o.CommandName != "commit" {
+		t.Errorf("CommandName = %q, want commit", o.CommandName)
+	}
+	if o.Status != "forked" {
+		t.Errorf("Status = %q, want forked", o.Status)
+	}
+}
+
+func TestSkill_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry("")
+	tt := New(reg, nil)
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"success":true}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
+	}
+}

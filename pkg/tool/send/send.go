@@ -95,8 +95,12 @@ func New(sender FileSender) tool.Tool {
 			return fmt.Sprintf("Sent %s", s.FilePath)
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var s SendResult
-			if err := json.Unmarshal(raw, &s); err != nil {
+			if err := json.Unmarshal([]byte(text), &s); err != nil {
 				return nil, err
 			}
 			return &s, nil

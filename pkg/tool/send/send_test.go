@@ -250,7 +250,9 @@ func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 	t.Parallel()
 	tt := New(&fakeSender{})
 
-	rawWith := json.RawMessage(`{"file_path":"/tmp/x.png","status":"sent"}`)
+	innerWith := `{"file_path":"/tmp/x.png","status":"sent"}`
+	textWith, _ := json.Marshal(innerWith)
+	rawWith := json.RawMessage(`[{"type":"text","text":` + string(textWith) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(rawWith)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -260,7 +262,9 @@ func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 		t.Errorf("RenderResult(decoded with path) = %q, want 'Sent /tmp/x.png'", got)
 	}
 
-	rawWithout := json.RawMessage(`{"status":"sent"}`)
+	innerWithout := `{"status":"sent"}`
+	textWithout, _ := json.Marshal(innerWithout)
+	rawWithout := json.RawMessage(`[{"type":"text","text":` + string(textWithout) + `}]`)
 	v, err = tt.(tool.ToolWithDecodeResult).DecodeResult(rawWithout)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -268,6 +272,16 @@ func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 	got = tt.RenderResult(v)
 	if got != "Sent" {
 		t.Errorf("RenderResult(decoded without path) = %q, want 'Sent'", got)
+	}
+}
+
+func TestSend_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := New(&fakeSender{})
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"file_path":"/tmp/x.png","status":"sent"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }
 

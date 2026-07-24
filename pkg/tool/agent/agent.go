@@ -285,8 +285,12 @@ func (t *AgentTool) RenderResult(data any) string {
 }
 
 func (t *AgentTool) DecodeResult(raw json.RawMessage) (any, error) {
+	text, err := tool.UnmarshalSingleBlock(raw)
+	if err != nil {
+		return nil, err
+	}
 	var r types.SubQueryResult
-	if err := json.Unmarshal(raw, &r); err != nil {
+	if err := json.Unmarshal([]byte(text), &r); err != nil {
 		return nil, err
 	}
 	return &r, nil

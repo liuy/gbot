@@ -881,3 +881,36 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 		t.Errorf("expected fallback string representation, got: %q", got)
 	}
 }
+
+func TestFileWrite_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	tt := filewrite.New()
+	inner := `{"type":"create","filePath":"/tmp/x.go","content":"hello"}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(*filewrite.Output)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *filewrite.Output", v)
+	}
+	if o.FilePath != "/tmp/x.go" {
+		t.Errorf("FilePath = %q, want /tmp/x.go", o.FilePath)
+	}
+	if o.Content != "hello" {
+		t.Errorf("Content = %q, want hello", o.Content)
+	}
+}
+
+func TestFileWrite_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := filewrite.New()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"type":"create","filePath":"/tmp/x.go"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
+	}
+}

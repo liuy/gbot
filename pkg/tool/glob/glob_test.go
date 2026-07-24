@@ -447,8 +447,9 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 
-	// Valid JSON RawMessage with output fields
-	raw := json.RawMessage(`{"filenames":["a.go","b.go"],"numFiles":2,"durationMs":5,"truncated":false}`)
+	inner := `{"filenames":["a.go","b.go"],"numFiles":2,"durationMs":5,"truncated":false}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -463,8 +464,9 @@ func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 
-	// Empty files list
-	raw := json.RawMessage(`{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`)
+	inner := `{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -479,10 +481,20 @@ func TestRenderResult_JsonRawMessage_Invalid(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 
-	// Invalid JSON within RawMessage — DecodeResult returns an error
-	raw := json.RawMessage(`not valid json`)
+	innerBytes, _ := json.Marshal("not valid json")
+	raw := json.RawMessage(`[{"type":"text","text":` + string(innerBytes) + `}]`)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
-		t.Error("DecodeResult(invalid json) should return error")
+		t.Error("DecodeResult(invalid json inner) should return error")
+	}
+}
+
+func TestGlob_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"filenames":["a.go"]}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }

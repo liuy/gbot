@@ -995,7 +995,9 @@ func TestRenderResult_NoMatchesWithPending(t *testing.T) {
 
 func TestRenderResult_JSONRawMessage_WithMatches(t *testing.T) {
 	tl := New()
-	raw := json.RawMessage(`{"matches":["FileRead","FileEdit"],"query":"read","total_deferred_tools":3}`)
+	inner := `{"matches":["FileRead","FileEdit"],"query":"read","total_deferred_tools":3}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1011,7 +1013,9 @@ func TestRenderResult_JSONRawMessage_WithMatches(t *testing.T) {
 
 func TestRenderResult_JSONRawMessage_NoMatches(t *testing.T) {
 	tl := New()
-	raw := json.RawMessage(`{"matches":[],"query":"xyz","total_deferred_tools":3,"pending_mcp_servers":["slack"]}`)
+	inner := `{"matches":[],"query":"xyz","total_deferred_tools":3,"pending_mcp_servers":["slack"]}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1022,6 +1026,16 @@ func TestRenderResult_JSONRawMessage_NoMatches(t *testing.T) {
 	}
 	if !strings.Contains(result, "slack") {
 		t.Errorf("expected 'slack' in render, got %q", result)
+	}
+}
+
+func TestToolSearch_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tl := New()
+	_, err := tl.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"matches":["FileRead"],"query":"read","total_deferred_tools":3}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }
 

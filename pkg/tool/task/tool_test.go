@@ -1542,3 +1542,33 @@ func TestTasksInput_UnmarshalJSON_GetAsStringOrNumber(t *testing.T) {
 		})
 	}
 }
+
+func TestTask_DecodeResult_ArrayForm(t *testing.T) {
+	t.Parallel()
+
+	tt := New(NewList(""))
+	inner := `{"list":{"tasks":[]}}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(*TasksOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TasksOutput", v)
+	}
+	if o.List == nil {
+		t.Errorf("List = nil, want non-nil")
+	}
+}
+
+func TestTask_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := New(NewList(""))
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"list":{"tasks":[]}}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
+	}
+}

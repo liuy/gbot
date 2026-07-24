@@ -19,7 +19,8 @@ func TestRenderViaTool_Found(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Glob": &mockRenderTool{},
 	}
-	got, ok := renderViaTool("Glob", json.RawMessage(`{"filenames":["a.go"]}`), tools)
+	raw := json.RawMessage(`[{"type":"text","text":"{\"filenames\":[\"a.go\"]}"}]`)
+	got, ok := renderViaTool("Glob", raw, tools)
 	if !ok {
 		t.Fatal("renderViaTool(Glob) returned ok=false, want true")
 	}
@@ -33,6 +34,36 @@ func TestRenderViaTool_NotFound(t *testing.T) {
 	_, ok := renderViaTool("Missing", nil, nil)
 	if ok {
 		t.Error("renderViaTool(Missing) returned ok=true, want false")
+	}
+}
+
+func TestRenderViaTool_DecodeErrorReturnsFalse(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	// Array form whose text content is not valid JSON for the tool.
+	raw := json.RawMessage(`[{"type":"text","text":"garbage"}]`)
+	got, ok := renderViaTool("Glob", raw, tools)
+	if ok {
+		t.Error("renderViaTool(Glob) returned ok=true, want false on decode error")
+	}
+	if got != "" {
+		t.Errorf("renderViaTool(Glob, decode error) = %q, want empty", got)
+	}
+}
+
+func TestRenderToolOutput_PassesRawArrayToDecodeResult(t *testing.T) {
+	t.Parallel()
+	var captured globResult
+	tools := map[string]tool.Tool{
+		"Glob": &captureMockTool{captured: &captured},
+	}
+	input := json.RawMessage(`[{"type":"text","text":"{\"filenames\":[\"a.go\"]}"}]`)
+	renderToolOutput("Glob", input, tools)
+	// The mock must receive the raw array bytes verbatim — not unwrapped text.
+	if len(captured.Files) != 1 || captured.Files[0] != "a.go" {
+		t.Errorf("DecodeResult did not receive the proper array form: %+v", captured)
 	}
 }
 
@@ -119,6 +150,30 @@ func TestRenderToolOutput_ArrayFormNoPrefix(t *testing.T) {
 	got := renderToolOutput("Glob", arrayInput, tools)
 	if got != "hello world" {
 		t.Errorf("renderToolOutput = %q, want %q", got, "hello world")
+	}
+}
+
+// TestRenderToolOutput_PersistedFileWrapsContent verifies that persisted-file
+// content (bare inner text on disk) gets re-wrapped in array form before
+// being fed to DecodeResult.
+func TestRenderToolOutput_PersistedFileWrapsContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "result.json")
+	fileContent := `{"filenames":["a.go","b.go"]}`
+	if err := os.WriteFile(filePath, []byte(fileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tools := map[string]tool.Tool{
+		"Glob": &mockRenderTool{},
+	}
+	input := "<persisted-output>\nFull output saved to: " + filePath + "\nPreview (first 5 lines):\nline1"
+	textJSON, _ := json.Marshal(input)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got := renderToolOutput("Glob", raw, tools)
+	want := "a.go\nb.go"
+	if got != want {
+		t.Errorf("renderToolOutput(persisted) = %q, want %q", got, want)
 	}
 }
 
@@ -603,6 +658,49 @@ type globResult struct {
 	Files []string `json:"filenames"`
 }
 
+// captureMockTool captures the decoded value for assertion in tests that
+// need to verify what DecodeResult received.
+type captureMockTool struct {
+	captured *globResult
+}
+
+func (m *captureMockTool) Name() string                                { return "Glob" }
+func (m *captureMockTool) Aliases() []string                           { return nil }
+func (m *captureMockTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (m *captureMockTool) InputSchema() json.RawMessage                { return nil }
+func (m *captureMockTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil
+}
+func (m *captureMockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (m *captureMockTool) RenderResult(data any) string {
+	out, ok := data.(*globResult)
+	if !ok {
+		return ""
+	}
+	return strings.Join(out.Files, "\n")
+}
+func (m *captureMockTool) DecodeResult(raw json.RawMessage) (any, error) {
+	text, err := tool.UnmarshalSingleBlock(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out globResult
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		return nil, err
+	}
+	*m.captured = out
+	return &out, nil
+}
+func (m *captureMockTool) IsEnabled() bool                           { return true }
+func (m *captureMockTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (m *captureMockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (m *captureMockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (m *captureMockTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
+func (m *captureMockTool) MaxResultSize() int                        { return 0 }
+func (m *captureMockTool) Prompt() string                            { return "" }
+
 // mockRenderTool is a minimal tool.Tool implementation for render tests.
 type mockRenderTool struct{}
 
@@ -627,8 +725,12 @@ func (m *mockRenderTool) RenderResult(data any) string {
 	return strings.Join(out.Files, "\n")
 }
 func (m *mockRenderTool) DecodeResult(raw json.RawMessage) (any, error) {
+	text, err := tool.UnmarshalSingleBlock(raw)
+	if err != nil {
+		return nil, err
+	}
 	var out globResult
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

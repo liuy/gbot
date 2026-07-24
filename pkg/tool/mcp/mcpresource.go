@@ -84,8 +84,12 @@ func NewListMcpResources(reg *gbotmcp.Registry) tool.Tool {
 			return []types.ContentBlock{types.NewTextBlock(renderResourceResultJSON(data))}
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var resources []gbotmcp.ServerResource
-			if err := json.Unmarshal(raw, &resources); err != nil {
+			if err := json.Unmarshal([]byte(text), &resources); err != nil {
 				return nil, err
 			}
 			return resources, nil
@@ -178,8 +182,12 @@ func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 			return []types.ContentBlock{types.NewTextBlock(renderResourceResultJSON(data))}
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var contents []gbotmcp.ResourceContent
-			if err := json.Unmarshal(raw, &contents); err != nil {
+			if err := json.Unmarshal([]byte(text), &contents); err != nil {
 				return nil, err
 			}
 			return contents, nil

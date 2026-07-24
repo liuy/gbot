@@ -1164,7 +1164,9 @@ func TestJob_RenderResult_JSONRawMessage(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	raw := json.RawMessage(`{"poll":{"task":{"job_id":"bg-1","status":"completed","exit_code":0},"retrieval_status":"success","output":"hello world"}}`)
+	inner := `{"poll":{"task":{"job_id":"bg-1","status":"completed","exit_code":0},"retrieval_status":"success","output":"hello world"}}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1175,5 +1177,16 @@ func TestJob_RenderResult_JSONRawMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "bg-1") {
 		t.Errorf("RenderResult should contain job ID, got: %q", got)
+	}
+}
+
+func TestJob_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	reg := newMockRegistry()
+	tl := NewJob(reg)
+	_, err := tl.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"poll":{"task":{"job_id":"bg-1"}}}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }

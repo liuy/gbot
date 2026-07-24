@@ -1897,7 +1897,9 @@ func TestExecute_CircularRefPanic(t *testing.T) {
 
 func TestREPLTool_RenderResult_JSONRawMessage(t *testing.T) {
 	r := New()
-	raw := json.RawMessage(`"console output from REPL"`)
+	inner := `"console output from REPL"`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := r.DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1908,17 +1910,11 @@ func TestREPLTool_RenderResult_JSONRawMessage(t *testing.T) {
 	}
 }
 
-func TestREPLTool_RenderResult_NonJSONRawMessage(t *testing.T) {
+func TestREPL_DecodeResult_RejectsBareStruct(t *testing.T) {
 	r := New()
-	// RawMessage that is not valid JSON string — DecodeResult returns the raw bytes
-	raw := json.RawMessage(`not a json string`)
-	v, err := r.DecodeResult(raw)
-	if err != nil {
-		t.Fatalf("DecodeResult failed: %v", err)
-	}
-	got := r.RenderResult(v)
-	if got != "not a json string" {
-		t.Errorf("RenderResult(non-JSON raw) = %q, want %q", got, "not a json string")
+	_, err := r.DecodeResult(json.RawMessage(`not a json string`))
+	if err == nil {
+		t.Error("DecodeResult must reject non-array-form input")
 	}
 }
 

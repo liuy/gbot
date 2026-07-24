@@ -232,57 +232,48 @@ func New() tool.Tool {
 		Prompt_:       fileReadPrompt(),
 		RenderResult_: renderResult,
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
-			// Array form: [{...}] — locate the first block and dispatch on Type.
-			if len(raw) > 0 && raw[0] == '[' {
-				var blocks []types.ContentBlock
-				if err := json.Unmarshal(raw, &blocks); err != nil {
-					return nil, err
+			// Array form: [{...}] — image blocks are dispatched by wire block
+			// type; text blocks are dispatched by the inner JSON's "type" field
+			// (FileRead emits TextOutput and FileUnchangedOutput both wrapped in
+			// a single text block).
+			if len(raw) == 0 || raw[0] != '[' {
+				preview := string(raw)
+				if len(preview) > 80 {
+					preview = preview[:80]
 				}
-				for _, b := range blocks {
-					switch b.Type {
-					case "image":
-						return &ImageOutput{Type: "image", MimeType: b.Source.MediaType}, nil
-					case "file_unchanged":
-						var o FileUnchangedOutput
-						if err := json.Unmarshal(raw, &o); err == nil {
-							return &o, nil
-						}
-					case "text":
-						var o TextOutput
-						if err := json.Unmarshal(raw, &o); err == nil {
-							return &o, nil
-						}
-					}
-				}
-				return nil, fmt.Errorf("fileread: no decodable block in array form")
+				return nil, fmt.Errorf("fileread: DecodeResult expects array-form content, got %q", preview)
 			}
-			// Legacy struct-form probe (single object).
-			var probe struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(raw, &probe); err != nil {
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(raw, &blocks); err != nil {
 				return nil, err
 			}
-			switch probe.Type {
-			case "image":
-				var o ImageOutput
-				if err := json.Unmarshal(raw, &o); err != nil {
-					return nil, err
+			for _, b := range blocks {
+				if b.Type == "image" {
+					return &ImageOutput{Type: "image", MimeType: b.Source.MediaType}, nil
 				}
-				return &o, nil
-			case "file_unchanged":
-				var o FileUnchangedOutput
-				if err := json.Unmarshal(raw, &o); err != nil {
-					return nil, err
+				if b.Type != "text" || b.Text == "" {
+					continue
 				}
-				return &o, nil
-			default:
-				var o TextOutput
-				if err := json.Unmarshal(raw, &o); err != nil {
-					return nil, err
+				var probe struct {
+					Type string `json:"type"`
 				}
-				return &o, nil
+				if json.Unmarshal([]byte(b.Text), &probe) != nil {
+					continue
+				}
+				switch probe.Type {
+				case "file_unchanged":
+					var o FileUnchangedOutput
+					if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
+						return &o, nil
+					}
+				case "text":
+					var o TextOutput
+					if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
+						return &o, nil
+					}
+				}
 			}
+			return nil, fmt.Errorf("fileread: no decodable block in array form")
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsRead: true}

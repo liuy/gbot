@@ -441,8 +441,10 @@ func TestRenderResultNonSubQueryResult(t *testing.T) {
 
 func TestRenderResult_JSONRawMessage(t *testing.T) {
 	at := New()
-	// Resume path: json.RawMessage containing a SubQueryResult.
-	raw := json.RawMessage(`{"content":"Found 3 files matching the pattern","usage":{"input_tokens":100,"output_tokens":50}}`)
+	// Resume path: array-form wire wrapping a SubQueryResult.
+	inner := `{"content":"Found 3 files matching the pattern","usage":{"input_tokens":100,"output_tokens":50}}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := at.DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -454,6 +456,16 @@ func TestRenderResult_JSONRawMessage(t *testing.T) {
 	// Must NOT show raw JSON keys like "usage"
 	if strings.Contains(got, `"usage"`) {
 		t.Errorf("RenderResult should not show raw JSON, got: %q", got)
+	}
+}
+
+func TestAgent_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	at := New()
+	_, err := at.DecodeResult(json.RawMessage(`{"content":"x"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }
 

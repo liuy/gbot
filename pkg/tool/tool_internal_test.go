@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -147,5 +148,103 @@ func TestProgressUpdate_Fields(t *testing.T) {
 	}
 	if u.TotalBytes != 11 {
 		t.Errorf("TotalBytes = %d, want 11", u.TotalBytes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UnmarshalSingleBlock / WrapSingleBlock — wire-array helpers
+// ---------------------------------------------------------------------------
+
+func TestUnmarshalSingleBlock_Valid(t *testing.T) {
+	t.Parallel()
+	text, err := UnmarshalSingleBlock(json.RawMessage(`[{"type":"text","text":"hello"}]`))
+	if err != nil {
+		t.Fatalf("UnmarshalSingleBlock: %v", err)
+	}
+	if text != "hello" {
+		t.Errorf("text = %q, want \"hello\"", text)
+	}
+}
+
+func TestUnmarshalSingleBlock_MultipleBlocksReturnsFirst(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`[{"type":"text","text":"first"},{"type":"text","text":"second"}]`)
+	text, err := UnmarshalSingleBlock(raw)
+	if err != nil {
+		t.Fatalf("UnmarshalSingleBlock: %v", err)
+	}
+	if text != "first" {
+		t.Errorf("text = %q, want \"first\"", text)
+	}
+}
+
+func TestUnmarshalSingleBlock_NotArray(t *testing.T) {
+	t.Parallel()
+	_, err := UnmarshalSingleBlock(json.RawMessage(`{"foo":"bar"}`))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "array") {
+		t.Errorf("error %q must mention array-form", err.Error())
+	}
+}
+
+func TestUnmarshalSingleBlock_Empty(t *testing.T) {
+	t.Parallel()
+	_, err := UnmarshalSingleBlock(json.RawMessage(`[]`))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no text") {
+		t.Errorf("error %q must mention no text block", err.Error())
+	}
+}
+
+func TestUnmarshalSingleBlock_NoTextBlock(t *testing.T) {
+	t.Parallel()
+	_, err := UnmarshalSingleBlock(json.RawMessage(`[{"type":"image","source":"x"}]`))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no text") {
+		t.Errorf("error %q must mention no text block", err.Error())
+	}
+}
+
+func TestUnmarshalSingleBlock_EmptyRaw(t *testing.T) {
+	t.Parallel()
+	_, err := UnmarshalSingleBlock(json.RawMessage(``))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "array") {
+		t.Errorf("error %q must mention array-form", err.Error())
+	}
+}
+
+func TestWrapSingleBlock_RoundTrip(t *testing.T) {
+	t.Parallel()
+	wrapped := WrapSingleBlock("x")
+	text, err := UnmarshalSingleBlock(wrapped)
+	if err != nil {
+		t.Fatalf("UnmarshalSingleBlock: %v", err)
+	}
+	if text != "x" {
+		t.Errorf("text = %q, want \"x\"", text)
+	}
+}
+
+func TestWrapSingleBlock_Escapes(t *testing.T) {
+	t.Parallel()
+	wrapped := WrapSingleBlock(`"quoted"`)
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(wrapped, &blocks); err != nil {
+		t.Fatalf("WrapSingleBlock produced invalid JSON: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Text != `"quoted"` {
+		t.Errorf("expected single block with quoted text, got %+v", blocks)
 	}
 }

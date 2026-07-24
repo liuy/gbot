@@ -231,8 +231,12 @@ func TestRenderToolOutput_PersistedOutputValidFile(t *testing.T) {
 				return out.Text
 			},
 			decodeFn: func(raw json.RawMessage) (any, error) {
+				text, err := tool.UnmarshalSingleBlock(raw)
+				if err != nil {
+					return nil, err
+				}
 				var r stringResult
-				if err := json.Unmarshal(raw, &r); err != nil {
+				if err := json.Unmarshal([]byte(text), &r); err != nil {
 					return nil, err
 				}
 				return &r, nil
@@ -258,18 +262,6 @@ func TestRenderToolOutput_PersistedOutputInvalidFile(t *testing.T) {
 	want := "prev1\nprev2\nprev3"
 	if got != want {
 		t.Errorf("renderToolOutput(invalid file) = %q, want %q", got, want)
-	}
-}
-
-func TestRenderToolOutput_JSONOutputField(t *testing.T) {
-	t.Parallel()
-	inner := `{"output":"hello world"}`
-	textJSON, _ := json.Marshal(inner)
-	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
-	got := renderToolOutput("Bash", raw, nil)
-	want := "hello world"
-	if got != want {
-		t.Errorf("renderToolOutput(JSON output) = %q, want %q", got, want)
 	}
 }
 

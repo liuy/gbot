@@ -841,7 +841,10 @@ func TestRenderReadResourceTUI_WithMimeType(t *testing.T) {
 }
 
 func TestRenderListResourcesTUI_JSONRawMessage(t *testing.T) {
-	raw := json.RawMessage(`[{"uri":"test://1","name":"res1","server":"s1","mimeType":"text/plain"}]`)
+	// Wire-form array: outer array of content blocks, inner text = JSON array of resources.
+	inner := `[{"uri":"test://1","name":"res1","server":"s1","mimeType":"text/plain"}]`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := NewListMcpResources(nil).(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -856,7 +859,9 @@ func TestRenderListResourcesTUI_JSONRawMessage(t *testing.T) {
 }
 
 func TestRenderReadResourceTUI_JSONRawMessage(t *testing.T) {
-	raw := json.RawMessage(`[{"uri":"test://1","text":"hello world"}]`)
+	inner := `[{"uri":"test://1","text":"hello world"}]`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := NewReadMcpResource(nil).(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -867,6 +872,25 @@ func TestRenderReadResourceTUI_JSONRawMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "hello world") {
 		t.Errorf("renderReadResourceTUI(RawMessage) should contain text, got: %q", got)
+	}
+}
+
+func TestListMcpResources_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	// Bare array of structs (without wire wrapper) — must reject.
+	_, err := NewListMcpResources(nil).(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`[{"uri":"test://1"}]`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct array form")
+	}
+}
+
+func TestReadMcpResource_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewReadMcpResource(nil).(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`[{"uri":"test://1","text":"hi"}]`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct array form")
 	}
 }
 

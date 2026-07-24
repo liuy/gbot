@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -271,6 +272,46 @@ func SearchHint(t Tool) string {
 		return ""
 	}
 	return h.SearchHint()
+}
+
+// ---------------------------------------------------------------------------
+// Wire-array helpers — shared unwrap/wrap for DecodeResult implementations
+// ---------------------------------------------------------------------------
+
+// UnmarshalSingleBlock unwraps the standard [{type:"text",text:"..."}] wire
+// form and returns the inner text for callers to unmarshal. Returns an error
+// if the input is not array-form, is empty, or has no non-empty text block.
+// Multi-block payloads (e.g. Computer's text+image) need their own unwrap
+// and must not use this helper.
+func UnmarshalSingleBlock(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || raw[0] != '[' {
+		preview := string(raw)
+		if runes := []rune(preview); len(runes) > 80 {
+			preview = string(runes[:80])
+		}
+		return "", fmt.Errorf("tool: UnmarshalSingleBlock expects array-form content, got %q", preview)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", err
+	}
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			return b.Text, nil
+		}
+	}
+	return "", fmt.Errorf("tool: UnmarshalSingleBlock found no text block in array")
+}
+
+// WrapSingleBlock is the inverse of UnmarshalSingleBlock: it wraps a text
+// payload in the standard wire array form. Used by renderToolOutput to feed
+// persisted-file content (which is bare inner text) into DecodeResult.
+func WrapSingleBlock(text string) json.RawMessage {
+	textBytes, _ := json.Marshal(text)
+	return json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 }
 
 // ---------------------------------------------------------------------------

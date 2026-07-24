@@ -952,8 +952,10 @@ func TestNew_RenderResult_Output(t *testing.T) {
 func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 	tl := New(nil)
 
-	// Valid JSON Output → content
-	valid := json.RawMessage(`{"Mode":"fetch","Content":"hello-json"}`)
+	// Valid JSON Output → content (wrapped in array form)
+	inner := `{"Mode":"fetch","Content":"hello-json"}`
+	textBytes, _ := json.Marshal(inner)
+	valid := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(valid)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -963,11 +965,22 @@ func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
 		t.Errorf("RenderResult(valid json) = %q, want %q", got, "hello-json")
 	}
 
-	// Invalid JSON → DecodeResult returns error
-	invalid := json.RawMessage(`not json`)
+	// Invalid JSON inside text block → DecodeResult returns error
+	invalidBytes, _ := json.Marshal("not json")
+	invalid := json.RawMessage(`[{"type":"text","text":` + string(invalidBytes) + `}]`)
 	_, err = tl.(tool.ToolWithDecodeResult).DecodeResult(invalid)
 	if err == nil {
-		t.Error("DecodeResult(invalid json) should return error")
+		t.Error("DecodeResult(invalid json inner) should return error")
+	}
+}
+
+func TestWeb_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tl := New(nil)
+	_, err := tl.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"Mode":"fetch","Content":"x"}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }
 

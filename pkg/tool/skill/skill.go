@@ -156,8 +156,12 @@ func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 			return strings.Join(parts, " · ")
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var o skillOutput
-			if err := json.Unmarshal(raw, &o); err != nil {
+			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
 			return o, nil

@@ -28,6 +28,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/computer"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -8739,40 +8740,14 @@ func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
 	// Step 2: marshalBlocks → tool_result.content (what gets stored/persisted).
 	content := marshalBlocks(blocks)
 
-	// Step 3: simulate renderToolOutput replay path.
-	var parsedBlocks []types.ContentBlock
-	if err := json.Unmarshal(content, &parsedBlocks); err != nil {
-		t.Fatalf("unmarshal content: %v", err)
-	}
-	var parts []string
-	for _, b := range parsedBlocks {
-		if b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	if len(parts) == 0 {
-		t.Fatal("no text blocks extracted from content")
-	}
-	text := parts[0]
-
-	// Step 4: renderToolOutput only calls renderViaTool when text starts
-	// with { or [. If it starts with " (doubleWrap bug), renderViaTool
-	// is skipped and the user sees raw JSON.
-	trimmed := strings.TrimLeft(text, " \t\n\r")
-	if len(trimmed) == 0 {
-		t.Fatal("text is empty after trim")
-	}
-	if trimmed[0] != '{' && trimmed[0] != '[' {
-		t.Fatalf("text starts with %q, expected '{' or '[' — "+
-			"renderViaTool would be skipped, showing raw JSON to user.\n"+
-			"text preview: %.80s", string(trimmed[0]), text)
-	}
-
-	// Step 5: renderViaTool → DecodeResult + RenderResult.
+	// Step 3: renderViaTool → DecodeResult + RenderResult.
+	// DecodeResult now strictly accepts array-form input (the wire shape
+	// produced by formatWireBlocksOrDefault). Pass the marshaled array
+	// directly — no inner-text extraction.
 	if dt, ok := editTool.(tool.ToolWithDecodeResult); ok {
-		decoded, err := dt.DecodeResult([]byte(trimmed))
+		decoded, err := dt.DecodeResult(content)
 		if err != nil {
-			t.Fatalf("DecodeResult failed: %v (text=%.80s)", err, trimmed)
+			t.Fatalf("DecodeResult failed: %v (content=%.80s)", err, string(content))
 		}
 		rendered := editTool.RenderResult(decoded)
 		if rendered == "" {
@@ -8786,5 +8761,71 @@ func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
 		if !strings.Contains(rendered, "old") || !strings.Contains(rendered, "new") {
 			t.Errorf("RenderResult output missing diff content: %s", rendered)
 		}
+	}
+}
+
+// TestReplayChain_ComputerToolReplayRenderOutput is the end-to-end regression
+// test for the original Computer history-replay flaw: persisted tool_result
+// content rendered as raw JSON instead of the friendly DeviceInfo string.
+// Mirrors TestReplayChain_EditToolReplayRenderOutput but exercises Computer's
+// array-form DecodeResult with a DeviceInfo payload.
+func TestReplayChain_ComputerToolReplayRenderOutput(t *testing.T) {
+	t.Parallel()
+
+	computerTool := computer.New(nil)
+	deviceInfo := &computer.DeviceInfo{
+		Manufacturer: "HONOR",
+		Model:        "BKQ-AN80",
+		SDK:          36,
+		Release:      "16",
+		ScreenWidth:  1256,
+		ScreenHeight: 2641,
+		Density:      3.5,
+		DensityDPI:   560,
+	}
+
+	// Step 1: engine produces wire blocks from tool Data.
+	blocks := formatWireBlocksOrDefault(computerTool, deviceInfo)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("blocks[0].Type = %q, want text", blocks[0].Type)
+	}
+
+	// Step 2: marshalBlocks → tool_result.content (what gets stored/persisted).
+	content := marshalBlocks(blocks)
+
+	// Step 3: DecodeResult must accept the raw array form and recover the
+	// concrete *DeviceInfo; RenderResult must produce the friendly string —
+	// NOT the raw JSON the original bug surfaced.
+	dt, ok := computerTool.(tool.ToolWithDecodeResult)
+	if !ok {
+		t.Fatal("Computer tool does not implement ToolWithDecodeResult")
+	}
+	decoded, err := dt.DecodeResult(content)
+	if err != nil {
+		t.Fatalf("DecodeResult failed: %v (content=%.80s)", err, string(content))
+	}
+	if _, ok := decoded.(*computer.DeviceInfo); !ok {
+		t.Fatalf("DecodeResult returned %T, want *computer.DeviceInfo", decoded)
+	}
+	rendered := computerTool.RenderResult(decoded)
+	if rendered == "" {
+		t.Fatal("RenderResult returned empty string")
+	}
+	// The rendered output must NOT contain raw JSON markers.
+	if strings.Contains(rendered, `"Manufacturer"`) {
+		t.Errorf("RenderResult output contains raw JSON key: %s", rendered)
+	}
+	if strings.Contains(rendered, `"action"`) {
+		t.Errorf("RenderResult output contains raw action key: %s", rendered)
+	}
+	// The rendered output must contain the friendly device info.
+	if !strings.Contains(rendered, "HONOR") {
+		t.Errorf("RenderResult output missing Manufacturer: %s", rendered)
+	}
+	if !strings.Contains(rendered, "BKQ-AN80") {
+		t.Errorf("RenderResult output missing Model: %s", rendered)
 	}
 }

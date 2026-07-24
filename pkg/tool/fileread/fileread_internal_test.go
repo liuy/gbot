@@ -602,9 +602,11 @@ func TestRenderResult_DefaultCase(t *testing.T) {
 func TestRenderResult_JSONRawMessage(t *testing.T) {
 	t.Parallel()
 	tt := New()
-	// TUI passes marshaled output as json.RawMessage. DecodeResult recovers
-	// the concrete type, then renderResult extracts the content field.
-	raw := json.RawMessage(`{"content":"hello world","file_path":"/tmp/x.go","num_lines":1}`)
+	// TUI passes marshaled wire array. DecodeResult unwraps the text block,
+	// then renderResult extracts the content field.
+	inner := `{"type":"text","content":"hello world","filePath":"/tmp/x.go","numLines":1}`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -881,10 +883,14 @@ func TestDecodeResult_TextOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt := New()
 	original := &TextOutput{Type: "text", FilePath: "/tmp/x.go", Content: "hello", NumLines: 1}
-	raw, err := json.Marshal(original)
+	// Wrap the marshaled struct in array form (the wire shape produced by
+	// FormatWireBlocksOrDefault).
+	inner, err := json.Marshal(original)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
+	textBytes, _ := json.Marshal(string(inner))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -937,10 +943,12 @@ func TestDecodeResult_FileUnchangedOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt := New()
 	original := &FileUnchangedOutput{Type: "file_unchanged", FilePath: "/tmp/x.go"}
-	raw, err := json.Marshal(original)
+	inner, err := json.Marshal(original)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
+	textBytes, _ := json.Marshal(string(inner))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -954,5 +962,15 @@ func TestDecodeResult_FileUnchangedOutputRoundTrip(t *testing.T) {
 	}
 	if tt.RenderResult(original) != tt.RenderResult(v) {
 		t.Error("stream and history render differ")
+	}
+}
+
+func TestFileRead_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	tt := New()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"content":"hello","file_path":"/tmp/x.go","num_lines":1}`))
+	if err == nil {
+		t.Error("DecodeResult must reject bare struct form")
 	}
 }

@@ -1696,8 +1696,10 @@ func TestNew_RenderResult(t *testing.T) {
 	if got == "" {
 		t.Error("expected non-empty JSON render")
 	}
-	// Resume path: json.RawMessage decoded by DecodeResult, then rendered.
-	raw := json.RawMessage(`"hover text here"`)
+	// Resume path: array-form wire wrapping a JSON-encoded string.
+	inner := `"hover text here"`
+	textBytes, _ := json.Marshal(inner)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
@@ -1705,6 +1707,17 @@ func TestNew_RenderResult(t *testing.T) {
 	got = tt.RenderResult(v)
 	if got != "hover text here" {
 		t.Errorf("RenderResult(decoded) = %q, want 'hover text here'", got)
+	}
+}
+
+func TestLSP_DecodeResult_RejectsBareStruct(t *testing.T) {
+	t.Parallel()
+
+	reg := lsp.NewRegistry("")
+	tt := New(reg)
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`"hover text here"`))
+	if err == nil {
+		t.Error("DecodeResult must reject non-array-form input")
 	}
 }
 

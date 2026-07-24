@@ -217,11 +217,17 @@ func (t *REPLTool) RenderResult(data any) string {
 }
 
 func (t *REPLTool) DecodeResult(raw json.RawMessage) (any, error) {
+	text, err := tool.UnmarshalSingleBlock(raw)
+	if err != nil {
+		return nil, err
+	}
+	// REPL's result type is string; FormatWireBlocksOrDefault JSON-encodes it,
+	// so the wire text is itself a JSON-encoded string. Unwrap once more.
 	var s string
-	if json.Unmarshal(raw, &s) == nil {
+	if json.Unmarshal([]byte(text), &s) == nil {
 		return s, nil
 	}
-	return string(raw), nil
+	return text, nil
 }
 
 // CleanSession removes a session from the map and closes it.

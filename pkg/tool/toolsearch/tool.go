@@ -112,8 +112,12 @@ func New() tool.Tool {
 			return renderToolSearchOutput(out.Matches, out.PendingMCPServers)
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			text, err := tool.UnmarshalSingleBlock(raw)
+			if err != nil {
+				return nil, err
+			}
 			var o Output
-			if err := json.Unmarshal(raw, &o); err != nil {
+			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
 			return &o, nil
