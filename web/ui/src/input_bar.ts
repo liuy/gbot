@@ -47,15 +47,6 @@ export function createInputBar(initial: {
   const row = document.createElement('div')
   row.className = 'flex items-end gap-2 px-4 py-2.5'
 
-  // STOP button (hidden unless streaming).
-  const stopBtn = document.createElement('button')
-  stopBtn.type = 'button'
-  stopBtn.className =
-    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue transition-colors pulse-blue bg-blue/12 hidden'
-  stopBtn.innerHTML =
-    '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
-  stopBtn.addEventListener('click', () => stopCb?.())
-
   // Textarea wrap.
   const taWrap = document.createElement('div')
   taWrap.className = 'flex-1 flex justify-center min-h-[20px] cursor-text'
@@ -71,16 +62,18 @@ export function createInputBar(initial: {
   taWrap.appendChild(textarea)
   taWrap.addEventListener('click', () => textarea.focus())
 
-  // Send button.
+  // Send/Stop button — toggles between send and stop based on streaming state.
   const sendBtn = document.createElement('button')
   sendBtn.type = 'button'
   sendBtn.setAttribute('aria-label', 'Send')
   sendBtn.className =
-    'flex-shrink-0 text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30'
-  sendBtn.innerHTML =
+    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30'
+  const sendIcon =
     '<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M3 10l14-7-7 14-2-5-5-2z" /></svg>'
+  const stopIcon =
+    '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
+  sendBtn.innerHTML = sendIcon
 
-  row.appendChild(stopBtn)
   row.appendChild(taWrap)
   row.appendChild(sendBtn)
   card.appendChild(row)
@@ -160,6 +153,11 @@ export function createInputBar(initial: {
   })
 
   sendBtn.addEventListener('click', (e) => {
+    if (streaming && textarea.value.trim() === '') {
+      e.preventDefault()
+      stopCb?.()
+      return
+    }
     if (textarea.value.trim() === '') {
       e.preventDefault()
       if (histPanelOpen) {
@@ -313,8 +311,15 @@ export function createInputBar(initial: {
     textarea,
     setStreaming: (s: boolean) => {
       streaming = s
-      stopBtn.classList.toggle('hidden', !s)
-      if (!s) {
+      if (s) {
+        sendBtn.innerHTML = stopIcon
+        sendBtn.classList.add('pulse-blue', 'bg-blue/12')
+        sendBtn.classList.remove('opacity-50')
+        sendBtn.setAttribute('aria-label', 'Stop')
+      } else {
+        sendBtn.innerHTML = sendIcon
+        sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
+        sendBtn.setAttribute('aria-label', 'Send')
         queuedMsgs = []
       }
       renderBubbles()

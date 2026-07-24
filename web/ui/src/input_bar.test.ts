@@ -37,16 +37,18 @@ describe('createInputBar', () => {
     const ib = mount()
     ib.setStreaming(true)
     expect(ib.root.textContent).toContain('STOP')
+    const btn = ib.root.querySelector('button[aria-label="Stop"]')!
+    expect(btn.classList.contains('pulse-blue')).toBe(true)
   })
 
-  it('setStreaming(false) hides STOP button', () => {
+  it('setStreaming(false) reverts button to send state', () => {
     const ib = mount()
     ib.setStreaming(true)
     ib.setStreaming(false)
-    const stopBtn = Array.from(ib.root.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('STOP'),
-    )!
-    expect(stopBtn.classList.contains('hidden')).toBe(true)
+    const btn = ib.root.querySelector('button[aria-label="Send"]')!
+    expect(btn).toBeTruthy()
+    expect(btn.classList.contains('pulse-blue')).toBe(false)
+    expect(ib.root.textContent).not.toContain('STOP')
   })
 
   it('setQueuedMsgs single shows Tap to CANCEL', () => {
@@ -169,9 +171,7 @@ describe('createInputBar', () => {
     const spy = vi.fn()
     ib.onStop(spy)
     ib.setStreaming(true)
-    const stopBtn = Array.from(ib.root.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('STOP'),
-    )!
+    const stopBtn = ib.root.querySelector('button[aria-label="Stop"]')!
     stopBtn.click()
     expect(spy).toHaveBeenCalledOnce()
   })
