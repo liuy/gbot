@@ -2177,6 +2177,111 @@ describe('chat integration', () => {
     stateCb!('connected')
     expect(banner.style.opacity).toBe('0')
   })
+
+  it('permission ask renders three buttons and sends decision on click', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'ask',
+      id: 'p1',
+      kind: 'permission',
+      tool_name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const root = document.querySelector('[class*="border-amber"]') as HTMLElement
+    expect(root).toBeInstanceOf(HTMLElement)
+    expect(root.textContent).toContain('Approve · Bash')
+    const allowBtn = Array.from(root.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Allow Once',
+    ) as HTMLButtonElement
+    allowBtn.click()
+    const last = sent[sent.length - 1] as { type: string; id: string; decision?: string }
+    expect(last.type).toBe('ask_response')
+    expect(last.id).toBe('p1')
+    expect(last.decision).toBe('allow')
+  })
+
+  it('input ask renders input field and sends text/aborted on submit', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'ask',
+      id: 'i1',
+      kind: 'input',
+      tool_name: 'Bash',
+      prompt: '[sudo] password:',
+      masked: true,
+    })
+    const root = document.querySelector('[class*="border-amber"]') as HTMLElement
+    expect(root.textContent).toContain('[sudo] password:')
+    // No permission buttons on input ask.
+    expect(root.textContent).not.toContain('Allow Once')
+    const input = root.querySelector('input') as HTMLInputElement
+    expect(input.type).toBe('password')
+    input.value = 'hunter2'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+    const last = sent[sent.length - 1] as {
+      type: string
+      id: string
+      text?: string
+      aborted?: boolean
+      decision?: string
+    }
+    expect(last.type).toBe('ask_response')
+    expect(last.id).toBe('i1')
+    expect(last.text).toBe('hunter2')
+    expect(last.aborted).toBe(false)
+    expect(last.decision).toBeUndefined()
+  })
+
+  it('permission ask does not render input field (regression)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'ask',
+      id: 'p2',
+      kind: 'permission',
+      tool_name: 'Bash',
+      input: { command: 'rm -rf /' },
+    })
+    const root = document.querySelector('[class*="border-amber"]') as HTMLElement
+    expect(root.querySelector('input')).toBeNull()
+    // Three permission buttons must be present.
+    const btns = Array.from(root.querySelectorAll('button')).map((b) => b.textContent)
+    expect(btns).toEqual(['Allow Once', 'Allow This Session', 'Deny'])
+  })
+
+  it('input ask with already-expired deadline auto-aborts without leaving dead dialog', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const pastDeadline = Math.floor(Date.now() / 1000) - 5
+    dispatch({
+      type: 'ask',
+      id: 'i-expired',
+      kind: 'input',
+      tool_name: 'Bash',
+      prompt: 'pw?',
+      deadline_unix: pastDeadline,
+    })
+    // Abort is deferred via setTimeout(0); flush it.
+    vi.advanceTimersByTime(10)
+    const last = sent[sent.length - 1] as {
+      type: string
+      id: string
+      aborted?: boolean
+      text?: string
+    }
+    expect(last.type).toBe('ask_response')
+    expect(last.id).toBe('i-expired')
+    expect(last.aborted).toBe(true)
+    expect(last.text).toBe('')
+    expect(last.timeout).toBe(true)
+    // No live dialog left in the DOM (chat.ts removes it from askEls and
+    // close() detaches the node).
+    expect(document.querySelector('[class*="border-amber"]')).toBeNull()
+    vi.useRealTimers()
+  })
 })
 
 describe('mapHistoryToChatMessages', () => {

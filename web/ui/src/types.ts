@@ -29,6 +29,7 @@ export type ServerMessage =
       prompt?: string
       masked?: boolean
       agent_type?: string
+      deadline_unix?: number
     }
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean; compactBoundary?: boolean }
@@ -196,6 +197,16 @@ export type QueryEvent = {
 }
 
 export type AskDecision = 'allow' | 'deny' | 'allow_always'
+
+// Full response for ask_response wire message. Permission asks use `decision`;
+// input asks use `text` + `aborted` (+ `timeout` to distinguish countdown
+// expiry from user-initiated cancel). Mirrors Go's types.AskResponse.
+export interface AskResponsePayload {
+  decision?: AskDecision
+  text?: string
+  aborted?: boolean
+  timeout?: boolean
+}
 
 export type ServerUsage = {
   // Go types.Usage JSON tags (snake_case — what server actually sends)

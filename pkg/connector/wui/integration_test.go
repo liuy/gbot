@@ -375,6 +375,86 @@ func TestHandleAsk_InputKind(t *testing.T) {
 	}
 }
 
+// TestHandleAsk_InputKind_DeadlineWireSerialization verifies the
+// deadline_unix field is emitted only for input-kind asks with a non-zero
+// Deadline, and omitted otherwise. Permission asks never carry it.
+func TestHandleAsk_InputKind_DeadlineWireSerialization(t *testing.T) {
+	t.Run("input_kind_zero_deadline_omits_field", func(t *testing.T) {
+		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
+
+		c.handleAsk(types.QueryEvent{
+			Type: types.EventAsk,
+			Ask: &types.AskEvent{
+				Kind:   types.AskInput,
+				Prompt: "pw?",
+				// Deadline zero-value
+			},
+		})
+
+		msg := readWSMessage(t, ws)
+		var raw map[string]any
+		if err := json.Unmarshal(msg, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, present := raw["deadline_unix"]; present {
+			t.Errorf("deadline_unix present in payload, want omitted for zero deadline: %v", raw["deadline_unix"])
+		}
+	})
+
+	t.Run("input_kind_nonzero_deadline_emits_unix", func(t *testing.T) {
+		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
+
+		// Fixed deadline (not time.Now — avoids flaky time-based weak pattern).
+		dl := time.Unix(1800000000, 0) // ~2027-01-15
+		c.handleAsk(types.QueryEvent{
+			Type: types.EventAsk,
+			Ask: &types.AskEvent{
+				Kind:     types.AskInput,
+				Prompt:   "pw?",
+				Deadline: dl,
+			},
+		})
+
+		msg := readWSMessage(t, ws)
+		var got struct {
+			DeadlineUnix int64 `json:"deadline_unix"`
+		}
+		if err := json.Unmarshal(msg, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.DeadlineUnix != dl.Unix() {
+			t.Errorf("deadline_unix = %d, want %d", got.DeadlineUnix, dl.Unix())
+		}
+	})
+
+	t.Run("permission_kind_never_emits_deadline", func(t *testing.T) {
+		c := newTestConnector(t)
+		ws := dialAndStore(t, c)
+
+		// Permission kind with non-zero Deadline (edge case — should still omit).
+		dl := time.Unix(1800000000, 0)
+		c.handleAsk(types.QueryEvent{
+			Type: types.EventAsk,
+			Ask: &types.AskEvent{
+				Kind:     types.AskPermission,
+				ToolName: "Bash",
+				Deadline: dl,
+			},
+		})
+
+		msg := readWSMessage(t, ws)
+		var raw map[string]any
+		if err := json.Unmarshal(msg, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, present := raw["deadline_unix"]; present {
+			t.Errorf("deadline_unix present in permission-kind payload, want omitted")
+		}
+	})
+}
+
 // ---- Section 4: onEngineEvent Ask for inactive engine ----
 
 // TestOnEngineEvent_AskDroppedForInactiveEngine verifies that Ask events
@@ -636,7 +716,7 @@ func TestRegisterChatWS_NonWSRequest(t *testing.T) {
 func TestHandleAskResponse_UnknownID(t *testing.T) {
 	c := newTestConnector(t)
 	// Should not panic.
-	c.handleAskResponse("nonexistent-id", "allow", "", false)
+	c.handleAskResponse("nonexistent-id", "allow", "", false, false)
 
 	c.pendingMu.Lock()
 	count := len(c.pendingAsks)
@@ -647,7 +727,103 @@ func TestHandleAskResponse_UnknownID(t *testing.T) {
 	}
 }
 
-// ---- Section 11: onEngineEvent slot not found ----
+// TestHandleAskResponse_InputKind_TextBranch verifies that responding to an
+// input-kind ask delivers {Text, Aborted:false} to the engine's ResponseCh
+// (NOT the permission path that would set Decision).
+func TestHandleAskResponse_InputKind_TextBranch(t *testing.T) {
+	c := newTestConnector(t)
+	respCh := make(chan types.AskResponse, 1)
+	evt := &types.AskEvent{Kind: types.AskInput, ResponseCh: respCh}
+
+	c.pendingMu.Lock()
+	c.pendingAsks["input-1"] = evt
+	c.pendingMu.Unlock()
+
+	c.handleAskResponse("input-1", "", "hunter2", false, false)
+
+	select {
+	case resp := <-respCh:
+		if resp.Text != "hunter2" {
+			t.Errorf("Text = %q, want \"hunter2\"", resp.Text)
+		}
+		if resp.Aborted {
+			t.Errorf("Aborted = true, want false")
+		}
+		if resp.Decision != "" {
+			t.Errorf("Decision = %q, want empty for input kind", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no response received on ResponseCh")
+	}
+
+	// Pending ask must be cleaned up.
+	c.pendingMu.Lock()
+	remaining := len(c.pendingAsks)
+	c.pendingMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("pendingAsks = %d after response, want 0", remaining)
+	}
+}
+
+// TestHandleAskResponse_InputKind_AbortBranch verifies that an aborted input
+// ask delivers {Text:"", Aborted:true, Timeout:timeoutFlag} to the ResponseCh.
+// The timeout flag distinguishes countdown expiry from a user-initiated cancel.
+func TestHandleAskResponse_InputKind_AbortBranch(t *testing.T) {
+	c := newTestConnector(t)
+	respCh := make(chan types.AskResponse, 1)
+	evt := &types.AskEvent{Kind: types.AskInput, ResponseCh: respCh}
+
+	c.pendingMu.Lock()
+	c.pendingAsks["input-2"] = evt
+	c.pendingMu.Unlock()
+
+	c.handleAskResponse("input-2", "", "", true, true)
+
+	select {
+	case resp := <-respCh:
+		if resp.Text != "" {
+			t.Errorf("Text = %q, want empty on abort", resp.Text)
+		}
+		if !resp.Aborted {
+			t.Errorf("Aborted = false, want true")
+		}
+		if !resp.Timeout {
+			t.Errorf("Timeout = false, want true for countdown-expiry abort")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no response received on ResponseCh")
+	}
+}
+
+// TestHandleAskResponse_PermissionKind_Regression verifies the permission-kind
+// response path still sets Decision (not Text/Aborted) — guards against
+// refactors that accidentally route permission responses through the input branch.
+func TestHandleAskResponse_PermissionKind_Regression(t *testing.T) {
+	c := newTestConnector(t)
+	respCh := make(chan types.AskResponse, 1)
+	evt := &types.AskEvent{Kind: types.AskPermission, ResponseCh: respCh}
+
+	c.pendingMu.Lock()
+	c.pendingAsks["perm-1"] = evt
+	c.pendingMu.Unlock()
+
+	c.handleAskResponse("perm-1", "allow_always", "ignored-text", true, false)
+
+	select {
+	case resp := <-respCh:
+		if resp.Decision != types.DecisionAllowAlways {
+			t.Errorf("Decision = %q, want %q", resp.Decision, types.DecisionAllowAlways)
+		}
+		if resp.Text != "" {
+			t.Errorf("Text = %q, want empty for permission kind (text arg should be ignored)", resp.Text)
+		}
+		if resp.Aborted {
+			t.Errorf("Aborted = true, want false for permission kind (aborted arg should be ignored)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no response received on ResponseCh")
+	}
+}
 
 // TestOnEngineEvent_UnknownEngineID verifies that events for an engine ID
 // with no registered slot are silently dropped (no panic).

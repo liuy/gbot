@@ -1,4 +1,4 @@
-import type { AskDecision } from './types'
+import type { AskResponsePayload } from './types'
 
 export interface AskData {
   id: string
@@ -10,6 +10,7 @@ export interface AskData {
   prompt?: string
   masked?: boolean
   agent_type?: string
+  deadline_unix?: number
 }
 
 export interface AskHandles {
@@ -34,7 +35,17 @@ function formatCommand(input: unknown): string {
 
 export function createAsk(
   ask: AskData,
-  respond: (decision: AskDecision) => void,
+  respond: (payload: AskResponsePayload) => void,
+): AskHandles {
+  if (ask.kind === 'input') {
+    return createInputAsk(ask, respond)
+  }
+  return createPermissionAsk(ask, respond)
+}
+
+function createPermissionAsk(
+  ask: AskData,
+  respond: (payload: AskResponsePayload) => void,
 ): AskHandles {
   const root = document.createElement('div')
   root.className =
@@ -42,10 +53,10 @@ export function createAsk(
 
   const title = document.createElement('div')
   title.className = 'mb-2 text-sm text-amber'
-  title.textContent = `approve · ${ask.tool_name}`
+  title.textContent = `Approve · ${ask.tool_name}`
   root.appendChild(title)
 
-  const label = ask.message ?? ask.prompt ?? `approve · ${ask.tool_name}`
+  const label = ask.message ?? ask.prompt ?? `Approve · ${ask.tool_name}`
   if (label) {
     const lbl = document.createElement('div')
     lbl.className = 'mb-1 text-t2 text-sm'
@@ -83,18 +94,154 @@ export function createAsk(
   }
 
   actions.appendChild(
-    mkBtn('Allow Once', () => respond('allow')),
+    mkBtn('Allow Once', () => respond({ decision: 'allow' })),
   )
   actions.appendChild(
-    mkBtn('Allow This Session', () => respond('allow_always')),
+    mkBtn('Allow This Session', () => respond({ decision: 'allow_always' })),
   )
   actions.appendChild(
-    mkBtn('Deny', () => respond('deny'), true),
+    mkBtn('Deny', () => respond({ decision: 'deny' }), true),
   )
   root.appendChild(actions)
 
   return {
     root,
     close: () => root.remove(),
+  }
+}
+
+// createInputAsk renders an interactive text input (masked or plain) with a
+// countdown timer. Enter submits the text; the countdown auto-aborts on zero.
+// Style mirrors permission ask (amber border, same container classes).
+function createInputAsk(
+  ask: AskData,
+  respond: (payload: AskResponsePayload) => void,
+): AskHandles {
+  const root = document.createElement('div')
+  root.className =
+    'mx-5 my-3 rounded-lg border border-amber/50 bg-amber/5 px-4 py-3'
+
+  const title = document.createElement('div')
+  title.className = 'mb-2 text-sm text-amber'
+    title.textContent = ask.tool_name ? `Input · ${ask.tool_name}` : 'Input'
+  root.appendChild(title)
+
+  const prompt = ask.prompt ?? ask.message ?? ''
+  if (prompt) {
+    const lbl = document.createElement('div')
+    lbl.className = 'mb-2 text-t2 text-sm'
+    lbl.textContent = prompt
+    root.appendChild(lbl)
+  }
+
+  const input = document.createElement('input')
+  input.type = ask.masked ? 'password' : 'text'
+  input.className =
+    'mb-3 w-full rounded bg-black/30 px-3 py-2 font-mono text-sm text-t1 outline-none border border-t3/30 focus:border-blue'
+  input.autocomplete = 'off'
+  input.spellcheck = false
+  root.appendChild(input)
+
+  const metaRow = document.createElement('div')
+  metaRow.className = 'flex items-center justify-between gap-2'
+
+  const countdown = document.createElement('span')
+  countdown.className = 'text-xs text-t3'
+  const submitBtn = document.createElement('button')
+  submitBtn.type = 'button'
+  submitBtn.textContent = 'Submit'
+  submitBtn.className =
+    'rounded-lg bg-blue/10 px-3 py-1.5 text-sm text-blue transition-colors hover:bg-blue/20'
+
+  const cancelBtn = document.createElement('button')
+  cancelBtn.type = 'button'
+  cancelBtn.textContent = 'Cancel'
+  cancelBtn.className =
+    'rounded-lg bg-red/10 px-3 py-1.5 text-sm text-red transition-colors hover:bg-red/20'
+
+  // Button group on the right: Cancel left, Submit right (primary action rightmost).
+  const btnGroup = document.createElement('div')
+  btnGroup.className = 'flex gap-2'
+  btnGroup.appendChild(cancelBtn)
+  btnGroup.appendChild(submitBtn)
+
+  metaRow.appendChild(countdown)
+  metaRow.appendChild(btnGroup)
+  root.appendChild(metaRow)
+
+  let submitted = false
+  const submit = () => {
+    if (submitted) return
+    submitted = true
+    stopTimer()
+    respond({ text: input.value, aborted: false })
+  }
+  // User clicked Cancel — aborted without timeout. PTY shows
+  // "[Interaction cancelled by user]" (vs "[Interaction timed out]").
+  const cancel = () => {
+    if (submitted) return
+    submitted = true
+    stopTimer()
+    respond({ text: '', aborted: true, timeout: false })
+  }
+  // Deadline countdown expired — aborted with timeout. PTY shows
+  // "[Interaction timed out]".
+  const abort = () => {
+    if (submitted) return
+    submitted = true
+    stopTimer()
+    respond({ text: '', aborted: true, timeout: true })
+  }
+
+  submitBtn.addEventListener('click', submit)
+  cancelBtn.addEventListener('click', cancel)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      submit()
+    }
+  })
+
+  // Countdown timer — auto-abort at deadline.
+  // Abort is deferred via setTimeout(0) so createAsk's caller (chat.ts)
+  // finishes appendChild + askEls.push before the abort callback fires;
+  // otherwise an already-expired deadline would synchronously close the
+  // dialog mid-construction, leaving a dead node in the DOM.
+  let timerId: number | undefined
+  const stopTimer = () => {
+    if (timerId !== undefined) {
+      clearInterval(timerId)
+      timerId = undefined
+    }
+  }
+  const startTimer = () => {
+    if (!ask.deadline_unix) {
+      countdown.textContent = ''
+      return
+    }
+    const update = () => {
+      const remaining = Math.max(0, ask.deadline_unix! - Math.floor(Date.now() / 1000))
+      if (remaining <= 0) {
+        countdown.textContent = 'Timed out'
+        setTimeout(abort, 0)
+        stopTimer()
+        return
+      }
+      countdown.textContent = `timeout in ${remaining}s`
+    }
+    update()
+    timerId = window.setInterval(update, 1000)
+  }
+  startTimer()
+
+  // Autofocus after attach.
+  setTimeout(() => input.focus(), 0)
+
+  return {
+    root,
+    close: () => {
+      stopTimer()
+      root.remove()
+    },
   }
 }

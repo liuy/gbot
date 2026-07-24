@@ -915,6 +915,9 @@ func (c *WUIConnector) handleAsk(event hub.Event) {
 		Masked:     event.Ask.Masked,
 		AgentType:  event.Ask.AgentType,
 	}
+	if kind == "input" && !event.Ask.Deadline.IsZero() {
+		out.DeadlineUnix = event.Ask.Deadline.Unix()
+	}
 	payload, err := json.Marshal(out)
 	if err != nil {
 		slog.Warn("wui: marshal ask failed", "id", id, "error", err)
@@ -1484,16 +1487,17 @@ func buildError(err error) []byte {
 // *types.AskEvent fields have no json tags — marshalling it directly would
 // emit PascalCase keys. The React client expects snake_case (Phase 0).
 type askOutbound struct {
-	Type       string          `json:"type"`
-	ID         string          `json:"id"`
-	Kind       string          `json:"kind"`
-	ToolName   string          `json:"tool_name"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	Message    string          `json:"message,omitempty"`
-	RuleDetail string          `json:"rule_detail,omitempty"`
-	Prompt     string          `json:"prompt,omitempty"`
-	Masked     bool            `json:"masked,omitempty"`
-	AgentType  string          `json:"agent_type,omitempty"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	Kind         string          `json:"kind"`
+	ToolName     string          `json:"tool_name"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	RuleDetail   string          `json:"rule_detail,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Masked       bool            `json:"masked,omitempty"`
+	AgentType    string          `json:"agent_type,omitempty"`
+	DeadlineUnix int64           `json:"deadline_unix,omitempty"`
 }
 
 func agentTypeLog(m *types.AgentMeta) string {

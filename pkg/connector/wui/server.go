@@ -96,9 +96,10 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 				Decision string `json:"decision"`
 				Text     string `json:"text"`
 				Aborted  bool   `json:"aborted"`
+				Timeout  bool   `json:"timeout"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				c.handleAskResponse(msg.ID, msg.Decision, msg.Text, msg.Aborted)
+				c.handleAskResponse(msg.ID, msg.Decision, msg.Text, msg.Aborted, msg.Timeout)
 			}
 		case "stop":
 			c.handleStop()
@@ -219,8 +220,8 @@ func (c *WUIConnector) handleMessageInbound(text string) {
 
 // handleAskResponse looks up a pending ask by id and writes the response to
 // its ResponseCh. Permission asks carry decision; input asks carry text or
-// aborted.
-func (c *WUIConnector) handleAskResponse(id, decision, text string, aborted bool) {
+// aborted (with timeout flag distinguishing countdown expiry from user cancel).
+func (c *WUIConnector) handleAskResponse(id, decision, text string, aborted bool, timeout bool) {
 	c.pendingMu.Lock()
 	ask := c.pendingAsks[id]
 	delete(c.pendingAsks, id)
@@ -232,7 +233,7 @@ func (c *WUIConnector) handleAskResponse(id, decision, text string, aborted bool
 	if ask.Kind == types.AskPermission {
 		resp = types.AskResponse{Decision: types.UserDecision(decision)}
 	} else {
-		resp = types.AskResponse{Text: text, Aborted: aborted}
+		resp = types.AskResponse{Text: text, Aborted: aborted, Timeout: timeout}
 	}
 	select {
 	case ask.ResponseCh <- resp:

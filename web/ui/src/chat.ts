@@ -1704,8 +1704,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         appendError(msg.message)
         return
       case 'ask': {
-        const a = createAsk(msg, (decision) => {
-          conn.send({ type: 'ask_response', id: msg.id, decision })
+        const a = createAsk(msg, (payload) => {
+          conn.send({ type: 'ask_response', id: msg.id, ...payload })
           a.close()
           askEls = askEls.filter((el) => el !== a.root)
         })
