@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows
+.PHONY: all build build-debug build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -87,6 +87,11 @@ package: package-windows
 
 package-windows: $(WCMD)/icon.ico
 	bash scripts/package-wails.sh $(VERSION)
+
+# package-android builds the self-contained Android APK. Requires Android
+# SDK + NDK 26.3.x + JDK 21. Sideload only (targetSdk 28 for W^X exemption).
+package-android:
+	bash scripts/package-android.sh $(VERSION)
 
 wails-build: web-build
 	go build -o $(BINARY) ./cmd/wails/

@@ -11,7 +11,7 @@ android {
 	compileSdk = 34
 
 	defaultConfig {
-		applicationId = "com.gbot.android"
+		applicationId = "com.gbot.android.remote"
 		minSdk = 30
 		targetSdk = 34
 		versionCode = 1

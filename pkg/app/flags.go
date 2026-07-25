@@ -1,10 +1,18 @@
 package app
 
-import "os"
+import (
+	"os"
+	"runtime"
+)
 
 func ParseFlags(args []string) Options {
 	var opts Options
 	opts.WSPort = "8765"
+	// Android has no terminal; force daemon mode so the WUI HTTP+WS server
+	// mounts and the Java WebView has something to load.
+	if runtime.GOOS == "android" {
+		opts.DaemonMode = true
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-d", "--daemon":

@@ -48,8 +48,7 @@ node_modules/
 pkg/connector/wui/assets/index.html.gz
 /gbot.exe
 /dist/
-/build/staging/
-/build/nsis-plugins/
+/build/
 *.syso
 cmd/wails/icon.ico
 *.exe

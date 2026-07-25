@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GBot</string>
+    <string name="app_name">GBot Remote</string>
     <string name="app_title">GBot Mobile Use</string>
     <string name="app_subtitle">AI-Powered Device Automation</string>
     <string name="accessibility_service_description">GBot uses accessibility features to provide AI-powered device automation. This service allows remote control of your device through the MCP protocol for testing and automation purposes.</string>
