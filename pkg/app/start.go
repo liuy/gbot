@@ -468,6 +468,19 @@ func Start(opts Options) (*Instance, error) {
 			}
 			return createEngineForWUI(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
 		})
+		// Dedicated media cache for WS chunked uploads — do NOT reuse the
+		// wechat cache (it is only constructed when wechat is enabled). The
+		// cleanup goroutine is stopped via the shared mediaStores slice at
+		// shutdown (this slice is later assigned to Instance.MediaStores in
+		// the return literal below — at this point in the function `inst`
+		// does not exist yet, so we must append to the local slice).
+		uploadCache, err := media.New()
+		if err != nil {
+			slog.Warn("wui: media cache init failed, WS uploads disabled", "error", err)
+		} else {
+			wc.SetMediaCache(uploadCache)
+			mediaStores = append(mediaStores, uploadCache)
+		}
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())

@@ -7,6 +7,7 @@ export type ConnState = 'connected' | 'reconnecting' | 'disconnected'
 export interface WebSocketConnection {
   subscribe: (listener: Listener) => () => void
   send: (payload: object) => void
+  sendBinary: (data: ArrayBuffer | Uint8Array) => void
   connected: boolean
   onStateChange: (cb: (state: ConnState) => void) => void
   reconnect: () => void
@@ -134,6 +135,12 @@ function connFromState(s: InternalState): WebSocketConnection {
       const ws = s.ws
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(payload))
+      }
+    },
+    sendBinary: (data: ArrayBuffer | Uint8Array) => {
+      const ws = s.ws
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(data)
       }
     },
     get connected() {

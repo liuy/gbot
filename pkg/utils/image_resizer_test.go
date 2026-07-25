@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // --- fixture builders ---
@@ -411,124 +409,6 @@ func TestMaybeResize_CatchFallbackToOriginalUnder5MB(t *testing.T) {
 	wantMT := strings.TrimPrefix(DetectImageFormatFromBuffer(buf), "image/")
 	if res.MediaType != wantMT {
 		t.Errorf("MediaType = %q, want %q", res.MediaType, wantMT)
-	}
-}
-
-// --- 15. ImageBlockPassthroughNonBase64 ---
-
-func TestMaybeResizeImageBlock_PassthroughNonBase64(t *testing.T) {
-	t.Parallel()
-	block := types.NewFileImageBlock("image/png", "/tmp/x.png")
-	out, dims, err := MaybeResizeAndDownsampleImageBlock(block)
-	if err != nil {
-		t.Fatalf("MaybeResizeAndDownsampleImageBlock: %v", err)
-	}
-	if dims != nil {
-		t.Errorf("dims = %+v, want nil for non-base64 block", dims)
-	}
-	if out.Source == nil || out.Source.Type != "file" {
-		t.Errorf("output block source = %+v, want file passthrough", out.Source)
-	}
-	if out.Source.Path != "/tmp/x.png" {
-		t.Errorf("Path = %q, want /tmp/x.png", out.Source.Path)
-	}
-}
-
-// --- 16. ImageBlockBase64FullFlow ---
-
-func TestMaybeResizeImageBlock_Base64FullFlow(t *testing.T) {
-	t.Parallel()
-	img := noiseRGBA(2500, 2500, 19)
-	buf := encodePNG(t, img)
-	block := types.NewImageBlock(types.ImageSource{
-		Type:      "base64",
-		MediaType: "image/png",
-		Data:      base64.StdEncoding.EncodeToString(buf),
-	})
-	out, dims, err := MaybeResizeAndDownsampleImageBlock(block)
-	if err != nil {
-		t.Fatalf("MaybeResizeAndDownsampleImageBlock: %v", err)
-	}
-	if dims == nil {
-		t.Fatal("dims = nil, want non-nil for resize path")
-	}
-	if dims.OriginalWidth != 2500 || dims.OriginalHeight != 2500 {
-		t.Errorf("Original = %dx%d, want 2500x2500", dims.OriginalWidth, dims.OriginalHeight)
-	}
-	if out.Source == nil || out.Source.Type != "base64" {
-		t.Fatalf("output source = %+v, want base64", out.Source)
-	}
-	switch out.Source.MediaType {
-	case "image/png", "image/jpeg":
-	default:
-		t.Errorf("MediaType = %q, want image/png or image/jpeg", out.Source.MediaType)
-	}
-	raw, err := base64.StdEncoding.DecodeString(out.Source.Data)
-	if err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
-	w, h := reDecode(t, raw, "ImageBlockBase64FullFlow")
-	if w > ImageMaxWidth || h > ImageMaxHeight {
-		t.Errorf("decoded = %dx%d, must be <= %dx%d", w, h, ImageMaxWidth, ImageMaxHeight)
-	}
-}
-
-// --- 16b. ImageBlockBase64DecodeError ---
-
-func TestMaybeResizeImageBlock_Base64DecodeError(t *testing.T) {
-	t.Parallel()
-	block := types.NewImageBlock(types.ImageSource{
-		Type:      "base64",
-		MediaType: "image/png",
-		Data:      "!!!not-base64!!!",
-	})
-	_, _, err := MaybeResizeAndDownsampleImageBlock(block)
-	if err == nil {
-		t.Fatal("err = nil, want base64 decode error")
-	}
-	if !strings.Contains(err.Error(), "decode base64 image block") {
-		t.Errorf("err = %q, want substring 'decode base64 image block'", err.Error())
-	}
-}
-
-// --- 16c. ImageBlockNilSource (passthrough) ---
-
-func TestMaybeResizeImageBlock_NilSource(t *testing.T) {
-	t.Parallel()
-	block := types.ContentBlock{Type: types.ContentTypeText, Text: "hi"}
-	out, dims, err := MaybeResizeAndDownsampleImageBlock(block)
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if dims != nil {
-		t.Errorf("dims = %+v, want nil", dims)
-	}
-	if out.Text != "hi" {
-		t.Errorf("output Text = %q, want 'hi' (passthrough)", out.Text)
-	}
-}
-
-// --- 16d. ImageBlockBase64ResizeErrorProp ---
-//
-// Feeds a base64 block whose decoded bytes exceed the API limit and are
-// non-decodable → resizer returns ImageResizeError → block wrapper must
-// propagate the error verbatim.
-func TestMaybeResizeImageBlock_Base64ResizeErrorProp(t *testing.T) {
-	t.Parallel()
-	oversize := make([]byte, IMAGE_TARGET_RAW_SIZE+1)
-	oversize[0], oversize[1], oversize[2], oversize[3] = 0x01, 0x02, 0x03, 0x04
-	block := types.NewImageBlock(types.ImageSource{
-		Type:      "base64",
-		MediaType: "image/png",
-		Data:      base64.StdEncoding.EncodeToString(oversize),
-	})
-	_, _, err := MaybeResizeAndDownsampleImageBlock(block)
-	if err == nil {
-		t.Fatal("err = nil, want ImageResizeError propagated")
-	}
-	var re *ImageResizeError
-	if !errors.As(err, &re) {
-		t.Errorf("err type = %T, want *ImageResizeError", err)
 	}
 }
 

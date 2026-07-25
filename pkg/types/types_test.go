@@ -144,30 +144,6 @@ func TestNewImageBlock(t *testing.T) {
 	}
 }
 
-func TestNewFileImageBlock(t *testing.T) {
-	t.Parallel()
-
-	block := types.NewFileImageBlock("image/png", "/tmp/cache/images/abc.png")
-	if block.Type != types.ContentTypeImage {
-		t.Fatalf("Type = %q, want %q", block.Type, types.ContentTypeImage)
-	}
-	if block.Source == nil {
-		t.Fatal("Source = nil, want non-nil")
-	}
-	if block.Source.Type != "file" {
-		t.Errorf("Source.Type = %q, want %q", block.Source.Type, "file")
-	}
-	if block.Source.MediaType != "image/png" {
-		t.Errorf("Source.MediaType = %q, want %q", block.Source.MediaType, "image/png")
-	}
-	if block.Source.Path != "/tmp/cache/images/abc.png" {
-		t.Errorf("Source.Path = %q, want %q", block.Source.Path, "/tmp/cache/images/abc.png")
-	}
-	if block.Source.Data != "" {
-		t.Errorf("Source.Data = %q, want empty (file source has no inline data)", block.Source.Data)
-	}
-}
-
 func TestImageSource_IsFileSource(t *testing.T) {
 	t.Parallel()
 
@@ -188,53 +164,6 @@ func TestImageSource_IsFileSource(t *testing.T) {
 				t.Errorf("IsFileSource() = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestFileImageBlockJSONRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	block := types.NewFileImageBlock("image/jpeg", "/home/user/cache/images/deadbeef.jpg")
-
-	data, err := json.Marshal(block)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	// The file source must serialize path and omit empty data. The on-wire form
-	// before materialization carries a "file" type; providers convert it to
-	// base64 before sending to the API.
-	got := string(data)
-	if !strings.Contains(got, `"type":"file"`) {
-		t.Errorf("JSON missing \"type\":\"file\": %s", got)
-	}
-	if !strings.Contains(got, `"path":"/home/user/cache/images/deadbeef.jpg"`) {
-		t.Errorf("JSON missing path field: %s", got)
-	}
-	if strings.Contains(got, `"data":`) {
-		t.Errorf("JSON should omit empty data field, got: %s", got)
-	}
-
-	var back types.ContentBlock
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if back.Type != types.ContentTypeImage {
-		t.Fatalf("round-trip Type = %q, want %q", back.Type, types.ContentTypeImage)
-	}
-	if back.Source == nil {
-		t.Fatal("round-trip Source = nil")
-	}
-	if back.Source.Type != "file" {
-		t.Errorf("round-trip Source.Type = %q, want %q", back.Source.Type, "file")
-	}
-	if back.Source.MediaType != "image/jpeg" {
-		t.Errorf("round-trip Source.MediaType = %q, want %q", back.Source.MediaType, "image/jpeg")
-	}
-	if back.Source.Path != "/home/user/cache/images/deadbeef.jpg" {
-		t.Errorf("round-trip Source.Path = %q, want %q", back.Source.Path, "/home/user/cache/images/deadbeef.jpg")
-	}
-	if back.Source.Data != "" {
-		t.Errorf("round-trip Source.Data = %q, want empty", back.Source.Data)
 	}
 }
 

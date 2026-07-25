@@ -15,7 +15,6 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/liuy/gbot/pkg/tool/toolresult"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // Port of claude-code-source-code/src/utils/imageResizer.ts
@@ -398,34 +397,6 @@ func applyFinalFallback(src image.Image, width, height, originalWidth, originalH
 			DisplayHeight:  smallerHeight,
 		},
 	}
-}
-
-// MaybeResizeAndDownsampleImageBlock ports TS maybeResizeAndDownsampleImageBlock
-// (imageResizer.ts:445–496). Non-base64 blocks pass through unchanged.
-// Base64 blocks are decoded, run through MaybeResizeAndDownsampleImageBuffer,
-// and re-wrapped with the post-resize media type.
-func MaybeResizeAndDownsampleImageBlock(block types.ContentBlock) (types.ContentBlock, *ImageDimensions, error) {
-	if block.Source == nil || block.Source.Type != "base64" {
-		return block, nil, nil
-	}
-	raw, err := base64.StdEncoding.DecodeString(block.Source.Data)
-	if err != nil {
-		return block, nil, fmt.Errorf("decode base64 image block: %w", err)
-	}
-	// TS line 465: mediaType.split('/')[1] || 'png'.
-	ext := "png"
-	if mt := block.Source.MediaType; strings.HasPrefix(mt, "image/") {
-		ext = mt[len("image/"):]
-	}
-	resized, err := MaybeResizeAndDownsampleImageBuffer(raw, len(raw), ext)
-	if err != nil {
-		return block, nil, err
-	}
-	return types.NewImageBlock(types.ImageSource{
-		Type:      "base64",
-		MediaType: "image/" + resized.MediaType,
-		Data:      base64.StdEncoding.EncodeToString(resized.Buffer),
-	}), resized.Dimensions, nil
 }
 
 // DetectImageFormatFromBuffer ports TS detectImageFormatFromBuffer

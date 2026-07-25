@@ -32,12 +32,13 @@ import {
 } from './components/stream_dom'
 import { createHeader } from './header'
 import { createSidebar } from './sidebar'
-import { createInputBar, type InputBarHandles } from './input_bar'
+import { createInputBar, type InputBarHandles, type AttachmentRef } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
+import { sendAttachmentViaWS, attachmentMeta, newAttachmentID } from './upload'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -83,6 +84,31 @@ export interface ChatHandles {
   scrollEl: HTMLElement
   inputBar: InputBarHandles
   cleanup: () => void
+}
+
+// Lightweight lightbox: clicking any user-message thumbnail overlays a
+// full-screen, scrollable, click-to-close view of the original image. No
+// zoom/pan gestures — keeps the implementation under 30 lines and avoids
+// pulling in a library. The overlay is created lazily on first click and
+// reused across clicks.
+let lightboxOverlay: HTMLDivElement | null = null
+function showImageLightbox(src: string): void {
+  if (!lightboxOverlay) {
+    const overlay = document.createElement('div')
+    overlay.className =
+      'fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-zoom-out p-4'
+    overlay.addEventListener('click', () => {
+      overlay.style.display = 'none'
+    })
+    const img = document.createElement('img')
+    img.className = 'max-w-full max-h-full object-contain rounded-lg'
+    overlay.appendChild(img)
+    document.body.appendChild(overlay)
+    lightboxOverlay = overlay
+  }
+  const img = lightboxOverlay.querySelector('img')!
+  img.src = src
+  lightboxOverlay.style.display = 'flex'
 }
 
 function classifyToolName(name: string): {
@@ -149,6 +175,9 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
       for (const b of h.blocks) {
         if (b.kind === 'text') {
           m.blocks.push({ kind: 'text', id: '', text: b.text })
+        } else if (b.kind === 'image') {
+          // data URL inlined by backend history replay — no /file endpoint needed.
+          m.blocks.push({ kind: 'image', id: '', src: b.src })
         } else if (b.kind === 'thinking') {
           const th = b.thinking!
           m.blocks.push({
@@ -257,14 +286,40 @@ function renderCommittedMessageDOM(
   const runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] = []
   if (m.role === 'user') {
     const { outer, content } = buildShell('user')
-    const text = m.blocks
-      .filter((b) => b.kind === 'text' || b.kind === 'user')
-      .map((b) => (b as { text: string }).text)
-      .join('')
-    const span = document.createElement('span')
-    span.className = 'whitespace-pre-wrap'
-    span.textContent = text
-    content.appendChild(span)
+    // Render blocks in order. Image blocks land as <img>; text blocks are
+    // parsed for the [Document: ...] prefix emitted by the backend when a
+    // document attachment was sent — the prefix becomes a [filename.ext]
+    // chip and the rest of the text becomes the text span.
+    for (const b of m.blocks) {
+      if (b.kind === 'image') {
+        const img = document.createElement('img')
+        img.src = b.src
+        img.className = 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in'
+        img.addEventListener('click', () => showImageLightbox(b.src))
+        content.appendChild(img)
+      } else if (b.kind === 'text' || b.kind === 'user') {
+        const text = (b as { text: string }).text
+        const docMatch = text.match(/^\[Document: (.+?) saved at .+?\]\n?/)
+        if (docMatch) {
+          const chip = document.createElement('span')
+          chip.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1'
+          chip.textContent = `[${docMatch[1]}]`
+          content.appendChild(chip)
+          const rest = text.slice(docMatch[0].length)
+          if (rest) {
+            const span = document.createElement('span')
+            span.className = 'whitespace-pre-wrap'
+            span.textContent = rest
+            content.appendChild(span)
+          }
+        } else {
+          const span = document.createElement('span')
+          span.className = 'whitespace-pre-wrap'
+          span.textContent = text
+          content.appendChild(span)
+        }
+      }
+    }
     if (m.error) {
       const err = document.createElement('div')
       err.className =
@@ -299,6 +354,13 @@ function renderCommittedMessageDOM(
       if (!b.text) continue
       const div = appendTextBlock(content)
       div.innerHTML = renderMarkdownNoHighlight(b.text)
+    } else if (b.kind === 'image') {
+      // Assistant image blocks should not occur in normal flow (assistant is
+      // text-only), but render defensively in case a future tool emits one.
+      const img = document.createElement('img')
+      img.src = b.src
+      img.className = 'block max-w-[400px] max-h-[400px] rounded-lg my-1'
+      content.appendChild(img)
     } else if (b.kind === 'user') {
       if (!b.text) continue
       appendUserBlock(content, b.text)
@@ -1500,23 +1562,49 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  const onSend = (text: string) => {
-    inputHistory.add(text)
-    if (streaming) {
-      queuedMsgs = [...queuedMsgs, { uuid: '', text }]
-      inputBar.setQueuedMsgs(queuedMsgs)
-      conn.send({ type: 'message', text })
-      return
-    }
+  // renderUserMessage builds a user message DOM node carrying text + any
+  // uploaded attachments (image thumbnails via blob URL or document chips)
+  // and appends it to the messages container. Mirrors the pre-attachment
+  // send path so users see their message immediately, before the WS round-trip.
+  const renderUserMessage = (
+    text: string,
+    uploaded: AttachmentRef[],
+  ) => {
     const { outer, content } = buildShell('user')
-    const span = document.createElement('span')
-    span.className = 'whitespace-pre-wrap'
-    span.textContent = text
-    content.appendChild(span)
+    // Populate the blocks array so abort-rewind / replay can recover the
+    // text without parsing DOM. Image refs become image blocks (the DOM
+    // <img> src stays the blob URL — same data URL after backend history
+    // replay, but for live send we use the blob URL until page unload).
+    const blocks: Block[] = []
+    if (text) {
+      const span = document.createElement('span')
+      span.className = 'whitespace-pre-wrap'
+      span.textContent = text
+      content.appendChild(span)
+      blocks.push({ kind: 'text', id: '', text })
+    }
+    for (const ref of uploaded) {
+      if (ref.kind === 'image') {
+        // Blob URL is still alive (clearAttachments used keepSentBlobURLs).
+        // The rendered DOM owns it now; browser GCs on page unload.
+        const img = document.createElement('img')
+        img.src = ref.previewURL
+        img.className = 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in'
+        img.alt = ref.file.name
+        img.addEventListener('click', () => showImageLightbox(ref.previewURL))
+        content.appendChild(img)
+        blocks.push({ kind: 'image', id: '', src: ref.previewURL })
+      } else {
+        const span = document.createElement('span')
+        span.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1'
+        span.textContent = `[${ref.file.name}]`
+        content.appendChild(span)
+      }
+    }
     const m: MessageState = {
       id: '',
       role: 'user',
-      blocks: [{ kind: 'text', id: '', text }],
+      blocks,
       usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
       error: '',
       status: 'done',
@@ -1527,7 +1615,67 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
     messages.push(m)
-    conn.send({ type: 'message', text })
+  }
+
+  const onSend = async (text: string) => {
+    inputHistory.add(text)
+    const attachments = inputBar.getAttachments()
+    if (attachments.length === 0) {
+      // Text-only fast path — no upload needed.
+      if (streaming) {
+        queuedMsgs = [...queuedMsgs, { uuid: '', text }]
+        inputBar.setQueuedMsgs(queuedMsgs)
+        conn.send({ type: 'message', text })
+        return
+      }
+      renderUserMessage(text, [])
+      conn.send({ type: 'message', text })
+      return
+    }
+    // B-plan upload flow: send user_message FIRST so the server enters the
+    // waiting state and knows how many attachment_start/binary/end triples
+    // to expect. IDs are generated client-side so the server can correlate
+    // user_message.attachments[].id with the matching attachment_start.id.
+    const ids = attachments.map(() => newAttachmentID())
+    conn.send({
+      type: 'message',
+      text,
+      attachments: attachments.map((a, i) => attachmentMeta(a.file, ids[i])),
+    })
+    // Upload phase — disable input via setUploading (NOT setStreaming):
+    // setStreaming would flip the send button to a STOP icon that aborts
+    // the engine, but we are uploading, not streaming. Each attachment is
+    // streamed serially over the WS (single activeUploadID on the server).
+    inputBar.setUploading(true)
+    const uploaded: AttachmentRef[] = []
+    for (let i = 0; i < attachments.length; i++) {
+      const ref = attachments[i]
+      try {
+        await sendAttachmentViaWS(ref.file, ids[i], (frac) =>
+          inputBar.setAttachmentProgress(ref, frac),
+        )
+        uploaded.push(ref)
+      } catch {
+        // Server has already sent an error frame and dropped this id;
+        // mark the chip so the user can retry without losing the others.
+        inputBar.markAttachmentFailures([ref])
+      }
+    }
+    inputBar.setUploading(false)
+    if (uploaded.length === 0) return // nothing rendered — failed chips stay for retry
+    // Drop the successfully-uploaded chips from the strip. Blob URLs are
+    // NOT revoked (the rendered user message <img> still references them).
+    inputBar.removeAttachments(uploaded)
+    if (streaming) {
+      // Mid-stream: do NOT render the user message (the running assistant
+      // turn owns the bottom of the transcript). query_start for the new
+      // turn renders it when the engine picks the message up — same
+      // behavior as the text-only fast path.
+      queuedMsgs = [...queuedMsgs, { uuid: '', text }]
+      inputBar.setQueuedMsgs(queuedMsgs)
+      return
+    }
+    renderUserMessage(text, uploaded)
   }
 
   const onStop = () => {
@@ -1552,6 +1700,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onSend(onSend)
   inputBar.onStop(onStop)
   inputBar.onCancelQueued(onCancelQueued)
+  // onRetryAttachment re-fires sendAttachmentViaWS for a failed chip with a
+  // fresh id (the prior id was either dropped server-side or never
+  // completed). Returns true on success so input_bar clears the failed flag.
+  inputBar.onRetryAttachment(async (ref) => {
+    try {
+      await sendAttachmentViaWS(ref.file, newAttachmentID())
+      return true
+    } catch {
+      return false
+    }
+  })
   inputBar.onHistoryUp((current) => {
     const r = inputHistory.up(current)
     return r.cursor === 'none' ? null : r.text

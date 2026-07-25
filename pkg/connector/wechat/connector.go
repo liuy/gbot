@@ -503,7 +503,15 @@ func (c *WeChatConnector) downloadImage(ctx context.Context, img *MediaItemHolde
 		slog.Warn("wechat: image cache save failed, falling back to text-only", "error", err)
 		return types.ContentBlock{}
 	}
-	return types.NewFileImageBlock(mime, path)
+	// Disk save retained for legacy SQLite history rows written before the
+	// fileread-unification refactor; new messages replay through the base64
+	// source path returned by ReadAsImageBlock. fileread owns resize/encode:
+	// a single source of truth shared with the WUI connector.
+	if block, ok := fileread.ReadAsImageBlock(ctx, path); ok {
+		return block
+	}
+	slog.Warn("wechat: image resize/encode failed, falling back to text-only", "path", path)
+	return types.ContentBlock{}
 }
 
 func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.ContentBlock {

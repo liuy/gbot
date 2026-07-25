@@ -227,12 +227,11 @@ func NewToolResultBlock(toolUseID string, content json.RawMessage, isError bool)
 // ImageSource is the source payload of an image content block.
 // Source: Anthropic API image block source — {type:"base64", media_type, data}.
 //
-// Two source types are supported:
-//   - "base64": Data carries inline base64-encoded bytes (the only wire form
-//     the Anthropic/OpenAI APIs accept).
-//   - "file": Path references a local file that providers read and base64-
-//     encode at request time (see llm.MaterializeFileImages). Used by the
-//     WeChat connector to avoid storing large base64 blobs in the message DB.
+// New code emits base64 only: image bytes enter the engine already resized
+// and base64-encoded via fileread.ReadAsImageBlock (see the wechat and wui
+// connectors). The "file" source type is retained solely so legacy SQLite
+// history rows — written before the unification — still replay correctly
+// through historyImageDataURL's path+mtime cache path.
 type ImageSource struct {
 	Type      string `json:"type"`           // "base64" | "file"
 	MediaType string `json:"media_type"`     // "image/png", "image/jpeg", etc.
@@ -240,23 +239,14 @@ type ImageSource struct {
 	Path      string `json:"path,omitempty"` // local file path (Type == "file")
 }
 
-// IsFileSource returns true if the source references a local file that must be
-// read and base64-encoded at request time (Type == "file").
+// IsFileSource returns true if the source references a local file. The wui
+// connector uses this in historyImageDataURL to pick the disk-read branch
+// (legacy file-source rows) over the base64-decode branch.
 func (s *ImageSource) IsFileSource() bool { return s != nil && s.Type == "file" }
 
 // NewImageBlock creates an image content block carrying base64-encoded image data.
 func NewImageBlock(source ImageSource) ContentBlock {
 	return ContentBlock{Type: ContentTypeImage, Source: &source}
-}
-
-// NewFileImageBlock creates an image content block referencing a local file.
-// The provider reads and base64-encodes Path at request time (see
-// llm.MaterializeFileImages). mediaType must be an image/* MIME type.
-func NewFileImageBlock(mediaType, path string) ContentBlock {
-	return ContentBlock{
-		Type:   ContentTypeImage,
-		Source: &ImageSource{Type: "file", MediaType: mediaType, Path: path},
-	}
 }
 
 // MarshalJSON projects ContentBlock onto the LLM wire shape, which is identical

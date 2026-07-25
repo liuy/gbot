@@ -63,12 +63,6 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	// Source: claude.ts:358-374
 	applyCacheControlToSystem(req)
 
-	// Read file-backed image blocks off disk and convert to base64 before
-	// validation/serialization — the wire format has no file-path source.
-	if err := MaterializeFileImages(req); err != nil {
-		return nil, err
-	}
-
 	if err := ValidateImagesForAPI(req.Messages); err != nil {
 		return nil, err
 	}
@@ -134,12 +128,6 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
 	// Apply cache control to system blocks if configured.
 	applyCacheControlToSystem(req)
-
-	// Read file-backed image blocks off disk and convert to base64 before
-	// validation/serialization — the wire format has no file-path source.
-	if err := MaterializeFileImages(req); err != nil {
-		return nil, err
-	}
 
 	if err := ValidateImagesForAPI(req.Messages); err != nil {
 		return nil, err

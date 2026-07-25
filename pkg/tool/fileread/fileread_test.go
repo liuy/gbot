@@ -1719,3 +1719,88 @@ func TestExecute_DocumentWithLimit(t *testing.T) {
 		t.Errorf("expected <= 2 lines with limit=2, got %d", output.NumLines)
 	}
 }
+
+// --- ReadAsImageBlock (shared image-block constructor for connectors) ---
+
+func TestReadAsImageBlock_RealPNG(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	srcImg := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := range 4 {
+		for x := range 4 {
+			srcImg.SetRGBA(x, y, color.RGBA{R: uint8(x * 60), G: uint8(y * 60), B: 0, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, srcImg); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	fp := filepath.Join(dir, "real.png")
+	if err := os.WriteFile(fp, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	block, ok := fileread.ReadAsImageBlock(context.Background(), fp)
+	if !ok {
+		t.Fatal("ReadAsImageBlock returned (zero, false) for a real PNG")
+	}
+	if block.Type != types.ContentTypeImage {
+		t.Errorf("block.Type = %q, want image", block.Type)
+	}
+	if block.Source == nil {
+		t.Fatal("block.Source is nil")
+	}
+	if block.Source.Type != "base64" {
+		t.Errorf("Source.Type = %q, want base64", block.Source.Type)
+	}
+	if block.Source.MediaType != "image/png" {
+		t.Errorf("Source.MediaType = %q, want image/png", block.Source.MediaType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(block.Source.Data)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	cfg, _, derr := image.DecodeConfig(bytes.NewReader(decoded))
+	if derr != nil {
+		t.Fatalf("decoded bytes are not a valid image: %v", derr)
+	}
+	if cfg.Width != 4 || cfg.Height != 4 {
+		t.Errorf("decoded dims = %dx%d, want 4x4", cfg.Width, cfg.Height)
+	}
+}
+
+func TestReadAsImageBlock_MissingFile(t *testing.T) {
+	t.Parallel()
+	block, ok := fileread.ReadAsImageBlock(context.Background(), filepath.Join(t.TempDir(), "nope.png"))
+	if ok {
+		t.Errorf("expected (zero, false) for missing file, got (%+v, true)", block)
+	}
+	if block.Type != "" {
+		t.Errorf("zero block.Type = %q, want empty", block.Type)
+	}
+}
+
+func TestReadAsImageBlock_CorruptImage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "corrupt.png")
+	if err := os.WriteFile(fp, []byte{0x89, 0x50, 0x4E, 0x47, 0x0D}, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	block, ok := fileread.ReadAsImageBlock(context.Background(), fp)
+	if ok {
+		t.Errorf("expected (zero, false) for corrupt image, got (%+v, true)", block)
+	}
+}
+
+func TestReadAsImageBlock_NonImageExt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(fp, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	block, ok := fileread.ReadAsImageBlock(context.Background(), fp)
+	if ok {
+		t.Errorf("expected (zero, false) for non-image extension, got (%+v, true)", block)
+	}
+}

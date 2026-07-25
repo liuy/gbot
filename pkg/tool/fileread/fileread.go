@@ -14,6 +14,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -504,6 +505,15 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 		DisplayHeight:  dims.DisplayHeight,
 	}
 
+	slog.Info("fileread: image resized",
+		"path", in.FilePath,
+		"original_bytes", info.Size(),
+		"original_wxh", fmt.Sprintf("%dx%d", dims.OriginalWidth, dims.OriginalHeight),
+		"resized_bytes", len(outputData),
+		"display_wxh", fmt.Sprintf("%dx%d", dims.DisplayWidth, dims.DisplayHeight),
+		"media_type", mediaType,
+	)
+
 	return &tool.ToolResult{Data: output}, nil
 }
 
@@ -695,3 +705,30 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 
 // resizeImage was removed: superseded by utils.MaybeResizeAndDownsampleImageBuffer,
 // which uses draw.CatmullRom.Scale (high-quality) instead of nearest-neighbor.
+
+// ReadAsImageBlock reads the image file at path via Execute, runs the standard
+// resize/downsample pipeline, and returns a base64 image ContentBlock ready
+// for the engine. Returns (zero, false) on any error (file missing,
+// undecodable, resize failure) so callers can degrade to text-only without
+// propagating errors. This is the single shared entry point for both the
+// wechat and WUI connectors — image attachments enter the engine as base64
+// source bytes, never as a file path the LLM would have to chase.
+func ReadAsImageBlock(ctx context.Context, path string) (types.ContentBlock, bool) {
+	input, err := json.Marshal(Input{FilePath: path})
+	if err != nil {
+		return types.ContentBlock{}, false
+	}
+	result, err := Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
+	if err != nil || result == nil {
+		return types.ContentBlock{}, false
+	}
+	out, ok := result.Data.(ImageOutput)
+	if !ok {
+		return types.ContentBlock{}, false
+	}
+	return types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: out.MimeType,
+		Data:      out.Base64,
+	}), true
+}

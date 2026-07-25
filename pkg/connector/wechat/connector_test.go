@@ -2215,7 +2215,7 @@ func TestHandleInbound_DisplayText_MultiDocs(t *testing.T) {
 func TestProcessBatch_MediaWithContextToken(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	pngHeader := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -2501,7 +2501,7 @@ func TestEnqueue_ImageContent_PassesToAttachment(t *testing.T) {
 	c.isBusyFn = func() bool { return true }
 
 	content := []types.ContentBlock{
-		types.NewFileImageBlock("image/png", "/tmp/x.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 		types.NewTextBlock("caption"),
 	}
 	c.enqueue("userA", "caption", content)
@@ -2536,7 +2536,7 @@ func TestAttachmentValue_DocContent(t *testing.T) {
 func TestAttachmentValue_MultiBlock(t *testing.T) {
 	t.Parallel()
 	content := []types.ContentBlock{
-		types.NewFileImageBlock("image/png", "/tmp/x.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 		types.NewTextBlock("caption"),
 	}
 	got := attachmentValue("ignored", content)

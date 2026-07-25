@@ -11,6 +11,9 @@ package wui
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +31,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
@@ -53,6 +57,7 @@ type queryEventWithAbort struct {
 // production code with test-only seam fields.
 type engineClient interface {
 	Query(ctx context.Context, userMessage, systemPrompt string)
+	QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string)
 	IsBusy() bool
 	Messages() []types.Message
 	QueryStartMsgIdx() int
@@ -96,6 +101,9 @@ var _ engineClient = (*engineAdapter)(nil)
 
 func (a *engineAdapter) Query(ctx context.Context, userMessage, systemPrompt string) {
 	a.eng.Query(ctx, userMessage, systemPrompt)
+}
+func (a *engineAdapter) QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) {
+	a.eng.QueryWithContent(ctx, content, systemPrompt)
 }
 func (a *engineAdapter) IsBusy() bool                { return a.eng.IsBusy() }
 func (a *engineAdapter) Messages() []types.Message   { return a.eng.Messages() }
@@ -175,6 +183,57 @@ type queryStats struct {
 	toolCount                atomic.Int64
 	thinkingMs               atomic.Int64
 	startMs                  atomic.Int64
+}
+
+// thumbCache memoizes resized history thumbnails so buildHistoryChatMsg
+// does not re-decode + re-scale + re-base64 the same image on every
+// history_request. Key is "<path>|<mtime>" so a replaced file invalidates.
+// Bounded to ~100 entries via FIFO eviction (LRU is aspirational — a simple
+// map + insertion-order slice is fine for this workload, since history is
+// rebuilt in temporal order each time).
+type thumbCache struct {
+	mu    sync.Mutex
+	order []string
+	m     map[string]string
+	cap   int
+}
+
+func newThumbCache() *thumbCache {
+	return &thumbCache{m: map[string]string{}, cap: 100}
+}
+
+func (tc *thumbCache) get(key string) (string, bool) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	v, ok := tc.m[key]
+	return v, ok
+}
+
+func (tc *thumbCache) put(key, dataURL string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if _, exists := tc.m[key]; exists {
+		tc.m[key] = dataURL
+		// Move-to-back: a re-put on an existing key refreshes its position
+		// in the FIFO order so it is not evicted before newer entries. This
+		// gives the cache LRU-like semantics for the workload where the
+		// same path is requested multiple times across history refreshes.
+		for i, k := range tc.order {
+			if k == key {
+				tc.order = append(tc.order[:i], tc.order[i+1:]...)
+				break
+			}
+		}
+		tc.order = append(tc.order, key)
+		return
+	}
+	tc.m[key] = dataURL
+	tc.order = append(tc.order, key)
+	if len(tc.order) > tc.cap {
+		evict := tc.order[0]
+		tc.order = tc.order[1:]
+		delete(tc.m, evict)
+	}
 }
 
 // streamBlock is one node in the streaming Block[] tree, matching client
@@ -273,6 +332,15 @@ type WUIConnector struct {
 	// SetCreateEngineFn. nil when engine_new is not supported.
 	createEngine func(name string) (string, error)
 
+	// mediaCache saves files received via the WS chunked-upload path. nil
+	// until SetMediaCache is called — handlers must check for nil and
+	// degrade to text-only when unset.
+	mediaCache *media.Store
+
+	// thumbs memoizes resized history thumbnails (data URL form) so
+	// buildHistoryChatMsg does not re-decode on every history_request.
+	thumbs *thumbCache
+
 	// testMock caches the mockEngine for lock-free test access via mock().
 	// nil in production connectors. Set only by newTestConnector* helpers.
 	// Typed as any so the production file does not depend on the test-only
@@ -293,6 +361,7 @@ func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerC
 		providerConfigs: providerConfigs,
 		wsCh:            make(chan []byte, 1024),
 		done:            make(chan struct{}),
+		thumbs:          newThumbCache(),
 	}
 	for _, vs := range mgr.List() {
 		c.registerEngine(vs)
@@ -1021,7 +1090,10 @@ func hasFilteredFlag(m *short.TranscriptMessage) bool {
 // historyChatMsg. It runs the same per-block loop as TUI's
 // engineMessagesToViews so pre-compact and post-compact messages render
 // identically. toolResults maps tool_use_id → result block for cross-reference.
-func buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResults map[string]types.ContentBlock) historyChatMsg {
+//
+// Defined as a method on *WUIConnector so it can access c.thumbs for
+// memoizing resized image thumbnails.
+func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResults map[string]types.ContentBlock) historyChatMsg {
 	hm := historyChatMsg{
 		ID:        m.ID,
 		Role:      string(m.Role),
@@ -1039,6 +1111,21 @@ func buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResult
 			if strings.TrimSpace(cb.Text) != "" {
 				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "text", Text: cb.Text})
 			}
+		case types.ContentTypeImage:
+			dataURL, ok := c.historyImageDataURL(cb)
+			if !ok {
+				// Degrade: never silently drop the attachment. Emit a
+				// placeholder text block so the user sees the image existed
+				// but the bytes are gone (file deleted, cache miss, etc.).
+				placeholder := "[image]"
+				if cb.Source != nil && cb.Source.Path != "" {
+					placeholder = "[image: " + filepath.Base(cb.Source.Path) + "]"
+				}
+				hm.Text += placeholder
+				hm.Blocks = append(hm.Blocks, historyBlock{Kind: "text", Text: placeholder})
+				continue
+			}
+			hm.Blocks = append(hm.Blocks, historyBlock{Kind: "image", Src: dataURL})
 		case types.ContentTypeThinking:
 			if strings.TrimSpace(cb.Thinking) != "" {
 				thinkingEntry := historyThinkingEntry{
@@ -1086,7 +1173,61 @@ func buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResult
 	return hm
 }
 
-// buildHistory returns a JSON "history" message for the given slot, applying
+// historyImageDataURL converts an image ContentBlock into a data: URL for
+// history replay. Both source types are decoded to raw bytes and resized to
+// 512px long edge (JPEG q80); the result is cached on c.thumbs. File sources
+// key by path+mtime; base64 sources key by a sha256 prefix of the source
+// string (avoiding 100KB+ map keys). Returns (dataURL, false) on any
+// decode/resize failure so the caller can emit a placeholder block.
+func (c *WUIConnector) historyImageDataURL(cb types.ContentBlock) (string, bool) {
+	if cb.Source == nil {
+		return "", false
+	}
+	var (
+		raw      []byte
+		cacheKey string
+	)
+	switch cb.Source.Type {
+	case "file":
+		key := cb.Source.Path
+		if fi, err := os.Stat(cb.Source.Path); err == nil {
+			key = cb.Source.Path + "|" + fi.ModTime().String()
+			if v, ok := c.thumbs.get(key); ok {
+				return v, true
+			}
+		}
+		data, err := os.ReadFile(cb.Source.Path)
+		if err != nil {
+			return "", false
+		}
+		raw = data
+		cacheKey = key
+	case "base64":
+		// Hash the encoded string (not the decoded bytes) so identical
+		// source strings hit the cache without paying for a second decode.
+		sum := sha256.Sum256([]byte(cb.Source.Data))
+		key := "b64:" + hex.EncodeToString(sum[:8])
+		if v, ok := c.thumbs.get(key); ok {
+			return v, true
+		}
+		data, err := base64.StdEncoding.DecodeString(cb.Source.Data)
+		if err != nil {
+			return "", false
+		}
+		raw = data
+		cacheKey = key
+	default:
+		return "", false
+	}
+	thumb, mt, err := utils.ResizeForThumbnail(raw, 512)
+	if err != nil {
+		return "", false
+	}
+	dataURL := "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(thumb)
+	c.thumbs.put(cacheKey, dataURL)
+	return dataURL, true
+}
+
 // IsBusy exclusion when the engine is streaming. When busy, the assistant's
 // streaming response (after the last user text message) is omitted so the
 // snapshot/streamState provides that data instead (zero overlap). The user's
@@ -1137,7 +1278,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 		if m.HasFlag(types.FlagMeta) || m.HasFlag(types.FlagCompactSummary) {
 			continue
 		}
-		out = append(out, buildHistoryChatMsg(m, tools, toolResults))
+		out = append(out, c.buildHistoryChatMsg(m, tools, toolResults))
 	}
 	if len(out) == 0 {
 		return nil
@@ -1258,7 +1399,7 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 			continue
 		}
 		em := short.StoreMessageToEngine(tm)
-		out = append(out, buildHistoryChatMsg(em, tools, toolResults))
+		out = append(out, c.buildHistoryChatMsg(em, tools, toolResults))
 	}
 
 	end := delivered + len(out)
@@ -1434,10 +1575,11 @@ type historyChatMsg struct {
 // Text/Thinking/Tools fields concatenate same-type blocks and lose ordering;
 // Blocks is authoritative when present.
 type historyBlock struct {
-	Kind     string                `json:"kind"`               // "text" | "thinking" | "tool"
+	Kind     string                `json:"kind"`               // "text" | "thinking" | "tool" | "image"
 	Text     string                `json:"text,omitempty"`     // kind == "text"
 	Thinking *historyThinkingEntry `json:"thinking,omitempty"` // kind == "thinking"
 	Tool     *historyToolEntry     `json:"tool,omitempty"`     // kind == "tool"
+	Src      string                `json:"src,omitempty"`      // kind == "image": data URL
 }
 
 type historyThinkingEntry struct {
@@ -1966,6 +2108,14 @@ func buildModelSwitched(contextUsed, contextTotal int) []byte {
 // connector.
 func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 	c.createEngine = fn
+}
+
+// SetMediaCache injects the media store used by the WS chunked-upload path
+// to save uploaded files. Without this call, attachment uploads degrade to
+// text-only (the readLoop's accumulator rejects handleEnd with "no media
+// cache").
+func (c *WUIConnector) SetMediaCache(store *media.Store) {
+	c.mediaCache = store
 }
 
 // sendMetadata sends a composite metadata message containing connect_status,

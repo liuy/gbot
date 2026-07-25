@@ -118,6 +118,7 @@ export type HistoryBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; thinking: HistoryBlockThinking }
   | { kind: 'tool'; tool: HistoryBlockTool }
+  | { kind: 'image'; src: string }  // data URL — backend base64-inlines the resized thumbnail
 
 export type HistoryChatMsg = {
   id: string

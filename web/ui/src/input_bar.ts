@@ -1,14 +1,40 @@
 import { createPopupPanel, createOutsideClick } from './utils'
 
+// AttachmentRef is the in-memory representation of a file the user has added
+// to the chip strip but not yet sent. Image refs carry a blob URL for the
+// thumbnail preview; document refs only carry metadata. uploadProgress
+// (0..1) is set during WS chunked upload so renderChips can paint a thin
+// blue progress bar; undefined when no upload is in flight.
+export type AttachmentRef =
+  | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number }
+  | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number }
+
 export interface InputBarHandles {
   root: HTMLElement
   bubbles: HTMLElement
   textarea: HTMLTextAreaElement
   setStreaming: (s: boolean) => void
+  setUploading: (u: boolean) => void      // distinct from setStreaming — disables + and textarea
   setQueuedMsgs: (q: { uuid: string; text: string }[]) => void
   setInputText: (text: string) => void
   appendQueuedText: (text: string) => void
   setConnected: (c: boolean) => void
+  getAttachments: () => AttachmentRef[]
+  markAttachmentFailures: (refs: AttachmentRef[]) => void
+  setAttachmentProgress: (ref: AttachmentRef, frac: number) => void
+  // removeAttachments drops the listed refs from the chip strip without
+  // revoking their blob URLs. Used after a successful send: the rendered
+  // user-message <img> still holds a reference to previewURL, so revoking
+  // here would blank the image. Failed refs NOT in the list stay in the
+  // strip so the user can hit the retry button.
+  removeAttachments: (refs: AttachmentRef[]) => void
+  clearAttachments: (opts?: { keepSentBlobURLs?: boolean }) => void
+  onAttachmentsChange: (cb: () => void) => void
+  // onRetryAttachment registers the callback fired when the user taps a
+  // failed chip's retry button. The callback performs the upload and
+  // returns true on success (caller clears failed state) or false on
+  // failure (chip stays red).
+  onRetryAttachment: (cb: (ref: AttachmentRef) => Promise<boolean>) => void
   onSend: (cb: (text: string) => void) => void
   onStop: (cb: () => void) => void
   onCancelQueued: (cb: () => void) => void
@@ -23,6 +49,10 @@ export function createInputBar(initial: {
 }): InputBarHandles {
   let connected = initial.connected
   let streaming = false
+  let uploading = false
+  let attachments: AttachmentRef[] = []
+  let attachmentsChangeCb: (() => void) | null = null
+  let retryCb: ((ref: AttachmentRef) => Promise<boolean>) | null = null
   let queuedMsgs: { uuid: string; text: string }[] = []
   let sendCb: ((text: string) => void) | null = null
   let stopCb: (() => void) | null = null
@@ -44,8 +74,26 @@ export function createInputBar(initial: {
   const form = document.createElement('form')
   const card = document.createElement('div')
   card.className = 'card-bg rounded-xl border border-hairline glow-blue'
+  const chipRow = document.createElement('div')
+  chipRow.className = 'flex flex-wrap gap-2 px-4 pt-2 empty:hidden'
   const row = document.createElement('div')
   row.className = 'flex items-end gap-2 px-4 py-2.5'
+
+  // Hidden file input — accept exactly matches pkg/tool/fileread.convertibleExtensions
+  // (.pdf .doc .docx .ppt .pptx .xls .xlsx .epub .ipynb .csv .zip) plus common
+  // text formats fileread handles as plain text plus all image/*. Anything
+  // outside this set would silently degrade to a garbage text block on the
+  // backend, so we don't offer it.
+  const fileInput = document.createElement('input')
+  fileInput.type = 'file'
+  fileInput.multiple = true
+  fileInput.accept =
+    'image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.epub,.csv,.zip,.ipynb,.txt,.md,.json,.xml,.html'
+  fileInput.style.display = 'none'
+  fileInput.addEventListener('change', () => {
+    for (const f of Array.from(fileInput.files ?? [])) addAttachment(f)
+    fileInput.value = ''  // allow re-picking the same file
+  })
 
   // Textarea wrap.
   const taWrap = document.createElement('div')
@@ -62,6 +110,21 @@ export function createInputBar(initial: {
   taWrap.appendChild(textarea)
   taWrap.addEventListener('click', () => textarea.focus())
 
+  // + button — opens the file dialog. Initial state: enabled when connected,
+  // disabled when not. (Legacy gating on uploadToken is gone — uploads no
+  // longer require a bearer token because they ride the same WS connection.)
+  const plusBtn = document.createElement('button')
+  plusBtn.type = 'button'
+  plusBtn.disabled = !connected
+  plusBtn.setAttribute('aria-label', 'Attach file')
+  plusBtn.className =
+    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
+  plusBtn.innerHTML =
+    '<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>'
+  plusBtn.addEventListener('click', () => {
+    if (!plusBtn.disabled) fileInput.click()
+  })
+
   // Send/Stop button — toggles between send and stop based on streaming state.
   const sendBtn = document.createElement('button')
   sendBtn.type = 'button'
@@ -74,11 +137,14 @@ export function createInputBar(initial: {
     '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
   sendBtn.innerHTML = sendIcon
 
+  row.appendChild(plusBtn)
   row.appendChild(taWrap)
   row.appendChild(sendBtn)
+  card.appendChild(chipRow)
   card.appendChild(row)
   form.appendChild(card)
   root.appendChild(form)
+  root.appendChild(fileInput)
 
   // History picker panel — shown when user taps send on empty input.
   let historyPickerCb: (() => string[]) | null = null
@@ -153,12 +219,13 @@ export function createInputBar(initial: {
   })
 
   sendBtn.addEventListener('click', (e) => {
-    if (streaming && textarea.value.trim() === '') {
+    if (streaming && textarea.value.trim() === '' && attachments.length === 0) {
       e.preventDefault()
       stopCb?.()
       return
     }
-    if (textarea.value.trim() === '') {
+    const hasInput = textarea.value.trim() !== '' || attachments.length > 0
+    if (!hasInput) {
       e.preventDefault()
       if (histPanelOpen) {
         closeHistPanel()
@@ -171,10 +238,130 @@ export function createInputBar(initial: {
     }
   })
 
+  // addAttachment pushes a new AttachmentRef into the chip strip. Image files
+  // produce a blob URL for the thumbnail preview; documents only carry metadata.
+  const addAttachment = (file: File) => {
+    if (file.type.startsWith('image/')) {
+      const ref: AttachmentRef = {
+        kind: 'image',
+        file,
+        previewURL: URL.createObjectURL(file),
+        mime: file.type,
+      }
+      attachments.push(ref)
+    } else {
+      const ref: AttachmentRef = { kind: 'document', file }
+      attachments.push(ref)
+    }
+    renderChips()
+    attachmentsChangeCb?.()
+    recomputeCanSend()
+  }
+
+  // removeAttachment splices a ref out of the array and revokes its blob URL
+  // (image only). Used by the chip × button.
+  const removeAttachment = (ref: AttachmentRef) => {
+    const i = attachments.indexOf(ref)
+    if (i < 0) return
+    if (ref.kind === 'image') {
+      URL.revokeObjectURL(ref.previewURL)
+    }
+    attachments.splice(i, 1)
+    renderChips()
+    attachmentsChangeCb?.()
+    recomputeCanSend()
+  }
+
+  // renderChips rebuilds the chip strip DOM from the attachments array.
+  // Each chip is a thumbnail (image) or a [filename] label (document) with a
+  // × button top-right. Failed uploads get a red border and a retry button
+  // next to × — the retry button re-fires uploadOne for that ref via
+  // onRetryAttachment; on success the failed flag is cleared and the chip
+  // returns to its normal appearance.
+  const renderChips = () => {
+    chipRow.replaceChildren()
+    for (const ref of attachments) {
+      const wrap = document.createElement('div')
+      wrap.className = 'relative'
+      if (ref.kind === 'image') {
+        const img = document.createElement('img')
+        img.src = ref.previewURL
+        img.className = 'w-12 h-12 object-cover rounded-lg'
+        img.alt = ref.file.name
+        if (ref.failed) {
+          img.classList.add('border-2', 'border-red-500')
+        }
+        wrap.appendChild(img)
+      } else {
+        const span = document.createElement('span')
+        span.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1'
+        span.textContent = `[${ref.file.name}]`
+        if (ref.failed) {
+          span.classList.add('border-2', 'border-red-500')
+        }
+        wrap.appendChild(span)
+      }
+      if (ref.failed) {
+        // Retry button: circular-arrow icon. Sibling to × so the user can
+        // either retry or dismiss. disabled during an in-flight retry to
+        // prevent duplicate uploads (retryCb is async).
+        const retry = document.createElement('button')
+        retry.type = 'button'
+        retry.setAttribute('aria-label', 'Retry upload')
+        retry.className =
+          'absolute -top-1 -left-1 w-4 h-4 rounded-full bg-blue text-white flex items-center justify-center hover:bg-blue/80 disabled:opacity-40'
+        retry.innerHTML =
+          '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>'
+        retry.addEventListener('click', async () => {
+          if (retry.disabled) return
+          retry.disabled = true
+          try {
+            const ok = retryCb ? await retryCb(ref) : false
+            if (ok) {
+              ref.failed = false
+              renderChips()
+              attachmentsChangeCb?.()
+              recomputeCanSend()
+            }
+          } finally {
+            retry.disabled = false
+          }
+        })
+        wrap.appendChild(retry)
+      }
+      const x = document.createElement('button')
+      x.type = 'button'
+      x.setAttribute('aria-label', 'Remove attachment')
+      x.className =
+        'absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink2 text-t3 hover:text-red flex items-center justify-center text-[10px] leading-none'
+      x.textContent = '×'
+      x.addEventListener('click', () => removeAttachment(ref))
+      wrap.appendChild(x)
+      // Thin blue progress bar at the chip's bottom edge during upload.
+      // Hidden once uploadProgress reaches 1 (caller then removes the chip
+      // via removeAttachments so the rendered user message takes over).
+      if (ref.uploadProgress !== undefined && ref.uploadProgress < 1) {
+        const bar = document.createElement('div')
+        bar.className = 'absolute bottom-0 left-0 right-0 h-0.5 bg-blue/20 rounded-b-lg overflow-hidden'
+        const fill = document.createElement('div')
+        fill.className = 'h-full bg-blue transition-[width] duration-150'
+        fill.style.width = `${Math.min(Math.max(ref.uploadProgress, 0), 1) * 100}%`
+        bar.appendChild(fill)
+        wrap.appendChild(bar)
+      }
+      chipRow.appendChild(wrap)
+    }
+  }
+
   const recomputeCanSend = () => {
     const hasText = textarea.value.trim().length > 0
-    sendBtn.disabled = !hasText && !connected ? true : !connected
-    if (!hasText) {
+    const hasAttachments = attachments.length > 0
+    // Button is enabled whenever connected & not uploading — even with no
+    // text, because the user may want to click STOP during streaming or
+    // open the history picker. The actual behavior (STOP / picker / send)
+    // is decided in the click handler based on state.
+    sendBtn.disabled = uploading || !connected
+    if (!hasText && !hasAttachments && !streaming) {
       sendBtn.classList.add('opacity-50')
     } else {
       sendBtn.classList.remove('opacity-50')
@@ -183,7 +370,7 @@ export function createInputBar(initial: {
     // Once the user types, it flips to Send so they can append a message
     // without interrupting the current query.
     if (streaming) {
-      if (hasText) {
+      if (hasText || hasAttachments) {
         sendBtn.innerHTML = sendIcon
         sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
         sendBtn.setAttribute('aria-label', 'Send')
@@ -198,7 +385,8 @@ export function createInputBar(initial: {
   const onSubmit = (e: Event) => {
     e.preventDefault()
     const text = textarea.value.trim()
-    if (!text || !connected) return
+    if (!connected) return
+    if (!text && attachments.length === 0) return
     sendCb?.(text)
     textarea.value = ''
     recomputeCanSend()
@@ -337,6 +525,16 @@ export function createInputBar(initial: {
       }
       renderBubbles()
     },
+    // setUploading disables the textarea, + button, AND send button for the
+    // duration of an upload. It does NOT toggle the STOP icon — STOP aborts
+    // the engine, and we are uploading, not streaming. Distinct from
+    // setStreaming to avoid conflating the two states.
+    setUploading: (u: boolean) => {
+      uploading = u
+      textarea.disabled = u || !connected
+      plusBtn.disabled = u || !connected
+      recomputeCanSend()
+    },
     setQueuedMsgs: (q) => {
       queuedMsgs = q
       renderBubbles()
@@ -352,6 +550,55 @@ export function createInputBar(initial: {
       textarea.value = existing === '' ? text : text + '\n' + existing
       textarea.focus()
       recomputeCanSend()
+    },
+    getAttachments: () => attachments,
+    markAttachmentFailures: (refs: AttachmentRef[]) => {
+      // Mutate the failed flag on each ref and re-render. Refs are compared
+      // by reference (they live in the attachments array), so the matching
+      // chip gets the red border applied by renderChips.
+      for (const ref of refs) {
+        ref.failed = true
+      }
+      renderChips()
+    },
+    setAttachmentProgress: (ref: AttachmentRef, frac: number) => {
+      ref.uploadProgress = frac
+      renderChips()
+    },
+    removeAttachments: (refs: AttachmentRef[]) => {
+      // Drop the given refs from the chip strip without revoking blob URLs.
+      // Used after a successful send: each ref's previewURL is still
+      // referenced by the rendered user-message <img>, so revoking here
+      // would blank the image. Failed refs not in the list stay in the
+      // strip so the user can hit retry.
+      const removeSet = new Set(refs)
+      attachments = attachments.filter((r) => !removeSet.has(r))
+      renderChips()
+      attachmentsChangeCb?.()
+      recomputeCanSend()
+    },
+    clearAttachments: (opts?: { keepSentBlobURLs?: boolean }) => {
+      // When keepSentBlobURLs is true (post-send), do NOT revoke blob URLs —
+      // they are still referenced by the just-rendered <img> in the user
+      // message. The browser GCs them on page unload. Otherwise (× button on
+      // a not-yet-sent chip, or session switch) revoke them.
+      if (!opts?.keepSentBlobURLs) {
+        for (const ref of attachments) {
+          if (ref.kind === 'image') {
+            URL.revokeObjectURL(ref.previewURL)
+          }
+        }
+      }
+      attachments = []
+      renderChips()
+      attachmentsChangeCb?.()
+      recomputeCanSend()
+    },
+    onAttachmentsChange: (cb: () => void) => {
+      attachmentsChangeCb = cb
+    },
+    onRetryAttachment: (cb: (ref: AttachmentRef) => Promise<boolean>) => {
+      retryCb = cb
     },
     onSend: (cb) => {
       sendCb = cb
@@ -377,6 +624,7 @@ export function createInputBar(initial: {
     setConnected: (c: boolean) => {
       connected = c
       textarea.disabled = !c
+      plusBtn.disabled = !c
       recomputeCanSend()
     },
   }

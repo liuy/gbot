@@ -43,6 +43,7 @@ type mockEngine struct {
 	mu sync.RWMutex
 
 	queryFn            func(ctx context.Context, userMessage, systemPrompt string)
+	queryWithContentFn func(ctx context.Context, content []types.ContentBlock, systemPrompt string)
 	isBusyFn           func() bool
 	queryStartMsgIdxFn func() int
 	messagesFn         func() []types.Message
@@ -74,24 +75,33 @@ type mockEngine struct {
 	preCompactFn       func(delivered, limit int) ([]*short.TranscriptMessage, int, bool)
 
 	// Recorded calls for assertions.
-	queryCalls         []queryCall
-	enqueueCalls       []types.QueuedItem
-	abortCount         int
-	rewindCalls        []int
-	removeAttachment   []string
-	removeAttachmentFn func(uuid string) bool
-	switchSessionCalls []string
-	newSessionCalls    int
-	updateTitleCalls   []struct{ ID, Title string }
-	setProviderCalls   []string
-	setModelCalls      []string
-	setMaxTokensCalls  []int
-	setInputModCalls   [][]string
-	updateAutoCalls    int
+	queryCalls            []queryCall
+	queryWithContentCalls []contentCall
+	enqueueCalls          []types.QueuedItem
+	abortCount            int
+	rewindCalls           []int
+	removeAttachment      []string
+	removeAttachmentFn    func(uuid string) bool
+	switchSessionCalls    []string
+	newSessionCalls       int
+	updateTitleCalls      []struct{ ID, Title string }
+	setProviderCalls      []string
+	setModelCalls         []string
+	setMaxTokensCalls     []int
+	setInputModCalls      [][]string
+	updateAutoCalls       int
 }
 
 type queryCall struct {
 	userMessage  string
+	systemPrompt string
+}
+
+// contentCall captures one QueryWithContent invocation. The content slice is
+// deep-copied at record time so later caller-side mutation cannot retroactively
+// alter the captured assertion data.
+type contentCall struct {
+	content      []types.ContentBlock
 	systemPrompt string
 }
 
@@ -104,6 +114,21 @@ func (m *mockEngine) Query(ctx context.Context, userMessage, systemPrompt string
 	}
 	// Engine commits assistant response after streaming finishes.
 	// This mirrors real engine: appendMessage(*resp).
+	if m.onQueryDoneFn != nil {
+		m.onQueryDoneFn()
+	}
+}
+
+func (m *mockEngine) QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) {
+	// Defensive copy so caller-side mutation cannot alter the recorded call.
+	copied := make([]types.ContentBlock, len(content))
+	copy(copied, content)
+	m.mu.Lock()
+	m.queryWithContentCalls = append(m.queryWithContentCalls, contentCall{content: copied, systemPrompt: systemPrompt})
+	m.mu.Unlock()
+	if m.queryWithContentFn != nil {
+		m.queryWithContentFn(ctx, content, systemPrompt)
+	}
 	if m.onQueryDoneFn != nil {
 		m.onQueryDoneFn()
 	}
@@ -362,6 +387,7 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 		wsCh:            make(chan []byte, 1024),
 		done:            make(chan struct{}),
 		testMock:        mock,
+		thumbs:          newThumbCache(),
 	}
 	activeID := engineID
 	c.active.Store(&activeID)

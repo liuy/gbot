@@ -132,15 +132,24 @@ func TestHandleMessageInbound_BusyEnqueues(t *testing.T) {
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return true }
 
-	c.handleMessageInbound("queued text")
+	c.handleMessageInbound("queued text", nil)
 
+	// Enqueue happens inside a goroutine launched by handleMessageInbound.
+	// Poll until the recorded call lands.
+	if !waitFor(time.Second, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return len(mock.enqueueCalls) == 1
+	}) {
+		mock.mu.Lock()
+		t.Fatalf("enqueueCalls len = %d, want 1", len(mock.enqueueCalls))
+		mock.mu.Unlock()
+		return
+	}
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	if len(mock.queryCalls) != 0 {
 		t.Errorf("query dispatched %d time(s), want 0", len(mock.queryCalls))
-	}
-	if len(mock.enqueueCalls) != 1 {
-		t.Fatalf("enqueueCalls len = %d, want 1", len(mock.enqueueCalls))
 	}
 	item := mock.enqueueCalls[0]
 	if item.Value != "queued text" {

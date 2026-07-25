@@ -5163,7 +5163,7 @@ func TestCreateAttachmentMessages_WithContent(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
 
-	imgBlock := types.NewFileImageBlock("image/png", "/tmp/x.png")
+	imgBlock := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
 	item := types.QueuedItem{
 		Value:     "metadata-text",
 		Mode:      types.ItemModePrompt,
@@ -5251,7 +5251,7 @@ func TestEngineDefaultModalitiesStripsImage(t *testing.T) {
 
 	content := []types.ContentBlock{
 		types.NewTextBlock("q"),
-		types.NewFileImageBlock("image/png", "/x.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 	}
 	result := eng.QuerySyncWithContent(ctx, content, "")
 	if result.Error != nil {

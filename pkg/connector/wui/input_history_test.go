@@ -322,7 +322,7 @@ func TestHandleMessageInbound_AppendsHistory(t *testing.T) {
 	c.mock().isBusyFn = func() bool { return false }
 	c.mock().systemPromptFn = func() string { return "" }
 
-	c.handleMessageInbound("hello")
+	c.handleMessageInbound("hello", nil)
 
 	// JSONL file should exist with one entry — synchronous, assert immediately.
 	path := filepath.Join(dir, "history", sid+".jsonl")
@@ -353,7 +353,7 @@ func TestHandleMessageInbound_BusyStillAppendsHistory(t *testing.T) {
 	c.mock().engineIDFn = func() string { return sid }
 	c.mock().isBusyFn = func() bool { return true }
 
-	c.handleMessageInbound("queued")
+	c.handleMessageInbound("queued", nil)
 
 	path := filepath.Join(dir, "history", sid+".jsonl")
 	data, err := os.ReadFile(path)

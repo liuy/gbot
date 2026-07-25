@@ -1,6 +1,7 @@
 export type Block =
 	| { kind: 'text'; id: string; text: string }
 	| { kind: 'user'; id: string; text: string }  // TUI BlockUser — queued msg visual marker
+	| { kind: 'image'; id: string; src: string }  // data URL or blob URL — attachments + history thumbnails
 	| { kind: 'thinking'; id: string; text: string; durationNs: number; active: boolean; startedAt: number }
 	| {
 			kind: 'tool'

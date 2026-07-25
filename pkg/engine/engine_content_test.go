@@ -29,7 +29,7 @@ func TestQuerySyncWithContent_TextAndImage(t *testing.T) {
 
 	content := []types.ContentBlock{
 		types.NewTextBlock("What is in this image?"),
-		types.NewFileImageBlock("image/png", "/tmp/cache/images/abc.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 	}
 	result := eng.QuerySyncWithContent(ctx, content, "")
 	if result.Error != nil {
@@ -37,8 +37,7 @@ func TestQuerySyncWithContent_TextAndImage(t *testing.T) {
 	}
 
 	// The provider must have received both blocks: a text block and an image
-	// block carrying the file source. (Materialization runs in the provider,
-	// not the engine, so the engine-side request still has Type=="file".)
+	// block carrying base64-encoded source data.
 	msgs := mp.lastRequestMessages()
 	if len(msgs) == 0 {
 		t.Fatal("provider received no messages")
@@ -65,14 +64,14 @@ func TestQuerySyncWithContent_TextAndImage(t *testing.T) {
 	if cb1.Source == nil {
 		t.Fatal("content[1].Source = nil, want non-nil")
 	}
-	if cb1.Source.Type != "file" {
-		t.Errorf("content[1].Source.Type = %q, want file", cb1.Source.Type)
+	if cb1.Source.Type != "base64" {
+		t.Errorf("content[1].Source.Type = %q, want base64", cb1.Source.Type)
 	}
 	if cb1.Source.MediaType != "image/png" {
 		t.Errorf("content[1].Source.MediaType = %q, want image/png", cb1.Source.MediaType)
 	}
-	if cb1.Source.Path != "/tmp/cache/images/abc.png" {
-		t.Errorf("content[1].Source.Path = %q, want /tmp/cache/images/abc.png", cb1.Source.Path)
+	if cb1.Source.Data == "" {
+		t.Error("content[1].Source.Data is empty, want the base64 payload")
 	}
 
 	// result.Reply proves the turn loop ran and produced assistant text.
@@ -99,7 +98,7 @@ func TestQuerySyncWithContent_AppearsInResultMessages(t *testing.T) {
 
 	content := []types.ContentBlock{
 		types.NewTextBlock("hello"),
-		types.NewFileImageBlock("image/jpeg", "/x.jpg"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "/9j/4AAQ"}),
 	}
 	result := eng.QuerySyncWithContent(ctx, content, "")
 	if result.Error != nil {
@@ -162,7 +161,7 @@ func TestQueryWithContent_EmitsQueryStartWithBlocks(t *testing.T) {
 
 	content := []types.ContentBlock{
 		types.NewTextBlock("look at this"),
-		types.NewFileImageBlock("image/png", "/img.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 	}
 	eng.QueryWithContent(ctx, content, "")
 
@@ -224,7 +223,7 @@ func TestEngineImageCapableModelRetainsImage(t *testing.T) {
 
 	content := []types.ContentBlock{
 		types.NewTextBlock("q"),
-		types.NewFileImageBlock("image/png", "/x.png"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 	}
 	result := eng.QuerySyncWithContent(ctx, content, "")
 	if result.Error != nil {

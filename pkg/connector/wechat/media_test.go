@@ -1,13 +1,16 @@
 package wechat
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,8 +41,23 @@ func aesEcbEncryptTest(plaintext, key []byte) []byte {
 	return out
 }
 
-// readFile is os.ReadFile re-exported for tests in this file.
-func readFile(path string) ([]byte, error) { return os.ReadFile(path) }
+// realPNGBytes is a real, decodable 4x4 PNG. fileread's executeImage calls
+// image.Decode, which fails on a bare PNG magic — every test that exercises
+// the image-download path needs bytes that round-trip through Decode and
+// re-encode. Built once at init time because the bytes never change.
+var realPNGBytes = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := range 4 {
+		for x := range 4 {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x * 60), G: uint8(y * 60), B: 0, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}()
 
 // newMediaTestConnector builds a connector with a real media cache rooted at a
 // temp dir and an httptest.Server-derived client, so downloadMedia can hit a
@@ -73,9 +91,7 @@ func encryptAesEcbForMediaTest(plaintext, key []byte) []byte {
 func TestDownloadMedia_Image(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	// A real PNG header so SniffImageMime returns image/png.
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}
-	plaintext := append(pngHeader, []byte("body")...)
+	plaintext := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(plaintext, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -85,7 +101,7 @@ func TestDownloadMedia_Image(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, store := newMediaTestConnector(t)
+	c, _ := newMediaTestConnector(t)
 	items := []Item{
 		{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{
 			FullURL: srv.URL, AesKey: aesKeyB64,
@@ -98,23 +114,18 @@ func TestDownloadMedia_Image(t *testing.T) {
 	if block.Source == nil {
 		t.Fatal("block.Source = nil")
 	}
-	if block.Source.Type != "file" {
-		t.Errorf("Source.Type = %q, want file", block.Source.Type)
+	if block.Source.Type != "base64" {
+		t.Errorf("Source.Type = %q, want base64", block.Source.Type)
 	}
 	if block.Source.MediaType != "image/png" {
 		t.Errorf("Source.MediaType = %q, want image/png", block.Source.MediaType)
 	}
-	if block.Source.Path == "" {
-		t.Fatal("Source.Path is empty, want a cache path")
+	decoded, err := base64.StdEncoding.DecodeString(block.Source.Data)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
 	}
-	// File must exist on disk under the images category.
-	if got, err := readFile(block.Source.Path); err != nil {
-		t.Fatalf("cached image not readable: %v", err)
-	} else if string(got) != string(plaintext) {
-		t.Errorf("cached image content mismatch: got %v want %v", got, plaintext)
-	}
-	if !strings.Contains(block.Source.Path, filepath.Join(store.RootDir, "images")) {
-		t.Errorf("Path = %q, want it under the images category dir", block.Source.Path)
+	if string(decoded) != string(plaintext) {
+		t.Errorf("decoded bytes mismatch: got %v want %v", decoded, plaintext)
 	}
 }
 
@@ -370,7 +381,7 @@ func TestDownloadMedia_PriorityImageOverFile(t *testing.T) {
 	t.Parallel()
 	// When both an image and a file are present, IMAGE wins (priority order).
 	key := []byte("0123456789abcdef")
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	pngHeader := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -430,7 +441,7 @@ func TestPickMediaItem_PriorityOrder(t *testing.T) {
 func TestProcessInbound_WithImage_EnqueuesContent(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	pngHeader := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -474,7 +485,7 @@ func TestProcessInbound_WithImage_EnqueuesContent(t *testing.T) {
 func TestProcessInbound_ImageWithCaption_CaptionEnqueuedSeparately(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	pngHeader := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -639,7 +650,7 @@ func TestHandleInbound_WithContentCallsQueryWithContent(t *testing.T) {
 		}
 	}
 
-	imgBlock := types.NewFileImageBlock("image/png", "/tmp/x.png")
+	imgBlock := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	c.handleInbound(ctx, inboundMessage{
@@ -674,7 +685,7 @@ func TestHandleInbound_ContentImagePlaceholderInDispatch(t *testing.T) {
 		}
 	}
 
-	imgBlock := types.NewFileImageBlock("image/png", "/tmp/x.png")
+	imgBlock := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	c.handleInbound(ctx, inboundMessage{
@@ -856,7 +867,7 @@ func TestProcessBatch_VoiceWithTranscription_EnqueuedAsText(t *testing.T) {
 func TestProcessBatch_MultiUserMedia_NotMergedAcrossUsers(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	pngHeader := realPNGBytes
 	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 

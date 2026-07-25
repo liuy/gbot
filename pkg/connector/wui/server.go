@@ -3,12 +3,20 @@ package wui
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/media"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -68,11 +76,28 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 
 // readLoop processes inbound JSON messages until the connection closes.
 func (c *WUIConnector) readLoop(ws *websocket.Conn) {
+	// Gorilla's default ReadLimit (64 MiB) would let a >50 MiB rogue single
+	// binary frame into memory before our handleStart size check can reject
+	// it; lower the limit explicitly so the read stops at the frame boundary.
+	ws.SetReadLimit(maxAttachmentSize + 64*1024)
+	// acc tracks the in-flight chunked-upload state for this WS connection.
+	// Lives on readLoop's stack so disconnect naturally GC's it; no
+	// connector-level cleanup is needed.
+	acc := &attachmentAccumulator{}
 	for {
-		_, data, err := ws.ReadMessage()
+		msgType, data, err := ws.ReadMessage()
 		if err != nil {
 			slog.Info("wui:readLoop exit", "error", err)
 			return
+		}
+		// Binary frames are attachment chunk payloads — route them to the
+		// accumulator before the JSON-type peek (binary bytes fail
+		// json.Unmarshal and would otherwise be silently dropped).
+		if msgType == websocket.BinaryMessage {
+			if errMsg := acc.handleBinary(data); errMsg != "" {
+				c.sendWS(buildError(errors.New(errMsg)))
+			}
+			continue
 		}
 		// Peek type first, then unmarshal into the right shape. Using a single
 		// struct with duplicate json tags would silently drop fields.
@@ -85,10 +110,47 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 		switch head.Type {
 		case "message":
 			var msg struct {
-				Text string `json:"text"`
+				Text        string              `json:"text"`
+				Content     []inboundContent    `json:"content"`
+				Attachments []inboundAttachment `json:"attachments"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				c.handleMessageInbound(msg.Text)
+				if len(msg.Attachments) > 0 {
+					// Attachments take priority over content when BOTH are
+					// present — the new frontend never sends content[], and
+					// a transitional client sending both should not dispatch
+					// twice.
+					if !acc.startWaiting(msg.Text, msg.Attachments) {
+						c.sendWS(buildError(errors.New("uploads already in progress; wait for current batch")))
+						continue
+					}
+					// Do NOT dispatch yet — wait for attachment_start /
+					// binary / attachment_end frames.
+					continue
+				}
+				// Legacy path: callers that pass content[] directly (existing
+				// inbound_test.go fixtures). The new frontend never sends it.
+				c.handleMessageInbound(msg.Text, msg.Content)
+			}
+		case "attachment_start":
+			var msg attachmentStartMsg
+			if json.Unmarshal(data, &msg) == nil {
+				if errMsg := acc.handleStart(msg); errMsg != "" {
+					c.sendWS(buildError(errors.New(errMsg)))
+				}
+			}
+		case "attachment_end":
+			var msg attachmentEndMsg
+			if json.Unmarshal(data, &msg) == nil {
+				if errMsg := acc.handleEnd(msg.ID, c.mediaCache); errMsg != "" {
+					c.sendWS(buildError(errors.New(errMsg)))
+				}
+				if acc.readyToDispatch() {
+					contents := acc.buildContents()
+					text := acc.text
+					acc.reset()
+					c.handleMessageInbound(text, contents)
+				}
 			}
 		case "ask_response":
 			var msg struct {
@@ -187,35 +249,142 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 	}
 }
 
-// handleMessageInbound dispatches a user message to the active engine. If a
-// query is already active, the message is enqueued via engine.EnqueueAttachment
-// (same path as TUI's handleEnqueueMessage) — the engine drains it
-// automatically after the current query finishes.
-func (c *WUIConnector) handleMessageInbound(text string) {
+// handleMessageInbound dispatches a user message (text + optional content
+// blocks) to the active engine. Content blocks reference files saved by the
+// WS chunked-upload path (or the legacy content[] field for tests); each is
+// converted to a types.ContentBlock before reaching the engine. If the
+// engine is busy, the assembled blocks are enqueued as a single QueuedItem
+// (Content field overrides Value).
+//
+// Dispatch decision ordering (critical for correctness):
+//  1. c.appendInputHistory(text) — synchronous, fast
+//  2. busy := eng.IsBusy()       — synchronous (atomic read of engine state)
+//  3. go func() { assemble blocks; enqueue | Query* }()  — async
+//
+// IsBusy MUST be read synchronously, BEFORE the goroutine starts. If it is
+// read inside the goroutine, two rapid messages each spawn a goroutine that
+// waits through a 10-30s PDF parse and both observe IsBusy()==false (because
+// neither has called Query yet) — then both call QueryWithContent and the
+// engine's Query/QueryWithContent (pkg/engine/engine.go) overwrites
+// e.activeCancel without guarding against an in-flight query, corrupting
+// engine state. Reading busy up-front on the readLoop closes the race:
+// inbound frames are processed serially by readLoop, so the second
+// invocation's `busy := eng.IsBusy()` read happens AFTER the first
+// goroutine has already been launched; the first goroutine's `eng.Query*`
+// call lands microseconds later (block assembly is trivial for text-only
+// messages), flipping `IsBusy()` to true before the second readLoop
+// iteration reaches its read.
+//
+// History-append stays synchronous because input-history tests
+// (input_history_test.go) assert on history state immediately after the
+// call. Everything else (block assembly, fileread.Execute, engine dispatch)
+// runs in a goroutine so a slow 50MB PDF parse cannot block readLoop from
+// draining concurrent stop / ask_response / cancel_queued frames.
+func (c *WUIConnector) handleMessageInbound(text string, content []inboundContent) {
 	eng := c.activeEngine()
 	if eng == nil {
 		return
 	}
-	c.appendInputHistory(text)
-	if eng.IsBusy() {
-		attachUUID := uuid.NewString()
-		eng.EnqueueAttachment(types.QueuedItem{
-			Value:     text,
-			Mode:      types.ItemModePrompt,
-			UUID:      attachUUID,
-			Priority:  types.PriorityNext,
-			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
-			Timestamp: time.Now(),
-		})
-		// Send queued UUID back to client so it can cancel later.
-		resp, _ := json.Marshal(struct {
-			Type string `json:"type"`
-			UUID string `json:"uuid"`
-		}{Type: "queued", UUID: attachUUID})
-		c.sendWS(resp)
-		return
+	if text != "" {
+		c.appendInputHistory(text)
 	}
-	go eng.Query(context.Background(), text, eng.SystemPrompt())
+	// Read busy SYNCHRONOUSLY — see the doc comment for the race this prevents.
+	busy := eng.IsBusy()
+	go func() {
+		ctx := context.Background()
+		blocks := c.assembleContentBlocks(ctx, text, content)
+		if len(blocks) == 0 {
+			// All attachments were rejected AND there was no text. Surface a
+			// WS error so the frontend isn't left waiting for an engine
+			// response that will never arrive.
+			if len(content) > 0 {
+				c.sendWS(buildError(errors.New("attachments rejected")))
+			}
+			return
+		}
+		if busy {
+			attachUUID := uuid.NewString()
+			eng.EnqueueAttachment(types.QueuedItem{
+				Value:     text,
+				Content:   blocks,
+				Mode:      types.ItemModePrompt,
+				UUID:      attachUUID,
+				Priority:  types.PriorityNext,
+				Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+				Timestamp: time.Now(),
+			})
+			resp, _ := json.Marshal(struct {
+				Type string `json:"type"`
+				UUID string `json:"uuid"`
+			}{Type: "queued", UUID: attachUUID})
+			c.sendWS(resp)
+			return
+		}
+		if len(content) == 0 {
+			eng.Query(ctx, text, eng.SystemPrompt())
+			return
+		}
+		eng.QueryWithContent(ctx, blocks, eng.SystemPrompt())
+	}()
+}
+
+// assembleContentBlocks converts text + inbound content items into the
+// []types.ContentBlock shape the engine consumes. Text is the first block
+// (when non-empty); image items are decoded + resized + base64-encoded via
+// fileread and become a base64 image ContentBlock; document items are parsed
+// inline via fileread and become a [Document: ...] text block. Unrecognized
+// image bytes are logged and skipped — partial
+// degradation is preferred over aborting the entire turn.
+func (c *WUIConnector) assembleContentBlocks(ctx context.Context, text string, content []inboundContent) []types.ContentBlock {
+	var blocks []types.ContentBlock
+	if text != "" {
+		blocks = append(blocks, types.NewTextBlock(text))
+	}
+	for _, item := range content {
+		if c.mediaCache == nil {
+			slog.Warn("wui: media cache not configured, skipping attachment")
+			continue
+		}
+		switch item.Type {
+		case "image":
+			mime := item.Source.Mime
+			if mime == "" {
+				// Re-sniff the first 512 bytes — SniffImageMime only needs
+				// the first ~12 bytes, so reading the whole 50MB image just
+				// to sniff was wasteful. The result guards against passing
+				// unrecognizable bytes into fileread's full decode attempt.
+				f, err := os.Open(item.Source.Path)
+				if err != nil {
+					slog.Warn("wui: open image failed", "path", item.Source.Path, "error", err)
+					continue
+				}
+				head, _ := io.ReadAll(io.LimitReader(f, 512))
+				_ = f.Close()
+				mime = media.SniffImageMime(head)
+				if mime == "" {
+					slog.Warn("wui: image bytes not a recognized format", "path", item.Source.Path)
+					continue
+				}
+			}
+			// fileread owns decode + resize + base64 encode — the single
+			// shared path with the wechat connector. MediaType is derived
+			// from the decoded image (more accurate than the sniffed mime).
+			if block, ok := fileread.ReadAsImageBlock(ctx, item.Source.Path); ok {
+				blocks = append(blocks, block)
+			} else {
+				slog.Warn("wui: image resize/encode failed, skipping", "path", item.Source.Path)
+			}
+		case "document":
+			name := item.Source.Name
+			if name == "" {
+				name = filepath.Base(item.Source.Path)
+			}
+			blocks = append(blocks, c.parseDocument(ctx, item.Source.Path, name))
+		default:
+			slog.Warn("wui: unknown content type, skipping", "type", item.Type)
+		}
+	}
+	return blocks
 }
 
 // handleAskResponse looks up a pending ask by id and writes the response to
@@ -277,4 +446,34 @@ func (c *WUIConnector) abortPendingAsksOnDisconnect() {
 		}
 	}
 	slog.Debug("wui: asks aborted on disconnect", "count", len(asks))
+}
+
+// parseDocument reads the file at path via fileread.Execute and returns a
+// text content block shaped like wechat's downloadFile: a [Document: name
+// saved at path] header line followed by the parsed content. On any failure
+// (parse error, empty content, unsupported format) the block degrades to
+// just the header line — never an error to the caller, because document
+// attachment should not abort the entire user turn.
+//
+// Mirrors wechat connector's downloadFile logic 1:1 (line numbers shift
+// across revisions; locate by function name).
+func (c *WUIConnector) parseDocument(ctx context.Context, path, name string) types.ContentBlock {
+	input, _ := json.Marshal(fileread.Input{FilePath: path})
+	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
+	if err != nil || result == nil {
+		slog.Warn("wui: document parse failed, sending path as fallback", "file", name, "error", err)
+		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
+	}
+	content := ""
+	if out, ok := result.Data.(fileread.TextOutput); ok {
+		content = out.Content
+	} else if s, ok := result.Data.(string); ok {
+		content = s
+	}
+	if content == "" {
+		slog.Warn("wui: document parse returned empty content, sending path as fallback", "file", name)
+		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
+	}
+	slog.Info("wui: document parsed inline", "file", name, "contentLen", len(content))
+	return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]\n%s", name, path, content))
 }
