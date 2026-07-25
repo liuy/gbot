@@ -112,17 +112,17 @@ function createPermissionAsk(
 
 // createInputAsk renders an interactive text input (masked or plain) with a
 // countdown timer. Enter submits the text; the countdown auto-aborts on zero.
-// Style mirrors permission ask (amber border, same container classes).
+// Uses blue (info/interactive) to distinguish from permission ask (amber).
 function createInputAsk(
   ask: AskData,
   respond: (payload: AskResponsePayload) => void,
 ): AskHandles {
   const root = document.createElement('div')
   root.className =
-    'mx-5 my-3 rounded-lg border border-amber/50 bg-amber/5 px-4 py-3'
+    'mx-5 my-3 rounded-lg border border-blue/50 bg-blue/5 px-4 py-3'
 
   const title = document.createElement('div')
-  title.className = 'mb-2 text-sm text-amber'
+  title.className = 'mb-2 text-sm text-blue'
     title.textContent = ask.tool_name ? `Input · ${ask.tool_name}` : 'Input'
   root.appendChild(title)
 
@@ -137,7 +137,7 @@ function createInputAsk(
   const input = document.createElement('input')
   input.type = ask.masked ? 'password' : 'text'
   input.className =
-    'mb-3 w-full rounded bg-black/30 px-3 py-2 font-mono text-sm text-t1 outline-none border border-t3/30 focus:border-blue'
+    'mb-3 w-full rounded card-bg px-3 py-2 font-mono text-sm text-t1 outline-none border border-hairline focus:border-blue'
   input.autocomplete = 'off'
   input.spellcheck = false
   root.appendChild(input)
@@ -151,7 +151,7 @@ function createInputAsk(
   submitBtn.type = 'button'
   submitBtn.textContent = 'Submit'
   submitBtn.className =
-    'rounded-lg bg-blue/10 px-3 py-1.5 text-sm text-blue transition-colors hover:bg-blue/20'
+    'rounded-lg bg-blue/20 px-3 py-1.5 text-sm text-blue transition-colors hover:bg-blue/30'
 
   const cancelBtn = document.createElement('button')
   cancelBtn.type = 'button'

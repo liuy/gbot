@@ -2212,7 +2212,7 @@ describe('chat integration', () => {
       prompt: '[sudo] password:',
       masked: true,
     })
-    const root = document.querySelector('[class*="border-amber"]') as HTMLElement
+    const root = document.querySelector('[class*="border-blue"]') as HTMLElement
     expect(root.textContent).toContain('[sudo] password:')
     // No permission buttons on input ask.
     expect(root.textContent).not.toContain('Allow Once')
@@ -2279,7 +2279,7 @@ describe('chat integration', () => {
     expect(last.timeout).toBe(true)
     // No live dialog left in the DOM (chat.ts removes it from askEls and
     // close() detaches the node).
-    expect(document.querySelector('[class*="border-amber"]')).toBeNull()
+    expect(document.querySelector('[class*="border-blue"]')).toBeNull()
     vi.useRealTimers()
   })
 })
