@@ -14,6 +14,28 @@ import { createPopupPanel, createOutsideClick, createAnchoredPopup, positionAnch
 export type AttachmentRef =
   | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
   | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
+  // paste refs carry failed?/uploadProgress? purely for union compat —
+  // markAttachmentFailures and setAttachmentProgress write to the
+  // unconstrained AttachmentRef type. Paste never enters the upload loop
+  // (filtered in chat.ts onSend), so these stay undefined at runtime and
+  // renderChips' guards skip them.
+  | { kind: 'paste'; text: string; lineCount: number; seq: number; failed?: boolean; uploadProgress?: number }
+
+// INTENTIONAL DIVERGENCE from the TUI (pkg/tui/app.go newlineCount at lines
+// 1736-1744), which does `\r`→`\n` then counts `\n` — that double-counts
+// `\r\n` (a Windows paste of N CRLFs yields newlineCount === 2N). This
+// implementation counts `\r\n` as ONE line break (skipping the trailing
+// `\n`), matching what a user sees in an editor. Bare `\r` and bare `\n`
+// each count as 1.
+function countNewlines(text: string): number {
+  let count = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    if (ch === 0x0d) { count++; i++; continue }
+    if (ch === 0x0a) { count++ }
+  }
+  return count
+}
 
 export interface InputBarHandles {
   root: HTMLElement
@@ -67,6 +89,7 @@ export function createInputBar(initial: {
   let historyDownCb: (() => string | null) | null = null
   let historyResetCb: (() => void) | null = null
   let histPanelOpen = false
+  let nextPasteID = 1
 
   const histItemClass =
     'w-full px-3 py-2 rounded-lg text-left text-[13px] text-t2 cursor-pointer leading-[1.4] truncate'
@@ -188,6 +211,20 @@ export function createInputBar(initial: {
   attachPanel.appendChild(cameraBtn)
   attachPanel.appendChild(imageBtn)
   attachPanel.appendChild(docBtn)
+
+  // Built once at construct time so the open/close handlers can reference
+  // its textarea in their closures. Lazily appended to body on first open
+  // (avoids the chipRow's empty:hidden rule). No Save/Cancel buttons —
+  // edits are auto-saved to editingRef on every input event; close popup
+  // by clicking outside or pressing Esc.
+  let editPopupOpen = false
+  let editingRef: Extract<AttachmentRef, { kind: 'paste' }> | null = null
+  const editPopup = createPopupPanel({ bottom: true, className: 'p-0 w-[90vw] max-w-sm overflow-hidden' })
+  editPopup.setAttribute('data-edit-popup', '')
+  const editTextarea = document.createElement('textarea')
+  editTextarea.rows = 8
+  editTextarea.className = 'w-full bg-transparent text-t1 text-[13px] resize-none outline-none p-3 font-mono'
+  editPopup.appendChild(editTextarea)
 
   const closeAttachPanel = () => {
     attachPanel.classList.add('hidden')
@@ -344,6 +381,19 @@ export function createInputBar(initial: {
     recomputeCanSend()
   }
 
+  // addPasteAttachment captures large/multi-line pastes as a chip instead of
+  // inserting them into the textarea. Threshold check happens in the paste
+  // listener. seq is stable: removing paste #1 does NOT renumber paste #2.
+  const addPasteAttachment = (text: string) => {
+    const lineCount = countNewlines(text)
+    const ref: AttachmentRef = { kind: 'paste', text, lineCount, seq: nextPasteID }
+    nextPasteID++
+    attachments.push(ref)
+    renderChips()
+    attachmentsChangeCb?.()
+    recomputeCanSend()
+  }
+
   // removeAttachment splices a ref out of the array and revokes its blob URL
   // (image only). Used by the chip × button.
   const removeAttachment = (ref: AttachmentRef) => {
@@ -353,6 +403,7 @@ export function createInputBar(initial: {
       URL.revokeObjectURL(ref.previewURL)
     }
     attachments.splice(i, 1)
+    if (!attachments.some(r => r.kind === 'paste')) nextPasteID = 1
     renderChips()
     attachmentsChangeCb?.()
     recomputeCanSend()
@@ -378,7 +429,7 @@ export function createInputBar(initial: {
           img.classList.add('border-2', 'border-red-500')
         }
         wrap.appendChild(img)
-      } else {
+      } else if (ref.kind === 'document') {
         const span = document.createElement('span')
         span.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1'
         span.textContent = `[${ref.file.name}]`
@@ -386,6 +437,44 @@ export function createInputBar(initial: {
           span.classList.add('border-2', 'border-red-500')
         }
         wrap.appendChild(span)
+      } else {
+        // Paste chip: clipboard icon + #N [+L lines] label + ~20-char
+        // preview. data-paste-chip marker is read by the edit popup's
+        // outside-click handler to keep the popup open when switching chips.
+        const click = document.createElement('div')
+        click.setAttribute('data-paste-chip', '')
+        click.setAttribute('role', 'button')
+        click.tabIndex = 0
+        click.className = 'flex items-center gap-1.5 bg-ink2 text-t2 rounded-md pl-2 pr-3 py-1 cursor-pointer hover:bg-ink2/80'
+        click.innerHTML =
+          '<svg class="h-3 w-3 shrink-0 text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<rect x="8" y="2" width="8" height="4" rx="1"/>' +
+          '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>' +
+          '</svg>'
+        const labelSpan = document.createElement('span')
+        labelSpan.className = 'font-mono text-[11px] leading-tight whitespace-nowrap'
+        // Display as visual line count (newline count + 1). A single-line
+        // 800+ char paste shows "+1 lines"; a 4-line paste shows "+4 lines".
+        labelSpan.textContent = `#${ref.seq} +${ref.lineCount + 1} lines`
+        const preview = document.createElement('span')
+        preview.className = 'text-[10px] text-t3 truncate max-w-[140px] leading-tight'
+        preview.textContent = ref.text.slice(0, 20).replace(/\n/g, ' ')
+        const stack = document.createElement('div')
+        stack.className = 'flex flex-col min-w-0'
+        stack.append(labelSpan, preview)
+        click.append(stack)
+        click.addEventListener('click', () => {
+          // Toggle: if popup is already showing this ref, close it.
+          if (editPopupOpen && editingRef === ref) {
+            closeEditPopup()
+            return
+          }
+          openEditPopup(ref)
+        })
+        click.addEventListener('keydown', (e: KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEditPopup(ref) }
+        })
+        wrap.appendChild(click)
       }
       if (ref.failed) {
         // Retry button: circular-arrow icon. Sibling to × so the user can
@@ -439,6 +528,49 @@ export function createInputBar(initial: {
     }
   }
 
+  // Lazily appends to body on first open so it never appears in the input
+  // bar DOM subtree (avoids the chipRow's empty:hidden rule and lets the
+  // popup float freely).
+  const openEditPopup = (ref: Extract<AttachmentRef, { kind: 'paste' }>) => {
+    if (!editPopup.parentElement) document.body.appendChild(editPopup)
+    editingRef = ref
+    editTextarea.value = ref.text
+    editPopup.classList.remove('hidden')
+    editPopupOpen = true
+    editTextarea.focus()
+  }
+  const closeEditPopup = () => {
+    editPopup.classList.add('hidden')
+    editPopupOpen = false
+    editingRef = null
+  }
+  // Auto-save on every input — no Save button. Edits go directly to
+  // editingRef.text/lineCount and the chip re-renders to reflect new preview.
+  editTextarea.addEventListener('input', () => {
+    if (!editingRef) return
+    editingRef.text = editTextarea.value
+    editingRef.lineCount = countNewlines(editingRef.text)
+    renderChips()
+    attachmentsChangeCb?.()
+  })
+  // Esc closes the popup.
+  editTextarea.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') closeEditPopup()
+  })
+  // Outside-click dismiss — but clicks on another paste chip are exempt: the
+  // chip's own click handler then calls openEditPopup, repopulating rather
+  // than flicker-closing. Order of dispatch: the chip's click is a 'click'
+  // event that fires AFTER mousedown, so the chip mousedown would close the
+  // popup before its click repopulates. Exempting [data-paste-chip] mousedowns
+  // keeps the popup open through the click.
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    if (!editPopupOpen) return
+    const target = e.target as HTMLElement
+    if (editPopup.contains(target)) return
+    if (target.closest('[data-paste-chip]')) return
+    closeEditPopup()
+  })
+
   const recomputeCanSend = () => {
     const hasText = textarea.value.trim().length > 0
     const hasAttachments = attachments.length > 0
@@ -482,6 +614,31 @@ export function createInputBar(initial: {
   textarea.addEventListener('input', () => {
     recomputeCanSend()
     historyResetCb?.()
+  })
+
+  // Paste compression: large or multi-line pastes become a paste chip
+  // rather than inserted into the textarea. Threshold matches the TUI
+  // (pkg/tui/app.go:1742): >800 chars OR >2 newlines. Small pastes fall
+  // through to the browser default (insert-text) action.
+  //
+  // Uses beforeinput + inputType === 'insertFromPaste' instead of the
+  // 'paste' event: Android WebView's IME paste (especially Samsung Keyboard
+  // clipboard history) often bypasses the paste event entirely. beforeinput
+  // is the spec-compliant way to intercept text insertion and works across
+  // desktop Chrome, Firefox, Safari, and Android WebView.
+  textarea.addEventListener('beforeinput', (e: InputEvent) => {
+    // Android IME (Sogou/Baidu etc.) sometimes dispatches insertText
+    // instead of insertFromPaste for clipboard operations. Accept both —
+    // the threshold check (>800 chars or >2 newlines) filters out normal
+    // typing, which never produces that much text in a single event.
+    if (e.inputType !== 'insertFromPaste' && e.inputType !== 'insertText') return
+    const text = e.dataTransfer?.getData('text/plain') ?? e.data ?? ''
+    if (!text) return
+    const lineCount = countNewlines(text)
+    if (text.length > 800 || lineCount > 2) {
+      e.preventDefault()
+      addPasteAttachment(text)
+    }
   })
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -660,6 +817,7 @@ export function createInputBar(initial: {
       // strip so the user can hit retry.
       const removeSet = new Set(refs)
       attachments = attachments.filter((r) => !removeSet.has(r))
+      if (!attachments.some(r => r.kind === 'paste')) nextPasteID = 1
       renderChips()
       attachmentsChangeCb?.()
       recomputeCanSend()
@@ -677,6 +835,8 @@ export function createInputBar(initial: {
         }
       }
       attachments = []
+      nextPasteID = 1
+      if (editPopupOpen) closeEditPopup()
       renderChips()
       attachmentsChangeCb?.()
       recomputeCanSend()

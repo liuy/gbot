@@ -1566,9 +1566,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // uploaded attachments (image thumbnails via blob URL or document chips)
   // and appends it to the messages container. Mirrors the pre-attachment
   // send path so users see their message immediately, before the WS round-trip.
+  // uploaded is narrowed to non-paste kinds: paste refs are filtered out of
+  // `files` in onSend and inlined into `text`, so they never reach here.
   const renderUserMessage = (
     text: string,
-    uploaded: AttachmentRef[],
+    uploaded: Exclude<AttachmentRef, { kind: 'paste' }>[],
   ) => {
     const { outer, content } = buildShell('user')
     // Populate the blocks array so abort-rewind / replay can recover the
@@ -1618,30 +1620,40 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   const onSend = async (text: string) => {
-    const attachments = inputBar.getAttachments()
-    if (attachments.length === 0) {
-      // Text-only fast path: history record + send are both side-effect-free
-      // on failure (server down → server replayers; nothing for us to undo).
-      inputHistory.add(text)
+    const all = inputBar.getAttachments()
+    const pastes = all.filter((r): r is Extract<AttachmentRef, { kind: 'paste' }> => r.kind === 'paste')
+    const files = all.filter((r) => r.kind !== 'paste')
+
+    // Inline paste text into the message body. Each paste is separated from
+    // the preceding content by a blank line so the LLM can tell where the
+    // user's typed message ends and the pasted block begins.
+    let fullText = text
+    for (const p of pastes) {
+      fullText = fullText === '' ? p.text : fullText + '\n\n' + p.text
+    }
+
+    if (files.length === 0) {
+      if (fullText.trim() === '' && pastes.length === 0) return
+      inputHistory.add(fullText)
       if (streaming) {
-        queuedMsgs = [...queuedMsgs, { uuid: '', text }]
+        queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
         inputBar.setQueuedMsgs(queuedMsgs)
-        conn.send({ type: 'message', text })
+        conn.send({ type: 'message', text: fullText })
+        inputBar.removeAttachments(all)
         return
       }
-      renderUserMessage(text, [])
-      conn.send({ type: 'message', text })
+      renderUserMessage(fullText, [])
+      conn.send({ type: 'message', text: fullText })
+      inputBar.removeAttachments(all)
       return
     }
-    // Two-phase commit: upload every attachment FIRST, then send a single
-    // user_message carrying the attachment ids. The server refuses dispatch
-    // until every id is in its saved map, so a partial failure never
-    // produces a half-rendered user message. setUploading (not
-    // setStreaming) disables input — setStreaming would flip the send
-    // button to a STOP icon that aborts the running engine.
+
+    // Two-phase commit path — upload files only (paste already inlined).
+    // Paste MUST be filtered out before this loop: paste refs have no `file`,
+    // so sendAttachmentViaWS would crash dereferencing ref.file.
     inputBar.setUploading(true)
     let anyFailed = false
-    for (const ref of attachments) {
+    for (const ref of files) {
       if (ref.uploadedID) continue // bytes already staged server-side (retry path)
       try {
         const id = newAttachmentID()
@@ -1656,29 +1668,28 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     inputBar.setUploading(false)
     if (anyFailed) {
-      // Restore the draft so the user can retry without retyping. Do NOT
-      // add to inputHistory — that would duplicate the entry on a later
-      // successful send.
+      // Restore the user's TYPED text (not fullText) — paste chips stay in
+      // the strip so a retry re-inlines them. Matches existing restore semantics.
       inputBar.setInputText(text)
       return
     }
     // inputHistory.add AFTER upload succeeded but BEFORE commit send — that
     // way a failed upload does NOT pollute history with a duplicate entry
     // when the user retries.
-    inputHistory.add(text)
+    inputHistory.add(fullText)
     conn.send({
       type: 'message',
-      text,
-      attachments: attachments.map((ref) =>
+      text: fullText,
+      attachments: files.map((ref) =>
         attachmentMeta(ref.file, ref.uploadedID!)),
     })
-    inputBar.removeAttachments(attachments)
+    inputBar.removeAttachments(all)
     if (streaming) {
-      queuedMsgs = [...queuedMsgs, { uuid: '', text }]
+      queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
       inputBar.setQueuedMsgs(queuedMsgs)
       return
     }
-    renderUserMessage(text, attachments)
+    renderUserMessage(fullText, files)
   }
 
   const onStop = () => {
@@ -1706,7 +1717,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // onRetryAttachment re-fires sendAttachmentViaWS for a failed chip with a
   // fresh id. On success the ref's uploadedID is set so a subsequent onSend
   // skips re-uploading it (only the failed chip needed bytes on the wire).
+  // Paste refs never reach here at runtime: the retry button only renders
+  // on `ref.failed === true` chips, and paste is filtered out of the upload
+  // loop in onSend before any failure can be marked.
   inputBar.onRetryAttachment(async (ref) => {
+    if (ref.kind === 'paste') return false
     const id = newAttachmentID()
     try {
       await sendAttachmentViaWS(ref.file, id, (frac) =>

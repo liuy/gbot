@@ -1,5 +1,39 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 import { createInputBar, type AttachmentRef } from '../src/input_bar'
+
+// dispatchPaste: jsdom 29 has no ClipboardEvent/DataTransfer (issue #1568).
+// Build a synthetic Event with a stubbed clipboardData via
+// dispatchPaste simulates an Android WebView paste via beforeinput +
+// inputType=insertFromPaste (the production code uses beforeinput, not
+// the 'paste' event, because Android IMEs often bypass paste events).
+// Returns { evt, spy } so call sites can assert on preventDefault.
+function dispatchPaste(textarea: HTMLTextAreaElement, text: string): { evt: InputEvent; spy: Mock } {
+  // jsdom's InputEvent constructor doesn't accept inputType in the init dict
+  // reliably, so we build a synthetic InputEvent and define the required
+  // fields via Object.defineProperty.
+  const evt = new InputEvent('beforeinput', { bubbles: true, cancelable: true })
+  Object.defineProperty(evt, 'inputType', {
+    value: 'insertFromPaste',
+    writable: false, configurable: true,
+  })
+  Object.defineProperty(evt, 'data', {
+    value: text,
+    writable: false, configurable: true,
+  })
+  Object.defineProperty(evt, 'dataTransfer', {
+    value: { getData: (t: string) => t === 'text/plain' ? text : '' },
+    writable: false, configurable: true,
+  })
+  const spy = vi.spyOn(evt as unknown as { preventDefault: () => void }, 'preventDefault')
+  textarea.dispatchEvent(evt)
+  return { evt, spy }
+}
+
+// getEditPopup returns the edit popup element from document.body. The popup
+// is lazily appended on first open, so callers must open it first.
+function getEditPopup(): HTMLElement {
+  return document.body.querySelector('[data-edit-popup]')!
+}
 
 describe('createInputBar attachments', () => {
   beforeEach(() => {
@@ -529,5 +563,285 @@ describe('createInputBar attachments', () => {
     expect(handles.root.querySelector('.bg-blue')).not.toBeNull()
     handles.setAttachmentProgress(ref, 1)
     expect(handles.root.querySelector('.bg-blue')).toBeNull()
+  })
+})
+
+describe('createInputBar paste compression', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('SmallPaste_FallsThroughToDefault', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const { spy } = dispatchPaste(handles.textarea, 'hello')
+    expect(handles.getAttachments().length).toBe(0)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('ExactlyAtThreshold_DoesNotTrigger', () => {
+    // Off-by-one guard: 800 chars (exactly at threshold) must NOT trigger.
+    // Flipping `> 800` to `>= 800` in the handler would fire here.
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const { spy } = dispatchPaste(handles.textarea, 'a'.repeat(800))
+    expect(handles.getAttachments().length).toBe(0)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('LargeCharCount_TriggersAttachment', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const { spy } = dispatchPaste(handles.textarea, 'a'.repeat(801))
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('paste')
+    const paste = atts[0] as Extract<AttachmentRef, { kind: 'paste' }>
+    expect(paste.text.length).toBe(801)
+    expect(paste.lineCount).toBe(0)
+    expect(paste.seq).toBe(1)
+    expect(spy).toHaveBeenCalled()
+  })
+
+  it('MultiNewline_TriggersAttachment', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'a\nb\nc\nd')
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    const paste = atts[0] as Extract<AttachmentRef, { kind: 'paste' }>
+    expect(paste.lineCount).toBe(3)
+    expect(paste.text).toBe('a\nb\nc\nd')
+  })
+
+  it('ExactlyTwoNewlines_DoesNotTrigger', () => {
+    // Boundary: 2 newlines (≤ threshold) must NOT trigger.
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'a\nb\nc')
+    expect(handles.getAttachments().length).toBe(0)
+  })
+
+  it('CarriageReturn_IntentionalDivergence_CRLFcountsAsOne', () => {
+    // Input: one \r\n, two \n, one bare \r.
+    // TUI normalize-then-count would yield 5 (double-counts \r\n).
+    // Our CRLF=1 divergence yields 4. The test name documents the
+    // intentional divergence so a future maintainer doesn't "fix" it.
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const { spy } = dispatchPaste(handles.textarea, 'a\r\nb\nc\nd\r')
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    const paste = atts[0] as Extract<AttachmentRef, { kind: 'paste' }>
+    expect(paste.lineCount).toBe(4)
+    expect(spy).toHaveBeenCalled()
+  })
+
+  it('SequenceNumber_IncrementsAndResetsOnEmpty', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    // Two pastes → seq 1 and 2.
+    dispatchPaste(handles.textarea, 'a\nb\nc\nd')
+    dispatchPaste(handles.textarea, 'e\nf\ng\nh')
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(2)
+    const labelOf = (chip: Element) => chip.querySelector('span')!.textContent
+    const chips = () => handles.root.querySelectorAll('[data-paste-chip]')
+    expect(labelOf(chips()[0])).toBe('#1 +4 lines')
+    expect(labelOf(chips()[1])).toBe('#2 +4 lines')
+
+    // Remove first: #2 stays (no renumber).
+    handles.removeAttachments([atts[0]])
+    expect(chips().length).toBe(1)
+    expect(labelOf(chips()[0])).toBe('#2 +4 lines')
+
+    // Remove second: strip empties → nextPasteID resets → next paste is #1.
+    handles.removeAttachments([atts[1]])
+    expect(chips().length).toBe(0)
+    dispatchPaste(handles.textarea, 'x\ny\nz\nw')
+    const newAtt = handles.getAttachments()
+    expect(newAtt.length).toBe(1)
+    expect(labelOf(chips()[0])).toBe('#1 +4 lines')
+  })
+
+  it('PasteChip_RendersIcon_Label_Preview', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'line1\nline2\nline3\nline4')
+    const chip = handles.root.querySelector('[data-paste-chip]')!
+    expect(chip).not.toBeNull()
+    expect(chip.querySelector('svg')).not.toBeNull()
+    const label = chip.querySelector('span')!
+    expect(label.textContent).toBe('#1 +4 lines')
+    const preview = chip.querySelectorAll('span')[1]!
+    expect(preview.textContent!.startsWith('line1')).toBe(true)
+    expect(preview.textContent!.includes('\n')).toBe(false)
+  })
+
+  it('LargePaste_DuringStreaming_StillTriggersAttachment', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    handles.setStreaming(true)
+    dispatchPaste(handles.textarea, 'line1\nline2\nline3\nline4')
+    expect(handles.getAttachments().length).toBe(1)
+    expect(handles.getAttachments()[0].kind).toBe('paste')
+  })
+
+  it('LargeInsertText_AndroidIMEstyle_TriggersAttachment', () => {
+    // Android IMEs (Sogou/Baidu etc.) sometimes dispatch insertText
+    // instead of insertFromPaste on the first paste after page load.
+    // Without this support, paste compression silently fails on Android
+    // until the user sends their first message.
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const evt = new InputEvent('beforeinput', { bubbles: true, cancelable: true })
+    Object.defineProperty(evt, 'inputType', { value: 'insertText', writable: false, configurable: true })
+    Object.defineProperty(evt, 'data', { value: 'line1\nline2\nline3\nline4', writable: false, configurable: true })
+    // insertText events have no dataTransfer — the handler must fall back
+    // to e.data to get the pasted text.
+    handles.textarea.dispatchEvent(evt)
+    expect(handles.getAttachments().length).toBe(1)
+    expect(handles.getAttachments()[0].kind).toBe('paste')
+  })
+
+  it('PasteChip_SingleLine_ShowsOneLine', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'a'.repeat(801))
+    const chip = handles.root.querySelector('[data-paste-chip]')!
+    const label = chip.querySelector('span')!
+    expect(label.textContent).toBe('#1 +1 lines')
+  })
+
+  it('ClickChip_OpensPopup_WithContent', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'hello\nworld\nfoo\nbar')
+    const chip = handles.root.querySelector('[data-paste-chip]')! as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    expect(popup.classList.contains('hidden')).toBe(false)
+    const editTA = popup.querySelector('textarea') as HTMLTextAreaElement
+    expect(editTA.value).toBe('hello\nworld\nfoo\nbar')
+  })
+
+  it('PopupEdit_AutoSavesOnInput', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'hello\nworld\nfoo\nbar')
+    const chip = handles.root.querySelector('[data-paste-chip]')! as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    const editTA = popup.querySelector('textarea') as HTMLTextAreaElement
+    editTA.value = 'x\ny\nz'
+    editTA.dispatchEvent(new Event('input', { bubbles: true }))
+    const paste = handles.getAttachments()[0] as Extract<AttachmentRef, { kind: 'paste' }>
+    expect(paste.text).toBe('x\ny\nz')
+    expect(paste.lineCount).toBe(2)
+    const label = handles.root.querySelector('[data-paste-chip] span')!
+    expect(label.textContent).toBe('#1 +3 lines')
+  })
+
+  it('PopupEdit_EscClosesPopup', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'original\na\nb\nc')
+    const chip = handles.root.querySelector('[data-paste-chip]')! as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    const editTA = popup.querySelector('textarea') as HTMLTextAreaElement
+    editTA.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(popup.classList.contains('hidden')).toBe(true)
+  })
+
+  it('PopupOutsideClick_ClosesPopup', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'keep\nme\nfoo\nbar')
+    const chip = handles.root.querySelector('[data-paste-chip]')! as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    expect(popup.classList.contains('hidden')).toBe(false)
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(popup.classList.contains('hidden')).toBe(true)
+  })
+
+  it('ClickSameChip_TogglesPopupClosed', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'hello\na\nb\nc')
+    const chip = handles.root.querySelector('[data-paste-chip]')! as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    expect(popup.classList.contains('hidden')).toBe(false)
+    // Click same chip again — should toggle close.
+    chip.click()
+    expect(popup.classList.contains('hidden')).toBe(true)
+  })
+
+  it('PopupOutsideClick_OnOtherPasteChip_DoesNotClose', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    // Two paste refs.
+    dispatchPaste(handles.textarea, 'first\na\nb\nc')
+    dispatchPaste(handles.textarea, 'second\nx\ny\nz')
+    const chips = handles.root.querySelectorAll('[data-paste-chip]')
+    const chip1 = chips[0] as HTMLElement
+    const chip2 = chips[1] as HTMLElement
+
+    // Open popup for ref1.
+    chip1.click()
+    const popup = getEditPopup()
+    expect(popup.classList.contains('hidden')).toBe(false)
+
+    // Dispatch mousedown on chip2 — without the [data-paste-chip] exemption,
+    // the outside-click handler would close the popup here.
+    chip2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(popup.classList.contains('hidden')).toBe(false)
+
+    // Click on chip2 repopulates the popup with ref2's text.
+    chip2.click()
+    const editTA = popup.querySelector('textarea') as HTMLTextAreaElement
+    expect(editTA.value).toBe('second\nx\ny\nz')
+  })
+
+  it('ClearAttachments_ClosesEditPopup', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'text\na\nb\nc')
+    const chip = handles.root.querySelector('[data-paste-chip]') as HTMLElement
+    chip.click()
+    const popup = getEditPopup()
+    expect(popup.classList.contains('hidden')).toBe(false)
+    // clearAttachments (session switch path) must close the popup so
+    // editingRef does not point to a detached ref.
+    handles.clearAttachments()
+    expect(popup.classList.contains('hidden')).toBe(true)
+  })
+
+  it('RemoveButton_DeletesPasteAttachment', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    dispatchPaste(handles.textarea, 'hello\nworld\nfoo\nbar')
+    expect(handles.getAttachments().length).toBe(1)
+    const xBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove attachment"]',
+    )!
+    xBtn.click()
+    expect(handles.getAttachments().length).toBe(0)
+    expect(handles.root.querySelector('[data-paste-chip]')).toBeNull()
+  })
+
+  it('OnAttachmentsChange_FiresOnPaste', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    let calls = 0
+    handles.onAttachmentsChange(() => { calls++ })
+    dispatchPaste(handles.textarea, 'hello\nworld\nfoo\nbar')
+    expect(calls).toBe(1)
   })
 })

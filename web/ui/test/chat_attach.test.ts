@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 
 // Mock WS at the path chat.ts imports. The mock captures every listener
 // registered via subscribe() so tests can drive inbound messages through
@@ -106,6 +106,29 @@ function clickSend() {
     'button[aria-label="Send"]',
   )!
   sendBtn.click()
+}
+
+// dispatchPaste: simulates Android WebView paste via beforeinput +
+// insertFromPaste (production code uses beforeinput, not paste, because
+// Android IMEs often bypass paste events). Returns { evt, spy } for
+// preventDefault assertions.
+function dispatchPaste(textarea: HTMLTextAreaElement, text: string): { evt: InputEvent; spy: Mock } {
+  const evt = new InputEvent('beforeinput', { bubbles: true, cancelable: true })
+  Object.defineProperty(evt, 'inputType', {
+    value: 'insertFromPaste',
+    writable: false, configurable: true,
+  })
+  Object.defineProperty(evt, 'data', {
+    value: text,
+    writable: false, configurable: true,
+  })
+  Object.defineProperty(evt, 'dataTransfer', {
+    value: { getData: (t: string) => t === 'text/plain' ? text : '' },
+    writable: false, configurable: true,
+  })
+  const spy = vi.spyOn(evt as unknown as { preventDefault: () => void }, 'preventDefault')
+  textarea.dispatchEvent(evt)
+  return { evt, spy }
 }
 
 // messagesContainer is the .space-y-7 div that holds rendered user/assistant
@@ -422,5 +445,84 @@ describe('chat attachment rendering', () => {
     const f1Commit = msg.attachments.find((a) => a.name === 'a.png')
     if (!f1Commit) throw new Error('commit message missing a.png attachment')
     expect(f1Commit.id).toBe(f1OriginalID)
+  })
+})
+
+describe('chat paste integration', () => {
+  it('PasteOnly_SendsAsMessageText_NoAttachmentFrames', async () => {
+    mount()
+    setTextarea('explain')
+    const paste = 'code\nline2\nline3\nline4'
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea')!
+    dispatchPaste(ta, paste)
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(sent.length).toBe(1)
+    })
+
+    const m = sent[0] as { type: string; text: string; attachments?: unknown }
+    expect(m.type).toBe('message')
+    expect(m.text).toBe('explain\n\n' + paste)
+    expect(m.attachments).toBeUndefined()
+    expect(sentBinary.length).toBe(0)
+
+    const text = messagesContainer().textContent ?? ''
+    expect(text.includes('explain')).toBe(true)
+    expect(text.includes('code')).toBe(true)
+  })
+
+  it('PastePlusImage_UploadsImageOnly_InlinesPaste', async () => {
+    mount()
+    setTextarea('see this')
+    const paste = 'first line\nsecond line\nthird line\nfourth line'
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const file = new File([blob], 'photo.png', { type: 'image/png' })
+    attachFile(file)
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea')!
+    dispatchPaste(ta, paste)
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+
+    expect(sent.length).toBe(3)
+    expect((sent[0] as { type: string }).type).toBe('attachment_start')
+    expect((sent[1] as { type: string }).type).toBe('attachment_end')
+    const msg = sent[2] as {
+      type: string
+      text: string
+      attachments: Array<{ id: string; name: string }>
+    }
+    expect(msg.type).toBe('message')
+    expect(msg.text).toBe('see this\n\n' + paste)
+    expect(msg.attachments.length).toBe(1)
+    expect(msg.attachments[0].name).toBe('photo.png')
+    expect(sentBinary.length).toBe(1)
+  })
+
+  it('FailedImageUpload_KeepsPasteChip_RestoresTypedText', async () => {
+    installConn({ disconnectAfterBinary: 1 })
+    mount()
+    setTextarea('hi')
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const file = new File([blob], 'photo.png', { type: 'image/png' })
+    attachFile(file)
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea')!
+    dispatchPaste(ta, 'pasted\nline2\nline3\nline4')
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.border-red-500').length).toBe(1)
+    })
+
+    // Typed text restored — NOT the paste-inlined fullText.
+    const taAfter = document.querySelector<HTMLTextAreaElement>('textarea')!
+    expect(taAfter.value).toBe('hi')
+    // Paste chip stays in the strip for retry.
+    expect(document.querySelector('[data-paste-chip]')).not.toBeNull()
+    // No commit frame sent.
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
   })
 })
