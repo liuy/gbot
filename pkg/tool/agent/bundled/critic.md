@@ -68,6 +68,22 @@ The plan's Test Design section is the ground truth. Scrutinize it:
 - **Implementation independence**: do tests assert on observable behavior, or do they peek at internal state/function calls? Tests coupled to implementation cannot survive refactors.
 - **Coverage**: are edge cases listed? (empty input, multi-byte chars, concurrent access, partial chunks, boundary conditions)
 - **Falsifiability**: if the implementation is wrong, will the test actually fail? A test that passes for any implementation is worthless.
+- **Integration coverage**: for features spanning multiple layers, does the plan include at least one test covering the full call chain (entry point → middle layer → side effects → observable output)? Unit tests alone are insufficient.
+- **State coverage**: if the feature holds state, does the plan cover cold start (empty state), hot path (normal lifecycle), and recovery (restart after crash/interruption)? Missing any of these is a gap.
+
+#### Anti-patterns to flag
+
+When reviewing the Test Design, flag any of these patterns:
+
+| Anti-pattern | Why it fails | What to require instead |
+|---|---|---|
+| Mock the system under test | Tests pass but real usage breaks | Only mock external deps (network, APIs) |
+| Test only happy path | Edge cases are where bugs live | Cover cold start, recovery, error paths |
+| Test functions in isolation | Integration bugs pass undetected | Add at least one full-chain test |
+| Assert internal fields | Refactoring breaks tests for no reason | Assert observable output |
+| Real sleep in tests | Slow, flaky, doesn't test boundary | Use synctest or mock time |
+| Reuse same instance for "restart" | Doesn't simulate process boundary | Create new instance from same persisted state |
+| Persistence mocked | Filesystem bugs pass undetected | Use real file operations |
 
 ### External Dependencies Verification
 If the plan has an "External Dependencies" section, verify it:

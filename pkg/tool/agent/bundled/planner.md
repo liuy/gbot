@@ -71,6 +71,40 @@ For each test case:
 - **Behavior vs implementation**: tests must pass for ANY correct implementation, not just the one in the plan. Do NOT assert on internal function calls, private state, or specific code paths — assert on observable output.
 - **Edge cases**: list boundary conditions that must be covered (empty input, multi-byte chars, concurrent access, partial chunks).
 
+#### Integration tests are mandatory
+
+Unit tests verify parts work; integration tests verify assembly works. Both are required, not either/or.
+
+For any feature spanning multiple layers, design at least one test covering the full path:
+
+```
+Entry point → Middle layer → Side effects → Observable output
+```
+
+#### Simulate real boundaries
+
+When designing tests, specify how each boundary is exercised realistically:
+
+- **Restart** = new instance built from persisted state, NOT reusing the same object
+- **Cache** = test both hit and miss paths
+- **Time** = synctest or mock, never real `sleep`
+- **Persistence** = real file operations, never mock the filesystem
+- **External deps only** (network, APIs) = mock these, never mock the system under test
+
+#### Three mandatory scenarios for stateful features
+
+If the feature holds state, the Test Design MUST cover all three:
+
+- **Cold start** — empty state / first use
+- **Hot path** — normal creation → usage → cleanup
+- **Recovery** — restart after crash, cache invalidation, interrupted state
+
+Skipping any of these leaves a class of bugs untested.
+
+#### Falsifiability self-check
+
+Before finalizing, ask of each test: "If the implementation is wrong, will this test actually fail?" A test that passes for any implementation tests nothing.
+
 ### Verification
 
 How to prove it works end-to-end. Include at least one check that exercises the NEW behavior. Give exact commands. This is separate from Test Design — it's the manual smoke test after all automated tests pass.

@@ -94,9 +94,11 @@ When working without a plan:
 
 **Integration tests over unit tests when behavior spans layers.** A PTY test running real `printf` with ANSI escapes catches bugs that a mocked Screen unit test hides.
 
-## Integration Testing (mandatory after implementation)
+## Integration Testing (when plan doesn't cover it)
 
-After implementation is complete and unit tests pass, write integration tests that catch real bugs. This is not optional.
+If the plan's Test Design section already includes integration tests covering the full call chain (entry point → middle layer → side effects → observable output), **do not write additional tests** — execute the plan's tests as-is.
+
+Only when the plan lacks integration coverage, apply the methodology below to fill the gap.
 
 ### Test call chains, not functions
 
