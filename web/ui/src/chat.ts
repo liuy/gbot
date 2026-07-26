@@ -255,7 +255,7 @@ function buildShell(
   }
 
   const content = document.createElement('div')
-  content.className = role === 'assistant' ? 'space-y-3' : 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap'
+  content.className = role === 'assistant' ? 'space-y-3' : 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap break-words'
 
   centerCol.appendChild(content)
   grid.appendChild(leftCol)

@@ -972,6 +972,29 @@ describe('chat integration', () => {
     expect(contentDiv!.className).toContain('whitespace-pre-wrap')
   })
 
+  it('user message content div has break-words to prevent overflow', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'https://example.com/very/long/path/that/should/overflow',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      (s) => s.textContent === 'https://example.com/very/long/path/that/should/overflow',
+    )
+    expect(spans.length).toBe(1)
+    const contentDiv = spans[0].parentElement
+    expect(contentDiv).toBeTruthy()
+    expect(contentDiv!.className).toContain('break-words')
+  })
+
   it('Bash grep in history is classified as search', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
