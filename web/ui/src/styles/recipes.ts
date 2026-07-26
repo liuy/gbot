@@ -49,7 +49,7 @@ export const toolDuration = tv({
   base: 'font-mono text-xs align-middle',
   variants: { state: { running: 'text-blue', done: 'text-t3', error: 'text-red' } },
 })
-export const toolBody = tv({ base: 'ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden' })
+export const toolBody = tv({ base: 'ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden' })
 export const toolChildren = tv({ base: 'ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden' })
 
 export const groupSummary = tv({ base: 'font-mono text-sm text-blue align-middle' })

@@ -106,7 +106,7 @@ describe('stream_dom className snapshot guards', () => {
       expect(nameEl.className).toBe('font-mono text-sm text-blue align-middle')
       expect(summaryEl.className).toBe('text-sm text-t2 font-light break-all align-middle')
       expect(h.durEl.className).toBe('font-mono text-xs align-middle text-blue')
-      expect(h.body.className).toBe('ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden')
+      expect(h.body.className).toBe('ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden')
       expect(h.childrenContainer.className).toBe('ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden')
     })
   })
