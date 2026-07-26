@@ -3,8 +3,9 @@ import {
   type Block,
   type ChatMessage,
   newAssistantMessage,
+  newUserMessage,
 } from './model'
-import { isCollapsibleToolName, timeDividerLabel } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel } from './utils'
 import { copyText } from './utils/copy_button'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 import {
@@ -31,6 +32,7 @@ import {
   collapseToolChildrenOnDone,
   markToolCollapsible,
 } from './components/stream_dom'
+import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
 import { createHeader } from './header'
 import { createSidebar } from './sidebar'
 import { createInputBar, type InputBarHandles, type AttachmentRef } from './input_bar'
@@ -129,28 +131,6 @@ function showImageLightbox(src: string): void {
   lightboxOverlay.style.display = 'flex'
 }
 
-function classifyToolName(name: string): {
-  isSearch: boolean
-  isRead: boolean
-  isList: boolean
-  isLsp: boolean
-  isWeb: boolean
-} {
-  switch (name) {
-    case 'Read':
-      return { isRead: true, isSearch: false, isList: false, isLsp: false, isWeb: false }
-    case 'Grep':
-    case 'Glob':
-      return { isSearch: true, isRead: false, isList: false, isLsp: false, isWeb: false }
-    case 'Lsp':
-      return { isLsp: true, isSearch: false, isRead: false, isList: false, isWeb: false }
-    case 'Web':
-      return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false }
-    default:
-      return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
-  }
-}
-
 export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   const merged: HistoryChatMsg[] = []
   for (const h of histMsgs) {
@@ -208,7 +188,7 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
           })
         } else if (b.kind === 'tool') {
           const t = b.tool!
-          const srk = classifyToolName(t.name)
+          const srk = classifyTool(t.name)
           m.blocks.push({
             kind: 'tool',
             id: t.id,
@@ -278,18 +258,6 @@ function buildShell(
   return { outer, content }
 }
 
-function isCollapsible(b: Block): boolean {
-  return (
-    b.kind === 'tool' &&
-    (b.isSearch ||
-      b.isRead ||
-      b.isList ||
-      b.isLsp ||
-      b.isWeb ||
-      isCollapsibleToolName(b.name))
-  )
-}
-
 // Build committed message DOM by replaying blocks through streamDom appenders.
 // Produces the same visual structure streaming builds, so loadHistory output
 // is indistinguishable from a message that just finished streaming.
@@ -344,7 +312,7 @@ function renderCommittedMessageDOM(
       if (b.text) writeThinkingText(p, b.text)
       finishThinking(p, labelEl, b.durationNs)
     } else if (b.kind === 'tool') {
-      const handles = appendToolBlock(content, b.name, undefined, isCollapsible(b))
+      const handles = appendToolBlock(content, b.name, undefined, isCollapsibleBlock(b))
       if (b.summary) setToolSummary(handles, b.summary, b.name)
       if (b.state === 'running') {
         runningTools.push({ id: b.id, handles, block: b })
@@ -575,8 +543,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
-    '<circle class="scroll-ring" cx="22" cy="22" r="18" fill="none" stroke="currentColor" stroke-width="2"/>' +
-    '<circle class="scroll-progress" cx="22" cy="22" r="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.15s ease-out"/>' +
+    progressRingCircles({ progressClassName: 'scroll-progress', backgroundClassName: 'scroll-ring' }) +
     '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
     '</svg>'
   mainContent.appendChild(scrollBtn)
@@ -588,7 +555,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   })
 
   const scrollArc = scrollBtn.querySelector('.scroll-progress') as SVGCircleElement
-  const circumference = 2 * Math.PI * 18 // r=18
 
   const updateScrollBtn = () => {
     const maxScroll = scroll.scrollHeight - scroll.clientHeight
@@ -600,7 +566,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // Progress ring: 0 at bottom, full at top
     if (maxScroll > 0) {
       const progress = Math.min(distFromBottom / maxScroll, 1)
-      scrollArc.setAttribute('stroke-dashoffset', String(circumference * (1 - progress)))
+      scrollArc.setAttribute('stroke-dashoffset', String(progressRingDashOffset(progress)))
     }
     maybePrefetchHistory()
   }
@@ -1083,7 +1049,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         finishThinking(p, labelEl, block.durationNs)
       }
     } else if (block.kind === 'tool') {
-      const handles = appendToolBlock(parent, block.name, before, isCollapsible(block))
+      const handles = appendToolBlock(parent, block.name, before, isCollapsibleBlock(block))
       if (block.summary) setToolSummary(handles, block.summary, block.name)
       if (block.state === 'running') {
         toolEntries.set(block.id, {
@@ -1381,7 +1347,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               domContainer,
               tu.name,
               undefined,
-              isCollapsible(block),
+              isCollapsibleBlock(block),
             )
             toolEntries.set(tu.id, {
               handles,
@@ -1408,7 +1374,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             streamContainer,
             tu.name,
             progressAnchor(),
-            isCollapsible(block),
+            isCollapsibleBlock(block),
           )
           if (tu.summary) {
             setToolSummary(handles, tu.summary, tu.name)
@@ -1443,7 +1409,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!e.tool_use) return
         const ruEntry = toolEntries.get(e.tool_use.id)
         if (!ruEntry) return
-        if (isCollapsible(ruEntry.pendingBlock)) {
+        if (isCollapsibleBlock(ruEntry.pendingBlock)) {
           markToolCollapsible(ruEntry.handles.root)
         }
         return
@@ -1533,13 +1499,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           const { outer, content } = buildShell('user')
           content.appendChild(createUserTextSpan(text))
           const m: MessageState = {
-            id: '',
-            role: 'user',
-            blocks: [{ kind: 'text', id: '', text }],
-            usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
-            error: '',
-            status: 'done',
-            startedAt: Date.now(),
+            ...newUserMessage(text),
             lastActivityAt: Date.now(),
             domRoot: outer,
             contentDiv: content,
@@ -1596,13 +1556,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
     }
     const m: MessageState = {
-      id: '',
-      role: 'user',
-      blocks,
-      usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
-      error: '',
-      status: 'done',
-      startedAt: Date.now(),
+      ...newUserMessage('', blocks),
       lastActivityAt: Date.now(),
       domRoot: outer,
       contentDiv: content,

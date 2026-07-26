@@ -1,6 +1,35 @@
 // Mirrors pkg/utils/duration.go:10. Input is SECONDS (caller converts ns).
 // <1s: "0.3s", 1-59s: "Xs", 60s-59m: "Xm Ys", >=1h: "Xh Ym Zs".
 import { popupPanel, anchoredPopup } from './styles/recipes'
+import type { Block } from './model'
+
+export interface ToolClassification {
+  isSearch: boolean
+  isRead: boolean
+  isList: boolean
+  isLsp: boolean
+  isWeb: boolean
+}
+
+// Pure name→flags lookup. isList is never set here — list-ness only comes
+// from the backend `is_list` flag (Bash ls/tree/du), so callers OR it in
+// at the merge sites (history replay / tool_start / tool_param_delta /
+// tool_end). Backend always sends 'Lsp' (pkg/tool/lsp/lsp.go Name_).
+export function classifyTool(name: string): ToolClassification {
+  switch (name) {
+    case 'Read':
+      return { isRead: true, isSearch: false, isList: false, isLsp: false, isWeb: false }
+    case 'Grep':
+    case 'Glob':
+      return { isSearch: true, isRead: false, isList: false, isLsp: false, isWeb: false }
+    case 'Lsp':
+      return { isLsp: true, isSearch: false, isRead: false, isList: false, isWeb: false }
+    case 'Web':
+      return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false }
+    default:
+      return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
+  }
+}
 
 export function formatDuration(seconds: number): string {
   const s = Math.floor(seconds)
@@ -87,9 +116,22 @@ export function parseDurationFromOutput(output: unknown): number {
 
 // Whether a tool is collapsible (groups with adjacent collapsible tools).
 // Shared by streamDom.ts (streaming) and MessageComponent.tsx (committed).
-// KEEP IN SYNC with the rules below — both call sites must agree.
+// Delegates to classifyTool so the name list has one source of truth.
 export function isCollapsibleToolName(name: string): boolean {
-  return name === 'Grep' || name === 'Glob' || name === 'Read' || name === 'Lsp' || name === 'LSP' || name === 'Web'
+  const c = classifyTool(name)
+  return c.isSearch || c.isRead || c.isList || c.isLsp || c.isWeb
+}
+
+// Whether a block should group with adjacent collapsible tool blocks.
+// Kept separate from isCollapsibleToolName because tool_start's buildToolBlock
+// doesn't call classifyTool (backend may not have sent flags yet at creation),
+// so the OR-with-name fallback covers tools marked collapsible retroactively
+// via markToolCollapsible.
+export function isCollapsibleBlock(b: Block): boolean {
+  if (b.kind !== 'tool') return false
+  return (
+    b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb || isCollapsibleToolName(b.name)
+  )
 }
 
 // Noun for tool group summary: "Search" for Grep/Glob, "Read" for Read, etc.
@@ -98,7 +140,7 @@ export function nounFor(name: string, isList = false): string {
 	if (isList) return 'List'
 	if (name === 'Grep' || name === 'Glob') return 'Search'
 	if (name === 'Read') return 'Read'
-	if (name === 'Lsp' || name === 'LSP') return 'LSP'
+	if (name === 'Lsp') return 'LSP'
 	if (name === 'Web') return 'Web'
 	return name
 }
@@ -154,6 +196,121 @@ export function createOutsideClick(
   return {
     add() { document.addEventListener('mousedown', handler) },
     remove() { document.removeEventListener('mousedown', handler) },
+  }
+}
+
+// ── Long-press ─────────────────────────────────────────────────
+//
+// Touch + optional mouse long-press binding. If both touchstart and a
+// synthesized mousedown fire on a touch device, the second start clears
+// the first's pending timer so only one fires.
+//
+// consumeTrigger lets the caller's click handler suppress the click that
+// would otherwise follow a long-press (e.g., to avoid cycling theme when
+// the user long-pressed to open the hljs popover).
+export interface LongPressOptions {
+  durationMs?: number
+  useMouse?: boolean
+}
+
+export interface LongPressController {
+  cancel: () => void
+  consumeTrigger: () => boolean
+}
+
+export function bindLongPress(
+  el: HTMLElement,
+  onTrigger: () => void,
+  opts?: LongPressOptions,
+): LongPressController {
+  const durationMs = opts?.durationMs ?? 500
+  const useMouse = opts?.useMouse ?? false
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let triggered = false
+
+  const start = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      triggered = true
+      onTrigger()
+    }, durationMs)
+  }
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+
+  el.addEventListener('touchstart', start)
+  el.addEventListener('touchend', clear)
+  el.addEventListener('touchmove', clear)
+  el.addEventListener('pointercancel', clear)
+  if (useMouse) {
+    el.addEventListener('mousedown', start)
+    el.addEventListener('mouseup', clear)
+    el.addEventListener('mouseleave', clear)
+  }
+
+  return {
+    cancel: clear,
+    consumeTrigger: () => {
+      const was = triggered
+      triggered = false
+      return was
+    },
+  }
+}
+
+// ── PopupHost ──────────────────────────────────────────────────
+//
+// Standard popup skeleton shared by modelPicker, enginePicker,
+// taskPopover, attachPanel, histPanel: caller-built panel + a trigger
+// (for outside-click exclusion) + lazy body append + hidden toggle +
+// outside-click arm/disarm. Caller still owns the trigger's event
+// handler — host exposes open/close/toggle/isOpen so non-standard
+// triggers (histPanel's sendBtn triple-duty, taskPopover's toggle)
+// stay at the call site. Special cases (contextPopover three-state,
+// debugPanel dblclick, hljsPopover long-press, editPopup mousedown)
+// stay on createOutsideClick directly.
+export interface PopupHostOptions {
+  trigger: HTMLElement
+  panel: HTMLElement
+  onOpen?: () => void
+  onClose?: () => void
+}
+
+export interface PopupHost {
+  open: () => void
+  close: () => void
+  toggle: () => void
+  isOpen: () => boolean
+}
+
+export function createPopupHost(opts: PopupHostOptions): PopupHost {
+  let open = false
+  const outside = createOutsideClick(opts.trigger, opts.panel, () => closeImpl())
+
+  const openImpl = () => {
+    if (open) return
+    if (!opts.panel.parentElement) document.body.appendChild(opts.panel)
+    opts.panel.classList.remove('hidden')
+    open = true
+    opts.onOpen?.()
+    outside.add()
+  }
+  const closeImpl = () => {
+    if (!open) return
+    opts.panel.classList.add('hidden')
+    open = false
+    opts.onClose?.()
+    outside.remove()
+  }
+  return {
+    open: openImpl,
+    close: closeImpl,
+    toggle: () => (open ? closeImpl() : openImpl()),
+    isOpen: () => open,
   }
 }
 

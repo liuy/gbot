@@ -1,6 +1,6 @@
 import type { SessionListItem } from './types'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
-import { createOutsideClick } from './utils'
+import { createOutsideClick, bindLongPress } from './utils'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -89,7 +89,11 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   // Apply saved hljs theme on load
   applyHljsTheme(getSavedHljsTheme(), effectiveTheme === 'dark')
 
+  // Long-press: open highlight theme selector. Single click handler below
+  // consumes the trigger first so a long-press doesn't also cycle the theme.
+  const themeLP = bindLongPress(themeToggle, openHljsPopover, { useMouse: true })
   themeToggle.addEventListener('click', () => {
+    if (themeLP.consumeTrigger()) return
     const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
     const idx = THEME_CYCLE.indexOf(current)
     const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
@@ -98,44 +102,6 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     document.documentElement.dataset.theme = resolved
     themeToggle.innerHTML = themeIcon(next)
     applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
-  })
-
-  // Long-press: open highlight theme selector
-  let themePressTimer: ReturnType<typeof setTimeout> | null = null
-  let themePressed = false
-  themeToggle.addEventListener('touchstart', () => {
-    themePressTimer = setTimeout(() => {
-      themePressed = true
-      openHljsPopover()
-    }, 500)
-  })
-  themeToggle.addEventListener('touchend', () => {
-    if (themePressTimer) clearTimeout(themePressTimer)
-  })
-  themeToggle.addEventListener('touchmove', () => {
-    if (themePressTimer) clearTimeout(themePressTimer)
-  })
-  // Mouse long-press for desktop
-  let mousePressTimer: ReturnType<typeof setTimeout> | null = null
-  themeToggle.addEventListener('mousedown', () => {
-    mousePressTimer = setTimeout(() => {
-      themePressed = true
-      openHljsPopover()
-    }, 500)
-  })
-  themeToggle.addEventListener('mouseup', () => {
-    if (mousePressTimer) clearTimeout(mousePressTimer)
-  })
-  themeToggle.addEventListener('mouseleave', () => {
-    if (mousePressTimer) clearTimeout(mousePressTimer)
-  })
-  // Prevent click from firing after long-press
-  themeToggle.addEventListener('click', (e) => {
-    if (themePressed) {
-      themePressed = false
-      e.preventDefault()
-      e.stopPropagation()
-    }
   })
 
   function openHljsPopover() {
@@ -259,29 +225,12 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
       row.appendChild(titleSpan)
       row.appendChild(timeSpan)
 
+      // Long-press rename. Touch-only: session rows have no mouse hover affordance.
+      const rowLP = bindLongPress(row, () => startRename(row, titleSpan, s))
       row.addEventListener('click', () => {
-        if (pressed) {
-          pressed = false
-          return
-        }
+        if (rowLP.consumeTrigger()) return
         handlers.sessionClick(s.id)
         closeImmediate()
-      })
-
-      // Long-press rename
-      let pressTimer: ReturnType<typeof setTimeout> | null = null
-      let pressed = false
-      row.addEventListener('touchstart', () => {
-        pressTimer = setTimeout(() => {
-          pressed = true
-          startRename(row, titleSpan, s)
-        }, 500)
-      })
-      row.addEventListener('touchend', () => {
-        if (pressTimer) clearTimeout(pressTimer)
-      })
-      row.addEventListener('touchmove', () => {
-        if (pressTimer) clearTimeout(pressTimer)
       })
 
       listContainer.appendChild(row)

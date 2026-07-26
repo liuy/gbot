@@ -5,6 +5,7 @@ import {
 	appendThinkingBlock,
 	markToolCollapsible,
 } from './stream_dom'
+import { isCollapsibleToolName } from '../utils'
 
 function setup() {
 	const container = document.createElement('div')
@@ -12,12 +13,8 @@ function setup() {
 	return container
 }
 
-function isCollapsible(name: string): boolean {
-	return name === 'Grep' || name === 'Glob' || name === 'Read' || name === 'Lsp' || name === 'Web'
-}
-
 function appendTool(container: HTMLElement, name: string) {
-	return appendToolBlock(container, name, null, isCollapsible(name))
+	return appendToolBlock(container, name, null, isCollapsibleToolName(name))
 }
 
 describe('collapsible tool grouping during streaming', () => {

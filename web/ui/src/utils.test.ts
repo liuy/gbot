@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { parseDurationFromOutput, timeDividerLabel } from './utils'
+import {
+  parseDurationFromOutput,
+  timeDividerLabel,
+  classifyTool,
+  isCollapsibleToolName,
+  isCollapsibleBlock,
+  bindLongPress,
+  createPopupHost,
+} from './utils'
+import type { Block } from './model'
 
 describe('parseDurationFromOutput', () => {
 	it('parses JSON-encoded string with prefix', () => {
@@ -200,5 +209,418 @@ describe('timeDividerLabel', () => {
 		const older = newer - 20 * 60 * 1000 // 20min before newer
 		const label = timeDividerLabel(newer, older, 'en-US')
 		expect(label).not.toBe(null)
+	})
+})
+
+describe('classifyTool', () => {
+	it('classifies Read as isRead-only', () => {
+		expect(classifyTool('Read')).toEqual({
+			isRead: true,
+			isSearch: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
+	})
+
+	it('classifies Grep and Glob as isSearch-only', () => {
+		expect(classifyTool('Grep')).toEqual({
+			isSearch: true,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
+		expect(classifyTool('Glob')).toEqual({
+			isSearch: true,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
+	})
+
+	it('classifies Lsp as isLsp-only', () => {
+		expect(classifyTool('Lsp').isLsp).toBe(true)
+		expect(classifyTool('Lsp')).toEqual({
+			isLsp: true,
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isWeb: false,
+		})
+	})
+
+	it('classifies Web as isWeb-only', () => {
+		expect(classifyTool('Web')).toEqual({
+			isWeb: true,
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+		})
+	})
+
+	it('returns all-false for unknown names and never sets isList by name', () => {
+		expect(classifyTool('Bash')).toEqual({
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
+		expect(classifyTool('Unknown')).toEqual({
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
+		// isList is backend-only (Bash ls/tree/du). No name maps to it.
+		expect(classifyTool('Bash').isList).toBe(false)
+	})
+})
+
+describe('isCollapsibleToolName', () => {
+	it('returns false for Bash', () => {
+		expect(isCollapsibleToolName('Bash')).toBe(false)
+	})
+
+	it('returns true for Read, Grep, Glob, Lsp, Web', () => {
+		expect(isCollapsibleToolName('Read')).toBe(true)
+		expect(isCollapsibleToolName('Grep')).toBe(true)
+		expect(isCollapsibleToolName('Glob')).toBe(true)
+		expect(isCollapsibleToolName('Lsp')).toBe(true)
+		expect(isCollapsibleToolName('Web')).toBe(true)
+	})
+})
+
+describe('isCollapsibleBlock', () => {
+	it('returns false for non-tool blocks', () => {
+		expect(isCollapsibleBlock({ kind: 'text', id: '', text: 'hi' } as Block)).toBe(false)
+	})
+
+	it('returns true when backend isList flag is set, even for unclassified name', () => {
+		const b: Block = {
+			kind: 'tool',
+			id: '',
+			name: 'Bash',
+			summary: '',
+			isSearch: false,
+			isRead: false,
+			isList: true,
+			isLsp: false,
+			isWeb: false,
+			state: 'done',
+			timingNs: 0,
+			displayOutput: '',
+			startedAt: 0,
+			children: [],
+		}
+		expect(isCollapsibleBlock(b)).toBe(true)
+	})
+
+	it('returns false for tool with no flags and unclassified name', () => {
+		const b: Block = {
+			kind: 'tool',
+			id: '',
+			name: 'Bash',
+			summary: '',
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+			state: 'done',
+			timingNs: 0,
+			displayOutput: '',
+			startedAt: 0,
+			children: [],
+		}
+		expect(isCollapsibleBlock(b)).toBe(false)
+	})
+
+	it('returns true for tool with classified name even when flags are false', () => {
+		const b: Block = {
+			kind: 'tool',
+			id: '',
+			name: 'Read',
+			summary: '',
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+			state: 'done',
+			timingNs: 0,
+			displayOutput: '',
+			startedAt: 0,
+			children: [],
+		}
+		expect(isCollapsibleBlock(b)).toBe(true)
+	})
+})
+
+describe('bindLongPress', () => {
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	it('fires onTrigger once after default 500ms touchstart hold', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(499)
+		expect(onTrigger).not.toHaveBeenCalled()
+		vi.advanceTimersByTime(1)
+		expect(onTrigger).toHaveBeenCalledTimes(1)
+	})
+
+	it('cancel via touchend prevents onTrigger from firing', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(300)
+		el.dispatchEvent(new TouchEvent('touchend', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).not.toHaveBeenCalled()
+	})
+
+	it('cancel via touchmove prevents onTrigger from firing', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(200)
+		el.dispatchEvent(new TouchEvent('touchmove', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).not.toHaveBeenCalled()
+	})
+
+	it('cancel via pointercancel prevents onTrigger from firing (defensive)', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(200)
+		el.dispatchEvent(new Event('pointercancel', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).not.toHaveBeenCalled()
+	})
+
+	it('useMouse binds mousedown path; default useMouse=false does not', () => {
+		vi.useFakeTimers()
+		const elMouse = document.createElement('div')
+		const onTriggerMouse = vi.fn()
+		bindLongPress(elMouse, onTriggerMouse, { useMouse: true })
+		elMouse.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTriggerMouse).toHaveBeenCalledTimes(1)
+
+		const elTouch = document.createElement('div')
+		const onTriggerTouch = vi.fn()
+		bindLongPress(elTouch, onTriggerTouch)
+		elTouch.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTriggerTouch).not.toHaveBeenCalled()
+	})
+
+	it('mouseup cancels mouse-path timer before 500ms', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger, { useMouse: true })
+		el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		vi.advanceTimersByTime(300)
+		el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).not.toHaveBeenCalled()
+	})
+
+	it('touchstart+mousedown dedup: onTrigger fires exactly once', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger, { useMouse: true })
+		// Browser synthesizes mousedown after touchstart on touch devices.
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).toHaveBeenCalledTimes(1)
+	})
+
+	it('consumeTrigger returns true once after fire, then false until next fire', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		const lp = bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(lp.consumeTrigger()).toBe(true)
+		// Second read without a new fire returns false.
+		expect(lp.consumeTrigger()).toBe(false)
+		// Subsequent clicks can call consumeTrigger — still false.
+		expect(lp.consumeTrigger()).toBe(false)
+	})
+
+	it('second long-press fires after the first one ends', () => {
+		// Trigger flag must not latch across gestures.
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).toHaveBeenCalledTimes(1)
+		el.dispatchEvent(new TouchEvent('touchend', { bubbles: true }))
+		// Second long-press on a fresh gesture must fire again.
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).toHaveBeenCalledTimes(2)
+	})
+
+	it('cancel() clears the pending timer', () => {
+		vi.useFakeTimers()
+		const el = document.createElement('div')
+		const onTrigger = vi.fn()
+		const lp = bindLongPress(el, onTrigger)
+		el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+		vi.advanceTimersByTime(200)
+		lp.cancel()
+		vi.advanceTimersByTime(500)
+		expect(onTrigger).not.toHaveBeenCalled()
+	})
+})
+
+describe('createPopupHost', () => {
+	function setup() {
+		document.body.innerHTML = ''
+		const trigger = document.createElement('button')
+		const panel = document.createElement('div')
+		panel.classList.add('hidden')
+		document.body.appendChild(trigger)
+		return { trigger, panel }
+	}
+
+	it('open lazily appends panel and removes hidden; isOpen reflects state', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		expect(host.isOpen()).toBe(false)
+		host.open()
+		expect(host.isOpen()).toBe(true)
+		expect(panel.classList.contains('hidden')).toBe(false)
+		expect(panel.parentElement).toBe(document.body)
+	})
+
+	it('open is idempotent (no duplicate append)', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		host.open()
+		host.open()
+		expect(document.body.querySelectorAll('div').length).toBeGreaterThanOrEqual(1)
+		// panel is still a single direct child of body.
+		let count = 0
+		for (const child of document.body.children) {
+			if (child === panel) count++
+		}
+		expect(count).toBe(1)
+	})
+
+	it('close re-adds hidden and reports closed; does NOT remove from DOM', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		host.open()
+		host.close()
+		expect(host.isOpen()).toBe(false)
+		expect(panel.classList.contains('hidden')).toBe(true)
+		// Critical contract: close keeps the panel parented so reopen is cheap.
+		expect(panel.parentElement).toBe(document.body)
+	})
+
+	it('close is idempotent', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		host.open()
+		host.close()
+		host.close()
+		expect(host.isOpen()).toBe(false)
+	})
+
+	it('toggle cycles open→close→open', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		expect(host.isOpen()).toBe(false)
+		host.toggle()
+		expect(host.isOpen()).toBe(true)
+		host.toggle()
+		expect(host.isOpen()).toBe(false)
+		host.toggle()
+		expect(host.isOpen()).toBe(true)
+	})
+
+	it('outside-click closes after open', () => {
+		const { trigger, panel } = setup()
+		const onClose = vi.fn()
+		const host = createPopupHost({ trigger, panel, onClose })
+		host.open()
+		document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		expect(host.isOpen()).toBe(false)
+		expect(onClose).toHaveBeenCalledTimes(1)
+	})
+
+	it('outside-click is removed after close (no double onClose)', () => {
+		const { trigger, panel } = setup()
+		const onClose = vi.fn()
+		const host = createPopupHost({ trigger, panel, onClose })
+		host.open()
+		host.close()
+		// host.close() already fired onClose once.
+		expect(onClose).toHaveBeenCalledTimes(1)
+		document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		// The mousedown after close must NOT fire onClose again.
+		expect(onClose).toHaveBeenCalledTimes(1)
+	})
+
+	it('mousedown on trigger does NOT close (trigger excluded)', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		host.open()
+		trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		expect(host.isOpen()).toBe(true)
+	})
+
+	it('mousedown inside panel does NOT close', () => {
+		const { trigger, panel } = setup()
+		const host = createPopupHost({ trigger, panel })
+		host.open()
+		panel.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		expect(host.isOpen()).toBe(true)
+	})
+
+	it('onOpen fires after panel shown but before outside-click armed', () => {
+		const { trigger, panel } = setup()
+		// If outside-click were armed BEFORE onOpen returns, dispatching
+		// mousedown inside onOpen would close the panel and onClose would
+		// fire. We assert neither happens.
+		let openOrder = ''
+		const onOpen = vi.fn(() => {
+			openOrder += 'onOpen'
+			document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+		})
+		const onClose = vi.fn(() => {
+			openOrder += 'onClose'
+		})
+		const host = createPopupHost({ trigger, panel, onOpen, onClose })
+		host.open()
+		expect(onOpen).toHaveBeenCalledTimes(1)
+		// onOpen ran first; the mousedown it dispatched must NOT close.
+		expect(host.isOpen()).toBe(true)
+		expect(openOrder).toBe('onOpen')
 	})
 })

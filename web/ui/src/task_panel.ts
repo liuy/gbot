@@ -1,14 +1,12 @@
 import type { TaskWireItem } from './types'
-import { createPopupPanel, createOutsideClick } from './utils'
+import { createPopupPanel, createPopupHost } from './utils'
 import { floatingButton } from './styles/recipes'
+import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
 
 export interface TaskPanelHandles {
   root: HTMLElement
   setTasks: (tasks: TaskWireItem[]) => void
 }
-
-const RING_R = 18
-const RING_CIRC = 2 * Math.PI * RING_R
 
 export function createTaskPanel(): TaskPanelHandles {
   const root = document.createElement('button')
@@ -19,10 +17,12 @@ export function createTaskPanel(): TaskPanelHandles {
 
   root.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
-    `<circle cx="22" cy="22" r="${RING_R}" fill="none" stroke="currentColor" stroke-width="2" opacity="0.2"/>` +
-    `<circle class="task-ring" cx="22" cy="22" r="${RING_R}" fill="none" stroke="currentColor" stroke-width="2" ` +
-    `stroke-linecap="round" stroke-dasharray="${RING_CIRC.toFixed(2)}" stroke-dashoffset="${RING_CIRC.toFixed(2)}" ` +
-    'transform="rotate(-90 22 22)" style="transition:stroke-dashoffset 0.3s ease"/>' +
+    progressRingCircles({
+      progressClassName: 'task-ring',
+      backgroundOpacity: 0.2,
+      transitionMs: 300,
+      transitionEasing: 'ease',
+    }) +
     '<text class="task-label" x="22" y="22" text-anchor="middle" dominant-baseline="central" ' +
     'fill="currentColor" style="font-size:11px;font-weight:600;font-family:ui-monospace,monospace"/>' +
     '</svg>'
@@ -30,51 +30,44 @@ export function createTaskPanel(): TaskPanelHandles {
   const ring = root.querySelector('.task-ring') as SVGCircleElement
   const label = root.querySelector('.task-label') as SVGTextElement
 
-  let popover: HTMLDivElement | null = null
-  let popoverClick: ReturnType<typeof createOutsideClick> | null = null
+  // Panel is built once; onOpen clears and rebuilds content so each open
+  // reflects currentTasks at click time. onClose detaches so the hidden
+  // panel doesn't linger in the DOM.
+  const popover = createPopupPanel({ bottom: true, className: 'right-5 left-auto translate-x-0' })
+  popover.id = 'task-popover'
   let currentTasks: TaskWireItem[] = []
 
-  function closePopover() {
-    if (popover) {
-      popover.remove()
-      popover = null
-    }
-    if (popoverClick) {
-      popoverClick.remove()
-      popoverClick = null
-    }
-  }
+  const host = createPopupHost({
+    trigger: root,
+    panel: popover,
+    onOpen: () => {
+      // onOpen clears and rebuilds content so each open reflects currentTasks
+      // at click time. Without this, reopen after close would stack a second
+      // title+list on top of the stale ones (instance is reused).
+      popover.replaceChildren()
+      const done = currentTasks.filter(t => t.status === 'completed').length
+      const running = currentTasks.filter(t => t.status === 'in_progress').length
+      const pending = currentTasks.filter(t => t.status === 'pending').length
+      const parts: string[] = [`${done}/${currentTasks.length} Done`]
+      if (running > 0) parts.push(`${running} Running`)
+      if (pending > 0) parts.push(`${pending} Pending`)
 
-  root.addEventListener('click', () => {
-    if (popover) { closePopover(); return }
+      const title = document.createElement('div')
+      title.className = 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium'
+      title.textContent = parts.join(' · ')
+      popover.appendChild(title)
 
-    popover = createPopupPanel({ bottom: true, className: 'right-5 left-auto translate-x-0' })
-    popover.id = 'task-popover'
-    popover.classList.remove('hidden')
-
-    const done = currentTasks.filter(t => t.status === 'completed').length
-    const running = currentTasks.filter(t => t.status === 'in_progress').length
-    const pending = currentTasks.filter(t => t.status === 'pending').length
-    const parts: string[] = [`${done}/${currentTasks.length} Done`]
-    if (running > 0) parts.push(`${running} Running`)
-    if (pending > 0) parts.push(`${pending} Pending`)
-
-    const title = document.createElement('div')
-    title.className = 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium'
-    title.textContent = parts.join(' · ')
-    popover.appendChild(title)
-
-    const list = document.createElement('div')
-    list.className = 'px-2 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto'
-    for (const t of currentTasks) {
-      list.appendChild(renderRow(t))
-    }
-    popover.appendChild(list)
-
-    document.body.appendChild(popover)
-    popoverClick = createOutsideClick(root, popover, closePopover)
-    popoverClick.add()
+      const list = document.createElement('div')
+      list.className = 'px-2 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto'
+      for (const t of currentTasks) {
+        list.appendChild(renderRow(t))
+      }
+      popover.appendChild(list)
+    },
+    onClose: () => { popover.remove() },
   })
+
+  root.addEventListener('click', () => host.toggle())
 
   function renderRow(t: TaskWireItem): HTMLElement {
     const row = document.createElement('div')
@@ -119,7 +112,7 @@ export function createTaskPanel(): TaskPanelHandles {
 
   const setTasks = (tasks: TaskWireItem[]) => {
     currentTasks = tasks
-    closePopover()
+    host.close()
 
     if (tasks.length === 0 || tasks.every(t => t.status === 'completed')) {
       root.style.display = 'none'
@@ -133,7 +126,7 @@ export function createTaskPanel(): TaskPanelHandles {
 
     const done = tasks.filter(t => t.status === 'completed').length
     const ratio = done / tasks.length
-    ring.setAttribute('stroke-dashoffset', String(RING_CIRC * (1 - ratio)))
+    ring.setAttribute('stroke-dashoffset', String(progressRingDashOffset(ratio)))
     const totalStr = tasks.length > 99 ? '99+' : String(tasks.length)
     const doneStr = done > 99 ? '99+' : String(done)
     label.textContent = `${doneStr}/${totalStr}`
@@ -142,7 +135,7 @@ export function createTaskPanel(): TaskPanelHandles {
   // Cleanup popover if root is removed from DOM.
   new MutationObserver((_mutations, observer) => {
     if (!root.isConnected) {
-      closePopover()
+      host.close()
       observer.disconnect()
     }
   }).observe(root.parentElement ?? document.body, { childList: true })

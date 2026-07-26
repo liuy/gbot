@@ -46,3 +46,18 @@ export function newAssistantMessage(id: string): ChatMessage {
 		startedAt: Date.now(),
 	}
 }
+
+// Caller-built blocks (renderUserMessage assembling image + text blocks)
+// overrides the text-default. Passing just `text` synthesizes a single text
+// block (attachmentEcho path); passing `[]` keeps blocks empty.
+export function newUserMessage(text: string, blocks?: Block[]): ChatMessage {
+	return {
+		id: '',
+		role: 'user',
+		blocks: blocks ?? (text ? [{ kind: 'text', id: '', text }] : []),
+		usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+		error: '',
+		status: 'done',
+		startedAt: Date.now(),
+	}
+}

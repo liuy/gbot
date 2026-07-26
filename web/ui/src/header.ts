@@ -1,6 +1,6 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
-import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
+import { createPopupPanel, createOutsideClick, createPopupHost, formatTokenCount } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
@@ -62,7 +62,6 @@ function createModelPicker(
   let allModels: ModelEntry[] = []
   let currentProvider = ''
   let currentModel = ''
-  let open = false
   const quotaByProvider = new Map<string, string>()
 
   const renderList = () => {
@@ -117,31 +116,19 @@ function createModelPicker(
 
   searchInput.addEventListener('input', renderList)
 
-  const closePanel = () => {
-    open = false
-    panel.classList.add('hidden')
-    searchInput.value = ''
-    outside.remove()
-  }
-  const outside = createOutsideClick(wrap, panel, () => {
-    open = false
-    panel.classList.add('hidden')
-    searchInput.value = ''
-  })
-  trigger.addEventListener('click', () => {
-    open = !open
-    if (open) {
-      if (!panel.parentElement) document.body.appendChild(panel)
-      panel.classList.remove('hidden')
+  const host = createPopupHost({
+    trigger: wrap,
+    panel,
+    onOpen: () => {
       searchInput.value = ''
       renderList()
       setTimeout(() => searchInput.focus(), 50)
-      outside.add()
       onRequestQuota?.()
-    } else {
-      closePanel()
-    }
+    },
+    onClose: () => { searchInput.value = '' },
   })
+  const closePanel = () => host.close()
+  trigger.addEventListener('click', () => host.toggle())
 
   trigger.textContent = ''
 
@@ -154,7 +141,7 @@ function createModelPicker(
 
   const setQuota = (provider: string, quota: string) => {
     quotaByProvider.set(provider, quota)
-    if (open) renderList()
+    if (host.isOpen()) renderList()
   }
 
   wrap.appendChild(trigger)
@@ -172,6 +159,7 @@ function createEnginePicker(
   trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors'
 
   const panel = createPopupPanel()
+  panel.dataset.testid = 'engine-picker-panel'
 
   const listContainer = document.createElement('div')
   listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
@@ -179,7 +167,6 @@ function createEnginePicker(
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
-  let open = false
 
   const renderList = () => {
     listContainer.innerHTML = ''
@@ -223,26 +210,13 @@ function createEnginePicker(
     listContainer.appendChild(footer)
   }
 
-  const closePanel = () => {
-    open = false
-    panel.classList.add('hidden')
-    outside.remove()
-  }
-  const outside = createOutsideClick(wrap, panel, () => {
-    open = false
-    panel.classList.add('hidden')
+  const host = createPopupHost({
+    trigger: wrap,
+    panel,
+    onOpen: () => renderList(),
   })
-  trigger.addEventListener('click', () => {
-    open = !open
-    if (open) {
-      if (!panel.parentElement) document.body.appendChild(panel)
-      panel.classList.remove('hidden')
-      renderList()
-      outside.add()
-    } else {
-      closePanel()
-    }
-  })
+  const closePanel = () => host.close()
+  trigger.addEventListener('click', () => host.toggle())
 
   trigger.textContent = ''
 

@@ -1,4 +1,4 @@
-import { createPopupPanel, createOutsideClick, createAnchoredPopup, positionAnchoredPopup } from './utils'
+import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -88,7 +88,6 @@ export function createInputBar(initial: {
   let historyUpCb: ((current: string) => string | null) | null = null
   let historyDownCb: (() => string | null) | null = null
   let historyResetCb: (() => void) | null = null
-  let histPanelOpen = false
   let nextPasteID = 1
 
   const histItemClass =
@@ -165,7 +164,6 @@ export function createInputBar(initial: {
 
   // Attach popup — three icon buttons (camera/image/doc), each opening its
   // own file picker. Anchored above the + button via positionAnchoredPopup.
-  let attachPanelOpen = false
   const attachPanel = createAnchoredPopup('flex items-center gap-3 px-4 py-3')
   const attachIconClass =
     'flex items-center justify-center w-9 h-9 rounded-lg text-blue hover:text-white hover:bg-blue/10 transition-colors'
@@ -226,23 +224,17 @@ export function createInputBar(initial: {
   editTextarea.className = 'w-full bg-transparent text-t1 text-[13px] resize-none outline-none p-3 font-mono'
   editPopup.appendChild(editTextarea)
 
-  const closeAttachPanel = () => {
-    attachPanel.classList.add('hidden')
-    attachPanelOpen = false
-    attachOutside.remove()
-  }
-  const attachOutside = createOutsideClick(plusBtn, attachPanel, closeAttachPanel)
-  const openAttachPanel = () => {
-    if (!attachPanel.parentElement) document.body.appendChild(attachPanel)
-    attachPanel.classList.remove('hidden')
-    positionAnchoredPopup(attachPanel, card)
-    attachPanelOpen = true
-    attachOutside.add()
-  }
+  const attachHost = createPopupHost({
+    trigger: plusBtn,
+    panel: attachPanel,
+    onOpen: () => positionAnchoredPopup(attachPanel, card),
+  })
+  const openAttachPanel = () => attachHost.open()
+  const closeAttachPanel = () => attachHost.close()
 
   plusBtn.addEventListener('click', () => {
     if (plusBtn.disabled) return
-    if (attachPanelOpen) closeAttachPanel()
+    if (attachHost.isOpen()) closeAttachPanel()
     else openAttachPanel()
   })
 
@@ -287,14 +279,20 @@ export function createInputBar(initial: {
   histList.className = 'flex-1 overflow-y-auto p-1 min-h-0'
   histPanel.appendChild(histList)
 
-  const closeHistPanel = () => {
-    histPanel.classList.add('hidden')
-    histPanelOpen = false
-    histSearch.value = ''
-    histOutside.remove()
-  }
-
-  const histOutside = createOutsideClick(sendBtn, histPanel, closeHistPanel)
+  // onClose clears the search box so a subsequent open starts fresh; onOpen
+  // re-renders the list from the current historyPickerCb snapshot. The
+  // openHistPanel wrapper still does the empty-items early return so an empty
+  // history doesn't arm the outside-click listener.
+  const histHost = createPopupHost({
+    trigger: sendBtn,
+    panel: histPanel,
+    onOpen: () => {
+      histSearch.value = ''
+      renderHistList(historyPickerCb?.() ?? [])
+    },
+    onClose: () => { histSearch.value = '' },
+  })
+  const closeHistPanel = () => histHost.close()
 
   const renderHistList = (items: string[]) => {
     histList.innerHTML = ''
@@ -329,11 +327,7 @@ export function createInputBar(initial: {
   const openHistPanel = () => {
     const items = historyPickerCb?.() ?? []
     if (items.length === 0) return
-    if (!histPanel.parentElement) document.body.appendChild(histPanel)
-    histPanel.classList.remove('hidden')
-    histPanelOpen = true
-    histSearch.value = ''
-    renderHistList(items)
+    histHost.open()
   }
 
   histSearch.addEventListener('input', () => {
@@ -350,11 +344,10 @@ export function createInputBar(initial: {
     const hasInput = textarea.value.trim() !== '' || attachments.length > 0
     if (!hasInput) {
       e.preventDefault()
-      if (histPanelOpen) {
+      if (histHost.isOpen()) {
         closeHistPanel()
       } else {
         openHistPanel()
-        histOutside.add()
       }
     } else {
       onSubmit(e)
@@ -776,7 +769,7 @@ export function createInputBar(initial: {
       uploading = u
       textarea.disabled = u || !connected
       plusBtn.disabled = u || !connected
-      if (u && attachPanelOpen) closeAttachPanel()
+      if (u && attachHost.isOpen()) closeAttachPanel()
       recomputeCanSend()
     },
     setQueuedMsgs: (q) => {
@@ -872,7 +865,7 @@ export function createInputBar(initial: {
       connected = c
       textarea.disabled = !c
       plusBtn.disabled = !c
-      if (!c && attachPanelOpen) closeAttachPanel()
+      if (!c && attachHost.isOpen()) closeAttachPanel()
       recomputeCanSend()
     },
   }

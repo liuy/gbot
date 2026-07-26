@@ -363,3 +363,124 @@ describe('Header context popover', () => {
     expect(panel!.classList.contains('hidden')).toBe(true)
   })
 })
+
+describe('Header model picker popover', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  // breadcrumb order: [enginePicker] [sep] [modelPicker]. The context popover
+  // trigger also matches button.mono.text-\\[14px\\] but starts hidden, so we
+  // filter it out. Model picker is the LAST visible match.
+  function modelTrigger(): HTMLButtonElement {
+    const triggers = header.root.querySelectorAll('button.mono.text-\\[14px\\]:not(.hidden)')
+    return triggers[triggers.length - 1] as HTMLButtonElement
+  }
+
+  function visibleModelPanel(): HTMLDivElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search models..."]')
+      if (hasModelSearch && !p.classList.contains('hidden')) return p as HTMLDivElement
+    }
+    return null
+  }
+
+  it('click trigger opens panel with search input', () => {
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleModelPanel()
+    expect(panel).not.toBeNull()
+    expect(panel!.querySelector('textarea[placeholder="Search models..."]')).not.toBeNull()
+  })
+
+  it('outside click closes panel', () => {
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleModelPanel()
+    expect(panel).not.toBeNull()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('reopen after close re-appends without duplicates', () => {
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleModelPanel()
+    expect(panel).not.toBeNull()
+    // Only one model-picker panel in the DOM.
+    let count = 0
+    for (const p of document.body.querySelectorAll('.modal-enter')) {
+      if (p.querySelector('textarea[placeholder="Search models..."]')) count++
+    }
+    expect(count).toBe(1)
+  })
+})
+
+describe('Header engine picker popover', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  // enginePicker trigger is the FIRST visible button.mono.text-\\[14px\\].
+  function engineTrigger(): HTMLButtonElement {
+    return header.root.querySelector('button.mono.text-\\[14px\\]:not(.hidden)') as HTMLButtonElement
+  }
+
+  function visibleEnginePanel(): HTMLDivElement | null {
+    const panels = document.body.querySelectorAll('[data-testid="engine-picker-panel"]')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) {
+        return p as HTMLDivElement
+      }
+    }
+    return null
+  }
+
+  it('click trigger opens panel', () => {
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleEnginePanel()
+    expect(panel).not.toBeNull()
+  })
+
+  it('outside click closes panel', () => {
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleEnginePanel()
+    expect(panel).not.toBeNull()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('reopen after close re-appends without duplicates', () => {
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = visibleEnginePanel()
+    expect(panel).not.toBeNull()
+    // Only one engine-picker panel in the DOM (PopupHost guards re-append).
+    let count = 0
+    for (const p of document.body.querySelectorAll('.modal-enter')) {
+      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search models..."]')
+      const hasContext = !!(p as HTMLElement).dataset && (p as HTMLElement).dataset.testid === 'context-panel'
+      if (!hasModelSearch && !hasContext) count++
+    }
+    expect(count).toBe(1)
+    // Panel body is a single listContainer (no duplicate children stacked).
+    expect(panel!.children.length).toBe(1)
+  })
+})

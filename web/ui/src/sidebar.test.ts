@@ -139,4 +139,31 @@ describe('createSidebar', () => {
     const restoredSpan = row.querySelector('span') as HTMLElement
     expect(restoredSpan.textContent).toBe('Renamed')
   })
+
+  it('long-press theme toggle opens hljs popover and does not cycle theme', () => {
+    // consumeTrigger lets the click handler bail out when a long-press
+    // just fired, so the synthesized post-touch click doesn't cycle theme.
+    const { sidebar } = setup()
+    const themeToggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
+    expect(themeToggle).not.toBeNull()
+
+    const themeBefore = document.documentElement.dataset.theme
+    expect(themeBefore).toBe('dark')
+
+    vi.useFakeTimers()
+    themeToggle.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+    vi.advanceTimersByTime(600)
+    vi.useRealTimers()
+
+    // Popover opened.
+    const popover = document.getElementById('hljs-popover')
+    expect(popover).not.toBeNull()
+    expect(popover?.textContent).toContain('Highlight Theme')
+
+    // Now dispatch the click that the browser would synthesize after touch.
+    themeToggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    // Theme must NOT have cycled.
+    expect(document.documentElement.dataset.theme).toBe('dark')
+  })
 })

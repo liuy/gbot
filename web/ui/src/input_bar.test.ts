@@ -521,6 +521,17 @@ describe('createInputBar', () => {
     expect((items[0] as HTMLElement).textContent).toContain('apple')
   })
 
+  it('history picker does not open when there are no items', () => {
+    const ib = mount()
+    ib.onHistoryPicker(() => [])
+    const sendBtn = ib.root.querySelector(
+      'button[aria-label="Send"]',
+    ) as HTMLButtonElement
+    sendBtn.click()
+    const panel = document.body.querySelector('div[role="button"]')?.parentElement
+    expect(panel).toBeUndefined()
+  })
+
   it('textarea breaks long unbreakable strings (word-break)', () => {
     mount()
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
@@ -530,5 +541,69 @@ describe('createInputBar', () => {
     const ow = style.overflowWrap
     const ok = wb === 'break-all' || wb === 'break-word' || ow === 'anywhere' || ow === 'break-word'
     expect(ok).toBe(true)
+  })
+})
+
+describe('attach panel popover', () => {
+  function mount() {
+    const ib = createInputBar({ connected: true })
+    document.body.appendChild(ib.bubbles)
+    document.body.appendChild(ib.root)
+    return ib
+  }
+
+  function plusBtn(ib: ReturnType<typeof createInputBar>): HTMLButtonElement {
+    return ib.root.querySelector('button[aria-label="Attach file"]') as HTMLButtonElement
+  }
+
+  function visibleAttachPanel(): HTMLElement | null {
+    // attachPanel uses anchoredPopup recipe (no modal-enter). Distinguish
+    // from editPopup by looking for the camera/image/doc buttons.
+    for (const p of document.body.querySelectorAll('div')) {
+      if (p.classList.contains('hidden')) continue
+      const hasCamera = !!p.querySelector('button[aria-label="Camera"]')
+        || !!p.querySelector('button[aria-label="Image"]')
+        || !!p.querySelector('button[aria-label="File"]')
+      if (hasCamera) return p as HTMLElement
+    }
+    return null
+  }
+
+  it('click plus opens attach panel and positions it (anchored to card)', () => {
+    const ib = mount()
+    plusBtn(ib).click()
+    const panel = visibleAttachPanel()
+    expect(panel).not.toBeNull()
+    // positionAnchoredPopup sets inline left/bottom style as numeric px.
+    // An undefined onOpen would leave these unset.
+    expect(panel!.style.left).toMatch(/^\d+(\.\d+)?px$/)
+    expect(panel!.style.bottom).toMatch(/^\d+(\.\d+)?px$/)
+  })
+
+  it('outside click closes attach panel', () => {
+    const ib = mount()
+    plusBtn(ib).click()
+    const panel = visibleAttachPanel()
+    expect(panel).not.toBeNull()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('reopen after close re-appends without duplicates', () => {
+    const ib = mount()
+    plusBtn(ib).click()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    plusBtn(ib).click()
+    const panel = visibleAttachPanel()
+    expect(panel).not.toBeNull()
+    // Only one attach panel in body.
+    let count = 0
+    for (const p of document.body.querySelectorAll('div')) {
+      const hasAttach = !!p.querySelector('button[aria-label="Camera"]')
+        || !!p.querySelector('button[aria-label="Image"]')
+        || !!p.querySelector('button[aria-label="File"]')
+      if (hasAttach) count++
+    }
+    expect(count).toBe(1)
   })
 })

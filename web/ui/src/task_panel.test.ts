@@ -146,4 +146,26 @@ describe('taskPanel', () => {
     const popover = document.getElementById('task-popover') as HTMLElement
     expect(popover.textContent).not.toContain('Blocked by')
   })
+
+  it('open-close-open does not accumulate children', () => {
+    const panel = mount()
+    panel.setTasks([{ id: '1', subject: 'Pending task', status: 'pending' }])
+    ;(panel.root as HTMLButtonElement).click()
+
+    const popover = document.getElementById('task-popover') as HTMLElement
+    // First open: exactly 1 title row + 1 list = 2 direct children.
+    expect(popover.children.length).toBe(2)
+
+    // Outside click closes (popover is detached but instance persists).
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(document.getElementById('task-popover')).toBeNull()
+
+    // Reopen — onOpen must rebuild, not append.
+    ;(panel.root as HTMLButtonElement).click()
+    const reopened = document.getElementById('task-popover') as HTMLElement
+    expect(reopened.children.length).toBe(2)
+    // Title row should appear exactly once.
+    const titleRows = reopened.querySelectorAll('.px-3.pt-2\\.5')
+    expect(titleRows.length).toBe(1)
+  })
 })
