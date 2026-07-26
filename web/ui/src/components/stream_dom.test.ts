@@ -62,6 +62,12 @@ describe('appendUserBlock', () => {
     expect(div.textContent).toBe('line1\nline2\nline3')
     expect(div.className).toContain('whitespace-pre-wrap')
   })
+
+  it('has break-words to prevent overflow on long strings', () => {
+    const parent = newParent()
+    const div = appendUserBlock(parent, 'https://example.com/very/long/path/that/should/overflow')
+    expect(div.className).toContain('break-words')
+  })
 })
 
 describe('appendThinkingBlock', () => {
