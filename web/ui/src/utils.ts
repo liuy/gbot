@@ -1,5 +1,7 @@
 // Mirrors pkg/utils/duration.go:10. Input is SECONDS (caller converts ns).
 // <1s: "0.3s", 1-59s: "Xs", 60s-59m: "Xm Ys", >=1h: "Xh Ym Zs".
+import { popupPanel, anchoredPopup } from './styles/recipes'
+
 export function formatDuration(seconds: number): string {
   const s = Math.floor(seconds)
   if (s < 1) {
@@ -111,13 +113,9 @@ export function pluralize(noun: string, count: number): string {
 
 // ── Popup panels ────────────────────────────────────────────────
 
-const PANEL_BASE =
-  'bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm'
-
 export function createPopupPanel(opts?: { bottom?: boolean; className?: string }): HTMLDivElement {
   const panel = document.createElement('div')
-  const pos = opts?.bottom ? 'fixed left-1/2 -translate-x-1/2 bottom-20' : 'fixed left-1/2 -translate-x-1/2 top-12'
-  panel.className = PANEL_BASE + ' ' + pos + (opts?.className ? ' ' + opts.className : '')
+  panel.className = popupPanel({ position: opts?.bottom ? 'bottom' : 'top', class: opts?.className })
   return panel
 }
 
@@ -128,9 +126,7 @@ export function createPopupPanel(opts?: { bottom?: boolean; className?: string }
 // that conflict with anchor positioning.
 export function createAnchoredPopup(className?: string): HTMLDivElement {
   const panel = document.createElement('div')
-  panel.className =
-    'fixed hidden z-40 bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl' +
-    (className ? ' ' + className : '')
+  panel.className = anchoredPopup({ class: className })
   return panel
 }
 

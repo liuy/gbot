@@ -10,6 +10,7 @@ import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
 import {
   type ToolDomHandles,
   type ProgressDomHandles,
+  createUserTextSpan,
   appendTextBlock,
   appendThinkingBlock,
   appendUserBlock,
@@ -39,6 +40,23 @@ import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
 import { sendAttachmentViaWS, attachmentMeta, newAttachmentID } from './upload'
+import {
+  errorBox,
+  compactDividerContainer,
+  dividerHairline,
+  dividerLabel,
+  timeDividerContainer,
+  floatingButton,
+  contentArea,
+  shellOuter,
+  shellGrid,
+  shellCenter,
+  avatarBase,
+  avatarG,
+  avatarU,
+  disconnectBannerClass,
+  disconnectText,
+} from './styles/recipes'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -219,10 +237,7 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
   return result
 }
 
-const avatarSizeClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md'
-const avatarGExtra = 'text-[11px] font-bold avatar-g-bg'
 const avatarGStyle = 'background: linear-gradient(to bottom right, #00B4FF, #9D5CFF);color:#FFFFFF'
-const avatarUExtra = 'bg-gradient-to-br from-t2 to-t3'
 const userAvatarSVG =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a8 8 0 0116 0v1" /></svg>'
 
@@ -230,32 +245,30 @@ const userAvatarSVG =
 // avatar) is identical for both roles — only the avatar position and content
 // alignment differ. This ensures both sides stay vertically aligned without
 // having to synchronise margin/line-height changes across two code paths.
-const shellGridClass = 'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5'
-
 function buildShell(
   role: 'user' | 'assistant',
 ): { outer: HTMLElement; content: HTMLDivElement } {
   const outer = document.createElement('div')
-  outer.className = 'px-1.5'
+  outer.className = shellOuter()
   const grid = document.createElement('div')
-  grid.className = shellGridClass
+  grid.className = shellGrid()
 
   const leftCol = document.createElement('div')
   const centerCol = document.createElement('div')
-  centerCol.className = 'min-w-0'
+  centerCol.className = shellCenter()
   const rightCol = document.createElement('div')
 
   if (role === 'assistant') {
-    leftCol.className = `${avatarSizeClass} ${avatarGExtra}`
+    leftCol.className = `${avatarBase()} ${avatarG()}`
     leftCol.setAttribute('style', avatarGStyle)
     leftCol.textContent = 'G'
   } else {
-    rightCol.className = `${avatarSizeClass} ${avatarUExtra}`
+    rightCol.className = `${avatarBase()} ${avatarU()}`
     rightCol.innerHTML = userAvatarSVG
   }
 
   const content = document.createElement('div')
-  content.className = role === 'assistant' ? 'space-y-3' : 'ml-auto w-fit text-left text-t1 text-[15px] whitespace-pre-wrap break-words'
+  content.className = contentArea({ role })
 
   centerCol.appendChild(content)
   grid.appendChild(leftCol)
@@ -307,23 +320,16 @@ function renderCommittedMessageDOM(
           content.appendChild(chip)
           const rest = text.slice(docMatch[0].length)
           if (rest) {
-            const span = document.createElement('span')
-            span.className = 'whitespace-pre-wrap'
-            span.textContent = rest
-            content.appendChild(span)
+            content.appendChild(createUserTextSpan(rest))
           }
         } else {
-          const span = document.createElement('span')
-          span.className = 'whitespace-pre-wrap'
-          span.textContent = text
-          content.appendChild(span)
+          content.appendChild(createUserTextSpan(text))
         }
       }
     }
     if (m.error) {
       const err = document.createElement('div')
-      err.className =
-        'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
+      err.className = errorBox()
       err.textContent = m.error
       content.appendChild(err)
     }
@@ -369,8 +375,7 @@ function renderCommittedMessageDOM(
 
   if (m.error) {
     const err = document.createElement('div')
-    err.className =
-      'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
+    err.className = errorBox()
     err.textContent = m.error
     content.appendChild(err)
   }
@@ -384,14 +389,14 @@ function renderCommittedMessageDOM(
 // in chat.ts (border-hairline, text-t3).
 function buildCompactDivider(): HTMLElement {
   const container = document.createElement('div')
-  container.className = 'flex items-center gap-2 my-4 px-4'
+  container.className = compactDividerContainer()
   const left = document.createElement('div')
-  left.className = 'flex-1 border-t border-hairline'
+  left.className = dividerHairline()
   const label = document.createElement('span')
-  label.className = 'text-blue text-[10px] shrink-0'
+  label.className = dividerLabel()
   label.textContent = 'Compact'
   const right = document.createElement('div')
-  right.className = 'flex-1 border-t border-hairline'
+  right.className = dividerHairline()
   container.append(left, label, right)
   return container
 }
@@ -402,9 +407,9 @@ function buildCompactDivider(): HTMLElement {
 // time dividers from compact dividers by textContent ("Compact" vs not).
 function buildTimeDivider(label: string): HTMLElement {
   const container = document.createElement('div')
-  container.className = 'flex justify-center items-center my-4 px-4'
+  container.className = timeDividerContainer()
   const labelEl = document.createElement('span')
-  labelEl.className = 'text-blue text-[10px] shrink-0'
+  labelEl.className = dividerLabel()
   labelEl.textContent = label
   container.appendChild(labelEl)
   return container
@@ -467,14 +472,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   // ── Disconnect banner: slides in below header when WS is down.
   const disconnectBanner = document.createElement('div')
-  disconnectBanner.className =
-    'absolute top-11 inset-x-0 z-50 ' +
-    'card-bg border-b border-hairline ' +
-    'px-4 py-1.5 flex items-center justify-center ' +
-    'transition-all duration-300 overflow-hidden max-h-0 opacity-0'
+  disconnectBanner.className = disconnectBannerClass()
 
   const dcText = document.createElement('span')
-  dcText.className = 'text-[12px] text-red'
+  dcText.className = disconnectText()
   disconnectBanner.appendChild(dcText)
   mainContent.appendChild(disconnectBanner)
 
@@ -570,8 +571,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
   const scrollBtn = document.createElement('button')
-  scrollBtn.className =
-    'absolute bottom-24 left-1/2 -translate-x-1/2 z-50 flex h-11 w-11 items-center justify-center rounded-full bg-transparent opacity-0 pointer-events-none transition-all duration-200 text-blue'
+  scrollBtn.className = floatingButton({ position: 'center' })
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
@@ -864,15 +864,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       last.status = 'done'
       last.lastActivityAt = Date.now()
       const err = document.createElement('div')
-      err.className =
-        'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
+      err.className = errorBox()
       err.textContent = text
       last.contentDiv.appendChild(err)
     } else {
       const { outer, content } = buildShell('assistant')
       const err = document.createElement('div')
-      err.className =
-        'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red'
+      err.className = errorBox()
       err.textContent = text
       content.appendChild(err)
       const m: MessageState = {
@@ -1533,10 +1531,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           }
         } else {
           const { outer, content } = buildShell('user')
-          const span = document.createElement('span')
-          span.className = 'whitespace-pre-wrap'
-          span.textContent = text
-          content.appendChild(span)
+          content.appendChild(createUserTextSpan(text))
           const m: MessageState = {
             id: '',
             role: 'user',
@@ -1579,10 +1574,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // replay, but for live send we use the blob URL until page unload).
     const blocks: Block[] = []
     if (text) {
-      const span = document.createElement('span')
-      span.className = 'whitespace-pre-wrap'
-      span.textContent = text
-      content.appendChild(span)
+      content.appendChild(createUserTextSpan(text))
       blocks.push({ kind: 'text', id: '', text })
     }
     for (const ref of uploaded) {

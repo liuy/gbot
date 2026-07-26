@@ -1,5 +1,6 @@
 import type { TaskWireItem } from './types'
 import { createPopupPanel, createOutsideClick } from './utils'
+import { floatingButton } from './styles/recipes'
 
 export interface TaskPanelHandles {
   root: HTMLElement
@@ -13,8 +14,7 @@ export function createTaskPanel(): TaskPanelHandles {
   const root = document.createElement('button')
   root.type = 'button'
   // Match scrollBtn style exactly: transparent bg, same size/positioning.
-  root.className =
-    'absolute bottom-24 right-5 z-50 flex h-11 w-11 items-center justify-center rounded-full bg-transparent opacity-0 pointer-events-none transition-all duration-200 text-blue'
+  root.className = floatingButton({ position: 'right' })
   root.style.display = 'none'
 
   root.innerHTML =

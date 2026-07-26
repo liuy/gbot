@@ -9,12 +9,35 @@
 import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
 import hljs from 'highlight.js'
+import {
+  toolHeaderBtn,
+  toolPrefix,
+  toolHeaderContent,
+  runningDot,
+  chevron,
+  thinkingGlyph,
+  thinkingLabel,
+  textBlock,
+  userEchoBlock,
+  userTextSpan,
+  thinkingText,
+  toolName,
+  toolSummary,
+  toolDuration,
+  toolBody,
+  toolChildren,
+  groupSummary,
+  groupDuration,
+  groupToolsContainer,
+  progressBar,
+} from '../styles/recipes'
 
-const headerBtnClass = 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left'
-const prefixClass = 'shrink-0 w-6'
-const runningDotClass = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat'
-const chevronClass = 'inline-block align-middle text-t3 transition-transform'
-const chevronExpandedClass = 'inline-block align-middle text-t3 transition-transform rotate-90'
+export function createUserTextSpan(text: string): HTMLSpanElement {
+  const span = document.createElement('span')
+  span.className = userTextSpan()
+  span.textContent = text
+  return span
+}
 
 interface ToolHeaderHandles {
   header: HTMLSpanElement
@@ -27,26 +50,26 @@ function createToolHeader(): ToolHeaderHandles {
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = headerBtnClass
+  header.className = toolHeaderBtn()
 
   const prefix = document.createElement('span')
-  prefix.className = prefixClass
+  prefix.className = toolPrefix()
 
   const dot = document.createElement('span')
-  dot.className = runningDotClass
+  dot.className = runningDot({ color: 'white' })
   dot.textContent = '●'
   prefix.appendChild(dot)
 
-  const chevron = document.createElement('span')
-  chevron.innerHTML = `<svg class="${chevronClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
-  prefix.appendChild(chevron)
+  const chevronEl = document.createElement('span')
+  chevronEl.innerHTML = `<svg class="${chevron({ expanded: false })}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
+  prefix.appendChild(chevronEl)
   header.appendChild(prefix)
 
   const content = document.createElement('span')
-  content.className = 'flex-1 min-w-0'
+  content.className = toolHeaderContent()
   header.appendChild(content)
 
-  return { header, dot, chevron, content }
+  return { header, dot, chevron: chevronEl, content }
 }
 
 function shouldAutoExpand(toolName: string): boolean {
@@ -127,15 +150,18 @@ function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = document.createElement('div')
-  div.className = 'md-body md-text text-t1 text-[15px] break-words'
+  div.className = textBlock()
   insertBefore(parent, div, before ?? null)
   return div
 }
 
 export function appendUserBlock(parent: HTMLElement, text: string, before?: Node | null): HTMLDivElement {
+  // Streaming echo visual (small italic indented) lives on the div; the wrap
+  // classes (whitespace-pre-wrap break-words) live on the inner span via
+  // createUserTextSpan so all user-text paths share the same source of truth.
   const div = document.createElement('div')
-  div.className = 'text-[13px] text-t2 italic ml-2 my-1 whitespace-pre-wrap break-words'
-  div.textContent = text
+  div.className = userEchoBlock()
+  div.appendChild(createUserTextSpan(text))
   insertBefore(parent, div, before ?? null)
   return div
 }
@@ -151,23 +177,23 @@ export function appendThinkingBlock(
   const header = document.createElement('span')
   header.setAttribute('role', 'button')
   header.tabIndex = 0
-  header.className = headerBtnClass
+  header.className = toolHeaderBtn()
 
   const prefix = document.createElement('span')
-  prefix.className = prefixClass
+  prefix.className = toolPrefix()
 
   const glyph = document.createElement('span')
-  glyph.className = 'text-amber text-sm inline-block w-3 text-center heartbeat'
+  glyph.className = thinkingGlyph()
   glyph.textContent = '✦'
   prefix.appendChild(glyph)
 
-  const chevron = document.createElement('span')
-  chevron.innerHTML = `<svg class="${chevronExpandedClass}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
-  prefix.appendChild(chevron)
+  const chevronEl = document.createElement('span')
+  chevronEl.innerHTML = `<svg class="${chevron({ expanded: true })}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
+  prefix.appendChild(chevronEl)
   header.appendChild(prefix)
 
   const labelEl = document.createElement('span')
-  labelEl.className = 'text-amber text-sm'
+  labelEl.className = thinkingLabel()
   labelEl.textContent = `Thinking (${formatDurationNs(0)})`
   header.appendChild(labelEl)
 
@@ -176,7 +202,7 @@ export function appendThinkingBlock(
   // <p> always mounted (CSS hidden when collapsed) so the sink stays live
   // for streaming writes even when collapsed.
   const p = document.createElement('p')
-  p.className = 'ml-6 text-t2 text-sm italic whitespace-pre-wrap'
+  p.className = thinkingText()
   wrap.appendChild(p)
 
   insertBefore(parent, wrap, before ?? null)
@@ -184,8 +210,8 @@ export function appendThinkingBlock(
   // Auto-expand on creation (matches Thinking.tsx active → expanded).
   const toggleThinking = () => {
     const collapsed = p.classList.toggle('hidden')
-    const svg = chevron.querySelector('svg')
-    if (svg) svg.setAttribute('class', collapsed ? chevronClass : chevronExpandedClass)
+    const svg = chevronEl.querySelector('svg')
+    if (svg) svg.setAttribute('class', chevron({ expanded: !collapsed }))
   }
   header.addEventListener('click', toggleThinking)
   p.addEventListener('click', toggleThinking)
@@ -208,47 +234,48 @@ export function finishThinking(
   durationNs: number,
 ): void {
   labelEl.textContent = `Thought for ${formatDurationNs(durationNs)}`
-  // Stop the heartbeat animation on the glyph.
+  // Only the glyph carries the heartbeat in a thinking block; the dot is
+  // a separate concern handled by finishTool.
   const glyph = labelEl.parentElement?.querySelector('.heartbeat')
   if (glyph) glyph.classList.remove('heartbeat')
   // Auto-collapse on finish (matches Thinking.tsx active→inactive → setExpanded(false)).
   p.classList.add('hidden')
   // Sync chevron: collapsed = no rotation, expanded = rotate-90.
-  const chevron = labelEl.parentElement?.querySelector('svg')
-  if (chevron) chevron.setAttribute('class', chevronClass)
+  const chevronNode = labelEl.parentElement?.querySelector('svg')
+  if (chevronNode) chevronNode.setAttribute('class', chevron({ expanded: false }))
 }
 
 function createGroupContainer(): HTMLElement {
   const group = document.createElement('div')
   group.dataset.toolGroup = '1'
 
-  const { header, dot, chevron, content } = createToolHeader()
+  const { header, dot, chevron: chevronEl, content } = createToolHeader()
   header.dataset.groupHeader = '1'
   dot.dataset.groupDot = '1'
-  chevron.dataset.groupChevron = '1'
+  chevronEl.dataset.groupChevron = '1'
 
   const summary = document.createElement('span')
   summary.dataset.groupSummary = '1'
-  summary.className = 'font-mono text-sm text-blue align-middle'
+  summary.className = groupSummary()
   content.appendChild(summary)
 
   const duration = document.createElement('span')
   duration.dataset.groupDuration = '1'
-  duration.className = 'font-mono text-xs align-middle text-t3'
+  duration.className = groupDuration()
   content.appendChild(duration)
 
   group.appendChild(header)
 
   const toolsContainer = document.createElement('div')
   toolsContainer.dataset.groupTools = '1'
-  toolsContainer.className = 'ml-6 hidden'
+  toolsContainer.className = groupToolsContainer()
   group.appendChild(toolsContainer)
 
   header.addEventListener('click', () => {
     const visible = !toolsContainer.classList.contains('hidden')
     toolsContainer.classList.toggle('hidden', visible)
-    const svg = chevron.querySelector('svg')
-    if (svg) svg.setAttribute('class', visible ? chevronClass : chevronExpandedClass)
+    const svg = chevronEl.querySelector('svg')
+    if (svg) svg.setAttribute('class', chevron({ expanded: !visible }))
   })
 
   return group
@@ -303,27 +330,27 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   const { header, dot, content } = createToolHeader()
 
   const nameEl = document.createElement('span')
-  nameEl.className = 'font-mono text-sm text-blue align-middle'
+  nameEl.className = toolName()
   nameEl.textContent = name
   content.appendChild(nameEl)
 
   const summaryEl = document.createElement('span')
-  summaryEl.className = 'text-sm text-t2 font-light break-all align-middle'
+  summaryEl.className = toolSummary()
   content.appendChild(summaryEl)
 
   const durEl = document.createElement('span')
-  durEl.className = 'font-mono text-xs align-middle text-blue'
+  durEl.className = toolDuration({ state: 'running' })
   durEl.textContent = ' 0s'
   content.appendChild(durEl)
 
   root.appendChild(header)
 
   const body = document.createElement('div')
-  body.className = 'ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto hidden'
+  body.className = toolBody()
   root.appendChild(body)
 
   const childrenContainer = document.createElement('div')
-  childrenContainer.className = 'ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden'
+  childrenContainer.className = toolChildren()
   childrenContainer.dataset.toolChildren = '1'
   root.appendChild(childrenContainer)
 
@@ -459,7 +486,7 @@ export function finishTool(
   handles.root.dataset.toolTimingNs = String(durationNs)
   const dur = formatDurationNs(durationNs)
   handles.durEl.textContent = ' ' + (isError ? `FAIL · ${dur}` : dur)
-  handles.durEl.className = 'font-mono text-xs align-middle ' + (isError ? 'text-red' : 'text-t3')
+  handles.durEl.className = toolDuration({ state: isError ? 'error' : 'done' })
   if (output) {
     setToolOutput(handles, output, skipHighlight)
     if (shouldAutoExpand(handles.root.dataset.toolName ?? '')) {
@@ -481,30 +508,30 @@ export function toggleToolExpanded(handles: ToolDomHandles): void {
     handles.childrenContainer.classList.remove('hidden')
   }
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class', collapsed ? chevronClass : chevronExpandedClass)
+  if (svg) svg.setAttribute('class', chevron({ expanded: !collapsed }))
 }
 
 export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
   handles.childrenContainer.classList.remove('hidden')
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class', chevronExpandedClass)
+  if (svg) svg.setAttribute('class', chevron({ expanded: true }))
 }
 
 export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
   handles.childrenContainer.replaceChildren()
   handles.childrenContainer.classList.add('hidden')
   const svg = handles.header.querySelector('svg')
-  if (svg) svg.setAttribute('class', chevronClass)
+  if (svg) svg.setAttribute('class', chevron({ expanded: false }))
 }
 
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {
   const root = document.createElement('div')
-  root.className = 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3'
+  root.className = progressBar()
 
   const dotWrap = document.createElement('span')
-  dotWrap.className = prefixClass
+  dotWrap.className = toolPrefix()
   const dotEl = document.createElement('span')
-  dotEl.className = 'text-[10px] leading-none align-middle inline-block w-3 text-center text-blue heartbeat'
+  dotEl.className = runningDot({ color: 'blue' })
   dotEl.textContent = '●'
   dotWrap.appendChild(dotEl)
   root.appendChild(dotWrap)

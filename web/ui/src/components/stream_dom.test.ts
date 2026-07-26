@@ -60,13 +60,18 @@ describe('appendUserBlock', () => {
     const parent = newParent()
     const div = appendUserBlock(parent, 'line1\nline2\nline3')
     expect(div.textContent).toBe('line1\nline2\nline3')
-    expect(div.className).toContain('whitespace-pre-wrap')
+    // Wrap classes live on the inner span (createUserTextSpan), not the div.
+    const span = div.querySelector('span')
+    expect(span).not.toBeNull()
+    expect(span!.className).toContain('whitespace-pre-wrap')
   })
 
   it('has break-words to prevent overflow on long strings', () => {
     const parent = newParent()
     const div = appendUserBlock(parent, 'https://example.com/very/long/path/that/should/overflow')
-    expect(div.className).toContain('break-words')
+    const span = div.querySelector('span')
+    expect(span).not.toBeNull()
+    expect(span!.className).toContain('break-words')
   })
 })
 
@@ -105,6 +110,13 @@ describe('appendThinkingBlock', () => {
     expect(dot).not.toBeNull()
     expect(dot?.className).toContain('w-3')
     expect(dot?.textContent).toBe('✦')
+  })
+
+  it('p has break-words to prevent overflow on long unbroken thinking text', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    expect(p.className).toContain('whitespace-pre-wrap')
+    expect(p.className).toContain('break-words')
   })
 })
 
