@@ -33,18 +33,120 @@ describe('createInputBar attachments', () => {
     expect(plusBtn.disabled).toBe(true)
   })
 
-  it('PlusButton_ClickTriggersFileInput', () => {
+  it('PlusButton_ClickOpensAttachPopup', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const plusBtn = handles.root.querySelector<HTMLButtonElement>(
       'button[aria-label="Attach file"]',
     )!
-    const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    )!
-    const clickSpy = vi.spyOn(fileInput, 'click')
+    // Popup is lazily appended to document.body on first open.
+    expect(document.body.querySelector('button[aria-label="Camera"]')).toBeNull()
     plusBtn.click()
-    expect(clickSpy).toHaveBeenCalledTimes(1)
+    // Three icon buttons are now visible inside the popup.
+    expect(document.body.querySelector('button[aria-label="Camera"]')).not.toBeNull()
+    expect(document.body.querySelector('button[aria-label="Image"]')).not.toBeNull()
+    expect(document.body.querySelector('button[aria-label="File"]')).not.toBeNull()
+  })
+
+  it('PlusButton_ClickAgainClosesAttachPopup', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const plusBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach file"]',
+    )!
+    plusBtn.click()
+    // Camera button's parentElement is the attach panel itself.
+    const panel = document.body.querySelector('button[aria-label="Camera"]')!
+      .parentElement as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    plusBtn.click()
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('PopupIcons_ClickTriggersCorrectInput', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const plusBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach file"]',
+    )!
+    plusBtn.click()
+
+    const cameraInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][capture]',
+    )!
+    const imageInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][multiple]',
+    )!
+    const docInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept]:not([accept*="image/*"])',
+    )!
+
+    const cameraSpy = vi.spyOn(cameraInput, 'click')
+    const imageSpy = vi.spyOn(imageInput, 'click')
+    const docSpy = vi.spyOn(docInput, 'click')
+
+    document.body.querySelector<HTMLButtonElement>('button[aria-label="Camera"]')!.click()
+    expect(cameraSpy).toHaveBeenCalledTimes(1)
+    // Popup closes after click, so we need to reopen for next icon.
+    plusBtn.click()
+    document.body.querySelector<HTMLButtonElement>('button[aria-label="Image"]')!.click()
+    expect(imageSpy).toHaveBeenCalledTimes(1)
+    plusBtn.click()
+    document.body.querySelector<HTMLButtonElement>('button[aria-label="File"]')!.click()
+    expect(docSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('AttachPopup_ClosesOnOutsideClick', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const plusBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach file"]',
+    )!
+    plusBtn.click()
+    const panel = document.body.querySelector('button[aria-label="Camera"]')!
+      .parentElement as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    // Click on something outside both + button and panel.
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('AttachPopup_ClosesOnSetUploading', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const plusBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach file"]',
+    )!
+    plusBtn.click()
+    const panel = document.body.querySelector('button[aria-label="Camera"]')!
+      .parentElement as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    handles.setUploading(true)
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('AttachPopup_ClosesOnSetConnectedFalse', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const plusBtn = handles.root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach file"]',
+    )!
+    plusBtn.click()
+    const panel = document.body.querySelector('button[aria-label="Camera"]')!
+      .parentElement as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    handles.setConnected(false)
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('CameraInput_LacksMultipleAttribute', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    // cameraInput is the only one with capture — distinguishes it from imageInput.
+    const cameraInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][capture]',
+    )!
+    expect(cameraInput.multiple).toBe(false)
   })
 
   it('PlusButton_DisabledClickDoesNotOpenFilePicker', () => {
@@ -55,19 +157,29 @@ describe('createInputBar attachments', () => {
     const plusBtn = handles.root.querySelector<HTMLButtonElement>(
       'button[aria-label="Attach file"]',
     )!
-    const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+    const cameraInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][capture]',
     )!
-    const clickSpy = vi.spyOn(fileInput, 'click')
+    const imageInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][multiple]',
+    )!
+    const docInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept]:not([accept*="image/*"])',
+    )!
+    const cameraSpy = vi.spyOn(cameraInput, 'click')
+    const imageSpy = vi.spyOn(imageInput, 'click')
+    const docSpy = vi.spyOn(docInput, 'click')
     plusBtn.click()
-    expect(clickSpy).not.toHaveBeenCalled()
+    expect(cameraSpy).not.toHaveBeenCalled()
+    expect(imageSpy).not.toHaveBeenCalled()
+    expect(docSpy).not.toHaveBeenCalled()
   })
 
   it('ImageAttachment_RendersThumbnailChip', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     // Synthesize a File via the file input's files property.
     const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })
@@ -84,7 +196,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept]:not([accept*="image/*"])',
     )!
     const blob = new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' })
     const file = new File([blob], 'report.pdf', { type: 'application/pdf' })
@@ -98,7 +210,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -118,7 +230,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -133,18 +245,27 @@ describe('createInputBar attachments', () => {
   it('AcceptAttribute_MatchesFilereadConvertibleExtensions', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
-    const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+    const docInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept]:not([accept*="image/*"])',
     )!
-    // Must include all of fileread.convertibleExtensions + image/*.
-    const accept = fileInput.accept
-    for (const ext of ['.pdf', '.docx', '.pptx', '.xlsx', '.epub', '.ipynb', '.csv', '.zip']) {
-      expect(accept).toContain(ext)
+    const imageInput = handles.root.querySelector<HTMLInputElement>(
+      'input[accept="image/*"][multiple]',
+    )!
+    // docInput must include ALL of fileread.convertibleExtensions (11 entries).
+    const docAccept = docInput.accept
+    for (const ext of ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.epub', '.ipynb', '.csv', '.zip']) {
+      expect(docAccept).toContain(ext)
     }
-    expect(accept).toContain('image/*')
+    // Plus plain-text formats fileread handles as text.
+    for (const ext of ['.txt', '.md', '.json', '.xml', '.html']) {
+      expect(docAccept).toContain(ext)
+    }
+    // docInput intentionally excludes image/* — images go through imageInput.
+    expect(docAccept).not.toContain('image/*')
+    expect(imageInput.accept).toContain('image/*')
     // RTF/ODT must NOT be present — fileread does not convert them.
-    expect(accept).not.toContain('.rtf')
-    expect(accept).not.toContain('.odt')
+    expect(docAccept).not.toContain('.rtf')
+    expect(docAccept).not.toContain('.odt')
   })
 
   it('SetUploading_DisablesTextareaAndPlusAndSend', () => {
@@ -179,7 +300,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -194,7 +315,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -211,7 +332,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -229,7 +350,7 @@ describe('createInputBar attachments', () => {
     let calls = 0
     handles.onAttachmentsChange(() => { calls++ })
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -242,7 +363,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -261,7 +382,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -295,7 +416,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -322,7 +443,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -355,7 +476,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob1 = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const f1 = new File([blob1], 'a.png', { type: 'image/png' })
@@ -380,7 +501,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })
@@ -397,7 +518,7 @@ describe('createInputBar attachments', () => {
     const handles = createInputBar({ connected: true })
     document.body.appendChild(handles.root)
     const fileInput = handles.root.querySelector<HTMLInputElement>(
-      'input[type="file"]',
+      'input[accept="image/*"][multiple]',
     )!
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
     const file = new File([blob], 'photo.png', { type: 'image/png' })

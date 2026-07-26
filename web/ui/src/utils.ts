@@ -121,6 +121,29 @@ export function createPopupPanel(opts?: { bottom?: boolean; className?: string }
   return panel
 }
 
+// createAnchoredPopup creates a popup panel anchored to a trigger element.
+// Position is set by positionAnchoredPopup at open time (left-aligned to
+// the trigger's left edge, `gap` pixels above). Built separately from
+// createPopupPanel to avoid the centering transform and animation keyframes
+// that conflict with anchor positioning.
+export function createAnchoredPopup(className?: string): HTMLDivElement {
+  const panel = document.createElement('div')
+  panel.className =
+    'fixed hidden z-40 bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl' +
+    (className ? ' ' + className : '')
+  return panel
+}
+
+// positionAnchoredPopup positions a popup above a trigger element.
+// Call AFTER removing the `hidden` class so the popup appears already
+// anchored (avoids a 1-frame flash of the unpositioned popup jumping
+// to its final location).
+export function positionAnchoredPopup(popup: HTMLElement, trigger: HTMLElement, gap = 6) {
+  const rect = trigger.getBoundingClientRect()
+  popup.style.left = `${rect.left}px`
+  popup.style.bottom = `${window.innerHeight - rect.top + gap}px`
+}
+
 // ── Outside-click dismiss ───────────────────────────────────────
 export function createOutsideClick(
   trigger: HTMLElement,

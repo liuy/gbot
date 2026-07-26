@@ -1,4 +1,4 @@
-import { createPopupPanel, createOutsideClick } from './utils'
+import { createPopupPanel, createOutsideClick, createAnchoredPopup, positionAnchoredPopup } from './utils'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -85,21 +85,34 @@ export function createInputBar(initial: {
   const row = document.createElement('div')
   row.className = 'flex items-end gap-2 px-4 py-2.5'
 
-  // Hidden file input — accept exactly matches pkg/tool/fileread.convertibleExtensions
-  // (.pdf .doc .docx .ppt .pptx .xls .xlsx .epub .ipynb .csv .zip) plus common
-  // text formats fileread handles as plain text plus all image/*. Anything
-  // outside this set would silently degrade to a garbage text block on the
-  // backend, so we don't offer it.
-  const fileInput = document.createElement('input')
-  fileInput.type = 'file'
-  fileInput.multiple = true
-  fileInput.accept =
-    'image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.epub,.csv,.zip,.ipynb,.txt,.md,.json,.xml,.html'
-  fileInput.style.display = 'none'
-  fileInput.addEventListener('change', () => {
-    for (const f of Array.from(fileInput.files ?? [])) addAttachment(f)
-    fileInput.value = ''  // allow re-picking the same file
-  })
+  // Three specialized inputs surfaced through the attach popup. cameraInput
+  // uses setAttribute for `capture` because the IDL property is non-standard
+  // and not in TS's lib.dom.d.ts.
+  // makeFileInput factory: shared change handler resets value='' after
+  // dispatching so the same file can be re-picked.
+  const makeFileInput = (accept: string, opts: { capture?: string; multiple?: boolean } = {}) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = accept
+    if (opts.capture) input.setAttribute('capture', opts.capture)
+    if (opts.multiple) input.multiple = true
+    input.style.display = 'none'
+    input.addEventListener('change', () => {
+      for (const f of Array.from(input.files ?? [])) addAttachment(f)
+      input.value = ''
+    })
+    return input
+  }
+
+  const cameraInput = makeFileInput('image/*', { capture: 'environment' })
+  const imageInput = makeFileInput('image/*', { multiple: true })
+  // Extension-only accept: works on desktop browsers; Android WebView ignores
+  // extensions and MIME types alike for the doc set, so it falls back to
+  // "any file" — acceptable since we still validate on the backend.
+  const docInput = makeFileInput(
+    '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.epub,.csv,.zip,.ipynb,.txt,.md,.json,.xml,.html',
+    { multiple: true },
+  )
 
   // Textarea wrap.
   const taWrap = document.createElement('div')
@@ -116,9 +129,8 @@ export function createInputBar(initial: {
   taWrap.appendChild(textarea)
   taWrap.addEventListener('click', () => textarea.focus())
 
-  // + button — opens the file dialog. Initial state: enabled when connected,
-  // disabled when not. (Legacy gating on uploadToken is gone — uploads no
-  // longer require a bearer token because they ride the same WS connection.)
+  // + button — toggles the attach popup panel (camera/image/doc). Initial
+  // state: enabled when connected, disabled when not.
   const plusBtn = document.createElement('button')
   plusBtn.type = 'button'
   plusBtn.disabled = !connected
@@ -127,8 +139,74 @@ export function createInputBar(initial: {
     'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
   plusBtn.innerHTML =
     '<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>'
+
+  // Attach popup — three icon buttons (camera/image/doc), each opening its
+  // own file picker. Anchored above the + button via positionAnchoredPopup.
+  let attachPanelOpen = false
+  const attachPanel = createAnchoredPopup('flex items-center gap-3 px-4 py-3')
+  const attachIconClass =
+    'flex items-center justify-center w-9 h-9 rounded-lg text-blue hover:text-white hover:bg-blue/10 transition-colors'
+  const attachSvgAttrs =
+    'class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
+
+  const cameraBtn = document.createElement('button')
+  cameraBtn.type = 'button'
+  cameraBtn.setAttribute('aria-label', 'Camera')
+  cameraBtn.className = attachIconClass
+  cameraBtn.innerHTML =
+    `<svg ${attachSvgAttrs}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`
+  cameraBtn.addEventListener('click', () => {
+    if (plusBtn.disabled) return
+    closeAttachPanel()
+    cameraInput.click()
+  })
+
+  const imageBtn = document.createElement('button')
+  imageBtn.type = 'button'
+  imageBtn.setAttribute('aria-label', 'Image')
+  imageBtn.className = attachIconClass
+  imageBtn.innerHTML =
+    `<svg ${attachSvgAttrs}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`
+  imageBtn.addEventListener('click', () => {
+    if (plusBtn.disabled) return
+    closeAttachPanel()
+    imageInput.click()
+  })
+
+  const docBtn = document.createElement('button')
+  docBtn.type = 'button'
+  docBtn.setAttribute('aria-label', 'File')
+  docBtn.className = attachIconClass
+  docBtn.innerHTML =
+    `<svg ${attachSvgAttrs}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
+  docBtn.addEventListener('click', () => {
+    if (plusBtn.disabled) return
+    closeAttachPanel()
+    docInput.click()
+  })
+
+  attachPanel.appendChild(cameraBtn)
+  attachPanel.appendChild(imageBtn)
+  attachPanel.appendChild(docBtn)
+
+  const closeAttachPanel = () => {
+    attachPanel.classList.add('hidden')
+    attachPanelOpen = false
+    attachOutside.remove()
+  }
+  const attachOutside = createOutsideClick(plusBtn, attachPanel, closeAttachPanel)
+  const openAttachPanel = () => {
+    if (!attachPanel.parentElement) document.body.appendChild(attachPanel)
+    attachPanel.classList.remove('hidden')
+    positionAnchoredPopup(attachPanel, card)
+    attachPanelOpen = true
+    attachOutside.add()
+  }
+
   plusBtn.addEventListener('click', () => {
-    if (!plusBtn.disabled) fileInput.click()
+    if (plusBtn.disabled) return
+    if (attachPanelOpen) closeAttachPanel()
+    else openAttachPanel()
   })
 
   // Send/Stop button — toggles between send and stop based on streaming state.
@@ -150,7 +228,9 @@ export function createInputBar(initial: {
   card.appendChild(row)
   form.appendChild(card)
   root.appendChild(form)
-  root.appendChild(fileInput)
+  root.appendChild(cameraInput)
+  root.appendChild(imageInput)
+  root.appendChild(docInput)
 
   // History picker panel — shown when user taps send on empty input.
   let historyPickerCb: (() => string[]) | null = null
@@ -539,6 +619,7 @@ export function createInputBar(initial: {
       uploading = u
       textarea.disabled = u || !connected
       plusBtn.disabled = u || !connected
+      if (u && attachPanelOpen) closeAttachPanel()
       recomputeCanSend()
     },
     setQueuedMsgs: (q) => {
@@ -631,6 +712,7 @@ export function createInputBar(initial: {
       connected = c
       textarea.disabled = !c
       plusBtn.disabled = !c
+      if (!c && attachPanelOpen) closeAttachPanel()
       recomputeCanSend()
     },
   }

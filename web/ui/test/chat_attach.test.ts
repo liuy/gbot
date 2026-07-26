@@ -83,8 +83,14 @@ function mount() {
   return chat
 }
 
-function attachFile(file: File) {
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!
+function attachFile(file: File, kind: 'image' | 'document' = 'image') {
+  // Three file inputs exist (camera/image/doc). Select by kind to avoid
+  // ambiguity from DOM-order-dependent querySelector('input[type="file"]').
+  const selector =
+    kind === 'image'
+      ? 'input[accept="image/*"][multiple]' // imageInput (multiple, no capture)
+      : 'input[accept]:not([accept*="image/*"])' // docInput (no image/*)
+  const fileInput = document.querySelector<HTMLInputElement>(selector)!
   Object.defineProperty(fileInput, 'files', { value: [file], configurable: true, writable: true })
   fileInput.dispatchEvent(new Event('change'))
 }
