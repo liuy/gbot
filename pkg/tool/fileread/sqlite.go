@@ -29,9 +29,6 @@ const (
 	sqliteDefaultSchemaSample       = 5
 	sqliteMaxQueryLimit             = 500
 	sqliteMaxRawQueryRows           = 1000
-	sqliteMaxRenderWidth            = 120
-	sqliteMaxColumnWidth            = 40
-	sqliteMinColumnWidth            = 1
 	sqliteRowCountProbeCap    int64 = 50000
 )
 
@@ -548,7 +545,7 @@ func sqliteGetSchema(db *sql.DB, table string, sampleLimit int) (string, error) 
 		return createSQL, nil // schema alone if sample fails
 	}
 
-	parts := []string{createSQL, "", "Sample rows:", buildAsciiTable(columns, rows)}
+	parts := []string{createSQL, "", "Sample rows:", buildSqliteOutput(columns, rows)}
 	return strings.Join(parts, "\n"), nil
 }
 
@@ -710,7 +707,7 @@ func sqliteQueryRows(db *sql.DB, sel *sqliteSelector) (string, error) {
 		return "", err
 	}
 
-	table := buildAsciiTable(columns, rows)
+	table := buildSqliteOutput(columns, rows)
 	shown := sel.offset + len(rows)
 	if shown < totalCount {
 		remaining := totalCount - shown
@@ -789,6 +786,43 @@ func sqliteSelectRows(db *sql.DB, table string, limit, offset int, where, order 
 	return colNames, resultRows, totalCount, nil
 }
 
+// sqlHasExplicitLimit reports whether the SQL text contains a LIMIT clause
+// with a numeric bound. Used to decide whether the sqliteMaxRawQueryRows cap
+// should be bypassed (user explicitly opted into more rows).
+//
+// Strips single-quoted string literals before scanning so the word "limit"
+// inside a string doesn't trigger a false positive. Requires LIMIT to be
+// followed by an integer to avoid matching column names like `SELECT limit FROM`.
+var sqliteLimitPattern = regexp.MustCompile(`(?i)\blimit\b\s+\d+`)
+
+func sqlHasExplicitLimit(sqlText string) bool {
+	// Remove single-quoted strings so 'limit' inside literals doesn't match.
+	stripped := stripSingleQuotedStrings(sqlText)
+	return sqliteLimitPattern.MatchString(stripped)
+}
+
+// stripSingleQuotedStrings removes '...' sequences from SQL, replacing them
+// with empty strings. Handles SQL-style '' escapes inside quoted strings.
+func stripSingleQuotedStrings(s string) string {
+	var b strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' {
+			if inQuote && i+1 < len(s) && s[i+1] == '\'' {
+				// Escaped quote — skip both
+				i++
+				continue
+			}
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote {
+			b.WriteByte(ch)
+		}
+	}
+	return b.String()
+}
 // sqliteExecuteRawQuery runs a raw SQL query, capping rows.
 // Rejects bound parameters (?) — values must be inlined because the SQL comes
 // from a single query string with no separate bind arguments. omp: paramsCount > 0.
@@ -807,10 +841,14 @@ func sqliteExecuteRawQuery(db *sql.DB, sqlText string) (string, error) {
 		return "", err
 	}
 
+	// Respect user-supplied LIMIT — they're explicitly opting into more rows.
+	// Otherwise cap at sqliteMaxRawQueryRows as a context-window guard.
+	capRows := !sqlHasExplicitLimit(sqlText)
+
 	var rows []map[string]any
 	truncated := false
 	for qRows.Next() {
-		if len(rows) >= sqliteMaxRawQueryRows {
+		if capRows && len(rows) >= sqliteMaxRawQueryRows {
 			truncated = true
 			break
 		}
@@ -829,7 +867,7 @@ func sqliteExecuteRawQuery(db *sql.DB, sqlText string) (string, error) {
 		rows = append(rows, row)
 	}
 
-	result := buildAsciiTable(colNames, rows)
+	result := buildSqliteOutput(colNames, rows)
 	if truncated {
 		result += fmt.Sprintf("\n[result truncated at %d rows]", sqliteMaxRawQueryRows)
 	}
@@ -956,8 +994,10 @@ func stringifySqliteValue(v any) string {
 }
 
 // sanitizeCell escapes tabs and newlines for table rendering.
+// Newlines become literal \n so a row stays on one line; tabs become spaces
+// so they don't break TSV-style parsing.
 func sanitizeCell(s string) string {
-	s = strings.ReplaceAll(s, "\t", "    ")
+	s = strings.ReplaceAll(s, "\t", " ")
 	s = strings.ReplaceAll(s, "\r\n", "\\n")
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	return s
@@ -968,26 +1008,6 @@ func stringWidth(s string) int {
 	return len([]rune(s))
 }
 
-func truncateToWidth(s string, max int) string {
-	if stringWidth(s) <= max {
-		return s
-	}
-	runes := []rune(s)
-	if max <= 0 {
-		return ""
-	}
-	return string(runes[:max])
-}
-
-func padCell(value string, width int) string {
-	truncated := truncateToWidth(sanitizeCell(value), maxInt(width, sqliteMinColumnWidth))
-	vw := stringWidth(truncated)
-	if vw >= width {
-		return truncated
-	}
-	return truncated + strings.Repeat(" ", width-vw)
-}
-
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -995,8 +1015,21 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// buildAsciiTable renders columns + rows as an aligned ASCII table.
-func buildAsciiTable(columns []string, rows []map[string]any) string {
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// buildSqliteOutput renders query results in a LLM-friendly format that mirrors
+// sqlite3 CLI defaults:
+//   - Single column: raw values, one per line (no padding, no truncation).
+//   - Multiple columns: header row + pipe-separated values per row.
+//
+// This format avoids the noise of padded ASCII tables (| --- |) and never
+// truncates long values like CREATE statements, which LLMs need verbatim.
+func buildSqliteOutput(columns []string, rows []map[string]any) string {
 	if len(columns) == 0 {
 		if len(rows) == 0 {
 			return "(no rows)"
@@ -1004,82 +1037,34 @@ func buildAsciiTable(columns []string, rows []map[string]any) string {
 		return "(rows returned without named columns)"
 	}
 
-	widths := make([]int, len(columns))
-	for i, col := range columns {
-		widths[i] = maxInt(sqliteMinColumnWidth, minInt(sqliteMaxColumnWidth, stringWidth(sanitizeCell(col))))
+	// Single column: raw values, one per line.
+	if len(columns) == 1 {
+		col := columns[0]
+		if len(rows) == 0 {
+			return "(no rows)"
+		}
+		lines := make([]string, 0, len(rows))
+		for _, row := range rows {
+			lines = append(lines, sanitizeCell(stringifySqliteValue(row[col])))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	// Multi-column: pipe-separated with header.
+	header := strings.Join(columns, "|")
+	lines := make([]string, 0, len(rows)+1)
+	lines = append(lines, header)
+	if len(rows) == 0 {
+		return header + "\n(no rows)"
 	}
 	for _, row := range rows {
+		vals := make([]string, len(columns))
 		for i, col := range columns {
-			cw := stringWidth(sanitizeCell(stringifySqliteValue(row[col])))
-			widths[i] = maxInt(widths[i], minInt(sqliteMaxColumnWidth, cw))
+			vals[i] = sanitizeCell(stringifySqliteValue(row[col]))
 		}
+		lines = append(lines, strings.Join(vals, "|"))
 	}
-
-	// Shrink if total exceeds max width
-	totalWidth := 0
-	for _, w := range widths {
-		totalWidth += w
-	}
-	totalWidth += len(columns)*3 + 1
-	for totalWidth > sqliteMaxRenderWidth {
-		widestIdx := -1
-		widestW := sqliteMinColumnWidth
-		for i, w := range widths {
-			if w > widestW {
-				widestIdx = i
-				widestW = w
-			}
-		}
-		if widestIdx == -1 {
-			break
-		}
-		widths[widestIdx] = maxInt(sqliteMinColumnWidth, widths[widestIdx]-1)
-		totalWidth = 0
-		for _, w := range widths {
-			totalWidth += w
-		}
-		totalWidth += len(columns)*3 + 1
-	}
-
-	// Header
-	headerCells := make([]string, len(columns))
-	for i, col := range columns {
-		headerCells[i] = padCell(col, widths[i])
-	}
-	header := "| " + strings.Join(headerCells, " | ") + " |"
-
-	// Divider
-	dashes := make([]string, len(columns))
-	for i, w := range widths {
-		dashes[i] = strings.Repeat("-", maxInt(w, sqliteMinColumnWidth))
-	}
-	divider := "| " + strings.Join(dashes, " | ") + " |"
-
-	lines := []string{header, divider}
-	if len(rows) == 0 {
-		lines = append(lines, "(no rows)")
-	} else {
-		for _, row := range rows {
-			cells := make([]string, len(columns))
-			for i, col := range columns {
-				cells[i] = padCell(stringifySqliteValue(row[col]), widths[i])
-			}
-			lines = append(lines, "| "+strings.Join(cells, " | ")+" |")
-		}
-	}
-
-	var rendered []string
-	for _, line := range lines {
-		rendered = append(rendered, truncateToWidth(line, sqliteMaxRenderWidth))
-	}
-	return strings.Join(rendered, "\n")
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return strings.Join(lines, "\n")
 }
 
 // trySqlitePath attempts to handle the input as a SQLite path.

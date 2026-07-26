@@ -221,6 +221,95 @@ func TestSqliteExecuteRawQuery_ParameterRejected(t *testing.T) {
 	}
 }
 
+// Red test: raw query returning a single long-text column (CREATE TABLE SQL)
+// must not be truncated. Mirrors sqlite3 CLI default behavior: single column
+// → raw value, no padding, no width cap.
+func TestSqliteExecuteRawQuery_SingleLongTextColumnNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	createStmt := "CREATE TABLE sample (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE)"
+	if _, err := db.Exec(createStmt); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	result, err := sqliteExecuteRawQuery(db, "SELECT sql FROM sqlite_master WHERE type='table' AND name='sample'")
+	if err != nil {
+		t.Fatalf("sqliteExecuteRawQuery: %v", err)
+	}
+	if !strings.Contains(result, createStmt) {
+		t.Errorf("expected full CREATE statement %q in result, got %q", createStmt, result)
+	}
+}
+
+// Raw query with explicit LIMIT should be respected — no auto cap when the
+// user wrote LIMIT themselves.
+func TestSqliteExecuteRawQuery_ExplicitLimitRespected(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE big (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	// Insert more rows than sqliteMaxRawQueryRows so cap would trigger otherwise.
+	if _, err := db.Exec(`WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < ?)
+		INSERT INTO big (id) SELECT x FROM cnt`, sqliteMaxRawQueryRows+500); err != nil {
+		t.Fatal(err)
+	}
+
+	// User wrote explicit LIMIT 1500 (more than the default 1000 cap).
+	result, err := sqliteExecuteRawQuery(db, "SELECT id FROM big LIMIT 1500")
+	if err != nil {
+		t.Fatalf("sqliteExecuteRawQuery: %v", err)
+	}
+	if contains(result, "truncated") {
+		t.Errorf("explicit LIMIT should bypass cap, got truncation marker: %q", result)
+	}
+	// Sanity: result has more than 1000 lines (1 header-ish line + 1500 rows is wrong, single column = no header)
+	// Single column → raw values, one per line → expect ~1500 lines.
+	lines := strings.Count(result, "\n") + 1
+	if lines <= sqliteMaxRawQueryRows {
+		t.Errorf("expected > %d rows when LIMIT 1500 set, got %d lines", sqliteMaxRawQueryRows, lines)
+	}
+}
+
+// Raw query without LIMIT still gets capped at sqliteMaxRawQueryRows.
+func TestSqliteExecuteRawQuery_NoLimitStillCapped(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE big (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < ?)
+		INSERT INTO big (id) SELECT x FROM cnt`, sqliteMaxRawQueryRows+500); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sqliteExecuteRawQuery(db, "SELECT id FROM big")
+	if err != nil {
+		t.Fatalf("sqliteExecuteRawQuery: %v", err)
+	}
+	if !contains(result, "truncated") {
+		t.Errorf("expected truncation marker without LIMIT, got: %q", result)
+	}
+}
+
 func TestExecuteSqliteRead_List(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "", queryString: ""}
@@ -532,22 +621,22 @@ func TestValidateWhereClause_Quoted(t *testing.T) {
 	}
 }
 
-func TestBuildAsciiTable_Truncation(t *testing.T) {
+func TestBuildSqliteOutput_LongSingleColumn(t *testing.T) {
 	longVal := strings.Repeat("x", 200)
 	rows := []map[string]any{
 		{"col": longVal},
 	}
-	got := buildAsciiTable([]string{"col"}, rows)
-	if !contains(got, "x") {
-		t.Errorf("expected truncated value, got %q", got)
+	got := buildSqliteOutput([]string{"col"}, rows)
+	if got != longVal {
+		t.Errorf("expected full value, got truncated: %q", got)
 	}
 }
 
-func TestBuildAsciiTable_NilValue(t *testing.T) {
+func TestBuildSqliteOutput_NilValue(t *testing.T) {
 	rows := []map[string]any{
 		{"col": nil},
 	}
-	got := buildAsciiTable([]string{"col"}, rows)
+	got := buildSqliteOutput([]string{"col"}, rows)
 	if !contains(got, "NULL") {
 		t.Errorf("expected NULL rendering, got %q", got)
 	}
@@ -716,21 +805,21 @@ func TestTrySqlitePath_NoMatch(t *testing.T) {
 	}
 }
 
-func TestBuildAsciiTable_WideTable(t *testing.T) {
+func TestBuildSqliteOutput_WideTable(t *testing.T) {
 	cols := make([]string, 10)
 	row := map[string]any{}
 	for i := range 10 {
 		cols[i] = "col" + string(rune('A'+i))
 		row[cols[i]] = strings.Repeat("x", 50)
 	}
-	got := buildAsciiTable(cols, []map[string]any{row})
-	if got == "" {
-		t.Error("expected non-empty table")
+	got := buildSqliteOutput(cols, []map[string]any{row})
+	if !contains(got, "colA|colB") {
+		t.Errorf("expected pipe-separated header, got %q", got)
 	}
 }
 
-func TestBuildAsciiTable_EmptyRows(t *testing.T) {
-	got := buildAsciiTable([]string{"a", "b"}, nil)
+func TestBuildSqliteOutput_EmptyRows(t *testing.T) {
+	got := buildSqliteOutput([]string{"a", "b"}, nil)
 	if !contains(got, "no rows") {
 		t.Errorf("expected 'no rows' marker: %q", got)
 	}

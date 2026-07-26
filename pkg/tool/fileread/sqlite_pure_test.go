@@ -105,22 +105,13 @@ func TestResolveOrderClause(t *testing.T) {
 	}
 }
 
-func TestTruncateToWidth(t *testing.T) {
-	if got := truncateToWidth("hello", 10); got != "hello" {
-		t.Errorf("truncateToWidth(hello, 10) = %q", got)
-	}
-	if got := truncateToWidth("hello", 3); got != "hel" {
-		t.Errorf("truncateToWidth(hello, 3) = %q, want %q", got, "hel")
-	}
-	if got := truncateToWidth("hello", 0); got != "" {
-		t.Errorf("truncateToWidth(hello, 0) = %q, want empty", got)
-	}
-}
-
 func TestSanitizeCell(t *testing.T) {
 	got := sanitizeCell("a\tb\nc\r\nd")
-	if got != "a    b\\nc\\nd" {
-		t.Errorf("sanitizeCell = %q", got)
+	// tab→space, \n→literal "\n", \r\n→literal "\n"
+	// "a\tb\nc\r\nd" → "a b" + "\n" + "c" + "\n" + "d" (with \n as literal backslash-n)
+	want := "a b\\nc\\nd"
+	if got != want {
+		t.Errorf("sanitizeCell = %q, want %q", got, want)
 	}
 }
 
@@ -130,26 +121,49 @@ func TestStringWidth(t *testing.T) {
 	}
 }
 
-func TestBuildAsciiTable(t *testing.T) {
+func TestBuildSqliteOutput(t *testing.T) {
 	t.Run("empty columns empty rows", func(t *testing.T) {
-		got := buildAsciiTable(nil, nil)
+		got := buildSqliteOutput(nil, nil)
 		if got != "(no rows)" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("rows without columns", func(t *testing.T) {
-		got := buildAsciiTable(nil, []map[string]any{{"x": 1}})
+		got := buildSqliteOutput(nil, []map[string]any{{"x": 1}})
 		if got != "(rows returned without named columns)" {
 			t.Errorf("got %q", got)
 		}
 	})
-	t.Run("simple table", func(t *testing.T) {
-		got := buildAsciiTable([]string{"id", "name"}, []map[string]any{
+	t.Run("single column raw values", func(t *testing.T) {
+		got := buildSqliteOutput([]string{"sql"}, []map[string]any{
+			{"sql": "CREATE TABLE foo (x INTEGER)"},
+			{"sql": "CREATE TABLE bar (y TEXT)"},
+		})
+		want := "CREATE TABLE foo (x INTEGER)\nCREATE TABLE bar (y TEXT)"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("multi column pipe separated", func(t *testing.T) {
+		got := buildSqliteOutput([]string{"id", "name"}, []map[string]any{
 			{"id": int64(1), "name": "alice"},
 			{"id": int64(2), "name": "bob"},
 		})
-		if got == "" {
-			t.Error("expected non-empty table")
+		want := "id|name\n1|alice\n2|bob"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("multi column empty rows", func(t *testing.T) {
+		got := buildSqliteOutput([]string{"a", "b"}, nil)
+		if got != "a|b\n(no rows)" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("single column empty rows", func(t *testing.T) {
+		got := buildSqliteOutput([]string{"a"}, nil)
+		if got != "(no rows)" {
+			t.Errorf("got %q", got)
 		}
 	})
 }
@@ -313,6 +327,33 @@ func TestLooksLikeSqlite(t *testing.T) {
 	}
 	if looksLikeSqlite(txt) {
 		t.Errorf("looksLikeSqlite(text) = true, want false")
+	}
+}
+
+func TestSqlHasExplicitLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{"plain limit", "SELECT * FROM t LIMIT 100", true},
+		{"lowercase limit", "select * from t limit 50", true},
+		{"limit offset", "SELECT * FROM t LIMIT 10 OFFSET 5", true},
+		{"limit newline", "SELECT * FROM t\nLIMIT 1000", true},
+		{"no limit", "SELECT * FROM t", false},
+		{"limit as column name", "SELECT limit FROM config", false},
+		{"limit in string literal", "SELECT 'limit 100' AS hint FROM t", false},
+		{"limit in table name", "SELECT * FROM speed_limits", false},
+		{"limit without number", "SELECT * FROM t LIMIT ?", false},
+		{"nested subquery limit", "SELECT * FROM (SELECT * FROM t LIMIT 5) x", true},
+		{"mixed case", "Select * From t LiMiT 25", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sqlHasExplicitLimit(tt.sql); got != tt.want {
+				t.Errorf("sqlHasExplicitLimit(%q) = %v, want %v", tt.sql, got, tt.want)
+			}
+		})
 	}
 }
 
