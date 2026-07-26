@@ -149,7 +149,7 @@ func (b *Builder) RuntimeInfo() string {
 	runtime := "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
 	if b.WorkingDir != "" && b.ProjectDir != "" {
 		runtime += "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n"
-		runtime += "- projectspace: gbot state directory (gbot.log, memory including markdown files and memory.db (transcripts), session notes, file history, PID)"
+		runtime += "- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (message transcripts); also session_notes/, file-history/, history/, plans/"
 	}
 	return runtime
 }
