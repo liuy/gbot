@@ -4,10 +4,27 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // registered via subscribe() so tests can drive inbound messages through
 // dispatch(); sent[] records every outbound payload (text + binary) for
 // assertion.
+//
+// connState + binaryCount let a test flip `connected` to false after the
+// Nth binary write — mirroring a real WS going down mid-upload so that
+// sendAttachmentViaWS's between-chunks re-check throws. getConnection()
+// returns an object whose `connected` is a getter over connState so the
+// re-check sees the live value after sendBinary flips it.
 type Listener = (msg: unknown) => void
 const listeners = new Set<Listener>()
 const sent: unknown[] = []
 const sentBinary: ArrayBuffer[] = []
+
+let connState: { connected: boolean; disconnectAfterBinary?: number }
+let binaryCount: number
+
+function installConn(opts: { connected?: boolean; disconnectAfterBinary?: number } = {}) {
+  connState = {
+    connected: opts.connected ?? true,
+    disconnectAfterBinary: opts.disconnectAfterBinary,
+  }
+  binaryCount = 0
+}
 
 vi.mock('../src/ws', () => ({
   getConnection: () => ({
@@ -22,8 +39,17 @@ vi.mock('../src/ws', () => ({
     },
     sendBinary: (d: ArrayBuffer) => {
       sentBinary.push(d)
+      binaryCount++
+      if (
+        connState.disconnectAfterBinary !== undefined &&
+        binaryCount >= connState.disconnectAfterBinary
+      ) {
+        connState.connected = false
+      }
     },
-    connected: true,
+    get connected() {
+      return connState.connected
+    },
   }),
 }))
 
@@ -50,7 +76,7 @@ function mount() {
   document.body.appendChild(chat.root)
   // connect_status resets chat state. The session_list_request it emits is
   // not relevant to these tests — drop it so sent[] reflects only what each
-  // test sends. No uploadToken in the new wire shape.
+  // test sends.
   dispatch({ type: 'connect_status', connected: true })
   sent.length = 0
   sentBinary.length = 0
@@ -59,7 +85,7 @@ function mount() {
 
 function attachFile(file: File) {
   const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')!
-  Object.defineProperty(fileInput, 'files', { value: [file], writable: false })
+  Object.defineProperty(fileInput, 'files', { value: [file], configurable: true, writable: true })
   fileInput.dispatchEvent(new Event('change'))
 }
 
@@ -88,10 +114,11 @@ beforeEach(() => {
   sent.length = 0
   sentBinary.length = 0
   document.body.innerHTML = ''
+  installConn()
 })
 
 describe('chat attachment rendering', () => {
-  it('UserMessageWithImage_SendsUserMessageFirstThenStreams', async () => {
+  it('UserMessageWithImage_UploadsFirstThenCommits', async () => {
     mount()
     setTextarea('look at this')
     const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
@@ -99,40 +126,41 @@ describe('chat attachment rendering', () => {
     attachFile(file)
     clickSend()
 
-    // onSend awaits sendAttachmentViaWS (which slices the file into chunks
-    // and writes binary frames). Wait for the rendered <img> to appear in
-    // the messages container before asserting.
+    // onSend awaits sendAttachmentViaWS before sending the user_message.
+    // Wait for the rendered <img> to appear in the messages container
+    // (renderUserMessage runs only after the commit frame is sent).
     await vi.waitFor(() => {
       const imgs = messagesContainer().querySelectorAll('img')
       expect(imgs.length).toBe(1)
     })
 
-    // First outbound frame MUST be the user_message — it carries the
-    // attachments metadata so the server enters waiting state before any
-    // bytes arrive.
-    expect(sent.length).toBeGreaterThanOrEqual(1)
-    const first = sent[0] as { type: string; text: string; attachments: unknown[] }
-    expect(first.type).toBe('message')
-    expect(first.text).toBe('look at this')
-    expect(first.attachments.length).toBe(1)
-    const att = first.attachments[0] as {
-      id: string
-      name: string
-      mime: string
-      size: number
-    }
-    expect(att.name).toBe('photo.png')
-    expect(att.mime).toBe('image/png')
-    expect(att.size).toBe(file.size)
-    expect(typeof att.id).toBe('string')
-    expect(att.id.length).toBeGreaterThan(0)
+    // Two-phase commit order: attachment_start + attachment_end (upload),
+    // then a single user_message with attachments metadata (commit).
+    expect(sent.length).toBe(3)
+    const start = sent[0] as { type: string; id: string; name: string; mime: string; size: number }
+    expect(start.type).toBe('attachment_start')
+    expect(start.name).toBe('photo.png')
+    expect(start.mime).toBe('image/png')
+    expect(start.size).toBe(file.size)
+    expect(typeof start.id).toBe('string')
+    expect(start.id.length).toBeGreaterThan(0)
 
-    // Subsequent text frames: attachment_start + attachment_end. Binary
-    // frames go through sendBinary (counted in sentBinary, not sent).
-    const subsequent = sent.slice(1) as Array<{ type?: string }>
-    expect(subsequent.length).toBe(2)
-    expect(subsequent[0].type).toBe('attachment_start')
-    expect(subsequent[1].type).toBe('attachment_end')
+    const end = sent[1] as { type: string; id: string }
+    expect(end.type).toBe('attachment_end')
+    expect(end.id).toBe(start.id)
+
+    const msg = sent[2] as {
+      type: string
+      text: string
+      attachments: Array<{ id: string; name: string; mime: string; size: number }>
+    }
+    expect(msg.type).toBe('message')
+    expect(msg.text).toBe('look at this')
+    expect(msg.attachments.length).toBe(1)
+    expect(msg.attachments[0].id).toBe(start.id)
+    expect(msg.attachments[0].name).toBe('photo.png')
+
+    // One binary chunk (small file) — captured in sentBinary, not sent.
     expect(sentBinary.length).toBe(1)
     expect(sentBinary[0].byteLength).toBe(file.size)
 
@@ -150,10 +178,6 @@ describe('chat attachment rendering', () => {
         {
           id: 'm1',
           role: 'user',
-          // mapHistoryToChatMessages skips user rows whose text is empty,
-          // so the row must carry non-empty text even when the payload is
-          // an image. text='look' mirrors what the backend stores when a
-          // user sends text+image together (text block concatenated).
           text: 'look',
           blocks: [{ kind: 'image', src: 'data:image/png;base64,abc' }],
           thinking: [],
@@ -181,10 +205,6 @@ describe('chat attachment rendering', () => {
         {
           id: 'm1',
           role: 'user',
-          // The [Document: name saved at path]\n prefix is emitted by the
-          // backend (parseDocument) and parsed client-side into a chip + a
-          // trailing text span. body text after the prefix must render as a
-          // separate node so the chip is a visual marker, not the message.
           text: '[Document: foo.pdf saved at /cache/documents/foo.pdf]\nbody text',
           thinking: [],
           tools: [],
@@ -198,15 +218,11 @@ describe('chat attachment rendering', () => {
       hasMore: false,
     })
 
-    // Chip is a span whose entire text is `[foo.pdf]`.
     const chips = Array.from(messagesContainer().querySelectorAll('span')).filter(
       (s) => s.textContent === '[foo.pdf]',
     )
     expect(chips.length).toBe(1)
 
-    // Remainder renders as a separate span (whitespace-pre-wrap) whose text
-    // equals the post-prefix body. A concatenated chip+body text node would
-    // fail this assertion.
     const rest = Array.from(messagesContainer().querySelectorAll('span')).filter(
       (s) => s.textContent === 'body text',
     )
@@ -217,7 +233,7 @@ describe('chat attachment rendering', () => {
     mount()
     setTextarea('hello there')
     clickSend()
-    // One outbound frame: just the user_message.
+    // One outbound frame: just the user_message (no upload phase).
     await vi.waitFor(() => {
       expect(sent.length).toBe(1)
     })
@@ -242,7 +258,7 @@ describe('chat attachment rendering', () => {
     clickSend()
 
     await vi.waitFor(() => {
-      // user_message + attachment_start + attachment_end = 3 text frames.
+      // attachment_start + attachment_end + user_message = 3 text frames.
       // (The single binary chunk is captured in sentBinary, not sent.)
       expect(sent.length).toBe(3)
       expect(sentBinary.length).toBe(1)
@@ -254,9 +270,151 @@ describe('chat attachment rendering', () => {
     const userImgs = messagesContainer().querySelectorAll('img')
     expect(userImgs.length).toBe(0)
 
-    // First frame is still user_message with attachments.
-    const first = sent[0] as { type: string; attachments: unknown[] }
-    expect(first.type).toBe('message')
-    expect(first.attachments.length).toBe(1)
+    // Two-phase commit: the user_message is the LAST frame (commit), not
+    // the first.
+    const start = sent[0] as { type: string }
+    const end = sent[1] as { type: string }
+    const msg = sent[2] as { type: string; attachments: unknown[] }
+    expect(start.type).toBe('attachment_start')
+    expect(end.type).toBe('attachment_end')
+    expect(msg.type).toBe('message')
+    expect(msg.attachments.length).toBe(1)
+  })
+
+  it('PartialFailure_MarksChipRed_DoesNotCommit', async () => {
+    // First file uploads successfully (1 binary); second file's binary
+    // write flips connected=false, so sendAttachmentViaWS throws on its
+    // between-chunks re-check and the loop breaks.
+    installConn({ disconnectAfterBinary: 2 })
+    mount()
+    setTextarea('two files')
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const f1 = new File([blob], 'a.png', { type: 'image/png' })
+    const f2 = new File([blob], 'b.png', { type: 'image/png' })
+    attachFile(f1)
+    attachFile(f2)
+    clickSend()
+
+    // Wait for the failed chip to render with the red border class.
+    await vi.waitFor(() => {
+      const failed = document.querySelectorAll('.border-red-500')
+      expect(failed.length).toBe(1)
+    })
+
+    // Commit frame must NOT be sent — onSend returns before conn.send when
+    // anyFailed is true.
+    const hasMessage = sent.some((m) => (m as { type?: string }).type === 'message')
+    expect(hasMessage).toBe(false)
+
+    // Draft restored so the user can retry without retyping.
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('two files')
+  })
+
+  it('StripCleared_AfterSuccessfulSend_NewFileReuploads', async () => {
+    // After a successful commit, removeAttachments clears the chip strip so
+    // the refs (and their uploadedIDs) do NOT leak into the next send. A
+    // fresh attachment on the next send is a new ref with uploadedID=
+    // undefined and must re-upload from scratch.
+    installConn()
+    mount()
+    setTextarea('first send')
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const f1 = new File([blob], 'a.png', { type: 'image/png' })
+    attachFile(f1)
+    clickSend()
+
+    // First send: 1 attachment_start + 1 binary + 1 attachment_end + 1 message.
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+    expect(sentBinary.length).toBe(1)
+    expect(document.querySelectorAll('.border-red-500').length).toBe(0)
+
+    // Second send: new file (new ref with uploadedID=undefined) must
+    // re-upload — strip was cleared by removeAttachments after the first
+    // successful commit.
+    sent.length = 0
+    sentBinary.length = 0
+    setTextarea('second send')
+    const f2 = new File([blob], 'b.png', { type: 'image/png' })
+    attachFile(f2)
+    clickSend()
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+    expect(sentBinary.length).toBe(1)
+  })
+
+  it('RetryThenResend_SkipsAlreadyUploaded_UploadsOnlyFailed', async () => {
+    // After a partial failure (f1 uploaded, f2 failed) the chips stay in the
+    // strip: f1's ref retains its uploadedID, f2's does not. A resend must
+    // exercise the `if (ref.uploadedID) continue` branch in onSend — skip
+    // f1 (bytes already staged server-side) and upload ONLY f2.
+    //
+    // Mutation guard: flipping the condition to `if (!ref.uploadedID)
+    // continue` re-uploads f1 (fresh id != original) and skips f2 (commit id
+    // is undefined). Both the id-match and the string-id assertions fail.
+    installConn({ disconnectAfterBinary: 2 })
+    mount()
+    setTextarea('two files')
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const f1 = new File([blob], 'a.png', { type: 'image/png' })
+    const f2 = new File([blob], 'b.png', { type: 'image/png' })
+    attachFile(f1)
+    attachFile(f2)
+    clickSend()
+
+    // First send: f1 uploads (1 binary), f2's binary write flips connected
+    // -> f2 marked failed, loop breaks, NO commit frame sent.
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.border-red-500').length).toBe(1)
+    })
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+
+    // Capture f1's uploadedID from its attachment_start frame BEFORE reset
+    // (it equals the id onSend assigned and stored on the ref).
+    const f1Start = sent.find(
+      (m) =>
+        (m as { type?: string; name?: string }).type === 'attachment_start' &&
+        (m as { name?: string }).name === 'a.png',
+    ) as { id: string } | undefined
+    if (!f1Start) throw new Error('first send did not emit attachment_start for a.png')
+    const f1OriginalID = f1Start.id
+
+    // Fresh connection + cleared frames for the resend.
+    installConn()
+    sent.length = 0
+    sentBinary.length = 0
+
+    // Draft was restored after the failed send — clickSend re-fires onSend.
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+
+    // KEY ASSERTION: only f2's bytes hit the wire. If the skip branch is
+    // removed entirely, both files upload -> length 2.
+    expect(sentBinary.length).toBe(1)
+
+    const msg = sent.find((m) => (m as { type?: string }).type === 'message') as {
+      attachments: Array<{ id: string; name: string }>
+    }
+    expect(msg.attachments.length).toBe(2)
+
+    // Every commit id must be a non-empty string. If the skip condition is
+    // flipped (!uploadedID), f2 is skipped and its commit id is undefined.
+    for (const att of msg.attachments) {
+      expect(typeof att.id).toBe('string')
+      expect(att.id.length).toBeGreaterThan(0)
+    }
+
+    // f1's commit id must equal its ORIGINAL uploadedID — the skip branch
+    // reused the staged id instead of re-uploading. If the condition is
+    // flipped, f1 is re-uploaded and gets a fresh id != f1OriginalID.
+    const f1Commit = msg.attachments.find((a) => a.name === 'a.png')
+    if (!f1Commit) throw new Error('commit message missing a.png attachment')
+    expect(f1Commit.id).toBe(f1OriginalID)
   })
 })

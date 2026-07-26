@@ -116,16 +116,26 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				if len(msg.Attachments) > 0 {
-					// Attachments take priority over content when BOTH are
-					// present — the new frontend never sends content[], and
-					// a transitional client sending both should not dispatch
-					// twice.
-					if !acc.startWaiting(msg.Text, msg.Attachments) {
-						c.sendWS(buildError(errors.New("uploads already in progress; wait for current batch")))
+					// Two-phase commit: user_message is the commit frame. All
+					// attachment ids must already be in acc.saved (uploaded
+					// beforehand via attachment_start/binary/end). A missing
+					// id means the upload failed or never ran — reject the
+					// whole message so partial state never reaches the
+					// engine. An active upload (activeID != "") means the
+					// user tried to commit mid-stream — also reject; the
+					// frontend learns to wait for attachment_end.
+					if acc.activeID != "" {
+						c.sendWS(buildError(errors.New("attachment upload in progress; wait for current attachment to finish")))
 						continue
 					}
-					// Do NOT dispatch yet — wait for attachment_start /
-					// binary / attachment_end frames.
+					contents, missing := acc.buildContents(msg.Attachments)
+					if missing != "" {
+						c.sendWS(buildError(fmt.Errorf("missing attachment uploads: %s", missing)))
+						continue
+					}
+					text := msg.Text
+					acc.reset()
+					c.handleMessageInbound(text, contents)
 					continue
 				}
 				// Legacy path: callers that pass content[] directly (existing
@@ -144,12 +154,6 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				if errMsg := acc.handleEnd(msg.ID, c.mediaCache); errMsg != "" {
 					c.sendWS(buildError(errors.New(errMsg)))
-				}
-				if acc.readyToDispatch() {
-					contents := acc.buildContents()
-					text := acc.text
-					acc.reset()
-					c.handleMessageInbound(text, contents)
 				}
 			}
 		case "ask_response":

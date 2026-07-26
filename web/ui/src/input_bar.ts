@@ -5,9 +5,15 @@ import { createPopupPanel, createOutsideClick } from './utils'
 // thumbnail preview; document refs only carry metadata. uploadProgress
 // (0..1) is set during WS chunked upload so renderChips can paint a thin
 // blue progress bar; undefined when no upload is in flight.
+//
+// uploadedID is the server-side id assigned when this ref's bytes have
+// successfully landed in the server's saved map (set after a successful
+// upload, kept across retries). Undefined means the upload has not yet
+// completed or has failed; onSend uses this to skip re-uploading refs
+// whose bytes are already staged server-side.
 export type AttachmentRef =
-  | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number }
-  | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number }
+  | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
+  | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
 
 export interface InputBarHandles {
   root: HTMLElement

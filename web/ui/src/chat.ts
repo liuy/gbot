@@ -1618,10 +1618,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   const onSend = async (text: string) => {
-    inputHistory.add(text)
     const attachments = inputBar.getAttachments()
     if (attachments.length === 0) {
-      // Text-only fast path — no upload needed.
+      // Text-only fast path: history record + send are both side-effect-free
+      // on failure (server down → server replayers; nothing for us to undo).
+      inputHistory.add(text)
       if (streaming) {
         queuedMsgs = [...queuedMsgs, { uuid: '', text }]
         inputBar.setQueuedMsgs(queuedMsgs)
@@ -1632,50 +1633,52 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       conn.send({ type: 'message', text })
       return
     }
-    // B-plan upload flow: send user_message FIRST so the server enters the
-    // waiting state and knows how many attachment_start/binary/end triples
-    // to expect. IDs are generated client-side so the server can correlate
-    // user_message.attachments[].id with the matching attachment_start.id.
-    const ids = attachments.map(() => newAttachmentID())
-    conn.send({
-      type: 'message',
-      text,
-      attachments: attachments.map((a, i) => attachmentMeta(a.file, ids[i])),
-    })
-    // Upload phase — disable input via setUploading (NOT setStreaming):
-    // setStreaming would flip the send button to a STOP icon that aborts
-    // the engine, but we are uploading, not streaming. Each attachment is
-    // streamed serially over the WS (single activeUploadID on the server).
+    // Two-phase commit: upload every attachment FIRST, then send a single
+    // user_message carrying the attachment ids. The server refuses dispatch
+    // until every id is in its saved map, so a partial failure never
+    // produces a half-rendered user message. setUploading (not
+    // setStreaming) disables input — setStreaming would flip the send
+    // button to a STOP icon that aborts the running engine.
     inputBar.setUploading(true)
-    const uploaded: AttachmentRef[] = []
-    for (let i = 0; i < attachments.length; i++) {
-      const ref = attachments[i]
+    let anyFailed = false
+    for (const ref of attachments) {
+      if (ref.uploadedID) continue // bytes already staged server-side (retry path)
       try {
-        await sendAttachmentViaWS(ref.file, ids[i], (frac) =>
-          inputBar.setAttachmentProgress(ref, frac),
-        )
-        uploaded.push(ref)
+        const id = newAttachmentID()
+        await sendAttachmentViaWS(ref.file, id, (frac) =>
+          inputBar.setAttachmentProgress(ref, frac))
+        ref.uploadedID = id
       } catch {
-        // Server has already sent an error frame and dropped this id;
-        // mark the chip so the user can retry without losing the others.
+        anyFailed = true
         inputBar.markAttachmentFailures([ref])
+        break // stop on first failure — server only accepts one upload at a time
       }
     }
     inputBar.setUploading(false)
-    if (uploaded.length === 0) return // nothing rendered — failed chips stay for retry
-    // Drop the successfully-uploaded chips from the strip. Blob URLs are
-    // NOT revoked (the rendered user message <img> still references them).
-    inputBar.removeAttachments(uploaded)
+    if (anyFailed) {
+      // Restore the draft so the user can retry without retyping. Do NOT
+      // add to inputHistory — that would duplicate the entry on a later
+      // successful send.
+      inputBar.setInputText(text)
+      return
+    }
+    // inputHistory.add AFTER upload succeeded but BEFORE commit send — that
+    // way a failed upload does NOT pollute history with a duplicate entry
+    // when the user retries.
+    inputHistory.add(text)
+    conn.send({
+      type: 'message',
+      text,
+      attachments: attachments.map((ref) =>
+        attachmentMeta(ref.file, ref.uploadedID!)),
+    })
+    inputBar.removeAttachments(attachments)
     if (streaming) {
-      // Mid-stream: do NOT render the user message (the running assistant
-      // turn owns the bottom of the transcript). query_start for the new
-      // turn renders it when the engine picks the message up — same
-      // behavior as the text-only fast path.
       queuedMsgs = [...queuedMsgs, { uuid: '', text }]
       inputBar.setQueuedMsgs(queuedMsgs)
       return
     }
-    renderUserMessage(text, uploaded)
+    renderUserMessage(text, attachments)
   }
 
   const onStop = () => {
@@ -1701,11 +1704,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onStop(onStop)
   inputBar.onCancelQueued(onCancelQueued)
   // onRetryAttachment re-fires sendAttachmentViaWS for a failed chip with a
-  // fresh id (the prior id was either dropped server-side or never
-  // completed). Returns true on success so input_bar clears the failed flag.
+  // fresh id. On success the ref's uploadedID is set so a subsequent onSend
+  // skips re-uploading it (only the failed chip needed bytes on the wire).
   inputBar.onRetryAttachment(async (ref) => {
+    const id = newAttachmentID()
     try {
-      await sendAttachmentViaWS(ref.file, newAttachmentID())
+      await sendAttachmentViaWS(ref.file, id, (frac) =>
+        inputBar.setAttachmentProgress(ref, frac))
+      ref.uploadedID = id
       return true
     } catch {
       return false

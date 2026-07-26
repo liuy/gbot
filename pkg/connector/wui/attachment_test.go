@@ -43,70 +43,21 @@ func newAccStore(t *testing.T) *media.Store {
 	return store
 }
 
-func TestAttachmentAccumulator_StartWaiting_RejectsSecondStart(t *testing.T) {
+// TestAttachmentAccumulator_HandleStart_AcceptsAnyID asserts the two-phase
+// model's key invariant: handleStart does not require id pre-registration —
+// the commit-time user_message.attachments is the source of truth.
+func TestAttachmentAccumulator_HandleStart_AcceptsAnyID(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	atts := []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 1}}
-	if !acc.startWaiting("text", atts) {
-		t.Fatal("first startWaiting returned false, want true")
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "anything", Name: "x.png", Mime: "image/png", Size: 10}); errMsg != "" {
+		t.Fatalf("handleStart rejected arbitrary id: %q", errMsg)
 	}
-	if acc.startWaiting("text2", atts) {
-		t.Error("second startWaiting returned true; must reject while waiting")
-	}
-	// Original text + pendingIDs preserved.
-	if acc.text != "text" {
-		t.Errorf("text = %q, want original 'text'", acc.text)
-	}
-}
-
-func TestAttachmentAccumulator_StartWaiting_PopulatesState(t *testing.T) {
-	acc := &attachmentAccumulator{}
-	atts := []inboundAttachment{
-		{ID: "a1", Name: "x.png", Mime: "image/png", Size: 1},
-		{ID: "a2", Name: "y.pdf", Mime: "application/pdf", Size: 2},
-	}
-	if !acc.startWaiting("hello", atts) {
-		t.Fatal("startWaiting returned false")
-	}
-	if !acc.waiting {
-		t.Error("waiting = false, want true")
-	}
-	if acc.text != "hello" {
-		t.Errorf("text = %q, want 'hello'", acc.text)
-	}
-	if len(acc.pendingIDs) != 2 || acc.pendingIDs[0] != "a1" || acc.pendingIDs[1] != "a2" {
-		t.Errorf("pendingIDs = %v, want [a1 a2]", acc.pendingIDs)
-	}
-	if got := acc.metas["a1"]; got.Name != "x.png" || got.Size != 1 {
-		t.Errorf("metas[a1] = %+v, want name=x.png size=1", got)
-	}
-	if len(acc.saved) != 0 || len(acc.dropped) != 0 {
-		t.Errorf("saved/dropped should be empty, got saved=%d dropped=%d", len(acc.saved), len(acc.dropped))
-	}
-	if acc.activeID != "" {
-		t.Errorf("activeID = %q, want empty between attachments", acc.activeID)
-	}
-}
-
-func TestAttachmentAccumulator_HandleStart_RejectsUnknownID(t *testing.T) {
-	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 1}})
-	errMsg := acc.handleStart(attachmentStartMsg{
-		Type: "attachment_start", ID: "bogus", Name: "x.png", Mime: "image/png", Size: 1,
-	})
-	if errMsg == "" {
-		t.Fatal("expected error for unknown id, got empty string")
-	}
-	if !strings.Contains(errMsg, "unknown id") {
-		t.Errorf("errMsg = %q, want substring 'unknown id'", errMsg)
-	}
-	if acc.activeID != "" {
-		t.Errorf("activeID = %q after rejection; must stay empty", acc.activeID)
+	if acc.activeID != "anything" {
+		t.Errorf("activeID = %q, want 'anything'", acc.activeID)
 	}
 }
 
 func TestAttachmentAccumulator_HandleStart_RejectsOversize(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "huge.bin", Mime: "application/octet-stream", Size: maxAttachmentSize + 1}})
 	errMsg := acc.handleStart(attachmentStartMsg{
 		Type: "attachment_start", ID: "a1", Name: "huge.bin", Mime: "application/octet-stream", Size: maxAttachmentSize + 1,
 	})
@@ -120,7 +71,6 @@ func TestAttachmentAccumulator_HandleStart_RejectsOversize(t *testing.T) {
 
 func TestAttachmentAccumulator_HandleStart_RejectsAtMaxBoundary(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "edge.bin", Mime: "application/octet-stream", Size: maxAttachmentSize}})
 	if errMsg := acc.handleStart(attachmentStartMsg{
 		Type: "attachment_start", ID: "a1", Name: "edge.bin", Mime: "application/octet-stream", Size: maxAttachmentSize,
 	}); errMsg != "" {
@@ -130,10 +80,6 @@ func TestAttachmentAccumulator_HandleStart_RejectsAtMaxBoundary(t *testing.T) {
 
 func TestAttachmentAccumulator_HandleStart_RejectsNestedStart(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{
-		{ID: "a1", Name: "x.png", Mime: "image/png", Size: 1},
-		{ID: "a2", Name: "y.png", Mime: "image/png", Size: 1},
-	})
 	if errMsg := acc.handleStart(attachmentStartMsg{
 		Type: "attachment_start", ID: "a1", Name: "x.png", Mime: "image/png", Size: 1,
 	}); errMsg != "" {
@@ -148,7 +94,6 @@ func TestAttachmentAccumulator_HandleStart_RejectsNestedStart(t *testing.T) {
 	if !strings.Contains(errMsg, "in progress") {
 		t.Errorf("errMsg = %q, want substring 'in progress'", errMsg)
 	}
-	// First attachment stays active.
 	if acc.activeID != "a1" {
 		t.Errorf("activeID = %q, want 'a1' (first preserved)", acc.activeID)
 	}
@@ -156,7 +101,6 @@ func TestAttachmentAccumulator_HandleStart_RejectsNestedStart(t *testing.T) {
 
 func TestAttachmentAccumulator_HandleStart_InitializesBuffer(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 10}})
 	if errMsg := acc.handleStart(attachmentStartMsg{
 		Type: "attachment_start", ID: "a1", Name: "x.png", Mime: "image/png", Size: 10,
 	}); errMsg != "" {
@@ -186,7 +130,6 @@ func TestAttachmentAccumulator_HandleBinary_RejectsWhenNoActive(t *testing.T) {
 
 func TestAttachmentAccumulator_HandleBinary_AppendsToActiveBuffer(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4})
 	if errMsg := acc.handleBinary([]byte{0x01, 0x02}); errMsg != "" {
 		t.Fatalf("first handleBinary failed: %q", errMsg)
@@ -204,26 +147,29 @@ func TestAttachmentAccumulator_HandleBinary_AppendsToActiveBuffer(t *testing.T) 
 
 func TestAttachmentAccumulator_HandleBinary_RejectsOverflow(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 2}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: 2})
 	if errMsg := acc.handleBinary([]byte{0x01, 0x02}); errMsg != "" {
 		t.Fatalf("first chunk to size limit failed: %q", errMsg)
 	}
-	errMsg := acc.handleBinary([]byte{0x03}) // exceeds declared size=2
+	errMsg := acc.handleBinary([]byte{0x03})
 	if errMsg == "" {
 		t.Fatal("expected overflow error, got empty")
 	}
 	if !strings.Contains(errMsg, "overflow") {
 		t.Errorf("errMsg = %q, want substring 'overflow'", errMsg)
 	}
+	// activeID cleared (no dropped concept in two-phase model — the
+	// attachment simply doesn't land in saved).
+	if acc.activeID != "" {
+		t.Errorf("activeID = %q, want empty after overflow clear", acc.activeID)
+	}
 }
 
 func TestAttachmentAccumulator_HandleEnd_RejectsSizeMismatch(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 10}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: 10})
-	acc.handleBinary([]byte{0x01, 0x02}) // only 2 bytes; declared 10
+	acc.handleBinary([]byte{0x01, 0x02})
 	errMsg := acc.handleEnd("a1", store)
 	if errMsg == "" {
 		t.Fatal("expected size mismatch error, got empty")
@@ -234,23 +180,18 @@ func TestAttachmentAccumulator_HandleEnd_RejectsSizeMismatch(t *testing.T) {
 	if _, ok := acc.saved["a1"]; ok {
 		t.Error("saved[a1] gained an entry on mismatch")
 	}
-	if !acc.dropped["a1"] {
-		t.Error("dropped[a1] = false, want true after size mismatch")
-	}
-	// activeID cleared so the next attachment_start can proceed.
 	if acc.activeID != "" {
-		t.Errorf("activeID = %q, want empty after end", acc.activeID)
+		t.Errorf("activeID = %q, want empty after clear", acc.activeID)
 	}
 }
 
 func TestAttachmentAccumulator_HandleEnd_RejectsMismatchedID(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4})
 	acc.handleBinary([]byte{0x01, 0x02, 0x03, 0x04})
 	// Calling handleEnd with a different id — the active attachment must
-	// NOT be auto-dropped; only size/save errors drop. The correct end-frame
+	// NOT be cleared; only size/save failures clear. The correct end-frame
 	// can still complete it.
 	errMsg := acc.handleEnd("other", store)
 	if errMsg == "" {
@@ -262,13 +203,9 @@ func TestAttachmentAccumulator_HandleEnd_RejectsMismatchedID(t *testing.T) {
 	if _, ok := acc.saved["a1"]; ok {
 		t.Error("saved[a1] gained an entry on id mismatch")
 	}
-	if acc.dropped["a1"] {
-		t.Error("dropped[a1] = true after id mismatch; must stay false (active NOT auto-dropped)")
-	}
 	if acc.activeID != "a1" {
 		t.Errorf("activeID = %q, want 'a1' preserved", acc.activeID)
 	}
-	// Correct end-frame still completes the attachment.
 	if errMsg := acc.handleEnd("a1", store); errMsg != "" {
 		t.Fatalf("correct handleEnd after id mismatch failed: %q", errMsg)
 	}
@@ -280,7 +217,6 @@ func TestAttachmentAccumulator_HandleEnd_RejectsMismatchedID(t *testing.T) {
 func TestAttachmentAccumulator_HandleEnd_SavesImage(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "photo.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "photo.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
 	acc.handleBinary(minimalPNGAttachment)
 	if errMsg := acc.handleEnd("a1", store); errMsg != "" {
@@ -317,7 +253,6 @@ func TestAttachmentAccumulator_HandleEnd_SavesImage(t *testing.T) {
 func TestAttachmentAccumulator_HandleEnd_SavesDocument(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "d1", Name: "report.pdf", Mime: "application/pdf", Size: int64(len(pdfFixture))}})
 	acc.handleStart(attachmentStartMsg{ID: "d1", Name: "report.pdf", Mime: "application/pdf", Size: int64(len(pdfFixture))})
 	acc.handleBinary(pdfFixture)
 	if errMsg := acc.handleEnd("d1", store); errMsg != "" {
@@ -339,9 +274,8 @@ func TestAttachmentAccumulator_HandleEnd_SavesDocument(t *testing.T) {
 	}
 }
 
-func TestAttachmentAccumulator_HandleEnd_NilStore_DropsAndErrors(t *testing.T) {
+func TestAttachmentAccumulator_HandleEnd_NilStore_ClearsAndErrors(t *testing.T) {
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: 4})
 	acc.handleBinary([]byte{0x01, 0x02, 0x03, 0x04})
 	errMsg := acc.handleEnd("a1", nil)
@@ -351,56 +285,18 @@ func TestAttachmentAccumulator_HandleEnd_NilStore_DropsAndErrors(t *testing.T) {
 	if !strings.Contains(errMsg, "no media cache") {
 		t.Errorf("errMsg = %q, want substring 'no media cache'", errMsg)
 	}
-	if !acc.dropped["a1"] {
-		t.Error("dropped[a1] = false, want true after nil-store failure")
+	if _, ok := acc.saved["a1"]; ok {
+		t.Error("saved[a1] gained an entry despite nil store")
 	}
 	if acc.activeID != "" {
-		t.Errorf("activeID = %q, want empty after drop", acc.activeID)
-	}
-}
-
-func TestAttachmentAccumulator_ReadyToDispatch_FalseWhenPartial(t *testing.T) {
-	store := newAccStore(t)
-	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{
-		{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
-		{ID: "a2", Name: "y.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
-	})
-	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
-	acc.handleBinary(minimalPNGAttachment)
-	acc.handleEnd("a1", store)
-	if acc.readyToDispatch() {
-		t.Error("readyToDispatch = true after only 1 of 2; want false")
-	}
-}
-
-func TestAttachmentAccumulator_ReadyToDispatch_TrueWhenAllDoneOrDropped(t *testing.T) {
-	store := newAccStore(t)
-	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{
-		{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
-		{ID: "a2", Name: "y.png", Mime: "image/png", Size: 10},
-	})
-	// a1 saved, a2 dropped (size mismatch).
-	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
-	acc.handleBinary(minimalPNGAttachment)
-	acc.handleEnd("a1", store)
-	acc.handleStart(attachmentStartMsg{ID: "a2", Name: "y.png", Mime: "image/png", Size: 10})
-	acc.handleBinary([]byte{0x01})
-	acc.handleEnd("a2", store) // size mismatch → drop
-	if !acc.readyToDispatch() {
-		t.Error("readyToDispatch = false; want true when all saved-or-dropped")
+		t.Errorf("activeID = %q, want empty after clear", acc.activeID)
 	}
 }
 
 func TestAttachmentAccumulator_BuildContents_ClassifiesByMime(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("see this", []inboundAttachment{
-		{ID: "img1", Name: "photo.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
-		{ID: "doc1", Name: "report.pdf", Mime: "application/pdf", Size: int64(len(pdfFixture))},
-	})
-	// Save both in declaration order.
+	// Save both attachments first (upload phase).
 	acc.handleStart(attachmentStartMsg{ID: "img1", Name: "photo.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
 	acc.handleBinary(minimalPNGAttachment)
 	acc.handleEnd("img1", store)
@@ -408,7 +304,14 @@ func TestAttachmentAccumulator_BuildContents_ClassifiesByMime(t *testing.T) {
 	acc.handleBinary(pdfFixture)
 	acc.handleEnd("doc1", store)
 
-	contents := acc.buildContents()
+	// Commit phase: pass the user_message's []inboundAttachment metadata.
+	contents, missing := acc.buildContents([]inboundAttachment{
+		{ID: "img1", Name: "photo.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
+		{ID: "doc1", Name: "report.pdf", Mime: "application/pdf", Size: int64(len(pdfFixture))},
+	})
+	if missing != "" {
+		t.Fatalf("missing = %q, want empty", missing)
+	}
 	if len(contents) != 2 {
 		t.Fatalf("buildContents returned %d items, want 2", len(contents))
 	}
@@ -424,56 +327,127 @@ func TestAttachmentAccumulator_BuildContents_ClassifiesByMime(t *testing.T) {
 	if contents[1].Source.Name != "report.pdf" {
 		t.Errorf("contents[1].Source.Name = %q, want 'report.pdf'", contents[1].Source.Name)
 	}
-	// Order matches pendingIDs order regardless of arrival order.
 	if contents[0].Source.Path == "" || contents[1].Source.Path == "" {
 		t.Error("paths should be populated from saved[id].path")
 	}
 }
 
-func TestAttachmentAccumulator_BuildContents_DropsFailedIDs(t *testing.T) {
+// TestAttachmentAccumulator_BuildContents_MissingIDs_ReturnsError asserts the
+// commit-time invariant: if any id is absent from saved (failed upload or
+// never sent), buildContents returns the missing ids and nil contents so the
+// caller can refuse dispatch.
+func TestAttachmentAccumulator_BuildContents_MissingIDs_ReturnsError(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{
-		{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
-		{ID: "a2", Name: "broken.png", Mime: "image/png", Size: 10},
-	})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
 	acc.handleBinary(minimalPNGAttachment)
 	acc.handleEnd("a1", store)
-	acc.handleStart(attachmentStartMsg{ID: "a2", Name: "broken.png", Mime: "image/png", Size: 10})
-	acc.handleBinary([]byte{0x01})
-	acc.handleEnd("a2", store) // size mismatch → drop
-
-	contents := acc.buildContents()
-	if len(contents) != 1 {
-		t.Fatalf("buildContents returned %d, want 1 (a2 dropped)", len(contents))
+	contents, missing := acc.buildContents([]inboundAttachment{
+		{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
+		{ID: "a2", Name: "y.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
+	})
+	if contents != nil {
+		t.Fatalf("contents = %v, want nil when missing", contents)
 	}
-	if contents[0].Source.Path != acc.saved["a1"].path {
-		t.Errorf("contents[0] is not the saved a1 path")
+	if !strings.Contains(missing, "a2") || strings.Contains(missing, "a1") {
+		t.Errorf("missing = %q, want only 'a2'", missing)
 	}
 }
 
 func TestAttachmentAccumulator_Reset_ClearsAllState(t *testing.T) {
 	store := newAccStore(t)
 	acc := &attachmentAccumulator{}
-	acc.startWaiting("text", []inboundAttachment{{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))}})
 	acc.handleStart(attachmentStartMsg{ID: "a1", Name: "x.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))})
 	acc.handleBinary(minimalPNGAttachment)
 	acc.handleEnd("a1", store)
 	acc.reset()
-	if acc.waiting {
-		t.Error("waiting = true after reset, want false")
-	}
-	if acc.text != "" {
-		t.Errorf("text = %q, want empty", acc.text)
-	}
-	if len(acc.pendingIDs) != 0 {
-		t.Errorf("pendingIDs = %v, want empty", acc.pendingIDs)
-	}
-	if acc.metas != nil || acc.saved != nil || acc.dropped != nil {
-		t.Errorf("maps not nil after reset: metas=%v saved=%v dropped=%v", acc.metas, acc.saved, acc.dropped)
+	if acc.saved != nil {
+		t.Errorf("saved = %v, want nil after reset", acc.saved)
 	}
 	if acc.activeID != "" || acc.buf != nil {
 		t.Errorf("activeID/buf not cleared: activeID=%q buf=%v", acc.activeID, acc.buf)
+	}
+}
+
+// TestAttachmentAccumulator_HandleEnd_AfterReset_LazyInitsSavedAndSavesAgain
+// exercises the full lifecycle twice: upload→commit→reset→upload→commit.
+// reset sets saved back to nil; the lazy-init in handleStart must re-fire so
+// the second round's handleEnd can assign without a nil-map panic, and
+// buildContents must resolve the new id. Guards against moving the lazy-init
+// to a one-shot constructor or weakening it so it only fires on first use.
+func TestAttachmentAccumulator_HandleEnd_AfterReset_LazyInitsSavedAndSavesAgain(t *testing.T) {
+	store := newAccStore(t)
+	acc := &attachmentAccumulator{}
+
+	// Round 1: full upload + commit cycle.
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "r1", Name: "first.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))}); errMsg != "" {
+		t.Fatalf("round 1 handleStart failed: %q", errMsg)
+	}
+	if errMsg := acc.handleBinary(minimalPNGAttachment); errMsg != "" {
+		t.Fatalf("round 1 handleBinary failed: %q", errMsg)
+	}
+	if errMsg := acc.handleEnd("r1", store); errMsg != "" {
+		t.Fatalf("round 1 handleEnd failed: %q", errMsg)
+	}
+	contents1, missing1 := acc.buildContents([]inboundAttachment{
+		{ID: "r1", Name: "first.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
+	})
+	if missing1 != "" {
+		t.Fatalf("round 1 buildContents missing: %q", missing1)
+	}
+	if len(contents1) != 1 {
+		t.Fatalf("round 1 buildContents returned %d items, want 1", len(contents1))
+	}
+
+	// reset clears saved to nil — the next handleStart must lazy-init it
+	// again so handleEnd can write to the map.
+	acc.reset()
+	if acc.saved != nil {
+		t.Fatalf("saved = %v, want nil after reset (precondition)", acc.saved)
+	}
+
+	// Round 2: same flow on the reset accumulator. If the lazy-init does not
+	// re-fire, handleEnd panics on nil-map assignment.
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "r2", Name: "second.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))}); errMsg != "" {
+		t.Fatalf("round 2 handleStart failed: %q", errMsg)
+	}
+	if errMsg := acc.handleBinary(minimalPNGAttachment); errMsg != "" {
+		t.Fatalf("round 2 handleBinary failed: %q", errMsg)
+	}
+	if errMsg := acc.handleEnd("r2", store); errMsg != "" {
+		t.Fatalf("round 2 handleEnd failed: %q", errMsg)
+	}
+	if acc.saved == nil {
+		t.Fatal("saved = nil after round 2 handleEnd, want lazy-init to have re-fired")
+	}
+	if _, ok := acc.saved["r2"]; !ok {
+		t.Error("saved[r2] missing after round 2 handleEnd")
+	}
+	// r1 must NOT survive reset — if it does, reset failed to clear saved
+	// and the lazy-init reused stale state.
+	if _, ok := acc.saved["r1"]; ok {
+		t.Error("saved[r1] leaked across reset — reset must clear it")
+	}
+
+	contents2, missing2 := acc.buildContents([]inboundAttachment{
+		{ID: "r2", Name: "second.png", Mime: "image/png", Size: int64(len(minimalPNGAttachment))},
+	})
+	if missing2 != "" {
+		t.Fatalf("round 2 buildContents missing: %q", missing2)
+	}
+	if len(contents2) != 1 {
+		t.Fatalf("round 2 buildContents returned %d items, want 1", len(contents2))
+	}
+	if contents2[0].Type != "image" {
+		t.Errorf("contents2[0].Type = %q, want 'image'", contents2[0].Type)
+	}
+	if contents2[0].Source.Name != "second.png" {
+		t.Errorf("contents2[0].Source.Name = %q, want 'second.png'", contents2[0].Source.Name)
+	}
+	if contents2[0].Source.Mime != "image/png" {
+		t.Errorf("contents2[0].Source.Mime = %q, want 'image/png'", contents2[0].Source.Mime)
+	}
+	if contents2[0].Source.Path == "" {
+		t.Error("contents2[0].Source.Path = empty, want populated from saved[r2].path")
 	}
 }
