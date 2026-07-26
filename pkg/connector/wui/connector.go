@@ -1494,6 +1494,14 @@ func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]too
 		return extractPersistedPreview(rest)
 	}
 
+	// DecodeResult rejected the payload (e.g., Edit error stored as a text
+	// block — fileedit.DecodeResult expects an Output struct). Tools with a
+	// string-form RenderResult (like renderEditError) get one more chance to
+	// shorten / format the text. Without this, streaming shows the short
+	// form (emitToolError calls RenderResult) but history replay shows raw.
+	if t, ok := tools[toolName]; ok {
+		return t.RenderResult(rest)
+	}
 	return rest
 }
 

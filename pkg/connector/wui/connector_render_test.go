@@ -110,6 +110,44 @@ func TestRenderViaTool_DecodeErrorReturnsFalse(t *testing.T) {
 	}
 }
 
+// TestRenderToolOutput_DecodeFallbackInvokesRenderResultWithString verifies
+// that when DecodeResult fails (e.g., Edit error stored as text block), the
+// fallback path calls RenderResult with the extracted string. Tools like
+// fileedit define a string-form RenderResult (renderEditError) that shortens
+// long error messages — without this call, history replay would show the
+// full error while streaming shows the shortened form.
+func TestRenderToolOutput_DecodeFallbackInvokesRenderResultWithString(t *testing.T) {
+	t.Parallel()
+	var renderInput any
+	tools := map[string]tool.Tool{
+		"Edit": &decodeMockTool{
+			renderFn: func(data any) string {
+				renderInput = data
+				if s, ok := data.(string); ok {
+					if strings.Contains(s, "not found") {
+						return "Error editing file"
+					}
+					return s
+				}
+				return "FALLBACK"
+			},
+			decodeFn: func(raw json.RawMessage) (any, error) {
+				return nil, errors.New("decode error")
+			},
+		},
+	}
+	fullErr := "string to replace not found in file.\nString: oldString content here"
+	textJSON, _ := json.Marshal(fullErr)
+	raw := json.RawMessage(`[{"type":"text","text":` + string(textJSON) + `}]`)
+	got := renderToolOutput("Edit", raw, tools)
+	if got != "Error editing file" {
+		t.Errorf("renderToolOutput fallback = %q, want %q", got, "Error editing file")
+	}
+	if _, ok := renderInput.(string); !ok {
+		t.Errorf("RenderResult received %T, want string", renderInput)
+	}
+}
+
 func TestRenderToolOutput_PassesRawArrayToDecodeResult(t *testing.T) {
 	t.Parallel()
 	var capturedRaw json.RawMessage
