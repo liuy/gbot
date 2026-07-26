@@ -137,7 +137,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 		p := &pipelineProvider{}
 		p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
 
-		compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 200000, provider: p})
+		compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 500, provider: p})
 		tc := newEventCollector()
 		eng := New(&Params{
 			Provider:  p,

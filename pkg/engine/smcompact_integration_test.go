@@ -575,7 +575,7 @@ func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
 	}
 
 	// Persist messages so PartialCompact has real data to split
-	msgs := makeLargeMessages(20, 500)
+	msgs := makeLargeMessages(20, 600)
 	storeMsgs, err := short.EngineMessagesToStore(msgs)
 	if err != nil {
 		t.Fatalf("convert messages: %v", err)
@@ -590,7 +590,7 @@ func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 40000, provider: p})
+	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
 
 	eng := New(&Params{
 		Provider:  p,

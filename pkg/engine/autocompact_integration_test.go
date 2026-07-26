@@ -109,7 +109,7 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "After compact response."), nil)
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 40000, provider: p})
+	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 1000, provider: p})
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -120,8 +120,8 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 		Logger: slog.Default(),
 	})
 
-	// 10 messages × 100 tokens each = 1000 tokens → exceeds 90% of 1000
-	eng.SetMessages(makeLargeMessages(10, 100))
+	// 10 messages × ~225 tokens each ≈ 2250 tokens > findKeepFrom tail budget (2000).
+	eng.SetMessages(makeLargeMessages(10, 1100))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -244,7 +244,7 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 40000, provider: p})
+	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 1000, provider: p})
 
 	parentMsgs := makeLargeMessages(10, 100)
 	originalCount := len(parentMsgs)
@@ -267,8 +267,8 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 		Model:        "test-model",
 	})
 
-	// Compact the sub-engine directly
-	subMsgs := makeLargeMessages(20, 100)
+	// Compact the sub-engine directly. 20 × ~125 tokens ≈ 2500 > tail budget (2000).
+	subMsgs := makeLargeMessages(20, 600)
 	subEng.SetMessages(subMsgs)
 
 	compacted, compactErr := compactor.Compact(context.Background(), subEng.Messages())

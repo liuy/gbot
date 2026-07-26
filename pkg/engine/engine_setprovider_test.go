@@ -66,18 +66,10 @@ func TestCompact_UsesLiveProviderAndModel(t *testing.T) {
 	eng.SetProvider(newProv)
 	eng.SetModel("new-model")
 
-	// Seed enough messages to trigger compact.
-	msgs := make([]types.Message, 0, 10)
-	for range 10 {
-		msgs = append(msgs, types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")},
-		})
-		msgs = append(msgs, types.Message{
-			Role:    types.RoleAssistant,
-			Content: []types.ContentBlock{types.NewTextBlock("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")},
-		})
-	}
+	// Seed enough messages to trigger compact. Engine ContextWindow is 1000
+	// (from AutoCompactConfig above) → findKeepFrom tail budget = 2000 tokens.
+	// makeLargeMessages(20, 600) ≈ 2500 tokens > 2000, so compact runs.
+	msgs := makeLargeMessages(20, 600)
 	eng.SetMessages(msgs)
 
 	// Trigger compact directly via the compactor.

@@ -627,15 +627,18 @@ func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 10000, provider: mp})
 
 	// All messages have only thinking blocks - no extractable text.
+	// Each message is padded large enough that total tokens exceed the
+	// findKeepFrom tail budget (contextWindow 10000 → 2000), so compact
+	// proceeds to summarizeMessages and hits the empty-head-text error path.
 	msgs := []types.Message{}
 	for i := range 5 {
 		msgs = append(msgs, types.Message{
 			Role:    types.RoleAssistant,
-			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("thinking %d", i)}},
+			Content: []types.ContentBlock{{Type: "thinking", Text: strings.Repeat(fmt.Sprintf("thinking %d ", i), 200)}},
 		})
 		msgs = append(msgs, types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("response %d", i)}},
+			Content: []types.ContentBlock{{Type: "thinking", Text: strings.Repeat(fmt.Sprintf("response %d ", i), 200)}},
 		})
 	}
 
@@ -663,7 +666,7 @@ func TestCompactor_Compact_LLMErrors_ReturnsError(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 1000, provider: mp})
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
@@ -1523,12 +1526,12 @@ func TestAutoCompactor_CompactWithInstructions(t *testing.T) {
 	sc := NewAutoCompactor(store, &testEngineMeta{
 		model:         "test-model",
 		sessionID:     "test-session",
-		contextWindow: 200000,
+		contextWindow: 1000,
 		provider:      p,
 	})
 
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello, please count")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello, please count ", 600))}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("1 2 3")}},
 	}
 
@@ -1583,12 +1586,12 @@ func TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker(t *tes
 	sc := NewAutoCompactor(store, &testEngineMeta{
 		model:         "test-model",
 		sessionID:     "test-session",
-		contextWindow: 200000,
+		contextWindow: 1000,
 		provider:      p,
 	})
 
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello ", 1700))}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
 
@@ -1611,5 +1614,142 @@ func TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker(t *tes
 	if strings.Contains(lastText, "Additional Instructions:") {
 		t.Errorf("empty customInstructions must not inject Additional Instructions marker; got prompt tail: %q",
 			lastText[max(0, len(lastText)-300):])
+	}
+}
+
+func TestCompactor_CompactAll_BoundaryMetadata(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	mp := &compactMockProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+
+	// Messages large enough to exceed tail budget → triggers buildCompactAllResult path.
+	// tail budget = min(200000/5, 60000) = 60000 tokens.
+	// 5 messages × ~20K tokens each = ~100K > 60K budget → last 3 fit, first 2 compacted.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 60000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("b", 60000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("c", 60000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("d", 60000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("e", 60000))}},
+	}
+
+	t.Run("auto_compact_trigger", func(t *testing.T) {
+		result, err := sc.Compact(context.Background(), msgs)
+		if err != nil {
+			t.Fatalf("Compact: %v", err)
+		}
+		if len(result.Messages) == 0 {
+			t.Fatal("expected at least boundary message")
+		}
+		// Parse boundary metadata from first message.
+		boundary := result.Messages[0]
+		meta := parseBoundaryMetadata(t, boundary)
+		if meta["trigger"] != "auto" {
+			t.Errorf("trigger should be %q, got %q", "auto", meta["trigger"])
+		}
+		// preTokens should reflect actual token count, not 0.
+		preTokens, ok := meta["preTokens"].(float64)
+		if !ok {
+			t.Fatalf("preTokens should be a number, got %T: %v", meta["preTokens"], meta["preTokens"])
+		}
+		if preTokens == 0 {
+			t.Error("preTokens should be > 0 for actual messages, got 0")
+		}
+	})
+
+	t.Run("manual_compact_trigger", func(t *testing.T) {
+		result, err := sc.CompactWithInstructions(context.Background(), msgs, "")
+		if err != nil {
+			t.Fatalf("CompactWithInstructions: %v", err)
+		}
+		if len(result.Messages) == 0 {
+			t.Fatal("expected at least boundary message")
+		}
+		boundary := result.Messages[0]
+		meta := parseBoundaryMetadata(t, boundary)
+		if meta["trigger"] != "manual" {
+			t.Errorf("trigger should be %q, got %q", "manual", meta["trigger"])
+		}
+		preTokens, ok := meta["preTokens"].(float64)
+		if !ok {
+			t.Fatalf("preTokens should be a number, got %T: %v", meta["preTokens"], meta["preTokens"])
+		}
+		if preTokens == 0 {
+			t.Error("preTokens should be > 0 for actual messages, got 0")
+		}
+	})
+}
+
+// parseBoundaryMetadata extracts compactMetadata from a compact boundary message.
+func parseBoundaryMetadata(t *testing.T, msg types.Message) map[string]any {
+	t.Helper()
+	if len(msg.Content) == 0 {
+		t.Fatal("message has no content")
+	}
+	text := msg.Content[0].Text
+	// The boundary content is JSON containing a "compactMetadata" field.
+	var contentMap map[string]any
+	if err := json.Unmarshal([]byte(text), &contentMap); err != nil {
+		t.Fatalf("failed to parse boundary JSON: %v\ncontent: %s", err, text)
+	}
+	metaRaw, ok := contentMap["compactMetadata"]
+	if !ok {
+		t.Fatalf("boundary JSON missing compactMetadata field: %s", text)
+	}
+	meta, ok := metaRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("compactMetadata should be an object, got %T: %v", metaRaw, metaRaw)
+	}
+	return meta
+}
+
+func TestCompactor_Compact_SmallMessages_NoOp(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	mp := &compactMockProvider{}
+	// contextWindow=200000 → tail budget = min(200000/5, 60000) = 60000 tokens.
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+
+	// 3 small messages, total ~100 tokens << 60000 budget.
+	// findKeepFrom returns len(messages) → "nothing to compact".
+	// compact() should return original messages unchanged, NOT [boundary, summary].
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("bye")}},
+	}
+
+	result, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	// Without the no-op gate, compact() returns [boundary, summary] = 2 messages.
+	// With the gate, it returns the original 3 messages unchanged.
+	if len(result.Messages) != len(msgs) {
+		t.Errorf("expected %d messages (no-op), got %d — compact() should not compact when all messages fit in tail budget",
+			len(msgs), len(result.Messages))
+	}
+	// BeforeTokens should equal AfterTokens (nothing was compacted).
+	if result.BeforeTokens != result.AfterTokens {
+		t.Errorf("BeforeTokens (%d) should equal AfterTokens (%d) for no-op compact",
+			result.BeforeTokens, result.AfterTokens)
 	}
 }

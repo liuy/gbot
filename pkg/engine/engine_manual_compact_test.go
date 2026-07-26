@@ -262,7 +262,7 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 		}, nil
 	}
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 40000, provider: p})
+	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -271,10 +271,8 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 	})
 	eng.SetStore(store, tmpDir)
 	eng.SetSessionID(sess.SessionID)
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
-	})
+	// Exceed findKeepFrom tail budget (2000 tokens) so compact actually runs.
+	eng.SetMessages(makeLargeMessages(20, 600))
 
 	if _, err := eng.ManualCompact(context.Background(), custom); err != nil {
 		t.Fatalf("ManualCompact error: %v", err)

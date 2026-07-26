@@ -67,18 +67,18 @@ func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompa
 // the manual /compact entry point. Keeping the Compactor interface (which uses
 // this method) unchanged avoids touching every mock implementation.
 func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (*short.CompactResult, error) {
-	return c.compact(ctx, messages, "")
+	return c.compact(ctx, messages, "", "auto")
 }
 
 // CompactWithInstructions is the manual /compact entry point. Identical to
 // Compact but threads custom summarization instructions into the LLM prompt.
 // TS align: compact.ts:compactConversation(messages, ..., customInstructions, false)
 func (c *AutoCompactor) CompactWithInstructions(ctx context.Context, messages []types.Message, customInstructions string) (*short.CompactResult, error) {
-	return c.compact(ctx, messages, customInstructions)
+	return c.compact(ctx, messages, customInstructions, "manual")
 }
 
 // compact is the shared body of Compact and CompactWithInstructions.
-func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, customInstructions string) (*short.CompactResult, error) {
+func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, customInstructions string, trigger string) (*short.CompactResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
@@ -96,6 +96,17 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 	// keepFrom < len: compact head, keep tail.
 	keepFrom := c.findKeepFrom(shortMsgs)
 
+	if keepFrom == len(shortMsgs) {
+		// All messages fit in the tail budget — nothing to compact.
+		c.logger.Info("compact:noop", "messages", len(messages), "tokens", beforeTokens)
+		return &short.CompactResult{
+			BeforeTokens:   beforeTokens,
+			BeforeMessages: len(messages),
+			AfterTokens:    beforeTokens,
+			Messages:       messages,
+		}, nil
+	}
+
 	// Generate summary for the head messages via LLM
 	headMsgs := shortMsgs[:keepFrom]
 	summaryText, err := c.summarizeMessages(ctx, headMsgs, customInstructions)
@@ -105,7 +116,7 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 
 	if keepFrom < len(shortMsgs) {
 		// Normal compact: call PartialCompact to split head/tail.
-		pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom)
+		pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom, trigger)
 		if err != nil {
 			c.logger.Error("PartialCompact failed", "error", err)
 			return nil, err
@@ -122,8 +133,8 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 
 	// keepFrom == len: compact everything (tail=0).
 	// Build [boundary, summary] directly — no PartialCompact needed.
-	built := c.buildCompactAllResult(summaryText)
-	boundary := short.CreateCompactBoundaryMessage("auto", 0, "")
+	built := c.buildCompactAllResult(summaryText, trigger, beforeTokens)
+	boundary := short.CreateCompactBoundaryMessage(trigger, beforeTokens, "")
 	return &short.CompactResult{
 		BoundaryMarker: boundary,
 		Summary:        summaryText,
@@ -326,7 +337,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 
 // buildCompactAllResult builds the post-compact message array when tail=0
 // (compact everything). Returns [boundary_msg, summary_msg].
-func (c *AutoCompactor) buildCompactAllResult(summaryText string) []types.Message {
+func (c *AutoCompactor) buildCompactAllResult(summaryText string, trigger string, preTokens int) []types.Message {
 	msgs := make([]types.Message, 0, 2)
 
 	// Boundary message using compact_boundary format (same as PartialCompact).
@@ -335,7 +346,7 @@ func (c *AutoCompactor) buildCompactAllResult(summaryText string) []types.Messag
 		"subtype":         "compact_boundary",
 		"content":         "Conversation compacted",
 		"isMeta":          false,
-		"compactMetadata": map[string]any{"trigger": "auto"},
+		"compactMetadata": map[string]any{"trigger": trigger, "preTokens": preTokens},
 	}
 	boundaryBytes, _ := json.Marshal(contentMap)
 	msgs = append(msgs, types.Message{
