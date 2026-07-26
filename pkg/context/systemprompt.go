@@ -144,11 +144,12 @@ func (b *Builder) RuntimeInfo() string {
 		}
 	}
 	parts = append(parts, "model={{MODEL}}")
+	parts = append(parts, "modalities={{MODALITIES}}")
 
 	runtime := "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
 	if b.WorkingDir != "" && b.ProjectDir != "" {
 		runtime += "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n"
-		runtime += "- projectspace: gbot state directory (gbot.log, memory, session notes, file history, PID)"
+		runtime += "- projectspace: gbot state directory (gbot.log, memory including markdown files and memory.db (transcripts), session notes, file history, PID)"
 	}
 	return runtime
 }

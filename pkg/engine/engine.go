@@ -2117,6 +2117,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{{SOUL}}", soulText, 1)
 		systemPrompt = strings.Replace(systemPrompt, "{{MODEL}}", e.model, 1)
+		modalities := e.inputModalities
+		if len(modalities) == 0 {
+			modalities = []string{"text"}
+		}
+		systemPrompt = strings.Replace(systemPrompt, "{{MODALITIES}}", strings.Join(modalities, "+"), 1)
 		systemBlocks = []llm.SystemBlockParam{
 			{Type: "text", Text: systemPrompt},
 		}
