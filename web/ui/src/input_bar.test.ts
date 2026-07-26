@@ -286,6 +286,23 @@ describe('createInputBar', () => {
     expect(ib.textarea.value).toBe('')
   })
 
+  it('setStreaming(false) dims send button when input is empty', () => {
+    const ib = mount()
+    const sendBtn = ib.root.querySelector(
+      'button[aria-label="Send"]',
+    ) as HTMLButtonElement
+    // Type and enter streaming.
+    ib.textarea.value = 'hello'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    ib.setStreaming(true)
+    // Form submit clears textarea; query then ends.
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    ib.setStreaming(false)
+    // Query end with empty input must re-dim the send icon.
+    expect(sendBtn.className).toContain('opacity-50')
+  })
+
   // ── Input history navigation ──
 
   function setCursor(ta: HTMLTextAreaElement, pos: number) {

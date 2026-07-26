@@ -758,6 +758,8 @@ export function createInputBar(initial: {
         sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
         sendBtn.setAttribute('aria-label', 'Send')
         queuedMsgs = []
+        // Re-evaluate opacity-50: query end with empty input should dim.
+        recomputeCanSend()
       }
       renderBubbles()
     },
