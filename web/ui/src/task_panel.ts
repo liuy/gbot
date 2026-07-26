@@ -135,7 +135,8 @@ export function createTaskPanel(): TaskPanelHandles {
   // Cleanup popover if root is removed from DOM.
   new MutationObserver((_mutations, observer) => {
     if (!root.isConnected) {
-      host.close()
+      // jsdom teardown fires observer after document is gone; guard.
+      if (typeof document !== 'undefined') host.close()
       observer.disconnect()
     }
   }).observe(root.parentElement ?? document.body, { childList: true })

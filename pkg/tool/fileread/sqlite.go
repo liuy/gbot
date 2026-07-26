@@ -802,7 +802,7 @@ func sqlHasExplicitLimit(sqlText string) bool {
 }
 
 // stripSingleQuotedStrings removes '...' sequences from SQL, replacing them
-// with empty strings. Handles SQL-style '' escapes inside quoted strings.
+// with empty strings. Handles SQL-style ” escapes inside quoted strings.
 func stripSingleQuotedStrings(s string) string {
 	var b strings.Builder
 	inQuote := false
@@ -823,6 +823,7 @@ func stripSingleQuotedStrings(s string) string {
 	}
 	return b.String()
 }
+
 // sqliteExecuteRawQuery runs a raw SQL query, capping rows.
 // Rejects bound parameters (?) — values must be inlined because the SQL comes
 // from a single query string with no separate bind arguments. omp: paramsCount > 0.
@@ -1006,13 +1007,6 @@ func sanitizeCell(s string) string {
 // stringWidth returns the visible character count (rune count, ignoring ANSI).
 func stringWidth(s string) int {
 	return len([]rune(s))
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func minInt(a, b int) int {
