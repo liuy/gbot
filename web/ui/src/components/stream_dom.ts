@@ -411,11 +411,13 @@ export function markToolCollapsible(root: HTMLElement): void {
   // Previous sibling is also collapsible — create a new group.
   if (sibling.dataset.collapsible === '1') {
     const preThinking = collectLeadingThinking(sibling)
+    const postThinking = collectTrailingThinking(sibling as HTMLElement)
     const group = createGroupContainer()
     parent.replaceChild(group, sibling)
     const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
     for (const th of preThinking) toolsContainer.appendChild(th)
     toolsContainer.appendChild(sibling)
+    for (const th of postThinking) toolsContainer.appendChild(th)
     toolsContainer.appendChild(root)
     updateGroupSummary(group)
   }

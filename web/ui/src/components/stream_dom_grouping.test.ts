@@ -3,6 +3,7 @@ import {
 	appendToolBlock,
 	appendTextBlock,
 	appendThinkingBlock,
+	markToolCollapsible,
 } from './stream_dom'
 
 function setup() {
@@ -253,5 +254,24 @@ describe('thinking absorption into tool groups', () => {
     expect((tc.children[0] as HTMLElement).dataset.toolName).toBe('Grep')
     expect((tc.children[1] as HTMLElement).dataset.thinking).toBe('1')
     expect((tc.children[2] as HTMLElement).dataset.toolName).toBe('Glob')
+  })
+
+  it('markToolCollapsible absorbs inter-tool thinking', () => {
+    // Simulate streaming: tools are not collapsible at creation (is_read
+    // hasn't arrived yet), and markToolCollapsible is called retroactively.
+    const container = setup()
+    const t1 = appendToolBlock(container, 'Grep', null, false)
+    appendThinkingBlock(container, 0)
+    const t2 = appendToolBlock(container, 'Grep', null, false)
+
+    // is_read arrives for both tools — mark retroactively.
+    markToolCollapsible(t1.root)
+    markToolCollapsible(t2.root)
+
+    const group = container.querySelector('[data-tool-group]') as HTMLElement
+    expect(group).toBeTruthy()
+    const tc = group.querySelector('[data-group-tools]') as HTMLElement
+    expect(tc.querySelectorAll('[data-thinking]').length).toBe(1)
+    expect(tc.querySelectorAll('[data-tool-root]').length).toBe(2)
   })
 })
