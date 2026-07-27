@@ -3,6 +3,7 @@ import { createPopupPanel, createPopupHost } from './utils'
 import { floatingButton } from './styles/recipes'
 import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
 import { createElement, createNode } from './dom'
+import { renderIcon } from './icons'
 
 export interface TaskPanelHandles {
   root: HTMLElement
@@ -78,13 +79,15 @@ export function createTaskPanel(): TaskPanelHandles {
 
     if (t.status === 'completed') {
       icon.className += ' bg-green/20 text-green'
+      // 'check' is not in IconName; inline SVG preserved so task_panel.test.ts
+      // path-substring assertion stays byte-stable.
       icon.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>'
       subject.className += ' text-t3 line-through'
       subject.textContent = t.subject
       row.append(icon, subject)
     } else if (t.status === 'in_progress') {
       icon.className += ' bg-blue/20 text-blue'
-      icon.innerHTML = '<svg class="spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>'
+      icon.replaceChildren(renderIcon('refresh', { size: 10, strokeWidth: 2.5, className: 'spin' }))
       subject.className += ' text-t1 font-medium'
       subject.textContent = t.subject
       const run = createElement('span', 'mono text-[10px] text-blue pulse')

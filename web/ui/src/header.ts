@@ -5,6 +5,7 @@ import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
 import { createElement, createNode, cx } from './dom'
+import { renderIcon } from './icons'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -188,8 +189,7 @@ function createEnginePicker(
       'button',
       'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1',
     )
-    footer.innerHTML =
-      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
+    footer.replaceChildren(renderIcon('plus', { size: 18 }))
     footer.style.color = 'var(--color-blue)'
     footer.addEventListener('click', () => {
       onNew()
@@ -494,11 +494,7 @@ export function createHeader(opts: {
   const inner = createElement('div', 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto')
 
   const hamburgerWrap = createElement('button', 'flex items-center text-t2 hover:text-t1 transition-colors')
-  hamburgerWrap.innerHTML =
-    '<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
-    '<rect x="1" y="1" width="16" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
-    '<rect x="3" y="10.5" width="12" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
-    '</svg>'
+  hamburgerWrap.replaceChildren(renderIcon('menu', { size: 18 }))
 
   const hamburgerHandler = { fn: () => {} }
   hamburgerWrap.addEventListener('click', () => hamburgerHandler.fn())

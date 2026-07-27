@@ -60,6 +60,7 @@ import {
   disconnectText,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
+import { renderIcon } from './icons'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -219,8 +220,11 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
 }
 
 const avatarGStyle = 'background: linear-gradient(to bottom right, #00B4FF, #9D5CFF);color:#FFFFFF'
-const userAvatarSVG =
-  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a8 8 0 0116 0v1" /></svg>'
+// User avatar uses literal #FFFFFF instead of text-white: index.css overrides
+// --color-white to #333333 in light theme, so Tailwind's text-white would
+// render the avatar nearly invisible on light backgrounds.
+const renderUserAvatar = (): SVGElement =>
+  renderIcon('user', { size: 13, className: 'text-[#FFFFFF]' })
 
 // Shared layout for user and assistant messages. The grid (avatar | content |
 // avatar) is identical for both roles — only the avatar position and content
@@ -245,7 +249,7 @@ function buildShell(
     : createElement('div')
 
   if (role === 'user') {
-    rightCol.innerHTML = userAvatarSVG
+    rightCol.replaceChildren(renderUserAvatar())
   }
 
   const content = createElement('div', contentArea({ role }))

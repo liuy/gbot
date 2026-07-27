@@ -222,10 +222,9 @@ describe('createNode', () => {
       expect(el.style.top).toBe('0px')
     })
 
-    // jsdom normalizes `el.style.x = undefined|null` to '' just like the
-    // persona loop does, so this test cannot distinguish the two in jsdom.
-    // Real browsers may stringify undefined; the persona loop is the source
-    // of truth, not this assertion. Kept to lock the observable contract.
+    // jsdom normalizes `el.style.x = undefined|null` to '' regardless of
+    // whether createNode uses the persona loop or Object.assign. Locks the
+    // observable contract; cannot catch an Object.assign regression here.
     it('nullish style values never appear on the element', () => {
       const el = createNode('div', {
         style: { display: 'none', color: undefined, background: null },

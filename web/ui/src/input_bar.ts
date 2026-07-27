@@ -1,5 +1,6 @@
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
 import { createElement, createNode } from './dom'
+import { renderIcon } from './icons'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -153,24 +154,20 @@ export function createInputBar(initial: {
     props: { type: 'button', disabled: !connected },
     attrs: { 'aria-label': 'Attach file' },
   })
-  plusBtn.innerHTML =
-    '<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>'
+  plusBtn.replaceChildren(renderIcon('plus', { className: 'h-6 w-6' }))
 
   // Attach popup — three icon buttons (camera/image/doc), each opening its
   // own file picker. Anchored above the + button via positionAnchoredPopup.
   const attachPanel = createAnchoredPopup('flex items-center gap-3 px-4 py-3')
   const attachIconClass =
     'flex items-center justify-center w-9 h-9 rounded-lg text-blue hover:text-white hover:bg-blue/10 transition-colors'
-  const attachSvgAttrs =
-    'class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
   const cameraBtn = createNode('button', {
     className: attachIconClass,
     props: { type: 'button' },
     attrs: { 'aria-label': 'Camera' },
   })
-  cameraBtn.innerHTML =
-    `<svg ${attachSvgAttrs}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`
+  cameraBtn.replaceChildren(renderIcon('camera', { className: 'h-5 w-5' }))
   cameraBtn.addEventListener('click', () => {
     if (plusBtn.disabled) return
     closeAttachPanel()
@@ -182,8 +179,7 @@ export function createInputBar(initial: {
     props: { type: 'button' },
     attrs: { 'aria-label': 'Image' },
   })
-  imageBtn.innerHTML =
-    `<svg ${attachSvgAttrs}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`
+  imageBtn.replaceChildren(renderIcon('image', { className: 'h-5 w-5' }))
   imageBtn.addEventListener('click', () => {
     if (plusBtn.disabled) return
     closeAttachPanel()
@@ -195,8 +191,7 @@ export function createInputBar(initial: {
     props: { type: 'button' },
     attrs: { 'aria-label': 'File' },
   })
-  docBtn.innerHTML =
-    `<svg ${attachSvgAttrs}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
+  docBtn.replaceChildren(renderIcon('file', { className: 'h-5 w-5' }))
   docBtn.addEventListener('click', () => {
     if (plusBtn.disabled) return
     closeAttachPanel()
@@ -242,15 +237,14 @@ export function createInputBar(initial: {
   // Send/Stop button — toggles between send and stop based on streaming state.
   const sendBtn = createNode('button', {
     className:
-      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30',
+      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-30',
     props: { type: 'button' },
     attrs: { 'aria-label': 'Send' },
   })
-  const sendIcon =
-    '<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M3 10l14-7-7 14-2-5-5-2z" /></svg>'
+  const renderSendIcon = (): SVGElement => renderIcon('send', { className: 'h-6 w-6' })
   const stopIcon =
     '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
-  sendBtn.innerHTML = sendIcon
+  sendBtn.replaceChildren(renderSendIcon())
 
   row.appendChild(plusBtn)
   row.appendChild(taWrap)
@@ -435,6 +429,7 @@ export function createInputBar(initial: {
           attrs: { 'data-paste-chip': '', role: 'button' },
           props: { tabIndex: 0 },
         })
+        // 'clipboard' is not in IconName; kept inline as a multi-string concat.
         click.innerHTML =
           '<svg class="h-3 w-3 shrink-0 text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
           '<rect x="8" y="2" width="8" height="4" rx="1"/>' +
@@ -472,8 +467,7 @@ export function createInputBar(initial: {
           props: { type: 'button' },
           attrs: { 'aria-label': 'Retry upload' },
         })
-        retry.innerHTML =
-          '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>'
+        retry.replaceChildren(renderIcon('refresh', { size: 9, strokeWidth: 2.5 }))
         retry.addEventListener('click', async () => {
           if (retry.disabled) return
           retry.disabled = true
@@ -575,7 +569,7 @@ export function createInputBar(initial: {
     // without interrupting the current query.
     if (streaming) {
       if (hasText || hasAttachments) {
-        sendBtn.innerHTML = sendIcon
+        sendBtn.replaceChildren(renderSendIcon())
         sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
         sendBtn.setAttribute('aria-label', 'Send')
       } else {
@@ -712,8 +706,7 @@ export function createInputBar(initial: {
         'div',
         'mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer',
       )
-      bub.innerHTML =
-        '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>'
+      bub.replaceChildren(renderIcon('dot', { size: 11, strokeWidth: 2.5, className: 'text-t3' }))
       const label = createElement('span', 'text-[10px] text-t2 font-light italic truncate max-w-[240px]')
       label.textContent = m.text
       bub.appendChild(label)
@@ -744,7 +737,7 @@ export function createInputBar(initial: {
         // (recomputeCanSend handles the icon/aria-label flip).
         recomputeCanSend()
       } else {
-        sendBtn.innerHTML = sendIcon
+        sendBtn.replaceChildren(renderSendIcon())
         sendBtn.classList.remove('pulse-blue', 'bg-blue/12')
         sendBtn.setAttribute('aria-label', 'Send')
         queuedMsgs = []

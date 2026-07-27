@@ -2,6 +2,7 @@ import type { SessionListItem } from './types'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 import { createOutsideClick, bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
+import { renderIcon } from './icons'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -51,14 +52,8 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     'button',
     'absolute bottom-5 right-5 w-10 h-10 flex items-center justify-center text-blue',
   )
-  fab.innerHTML =
-    '<svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
+  fab.replaceChildren(renderIcon('plus', { size: 22 }))
   root.appendChild(fab)
-
-  // Theme toggle — bottom-left corner
-  const moonSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
-  const sunSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
-  const taiChiSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M17 3.34a10 10 0 1 1 -14.995 8.984l-.005 -.324l.005 -.324a10 10 0 0 1 14.995 -8.336zm-9 1.732a8 8 0 0 0 4 14.928l.2 -.005a4 4 0 0 0 0 -7.99l-.2 -.005a4 4 0 0 1 -.2 -7.995l.2 -.005a7.995 7.995 0 0 0 -4 1.072zm4 1.428a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0 -3" fill="currentColor"/><circle cx="12" cy="15.5" r="1.5" fill="currentColor"/><circle cx="12" cy="8.5" r="1.5" fill="var(--color-ink2, white)"/></svg>'
 
   const THEME_CYCLE = ['dark', 'light', 'system'] as const
   type Theme = typeof THEME_CYCLE[number]
@@ -72,13 +67,14 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const effectiveTheme = resolveTheme(savedPref)
   document.documentElement.dataset.theme = effectiveTheme
 
-  const themeIcon = (pref: Theme) => pref === 'dark' ? moonSvg : pref === 'light' ? sunSvg : taiChiSvg
+  const renderThemeIcon = (pref: Theme): SVGElement =>
+    renderIcon(pref === 'dark' ? 'moon' : pref === 'light' ? 'sun' : 'tai-chi', { size: 18 })
 
   const themeToggle = createElement(
     'button',
     'absolute bottom-5 left-5 w-10 h-10 flex items-center justify-center text-t2',
   )
-  themeToggle.innerHTML = themeIcon(savedPref)
+  themeToggle.replaceChildren(renderThemeIcon(savedPref))
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
   const onSystemChange = () => {
@@ -105,7 +101,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     localStorage.setItem('gbot-theme', next)
     const resolved = resolveTheme(next)
     document.documentElement.dataset.theme = resolved
-    themeToggle.innerHTML = themeIcon(next)
+    themeToggle.replaceChildren(renderThemeIcon(next))
     applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
   })
 
