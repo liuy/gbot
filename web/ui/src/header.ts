@@ -4,6 +4,7 @@ import { createPopupPanel, createOutsideClick, createPopupHost, formatTokenCount
 import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
+import { createElement, createNode, cx } from './dom'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -34,29 +35,23 @@ function createModelPicker(
   onSelect: (provider: string, model: string) => void,
   onRequestQuota?: () => void,
 ): { wrap: HTMLElement; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
-  const wrap = document.createElement('div')
-  wrap.className = 'relative'
+  const wrap = createElement('div', 'relative')
 
-  const trigger = document.createElement('button')
-  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors'
+  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors')
 
   const panel = createPopupPanel()
 
-  const searchInput = document.createElement('textarea')
-  searchInput.rows = 1
-  searchInput.placeholder = 'Search models...'
-  searchInput.setAttribute('autocapitalize', 'off')
-  searchInput.setAttribute('autocorrect', 'off')
-  searchInput.spellcheck = false
-  searchInput.className =
-    'w-full bg-transparent px-4 py-2.5 text-[13px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none'
-  searchInput.style.fontFamily = 'inherit'
-  searchInput.style.fontSize = 'inherit'
+  const searchInput = createNode('textarea', {
+    className:
+      'w-full bg-transparent px-4 py-2.5 text-[13px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none',
+    props: { rows: 1, placeholder: 'Search models...', spellcheck: false },
+    attrs: { autocapitalize: 'off', autocorrect: 'off' },
+    style: { fontFamily: 'inherit', fontSize: 'inherit' },
+  })
   ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
   panel.appendChild(searchInput)
 
-  const listContainer = document.createElement('div')
-  listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
+  const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
   panel.appendChild(listContainer)
 
   let allModels: ModelEntry[] = []
@@ -72,8 +67,7 @@ function createModelPicker(
     )
 
     if (filtered.length === 0) {
-      const empty = document.createElement('div')
-      empty.className = 'px-3 py-4 text-center text-[13px] text-t3'
+      const empty = createElement('div', 'px-3 py-4 text-center text-[13px] text-t3')
       empty.textContent = 'No models found'
       listContainer.appendChild(empty)
       return
@@ -83,23 +77,21 @@ function createModelPicker(
     for (const entry of filtered) {
       if (entry.provider !== lastProvider) {
         lastProvider = entry.provider
-        const header = document.createElement('div')
-        header.className = 'px-3 pt-2 pb-1 mono text-[13px] text-t3 uppercase tracking-wider'
+        const header = createElement('div', 'px-3 pt-2 pb-1 mono text-[13px] text-t3 uppercase tracking-wider')
         header.textContent = entry.provider
         listContainer.appendChild(header)
       }
-      const item = document.createElement('button')
+      const item = createElement(
+        'button',
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50',
+      )
       const isActive = entry.provider === currentProvider && entry.model === currentModel
-      item.className =
-        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50'
-      const span = document.createElement('span')
-      span.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
+      const span = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
       span.textContent = entry.model
       item.appendChild(span)
       const qText = entry.quota ?? quotaByProvider.get(entry.provider)
       if (qText) {
-        const q = document.createElement('span')
-        q.className = 'text-[10px] text-t3 ml-auto'
+        const q = createElement('span', 'text-[10px] text-t3 ml-auto')
         q.textContent = qText
         item.appendChild(q)
       }
@@ -152,17 +144,14 @@ function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
 ): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
-  const wrap = document.createElement('div')
-  wrap.className = 'relative'
+  const wrap = createElement('div', 'relative')
 
-  const trigger = document.createElement('button')
-  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors'
+  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors')
 
   const panel = createPopupPanel()
   panel.dataset.testid = 'engine-picker-panel'
 
-  const listContainer = document.createElement('div')
-  listContainer.className = 'max-h-[50dvh] overflow-y-auto p-1'
+  const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
   panel.appendChild(listContainer)
 
   let allEngines: EngineEntry[] = []
@@ -172,18 +161,16 @@ function createEnginePicker(
     listContainer.innerHTML = ''
     for (const entry of allEngines) {
       const isActive = entry.id === activeID
-      const item = document.createElement('button')
-      item.className =
-        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50'
-      const dot = document.createElement('span')
-      dot.className = 'h-2 w-2 rounded-full shrink-0 ' + (isActive ? 'bg-blue' : 'bg-t3/30')
+      const item = createElement(
+        'button',
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50',
+      )
+      const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
       item.appendChild(dot)
-      const nameSpan = document.createElement('span')
-      nameSpan.className = 'text-[13px] ' + (isActive ? 'text-blue' : 'text-t2')
+      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
       nameSpan.textContent = entry.name || entry.id
       item.appendChild(nameSpan)
-      const modelSpan = document.createElement('span')
-      modelSpan.className = 'text-[13px] text-t3 ml-2'
+      const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
       modelSpan.textContent = entry.model
       item.appendChild(modelSpan)
       if (isActive) {
@@ -197,9 +184,10 @@ function createEnginePicker(
       listContainer.appendChild(item)
     }
     // Footer: + icon only
-    const footer = document.createElement('button')
-    footer.className =
-      'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1'
+    const footer = createElement(
+      'button',
+      'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1',
+    )
     footer.innerHTML =
       '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
     footer.style.color = 'var(--color-blue)'
@@ -251,24 +239,21 @@ function ansiToCss(code: string): string {
 }
 
 function createSection(title: string): HTMLDivElement {
-  const sec = document.createElement('div')
-  sec.className = 'pt-2 pb-1 px-4'
-  const h = document.createElement('div')
-  h.className = 'mono text-[11px] text-t3 uppercase tracking-wider'
-  h.textContent = title
+  const sec = createElement('div', 'pt-2 pb-1 px-4')
+  const h = createNode('div', {
+    className: 'mono text-[11px] text-t3 uppercase tracking-wider',
+    text: title,
+  })
   sec.appendChild(h)
   return sec
 }
 
 function createDetailRow(name: string, tokens: number): HTMLDivElement {
-  const row = document.createElement('div')
-  row.className = 'flex items-center justify-between px-4 py-1'
-  const n = document.createElement('span')
-  n.className = 'text-[13px] text-t2 truncate'
+  const row = createElement('div', 'flex items-center justify-between px-4 py-1')
+  const n = createElement('span', 'text-[13px] text-t2 truncate')
   n.textContent = name
   row.appendChild(n)
-  const t = document.createElement('span')
-  t.className = 'mono text-[12px] text-t3 ml-2 shrink-0'
+  const t = createElement('span', 'mono text-[12px] text-t3 ml-2 shrink-0')
   t.textContent = formatTokenCount(tokens)
   row.appendChild(t)
   return row
@@ -277,28 +262,25 @@ function createDetailRow(name: string, tokens: number): HTMLDivElement {
 function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData) {
   panel.innerHTML = ''
 
-  const titleBar = document.createElement('div')
-  titleBar.className = 'px-4 pt-3 pb-1'
-  const title = document.createElement('div')
-  title.className = 'text-[14px] font-semibold text-t1'
-  title.textContent = 'Context Usage'
+  const titleBar = createElement('div', 'px-4 pt-3 pb-1')
+  const title = createNode('div', {
+    className: 'text-[14px] font-semibold text-t1',
+    text: 'Context Usage',
+  })
   titleBar.appendChild(title)
-  const total = document.createElement('div')
-  total.className = 'mono text-[12px] text-t3 mt-0.5'
+  const total = createElement('div', 'mono text-[12px] text-t3 mt-0.5')
   total.textContent =
     formatTokenCount(data.totalTokens) + ' / ' + formatTokenCount(data.contextWindow) +
     ' (' + data.percentage.toFixed(1) + '%)'
   titleBar.appendChild(total)
   panel.appendChild(titleBar)
 
-  const barWrap = document.createElement('div')
-  barWrap.className = 'px-4 py-2'
-  const bar = document.createElement('div')
-  bar.className = 'flex h-2 rounded-full overflow-hidden bg-ink3/50'
+  const barWrap = createElement('div', 'px-4 py-2')
+  const bar = createElement('div', 'flex h-2 rounded-full overflow-hidden bg-ink3/50')
   bar.dataset.testid = 'context-bar'
   for (const cat of data.categories) {
     if (cat.tokens === 0) continue
-    const seg = document.createElement('div')
+    const seg = createElement('div')
     seg.style.width = cat.percentage + '%'
     seg.style.backgroundColor = ansiToCss(cat.color)
     seg.dataset.testid = 'context-segment'
@@ -308,25 +290,19 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   barWrap.appendChild(bar)
   panel.appendChild(barWrap)
 
-  const listWrap = document.createElement('div')
-  listWrap.className = 'pb-1'
+  const listWrap = createElement('div', 'pb-1')
   for (const cat of data.categories) {
-    const row = document.createElement('div')
-    row.className = 'flex items-center gap-2 px-4 py-1'
-    const dot = document.createElement('span')
-    dot.className = 'h-2 w-2 rounded-full shrink-0'
+    const row = createElement('div', 'flex items-center gap-2 px-4 py-1')
+    const dot = createElement('span', 'h-2 w-2 rounded-full shrink-0')
     dot.style.backgroundColor = ansiToCss(cat.color)
     row.appendChild(dot)
-    const name = document.createElement('span')
-    name.className = 'text-[13px] text-t2 flex-1 truncate'
+    const name = createElement('span', 'text-[13px] text-t2 flex-1 truncate')
     name.textContent = cat.name
     row.appendChild(name)
-    const tok = document.createElement('span')
-    tok.className = 'mono text-[12px] text-t3'
+    const tok = createElement('span', 'mono text-[12px] text-t3')
     tok.textContent = formatTokenCount(cat.tokens)
     row.appendChild(tok)
-    const pct = document.createElement('span')
-    pct.className = 'text-[11px] text-t3 w-10 text-right'
+    const pct = createElement('span', 'text-[11px] text-t3 w-10 text-right')
     pct.textContent = cat.percentage.toFixed(1) + '%'
     row.appendChild(pct)
     listWrap.appendChild(row)
@@ -388,10 +364,8 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     const sec = createSection('MCP tools deferred')
     panel.appendChild(sec)
     for (const t of data.mcpToolsDeferred) {
-      const row = document.createElement('div')
-      row.className = 'flex items-center justify-between px-4 py-1'
-      const n = document.createElement('span')
-      n.className = 'text-[13px] text-t2 truncate'
+      const row = createElement('div', 'flex items-center justify-between px-4 py-1')
+      const n = createElement('span', 'text-[13px] text-t2 truncate')
       n.textContent = t.name + ' (' + t.serverName + ')'
       row.appendChild(n)
       panel.appendChild(row)
@@ -429,8 +403,7 @@ function createContextPopover(onRequest: () => void): {
   setBreakdown: (data: ContextBreakdownData | null) => void
   hide: () => void
 } {
-  const trigger = document.createElement('button')
-  trigger.className = 'mono text-[14px] text-t2 hover:text-t1 transition-colors cursor-pointer hidden'
+  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors cursor-pointer hidden')
   trigger.dataset.testid = 'context-trigger'
 
   const panel = createPopupPanel({ className: 'max-h-[60dvh] overflow-y-auto max-w-md' })
@@ -452,10 +425,10 @@ function createContextPopover(onRequest: () => void): {
     if (breakdown) {
       renderBreakdownContent(panel, breakdown)
     } else {
-      const hint = document.createElement('div')
-      hint.className = 'px-4 py-6 text-center text-[13px] text-t3'
-      hint.textContent = 'Send a message first to see context usage.'
-      panel.appendChild(hint)
+      panel.appendChild(createNode('div', {
+        className: 'px-4 py-6 text-center text-[13px] text-t3',
+        text: 'Send a message first to see context usage.',
+      }))
     }
   }
 
@@ -464,10 +437,10 @@ function createContextPopover(onRequest: () => void): {
     if (!panel.parentElement) document.body.appendChild(panel)
     panel.classList.remove('hidden')
     panel.innerHTML = ''
-    const loading = document.createElement('div')
-    loading.className = 'px-4 py-6 text-center text-[13px] text-t3'
-    loading.textContent = 'Loading...'
-    panel.appendChild(loading)
+    panel.appendChild(createNode('div', {
+      className: 'px-4 py-6 text-center text-[13px] text-t3',
+      text: 'Loading...',
+    }))
   }
 
   const closePanel = () => {
@@ -498,10 +471,10 @@ function createContextPopover(onRequest: () => void): {
         renderBreakdownContent(panel, data)
       } else {
         panel.innerHTML = ''
-        const hint = document.createElement('div')
-        hint.className = 'px-4 py-6 text-center text-[13px] text-t3'
-        hint.textContent = 'Send a message first to see context usage.'
-        panel.appendChild(hint)
+        panel.appendChild(createNode('div', {
+          className: 'px-4 py-6 text-center text-[13px] text-t3',
+          text: 'Send a message first to see context usage.',
+        }))
       }
     }
   }
@@ -516,15 +489,11 @@ export function createHeader(opts: {
   onContextRequest?: () => void
   onRequestQuota?: () => void
 }): HeaderHandles {
-  const root = document.createElement('header')
-  root.className = 'sticky top-0 z-30 card-bg'
+  const root = createElement('header', 'sticky top-0 z-30 card-bg')
 
-  const inner = document.createElement('div')
-  inner.className = 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto'
+  const inner = createElement('div', 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto')
 
-  const hamburgerWrap = document.createElement('button')
-  hamburgerWrap.className =
-    'flex items-center text-t2 hover:text-t1 transition-colors'
+  const hamburgerWrap = createElement('button', 'flex items-center text-t2 hover:text-t1 transition-colors')
   hamburgerWrap.innerHTML =
     '<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
     '<rect x="1" y="1" width="16" height="2.5" rx="1.25" fill="currentColor" stroke="none"/>' +
@@ -534,16 +503,14 @@ export function createHeader(opts: {
   const hamburgerHandler = { fn: () => {} }
   hamburgerWrap.addEventListener('click', () => hamburgerHandler.fn())
 
-  const gbotWrap = document.createElement('button')
-  gbotWrap.className = 'group flex items-center'
+  const gbotWrap = createElement('button', 'group flex items-center')
 
   const debugPanel = createPopupPanel({ className: 'flex flex-col h-[60vh]' })
   const copyBtn = createCopyButton(() => getDebugLogs().join('\n'))
   copyBtn.classList.add('absolute', 'top-2', 'right-2', 'text-t3', 'z-10')
   debugPanel.appendChild(copyBtn)
 
-  const debugList = document.createElement('div')
-  debugList.className = 'flex-1 overflow-y-auto p-2 min-h-0 space-y-0.5'
+  const debugList = createElement('div', 'flex-1 overflow-y-auto p-2 min-h-0 space-y-0.5')
   debugPanel.appendChild(debugList)
 
   let debugOpen = false
@@ -552,8 +519,7 @@ export function createHeader(opts: {
     const logs = getDebugLogs()
     debugList.innerHTML = ''
     for (const line of logs) {
-      const el = document.createElement('div')
-      el.className = 'text-[11px] text-t3 font-mono break-all leading-tight'
+      const el = createElement('div', 'text-[11px] text-t3 font-mono break-all leading-tight')
       el.textContent = line
       debugList.appendChild(el)
     }
@@ -579,9 +545,10 @@ export function createHeader(opts: {
     }
   })
   onDebugLog(renderDebugLogs)
-  const wordmark = document.createElement('span')
-  wordmark.className =
-    'text-[14px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue'
+  const wordmark = createElement(
+    'span',
+    'text-[14px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue',
+  )
   wordmark.textContent = 'GBot'
   gbotWrap.appendChild(wordmark)
 
@@ -589,15 +556,17 @@ export function createHeader(opts: {
   const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
 
   const sep = () => {
-    const s = document.createElement('span')
-    s.className = 'text-t3 text-[14px]'
-    s.textContent = '\u203a'
+    const s = createNode('span', {
+      className: 'text-t3 text-[14px]',
+      text: '\u203a',
+    })
     return s
   }
 
-  const breadcrumb = document.createElement('div')
-  breadcrumb.className = 'flex items-center gap-1.5'
-  breadcrumb.style.lineHeight = '14px'
+  const breadcrumb = createNode('div', {
+    className: 'flex items-center gap-1.5',
+    style: { lineHeight: '14px' },
+  })
   breadcrumb.appendChild(enginePicker.wrap)
   breadcrumb.appendChild(sep())
   breadcrumb.appendChild(modelPicker.wrap)
@@ -606,8 +575,7 @@ export function createHeader(opts: {
   inner.appendChild(gbotWrap)
   inner.appendChild(breadcrumb)
 
-  const spacer = document.createElement('div')
-  spacer.className = 'flex-1'
+  const spacer = createElement('div', 'flex-1')
   inner.appendChild(spacer)
 
   const ctxPopover = createContextPopover(() => opts.onContextRequest?.())
@@ -650,7 +618,7 @@ export function createHeader(opts: {
     let color = 'text-t2'
     if (pct >= 90) color = 'text-red-500'
     else if (pct >= 80) color = 'text-amber-500'
-    ctxPopover.trigger.className = 'mono text-[14px] hover:text-t1 transition-colors cursor-pointer ' + color
+    ctxPopover.trigger.className = cx('mono text-[14px] hover:text-t1 transition-colors cursor-pointer', color)
     ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 

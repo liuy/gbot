@@ -59,6 +59,7 @@ import {
   disconnectBannerClass,
   disconnectText,
 } from './styles/recipes'
+import { createElement, createNode, createFragment } from './dom'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -114,14 +115,14 @@ export interface ChatHandles {
 let lightboxOverlay: HTMLDivElement | null = null
 function showImageLightbox(src: string): void {
   if (!lightboxOverlay) {
-    const overlay = document.createElement('div')
-    overlay.className =
-      'fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-zoom-out p-4'
+    const overlay = createElement(
+      'div',
+      'fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-zoom-out p-4',
+    )
     overlay.addEventListener('click', () => {
       overlay.style.display = 'none'
     })
-    const img = document.createElement('img')
-    img.className = 'max-w-full max-h-full object-contain rounded-lg'
+    const img = createElement('img', 'max-w-full max-h-full object-contain rounded-lg')
     overlay.appendChild(img)
     document.body.appendChild(overlay)
     lightboxOverlay = overlay
@@ -228,27 +229,26 @@ const userAvatarSVG =
 function buildShell(
   role: 'user' | 'assistant',
 ): { outer: HTMLElement; content: HTMLDivElement } {
-  const outer = document.createElement('div')
-  outer.className = shellOuter()
-  const grid = document.createElement('div')
-  grid.className = shellGrid()
+  const outer = createElement('div', shellOuter())
+  const grid = createElement('div', shellGrid())
 
-  const leftCol = document.createElement('div')
-  const centerCol = document.createElement('div')
-  centerCol.className = shellCenter()
-  const rightCol = document.createElement('div')
+  const leftCol = role === 'assistant'
+    ? createNode('div', {
+        className: `${avatarBase()} ${avatarG()}`,
+        attrs: { style: avatarGStyle },
+        text: 'G',
+      })
+    : createElement('div')
+  const centerCol = createElement('div', shellCenter())
+  const rightCol = role === 'user'
+    ? createElement('div', `${avatarBase()} ${avatarU()}`)
+    : createElement('div')
 
-  if (role === 'assistant') {
-    leftCol.className = `${avatarBase()} ${avatarG()}`
-    leftCol.setAttribute('style', avatarGStyle)
-    leftCol.textContent = 'G'
-  } else {
-    rightCol.className = `${avatarBase()} ${avatarU()}`
+  if (role === 'user') {
     rightCol.innerHTML = userAvatarSVG
   }
 
-  const content = document.createElement('div')
-  content.className = contentArea({ role })
+  const content = createElement('div', contentArea({ role }))
 
   centerCol.appendChild(content)
   grid.appendChild(leftCol)
@@ -273,17 +273,15 @@ function renderCommittedMessageDOM(
     // chip and the rest of the text becomes the text span.
     for (const b of m.blocks) {
       if (b.kind === 'image') {
-        const img = document.createElement('img')
+        const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
         img.src = b.src
-        img.className = 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in'
         img.addEventListener('click', () => showImageLightbox(b.src))
         content.appendChild(img)
       } else if (b.kind === 'text' || b.kind === 'user') {
         const text = (b as { text: string }).text
         const docMatch = text.match(/^\[Document: (.+?) saved at .+?\]\n?/)
         if (docMatch) {
-          const chip = document.createElement('span')
-          chip.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1'
+          const chip = createElement('span', 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1')
           chip.textContent = `[${docMatch[1]}]`
           content.appendChild(chip)
           const rest = text.slice(docMatch[0].length)
@@ -296,10 +294,7 @@ function renderCommittedMessageDOM(
       }
     }
     if (m.error) {
-      const err = document.createElement('div')
-      err.className = errorBox()
-      err.textContent = m.error
-      content.appendChild(err)
+      content.appendChild(createNode('div', { className: errorBox(), text: m.error }))
     }
     return { outer, content, runningTools }
   }
@@ -331,9 +326,8 @@ function renderCommittedMessageDOM(
     } else if (b.kind === 'image') {
       // Assistant image blocks should not occur in normal flow (assistant is
       // text-only), but render defensively in case a future tool emits one.
-      const img = document.createElement('img')
+      const img = createElement('img', 'block max-w-[400px] max-h-[400px] rounded-lg my-1')
       img.src = b.src
-      img.className = 'block max-w-[400px] max-h-[400px] rounded-lg my-1'
       content.appendChild(img)
     } else if (b.kind === 'user') {
       if (!b.text) continue
@@ -342,10 +336,7 @@ function renderCommittedMessageDOM(
   }
 
   if (m.error) {
-    const err = document.createElement('div')
-    err.className = errorBox()
-    err.textContent = m.error
-    content.appendChild(err)
+    content.appendChild(createNode('div', { className: errorBox(), text: m.error }))
   }
   return { outer, content, runningTools }
 }
@@ -356,15 +347,10 @@ function renderCommittedMessageDOM(
 // available width. Class names mirror design tokens already used elsewhere
 // in chat.ts (border-hairline, text-t3).
 function buildCompactDivider(): HTMLElement {
-  const container = document.createElement('div')
-  container.className = compactDividerContainer()
-  const left = document.createElement('div')
-  left.className = dividerHairline()
-  const label = document.createElement('span')
-  label.className = dividerLabel()
-  label.textContent = 'Compact'
-  const right = document.createElement('div')
-  right.className = dividerHairline()
+  const container = createElement('div', compactDividerContainer())
+  const left = createElement('div', dividerHairline())
+  const label = createNode('span', { className: dividerLabel(), text: 'Compact' })
+  const right = createElement('div', dividerHairline())
   container.append(left, label, right)
   return container
 }
@@ -374,11 +360,8 @@ function buildCompactDivider(): HTMLElement {
 // session break). The label text is the sole content; tests distinguish
 // time dividers from compact dividers by textContent ("Compact" vs not).
 function buildTimeDivider(label: string): HTMLElement {
-  const container = document.createElement('div')
-  container.className = timeDividerContainer()
-  const labelEl = document.createElement('span')
-  labelEl.className = dividerLabel()
-  labelEl.textContent = label
+  const container = createElement('div', timeDividerContainer())
+  const labelEl = createNode('span', { className: dividerLabel(), text: label })
   container.appendChild(labelEl)
   return container
 }
@@ -416,14 +399,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let queuedMsgs: { uuid: string; text: string }[] = []
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
-  const root = document.createElement('div')
-  root.className = 'relative flex flex-col h-dvh'
+  const root = createElement('div', 'relative flex flex-col h-dvh')
 
-  const mainContent = document.createElement('div')
-  mainContent.className = 'relative overflow-hidden transition-transform duration-300 ease-out h-full'
+  const mainContent = createElement(
+    'div',
+    'relative overflow-hidden transition-transform duration-300 ease-out h-full',
+  )
 
-  const scroll = document.createElement('div')
-  scroll.className = 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20 h-full'
+  const scroll = createElement(
+    'div',
+    'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20 h-full',
+  )
 
   const sidebar = createSidebar({ mainContent })
 
@@ -439,25 +425,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   scroll.appendChild(header.root)
 
   // ── Disconnect banner: slides in below header when WS is down.
-  const disconnectBanner = document.createElement('div')
-  disconnectBanner.className = disconnectBannerClass()
+  const disconnectBanner = createElement('div', disconnectBannerClass())
 
-  const dcText = document.createElement('span')
-  dcText.className = disconnectText()
+  const dcText = createElement('span', disconnectText())
   disconnectBanner.appendChild(dcText)
   mainContent.appendChild(disconnectBanner)
 
-  const wrapper = document.createElement('div')
-  wrapper.className = 'mx-auto max-w-2xl py-4'
+  const wrapper = createElement('div', 'mx-auto max-w-2xl py-4')
 
-  const topSentinel = document.createElement('div')
-  topSentinel.className = 'h-px'
-  const messagesContainer = document.createElement('div')
-  messagesContainer.className = 'space-y-7'
+  const topSentinel = createElement('div', 'h-px')
+  const messagesContainer = createElement('div', 'space-y-7')
   ;(messagesContainer.style as unknown as Record<string, string>).overflowAnchor = 'none'
 
-  const bottomSentinel = document.createElement('div')
-  bottomSentinel.className = 'h-px'
+  const bottomSentinel = createElement('div', 'h-px')
   ;(bottomSentinel.style as unknown as Record<string, string>).overflowAnchor = 'auto'
 
   wrapper.appendChild(topSentinel)
@@ -471,8 +451,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const taskPanel = createTaskPanel()
 
-  const inputWrapper = document.createElement('div')
-  inputWrapper.className = 'absolute bottom-0 inset-x-0 z-10'
+  const inputWrapper = createElement('div', 'absolute bottom-0 inset-x-0 z-10')
   inputWrapper.appendChild(inputBar.bubbles)
   inputWrapper.appendChild(inputBar.root)
   mainContent.appendChild(inputWrapper)
@@ -538,8 +517,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let lastScrollHeight = 0
 
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
-  const scrollBtn = document.createElement('button')
-  scrollBtn.className = floatingButton({ position: 'center' })
+  const scrollBtn = createElement('button', floatingButton({ position: 'center' }))
   // SVG: outer ring (progress) + inner arrow
   scrollBtn.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
@@ -742,7 +720,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   function createThinkingEntry(): ThinkingEntry {
     const startedAt = Date.now()
-    const temp = document.createElement('div')
+    const temp = createElement('div')
     const { p, labelEl } = appendThinkingBlock(temp, startedAt)
     const wrap = temp.firstChild as HTMLElement
     temp.removeChild(wrap)
@@ -829,16 +807,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       last.error = text
       last.status = 'done'
       last.lastActivityAt = Date.now()
-      const err = document.createElement('div')
-      err.className = errorBox()
-      err.textContent = text
-      last.contentDiv.appendChild(err)
+      last.contentDiv.appendChild(createNode('div', { className: errorBox(), text }))
     } else {
       const { outer, content } = buildShell('assistant')
-      const err = document.createElement('div')
-      err.className = errorBox()
-      err.textContent = text
-      content.appendChild(err)
+      content.appendChild(createNode('div', { className: errorBox(), text }))
       const m: MessageState = {
         id: '',
         role: 'assistant',
@@ -905,7 +877,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const prevScrollTop = scroll.scrollTop
     const before = messagesContainer.firstChild
     const wasEmpty = messages.length === 0
-    const frag = document.createDocumentFragment()
+    const frag = createFragment()
     // loadHistory prepends OLDER messages. The single cursor lastUserAt
     // already tracks the previous user message regardless of direction —
     // loadHistory and streaming share it via abs-time-delta rule.
@@ -1541,17 +1513,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (ref.kind === 'image') {
         // Blob URL is still alive (clearAttachments used keepSentBlobURLs).
         // The rendered DOM owns it now; browser GCs on page unload.
-        const img = document.createElement('img')
+        const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
         img.src = ref.previewURL
-        img.className = 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in'
         img.alt = ref.file.name
         img.addEventListener('click', () => showImageLightbox(ref.previewURL))
         content.appendChild(img)
         blocks.push({ kind: 'image', id: '', src: ref.previewURL })
       } else {
-        const span = document.createElement('span')
-        span.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1'
-        span.textContent = `[${ref.file.name}]`
+        const span = createNode('span', {
+          className: 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1',
+          text: `[${ref.file.name}]`,
+        })
         content.appendChild(span)
       }
     }

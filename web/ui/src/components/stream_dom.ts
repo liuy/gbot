@@ -31,12 +31,10 @@ import {
   groupToolsContainer,
   progressBar,
 } from '../styles/recipes'
+import { createElement, createNode } from '../dom'
 
 export function createUserTextSpan(text: string): HTMLSpanElement {
-  const span = document.createElement('span')
-  span.className = userTextSpan()
-  span.textContent = text
-  return span
+  return createNode('span', { className: userTextSpan(), text })
 }
 
 interface ToolHeaderHandles {
@@ -47,26 +45,24 @@ interface ToolHeaderHandles {
 }
 
 function createToolHeader(): ToolHeaderHandles {
-  const header = document.createElement('span')
-  header.setAttribute('role', 'button')
-  header.tabIndex = 0
-  header.className = toolHeaderBtn()
+  const header = createNode('span', {
+    className: toolHeaderBtn(),
+    attrs: { role: 'button' },
+    props: { tabIndex: 0 },
+  })
 
-  const prefix = document.createElement('span')
-  prefix.className = toolPrefix()
+  const prefix = createElement('span', toolPrefix())
 
-  const dot = document.createElement('span')
-  dot.className = runningDot({ color: 'white' })
+  const dot = createElement('span', runningDot({ color: 'white' }))
   dot.textContent = '●'
   prefix.appendChild(dot)
 
-  const chevronEl = document.createElement('span')
+  const chevronEl = createElement('span')
   chevronEl.innerHTML = `<svg class="${chevron({ expanded: false })}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
   prefix.appendChild(chevronEl)
   header.appendChild(prefix)
 
-  const content = document.createElement('span')
-  content.className = toolHeaderContent()
+  const content = createElement('span', toolHeaderContent())
   header.appendChild(content)
 
   return { header, dot, chevron: chevronEl, content }
@@ -149,8 +145,7 @@ function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
 }
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
-  const div = document.createElement('div')
-  div.className = textBlock()
+  const div = createElement('div', textBlock())
   insertBefore(parent, div, before ?? null)
   return div
 }
@@ -159,8 +154,7 @@ export function appendUserBlock(parent: HTMLElement, text: string, before?: Node
   // Streaming echo visual (small italic indented) lives on the div; the wrap
   // classes (whitespace-pre-wrap break-words) live on the inner span via
   // createUserTextSpan so all user-text paths share the same source of truth.
-  const div = document.createElement('div')
-  div.className = userEchoBlock()
+  const div = createElement('div', userEchoBlock())
   div.appendChild(createUserTextSpan(text))
   insertBefore(parent, div, before ?? null)
   return div
@@ -171,29 +165,27 @@ export function appendThinkingBlock(
   startedAt: number,
   before?: Node | null,
 ): { p: HTMLParagraphElement; labelEl: HTMLSpanElement } {
-  const wrap = document.createElement('div')
+  const wrap = createElement('div')
   wrap.dataset.thinking = '1'
 
-  const header = document.createElement('span')
-  header.setAttribute('role', 'button')
-  header.tabIndex = 0
-  header.className = toolHeaderBtn()
+  const header = createNode('span', {
+    className: toolHeaderBtn(),
+    attrs: { role: 'button' },
+    props: { tabIndex: 0 },
+  })
 
-  const prefix = document.createElement('span')
-  prefix.className = toolPrefix()
+  const prefix = createElement('span', toolPrefix())
 
-  const glyph = document.createElement('span')
-  glyph.className = thinkingGlyph()
+  const glyph = createElement('span', thinkingGlyph())
   glyph.textContent = '✦'
   prefix.appendChild(glyph)
 
-  const chevronEl = document.createElement('span')
+  const chevronEl = createElement('span')
   chevronEl.innerHTML = `<svg class="${chevron({ expanded: true })}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
   prefix.appendChild(chevronEl)
   header.appendChild(prefix)
 
-  const labelEl = document.createElement('span')
-  labelEl.className = thinkingLabel()
+  const labelEl = createElement('span', thinkingLabel())
   labelEl.textContent = `Thinking (${formatDurationNs(0)})`
   header.appendChild(labelEl)
 
@@ -201,8 +193,7 @@ export function appendThinkingBlock(
 
   // <p> always mounted (CSS hidden when collapsed) so the sink stays live
   // for streaming writes even when collapsed.
-  const p = document.createElement('p')
-  p.className = thinkingText()
+  const p = createElement('p', thinkingText())
   wrap.appendChild(p)
 
   insertBefore(parent, wrap, before ?? null)
@@ -246,7 +237,7 @@ export function finishThinking(
 }
 
 function createGroupContainer(): HTMLElement {
-  const group = document.createElement('div')
+  const group = createElement('div')
   group.dataset.toolGroup = '1'
 
   const { header, dot, chevron: chevronEl, content } = createToolHeader()
@@ -254,21 +245,18 @@ function createGroupContainer(): HTMLElement {
   dot.dataset.groupDot = '1'
   chevronEl.dataset.groupChevron = '1'
 
-  const summary = document.createElement('span')
+  const summary = createElement('span', groupSummary())
   summary.dataset.groupSummary = '1'
-  summary.className = groupSummary()
   content.appendChild(summary)
 
-  const duration = document.createElement('span')
+  const duration = createElement('span', groupDuration())
   duration.dataset.groupDuration = '1'
-  duration.className = groupDuration()
   content.appendChild(duration)
 
   group.appendChild(header)
 
-  const toolsContainer = document.createElement('div')
+  const toolsContainer = createElement('div', groupToolsContainer())
   toolsContainer.dataset.groupTools = '1'
-  toolsContainer.className = groupToolsContainer()
   group.appendChild(toolsContainer)
 
   header.addEventListener('click', () => {
@@ -322,35 +310,30 @@ function updateGroupSummary(group: HTMLElement): void {
 }
 
 export function appendToolBlock(parent: HTMLElement, name: string, before?: Node | null, collapsible = false): ToolDomHandles {
-  const root = document.createElement('div')
+  const root = createElement('div')
   root.dataset.toolRoot = '1'
   root.dataset.toolName = name
   if (collapsible) root.dataset.collapsible = '1'
 
   const { header, dot, content } = createToolHeader()
 
-  const nameEl = document.createElement('span')
-  nameEl.className = toolName()
+  const nameEl = createElement('span', toolName())
   nameEl.textContent = name
   content.appendChild(nameEl)
 
-  const summaryEl = document.createElement('span')
-  summaryEl.className = toolSummary()
+  const summaryEl = createElement('span', toolSummary())
   content.appendChild(summaryEl)
 
-  const durEl = document.createElement('span')
-  durEl.className = toolDuration({ state: 'running' })
+  const durEl = createElement('span', toolDuration({ state: 'running' }))
   durEl.textContent = ' 0s'
   content.appendChild(durEl)
 
   root.appendChild(header)
 
-  const body = document.createElement('div')
-  body.className = toolBody()
+  const body = createElement('div', toolBody())
   root.appendChild(body)
 
-  const childrenContainer = document.createElement('div')
-  childrenContainer.className = toolChildren()
+  const childrenContainer = createElement('div', toolChildren())
   childrenContainer.dataset.toolChildren = '1'
   root.appendChild(childrenContainer)
 
@@ -525,66 +508,58 @@ export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
 }
 
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {
-  const root = document.createElement('div')
-  root.className = progressBar()
+  const root = createElement('div', progressBar())
 
-  const dotWrap = document.createElement('span')
-  dotWrap.className = toolPrefix()
-  const dotEl = document.createElement('span')
-  dotEl.className = runningDot({ color: 'blue' })
+  const dotWrap = createElement('span', toolPrefix())
+  const dotEl = createElement('span', runningDot({ color: 'blue' }))
   dotEl.textContent = '●'
   dotWrap.appendChild(dotEl)
   root.appendChild(dotWrap)
 
-  const inEl = document.createElement('span')
+  const inEl = createElement('span')
   inEl.textContent = '↑' + formatTokenCount(0)
   root.appendChild(inEl)
 
-  const outEl = document.createElement('span')
+  const outEl = createElement('span')
   outEl.textContent = '↓' + formatTokenCount(0)
   root.appendChild(outEl)
 
-  const tokensSuffix = document.createElement('span')
+  const tokensSuffix = createElement('span', 'hidden')
   tokensSuffix.textContent = ''
-  tokensSuffix.className = 'hidden'
   root.appendChild(tokensSuffix)
 
-  const sep1 = document.createElement('span')
+  const sep1 = createElement('span')
   sep1.textContent = '·'
   root.appendChild(sep1)
 
-  const rateEl = document.createElement('span')
+  const rateEl = createElement('span')
   rateEl.textContent = '0.0 t/s'
   root.appendChild(rateEl)
 
-  const sep2 = document.createElement('span')
+  const sep2 = createElement('span', 'sep-cache hidden')
   sep2.textContent = '·'
-  sep2.className = 'sep-cache hidden'
   root.appendChild(sep2)
 
-  const cacheEl = document.createElement('span')
+  const cacheEl = createElement('span')
   root.appendChild(cacheEl)
 
-  const sep3 = document.createElement('span')
+  const sep3 = createElement('span', 'sep-tools hidden')
   sep3.textContent = '·'
-  sep3.className = 'sep-tools hidden'
   root.appendChild(sep3)
 
-  const toolCountEl = document.createElement('span')
+  const toolCountEl = createElement('span')
   toolCountEl.textContent = ''
   root.appendChild(toolCountEl)
 
-  const sep4 = document.createElement('span')
+  const sep4 = createElement('span', 'sep-elapsed')
   sep4.textContent = '·'
-  sep4.className = 'sep-elapsed'
   root.appendChild(sep4)
 
-  const elapsedEl = document.createElement('span')
+  const elapsedEl = createElement('span')
   elapsedEl.textContent = '0s'
   root.appendChild(elapsedEl)
 
-  const thinkingEl = document.createElement('span')
-  thinkingEl.className = 'hidden'
+  const thinkingEl = createElement('span', 'hidden')
   root.appendChild(thinkingEl)
 
   insertBefore(parent, root, before ?? null)

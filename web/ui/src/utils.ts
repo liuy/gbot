@@ -2,6 +2,7 @@
 // <1s: "0.3s", 1-59s: "Xs", 60s-59m: "Xm Ys", >=1h: "Xh Ym Zs".
 import { popupPanel, anchoredPopup } from './styles/recipes'
 import type { Block } from './model'
+import { createElement } from './dom'
 
 export interface ToolClassification {
   isSearch: boolean
@@ -156,9 +157,7 @@ export function pluralize(noun: string, count: number): string {
 // ── Popup panels ────────────────────────────────────────────────
 
 export function createPopupPanel(opts?: { bottom?: boolean; className?: string }): HTMLDivElement {
-  const panel = document.createElement('div')
-  panel.className = popupPanel({ position: opts?.bottom ? 'bottom' : 'top', class: opts?.className })
-  return panel
+  return createElement('div', popupPanel({ position: opts?.bottom ? 'bottom' : 'top', class: opts?.className }))
 }
 
 // createAnchoredPopup creates a popup panel anchored to a trigger element.
@@ -167,9 +166,7 @@ export function createPopupPanel(opts?: { bottom?: boolean; className?: string }
 // createPopupPanel to avoid the centering transform and animation keyframes
 // that conflict with anchor positioning.
 export function createAnchoredPopup(className?: string): HTMLDivElement {
-  const panel = document.createElement('div')
-  panel.className = anchoredPopup({ class: className })
-  return panel
+  return createElement('div', anchoredPopup({ class: className }))
 }
 
 // positionAnchoredPopup positions a popup above a trigger element.

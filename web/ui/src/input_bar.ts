@@ -1,4 +1,5 @@
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
+import { createElement, createNode } from './dom'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -93,19 +94,14 @@ export function createInputBar(initial: {
   const histItemClass =
     'w-full px-3 py-2 rounded-lg text-left text-[13px] text-t2 cursor-pointer leading-[1.4] truncate'
 
-  const root = document.createElement('div')
-  root.className = 'sticky bottom-0 z-10 px-5 pb-3 pt-1'
+  const root = createElement('div', 'sticky bottom-0 z-10 px-5 pb-3 pt-1')
 
-  const bubbles = document.createElement('div')
-  bubbles.className = 'sticky bottom-16 z-10 px-5'
+  const bubbles = createElement('div', 'sticky bottom-16 z-10 px-5')
 
-  const form = document.createElement('form')
-  const card = document.createElement('div')
-  card.className = 'card-bg rounded-xl border border-hairline glow-blue'
-  const chipRow = document.createElement('div')
-  chipRow.className = 'flex flex-wrap gap-2 px-4 pt-2 empty:hidden'
-  const row = document.createElement('div')
-  row.className = 'flex items-end gap-2 px-4 py-2.5'
+  const form = createElement('form')
+  const card = createElement('div', 'card-bg rounded-xl border border-hairline glow-blue')
+  const chipRow = createElement('div', 'flex flex-wrap gap-2 px-4 pt-2 empty:hidden')
+  const row = createElement('div', 'flex items-end gap-2 px-4 py-2.5')
 
   // Three specialized inputs surfaced through the attach popup. cameraInput
   // uses setAttribute for `capture` because the IDL property is non-standard
@@ -113,12 +109,12 @@ export function createInputBar(initial: {
   // makeFileInput factory: shared change handler resets value='' after
   // dispatching so the same file can be re-picked.
   const makeFileInput = (accept: string, opts: { capture?: string; multiple?: boolean } = {}) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = accept
-    if (opts.capture) input.setAttribute('capture', opts.capture)
+    const input = createNode('input', {
+      props: { type: 'file', accept },
+      attrs: opts.capture ? { capture: opts.capture } : undefined,
+      style: { display: 'none' },
+    })
     if (opts.multiple) input.multiple = true
-    input.style.display = 'none'
     input.addEventListener('change', () => {
       for (const f of Array.from(input.files ?? [])) addAttachment(f)
       input.value = ''
@@ -137,15 +133,13 @@ export function createInputBar(initial: {
   )
 
   // Textarea wrap.
-  const taWrap = document.createElement('div')
-  taWrap.className = 'flex-1 flex justify-center min-h-[20px] cursor-text'
-  const textarea = document.createElement('textarea')
-  textarea.rows = 1
-  textarea.placeholder = 'Sup?'
-  textarea.disabled = !connected
-  textarea.className =
-    'bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40 w-fit max-w-full max-h-[120px] overflow-hidden'
-  textarea.style.wordBreak = 'break-all'
+  const taWrap = createElement('div', 'flex-1 flex justify-center min-h-[20px] cursor-text')
+  const textarea = createNode('textarea', {
+    className:
+      'bg-transparent text-[15px] text-t1 placeholder-t3 resize-none outline-none text-center disabled:opacity-40 w-fit max-w-full max-h-[120px] overflow-hidden',
+    props: { rows: 1, placeholder: 'Sup?', disabled: !connected },
+    style: { wordBreak: 'break-all' },
+  })
   // fieldSizing is non-standard TS lib type; cast via setProperty.
   ;(textarea.style as unknown as Record<string, string>).fieldSizing = 'content'
   taWrap.appendChild(textarea)
@@ -153,12 +147,12 @@ export function createInputBar(initial: {
 
   // + button — toggles the attach popup panel (camera/image/doc). Initial
   // state: enabled when connected, disabled when not.
-  const plusBtn = document.createElement('button')
-  plusBtn.type = 'button'
-  plusBtn.disabled = !connected
-  plusBtn.setAttribute('aria-label', 'Attach file')
-  plusBtn.className =
-    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
+  const plusBtn = createNode('button', {
+    className:
+      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+    props: { type: 'button', disabled: !connected },
+    attrs: { 'aria-label': 'Attach file' },
+  })
   plusBtn.innerHTML =
     '<svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>'
 
@@ -170,10 +164,11 @@ export function createInputBar(initial: {
   const attachSvgAttrs =
     'class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
-  const cameraBtn = document.createElement('button')
-  cameraBtn.type = 'button'
-  cameraBtn.setAttribute('aria-label', 'Camera')
-  cameraBtn.className = attachIconClass
+  const cameraBtn = createNode('button', {
+    className: attachIconClass,
+    props: { type: 'button' },
+    attrs: { 'aria-label': 'Camera' },
+  })
   cameraBtn.innerHTML =
     `<svg ${attachSvgAttrs}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`
   cameraBtn.addEventListener('click', () => {
@@ -182,10 +177,11 @@ export function createInputBar(initial: {
     cameraInput.click()
   })
 
-  const imageBtn = document.createElement('button')
-  imageBtn.type = 'button'
-  imageBtn.setAttribute('aria-label', 'Image')
-  imageBtn.className = attachIconClass
+  const imageBtn = createNode('button', {
+    className: attachIconClass,
+    props: { type: 'button' },
+    attrs: { 'aria-label': 'Image' },
+  })
   imageBtn.innerHTML =
     `<svg ${attachSvgAttrs}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`
   imageBtn.addEventListener('click', () => {
@@ -194,10 +190,11 @@ export function createInputBar(initial: {
     imageInput.click()
   })
 
-  const docBtn = document.createElement('button')
-  docBtn.type = 'button'
-  docBtn.setAttribute('aria-label', 'File')
-  docBtn.className = attachIconClass
+  const docBtn = createNode('button', {
+    className: attachIconClass,
+    props: { type: 'button' },
+    attrs: { 'aria-label': 'File' },
+  })
   docBtn.innerHTML =
     `<svg ${attachSvgAttrs}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
   docBtn.addEventListener('click', () => {
@@ -218,10 +215,14 @@ export function createInputBar(initial: {
   let editPopupOpen = false
   let editingRef: Extract<AttachmentRef, { kind: 'paste' }> | null = null
   const editPopup = createPopupPanel({ bottom: true, className: 'p-0 w-[90vw] max-w-sm overflow-hidden' })
+  // editPopup comes from createPopupPanel (no attrs channel on that helper);
+  // setAttribute keeps data-* routing consistent with the pasteChip element
+  // built via createNode({ attrs: { 'data-paste-chip': '' } }).
   editPopup.setAttribute('data-edit-popup', '')
-  const editTextarea = document.createElement('textarea')
-  editTextarea.rows = 8
-  editTextarea.className = 'w-full bg-transparent text-t1 text-[13px] resize-none outline-none p-3 font-mono'
+  const editTextarea = createNode('textarea', {
+    className: 'w-full bg-transparent text-t1 text-[13px] resize-none outline-none p-3 font-mono',
+    props: { rows: 8 },
+  })
   editPopup.appendChild(editTextarea)
 
   const attachHost = createPopupHost({
@@ -239,11 +240,12 @@ export function createInputBar(initial: {
   })
 
   // Send/Stop button — toggles between send and stop based on streaming state.
-  const sendBtn = document.createElement('button')
-  sendBtn.type = 'button'
-  sendBtn.setAttribute('aria-label', 'Send')
-  sendBtn.className =
-    'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30'
+  const sendBtn = createNode('button', {
+    className:
+      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors pb-0.5 disabled:opacity-30',
+    props: { type: 'button' },
+    attrs: { 'aria-label': 'Send' },
+  })
   const sendIcon =
     '<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M3 10l14-7-7 14-2-5-5-2z" /></svg>'
   const stopIcon =
@@ -265,18 +267,15 @@ export function createInputBar(initial: {
   let historyPickerCb: (() => string[]) | null = null
   const histPanel = createPopupPanel({ bottom: true, className: 'flex flex-col h-[300px]' })
 
-  const histSearch = document.createElement('textarea')
-  histSearch.rows = 1
-  histSearch.placeholder = 'Search history...'
-  histSearch.setAttribute('autocapitalize', 'off')
-  histSearch.setAttribute('autocorrect', 'off')
-  histSearch.spellcheck = false
-  histSearch.className =
-    'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0 font-[inherit] text-[length:inherit]'
+  const histSearch = createNode('textarea', {
+    className:
+      'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0 font-[inherit] text-[length:inherit]',
+    props: { rows: 1, placeholder: 'Search history...', spellcheck: false },
+    attrs: { autocapitalize: 'off', autocorrect: 'off' },
+  })
   histPanel.appendChild(histSearch)
 
-  const histList = document.createElement('div')
-  histList.className = 'flex-1 overflow-y-auto p-1 min-h-0'
+  const histList = createElement('div', 'flex-1 overflow-y-auto p-1 min-h-0')
   histPanel.appendChild(histList)
 
   // onClose clears the search box so a subsequent open starts fresh; onOpen
@@ -301,18 +300,18 @@ export function createInputBar(initial: {
       ? items.filter((s) => s.toLowerCase().includes(query))
       : items
     if (filtered.length === 0) {
-      const empty = document.createElement('div')
-      empty.className = 'px-3 py-4 text-center text-[13px] text-t3'
+      const empty = createElement('div', 'px-3 py-4 text-center text-[13px] text-t3')
       empty.textContent = 'No history'
       histList.appendChild(empty)
       return
     }
     for (const item of filtered) {
-      const el = document.createElement('div')
-      el.setAttribute('role', 'button')
-      el.tabIndex = 0
-      el.className = histItemClass
-      el.textContent = item
+      const el = createNode('div', {
+        className: histItemClass,
+        attrs: { role: 'button' },
+        props: { tabIndex: 0 },
+        text: item,
+      })
       el.addEventListener('click', () => {
         textarea.value = item
         textarea.focus()
@@ -411,20 +410,17 @@ export function createInputBar(initial: {
   const renderChips = () => {
     chipRow.replaceChildren()
     for (const ref of attachments) {
-      const wrap = document.createElement('div')
-      wrap.className = 'relative'
+      const wrap = createElement('div', 'relative')
       if (ref.kind === 'image') {
-        const img = document.createElement('img')
+        const img = createElement('img', 'w-12 h-12 object-cover rounded-lg')
         img.src = ref.previewURL
-        img.className = 'w-12 h-12 object-cover rounded-lg'
         img.alt = ref.file.name
         if (ref.failed) {
           img.classList.add('border-2', 'border-red-500')
         }
         wrap.appendChild(img)
       } else if (ref.kind === 'document') {
-        const span = document.createElement('span')
-        span.className = 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1'
+        const span = createElement('span', 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1')
         span.textContent = `[${ref.file.name}]`
         if (ref.failed) {
           span.classList.add('border-2', 'border-red-500')
@@ -434,26 +430,23 @@ export function createInputBar(initial: {
         // Paste chip: clipboard icon + #N [+L lines] label + ~20-char
         // preview. data-paste-chip marker is read by the edit popup's
         // outside-click handler to keep the popup open when switching chips.
-        const click = document.createElement('div')
-        click.setAttribute('data-paste-chip', '')
-        click.setAttribute('role', 'button')
-        click.tabIndex = 0
-        click.className = 'flex items-center gap-1.5 bg-ink2 text-t2 rounded-md pl-2 pr-3 py-1 cursor-pointer hover:bg-ink2/80'
+        const click = createNode('div', {
+          className: 'flex items-center gap-1.5 bg-ink2 text-t2 rounded-md pl-2 pr-3 py-1 cursor-pointer hover:bg-ink2/80',
+          attrs: { 'data-paste-chip': '', role: 'button' },
+          props: { tabIndex: 0 },
+        })
         click.innerHTML =
           '<svg class="h-3 w-3 shrink-0 text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
           '<rect x="8" y="2" width="8" height="4" rx="1"/>' +
           '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>' +
           '</svg>'
-        const labelSpan = document.createElement('span')
-        labelSpan.className = 'font-mono text-[11px] leading-tight whitespace-nowrap'
+        const labelSpan = createElement('span', 'font-mono text-[11px] leading-tight whitespace-nowrap')
         // Display as visual line count (newline count + 1). A single-line
         // 800+ char paste shows "+1 lines"; a 4-line paste shows "+4 lines".
         labelSpan.textContent = `#${ref.seq} +${ref.lineCount + 1} lines`
-        const preview = document.createElement('span')
-        preview.className = 'text-[10px] text-t3 truncate max-w-[140px] leading-tight'
+        const preview = createElement('span', 'text-[10px] text-t3 truncate max-w-[140px] leading-tight')
         preview.textContent = ref.text.slice(0, 20).replace(/\n/g, ' ')
-        const stack = document.createElement('div')
-        stack.className = 'flex flex-col min-w-0'
+        const stack = createElement('div', 'flex flex-col min-w-0')
         stack.append(labelSpan, preview)
         click.append(stack)
         click.addEventListener('click', () => {
@@ -473,11 +466,12 @@ export function createInputBar(initial: {
         // Retry button: circular-arrow icon. Sibling to × so the user can
         // either retry or dismiss. disabled during an in-flight retry to
         // prevent duplicate uploads (retryCb is async).
-        const retry = document.createElement('button')
-        retry.type = 'button'
-        retry.setAttribute('aria-label', 'Retry upload')
-        retry.className =
-          'absolute -top-1 -left-1 w-4 h-4 rounded-full bg-blue text-white flex items-center justify-center hover:bg-blue/80 disabled:opacity-40'
+        const retry = createNode('button', {
+          className:
+            'absolute -top-1 -left-1 w-4 h-4 rounded-full bg-blue text-white flex items-center justify-center hover:bg-blue/80 disabled:opacity-40',
+          props: { type: 'button' },
+          attrs: { 'aria-label': 'Retry upload' },
+        })
         retry.innerHTML =
           '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>'
         retry.addEventListener('click', async () => {
@@ -497,22 +491,21 @@ export function createInputBar(initial: {
         })
         wrap.appendChild(retry)
       }
-      const x = document.createElement('button')
-      x.type = 'button'
-      x.setAttribute('aria-label', 'Remove attachment')
-      x.className =
-        'absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink2 text-t3 hover:text-red flex items-center justify-center text-[10px] leading-none'
-      x.textContent = '×'
+      const x = createNode('button', {
+        className:
+          'absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink2 text-t3 hover:text-red flex items-center justify-center text-[10px] leading-none',
+        props: { type: 'button' },
+        attrs: { 'aria-label': 'Remove attachment' },
+        text: '×',
+      })
       x.addEventListener('click', () => removeAttachment(ref))
       wrap.appendChild(x)
       // Thin blue progress bar at the chip's bottom edge during upload.
       // Hidden once uploadProgress reaches 1 (caller then removes the chip
       // via removeAttachments so the rendered user message takes over).
       if (ref.uploadProgress !== undefined && ref.uploadProgress < 1) {
-        const bar = document.createElement('div')
-        bar.className = 'absolute bottom-0 left-0 right-0 h-0.5 bg-blue/20 rounded-b-lg overflow-hidden'
-        const fill = document.createElement('div')
-        fill.className = 'h-full bg-blue transition-[width] duration-150'
+        const bar = createElement('div', 'absolute bottom-0 left-0 right-0 h-0.5 bg-blue/20 rounded-b-lg overflow-hidden')
+        const fill = createElement('div', 'h-full bg-blue transition-[width] duration-150')
         fill.style.width = `${Math.min(Math.max(ref.uploadProgress, 0), 1) * 100}%`
         bar.appendChild(fill)
         wrap.appendChild(bar)
@@ -715,24 +708,21 @@ export function createInputBar(initial: {
     bubbles.replaceChildren()
     if (!streaming) return
     queuedMsgs.forEach((m, i) => {
-      const bub = document.createElement('div')
-      bub.className =
-        'mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
+      const bub = createElement(
+        'div',
+        'mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer',
+      )
       bub.innerHTML =
         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-t3"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>'
-      const label = document.createElement('span')
-      label.className =
-        'text-[10px] text-t2 font-light italic truncate max-w-[240px]'
+      const label = createElement('span', 'text-[10px] text-t2 font-light italic truncate max-w-[240px]')
       label.textContent = m.text
       bub.appendChild(label)
       if (i === 0 && queuedMsgs.length > 1) {
-        const more = document.createElement('span')
-        more.className = 'text-[10px] text-t3 mono ml-1'
+        const more = createElement('span', 'text-[10px] text-t3 mono ml-1')
         more.textContent = `+${queuedMsgs.length - 1} more`
         bub.appendChild(more)
       }
-      const cancelLabel = document.createElement('span')
-      cancelLabel.className = 'text-[10px] text-t3 mono ml-1'
+      const cancelLabel = createElement('span', 'text-[10px] text-t3 mono ml-1')
       cancelLabel.textContent =
         queuedMsgs.length > 1 ? 'Tap to CANCEL all' : 'Tap to CANCEL'
       bub.appendChild(cancelLabel)

@@ -2,6 +2,7 @@ import type { TaskWireItem } from './types'
 import { createPopupPanel, createPopupHost } from './utils'
 import { floatingButton } from './styles/recipes'
 import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
+import { createElement, createNode } from './dom'
 
 export interface TaskPanelHandles {
   root: HTMLElement
@@ -9,11 +10,12 @@ export interface TaskPanelHandles {
 }
 
 export function createTaskPanel(): TaskPanelHandles {
-  const root = document.createElement('button')
-  root.type = 'button'
   // Match scrollBtn style exactly: transparent bg, same size/positioning.
-  root.className = floatingButton({ position: 'right' })
-  root.style.display = 'none'
+  const root = createNode('button', {
+    className: floatingButton({ position: 'right' }),
+    props: { type: 'button' },
+    style: { display: 'none' },
+  })
 
   root.innerHTML =
     '<svg width="44" height="44" viewBox="0 0 44 44">' +
@@ -52,13 +54,11 @@ export function createTaskPanel(): TaskPanelHandles {
       if (running > 0) parts.push(`${running} Running`)
       if (pending > 0) parts.push(`${pending} Pending`)
 
-      const title = document.createElement('div')
-      title.className = 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium'
+      const title = createElement('div', 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium')
       title.textContent = parts.join(' · ')
       popover.appendChild(title)
 
-      const list = document.createElement('div')
-      list.className = 'px-2 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto'
+      const list = createElement('div', 'px-2 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto')
       for (const t of currentTasks) {
         list.appendChild(renderRow(t))
       }
@@ -70,14 +70,11 @@ export function createTaskPanel(): TaskPanelHandles {
   root.addEventListener('click', () => host.toggle())
 
   function renderRow(t: TaskWireItem): HTMLElement {
-    const row = document.createElement('div')
-    row.className = 'flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px]'
+    const row = createElement('div', 'flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px]')
 
-    const icon = document.createElement('span')
-    icon.className = 'flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center'
+    const icon = createElement('span', 'flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center')
 
-    const subject = document.createElement('span')
-    subject.className = 'flex-1'
+    const subject = createElement('span', 'flex-1')
 
     if (t.status === 'completed') {
       icon.className += ' bg-green/20 text-green'
@@ -90,8 +87,7 @@ export function createTaskPanel(): TaskPanelHandles {
       icon.innerHTML = '<svg class="spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>'
       subject.className += ' text-t1 font-medium'
       subject.textContent = t.subject
-      const run = document.createElement('span')
-      run.className = 'mono text-[10px] text-blue pulse'
+      const run = createElement('span', 'mono text-[10px] text-blue pulse')
       run.textContent = 'Running'
       row.append(icon, subject, run)
     } else {
@@ -99,8 +95,7 @@ export function createTaskPanel(): TaskPanelHandles {
       subject.className += ' text-t2/70'
       subject.textContent = t.subject
       if (t.blockedBy && t.blockedBy.length > 0) {
-        const bl = document.createElement('span')
-        bl.className = 'mono text-[9px] text-t3'
+        const bl = createElement('span', 'mono text-[9px] text-t3')
         bl.textContent = 'Blocked by ' + t.blockedBy.join(', ')
         row.append(icon, subject, bl)
       } else {

@@ -1,6 +1,8 @@
 // copyText writes text to the clipboard, transparently falling back to the
 // legacy textarea + execCommand path when navigator.clipboard is unavailable
 // (non-secure context like http://<lan-ip>:port, or older browsers).
+import { createNode } from '../dom'
+
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {
@@ -10,10 +12,10 @@ export async function copyText(text: string): Promise<void> {
       // fall through to legacy path
     }
   }
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.opacity = '0'
+  const ta = createNode('textarea', {
+    props: { value: text },
+    style: { position: 'fixed', opacity: '0' },
+  })
   document.body.appendChild(ta)
   ta.select()
   document.execCommand('copy')
@@ -49,9 +51,7 @@ export function applyCopyBehavior(btn: HTMLButtonElement, getText: () => string)
 // swap and clipboard logic are encapsulated; caller only supplies the text
 // source. Used by header.ts and other UI components.
 export function createCopyButton(getText: () => string): HTMLButtonElement {
-  const btn = document.createElement('button')
-  btn.type = 'button'
-  btn.className = 'copy-btn'
+  const btn = createNode('button', { className: 'copy-btn', props: { type: 'button' } })
   applyCopyBehavior(btn, getText)
   return btn
 }

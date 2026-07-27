@@ -1,6 +1,7 @@
 import type { SessionListItem } from './types'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 import { createOutsideClick, bindLongPress } from './utils'
+import { createElement, createNode } from './dom'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -34,19 +35,22 @@ function formatRelativeTime(unixMs: number): string {
 export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandles {
   const { mainContent } = opts
 
-  const root = document.createElement('div')
-  root.className =
-    'fixed top-0 left-0 h-full w-72 z-50 glass-solid border-r border-hairline transition-transform duration-300 ease-out'
-  root.style.transform = 'translateX(-100%)'
+  const root = createNode('div', {
+    className:
+      'fixed top-0 left-0 h-full w-72 z-50 glass-solid border-r border-hairline transition-transform duration-300 ease-out',
+    style: { transform: 'translateX(-100%)' },
+  })
 
-  const listContainer = document.createElement('div')
-  listContainer.className = 'px-2 pt-4 overflow-y-auto'
-  listContainer.style.maxHeight = 'calc(100dvh - 80px)'
+  const listContainer = createNode('div', {
+    className: 'px-2 pt-4 overflow-y-auto',
+    style: { maxHeight: 'calc(100dvh - 80px)' },
+  })
   root.appendChild(listContainer)
 
-  const fab = document.createElement('button')
-  fab.className =
-    'absolute bottom-5 right-5 w-10 h-10 flex items-center justify-center text-blue'
+  const fab = createElement(
+    'button',
+    'absolute bottom-5 right-5 w-10 h-10 flex items-center justify-center text-blue',
+  )
   fab.innerHTML =
     '<svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 2v10M2 7h10"/></svg>'
   root.appendChild(fab)
@@ -70,9 +74,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   const themeIcon = (pref: Theme) => pref === 'dark' ? moonSvg : pref === 'light' ? sunSvg : taiChiSvg
 
-  const themeToggle = document.createElement('button')
-  themeToggle.className =
-    'absolute bottom-5 left-5 w-10 h-10 flex items-center justify-center text-t2'
+  const themeToggle = createElement(
+    'button',
+    'absolute bottom-5 left-5 w-10 h-10 flex items-center justify-center text-t2',
+  )
   themeToggle.innerHTML = themeIcon(savedPref)
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
@@ -113,33 +118,30 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     const currentTheme = (localStorage.getItem('gbot-theme') || 'dark') as Theme
     const isDark = resolveTheme(currentTheme) === 'dark'
 
-    const popover = document.createElement('div')
-    popover.id = 'hljs-popover'
-    popover.className = 'fixed z-50 glass-solid border border-hairline rounded-xl p-2 shadow-2xl modal-enter'
-    popover.style.bottom = '60px'
-    popover.style.left = '20px'
-    popover.style.minWidth = '180px'
+    const popover = createNode('div', {
+      className: 'fixed z-50 glass-solid border border-hairline rounded-xl p-2 shadow-2xl modal-enter',
+      props: { id: 'hljs-popover' },
+      style: { bottom: '60px', left: '20px', minWidth: '180px' },
+    })
 
-    const title = document.createElement('div')
-    title.className = 'text-[11px] text-t3 px-2 py-1 font-medium'
+    const title = createElement('div', 'text-[11px] text-t3 px-2 py-1 font-medium')
     title.textContent = 'Highlight Theme'
     popover.appendChild(title)
 
     for (const theme of HLJS_THEMES) {
       const isSelected = theme.key === currentHljs
-      const row = document.createElement('div')
-      row.className =
+      const row = createElement(
+        'div',
         'flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-[13px] ' +
-        (isSelected
-          ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
-          : 'hover:bg-ink3/50 text-t2')
-      const label = document.createElement('span')
-      label.className = 'flex-1'
+          (isSelected
+            ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
+            : 'hover:bg-ink3/50 text-t2'),
+      )
+      const label = createElement('span', 'flex-1')
       label.textContent = theme.label
       row.appendChild(label)
       if (isSelected) {
-        const check = document.createElement('span')
-        check.className = 'text-blue text-[13px]'
+        const check = createElement('span', 'text-blue text-[13px]')
         check.textContent = '✓'
         row.appendChild(check)
       }
@@ -160,9 +162,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   }
   root.appendChild(themeToggle)
 
-  const overlay = document.createElement('div')
-  overlay.className = 'fixed inset-0 z-40 bg-black/30 transition-opacity duration-300'
-  overlay.style.display = 'none'
+  const overlay = createNode('div', {
+    className: 'fixed inset-0 z-40 bg-black/30 transition-opacity duration-300',
+    style: { display: 'none' },
+  })
 
   const handlers = {
     sessionClick: (_id: string) => {},
@@ -207,19 +210,18 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     listContainer.innerHTML = ''
     for (const s of sessions) {
       const isCurrent = s.id === currentID
-      const row = document.createElement('div')
-      row.className =
+      const row = createElement(
+        'div',
         'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer ' +
-        (isCurrent
-          ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
-          : 'hover:bg-ink3/30 text-t2')
+          (isCurrent
+            ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
+            : 'hover:bg-ink3/30 text-t2'),
+      )
 
-      const titleSpan = document.createElement('span')
-      titleSpan.className = 'text-[13px] truncate flex-1'
+      const titleSpan = createElement('span', 'text-[13px] truncate flex-1')
       titleSpan.textContent = s.title || s.id.slice(0, 8)
 
-      const timeSpan = document.createElement('span')
-      timeSpan.className = 'text-[10px] text-t3 shrink-0'
+      const timeSpan = createElement('span', 'text-[10px] text-t3 shrink-0')
       timeSpan.textContent = formatRelativeTime(s.updatedAt)
 
       row.appendChild(titleSpan)
@@ -243,11 +245,11 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     session: SessionListItem,
   ) => {
     const originalText = titleSpan.textContent || ''
-    const input = document.createElement('input')
-    input.type = 'text'
-    input.value = originalText
-    input.className =
-      'text-[13px] flex-1 bg-ink2 border border-blue/30 rounded px-1 py-0.5 text-t1 outline-none'
+    const input = createNode('input', {
+      className:
+        'text-[13px] flex-1 bg-ink2 border border-blue/30 rounded px-1 py-0.5 text-t1 outline-none',
+      props: { type: 'text', value: originalText },
+    })
     titleSpan.replaceWith(input)
     input.focus()
     input.select()

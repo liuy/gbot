@@ -28,6 +28,7 @@ import tokyoNightDark from 'highlight.js/styles/tokyo-night-dark.css?raw'
 import tokyoNightLight from 'highlight.js/styles/tokyo-night-light.css?raw'
 import rosePine from 'highlight.js/styles/rose-pine.css?raw'
 import rosePineDawn from 'highlight.js/styles/rose-pine-dawn.css?raw'
+import { createElement } from './dom'
 
 export interface HljsTheme {
   key: string
@@ -67,7 +68,7 @@ let styleEl: HTMLStyleElement | null = null
 
 function getStyleEl(): HTMLStyleElement {
   if (!styleEl || !styleEl.isConnected) {
-    styleEl = document.createElement('style')
+    styleEl = createElement('style')
     styleEl.id = 'hljs-theme-css'
     document.head.appendChild(styleEl)
   }
