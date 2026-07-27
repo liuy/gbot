@@ -1,5 +1,6 @@
 import type { AskResponsePayload } from './types'
 import { createElement, createNode } from './dom'
+import { createTextButton } from './buttons'
 
 export interface AskData {
   id: string
@@ -80,19 +81,13 @@ function createPermissionAsk(
     label: string,
     onClick: () => void,
     danger?: boolean,
-  ): HTMLButtonElement => {
-    const b = createNode('button', {
-      className:
-        'rounded-lg px-3 py-1.5 text-sm transition-colors ' +
-        (danger
-          ? 'bg-red/10 text-red hover:bg-red/20'
-          : 'bg-blue/10 text-blue hover:bg-blue/20'),
-      props: { type: 'button' },
+  ): HTMLButtonElement =>
+    createTextButton({
       text: label,
+      variant: danger ? 'danger' : 'primary',
+      size: 'sm',
+      onClick,
     })
-    b.addEventListener('click', onClick)
-    return b
-  }
 
   actions.appendChild(
     mkBtn('Allow Once', () => respond({ decision: 'allow' })),
@@ -145,18 +140,16 @@ function createInputAsk(
   const metaRow = createElement('div', 'flex items-center justify-between gap-2')
 
   const countdown = createElement('span', 'text-xs text-t3')
-  const submitBtn = createNode('button', {
-    className:
-      'rounded-lg bg-blue/20 px-3 py-1.5 text-sm text-blue transition-colors hover:bg-blue/30',
-    props: { type: 'button' },
+  const submitBtn = createTextButton({
     text: 'Submit',
+    variant: 'primary',
+    size: 'sm',
   })
 
-  const cancelBtn = createNode('button', {
-    className:
-      'rounded-lg bg-red/10 px-3 py-1.5 text-sm text-red transition-colors hover:bg-red/20',
-    props: { type: 'button' },
+  const cancelBtn = createTextButton({
     text: 'Cancel',
+    variant: 'danger',
+    size: 'sm',
   })
 
   // Button group on the right: Cancel left, Submit right (primary action rightmost).

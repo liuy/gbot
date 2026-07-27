@@ -1,11 +1,11 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
-import { createPopupPanel, createOutsideClick, createPopupHost, formatTokenCount } from './utils'
+import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
 import { createElement, createNode, cx } from './dom'
-import { renderIcon } from './icons'
+import { createIconButton, createTextButton, createComboButton } from './buttons'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -35,13 +35,7 @@ interface EngineEntry {
 function createModelPicker(
   onSelect: (provider: string, model: string) => void,
   onRequestQuota?: () => void,
-): { wrap: HTMLElement; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
-  const wrap = createElement('div', 'relative')
-
-  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors')
-
-  const panel = createPopupPanel()
-
+): { wrap: HTMLElement; setLabel: (text: string) => void; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
   const searchInput = createNode('textarea', {
     className:
       'w-full bg-transparent px-4 py-2.5 text-[13px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none',
@@ -50,10 +44,8 @@ function createModelPicker(
     style: { fontFamily: 'inherit', fontSize: 'inherit' },
   })
   ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
-  panel.appendChild(searchInput)
 
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
-  panel.appendChild(listContainer)
 
   let allModels: ModelEntry[] = []
   let currentProvider = ''
@@ -99,9 +91,9 @@ function createModelPicker(
       item.addEventListener('click', () => {
         currentProvider = entry.provider
         currentModel = entry.model
-        trigger.textContent = entry.model
+        combo.setLabel(entry.model)
         onSelect(entry.provider, entry.model)
-        closePanel()
+        combo.close()
       })
       listContainer.appendChild(item)
     }
@@ -109,51 +101,53 @@ function createModelPicker(
 
   searchInput.addEventListener('input', renderList)
 
-  const host = createPopupHost({
-    trigger: wrap,
-    panel,
-    onOpen: () => {
+  // Caller-tracked open flag replaces host.isOpen(): ComboButtonHandle does
+  // not leak host internals (locked decision 6). setQuota re-renders the
+  // list only while the popup is open so freshly fetched quotas show up
+  // without a close/reopen.
+  let open = false
+  let panelSetup = false
+  const combo = createComboButton({
+    label: '',
+    className: 'text-[15px]',
+    onOpen: (panel) => {
+      if (!panelSetup) {
+        panel.appendChild(searchInput)
+        panel.appendChild(listContainer)
+        panelSetup = true
+      }
+      open = true
       searchInput.value = ''
       renderList()
       setTimeout(() => searchInput.focus(), 50)
       onRequestQuota?.()
     },
-    onClose: () => { searchInput.value = '' },
+    onClose: () => {
+      open = false
+      searchInput.value = ''
+    },
   })
-  const closePanel = () => host.close()
-  trigger.addEventListener('click', () => host.toggle())
-
-  trigger.textContent = ''
 
   const setModels = (models: ModelEntry[], curProvider: string, curModel: string) => {
     allModels = models
     currentProvider = curProvider
     currentModel = curModel
-    if (curModel) trigger.textContent = curModel
+    if (curModel) combo.setLabel(curModel)
   }
 
   const setQuota = (provider: string, quota: string) => {
     quotaByProvider.set(provider, quota)
-    if (host.isOpen()) renderList()
+    if (open) renderList()
   }
 
-  wrap.appendChild(trigger)
-  return { wrap, setModels, setQuota }
+  return { wrap: combo.wrap, setLabel: combo.setLabel, setModels, setQuota }
 }
 
 function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
 ): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
-  const wrap = createElement('div', 'relative')
-
-  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors')
-
-  const panel = createPopupPanel()
-  panel.dataset.testid = 'engine-picker-panel'
-
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
-  panel.appendChild(listContainer)
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
@@ -175,48 +169,56 @@ function createEnginePicker(
       modelSpan.textContent = entry.model
       item.appendChild(modelSpan)
       if (isActive) {
-        item.addEventListener('click', () => closePanel())
+        item.addEventListener('click', () => combo.close())
       } else {
         item.addEventListener('click', () => {
           onSwitch(entry.id)
-          closePanel()
+          combo.close()
         })
       }
       listContainer.appendChild(item)
     }
-    // Footer: + icon only
-    const footer = createElement(
-      'button',
-      'w-full flex items-center justify-center px-3 py-2 rounded-lg transition-colors hover:bg-ink3/50 border-t border-hairline mt-1',
-    )
-    footer.replaceChildren(renderIcon('plus', { size: 18 }))
-    footer.style.color = 'var(--color-blue)'
-    footer.addEventListener('click', () => {
-      onNew()
-      closePanel()
+    // Footer is the "+ new engine" CTA. variant=default + text-blue matches
+    // the previous style.color = var(--color-blue); the list-row decoration
+    // classes (border-t, mt-1, w-full, hover-bg) layer on top via className.
+    const footer = createIconButton({
+      icon: 'plus',
+      label: 'New engine',
+      variant: 'default',
+      size: 'md',
+      iconSize: 18,
+      className:
+        'w-full justify-center px-3 py-2 rounded-lg hover:bg-ink3/50 border-t border-hairline mt-1',
+      onClick: () => {
+        onNew()
+        combo.close()
+      },
     })
     listContainer.appendChild(footer)
   }
 
-  const host = createPopupHost({
-    trigger: wrap,
-    panel,
-    onOpen: () => renderList(),
+  let panelSetup = false
+  const combo = createComboButton({
+    label: '',
+    className: 'text-[15px]',
+    onOpen: (panel) => {
+      if (!panelSetup) {
+        panel.dataset.testid = 'engine-picker-panel'
+        panel.appendChild(listContainer)
+        panelSetup = true
+      }
+      renderList()
+    },
   })
-  const closePanel = () => host.close()
-  trigger.addEventListener('click', () => host.toggle())
-
-  trigger.textContent = ''
 
   const setEngines = (engines: EngineEntry[], active: string) => {
     allEngines = engines
     activeID = active
     const cur = engines.find((e) => e.id === active)
-    if (cur) trigger.textContent = cur.name || cur.id
+    if (cur) combo.setLabel(cur.name || cur.id)
   }
 
-  wrap.appendChild(trigger)
-  return { wrap, setEngines }
+  return { wrap: combo.wrap, setEngines }
 }
 
 const ANSI_TO_CSS: Record<string, string> = {
@@ -403,7 +405,17 @@ function createContextPopover(onRequest: () => void): {
   setBreakdown: (data: ContextBreakdownData | null) => void
   hide: () => void
 } {
-  const trigger = createElement('button', 'mono text-[14px] text-t2 hover:text-t1 transition-colors cursor-pointer hidden')
+  // contextPopover keeps its own 3-state click handler (close-if-open /
+  // show-loading / show-panel) instead of going through createComboButton —
+  // the popover may need to display a Loading placeholder before the
+  // breakdown data arrives, which createPopupHost's open/close model does
+  // not express. link variant gives us text-t2/hover:text-t1; the className
+  // option layers on mono / text-[14px] / cursor-pointer / hidden.
+  const trigger = createTextButton({
+    text: '',
+    variant: 'link',
+    className: 'text-[15px] cursor-pointer hidden',
+  })
   trigger.dataset.testid = 'context-trigger'
 
   const panel = createPopupPanel({ className: 'max-h-[60dvh] overflow-y-auto max-w-md' })
@@ -493,13 +505,18 @@ export function createHeader(opts: {
 
   const inner = createElement('div', 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto')
 
-  const hamburgerWrap = createElement('button', 'flex items-center text-t2 hover:text-t1 transition-colors')
-  hamburgerWrap.replaceChildren(renderIcon('menu', { size: 18 }))
-
   const hamburgerHandler = { fn: () => {} }
-  hamburgerWrap.addEventListener('click', () => hamburgerHandler.fn())
-
-  const gbotWrap = createElement('button', 'group flex items-center')
+  // size=sm (w-7 h-7) widens the click target from the menu SVG's intrinsic
+  // 18×18 to 28×28 — friendlier on touch screens. rounded-full adds no
+  // visible effect because the variant carries no background color.
+  const hamburgerWrap = createIconButton({
+    icon: 'menu',
+    label: 'Menu',
+    variant: 'ghost',
+    size: 'auto',
+    iconSize: 18,
+    onClick: () => hamburgerHandler.fn(),
+  })
 
   const debugPanel = createPopupPanel({ className: 'flex flex-col h-[60vh]' })
   const copyBtn = createCopyButton(() => getDebugLogs().join('\n'))
@@ -522,28 +539,34 @@ export function createHeader(opts: {
     debugList.scrollTop = debugList.scrollHeight
   }
 
+  const gbotWrap = createTextButton({
+    text: '',
+    variant: 'link',
+    className: 'group flex items-center',
+    onDblClick: (e) => {
+      e.stopPropagation()
+      debugOpen = !debugOpen
+      if (debugOpen) {
+        if (!debugPanel.parentElement) document.body.appendChild(debugPanel)
+        debugPanel.classList.remove('hidden')
+        renderDebugLogs()
+        debugOutside.add()
+      } else {
+        debugPanel.classList.add('hidden')
+        debugOutside.remove()
+      }
+    },
+  })
+
   const debugOutside = createOutsideClick(gbotWrap, debugPanel, () => {
     debugOpen = false
     debugPanel.classList.add('hidden')
   })
 
-  gbotWrap.addEventListener('dblclick', (e) => {
-    e.stopPropagation()
-    debugOpen = !debugOpen
-    if (debugOpen) {
-      if (!debugPanel.parentElement) document.body.appendChild(debugPanel)
-      debugPanel.classList.remove('hidden')
-      renderDebugLogs()
-      debugOutside.add()
-    } else {
-      debugPanel.classList.add('hidden')
-      debugOutside.remove()
-    }
-  })
   onDebugLog(renderDebugLogs)
   const wordmark = createElement(
     'span',
-    'text-[14px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue',
+    'text-[15px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue',
   )
   wordmark.textContent = 'GBot'
   gbotWrap.appendChild(wordmark)
@@ -553,7 +576,7 @@ export function createHeader(opts: {
 
   const sep = () => {
     const s = createNode('span', {
-      className: 'text-t3 text-[14px]',
+      className: 'text-t3 text-[15px]',
       text: '\u203a',
     })
     return s
@@ -581,15 +604,12 @@ export function createHeader(opts: {
 
   const setStatus = (connected: boolean) => {
     wordmark.className =
-      'text-[14px] font-semibold tracking-tight transition-colors group-hover:text-blue ' +
+      'text-[15px] font-semibold tracking-tight transition-colors group-hover:text-blue ' +
       (connected ? 'text-blue pulse' : 'text-t3')
   }
 
   const setModel = (model: string) => {
-    if (model) {
-      const trigger = modelPicker.wrap.querySelector('button') as HTMLButtonElement
-      if (trigger) trigger.textContent = model
-    }
+    if (model) modelPicker.setLabel(model)
   }
 
   const onHamburgerClick = (handler: () => void) => {
@@ -611,10 +631,15 @@ export function createHeader(opts: {
     }
     ctxPopover.trigger.classList.remove('hidden')
     const pct = used * 100 / total
+    // Toggle color classes in-place instead of replacing className wholesale
+    // — the trigger was created via createTextButton which composes the
+    // link variant + compoundVariants (px-0 py-0), and a full replace would
+    // drop the padding reset and inflate the trigger.
+    ctxPopover.trigger.classList.remove('text-t2', 'text-red-500', 'text-amber-500')
     let color = 'text-t2'
     if (pct >= 90) color = 'text-red-500'
     else if (pct >= 80) color = 'text-amber-500'
-    ctxPopover.trigger.className = cx('mono text-[14px] hover:text-t1 transition-colors cursor-pointer', color)
+    ctxPopover.trigger.classList.add(color)
     ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 

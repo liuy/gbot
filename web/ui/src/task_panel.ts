@@ -1,9 +1,8 @@
 import type { TaskWireItem } from './types'
 import { createPopupPanel, createPopupHost } from './utils'
-import { floatingButton } from './styles/recipes'
-import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
-import { createElement, createNode } from './dom'
+import { createElement } from './dom'
 import { renderIcon } from './icons'
+import { createFloatButton } from './buttons'
 
 export interface TaskPanelHandles {
   root: HTMLElement
@@ -12,26 +11,18 @@ export interface TaskPanelHandles {
 
 export function createTaskPanel(): TaskPanelHandles {
   // Match scrollBtn style exactly: transparent bg, same size/positioning.
-  const root = createNode('button', {
-    className: floatingButton({ position: 'right' }),
-    props: { type: 'button' },
-    style: { display: 'none' },
-  })
-
-  root.innerHTML =
-    '<svg width="44" height="44" viewBox="0 0 44 44">' +
-    progressRingCircles({
+  const floatBtn = createFloatButton({
+    position: 'right',
+    progressRing: {
       progressClassName: 'task-ring',
       backgroundOpacity: 0.2,
       transitionMs: 300,
       transitionEasing: 'ease',
-    }) +
-    '<text class="task-label" x="22" y="22" text-anchor="middle" dominant-baseline="central" ' +
-    'fill="currentColor" style="font-size:11px;font-weight:600;font-family:ui-monospace,monospace"/>' +
-    '</svg>'
-
-  const ring = root.querySelector('.task-ring') as SVGCircleElement
-  const label = root.querySelector('.task-label') as SVGTextElement
+    },
+    labelClassName: 'task-label',
+  })
+  const root = floatBtn.root
+  root.style.display = 'none'
 
   // Panel is built once; onOpen clears and rebuilds content so each open
   // reflects currentTasks at click time. onClose detaches so the hidden
@@ -124,10 +115,10 @@ export function createTaskPanel(): TaskPanelHandles {
 
     const done = tasks.filter(t => t.status === 'completed').length
     const ratio = done / tasks.length
-    ring.setAttribute('stroke-dashoffset', String(progressRingDashOffset(ratio)))
+    floatBtn.setProgress(ratio)
     const totalStr = tasks.length > 99 ? '99+' : String(tasks.length)
     const doneStr = done > 99 ? '99+' : String(done)
-    label.textContent = `${doneStr}/${totalStr}`
+    floatBtn.setLabel(`${doneStr}/${totalStr}`)
   }
 
   // Cleanup popover if root is removed from DOM.

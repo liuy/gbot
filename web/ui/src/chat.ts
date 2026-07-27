@@ -6,8 +6,23 @@ import {
   newUserMessage,
 } from './model'
 import { classifyTool, isCollapsibleBlock, timeDividerLabel } from './utils'
-import { copyText } from './utils/copy_button'
+import { createCopyButton } from './utils/copy_button'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
+
+// wireCopyButtons must be called after every innerHTML assignment that may
+// contain rendered markdown — innerHTML wipes prior DOM, so the injected
+// buttons do not survive a re-render.
+function wireCopyButtons(container: HTMLElement) {
+  const wrappers = container.querySelectorAll<HTMLElement>('.code-block-wrapper')
+  for (const wrapper of wrappers) {
+    const header = wrapper.querySelector('.code-header')
+    const code = wrapper.querySelector('code')
+    if (!header || !code) continue
+    const btn = createCopyButton(() => code.textContent ?? '')
+    btn.classList.add('ml-auto')
+    header.appendChild(btn)
+  }
+}
 import {
   type ToolDomHandles,
   type ProgressDomHandles,
@@ -32,12 +47,12 @@ import {
   collapseToolChildrenOnDone,
   markToolCollapsible,
 } from './components/stream_dom'
-import { progressRingCircles, progressRingDashOffset } from './components/progress_ring'
 import { createHeader } from './header'
 import { createSidebar } from './sidebar'
 import { createInputBar, type InputBarHandles, type AttachmentRef } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
+import { createFloatButton } from './buttons'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
@@ -48,7 +63,6 @@ import {
   dividerHairline,
   dividerLabel,
   timeDividerContainer,
-  floatingButton,
   contentArea,
   shellOuter,
   shellGrid,
@@ -327,6 +341,7 @@ function renderCommittedMessageDOM(
       if (!b.text) continue
       const div = appendTextBlock(content)
       div.innerHTML = renderMarkdownNoHighlight(b.text)
+      wireCopyButtons(div)
     } else if (b.kind === 'image') {
       // Assistant image blocks should not occur in normal flow (assistant is
       // text-only), but render defensively in case a future tool emits one.
@@ -506,37 +521,26 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     conn.reconnect?.()
   })
 
-  messagesContainer.addEventListener('click', async (e: MouseEvent) => {
-    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.copy-btn')
-    if (!btn) return
-    const wrapper = btn.closest('.code-block-wrapper')
-    const code = wrapper?.querySelector('code')
-    if (!code) return
-    await copyText(code.textContent ?? '')
-    btn.dataset.state = 'copied'
-    setTimeout(() => { btn.dataset.state = 'idle' }, 1500)
-  })
+  // No global click delegation: copy buttons are wired per-wrapper via
+  // wireCopyButtons() after each renderMarkdown call.
 
   let isNearBottom = true
   let lastScrollHeight = 0
 
   // Scroll-to-bottom floating button — blue glow + circular progress ring.
-  const scrollBtn = createElement('button', floatingButton({ position: 'center' }))
-  // SVG: outer ring (progress) + inner arrow
-  scrollBtn.innerHTML =
-    '<svg width="44" height="44" viewBox="0 0 44 44">' +
-    progressRingCircles({ progressClassName: 'scroll-progress', backgroundClassName: 'scroll-ring' }) +
-    '<path d="M22 14v10M17 20l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
-    '</svg>'
-  mainContent.appendChild(scrollBtn)
-  scrollBtn.addEventListener('click', () => {
-    isNearBottom = true
-    lastScrollHeight = 0
-    scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' })
-    updateScrollBtn()
+  const scrollBtnHandle = createFloatButton({
+    position: 'center',
+    progressRing: { progressClassName: 'scroll-progress', backgroundClassName: 'scroll-ring' },
+    innerIcon: 'scroll-to-bottom',
+    onClick: () => {
+      isNearBottom = true
+      lastScrollHeight = 0
+      scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' })
+      updateScrollBtn()
+    },
   })
-
-  const scrollArc = scrollBtn.querySelector('.scroll-progress') as SVGCircleElement
+  const scrollBtn = scrollBtnHandle.root
+  mainContent.appendChild(scrollBtn)
 
   const updateScrollBtn = () => {
     const maxScroll = scroll.scrollHeight - scroll.clientHeight
@@ -548,7 +552,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // Progress ring: 0 at bottom, full at top
     if (maxScroll > 0) {
       const progress = Math.min(distFromBottom / maxScroll, 1)
-      scrollArc.setAttribute('stroke-dashoffset', String(progressRingDashOffset(progress)))
+      scrollBtnHandle.setProgress(progress)
     }
     maybePrefetchHistory()
   }
@@ -750,6 +754,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (streamContainer) {
       currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
       currentTextDiv.innerHTML = renderMarkdown('')
+      wireCopyButtons(currentTextDiv)
     }
   }
 
@@ -761,8 +766,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (currentPendingText && !currentTextDiv) {
       currentTextDiv = appendTextBlock(streamContainer, progressAnchor())
       currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+      wireCopyButtons(currentTextDiv)
     } else if (currentTextDiv && currentPendingText) {
       currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+      wireCopyButtons(currentTextDiv)
     }
     // Late thinking deltas wrote into currentThinking.pendingBlock.text.
     // thinking_start only attaches the <p> when streamContainer is non-null;
@@ -1010,6 +1017,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (!block.text) return
       const div = appendTextBlock(parent, before)
       div.innerHTML = renderMarkdown(block.text)
+      wireCopyButtons(div)
     } else if (block.kind === 'thinking') {
       const startedAt = block.startedAt || Date.now()
       const { p, labelEl } = appendThinkingBlock(parent, startedAt, before)
@@ -1271,6 +1279,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             if (domContainer) {
               const div = appendTextBlock(domContainer)
               div.innerHTML = renderMarkdown(e.text)
+              wireCopyButtons(div)
               currentSubAgentTextDiv.set(parentID, div)
             }
             return
@@ -1282,6 +1291,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               currentSubAgentTextDiv.set(parentID, div)
             }
             div.innerHTML = renderMarkdown((last as { text: string }).text)
+            wireCopyButtons(div)
           }
           return
         }
@@ -1293,11 +1303,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           tokenRate.add(e.text)
           if (currentTextDiv) {
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+      wireCopyButtons(currentTextDiv)
           } else if (streamContainer) {
             // Late delta: sink not yet mounted. Mount inline now.
             const anchor = progressHandles?.root ?? null
             currentTextDiv = appendTextBlock(streamContainer, anchor)
             currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+      wireCopyButtons(currentTextDiv)
           }
         }
         return

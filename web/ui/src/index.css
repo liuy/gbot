@@ -205,38 +205,33 @@ body {
   margin: 0.5em 0;
 }
 
-/* Code block copy button — always visible (mobile has no hover). */
+/* Code block: header row + code body. Fully transparent — hljs only
+   controls text colors, not the background. */
 .code-block-wrapper {
   position: relative;
+  margin: 0.5em 0;
 }
-.copy-btn {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+.code-header {
   display: flex;
   align-items: center;
-  justify-content: center;
+  padding: 2px 4px 2px 8px;
+  border-bottom: 1px solid var(--color-hairline);
+}
+.code-lang {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--color-blue);
+  text-transform: uppercase;
+}
+/* No .code-lang-placeholder rule needed: button's ml-auto pushes it right. */
+.code-block-wrapper .copy-btn {
   width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--color-t1);
-  opacity: 0.5;
-  cursor: pointer;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  height: 22px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
 }
-.copy-btn:hover {
-  opacity: 1;
-  background: rgba(127, 127, 127, 0.15);
-}
-.copy-btn .copy-icon-done { display: none; }
-.copy-btn[data-state="copied"] .copy-icon-idle { display: none; }
-.copy-btn[data-state="copied"] .copy-icon-done {
-  display: block;
-  color: var(--color-white);
-}
+.code-block-wrapper .copy-btn:hover { opacity: 1; }
+.code-block-wrapper pre { margin: 0; }
 
 /* ── Light theme ─────────────────────────────────────────────── */
 [data-theme="light"] {

@@ -1,7 +1,6 @@
 import MarkdownIt from 'markdown-it'
 import highlightjs from 'markdown-it-highlightjs'
 import DOMPurify from 'dompurify'
-import { copyButtonHTML } from './utils/copy_button'
 
 const mdHighlighted: MarkdownIt = MarkdownIt({ html: true, linkify: true, breaks: true }).use(highlightjs)
 const mdPlain: MarkdownIt = MarkdownIt({ html: true, linkify: true, breaks: true })
@@ -11,19 +10,37 @@ for (const md of [mdHighlighted, mdPlain]) {
   md.renderer.rules.table_close = () => '</table></div>'
 }
 
-// Wrap fenced code blocks with a copy button. The button itself is inert;
-// chat.ts wires click handlers via delegation on the messages container.
-function wrapFenceWithCopy(md: MarkdownIt) {
+// escapeHtml avoids pulling in a dep for the 4 chars we need; fence info
+// strings are user-controlled and must not leak into HTML unescaped.
+function escapeHtml(s: string): string {
+  return s.replace(/[<>&"]/g, (c) => (
+    c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '&' ? '&amp;' : '&quot;'
+  ))
+}
+
+// Wrap fenced code blocks with a header showing the language. The copy
+// button is wired by chat.ts post-render via createIconButton — this
+// renderer only produces the structural HTML (wrapper > header > code).
+function wrapFenceWithHeader(md: MarkdownIt) {
   const defaultFence = md.renderer.rules.fence?.bind(md.renderer.rules)
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const rendered = defaultFence
       ? defaultFence(tokens, idx, options, env, self)
       : self.renderToken(tokens, idx, options)
-    return `<div class="code-block-wrapper">${rendered}${copyButtonHTML()}</div>`
+    const lang = tokens[idx].info.trim().split(/\s+/)[0]
+    const langBadge = lang
+      ? `<span class="code-lang">${escapeHtml(lang)}</span>`
+      : '<span class="code-lang-placeholder"></span>'
+    return (
+      '<div class="code-block-wrapper" data-lang="' + escapeHtml(lang) + '">' +
+      '<div class="code-header">' + langBadge + '</div>' +
+      rendered +
+      '</div>'
+    )
   }
 }
-wrapFenceWithCopy(mdHighlighted)
-wrapFenceWithCopy(mdPlain)
+wrapFenceWithHeader(mdHighlighted)
+wrapFenceWithHeader(mdPlain)
 
 export function ensureTableBlankLine(src: string): string {
   return src.replace(/([^\n|])\n(\|[^\n]+\n\|[-| ]+\|)/g, '$1\n\n$2')

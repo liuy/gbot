@@ -378,10 +378,10 @@ describe('Header model picker popover', () => {
   })
 
   // breadcrumb order: [enginePicker] [sep] [modelPicker]. The context popover
-  // trigger also matches button.mono.text-\\[14px\\] but starts hidden, so we
+  // trigger also matches button.text-\\[14px\\] but starts hidden, so we
   // filter it out. Model picker is the LAST visible match.
   function modelTrigger(): HTMLButtonElement {
-    const triggers = header.root.querySelectorAll('button.mono.text-\\[14px\\]:not(.hidden)')
+    const triggers = header.root.querySelectorAll('button.text-\\[15px\\]:not(.hidden)')
     return triggers[triggers.length - 1] as HTMLButtonElement
   }
 
@@ -439,7 +439,7 @@ describe('Header engine picker popover', () => {
 
   // enginePicker trigger is the FIRST visible button.mono.text-\\[14px\\].
   function engineTrigger(): HTMLButtonElement {
-    return header.root.querySelector('button.mono.text-\\[14px\\]:not(.hidden)') as HTMLButtonElement
+    return header.root.querySelector('button.text-\\[15px\\]:not(.hidden)') as HTMLButtonElement
   }
 
   function visibleEnginePanel(): HTMLDivElement | null {

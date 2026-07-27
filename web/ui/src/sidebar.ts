@@ -3,6 +3,7 @@ import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from '.
 import { createOutsideClick, bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
+import { createIconButton } from './buttons'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -48,11 +49,18 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   })
   root.appendChild(listContainer)
 
-  const fab = createElement(
-    'button',
-    'absolute bottom-5 right-5 w-10 h-10 flex items-center justify-center text-blue',
-  )
-  fab.replaceChildren(renderIcon('plus', { size: 22 }))
+  // FAB: variant=default (text-blue hover:text-white) layers a transition on
+  // top of the previous static look — slight UX upgrade accepted in D5.
+  // absolute positioning classes go through className so sidebar.test.ts
+  // `button.absolute` selector still finds the FAB.
+  const fab = createIconButton({
+    icon: 'plus',
+    label: 'New session',
+    variant: 'default',
+    size: 'md',
+    iconSize: 22,
+    className: 'absolute bottom-5 right-5',
+  })
   root.appendChild(fab)
 
   const THEME_CYCLE = ['dark', 'light', 'system'] as const
@@ -70,11 +78,34 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const renderThemeIcon = (pref: Theme): SVGElement =>
     renderIcon(pref === 'dark' ? 'moon' : pref === 'light' ? 'sun' : 'tai-chi', { size: 18 })
 
-  const themeToggle = createElement(
-    'button',
-    'absolute bottom-5 left-5 w-10 h-10 flex items-center justify-center text-t2',
-  )
-  themeToggle.replaceChildren(renderThemeIcon(savedPref))
+  // themeToggle: variant=ghost (text-t2 hover:text-t1) layers hover + transition
+  // on top of the previous static look — slight UX upgrade accepted in D5.
+  // Long-press → openHljsPopover, single click → cycleTheme: the factory's
+  // internal consumeTrigger swallows the synthesized post-long-press click,
+  // so we no longer need a sidebar-side themeLP binding.
+  // cycleTheme must be declared before themeToggle's createIconButton call,
+  // but it references themeToggle via closure — fine because cycleTheme only
+  // runs after createIconButton returns.
+  const cycleTheme = () => {
+    const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
+    const idx = THEME_CYCLE.indexOf(current)
+    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
+    localStorage.setItem('gbot-theme', next)
+    const resolved = resolveTheme(next)
+    document.documentElement.dataset.theme = resolved
+    themeToggle.replaceChildren(renderThemeIcon(next))
+    applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
+  }
+  const themeToggle = createIconButton({
+    icon: savedPref === 'dark' ? 'moon' : savedPref === 'light' ? 'sun' : 'tai-chi',
+    label: 'Theme',
+    variant: 'ghost',
+    size: 'md',
+    iconSize: 18,
+    className: 'absolute bottom-5 left-5',
+    onClick: cycleTheme,
+    onLongPress: openHljsPopover,
+  })
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
   const onSystemChange = () => {
@@ -89,21 +120,6 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   // Apply saved hljs theme on load
   applyHljsTheme(getSavedHljsTheme(), effectiveTheme === 'dark')
-
-  // Long-press: open highlight theme selector. Single click handler below
-  // consumes the trigger first so a long-press doesn't also cycle the theme.
-  const themeLP = bindLongPress(themeToggle, openHljsPopover, { useMouse: true })
-  themeToggle.addEventListener('click', () => {
-    if (themeLP.consumeTrigger()) return
-    const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
-    const idx = THEME_CYCLE.indexOf(current)
-    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
-    localStorage.setItem('gbot-theme', next)
-    const resolved = resolveTheme(next)
-    document.documentElement.dataset.theme = resolved
-    themeToggle.replaceChildren(renderThemeIcon(next))
-    applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
-  })
 
   function openHljsPopover() {
     // Remove existing popover if open

@@ -1,6 +1,7 @@
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
 import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
+import { createIconButton } from './buttons'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -148,54 +149,64 @@ export function createInputBar(initial: {
 
   // + button — toggles the attach popup panel (camera/image/doc). Initial
   // state: enabled when connected, disabled when not.
-  const plusBtn = createNode('button', {
-    className:
-      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-    props: { type: 'button', disabled: !connected },
-    attrs: { 'aria-label': 'Attach file' },
+  // Caller-side attach-popup-toggle state machine (plusBtn.addEventListener
+  // below) drives open/close via attachHost; the factory stays out of the
+  // click path (no onClick), so disabled gating and panel coordination stay
+  // at the call site exactly as before.
+  const plusBtn = createIconButton({
+    icon: 'plus',
+    label: 'Attach file',
+    variant: 'default',
+    size: 'sm',
+    iconSize: 24,
+    className: 'flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
   })
-  plusBtn.replaceChildren(renderIcon('plus', { className: 'h-6 w-6' }))
+  plusBtn.disabled = !connected
 
   // Attach popup — three icon buttons (camera/image/doc), each opening its
   // own file picker. Anchored above the + button via positionAnchoredPopup.
   const attachPanel = createAnchoredPopup('flex items-center gap-3 px-4 py-3')
-  const attachIconClass =
-    'flex items-center justify-center w-9 h-9 rounded-lg text-blue hover:text-white hover:bg-blue/10 transition-colors'
 
-  const cameraBtn = createNode('button', {
-    className: attachIconClass,
-    props: { type: 'button' },
-    attrs: { 'aria-label': 'Camera' },
-  })
-  cameraBtn.replaceChildren(renderIcon('camera', { className: 'h-5 w-5' }))
-  cameraBtn.addEventListener('click', () => {
-    if (plusBtn.disabled) return
-    closeAttachPanel()
-    cameraInput.click()
-  })
-
-  const imageBtn = createNode('button', {
-    className: attachIconClass,
-    props: { type: 'button' },
-    attrs: { 'aria-label': 'Image' },
-  })
-  imageBtn.replaceChildren(renderIcon('image', { className: 'h-5 w-5' }))
-  imageBtn.addEventListener('click', () => {
-    if (plusBtn.disabled) return
-    closeAttachPanel()
-    imageInput.click()
+  const cameraBtn = createIconButton({
+    icon: 'camera',
+    label: 'Camera',
+    variant: 'subtle',
+    size: 'lg',
+    iconSize: 20,
+    className: 'flex-shrink-0',
+    onClick: () => {
+      if (plusBtn.disabled) return
+      closeAttachPanel()
+      cameraInput.click()
+    },
   })
 
-  const docBtn = createNode('button', {
-    className: attachIconClass,
-    props: { type: 'button' },
-    attrs: { 'aria-label': 'File' },
+  const imageBtn = createIconButton({
+    icon: 'image',
+    label: 'Image',
+    variant: 'subtle',
+    size: 'lg',
+    iconSize: 20,
+    className: 'flex-shrink-0',
+    onClick: () => {
+      if (plusBtn.disabled) return
+      closeAttachPanel()
+      imageInput.click()
+    },
   })
-  docBtn.replaceChildren(renderIcon('file', { className: 'h-5 w-5' }))
-  docBtn.addEventListener('click', () => {
-    if (plusBtn.disabled) return
-    closeAttachPanel()
-    docInput.click()
+
+  const docBtn = createIconButton({
+    icon: 'file',
+    label: 'File',
+    variant: 'subtle',
+    size: 'lg',
+    iconSize: 20,
+    className: 'flex-shrink-0',
+    onClick: () => {
+      if (plusBtn.disabled) return
+      closeAttachPanel()
+      docInput.click()
+    },
   })
 
   attachPanel.appendChild(cameraBtn)
@@ -235,16 +246,21 @@ export function createInputBar(initial: {
   })
 
   // Send/Stop button — toggles between send and stop based on streaming state.
-  const sendBtn = createNode('button', {
-    className:
-      'flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-blue hover:text-white transition-colors disabled:opacity-30',
-    props: { type: 'button' },
-    attrs: { 'aria-label': 'Send' },
+  // Caller-side STOP/send/history-picker state machine (sendBtn.addEventListener
+  // below) drives behavior; factory supplies the initial Send icon and stays
+  // out of the click path. Runtime icon swap (replaceChildren(renderSendIcon())
+  // / innerHTML = stopIcon) replaces the factory-installed svg directly.
+  const sendBtn = createIconButton({
+    icon: 'send',
+    label: 'Send',
+    variant: 'default',
+    size: 'sm',
+    iconSize: 24,
+    className: 'flex-shrink-0 disabled:opacity-30',
   })
   const renderSendIcon = (): SVGElement => renderIcon('send', { className: 'h-6 w-6' })
   const stopIcon =
     '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
-  sendBtn.replaceChildren(renderSendIcon())
 
   row.appendChild(plusBtn)
   row.appendChild(taWrap)
@@ -461,13 +477,19 @@ export function createInputBar(initial: {
         // Retry button: circular-arrow icon. Sibling to × so the user can
         // either retry or dismiss. disabled during an in-flight retry to
         // prevent duplicate uploads (retryCb is async).
-        const retry = createNode('button', {
-          className:
-            'absolute -top-1 -left-1 w-4 h-4 rounded-full bg-blue text-white flex items-center justify-center hover:bg-blue/80 disabled:opacity-40',
-          props: { type: 'button' },
-          attrs: { 'aria-label': 'Retry upload' },
+        // Caller-side disabled-state management (retry.disabled = true/false
+        // in the async handler) replaces the factory's onClick — we don't
+        // pass onClick because the in-flight guard needs to read/set
+        // retry.disabled, which requires the button reference.
+        const retry = createIconButton({
+          icon: 'refresh',
+          label: 'Retry upload',
+          variant: 'solid',
+          size: 'xs',
+          iconSize: 9,
+          strokeWidth: 2.5,
+          className: 'absolute -top-1 -left-1 disabled:opacity-40',
         })
-        retry.replaceChildren(renderIcon('refresh', { size: 9, strokeWidth: 2.5 }))
         retry.addEventListener('click', async () => {
           if (retry.disabled) return
           retry.disabled = true
@@ -485,14 +507,15 @@ export function createInputBar(initial: {
         })
         wrap.appendChild(retry)
       }
-      const x = createNode('button', {
-        className:
-          'absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink2 text-t3 hover:text-red flex items-center justify-center text-[10px] leading-none',
-        props: { type: 'button' },
-        attrs: { 'aria-label': 'Remove attachment' },
-        text: '×',
+      const x = createIconButton({
+        icon: 'x',
+        label: 'Remove attachment',
+        variant: 'ghost',
+        size: 'xs',
+        iconSize: 10,
+        className: 'absolute -top-1 -right-1 bg-ink2 text-t3 hover:text-red',
+        onClick: () => removeAttachment(ref),
       })
-      x.addEventListener('click', () => removeAttachment(ref))
       wrap.appendChild(x)
       // Thin blue progress bar at the chip's bottom edge during upload.
       // Hidden once uploadProgress reaches 1 (caller then removes the chip

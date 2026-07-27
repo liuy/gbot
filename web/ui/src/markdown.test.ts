@@ -82,6 +82,18 @@ describe('renderMarkdown', () => {
     expect(code?.className).toContain('hljs')
   })
 
+  it('renders rust code block with language label in header', () => {
+    const el = container(renderMarkdown('```rust\nfn main() {}\n```'))
+    const wrapper = el.querySelector('.code-block-wrapper') as HTMLElement
+    expect(wrapper).toBeTruthy()
+    expect(wrapper.dataset.lang).toBe('rust')
+    const langSpan = wrapper.querySelector('.code-lang')
+    expect(langSpan?.textContent).toBe('rust')
+    const code = wrapper.querySelector('code')
+    expect(code?.className).toContain('hljs')
+    expect(code?.className).toContain('language-rust')
+  })
+
   it('renders blockquote', () => {
     const el = container(renderMarkdown('> quoted text'))
     const bq = el.querySelector('blockquote')
