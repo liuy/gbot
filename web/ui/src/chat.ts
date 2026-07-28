@@ -1721,6 +1721,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             initStreaming('snapshot')
           }
           renderStreamStateBlocks(msg.snapshot.blocks)
+        } else if (msg.stats?.queryStartMs && msg.stats.queryStartMs > 0) {
+          // Query is active but no events received yet (e.g. LLM warming up
+          // after engine switch). Without this, the UI stays idle: no STOP
+          // button, Esc ignored — even though the query is running.
+          if (!streamContainer) {
+            initStreaming('snapshot')
+          }
         }
 
         const s = msg.stats
