@@ -388,7 +388,7 @@ describe('Header model picker popover', () => {
   function visibleModelPanel(): HTMLDivElement | null {
     const panels = document.body.querySelectorAll('.modal-enter')
     for (const p of panels) {
-      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search models..."]')
+      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search..."]')
       if (hasModelSearch && !p.classList.contains('hidden')) return p as HTMLDivElement
     }
     return null
@@ -398,7 +398,7 @@ describe('Header model picker popover', () => {
     modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
     const panel = visibleModelPanel()
     expect(panel).not.toBeNull()
-    expect(panel!.querySelector('textarea[placeholder="Search models..."]')).not.toBeNull()
+    expect(panel!.querySelector('textarea[placeholder="Search..."]')).not.toBeNull()
   })
 
   it('outside click closes panel', () => {
@@ -418,7 +418,7 @@ describe('Header model picker popover', () => {
     // Only one model-picker panel in the DOM.
     let count = 0
     for (const p of document.body.querySelectorAll('.modal-enter')) {
-      if (p.querySelector('textarea[placeholder="Search models..."]')) count++
+      if (p.querySelector('textarea[placeholder="Search..."]')) count++
     }
     expect(count).toBe(1)
   })
@@ -475,7 +475,7 @@ describe('Header engine picker popover', () => {
     // Only one engine-picker panel in the DOM (PopupHost guards re-append).
     let count = 0
     for (const p of document.body.querySelectorAll('.modal-enter')) {
-      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search models..."]')
+      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search..."]')
       const hasContext = !!(p as HTMLElement).dataset && (p as HTMLElement).dataset.testid === 'context-panel'
       if (!hasModelSearch && !hasContext) count++
     }

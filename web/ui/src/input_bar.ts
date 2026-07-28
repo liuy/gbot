@@ -277,13 +277,17 @@ export function createInputBar(initial: {
   let historyPickerCb: (() => string[]) | null = null
   const histPanel = createPopupPanel({ bottom: true, className: 'flex flex-col h-[300px]' })
 
+  const histSearchWrap = createElement('div', 'flex items-center gap-2 mx-3 my-2 px-3 py-2 rounded-lg bg-ink3/40 shrink-0')
+  histSearchWrap.appendChild(renderIcon('search', { size: 14, className: 'text-t3 shrink-0' }))
   const histSearch = createNode('textarea', {
     className:
-      'w-full bg-transparent px-4 py-2.5 text-[14px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none shrink-0 font-[inherit] text-[length:inherit]',
-    props: { rows: 1, placeholder: 'Search history...', spellcheck: false },
+      'flex-1 bg-transparent text-[13px] text-t1 placeholder-t3 outline-none resize-none',
+    props: { rows: 1, placeholder: 'Search...', spellcheck: false },
     attrs: { autocapitalize: 'off', autocorrect: 'off' },
+    style: { fontFamily: 'inherit' },
   })
-  histPanel.appendChild(histSearch)
+  histSearchWrap.appendChild(histSearch)
+  histPanel.appendChild(histSearchWrap)
 
   const histList = createElement('div', 'flex-1 overflow-y-auto p-1 min-h-0')
   histPanel.appendChild(histList)

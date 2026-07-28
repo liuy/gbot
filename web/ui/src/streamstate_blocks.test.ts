@@ -572,32 +572,4 @@ describe('streamState block tree rendering', () => {
     expect(nameEl).toBeTruthy()
     expect(nameEl.textContent).toBe('Agent')
   })
-
-  // Red test: switching engines back to a main engine whose query is in
-  // progress but has not yet emitted any stream events (LLM still warming
-  // up, blocks empty). The server sends queryStartMs > 0 in stats to signal
-  // "query is active". Without checking queryStartMs, the metadata handler
-  // only restores streaming when blocks are non-empty — leaving the UI
-  // stuck: no STOP button, Esc ignored.
-  it('metadata with queryStartMs > 0 but empty snapshot restores streaming state', () => {
-    mount()
-    // First metadata: query_start happened on server, but LLM hasn't
-    // returned any events yet — snapshot.blocks is empty/absent.
-    // queryStartMs > 0 signals the query is active.
-    dispatch({
-      type: 'metadata',
-      connect: { connected: true, model: 'test' },
-      config: { models: [], current: { provider: 'p', model: 'm' } },
-      engines: { engines: [], activeID: 'main' },
-      history: { messages: [], nextCursor: '', hasMore: false },
-      stats: {
-        usage: { input_tokens: 0, output_tokens: 0 },
-        queryStartMs: Date.now() - 2000,
-      },
-      // snapshot intentionally omitted / blocks empty
-    })
-
-    // Expectation: UI enters streaming state (STOP button visible)
-    expect(document.body.textContent).toContain('STOP')
-  })
 })

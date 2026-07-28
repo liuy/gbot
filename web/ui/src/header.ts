@@ -6,6 +6,7 @@ import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
+import { renderIcon } from './icons'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -36,14 +37,17 @@ function createModelPicker(
   onSelect: (provider: string, model: string) => void,
   onRequestQuota?: () => void,
 ): { wrap: HTMLElement; setLabel: (text: string) => void; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
+  const searchWrap = createElement('div', 'flex items-center gap-2 mx-3 my-2 px-3 py-2 rounded-lg bg-ink3/40')
+  searchWrap.appendChild(renderIcon('search', { size: 14, className: 'text-t3 shrink-0' }))
   const searchInput = createNode('textarea', {
     className:
-      'w-full bg-transparent px-4 py-2.5 text-[13px] text-t1 placeholder-t3 outline-none border-b border-hairline resize-none',
-    props: { rows: 1, placeholder: 'Search models...', spellcheck: false },
+      'flex-1 bg-transparent text-[13px] text-t1 placeholder-t3 outline-none resize-none',
+    props: { rows: 1, placeholder: 'Search...', spellcheck: false },
     attrs: { autocapitalize: 'off', autocorrect: 'off' },
-    style: { fontFamily: 'inherit', fontSize: 'inherit' },
+    style: { fontFamily: 'inherit' },
   })
   ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
+  searchWrap.appendChild(searchInput)
 
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
 
@@ -112,7 +116,7 @@ function createModelPicker(
     className: 'text-[15px]',
     onOpen: (panel) => {
       if (!panelSetup) {
-        panel.appendChild(searchInput)
+        panel.appendChild(searchWrap)
         panel.appendChild(listContainer)
         panelSetup = true
       }

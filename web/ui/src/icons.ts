@@ -19,6 +19,7 @@ export type IconName =
   | 'dot'
   | 'copy'
   | 'check'
+  | 'search'
 
 export type IconVariant = 'outline' | 'solid' | 'mixed'
 
@@ -119,6 +120,11 @@ const ICONS: Record<IconName, IconDef> = {
   },
   check: {
     path: '<polyline points="20 6 9 17 4 12"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  search: {
+    path: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
