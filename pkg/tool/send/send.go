@@ -1,6 +1,6 @@
 // Package send implements the Send tool for delivering local files to the
-// WeChat user over the iLink CDN upload pipeline. WeChat-engine-only: the tool
-// is registered into the WeChat engine's registry, absent from the TUI engine.
+// user via the engine's FileSender routing. Registered on engines that have
+// a connector-bound FileSender (WeChat, WUI); absent from the TUI engine.
 package send
 
 import (
@@ -13,7 +13,8 @@ import (
 )
 
 // FileSender is implemented by connectors that can deliver a local file.
-// Satisfied by *wechat.WeChatConnector (SendFile).
+// Satisfied by *engine.Engine (which routes by source to the registered
+// connector) and, indirectly, by *wechat.WeChatConnector and *wui.WUIConnector.
 type FileSender interface {
 	SendFile(ctx context.Context, filePath, caption string) error
 }

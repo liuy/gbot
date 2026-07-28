@@ -97,10 +97,10 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	c.sendItemFn = SendItemMessage
 	c.uploadFn = UploadFile
 	c.queryFn = func(ctx context.Context, userMessage, _ string) {
-		eng.Query(ctx, userMessage, eng.SystemPrompt())
+		eng.Query(engine.WithSource(ctx, "wechat"), userMessage, eng.SystemPrompt())
 	}
 	c.queryWithContentFn = func(ctx context.Context, content []types.ContentBlock, _ string) {
-		eng.QueryWithContent(ctx, content, eng.SystemPrompt())
+		eng.QueryWithContent(engine.WithSource(ctx, "wechat"), content, eng.SystemPrompt())
 	}
 	c.getUpdatesFn = GetUpdates
 	c.isBusyFn = func() bool {

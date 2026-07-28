@@ -8,8 +8,24 @@ import (
 	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool/send"
 	"github.com/liuy/gbot/pkg/tui"
 )
+
+// registerWUISendTool wires the WUI connector as the engine's "wui"
+// FileSender and registers the Send tool (bound to the engine) on the
+// engine's mutable registry. Called for every WUI-driven engine: those
+// restored at boot (start.go WUI block) and those created at runtime via
+// engine_new (createEngineForWUI). Without this, the Send tool is absent
+// from WUI engines and the LLM cannot deliver files to the browser.
+func registerWUISendTool(eng *engine.Engine, wc *wui.WUIConnector) {
+	eng.RegisterFileSender("wui", wc)
+	reg := eng.ToolRefs().Reg
+	if _, ok := reg.Lookup("Send"); ok {
+		return
+	}
+	reg.MustRegister(send.New(eng))
+}
 
 // createEngineForWUI builds a new engine via engineFactory, registers it
 // in the manager, subscribes the wui connector to its hub, and wires
@@ -40,6 +56,7 @@ func createEngineForWUI(
 		eng.Close()
 		return "", fmt.Errorf("new session: %w", err)
 	}
+	registerWUISendTool(eng, connector)
 	vs := &engine.EngineViewState{
 		Engine:          eng,
 		Handler:         handler,

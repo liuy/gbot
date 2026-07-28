@@ -1829,6 +1829,47 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         askEls.push(a.root)
         return
       }
+      case 'file': {
+        // Discrete delivery event from Send tool. Auto-download via transient
+        // <a download> — Chrome on Android and desktop browsers both honor
+        // a.click() and save to the system Downloads directory without user
+        // interaction. Images additionally render as inline thumbnails.
+        const raw = atob(msg.data)
+        const bytes = new Uint8Array(raw.length)
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+        const blob = new Blob([bytes], { type: msg.mime })
+        const url = URL.createObjectURL(blob)
+
+        // Auto-download: transient anchor, removed after click.
+        const dl = document.createElement('a')
+        dl.href = url
+        dl.download = msg.name
+        dl.style.display = 'none'
+        document.body.appendChild(dl)
+        dl.click()
+        setTimeout(() => { dl.remove(); URL.revokeObjectURL(url) }, 60_000)
+
+        const { outer, content } = buildShell('assistant')
+        if (msg.mime.startsWith('image/')) {
+          // Image: inline thumbnail using data: URL (independent of the
+          // blob URL above, so revokeObjectURL doesn't break the preview).
+          const img = createElement('img', 'block max-w-full rounded-lg my-1')
+          img.src = `data:${msg.mime};base64,${msg.data}`
+          img.alt = msg.name
+          content.appendChild(img)
+        } else {
+          // Non-image: file icon + name (file is already auto-downloaded).
+          const row = createElement('div', 'inline-flex items-center gap-1.5 text-t2 my-1')
+          const icon = renderIcon('file', { size: 16 })
+          if (icon) row.appendChild(icon)
+          const name = createElement('span', 'break-all')
+          name.textContent = msg.name
+          row.appendChild(name)
+          content.appendChild(row)
+        }
+        appendMsgWithDivider(messagesContainer, 'assistant', Date.now(), outer)
+        return
+      }
       case 'event':
         handleEvent(msg.event)
         return

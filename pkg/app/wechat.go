@@ -163,7 +163,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 	// Register the WeChat-only Send tool on the engine's mutable registry.
 	// Both branches (fresh build + restore) stash their ToolRefs on wcEng, so
 	// this single call covers both. The TUI engine never reaches this path.
-	wc.RegisterSendTool(wcEng.ToolRefs().Reg)
+	wc.RegisterSendTool(wcEng, wcEng.ToolRefs().Reg)
 	if d.daemonMode {
 		memDir := filepath.Join(d.projectDir, "memory", engineID)
 		wcEng.SetMemoryDir(memDir)

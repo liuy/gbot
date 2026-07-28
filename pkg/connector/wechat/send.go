@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/tool"
 	sendtool "github.com/liuy/gbot/pkg/tool/send"
@@ -82,12 +83,17 @@ func mediaTypeFromExt(ext string) int {
 	return MediaFile
 }
 
-// RegisterSendTool adds the Send tool to the given tool registry. Called from
-// main.go after the connector exists. Idempotent: a no-op if a "Send" tool is
-// already registered.
-func (c *WeChatConnector) RegisterSendTool(reg *tool.Registry) {
+// RegisterSendTool binds the connector as the engine's "wechat" FileSender
+// and registers the Send tool (bound to the engine) on the registry. The Send
+// tool routes via engine.SendFile using the source set on the Query ctx by the
+// connector's queryFn/queryWithContentFn closures. Idempotent: a no-op if a
+// "Send" tool is already registered. Called from app/wechat.go after the
+// connector exists. Both fresh-build and restore branches stash ToolRefs on
+// the engine, so the same call covers both.
+func (c *WeChatConnector) RegisterSendTool(eng *engine.Engine, reg *tool.Registry) {
+	eng.RegisterFileSender("wechat", c)
 	if _, ok := reg.Lookup("Send"); ok {
 		return
 	}
-	reg.MustRegister(sendtool.New(c))
+	reg.MustRegister(sendtool.New(eng))
 }

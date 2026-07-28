@@ -506,6 +506,45 @@ func (c *WUIConnector) Stop() {
 // connector.Connector contract.
 func (c *WUIConnector) Send(userID, text string) error { return nil }
 
+// SendFile delivers a local file to the active WS client as a discrete "file"
+// event with base64-inline data. Satisfies send.FileSender so the Send tool,
+// bound to the engine, can route file deliveries to the browser. Caption is
+// dropped — the file event carries only the file (no separate text frame),
+// matching WeChat's media-only behavior.
+//
+// Size is checked via os.Stat before ReadFile so a huge file is rejected
+// without first loading it into memory. The 10 MiB raw cap bounds the
+// base64-expanded WS frame (~13.3 MiB) and browser memory.
+func (c *WUIConnector) SendFile(_ context.Context, filePath, _ string) error {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("wui: send file: %w", err)
+	}
+	if fi.Size() > maxSendFileSize {
+		return fmt.Errorf("wui: file too large (%d bytes, max %d)", fi.Size(), maxSendFileSize)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("wui: read file: %w", err)
+	}
+	payload, err := json.Marshal(struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+		Mime string `json:"mime"`
+		Data string `json:"data"`
+	}{
+		Type: "file",
+		Name: filepath.Base(filePath),
+		Mime: media.MimeFromExt(filepath.Ext(filePath)),
+		Data: base64.StdEncoding.EncodeToString(data),
+	})
+	if err != nil {
+		return fmt.Errorf("wui: marshal file payload: %w", err)
+	}
+	c.sendWS(payload)
+	return nil
+}
+
 // Handle dispatches an event to the active engine. Kept for test
 // compatibility: existing tests call c.Handle(event) to simulate hub dispatch.
 // Production code routes events through engineHubShim → onEngineEvent.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileread"
@@ -295,7 +296,7 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 	// Read busy SYNCHRONOUSLY — see the doc comment for the race this prevents.
 	busy := eng.IsBusy()
 	go func() {
-		ctx := context.Background()
+		ctx := engine.WithSource(context.Background(), "wui")
 		blocks := c.assembleContentBlocks(ctx, text, content)
 		if len(blocks) == 0 {
 			// All attachments were rejected AND there was no text. Surface a

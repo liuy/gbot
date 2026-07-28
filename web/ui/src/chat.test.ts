@@ -2330,3 +2330,37 @@ describe('mapHistoryToChatMessages', () => {
     expect(result).toEqual([])
   })
 })
+
+describe('file event rendering', () => {
+  it('file_event_renders_file_name for non-image mime', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'file',
+      name: 'r.pdf',
+      mime: 'application/pdf',
+      data: btoa('content'),
+    })
+    // Non-image: file icon + name (auto-download triggered separately).
+    const name = document.querySelector('span.break-all')
+    expect(name?.textContent).toBe('r.pdf')
+    // No inline <img> for non-image
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('file_event_image_renders_inline for image mime', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'file',
+      name: 'pic.png',
+      mime: 'image/png',
+      data: btoa('png-bytes'),
+    })
+    const img = document.querySelector('img') as HTMLImageElement
+    expect(img).not.toBeNull()
+    // Thumbnail uses data: URL (independent from the auto-download blob URL).
+    expect(img.src).toMatch(/^data:image\/png;base64,/)
+    expect(img.alt).toBe('pic.png')
+  })
+})

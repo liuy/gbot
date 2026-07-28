@@ -28,6 +28,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
+	"github.com/liuy/gbot/pkg/tool/send"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
@@ -279,6 +280,12 @@ type Engine struct {
 	// callers that need the mutable registry post-construction (e.g. main.go
 	// registering WeChat-only tools on a restored engine) can reach it.
 	toolRefs ToolRefs
+
+	// senders routes Send tool calls to the connector that originated the
+	// query. Keyed by source string set via WithSource on the Query ctx.
+	// Empty for engines never given a FileSender (TUI main engine, sub-engines).
+	senders   map[string]send.FileSender
+	sendersMu sync.RWMutex
 }
 
 // Params holds the constructor arguments for Engine.
@@ -409,6 +416,7 @@ func New(p *Params) *Engine {
 		taskList:                taskList,
 		modelThinking:           p.ModelThinking,
 		engineID:                engineID,
+		senders:                 make(map[string]send.FileSender),
 	}
 
 	// Auto-create compactor from provider if not set. Compactor reads live
@@ -4252,6 +4260,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		fileHistory:             e.fileHistory, // share same Tracker — sub-agent edits tracked too
 		workingDir:              e.workingDir,
 		systemPrompt:            opts.SystemPrompt,
+		senders:                 make(map[string]send.FileSender),
 	}
 }
 
@@ -4468,4 +4477,47 @@ func (e *Engine) Dispatcher() types.EventDispatcher {
 func mustMarshalString(s string) json.RawMessage {
 	b, _ := json.Marshal(s)
 	return json.RawMessage(b)
+}
+
+// sourceCtxKey keys the connector source string stored on a Query ctx so the
+// Send tool can route to the originating connector's FileSender.
+type sourceCtxKey struct{}
+
+// WithSource returns a derived ctx carrying the source identifier (e.g.
+// "wechat", "wui"). Connectors wrap the ctx they pass to Query/QueryWithContent
+// so the engine's SendFile can route by source.
+func WithSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(ctx, sourceCtxKey{}, source)
+}
+
+// SourceFromContext extracts the source set by WithSource. Returns "" when no
+// source was injected (e.g. TUI main engine never wraps its ctx).
+func SourceFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(sourceCtxKey{}).(string)
+	return s
+}
+
+// RegisterFileSender binds a connector's FileSender to a source key. The Send
+// tool, bound to the engine via send.New(eng), routes by the source on the
+// Query ctx to the sender registered here. Idempotent: a second call for the
+// same source replaces the prior sender.
+func (e *Engine) RegisterFileSender(source string, sender send.FileSender) {
+	e.sendersMu.Lock()
+	defer e.sendersMu.Unlock()
+	e.senders[source] = sender
+}
+
+// SendFile routes a file delivery to the FileSender registered for the source
+// on ctx. Called by the Send tool (which is bound to the engine). The sender
+// lookup happens under RLock but the sender's own SendFile runs lock-free so
+// a slow connector I/O cannot block RegisterFileSender.
+func (e *Engine) SendFile(ctx context.Context, filePath, caption string) error {
+	source := SourceFromContext(ctx)
+	e.sendersMu.RLock()
+	sender, ok := e.senders[source]
+	e.sendersMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("send: no FileSender registered for source %q", source)
+	}
+	return sender.SendFile(ctx, filePath, caption)
 }

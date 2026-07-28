@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
 )
 
@@ -245,8 +246,10 @@ func TestMediaTypeFromExt(t *testing.T) {
 func TestRegisterSendTool(t *testing.T) {
 	t.Parallel()
 	c, _, _ := newSendTestConnector(t)
+	eng := engine.New(&engine.Params{Model: "test"})
+	t.Cleanup(eng.Close)
 	reg := tool.NewRegistry()
-	c.RegisterSendTool(reg)
+	c.RegisterSendTool(eng, reg)
 
 	got, ok := reg.Lookup("Send")
 	if !ok {
@@ -256,8 +259,17 @@ func TestRegisterSendTool(t *testing.T) {
 		t.Errorf("registered tool Name = %q, want 'Send'", got.Name())
 	}
 
-	// Idempotent: calling again must not panic.
-	c.RegisterSendTool(reg)
+	// The "wechat" FileSender must be bound to the engine so the Send tool
+	// (bound to eng) routes to the connector. newSendTestConnector stubs
+	// upload+sendItem to succeed, so a nil error proves the connector's
+	// SendFile was reached — a routing failure would surface as
+	// "no FileSender registered for source".
+	if err := eng.SendFile(engine.WithSource(context.Background(), "wechat"), "/nonexistent.png", ""); err != nil {
+		t.Errorf("SendFile via engine routing = %v, want nil (sender must be registered)", err)
+	}
+
+	// Idempotent: calling again must not panic and the tool must remain.
+	c.RegisterSendTool(eng, reg)
 	if _, ok := reg.Lookup("Send"); !ok {
 		t.Error("Send tool missing after second RegisterSendTool call")
 	}

@@ -456,6 +456,12 @@ func Start(opts Options) (*Instance, error) {
 
 	if needWS && wsMux != nil {
 		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
+		// Register the Send tool + "wui" FileSender on every engine restored
+		// at boot. Engines created later via engine_new are wired inside
+		// createEngineForWUI.
+		for _, vs := range engineMgr.List() {
+			registerWUISendTool(vs.Engine, wc)
+		}
 		wc.SetCreateEngineFn(func(name string) (string, error) {
 			currentProvider, currentModel := "", model
 			if vs := engineMgr.Active(); vs != nil {
