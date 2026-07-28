@@ -1170,7 +1170,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (isNearBottom) {
           scroll.scrollTop = scroll.scrollHeight
         }
-        console.debug('[chat] query_end aborted=' + wasAborted)
         return
       }
       case 'thinking_start': {
@@ -1627,7 +1626,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   const onStop = () => {
+    const t0 = performance.now()
+    console.debug('[chat] onStop esc pressed at', t0)
     conn.send({ type: 'stop' })
+    console.debug('[chat] onStop stop sent, ws_buffered=' + (performance.now() - t0) + 'ms')
   }
 
   const onCancelQueued = () => {

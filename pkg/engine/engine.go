@@ -463,8 +463,12 @@ func (e *Engine) Abort() {
 	e.activeCancelMu.Lock()
 	defer e.activeCancelMu.Unlock()
 	if e.activeCancel != nil {
+		e.logger.Info("engine:abort_entered")
 		e.activeCancel()
 		e.activeCancel = nil
+		e.logger.Info("engine:abort_cancel_returned")
+	} else {
+		e.logger.Info("engine:abort_noop_no_active_cancel")
 	}
 }
 
@@ -1912,9 +1916,11 @@ func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*ty
 		cfg = llm.DefaultRetryConfig()
 	}
 	for attempt := 1; attempt <= cfg.MaxRetries+1; attempt++ {
+		e.logger.Debug("engine:callLLM_start", "attempt", attempt)
 		// callLLM internally calls Discard() on the executor for stream errors,
 		// so no goroutine leak on failed attempts.
 		msg, exec, err := e.callLLM(ctx, systemPrompt)
+		e.logger.Debug("engine:callLLM_returned", "attempt", attempt, "err", err)
 		if err == nil {
 			return msg, exec, nil
 		}

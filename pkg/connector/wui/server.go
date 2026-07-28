@@ -418,8 +418,13 @@ func (c *WUIConnector) handleAskResponse(id, decision, text string, aborted bool
 // same path as TUI's ESC handler. This cancels the engine's internal
 // activeCancel which propagates to the LLM stream and all tool contexts.
 func (c *WUIConnector) handleStop() {
+	slog.Info("wui:handle_stop_enter")
 	if eng := c.activeEngine(); eng != nil {
+		slog.Info("wui:handle_stop_calling_abort")
 		eng.Abort()
+		slog.Info("wui:handle_stop_abort_returned")
+	} else {
+		slog.Info("wui:handle_stop_no_active_engine")
 	}
 }
 
