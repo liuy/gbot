@@ -34,6 +34,7 @@ vi.mock('../src/ws', () => ({
         listeners.delete(fn)
       }
     },
+    subscribeBinary: () => () => {},
     send: (p: unknown) => {
       sent.push(p)
     },

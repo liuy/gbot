@@ -16,6 +16,7 @@ const sent: unknown[] = []
 vi.mock('./ws', () => ({
   getConnection: () => ({
     subscribe: (fn: Listener) => { listeners.add(fn); return () => { listeners.delete(fn) } },
+    subscribeBinary: () => () => {},
     send: (p: unknown) => { sent.push(p) },
     connected: true,
   }),

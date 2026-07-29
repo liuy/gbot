@@ -55,7 +55,8 @@ export type ServerMessage =
   | { type: 'context_breakdown' } & ContextBreakdownData
   | { type: 'model_switched'; contextUsed: number; contextTotal: number }
   | { type: 'quota_result'; entries: { provider: string; quota: string }[] }
-  | { type: 'file'; name: string; mime: string; data: string }
+  | { type: 'file_start'; name: string; mime: string; size: number }
+  | { type: 'file_end'; name: string }
 
 export type ContextCategoryData = {
   name: string; tokens: number; percentage: number

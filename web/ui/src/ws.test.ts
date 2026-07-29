@@ -5,10 +5,11 @@ class MockWebSocket {
   static OPEN = 1
   static CLOSED = 3
   readyState = MockWebSocket.OPEN
+  binaryType: string = 'blob'
   onopen: (() => void) | null = null
   onclose: ((ev: CloseEvent) => void) | null = null
   onerror: (() => void) | null = null
-  onmessage: ((ev: { data: string }) => void) | null = null
+  onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null
   sentMessages: string[] = []
 
   constructor() {
@@ -19,6 +20,10 @@ class MockWebSocket {
   }
   send(data: string) {
     this.sentMessages.push(data)
+  }
+  // Dispatch a text or binary frame to the stored onmessage handler.
+  dispatchMessage(data: string | ArrayBuffer) {
+    this.onmessage!({ data })
   }
 }
 
@@ -130,5 +135,69 @@ describe('ws reconnect backoff', () => {
     // Try triggering another onclose on the same socket
     MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose?.()
     expect(states.length).toBe(beforeLen)
+  })
+})
+
+describe('ws binary frame routing', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.stubGlobal('location', { host: 'localhost' })
+    vi.resetModules()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('sets binaryType to arraybuffer on connect', async () => {
+    const { getConnection } = await import('./ws')
+    getConnection()
+    expect(MockWebSocket.instances[0].binaryType).toBe('arraybuffer')
+  })
+
+  it('routes binary frames to subscribeBinary listeners', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const binaryListener = vi.fn()
+    const textListener = vi.fn()
+    conn.subscribeBinary(binaryListener)
+    conn.subscribe(textListener)
+
+    MockWebSocket.instances[0].dispatchMessage(new Uint8Array([1, 2, 3]).buffer)
+
+    expect(binaryListener).toHaveBeenCalledTimes(1)
+    const received = binaryListener.mock.calls[0][0] as ArrayBuffer
+    expect(new Uint8Array(received)).toEqual(new Uint8Array([1, 2, 3]))
+    // Text listener must NOT receive binary frames.
+    expect(textListener).not.toHaveBeenCalled()
+  })
+
+  it('routes text frames to text listeners and not binary listeners', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const binaryListener = vi.fn()
+    const textListener = vi.fn()
+    conn.subscribeBinary(binaryListener)
+    conn.subscribe(textListener)
+
+    MockWebSocket.instances[0].dispatchMessage(JSON.stringify({ type: 'error', message: 'hi' }))
+
+    expect(textListener).toHaveBeenCalledTimes(1)
+    expect(textListener).toHaveBeenCalledWith({ type: 'error', message: 'hi' })
+    expect(binaryListener).not.toHaveBeenCalled()
+  })
+
+  it('subscribeBinary disposer removes the listener', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const binaryListener = vi.fn()
+    const dispose = conn.subscribeBinary(binaryListener)
+
+    MockWebSocket.instances[0].dispatchMessage(new Uint8Array([1]).buffer)
+    expect(binaryListener).toHaveBeenCalledTimes(1)
+
+    dispose()
+    MockWebSocket.instances[0].dispatchMessage(new Uint8Array([2]).buffer)
+    expect(binaryListener).toHaveBeenCalledTimes(1)
   })
 })

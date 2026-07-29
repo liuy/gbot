@@ -1,11 +1,13 @@
 import type { ServerMessage } from './types'
 
 type Listener = (msg: ServerMessage) => void
+type BinaryListener = (data: ArrayBuffer) => void
 
 export type ConnState = 'connected' | 'reconnecting' | 'disconnected'
 
 export interface WebSocketConnection {
   subscribe: (listener: Listener) => () => void
+  subscribeBinary: (listener: BinaryListener) => () => void
   send: (payload: object) => void
   sendBinary: (data: ArrayBuffer | Uint8Array) => void
   connected: boolean
@@ -15,6 +17,7 @@ export interface WebSocketConnection {
 
 interface InternalState {
   listeners: Set<Listener>
+  binaryListeners: Set<BinaryListener>
   stateCbs: Set<(s: ConnState) => void>
   ws: WebSocket | null
   connected: boolean
@@ -29,6 +32,7 @@ let state: InternalState | null = null
 function createState(): InternalState {
   return {
     listeners: new Set(),
+    binaryListeners: new Set(),
     stateCbs: new Set(),
     ws: null,
     connected: false,
@@ -68,6 +72,7 @@ function connect(s: InternalState, wsUrl: string) {
     try { s.ws.close() } catch { /* socket already closed */ }
   }
   const ws = new WebSocket(wsUrl)
+  ws.binaryType = 'arraybuffer'
   s.ws = ws
 
   ws.onopen = () => {
@@ -96,6 +101,14 @@ function connect(s: InternalState, wsUrl: string) {
   }
 
   ws.onmessage = (ev: MessageEvent) => {
+    // Binary frames (file chunks) route to binaryListeners; text frames
+    // parse as JSON and route to text listeners. WS guarantees in-order
+    // delivery, so a file_start text frame always precedes its binary
+    // chunks which always precede file_end.
+    if (ev.data instanceof ArrayBuffer) {
+      s.binaryListeners.forEach((fn) => fn(ev.data))
+      return
+    }
     let msg: ServerMessage
     try {
       msg = JSON.parse(ev.data) as ServerMessage
@@ -129,6 +142,12 @@ function connFromState(s: InternalState): WebSocketConnection {
       s.listeners.add(listener)
       return () => {
         s.listeners.delete(listener)
+      }
+    },
+    subscribeBinary: (listener: BinaryListener) => {
+      s.binaryListeners.add(listener)
+      return () => {
+        s.binaryListeners.delete(listener)
       }
     },
     send: (payload: object) => {

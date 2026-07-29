@@ -14,12 +14,6 @@ import (
 // bytes land in memory. Mirrors the prior upload.go HTTP limit.
 const maxAttachmentSize = 50 << 20
 
-// maxSendFileSize caps outbound file delivery via the Send tool. base64 inline
-// encoding expands raw bytes ~1.33x, so 10 MiB raw ≈ 13.3 MiB on the wire —
-// safe for WS frame and browser memory. A larger file surfaces an error to
-// the LLM so it can tell the user instead of silently dropping the send.
-const maxSendFileSize = 10 << 20
-
 // inboundAttachment is the wire shape of one entry in user_message.attachments[].
 // The path is assigned server-side after bytes land (the client only sends
 // id+name+mime+size).

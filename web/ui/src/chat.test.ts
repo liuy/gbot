@@ -12,8 +12,10 @@ class MockIntersectionObserver {
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver as unknown as typeof IntersectionObserver)
 
 type Listener = (msg: unknown) => void
+type BinaryListener = (data: ArrayBuffer) => void
 
 const listeners: Set<Listener> = new Set()
+const binaryListeners: Set<BinaryListener> = new Set()
 const sent: unknown[] = []
 
 let stateCb: ((s: string) => void) | null = null
@@ -23,6 +25,10 @@ vi.mock('./ws', () => ({
     subscribe: (fn: Listener) => {
       listeners.add(fn)
       return () => listeners.delete(fn)
+    },
+    subscribeBinary: (fn: BinaryListener) => {
+      binaryListeners.add(fn)
+      return () => binaryListeners.delete(fn)
     },
     send: (p: unknown) => {
       sent.push(p)
@@ -35,6 +41,10 @@ vi.mock('./ws', () => ({
 
 function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
+}
+
+function dispatchBinary(data: ArrayBuffer) {
+  binaryListeners.forEach((fn) => fn(data))
 }
 
 function dispatchEvents(events: unknown[]) {
@@ -74,6 +84,7 @@ function assistantContentDivs(): HTMLElement[] {
 
 beforeEach(() => {
   listeners.clear()
+  binaryListeners.clear()
   sent.length = 0
   document.body.innerHTML = ''
 })
@@ -2332,15 +2343,12 @@ describe('mapHistoryToChatMessages', () => {
 })
 
 describe('file event rendering', () => {
-  it('file_event_renders_file_name for non-image mime', () => {
+  it('file_start_binary_file_end_renders_file_name for non-image mime', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    dispatch({
-      type: 'file',
-      name: 'r.pdf',
-      mime: 'application/pdf',
-      data: btoa('content'),
-    })
+    dispatch({ type: 'file_start', name: 'r.pdf', mime: 'application/pdf', size: 7 })
+    dispatchBinary(Uint8Array.from('content').buffer)
+    dispatch({ type: 'file_end', name: 'r.pdf' })
     // Non-image: file icon + name (auto-download triggered separately).
     const name = document.querySelector('span.break-all')
     expect(name?.textContent).toBe('r.pdf')
@@ -2348,19 +2356,50 @@ describe('file event rendering', () => {
     expect(document.querySelector('img')).toBeNull()
   })
 
-  it('file_event_image_renders_inline for image mime', () => {
+  it('file_start_binary_file_end_renders_inline_image with blob URL', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    dispatch({
-      type: 'file',
-      name: 'pic.png',
-      mime: 'image/png',
-      data: btoa('png-bytes'),
-    })
+    dispatch({ type: 'file_start', name: 'pic.png', mime: 'image/png', size: 9 })
+    dispatchBinary(Uint8Array.from('png-bytes').buffer)
+    dispatch({ type: 'file_end', name: 'pic.png' })
     const img = document.querySelector('img') as HTMLImageElement
     expect(img).not.toBeNull()
-    // Thumbnail uses data: URL (independent from the auto-download blob URL).
-    expect(img.src).toMatch(/^data:image\/png;base64,/)
+    // Thumbnail uses blob: URL (not the old data: base64 path).
+    expect(img.src).toMatch(/^blob:/)
     expect(img.alt).toBe('pic.png')
+  })
+
+  it('stray_binary_without_file_start_is_noop', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchBinary(Uint8Array.from('orphan').buffer)
+    // No file DOM element should appear.
+    expect(document.querySelector('span.break-all')).toBeNull()
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('file_end_without_pending_is_noop', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'file_end', name: 'ghost.txt' })
+    expect(document.querySelector('span.break-all')).toBeNull()
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('two_files_back_to_back_render_distinct_blocks', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // First file
+    dispatch({ type: 'file_start', name: 'a.txt', mime: 'text/plain', size: 3 })
+    dispatchBinary(Uint8Array.from('aaa').buffer)
+    dispatch({ type: 'file_end', name: 'a.txt' })
+    // Second file
+    dispatch({ type: 'file_start', name: 'b.txt', mime: 'text/plain', size: 3 })
+    dispatchBinary(Uint8Array.from('bbb').buffer)
+    dispatch({ type: 'file_end', name: 'b.txt' })
+    const names = document.querySelectorAll('span.break-all')
+    expect(names.length).toBe(2)
+    expect(names[0].textContent).toBe('a.txt')
+    expect(names[1].textContent).toBe('b.txt')
   })
 })

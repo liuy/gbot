@@ -388,7 +388,7 @@ func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
-		wsCh:        make(chan []byte, 16),
+		wsCh:        make(chan wsMsg, 16),
 		done:        make(chan struct{}),
 		testMock:    mock,
 	}
@@ -409,11 +409,11 @@ func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
 
 	select {
 	case got := <-c.wsCh:
-		if !strings.Contains(string(got), `"type":"error"`) {
-			t.Errorf("payload = %q, want substring '\"type\":\"error\"'", string(got))
+		if !strings.Contains(string(got.data), `"type":"error"`) {
+			t.Errorf("payload = %q, want substring '\"type\":\"error\"'", string(got.data))
 		}
-		if !strings.Contains(string(got), "attachments rejected") {
-			t.Errorf("payload = %q, want substring 'attachments rejected'", string(got))
+		if !strings.Contains(string(got.data), "attachments rejected") {
+			t.Errorf("payload = %q, want substring 'attachments rejected'", string(got.data))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no WS frame received within 2s")
