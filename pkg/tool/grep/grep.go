@@ -224,7 +224,11 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	}
 
 	// Fall back to Go-based search if rg is not available
-	if _, err := exec.LookPath("rg"); err != nil {
+	rgBin := os.Getenv("GBOT_RG_PATH")
+	if rgBin == "" {
+		rgBin = "rg"
+	}
+	if _, err := exec.LookPath(rgBin); err != nil {
 		return goGrep(ctx, in.Pattern, searchPath, in.Glob)
 	}
 
@@ -313,7 +317,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 
 	args = append(args, searchPath)
 
-	cmd := exec.CommandContext(ctx, "rg", args...)
+	cmd := exec.CommandContext(ctx, rgBin, args...)
 	proc.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {

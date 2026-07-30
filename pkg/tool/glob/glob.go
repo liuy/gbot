@@ -243,7 +243,11 @@ func rgRaw(ctx context.Context, args []string) ([]string, error) {
 	rgCtx, cancel := context.WithTimeout(ctx, defaultGlobTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(rgCtx, "rg", args...)
+	rgBin := os.Getenv("GBOT_RG_PATH")
+	if rgBin == "" {
+		rgBin = "rg"
+	}
+	cmd := exec.CommandContext(rgCtx, rgBin, args...)
 	proc.HideWindow(cmd)
 
 	// TS: ripgrep.ts:149-156 — capture stdout with 20MB buffer limit
