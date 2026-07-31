@@ -335,10 +335,7 @@ func TestGoldenFiles(t *testing.T) {
 					len(gotLines), len(got), len(wantLines), len(want))
 
 				// Find first difference
-				maxLines := len(gotLines)
-				if len(wantLines) < maxLines {
-					maxLines = len(wantLines)
-				}
+				maxLines := min(len(wantLines), len(gotLines))
 				for i := 0; i < maxLines; i++ {
 					if gotLines[i] != wantLines[i] {
 						t.Errorf("First diff at line %d:\n  got:  %q\n  want: %q", i+1, truncate(gotLines[i], 200), truncate(wantLines[i], 200))
