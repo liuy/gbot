@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -22,6 +22,14 @@ all: build
 # build compiles frontend (web/ui) + backend (Go binary).
 build: web-build
 	go build -o $(BINARY) $(CMD)
+
+# build-android compiles a binary that can replace the GBot APK's gbot
+# on-device (Termux). Uses wails entry point + android tags to match
+# the production build. Run this on the phone, then cp to /usr/bin/gbot.
+build-android: web-build
+	CGO_ENABLED=1 go build -tags android,production,netcgo \
+		-trimpath -ldflags="-w -s" \
+		-o gbot-android ./cmd/wails/
 
 build-debug:
 	go build $(DEBUG_GCFLAGS) -o $(BINARY_DEBUG) $(CMD)
