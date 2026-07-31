@@ -11,7 +11,7 @@ const maxLogSize = 20 * 1024 * 1024 // 20MB
 // Returns the file handle for writing, or nil on error.
 func setupLogFile(logPath string, logLevel slog.Level) *os.File {
 	if info, err := os.Stat(logPath); err == nil && info.Size() > maxLogSize {
-		os.Rename(logPath, logPath+".old")
+		_ = os.Rename(logPath, logPath+".old")
 	}
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {

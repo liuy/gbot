@@ -149,7 +149,9 @@ func TestSetupLogFile_RotateReplacesOldBackup(t *testing.T) {
 	if f1 == nil {
 		t.Fatal("expected non-nil file handle on first rotation")
 	}
-	f1.Close()
+	if err := f1.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify .old has bigContent
 	oldData, _ := os.ReadFile(logPath + ".old")
@@ -165,7 +167,9 @@ func TestSetupLogFile_RotateReplacesOldBackup(t *testing.T) {
 	if f2 == nil {
 		t.Fatal("expected non-nil file handle on second rotation")
 	}
-	f2.Close()
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// .old should now have the second big content, not the first
 	oldData2, _ := os.ReadFile(logPath + ".old")
