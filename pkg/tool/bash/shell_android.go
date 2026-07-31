@@ -14,7 +14,7 @@ import (
 //  1. Test override: if shellCommand has been changed from "bash" (default),
 //     honor it. Preserves the cross-platform test hook used by
 //     bash_internal_test.go and pty_test.go to force error paths.
-//  2. GBOT_BASH_PATH env var (set by nativeSetDataPath in gui_android.go).
+//  2. GBOT_BASH_PATH env var (set by GbotProcess via ProcessBuilder).
 //  3. $HOME/usr/bin/bash — default bootstrap install location.
 //  4. Literal "bash" — defer to the OS to surface a clear error.
 //

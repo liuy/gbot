@@ -283,10 +283,23 @@
                         android:fontFamily="monospace"
                         android:textColor="@color/text_light"
                         android:textSize="11sp"
-                        android:lineSpacingMultiplier="1.3" />
+                        android:lineSpacingMultiplier="1.3"
+                        android:textIsSelectable="true"
+                        android:scrollbars="vertical" />
                 </androidx.core.widget.NestedScrollView>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+        <Button
+            android:id="@+id/btnEditConfig"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/edit_text_bg_glass"
+            android:text="Edit Config (settings.json)"
+            android:textAllCaps="false"
+            android:textColor="@color/text_white"
+            android:textSize="14sp" />
 
     </LinearLayout>
 </ScrollView>

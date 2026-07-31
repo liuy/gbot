@@ -75,6 +75,17 @@ class ControlFragment : Fragment() {
         if (prefs.getString("host", null) == null) {
             prefs.edit().putString("host", "10.0.2.2").putString("port", "8765").apply()
         }
+
+        // Edit Config button
+        view.findViewById<android.widget.Button?>(R.id.btnEditConfig)?.setOnClickListener {
+            showConfigEditor()
+        }
+
+        // Display gbot startup logs from the MainActivity launch
+        val logs = GbotProcess.logBuffer.toString().trim()
+        if (logs.isNotEmpty()) {
+            logs.lines().forEach { appendLog(it) }
+        }
     }
 
     override fun onResume() {
@@ -89,6 +100,15 @@ class ControlFragment : Fragment() {
 
         btnOpenAccessibility?.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        // Long-press log area to copy all logs to clipboard
+        tvLog?.setOnLongClickListener {
+            val text = tvLog?.text?.toString() ?: ""
+            val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("gbot log", text))
+            android.widget.Toast.makeText(requireContext(), "Log copied", android.widget.Toast.LENGTH_SHORT).show()
+            true
         }
     }
 
@@ -226,16 +246,55 @@ class ControlFragment : Fragment() {
     private fun appendLog(message: String) {
         val timestamp = dateFormat.format(Date())
         val logLine = "[$timestamp] $message\n"
-        tvLog?.append(logLine)
+        activity?.runOnUiThread {
+            tvLog?.append(logLine)
+            logScrollView?.post {
+                logScrollView?.fullScroll(android.view.View.FOCUS_DOWN)
+            }
+            val text = tvLog?.text?.toString() ?: return@runOnUiThread
+            if (text.length > 10000) {
+                tvLog?.text = text.substring(text.length - 5000)
+            }
+        }
+    }
 
-        logScrollView?.post {
-            logScrollView?.fullScroll(android.view.View.FOCUS_DOWN)
+    private fun showConfigEditor() {
+        val ctx = requireContext()
+        val gbotDir = java.io.File(ctx.filesDir, ".gbot")
+        gbotDir.mkdirs()
+        val configFile = java.io.File(gbotDir, "settings.json")
+        val currentContent = if (configFile.exists()) configFile.readText()
+            else """{"providers":[]}"""
+
+        val edit = android.widget.EditText(ctx).apply {
+            setText(currentContent)
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            textSize = 12f
+            setPadding(32, 24, 32, 24)
+            setHorizontallyScrolling(true)
+            minLines = 15
         }
 
-        val text = tvLog?.text?.toString() ?: return
-        if (text.length > 10000) {
-            tvLog?.text = text.substring(text.length - 5000)
-        }
+        val scroll = android.widget.ScrollView(ctx).apply { addView(edit) }
+
+        androidx.appcompat.app.AlertDialog.Builder(ctx)
+            .setTitle("settings.json")
+            .setView(scroll)
+            .setPositiveButton("Save") { _, _ ->
+                try {
+                    configFile.writeText(edit.text.toString())
+                    appendLog("Config saved to ${configFile.absolutePath}")
+                    appendLog("Restarting gbot...")
+                    Thread {
+                        GbotProcess.stop()
+                        GbotProcess.start(ctx) { msg -> appendLog(msg) }
+                    }.start()
+                } catch (e: Exception) {
+                    appendLog("Config save error: ${e.message}")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     override fun onDestroyView() {

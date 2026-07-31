@@ -11,9 +11,11 @@ android {
 	compileSdk = 34
 
 	defaultConfig {
-		applicationId = "com.gbot.android.remote"
-		minSdk = 30
-		targetSdk = 34
+		// Must be com.termux so filesDir = /data/data/com.termux/files,
+		// matching hardcoded paths in Termux bootstrap binaries.
+		applicationId = "com.termux"
+		minSdk = 28
+		targetSdk = 28
 		versionCode = 1
 		versionName = "1.0.0"
 	}

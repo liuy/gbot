@@ -11,6 +11,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Start gbot daemon locally (ProcessBuilder, not JNI). Runs in a
+        // background thread to avoid blocking the UI during bootstrap extraction.
+        Thread {
+            GbotProcess.start(this) { msg ->
+                android.util.Log.i("MainActivity", msg)
+            }
+        }.start()
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -31,6 +40,11 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             binding.bottomNav.selectedItemId = R.id.nav_chat
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        GbotProcess.stop()
     }
 
     private fun swapFragment(fragment: androidx.fragment.app.Fragment) {
