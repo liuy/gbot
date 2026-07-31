@@ -29,7 +29,7 @@ build: web-build
 build-android: web-build
 	CGO_ENABLED=1 go build -tags android,production,netcgo \
 		-trimpath -ldflags="-w -s" \
-		-o gbot-android ./cmd/wails/
+		-o gbot-android ./cmd/gbot/
 
 build-debug:
 	go build $(DEBUG_GCFLAGS) -o $(BINARY_DEBUG) $(CMD)

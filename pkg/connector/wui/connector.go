@@ -441,13 +441,21 @@ func (c *WUIConnector) sendBinaryChunk(data []byte) {
 	}
 }
 
-// sendWS enqueues a payload for the wsWriter goroutine. Non-blocking: if wsCh
-// is full or done is closed, the payload is dropped. Backpressure prevents
-// overwhelming a slow WS client.
+// sendWS enqueues a payload for the wsWriter goroutine.
+// Logs a warning if wsCh is full (slow WS client).
 func (c *WUIConnector) sendWS(payload []byte) {
 	select {
 	case c.wsCh <- wsMsg{data: payload, isBinary: false}:
+		return
 	case <-c.done:
+		return
+	default:
+		// wsCh full — warn but still block (don't drop events).
+		slog.Warn("wui:sendWS blocked (wsCh full)", "len", len(c.wsCh), "cap", cap(c.wsCh))
+		select {
+		case c.wsCh <- wsMsg{data: payload, isBinary: false}:
+		case <-c.done:
+		}
 	}
 }
 
