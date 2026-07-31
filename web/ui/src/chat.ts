@@ -937,7 +937,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       batch = []
     }
 
-    for (const h of msg.messages) {
+    for (const h of msg.messages ?? []) {
       if (h.compactBoundary === true) {
         flushBatch()
         frag.appendChild(buildCompactDivider())
