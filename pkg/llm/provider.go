@@ -199,10 +199,26 @@ func IsRetryable(err error) bool {
 }
 
 // IsContextOverflow returns whether the error is a context window overflow.
+//
+// Two layers: (1) ErrorCode fast-path — openai.go/anthropic.go map known
+// provider error codes to "prompt_too_long"; (2) message regex fallback that
+// catches OpenAI-compatible providers (DeepSeek, GLM/z.ai, OpenRouter, Kimi,
+// MiniMax, …) which omit the code field and only return a message. The
+// fallback patterns are centralized in overflow.go and cover all providers
+// gbot is likely to meet — see overflow.go for the per-provider examples.
 func IsContextOverflow(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == "prompt_too_long"
+		// Rate limiting is never context overflow, even if the message
+		// happens to contain a generic phrase like "too many tokens per
+		// minute" that a fallback pattern would catch.
+		if apiErr.Status == 429 {
+			return false
+		}
+		if apiErr.ErrorCode == "prompt_too_long" {
+			return true
+		}
+		return messageLooksLikeOverflow(apiErr.Message)
 	}
 	return false
 }
