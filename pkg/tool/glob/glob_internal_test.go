@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,7 +19,13 @@ import (
 func writeFakeRg(t *testing.T, dir, script string) {
 	t.Helper()
 	rgPath := filepath.Join(dir, "rg")
-	content := "#!/bin/bash\n" + script
+	bashPath := func() string {
+		if p, err := exec.LookPath("bash"); err == nil {
+			return p
+		}
+		return "/bin/bash"
+	}()
+	content := "#!" + bashPath + "\n" + script
 	if err := os.WriteFile(rgPath, []byte(content), 0o755); err != nil {
 		t.Fatalf("write fake rg: %v", err)
 	}

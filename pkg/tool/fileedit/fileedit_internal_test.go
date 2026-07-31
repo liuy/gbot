@@ -78,6 +78,10 @@ func TestReadFileForEdit_NormalFile(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	// Ensure 0644 regardless of umask (e.g. Termux defaults to 0077)
+	if err := os.Chmod(fp, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
 	fr := readFileForEdit(fp)
 	if !fr.fileExists {
 		t.Fatal("fileExists = false, want true")

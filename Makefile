@@ -53,7 +53,11 @@ debug: build-debug
 	dlv exec ./$(BINARY_DEBUG) --headless --api-version=2 --listen=127.0.0.1:2345
 
 test:
+ifeq ($(shell go env GOARCH),arm64)
+	go test $(PKG) -count=1 -timeout 120s -coverprofile=coverage.out
+else
 	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
+endif
 	go test ./test/ -count=1 -timeout 120s
 	cd web/ui && npm test
 	@echo ""
@@ -67,7 +71,13 @@ test:
 lint:
 	golangci-lint run $(ALL)
 
-check: build build-windows build-windows-gui test lint fix web-lint web-weak
+ifeq ($(shell go env GOOS),android)
+CHECK_TARGETS := build test lint fix web-lint web-weak
+else
+CHECK_TARGETS := build build-windows build-windows-gui test lint fix web-lint web-weak
+endif
+
+check: $(CHECK_TARGETS)
 
 fix:
 	@gofmt -w $(shell find ./pkg ./cmd -name '*.go')

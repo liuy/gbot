@@ -3,6 +3,7 @@ package toolresult
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,9 @@ func TestCleanupOldSessions_WithNonDirEntry(t *testing.T) {
 }
 
 func TestCleanupOldSessions_HomeError(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("Termux HOME resolution differs from standard Linux; os.UserHomeDir fallback makes empty HOME non-fatal")
+	}
 	// Trigger os.UserHomeDir error (cleanup.go:33-35)
 	t.Setenv("HOME", "")
 	_, err := CleanupOldSessions(time.Now()) // REAL-TIME: filesystem mtime comparison

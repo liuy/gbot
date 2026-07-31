@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1145,6 +1146,9 @@ func TestParseEffortValue_Float64Negative(t *testing.T) {
 }
 
 func TestUserAgentDir_HomeError(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("Termux HOME resolution differs from standard Linux; os.UserHomeDir fallback makes empty HOME non-fatal")
+	}
 	orig := os.Getenv("HOME")
 	_ = os.Setenv("HOME", "")
 	defer func() { _ = os.Setenv("HOME", orig) }()

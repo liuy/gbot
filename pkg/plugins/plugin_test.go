@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -273,6 +274,9 @@ func TestDiscoverPluginsFromDir_NonExistent(t *testing.T) {
 }
 
 func TestPluginsDir_EmptyHome(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("Termux HOME resolution differs from standard Linux; os.UserHomeDir fallback makes empty HOME non-fatal")
+	}
 	orig := pluginsDirOverride
 	pluginsDirOverride = ""
 	defer func() { pluginsDirOverride = orig }()
@@ -291,6 +295,9 @@ func TestPluginsDir_EmptyHome(t *testing.T) {
 }
 
 func TestDiscoverPlugins_EmptyHome(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("Termux HOME resolution differs from standard Linux; os.UserHomeDir fallback makes empty HOME non-fatal")
+	}
 	orig := pluginsDirOverride
 	pluginsDirOverride = ""
 	defer func() { pluginsDirOverride = orig }()

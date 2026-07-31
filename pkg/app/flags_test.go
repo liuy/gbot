@@ -1,6 +1,7 @@
 package app
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -9,8 +10,14 @@ func TestParseFlags_Default(t *testing.T) {
 	if opts.WSPort != "8765" {
 		t.Errorf("WSPort = %q, want 8765", opts.WSPort)
 	}
-	if opts.DaemonMode {
-		t.Errorf("DaemonMode = true, want false")
+	if runtime.GOOS == "android" {
+		if !opts.DaemonMode {
+			t.Errorf("DaemonMode = false, want true on android")
+		}
+	} else {
+		if opts.DaemonMode {
+			t.Errorf("DaemonMode = true, want false")
+		}
 	}
 	if opts.Verbose {
 		t.Errorf("Verbose = true, want false")

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	neturl "net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -418,6 +419,9 @@ func TestExecute_SearchContextCanceled(t *testing.T) {
 // --- JS Fallback ---
 
 func TestExecute_Fetch_BotBlockNoChrome(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("chromedp unsupported on android (Chrome APK not a CLI binary)")
+	}
 	if ok, _ := isChromedpAvailable(); ok {
 		t.Skip("Chrome available — use TestExecute_FetchJSFallback_BotBlock instead")
 	}

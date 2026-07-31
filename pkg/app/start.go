@@ -92,9 +92,8 @@ func Start(opts Options) (*Instance, error) {
 		logLevel = slog.LevelDebug
 	}
 	logPath := filepath.Join(projectDir, "gbot.log")
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
-		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})))
-	}
+	f := setupLogFile(logPath, logLevel)
+	_ = f
 
 	cfg, err := loadConfig()
 	if err != nil {

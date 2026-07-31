@@ -25,6 +25,13 @@ import (
 // would be flaky in CI where test ordering isn't guaranteed.
 
 func TestResolveShellCommand_GBOTBashPath(t *testing.T) {
+	// sync.OnceValue cannot be reset; if another parallel test already
+	// populated the cache, this test cannot verify GBOT_BASH_PATH resolution.
+	cached := resolvedShellCommandOnce()
+	if cached != "" && cached != "bash" {
+		t.Skipf("shell cache already populated by another test: %q", cached)
+	}
+
 	orig := shellCommand
 	defer func() { shellCommand = orig }()
 	shellCommand = "bash"
