@@ -2316,6 +2316,11 @@ func (c *WUIConnector) switchEngine(newID string) {
 	if c.mgr != nil {
 		if err := c.mgr.SetActive(newID); err != nil {
 			slog.Warn("wui:switchEngine:SetActive failed", "error", err)
+		} else {
+			dir := newSlot.engine.ProjectDir()
+			if err := c.mgr.PersistMeta(dir); err != nil {
+				slog.Warn("wui:switchEngine:PersistMeta failed", "error", err)
+			}
 		}
 	}
 
