@@ -86,6 +86,16 @@ go build -tags android,production,netcgo \
 chmod +x "${ASSETS}/gbot-arm64"
 echo "Staged assets/gbot-arm64 ($(du -h "${ASSETS}/gbot-arm64" | cut -f1))"
 
+# 4.5. Auto-bump BOOTSTRAP_VERSION so existing installs pick up new binaries.
+# Derive from md5 of gbot+rg so it changes only when the binaries actually
+# change — not on every build. Injected into BootstrapInstaller.kt, then
+# restored to the placeholder after gradle finishes so git stays clean.
+KT_FILE="${APP_DIR}/src/main/kotlin/com/gbot/android/BootstrapInstaller.kt"
+ASSET_HASH=$(cat "${ASSETS}/gbot-arm64" "${ASSETS}/rg-arm64" | md5sum | cut -c1-8)
+sed -i "s/BOOTSTRAP_VERSION = \"[^\"]*\"/BOOTSTRAP_VERSION = \"${ASSET_HASH}\"/" "${KT_FILE}"
+echo "Stamped BOOTSTRAP_VERSION=${ASSET_HASH}"
+trap 'sed -i "s/BOOTSTRAP_VERSION = \"[^\"]*\"/BOOTSTRAP_VERSION = \"dev\"/" "${KT_FILE}"; echo "Restored BOOTSTRAP_VERSION=dev"' EXIT
+
 # 5. Remove jniLibs (no longer needed — targetSdk 28 allows exec from filesDir)
 rm -rf "${APP_DIR}/src/main/jniLibs"
 

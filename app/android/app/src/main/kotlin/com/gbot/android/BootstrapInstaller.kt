@@ -19,21 +19,62 @@ object BootstrapInstaller {
 
     private const val TAG = "BootstrapInstaller"
     private const val VERSION_FILE = "bootstrap_version.txt"
-    private const val BOOTSTRAP_VERSION = "11"
+    // Auto-stamped by package-android.sh from md5(gbot+rg) so it changes
+    // only when the binaries actually change. Never edit by hand.
+    private const val BOOTSTRAP_VERSION = "dev"
 
     fun ensureInstalled(context: Context, onLog: (String) -> Unit = {}, onError: (String) -> Unit = {}): File? {
         val prefixDir = File(context.filesDir, "usr")
         val versionFile = File(context.filesDir, VERSION_FILE)
+        val binDir = File(prefixDir, "bin")
+        val bashExists = File(binDir, "bash").exists()
 
-        val alreadyInstalled = versionFile.exists() &&
-            versionFile.readText().trim() == BOOTSTRAP_VERSION &&
-            File(prefixDir, "bin/bash").exists()
-
-        if (alreadyInstalled) {
-            Log.i(TAG, "Bootstrap already installed")
-            return File(prefixDir, "bin")
+        // Case 1: First install or usr/ wiped — full bootstrap extraction.
+        if (!bashExists) {
+            Log.i(TAG, "Full bootstrap extraction (bash not found)")
+            return fullBootstrap(context, prefixDir, versionFile, onLog, onError)
         }
 
+        // Case 2: usr/ exists — check if APK version changed.
+        val currentVersion = if (versionFile.exists()) versionFile.readText().trim() else ""
+        if (currentVersion != BOOTSTRAP_VERSION) {
+            // Version changed: only refresh gbot/rg, keep everything else.
+            Log.i(TAG, "Version changed ($currentVersion → $BOOTSTRAP_VERSION), refreshing gbot/rg")
+            try {
+                val gbotBin = File(binDir, "gbot")
+                val oldGbot = gbotBin.length()
+                copyAssetTo(context, gbotBin, "gbot-arm64")
+                val rgBin = File(binDir, "rg")
+                val oldRg = rgBin.length()
+                copyAssetTo(context, rgBin, "rg-arm64")
+                versionFile.writeText(BOOTSTRAP_VERSION)
+                onLog("Refreshed gbot ($oldGbot → ${gbotBin.length()} bytes), rg ($oldRg → ${rgBin.length()} bytes)")
+            } catch (e: Exception) {
+                val msg = "${e.javaClass.name}: ${e.message}"
+                Log.e(TAG, "Refresh failed: $msg", e)
+                onError(msg)
+                return null
+            }
+        } else {
+            Log.i(TAG, "Bootstrap already installed (v$BOOTSTRAP_VERSION)")
+        }
+        return binDir
+    }
+
+    private fun copyAssetTo(context: Context, dest: File, assetName: String) {
+        context.assets.open(assetName).use { asset ->
+            FileOutputStream(dest).use { asset.copyTo(it) }
+        }
+        android.system.Os.chmod(dest.absolutePath, 0x1C0) // 0700
+    }
+
+    private fun fullBootstrap(
+        context: Context,
+        prefixDir: File,
+        versionFile: File,
+        onLog: (String) -> Unit,
+        onError: (String) -> Unit
+    ): File? {
         val stagingDir = File(context.filesDir, "usr-staging")
         val stagingPath = stagingDir.absolutePath
 
@@ -114,18 +155,12 @@ object BootstrapInstaller {
             // 4. Copy gbot binary into usr/bin/
             val binDir = File(prefixDir, "bin")
             val gbotBin = File(binDir, "gbot")
-            context.assets.open("gbot-arm64").use { asset ->
-                FileOutputStream(gbotBin).use { asset.copyTo(it) }
-            }
-            Os.chmod(gbotBin.absolutePath, 0x1C0) // 0700
+            copyAssetTo(context, gbotBin, "gbot-arm64")
             onLog("Injected gbot (${gbotBin.length()} bytes)")
 
             // 5. Copy rg binary into usr/bin/
             val rgBin = File(binDir, "rg")
-            context.assets.open("rg-arm64").use { asset ->
-                FileOutputStream(rgBin).use { asset.copyTo(it) }
-            }
-            Os.chmod(rgBin.absolutePath, 0x1C0) // 0700
+            copyAssetTo(context, rgBin, "rg-arm64")
             onLog("Injected rg (${rgBin.length()} bytes)")
 
             // second-stage writes into $TMPDIR, so it must exist before the

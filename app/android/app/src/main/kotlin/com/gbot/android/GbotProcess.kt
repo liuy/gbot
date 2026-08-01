@@ -3,7 +3,6 @@ package com.gbot.android
 import android.content.Context
 import android.util.Log
 import java.io.File
-import java.io.FileOutputStream
 
 /**
  * Starts and manages the gbot daemon as a child process.
@@ -49,13 +48,9 @@ object GbotProcess {
             return false
         }
 
-        // Always overwrite gbot/rg with the APK assets — BootstrapInstaller
-        // skips injection when the Termux prefix is already installed (version
-        // file match), so without this an app update would keep the old binary.
-        // gbot is never running here (alive check above returns early).
-        overwriteFromAsset(context, gbotBin, "gbot-arm64")
-        val rgBin = File(usrBin, "rg")
-        overwriteFromAsset(context, rgBin, "rg-arm64")
+        // gbot/rg injection is handled by BootstrapInstaller.ensureInstalled()
+        // based on BOOTSTRAP_VERSION. No unconditional overwrite here — this
+        // allows on-device builds (make build-android + cp) to survive restarts.
 
         val homeDir = context.filesDir.absolutePath
         val logFile = File(context.filesDir, LOG_FILE)
@@ -82,9 +77,6 @@ object GbotProcess {
             process = pb.start()
             log("Process started")
             return true
-
-            log("gbot running successfully")
-            return true
         } catch (e: Exception) {
             log("EXCEPTION: ${e.javaClass.name}: ${e.message}")
             Log.e(TAG, "Failed to start gbot", e)
@@ -101,21 +93,5 @@ object GbotProcess {
             process = null
         }
     }
-
-    /**
-     * Overwrites [dest] with the APK asset [assetName] unconditionally.
-     * BootstrapInstaller skips injection when the Termux prefix is already
-     * installed (version file match), so an app update would keep the old
-     * binary without this. Called only when gbot is not running.
-     */
-    private fun overwriteFromAsset(
-        context: Context,
-        dest: File,
-        assetName: String,
-    ) {
-        context.assets.open(assetName).use { asset ->
-            FileOutputStream(dest).use { asset.copyTo(it) }
-        }
-        android.system.Os.chmod(dest.absolutePath, 0x1C0) // 0700
-    }
 }
+
