@@ -2,6 +2,7 @@ package com.gbot.android
 
 import android.app.Activity
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -161,6 +162,19 @@ class ChatFragment : Fragment() {
     private fun tryLoad() {
         webView?.visibility = View.VISIBLE
         webView?.loadUrl("http://localhost:8765/")
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Android WebView doesn't fire matchMedia change events when the
+        // system theme switches. Detect uiMode here and call the JS hook
+        // that sidebar.ts exposed for exactly this case.
+        val isLight = (newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_NO
+        webView?.evaluateJavascript(
+            "window.__gbotApplySystemTheme && window.__gbotApplySystemTheme($isLight);",
+            null,
+        )
     }
 
     override fun onDestroyView() {

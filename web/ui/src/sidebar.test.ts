@@ -166,4 +166,38 @@ describe('createSidebar', () => {
     // Theme must NOT have cycled.
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
+
+  describe('__gbotApplySystemTheme (Android WebView bridge)', () => {
+    it('HookDefined_AfterCreate', () => {
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      // Kotlin onConfigurationChanged calls this by name — must exist.
+      expect(typeof (window as any).__gbotApplySystemTheme).toBe('function')
+    })
+
+    it('SystemLight_SetsLightTheme', () => {
+      localStorage.setItem('gbot-theme', 'system')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      ;(window as any).__gbotApplySystemTheme(true)
+      expect(document.documentElement.dataset.theme).toBe('light')
+    })
+
+    it('SystemDark_SetsDarkTheme', () => {
+      localStorage.setItem('gbot-theme', 'system')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      ;(window as any).__gbotApplySystemTheme(false)
+      expect(document.documentElement.dataset.theme).toBe('dark')
+    })
+
+    it('ExplicitPref_NotOverridden', () => {
+      localStorage.setItem('gbot-theme', 'dark')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      ;(window as any).__gbotApplySystemTheme(true)
+      // User chose dark explicitly — system switch must not override.
+      expect(document.documentElement.dataset.theme).toBe('dark')
+    })
+  })
 })
