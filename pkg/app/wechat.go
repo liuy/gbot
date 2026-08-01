@@ -119,20 +119,14 @@ func startWeChatConnector(d startWeChatDeps) error {
 		//   1. ReadOnly: true — the TUI input must stay disabled because
 		//      this engine is driven by the WeChat connector, not the TUI.
 		//   2. The connector hub — recovered below from wcEng.Dispatcher()
-		//      so the connector and TUI share the same Hub the factory
-		//      built (engineFactory sets Dispatcher: engineHub).
+		//      so the connector shares the same Hub the factory built
+		//      (engineFactory sets Dispatcher: engineHub).
+		//
+		// In daemon mode engineFactory returns handler=nil (no TUIHandler),
+		// so vs.Handler is nil here — the hub recovery below still works
+		// because it reads from the engine's Dispatcher, not the handler.
 		if vs := d.engineMgr.Get(engineID); vs != nil {
 			vs.ReadOnly = true
-			if h, ok := vs.Handler.(*tui.TUIHandler); ok && h != nil {
-				wcHandler = h
-			}
-		}
-		if wcHandler == nil {
-			// Defensive: view state has no handler (shouldn't happen since
-			// engineFactory always builds one). Build a fresh hub so the
-			// connector still works; the TUI just won't render for this
-			// engine.
-			wcHub = hub.NewHub()
 		}
 	}
 

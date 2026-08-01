@@ -265,7 +265,16 @@ func Start(opts Options) (*Instance, error) {
 			slog.Warn("restore: no provider prefix in model, falling back to default",
 				"model", modelArg, "engine_id", id)
 		}
-		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
+		var engineHub *hub.Hub
+		var handler *tui.TUIHandler
+		if opts.DaemonMode {
+			// No TUI in daemon mode — skip TUIHandler entirely. Its appCh
+			// has no readEvents consumer without a bubbletea loop, so any
+			// event would block the engine goroutine on appCh <- msg.
+			engineHub = hub.NewHub()
+		} else {
+			engineHub, handler = tui.NewEngineHubWithHandler(id, nil)
+		}
 		engTaskList := task.NewList("")
 		refs := engine.CreateTools(deps, engTaskList)
 		var providerCfg *config.Provider
