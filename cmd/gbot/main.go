@@ -61,6 +61,13 @@ func main() {
 	}
 	defer inst.Cleanup()
 
+	if opts.DaemonMode {
+		// WS server is already started inside app.Start(). runDaemon waits
+		// for a signal (non-Windows) or shows a wails window (Windows).
+		runDaemon(inst, opts.WSPort)
+		return
+	}
+
 	if err := inst.RunTUI(); err != nil {
 		inst.Cleanup()
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

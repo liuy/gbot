@@ -82,7 +82,7 @@ export GOARCH=arm64
 go build -tags android,production,netcgo \
     -trimpath -buildvcs=false -ldflags="-w -s" \
     -o "${ASSETS}/gbot-arm64" \
-    ./cmd/wails/
+    ./cmd/gbot/
 chmod +x "${ASSETS}/gbot-arm64"
 echo "Staged assets/gbot-arm64 ($(du -h "${ASSETS}/gbot-arm64" | cut -f1))"
 

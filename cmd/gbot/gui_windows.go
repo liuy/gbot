@@ -10,7 +10,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-func runGUI(inst *app.Instance, wsPort string) {
+func runDaemon(inst *app.Instance, wsPort string) {
 	wailsApp := application.New(application.Options{
 		Name: "GBot",
 	})

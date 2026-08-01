@@ -12,7 +12,6 @@ import java.io.File
 object GbotProcess {
 
     private const val TAG = "GbotProcess"
-    private const val LOG_FILE = "gbot-stdout.log"
 
     private val lock = Any()
     @Volatile private var process: Process? = null
@@ -53,7 +52,6 @@ object GbotProcess {
         // allows on-device builds (make build-android + cp) to survive restarts.
 
         val homeDir = context.filesDir.absolutePath
-        val logFile = File(context.filesDir, LOG_FILE)
 
         log("Starting: ${gbotBin.absolutePath} --daemon")
         log("HOME=$homeDir")
@@ -61,7 +59,6 @@ object GbotProcess {
         try {
             val pb = ProcessBuilder(gbotBin.absolutePath, "--daemon")
                 .directory(context.filesDir)
-                .redirectOutput(logFile)
                 .redirectErrorStream(true)
 
             pb.environment().apply {
@@ -75,6 +72,20 @@ object GbotProcess {
             }
 
             process = pb.start()
+            // Pipe gbot stdout/stderr to Control tab logBuffer so crash
+            // messages and panic traces are visible there.
+            val proc = process!!
+            Thread {
+                try {
+                    proc.inputStream.bufferedReader().useLines { lines ->
+                        for (line in lines) {
+                            synchronized(logBuffer) {
+                                logBuffer.append("gbot: $line\n")
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }.start()
             log("Process started")
             return true
         } catch (e: Exception) {

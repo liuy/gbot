@@ -2,7 +2,7 @@
 # Generate icon.ico and rsrc_windows_amd64.syso from icon.png
 # using Wails v3 official CLI commands (no PIL, no go-winres).
 set -e
-DIR="$(dirname "$0")/../cmd/wails"
+DIR="$(dirname "$0")/../cmd/gbot"
 
 # Step 1: PNG → ICO (multi-resolution, Wails handles sizing)
 wails3 generate icons -input "${DIR}/icon.png" -windowsfilename "${DIR}/icon.ico"

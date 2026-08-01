@@ -6,7 +6,6 @@ ifeq ($(OS),Windows_NT)
 endif
 BINARY_DEBUG := gbot-debug
 CMD := ./cmd/gbot/
-WCMD := ./cmd/wails/
 PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
 GBOT_HOME := $(HOME)/.gbot
@@ -24,8 +23,7 @@ build: web-build
 	go build -o $(BINARY) $(CMD)
 
 # build-android compiles a binary that can replace the GBot APK's gbot
-# on-device (Termux). Uses wails entry point + android tags to match
-# the production build. Run this on the phone, then cp to /usr/bin/gbot.
+# on-device (Termux). Run this on the phone, then cp to /usr/bin/gbot.
 build-android: web-build
 	CGO_ENABLED=1 go build -tags android,production,netcgo \
 		-trimpath -ldflags="-w -s" \
@@ -39,16 +37,16 @@ build-debug:
 build-windows:
 	GOOS=windows GOARCH=amd64 go build ./pkg/... ./cmd/gbot/
 
-# build-windows-gui cross-compiles the Wails entry point separately.
-# May fail on non-Windows hosts due to Wails CGO/webkitgtk deps.
-# Uses leading '-' so failure is non-fatal in `make check`.
+# build-windows-gui cross-compiles the Windows GUI entry point (wails window
+# via gui_windows.go build tag). May fail on non-Windows hosts due to Wails
+# CGO/webkitgtk deps. Uses leading '-' so failure is non-fatal in `make check`.
 build-windows-gui:
-	-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/wails/ 2>/dev/null || \
-		echo "NOTE: cmd/wails cross-compile skipped (build on Windows for production)"
+	-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/gbot/ 2>/dev/null || \
+		echo "NOTE: cmd/gbot windows cross-compile skipped (build on Windows for production)"
 
 # icon.ico is auto-generated from icon.png so users only maintain one file.
 # PIL generates multi-resolution ICO with proper RGBA alpha and PNG frames.
-$(WCMD)/icon.ico $(WCMD)/rsrc_windows_amd64.syso: $(WCMD)/icon.png scripts/gen-ico.sh
+$(CMD)icon.ico $(CMD)rsrc_windows_amd64.syso: $(CMD)icon.png scripts/gen-ico.sh
 	bash scripts/gen-ico.sh
 
 # Alias for clarity when only one is wanted.
@@ -62,9 +60,9 @@ debug: build-debug
 
 test:
 ifeq ($(shell go env GOARCH),arm64)
-	go test $(PKG) -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./cmd/... -count=1 -timeout 120s -coverprofile=coverage.out
 else
-	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./cmd/... -race -count=1 -timeout 120s -coverprofile=coverage.out
 endif
 	go test ./test/ -count=1 -timeout 120s
 	cd web/ui && npm test
@@ -103,7 +101,7 @@ clean:
 # Linux/macOS packaging is future work.
 package: package-windows
 
-package-windows: $(WCMD)/icon.ico
+package-windows: $(CMD)icon.ico
 	bash scripts/package-wails.sh $(VERSION)
 
 # package-android builds the self-contained Android APK. Requires Android
@@ -112,7 +110,7 @@ package-android:
 	bash scripts/package-android.sh $(VERSION)
 
 wails-build: web-build
-	go build -o $(BINARY) ./cmd/wails/
+	go build -o $(BINARY) ./cmd/gbot/
 
 # e2e
 agent-start: build
