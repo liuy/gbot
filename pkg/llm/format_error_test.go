@@ -19,7 +19,7 @@ func TestFormatLLMError_APIError(t *testing.T) {
 
 func TestFormatLLMError_NetworkTimeout(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	ln.Close()
+	_ = ln.Close()
 	_, err := net.Dial("tcp", ln.Addr().String())
 	err = fmt.Errorf("send request: Post \"https://api.example.com/v1/chat\": %w", err)
 	got := FormatLLMError(err)

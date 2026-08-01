@@ -168,18 +168,22 @@ describe('createSidebar', () => {
   })
 
   describe('__gbotApplySystemTheme (Android WebView bridge)', () => {
+    const getHook = (): ((isLight: boolean) => void) | undefined =>
+      (window as Record<string, unknown>).__gbotApplySystemTheme as
+        ((isLight: boolean) => void) | undefined
+
     it('HookDefined_AfterCreate', () => {
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
       // Kotlin onConfigurationChanged calls this by name — must exist.
-      expect(typeof (window as any).__gbotApplySystemTheme).toBe('function')
+      expect(typeof getHook()).toBe('function')
     })
 
     it('SystemLight_SetsLightTheme', () => {
       localStorage.setItem('gbot-theme', 'system')
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
-      ;(window as any).__gbotApplySystemTheme(true)
+      getHook()!(true)
       expect(document.documentElement.dataset.theme).toBe('light')
     })
 
@@ -187,7 +191,7 @@ describe('createSidebar', () => {
       localStorage.setItem('gbot-theme', 'system')
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
-      ;(window as any).__gbotApplySystemTheme(false)
+      getHook()!(false)
       expect(document.documentElement.dataset.theme).toBe('dark')
     })
 
@@ -195,7 +199,7 @@ describe('createSidebar', () => {
       localStorage.setItem('gbot-theme', 'dark')
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
-      ;(window as any).__gbotApplySystemTheme(true)
+      getHook()!(true)
       // User chose dark explicitly — system switch must not override.
       expect(document.documentElement.dataset.theme).toBe('dark')
     })

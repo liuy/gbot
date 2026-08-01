@@ -121,12 +121,13 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   // Android WebView does not fire matchMedia change events when the system
   // theme switches. Expose a hook so the Kotlin side can call it from
   // onConfigurationChanged via evaluateJavascript.
-  ;(window as any).__gbotApplySystemTheme = (isLight: boolean) => {
+  const apply = (isLight: boolean) => {
     const pref = (localStorage.getItem('gbot-theme') as Theme) || 'dark'
     if (pref !== 'system') return
     document.documentElement.dataset.theme = isLight ? 'light' : 'dark'
     applyHljsTheme(getSavedHljsTheme(), !isLight)
   }
+  Object.assign(window, { __gbotApplySystemTheme: apply })
 
   // Apply saved hljs theme on load
   applyHljsTheme(getSavedHljsTheme(), effectiveTheme === 'dark')
