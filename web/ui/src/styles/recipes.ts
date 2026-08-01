@@ -1,7 +1,7 @@
 import { tv } from 'tailwind-variants'
 
 export const errorBox = tv({
-  base: 'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red',
+  base: 'rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red break-all',
 })
 
 export const compactDividerContainer = tv({ base: 'flex items-center gap-2 my-4 px-4' })

@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
@@ -639,7 +640,7 @@ func (s *ReplState) FinishStream(err error) {
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
 			Role:   "system",
-			Blocks: []ContentBlock{{Type: BlockText, Text: err.Error()}},
+			Blocks: []ContentBlock{{Type: BlockText, Text: llm.FormatLLMError(err)}},
 		})
 	}
 }

@@ -184,7 +184,7 @@ describe('chat.ts className snapshot guards (via createChat + dispatch)', () => 
     })
     const err = Array.from(document.querySelectorAll('.text-red'))
       .find((el) => el.className.includes('border-red/40')) as HTMLElement
-    expect(err.className).toBe('rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red')
+    expect(err.className).toBe('rounded-lg border border-red/40 bg-red/5 px-3 py-2 text-sm text-red break-all')
   })
 
   it('compact divider container / hairlines / label className match', () => {

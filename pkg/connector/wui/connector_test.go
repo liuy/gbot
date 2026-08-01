@@ -1542,7 +1542,7 @@ func TestBuildErrorMessage_APIError(t *testing.T) {
 
 func TestBuildErrorMessage_GenericError(t *testing.T) {
 	t.Parallel()
-	err := fmt.Errorf("connection refused")
+	err := fmt.Errorf("invalid config: missing provider")
 	data := buildError(err)
 	var out struct {
 		Message string `json:"message"`
@@ -1550,7 +1550,7 @@ func TestBuildErrorMessage_GenericError(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Message != "connection refused" {
-		t.Errorf("message = %q, want %q", out.Message, "connection refused")
+	if out.Message != "invalid config: missing provider" {
+		t.Errorf("message = %q, want %q", out.Message, "invalid config: missing provider")
 	}
 }

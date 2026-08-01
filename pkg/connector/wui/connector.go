@@ -1746,7 +1746,7 @@ type historyUsage struct {
 func buildError(err error) []byte {
 	msg := "unknown error"
 	if err != nil {
-		msg = err.Error()
+		msg = llm.FormatLLMError(err)
 	}
 	out, _ := json.Marshal(struct {
 		Type    string `json:"type"`
