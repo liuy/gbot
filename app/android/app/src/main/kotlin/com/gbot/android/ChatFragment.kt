@@ -140,6 +140,14 @@ class ChatFragment : Fragment() {
         }
 
         webView?.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // Android WebView's matchMedia('(prefers-color-scheme: light)')
+                // initial value is unreliable — inject the real system theme
+                // once the page is ready so resolveTheme('system') gets
+                // corrected if it guessed wrong.
+                applySystemTheme(view)
+            }
+
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 if (request?.isForMainFrame() == true) {
                     retryLoad()
@@ -166,12 +174,13 @@ class ChatFragment : Fragment() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Android WebView doesn't fire matchMedia change events when the
-        // system theme switches. Detect uiMode here and call the JS hook
-        // that sidebar.ts exposed for exactly this case.
-        val isLight = (newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+        applySystemTheme(webView)
+    }
+
+    private fun applySystemTheme(view: WebView?) {
+        val isLight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_NO
-        webView?.evaluateJavascript(
+        view?.evaluateJavascript(
             "window.__gbotApplySystemTheme && window.__gbotApplySystemTheme($isLight);",
             null,
         )
