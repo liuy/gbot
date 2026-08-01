@@ -15,19 +15,66 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.fragment.app.Fragment
+import java.io.File
 
 class ChatFragment : Fragment() {
 
     companion object {
-        private const val REQUEST_FILE_CHOOSER = 1001
-        private const val REQUEST_CAPTURE = 1002
+        // Persist across Fragment recreation — the system may destroy the
+        // Fragment while the file picker / camera is open, and the recreated
+        // Fragment needs the original callback and camera URI to deliver the
+        // result to WebView.
+        @Volatile
+        private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
+        @Volatile
+        private var cameraPhotoUri: Uri? = null
     }
 
     private var webView: WebView? = null
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
-    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+    // registerForActivityResult must be called during Fragment initialization
+    // (as a field initializer), NOT inside a method. This ensures the callback
+    // survives Fragment recreation when the system kills it during file picker.
+    private val filePickerLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val callback = pendingFileCallback
+            pendingFileCallback = null
+            val data = result.data
+
+            val results: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
+                val uris = mutableListOf<Uri>()
+                data?.data?.let { uris.add(it) }
+                data?.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        uris.add(clip.getItemAt(i).uri)
+                    }
+                }
+                if (uris.isNotEmpty()) uris.toTypedArray() else null
+            } else {
+                null
+            }
+            callback?.onReceiveValue(results)
+        }
+
+    private val cameraLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val callback = pendingFileCallback
+            pendingFileCallback = null
+            val uri = cameraPhotoUri
+            cameraPhotoUri = null
+            // ACTION_IMAGE_CAPTURE without EXTRA_OUTPUT returns a thumbnail
+            // Bitmap in data.extras, not a URI. We provide EXTRA_OUTPUT so the
+            // camera writes a full-res JPEG to our FileProvider URI.
+            callback?.onReceiveValue(
+                if (result.resultCode == Activity.RESULT_OK && uri != null) arrayOf(uri) else null
+            )
+        }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -47,44 +94,44 @@ class ChatFragment : Fragment() {
             domStorageEnabled = true
             allowFileAccess = false
         }
-        // File input support: WebView does not open a file chooser by
-        // default — without onShowFileChooser, tapping the attach (+) button
-        // in WUI silently does nothing.
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
-                this@ChatFragment.filePathCallback?.onReceiveValue(null)
-                this@ChatFragment.filePathCallback = filePathCallback
-                val intent: Intent
-                // capture attribute (camera icon) → open camera app directly;
-                // createIntent() ignores capture and opens the generic file
-                // picker instead.
+                pendingFileCallback?.onReceiveValue(null)
+                pendingFileCallback = filePathCallback
+
                 if (fileChooserParams?.isCaptureEnabled == true) {
-                    intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                    // Create a temp file for the full-res photo and pass its
+                    // URI via EXTRA_OUTPUT. Without this, the camera only
+                    // returns a thumbnail Bitmap in data.extras — no URI.
+                    val photoFile = File(context!!.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
+                    cameraPhotoUri = FileProvider.getUriForFile(
+                        context!!, "${context!!.packageName}.fileprovider", photoFile
+                    )
+                    val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                        putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
                     try {
-                        startActivityForResult(intent, REQUEST_CAPTURE)
+                        cameraLauncher.launch(intent)
                     } catch (e: Exception) {
-                        this@ChatFragment.filePathCallback = null
+                        pendingFileCallback = null
                         return false
                     }
                     return true
                 }
-                intent = fileChooserParams?.createIntent() ?: return false
-                // createIntent() may narrow extension-only accept lists to
-                // text/plain on some devices (WUI doc input uses
-                // '.pdf,.doc,.zip,...'). Widen to */* so the picker shows
-                // all files — backend validates extensions anyway.
+                val intent = fileChooserParams?.createIntent() ?: return false
                 val acceptTypes = fileChooserParams?.acceptTypes
                 if (acceptTypes?.any { it.startsWith(".") } == true) {
                     intent.type = "*/*"
                 }
                 try {
-                    startActivityForResult(intent, REQUEST_FILE_CHOOSER)
+                    filePickerLauncher.launch(intent)
                 } catch (e: Exception) {
-                    this@ChatFragment.filePathCallback = null
+                    pendingFileCallback = null
                     return false
                 }
                 return true
@@ -99,8 +146,6 @@ class ChatFragment : Fragment() {
             }
         }
 
-        // Load immediately — onReceivedError retries if gbot hasn't bound
-        // localhost:8765 yet.
         tryLoad()
     }
 
@@ -114,33 +159,8 @@ class ChatFragment : Fragment() {
     }
 
     private fun tryLoad() {
-        // Force localhost:8765 for local gbot — ignore any stale host/port
-        // from the remote-server app version.
         webView?.visibility = View.VISIBLE
         webView?.loadUrl("http://localhost:8765/")
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        val callback = filePathCallback
-        filePathCallback = null
-        if (requestCode == REQUEST_CAPTURE) {
-            // Camera returns the image as thumbnail in data?.data (some
-            // devices) or in "data" extra (low-res). Full-res requires a
-            // FileProvider URI passed via EXTRA_OUTPUT — for now accept
-            // whatever the camera returns.
-            val uri = data?.data
-            callback?.onReceiveValue(if (resultCode == Activity.RESULT_OK && uri != null) arrayOf(uri) else null)
-            return
-        }
-        if (requestCode == REQUEST_FILE_CHOOSER) {
-            val results = if (resultCode == Activity.RESULT_OK && data?.data != null) {
-                arrayOf(data.data!!)
-            } else {
-                null
-            }
-            callback?.onReceiveValue(results)
-        }
     }
 
     override fun onDestroyView() {
