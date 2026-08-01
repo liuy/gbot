@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -137,7 +138,14 @@ func (h *TUIHandler) Handle(event hub.Event) {
 			}
 		}
 	default:
-		h.appCh <- msg
+		select {
+		case h.appCh <- msg:
+		default:
+			slog.Warn("TUIHandler: appCh full (blocking until drained)",
+				"engine_id", h.engineID,
+				"msg_type", fmt.Sprintf("%T", msg))
+			h.appCh <- msg
+		}
 	}
 }
 
