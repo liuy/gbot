@@ -6,12 +6,15 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // handleCompact implements the /compact command. ManualCompact runs in a
-// background goroutine and emits EventToolStart/Run/ParamDelta/End through
-// the hub; readEvents drains those into TUI messages, so the tool block
-// appears and finalizes without manual UI simulation here.
+// background goroutine and emits a full query lifecycle (EventQueryStart →
+// tool events → EventQueryEnd) through the hub; readEvents drains those into
+// TUI messages, so the tool block appears and the stream finalizes without
+// manual UI simulation here.
 //
 //	/compact               → compact conversation with default summarization
 //	/compact [instructions] → compact with custom summarization instructions
@@ -30,9 +33,16 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 	a.repl.AddUserMessage(displayInput)
 	a.repl.StartQuery()
 	a.status.SetStreaming(true)
+	a.status.SetUsage(types.Usage{})
 	a.spinner.Start()
 	a.markViewportDirty()
 
+	userMsg := types.Message{
+		ID:        uuid.New().String(),
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock(displayInput)},
+		Timestamp: time.Now(),
+	}
 	customInstructions := args
 	eng := a.engine
 	ctx := context.Background()
@@ -43,7 +53,7 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 				slog.Error("compact goroutine panic", "err", r)
 			}
 		}()
-		if _, err := eng.ManualCompact(ctx, customInstructions); err != nil {
+		if _, err := eng.ManualCompact(ctx, userMsg, customInstructions); err != nil {
 			slog.Warn("manual compact failed", "err", err)
 		}
 	}()

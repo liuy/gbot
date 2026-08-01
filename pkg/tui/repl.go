@@ -1074,25 +1074,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		} else {
 			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}, m.Duration)
-			// Virtual tools (bash shortcut, /compact) drive their own stream
-			// lifecycle — no engine queryEndMsg follows — so FinishStream to
-			// stop streaming/spinner here, detected by ID prefix.
-			if strings.HasPrefix(m.ToolUseID, "bash-shortcut-") || strings.HasPrefix(m.ToolUseID, "compact-manual-") {
+			// Bash shortcut virtual tools drive their own stream lifecycle —
+			// no engine queryEndMsg follows — so FinishStream to stop
+			// streaming/spinner here, detected by ID prefix. /compact does
+			// NOT need this: ManualCompact emits a full EventQueryStart →
+			// EventQueryEnd cycle, so queryEndMsg handles FinishStream +
+			// context token sync.
+			if strings.HasPrefix(m.ToolUseID, "bash-shortcut-") {
 				a.repl.FinishStream(nil)
 				a.status.SetStreaming(false)
 				a.spinner.Stop()
-			}
-			// /compact: ManualCompact updated engine.ContextTokens to the
-			// post-compact precise value (result.AfterTokens). Sync it to
-			// the status bar so "used context" reflects the compacted size,
-			// not the pre-compact value. Passive compact gets this via
-			// queryEndMsg; /compact's virtual tool path bypasses queryEnd.
-			if strings.HasPrefix(m.ToolUseID, "compact-manual-") && !m.IsError {
-				if ct := a.engine.GetContextTokens(); ct > 0 {
-					a.repl.displayedInputTokens = ct
-					a.repl.inputTokenTarget = ct
-					a.status.SetContext(ct, a.engine.ContextWindow())
-				}
 			}
 		}
 		a.taskListDirty = true

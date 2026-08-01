@@ -2785,7 +2785,7 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 // trigger="manual", passes custom instructions to the summarizer, and suppresses
 // the "context left until auto-compact" warning.
 // TS align: commands/compact/compact.ts:call — manual path
-func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (*short.CompactResult, error) {
+func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error) {
 	e.mu.RLock()
 	comp := e.compactor
 	e.mu.RUnlock()
@@ -2793,6 +2793,8 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 	if comp == nil {
 		return nil, fmt.Errorf("compaction not configured")
 	}
+
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
 	compactID := "compact-manual-" + uuid.New().String()[:8]
 	summary := "Compacting conversation..."
@@ -2848,6 +2850,7 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 					IsError:       true,
 				},
 			})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 			return nil, err
 		}
 	}
@@ -2883,6 +2886,7 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 
 	suppressCompactWarning()
 	e.fireCompactHooks(ctx, "manual", "post")
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 	return result, nil
 }
 

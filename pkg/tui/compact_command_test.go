@@ -193,13 +193,11 @@ func TestHandleCompact_NilEngine_Rejects(t *testing.T) {
 	}
 }
 
-// TestApp_CompactToolEndMsg_SyncsContextUsed verifies that after /compact's
-// toolEndMsg, the status bar reflects the engine's post-compact ContextTokens.
-// ManualCompact sets engine.ContextTokens = result.AfterTokens (a precise
-// value from the summarization API response). Without syncing it to the
-// status bar in the toolEndMsg handler, the "used context" display stays
-// stuck at the pre-compact value after /compact.
-func TestApp_CompactToolEndMsg_SyncsContextUsed(t *testing.T) {
+// TestApp_CompactQueryEndMsg_SyncsContextUsed verifies that after /compact's
+// queryEndMsg, the status bar reflects the engine's post-compact ContextTokens.
+// ManualCompact emits a full EventQueryStart → EventQueryEnd cycle, so the
+// queryEndMsg handler (not the toolEndMsg handler) syncs context tokens.
+func TestApp_CompactQueryEndMsg_SyncsContextUsed(t *testing.T) {
 	t.Parallel()
 	a := newCompactTestApp(t)
 
@@ -209,17 +207,13 @@ func TestApp_CompactToolEndMsg_SyncsContextUsed(t *testing.T) {
 	// post-compact precise value.
 	a.engine.ContextTokens = 15000
 
-	// Build the toolEndMsg that readEvents produces from the engine's
-	// EventToolEnd (compact-manual- prefix).
-	tem := toolEndMsg{
-		ToolUseID: "compact-manual-abc12345",
-		Output:    "Compacted: 80k → 15k tokens",
-	}
-	model, _ := a.Update(tem)
+	// ManualCompact emits EventQueryEnd after the tool events, so queryEndMsg
+	// is what triggers the context sync + FinishStream.
+	model, _ := a.Update(queryEndMsg{})
 	updated := model.(*App)
 
 	if got := updated.status.contextUsed; got != 15000 {
-		t.Errorf("after compact toolEndMsg, contextUsed = %d, want 15000 (engine's post-compact ContextTokens) — status bar must reflect the compacted size, not the pre-compact value",
+		t.Errorf("after compact queryEndMsg, contextUsed = %d, want 15000 (engine's post-compact ContextTokens) — status bar must reflect the compacted size, not the pre-compact value",
 			got)
 	}
 }

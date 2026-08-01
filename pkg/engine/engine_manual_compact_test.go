@@ -20,6 +20,13 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func compactUserMsg() types.Message {
+	return types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("/compact")},
+	}
+}
+
 // TestEngine_ManualCompact_NilCompactor verifies that calling ManualCompact
 // with no compactor configured returns a descriptive error (rather than
 // nil-dereferencing the compactor).
@@ -32,7 +39,7 @@ func TestEngine_ManualCompact_NilCompactor(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	_, err := eng.ManualCompact(context.Background(), "")
+	_, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
 	if err == nil {
 		t.Fatal("expected error when compactor is nil")
 	}
@@ -72,7 +79,7 @@ func TestEngine_ManualCompact_Success(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old reply")}},
 	})
 
-	result, err := eng.ManualCompact(context.Background(), "")
+	result, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
 	if err != nil {
 		t.Fatalf("ManualCompact error: %v", err)
 	}
@@ -201,7 +208,7 @@ func TestEngine_ManualCompact_CustomInstructions_SkipsSMCompact(t *testing.T) {
 		fix := newManualCompactSMCase(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		result, err := fix.eng.ManualCompact(ctx, "focus on API design")
+		result, err := fix.eng.ManualCompact(ctx, compactUserMsg(), "focus on API design")
 		if err != nil {
 			t.Fatalf("ManualCompact(instructions) error: %v", err)
 		}
@@ -218,7 +225,7 @@ func TestEngine_ManualCompact_CustomInstructions_SkipsSMCompact(t *testing.T) {
 		fix := newManualCompactSMCase(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, err := fix.eng.ManualCompact(ctx, ""); err != nil {
+		if _, err := fix.eng.ManualCompact(ctx, compactUserMsg(), ""); err != nil {
 			t.Fatalf("ManualCompact() error: %v", err)
 		}
 		if got := atomic.LoadInt32(fix.completeCalls); got != 0 {
@@ -274,7 +281,7 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 	// Exceed findKeepFrom tail budget (2000 tokens) so compact actually runs.
 	eng.SetMessages(makeLargeMessages(20, 600))
 
-	if _, err := eng.ManualCompact(context.Background(), custom); err != nil {
+	if _, err := eng.ManualCompact(context.Background(), compactUserMsg(), custom); err != nil {
 		t.Fatalf("ManualCompact error: %v", err)
 	}
 
@@ -332,7 +339,7 @@ func TestEngine_ManualCompact_EmitsToolEvents(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old message 1")}},
 	})
 
-	result, err := eng.ManualCompact(context.Background(), "")
+	result, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
 	if err != nil {
 		t.Fatalf("ManualCompact error: %v", err)
 	}
@@ -341,62 +348,76 @@ func TestEngine_ManualCompact_EmitsToolEvents(t *testing.T) {
 	}
 
 	events := ec.Events()
-	wantCount := 4
+	wantCount := 6
 	if len(events) != wantCount {
 		t.Fatalf("event count = %d, want %d; events: %+v", len(events), wantCount, eventTypes(events))
 	}
 
-	if et := events[0].Type; et != types.EventToolStart {
-		t.Fatalf("events[0].Type = %s, want %s", et, types.EventToolStart)
+	if et := events[0].Type; et != types.EventQueryStart {
+		t.Fatalf("events[0].Type = %s, want %s", et, types.EventQueryStart)
 	}
-	if events[0].ToolUse == nil {
-		t.Fatal("events[0].ToolUse is nil")
+	if events[0].Message == nil || events[0].Message.Role != types.RoleUser {
+		t.Fatal("events[0].Message is nil or not user role")
 	}
-	startID := events[0].ToolUse.ID
+
+	if et := events[1].Type; et != types.EventToolStart {
+		t.Fatalf("events[1].Type = %s, want %s", et, types.EventToolStart)
+	}
+	if events[1].ToolUse == nil {
+		t.Fatal("events[1].ToolUse is nil")
+	}
+	startID := events[1].ToolUse.ID
 	if !strings.HasPrefix(startID, "compact-manual-") {
 		t.Errorf("ToolUse.ID = %q, want compact-manual-* prefix", startID)
 	}
-	if events[0].ToolUse.Name != "Compact" {
-		t.Errorf("ToolUse.Name = %q, want \"Compact\"", events[0].ToolUse.Name)
+	if events[1].ToolUse.Name != "Compact" {
+		t.Errorf("ToolUse.Name = %q, want \"Compact\"", events[1].ToolUse.Name)
 	}
-	if events[0].ToolUse.Summary != "Compacting conversation..." {
-		t.Errorf("ToolUse.Summary = %q, want \"Compacting conversation...\"", events[0].ToolUse.Summary)
-	}
-
-	if et := events[1].Type; et != types.EventToolRun {
-		t.Fatalf("events[1].Type = %s, want %s", et, types.EventToolRun)
-	}
-	if events[1].ToolUse == nil || events[1].ToolUse.ID != startID {
-		t.Errorf("events[1].ToolUse.ID = %q, want %s", toolUseIDOrEmpty(events[1].ToolUse), startID)
+	if events[1].ToolUse.Summary != "Compacting conversation..." {
+		t.Errorf("ToolUse.Summary = %q, want \"Compacting conversation...\"", events[1].ToolUse.Summary)
 	}
 
-	if et := events[2].Type; et != types.EventToolParamDelta {
-		t.Fatalf("events[2].Type = %s, want %s", et, types.EventToolParamDelta)
+	if et := events[2].Type; et != types.EventToolRun {
+		t.Fatalf("events[2].Type = %s, want %s", et, types.EventToolRun)
 	}
-	if events[2].PartialInput == nil {
-		t.Fatal("events[2].PartialInput is nil")
-	}
-	if events[2].PartialInput.ID != startID {
-		t.Errorf("PartialInput.ID = %q, want %s", events[2].PartialInput.ID, startID)
-	}
-	if !strings.HasPrefix(events[2].PartialInput.Summary, "Conversation compacted") {
-		t.Errorf("PartialInput.Summary = %q, want prefix \"Conversation compacted\"", events[2].PartialInput.Summary)
+	if events[2].ToolUse == nil || events[2].ToolUse.ID != startID {
+		t.Errorf("events[2].ToolUse.ID = %q, want %s", toolUseIDOrEmpty(events[2].ToolUse), startID)
 	}
 
-	if et := events[3].Type; et != types.EventToolEnd {
-		t.Fatalf("events[3].Type = %s, want %s", et, types.EventToolEnd)
+	if et := events[3].Type; et != types.EventToolParamDelta {
+		t.Fatalf("events[3].Type = %s, want %s", et, types.EventToolParamDelta)
 	}
-	if events[3].ToolResult == nil {
-		t.Fatal("events[3].ToolResult is nil")
+	if events[3].PartialInput == nil {
+		t.Fatal("events[3].PartialInput is nil")
 	}
-	if events[3].ToolResult.ToolUseID != startID {
-		t.Errorf("ToolResult.ToolUseID = %q, want %s", events[3].ToolResult.ToolUseID, startID)
+	if events[3].PartialInput.ID != startID {
+		t.Errorf("PartialInput.ID = %q, want %s", events[3].PartialInput.ID, startID)
 	}
-	if events[3].ToolResult.IsError {
+	if !strings.HasPrefix(events[3].PartialInput.Summary, "Conversation compacted") {
+		t.Errorf("PartialInput.Summary = %q, want prefix \"Conversation compacted\"", events[3].PartialInput.Summary)
+	}
+
+	if et := events[4].Type; et != types.EventToolEnd {
+		t.Fatalf("events[4].Type = %s, want %s", et, types.EventToolEnd)
+	}
+	if events[4].ToolResult == nil {
+		t.Fatal("events[4].ToolResult is nil")
+	}
+	if events[4].ToolResult.ToolUseID != startID {
+		t.Errorf("ToolResult.ToolUseID = %q, want %s", events[4].ToolResult.ToolUseID, startID)
+	}
+	if events[4].ToolResult.IsError {
 		t.Error("ToolResult.IsError = true, want false")
 	}
-	if events[3].ToolResult.DisplayOutput != summaryText {
-		t.Errorf("ToolResult.DisplayOutput = %q, want %q (FormatCompactOutput returns result.Summary)", events[3].ToolResult.DisplayOutput, summaryText)
+	if events[4].ToolResult.DisplayOutput != summaryText {
+		t.Errorf("ToolResult.DisplayOutput = %q, want %q (FormatCompactOutput returns result.Summary)", events[4].ToolResult.DisplayOutput, summaryText)
+	}
+
+	if et := events[5].Type; et != types.EventQueryEnd {
+		t.Fatalf("events[5].Type = %s, want %s", et, types.EventQueryEnd)
+	}
+	if events[5].Error != nil {
+		t.Errorf("QueryEnd.Error = %v, want nil", events[5].Error)
 	}
 }
 
@@ -431,7 +452,7 @@ func TestEngine_ManualCompact_CustomInstructions_EventSummary(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old")}},
 	})
 
-	if _, err := eng.ManualCompact(context.Background(), "focus on the API"); err != nil {
+	if _, err := eng.ManualCompact(context.Background(), compactUserMsg(), "focus on the API"); err != nil {
 		t.Fatalf("ManualCompact error: %v", err)
 	}
 
@@ -470,7 +491,7 @@ func TestEngine_ManualCompact_ErrorEmitsToolEndError(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old")}},
 	})
 
-	_, err := eng.ManualCompact(context.Background(), "")
+	_, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
 	if err == nil {
 		t.Fatal("expected error from ManualCompact")
 	}
@@ -479,30 +500,39 @@ func TestEngine_ManualCompact_ErrorEmitsToolEndError(t *testing.T) {
 	}
 
 	events := ec.Events()
-	// Start + Run + End(error); no ParamDelta on the error path.
-	wantCount := 3
+	// QueryStart + Start + Run + End(error) + QueryEnd(error); no ParamDelta on the error path.
+	wantCount := 5
 	if len(events) != wantCount {
 		t.Fatalf("event count = %d, want %d; events: %+v", len(events), wantCount, eventTypes(events))
 	}
 
-	if et := events[0].Type; et != types.EventToolStart {
-		t.Fatalf("events[0].Type = %s, want %s", et, types.EventToolStart)
+	if et := events[0].Type; et != types.EventQueryStart {
+		t.Fatalf("events[0].Type = %s, want %s", et, types.EventQueryStart)
 	}
-	if et := events[1].Type; et != types.EventToolRun {
-		t.Fatalf("events[1].Type = %s, want %s", et, types.EventToolRun)
+	if et := events[1].Type; et != types.EventToolStart {
+		t.Fatalf("events[1].Type = %s, want %s", et, types.EventToolStart)
 	}
-	if et := events[2].Type; et != types.EventToolEnd {
-		t.Fatalf("events[2].Type = %s, want %s", et, types.EventToolEnd)
+	if et := events[2].Type; et != types.EventToolRun {
+		t.Fatalf("events[2].Type = %s, want %s", et, types.EventToolRun)
 	}
-	if events[2].ToolResult == nil {
-		t.Fatal("events[2].ToolResult is nil")
+	if et := events[3].Type; et != types.EventToolEnd {
+		t.Fatalf("events[3].Type = %s, want %s", et, types.EventToolEnd)
 	}
-	if !events[2].ToolResult.IsError {
+	if events[3].ToolResult == nil {
+		t.Fatal("events[3].ToolResult is nil")
+	}
+	if !events[3].ToolResult.IsError {
 		t.Error("ToolResult.IsError = false, want true")
 	}
-	if !strings.Contains(events[2].ToolResult.DisplayOutput, "summarization unavailable") {
+	if !strings.Contains(events[3].ToolResult.DisplayOutput, "summarization unavailable") {
 		t.Errorf("ToolResult.DisplayOutput = %q, want substring \"summarization unavailable\"",
-			events[2].ToolResult.DisplayOutput)
+			events[3].ToolResult.DisplayOutput)
+	}
+	if et := events[4].Type; et != types.EventQueryEnd {
+		t.Fatalf("events[4].Type = %s, want %s", et, types.EventQueryEnd)
+	}
+	if events[4].Error == nil {
+		t.Error("QueryEnd.Error = nil, want error")
 	}
 	if len(ec.FindEvents(types.EventToolParamDelta)) != 0 {
 		t.Error("no EventToolParamDelta expected on error path")
@@ -522,7 +552,7 @@ func TestEngine_ManualCompact_NilCompactor_NoEvents(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	_, err := eng.ManualCompact(context.Background(), "")
+	_, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
 	if err == nil {
 		t.Fatal("expected error when compactor is nil")
 	}
