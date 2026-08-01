@@ -1,21 +1,24 @@
 package tui
 
-// compact_command_test.go tests the /compact TUI handler. /compact uses the
-// virtual tool pattern (mirrors bash_shortcut.go): a tool block is created
-// synchronously so the card appears immediately, then ManualCompact runs
-// async and returns a toolEndMsg that fills the result into the card.
+// compact_command_test.go tests the /compact TUI handler. After the refactor,
+// /compact no longer creates a tool block synchronously. Instead it launches
+// ManualCompact in a background goroutine; the engine emits EventToolStart/
+// Run/ParamDelta/End through the hub, and readEvents drains those into TUI
+// messages that drive the tool block. The test app's engine has no compactor,
+// so ManualCompact returns at the comp==nil guard before emitting any event —
+// readEvents therefore blocks on appCh forever (no toolEndMsg is produced).
 
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // newCompactTestApp builds a minimal App with a non-nil engine for compact
-// handler tests. The engine has no compactor, so ManualCompact returns an
-// error — useful for testing the error→toolEndMsg path. Guards (streaming /
-// nil engine) are checked before the async cmd runs.
+// handler tests. The engine has no compactor, so ManualCompact returns at the
+// comp==nil guard before emitting any event — no toolEndMsg reaches appCh.
 func newCompactTestApp(t *testing.T) *App {
 	t.Helper()
 	return newTestApp(&tuiMockProvider{})
@@ -49,82 +52,41 @@ func msgProducesInfoMsg(t *testing.T, msg tea.Msg) (bool, string) {
 	return false, ""
 }
 
-// msgProducesToolEnd walks a tea.Msg (including nested BatchMsg) and reports
-// the first toolEndMsg found, if any. The async cmd may be batched with a
-// spinnerTickMsg, so we must walk the batch.
-func msgProducesToolEnd(t *testing.T, msg tea.Msg) (toolEndMsg, bool) {
-	t.Helper()
-	if msg == nil {
-		return toolEndMsg{}, false
-	}
-	if tem, ok := msg.(toolEndMsg); ok {
-		return tem, true
-	}
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, sub := range batch {
-			if tem, ok := msgProducesToolEnd(t, sub()); ok {
-				return tem, true
-			}
-		}
-	}
-	return toolEndMsg{}, false
-}
-
-// msgBatchContainsSpinnerTick walks a tea.Msg (including nested BatchMsg) and
-// reports whether any leaf produces a spinnerTickMsg. Without an initial tick,
-// the spinner chain never starts and the progress bar stays frozen during
-// the async ManualCompact call.
-func msgBatchContainsSpinnerTick(t *testing.T, msg tea.Msg) bool {
-	t.Helper()
-	if msg == nil {
-		return false
-	}
-	if _, ok := msg.(spinnerTickMsg); ok {
-		return true
-	}
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, sub := range batch {
-			if _, ok := sub().(spinnerTickMsg); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// TestHandleCompact_NotStreaming_CreatesToolBlock verifies that when not
-// streaming and an engine is present, handleCompact synchronously creates a
-// Compact tool block (PendingToolStarted) so the card appears immediately,
-// and returns a non-nil async cmd whose execution yields a toolEndMsg.
-func TestHandleCompact_NotStreaming_CreatesToolBlock(t *testing.T) {
+// TestHandleCompact_NotStreaming_LaunchesGoroutine verifies that when not
+// streaming and an engine is present, handleCompact adds the user message,
+// starts the query (streaming flag set), launches the ManualCompact goroutine,
+// and returns a non-nil batched cmd. The tool block is NOT created
+// synchronously — it now appears only when the engine's EventToolStart arrives
+// via readEvents, which the nil-compactor test engine never emits.
+func TestHandleCompact_NotStreaming_LaunchesGoroutine(t *testing.T) {
 	t.Parallel()
 	a := newCompactTestApp(t)
 
 	cmd := a.handleCompact("", nil)
 	if cmd == nil {
-		t.Fatal("handleCompact should return a non-nil tea.Cmd to run compact async")
+		t.Fatal("handleCompact should return a non-nil tea.Cmd (batch of readEvents + spinner tick)")
 	}
 
-	// The tool block must be created synchronously so the card shows before
-	// the (possibly multi-second) LLM call completes.
-	if len(a.repl.pendingTool) == 0 {
-		t.Error("PendingToolStarted should add a Compact tool block synchronously — without it the card appears only after ManualCompact returns")
+	// StartQuery sets streaming=true and resets pendingTool.
+	if !a.repl.streaming {
+		t.Error("a.repl.streaming should be true after handleCompact — StartQuery was not called")
 	}
 
-	tem, ok := msgProducesToolEnd(t, cmd())
-	if !ok {
-		t.Fatalf("batched cmd should produce toolEndMsg, got %T", cmd())
+	// The user message must be appended so it shows in the transcript.
+	// StartQuery (called next) appends an empty assistant message after it,
+	// so the user message is the last *user* message, not the last overall.
+	msgs := a.repl.Messages()
+	userText := lastUserMessageText(msgs)
+	if !strings.Contains(userText, "/compact") {
+		t.Errorf("expected a user message containing \"/compact\", got last user text %q (msgs=%d)", userText, len(msgs))
 	}
-	if !strings.HasPrefix(tem.ToolUseID, "compact-manual-") {
-		t.Errorf("toolEndMsg.ToolUseID = %q, want compact-manual-* prefix", tem.ToolUseID)
-	}
-	// Engine has no compactor → ManualCompact returns "compaction not
-	// configured" → the error path must surface it in the card.
-	if !tem.IsError {
-		t.Error("toolEndMsg.IsError should be true when ManualCompact fails (no compactor)")
-	}
-	if !strings.Contains(tem.Output, "compaction not configured") {
-		t.Errorf("toolEndMsg.Output = %q, want substring 'compaction not configured'", tem.Output)
+
+	// No synchronous tool block: StartQuery reset pendingTool, and the new
+	// handler does not call PendingToolStarted (the engine EventToolStart
+	// drives it instead, which the nil-compactor engine never emits).
+	if len(a.repl.pendingTool) != 0 {
+		t.Errorf("pendingTool should be empty (no synchronous tool block), got %d entries: %+v",
+			len(a.repl.pendingTool), a.repl.pendingTool)
 	}
 }
 
@@ -133,6 +95,12 @@ func TestHandleCompact_NotStreaming_CreatesToolBlock(t *testing.T) {
 // normally emits the initial spinnerTickMsg), so handleCompact must batch its
 // own initial tick — otherwise the spinner chain never starts and the
 // progress bar stays frozen during the async ManualCompact call.
+//
+// The batch also contains a.readEvents() which blocks forever on appCh
+// (nil-compactor engine emits no events), so a synchronous walk would hang
+// the test. Use the goroutine+timeout pattern: run each batched sub-cmd in a
+// goroutine and select on its result vs a timeout — readEvents times out
+// (skip), the spinner tick returns immediately (assert).
 func TestHandleCompact_BatchesInitialSpinnerTick(t *testing.T) {
 	t.Parallel()
 	a := newCompactTestApp(t)
@@ -141,30 +109,42 @@ func TestHandleCompact_BatchesInitialSpinnerTick(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("handleCompact should return a non-nil tea.Cmd")
 	}
-	if !msgBatchContainsSpinnerTick(t, cmd()) {
-		t.Error("handleCompact must batch an initial spinnerTickMsg — without it the spinner never animates during the async ManualCompact call")
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("cmd() returned nil msg")
 	}
-}
-
-// TestHandleCompact_CustomInstructionsShown verifies custom instructions are
-// reflected in the tool card summary.
-func TestHandleCompact_CustomInstructionsShown(t *testing.T) {
-	t.Parallel()
-	a := newCompactTestApp(t)
-
-	a.handleCompact("focus on the bug fix", nil)
-
-	if len(a.repl.pendingTool) == 0 {
-		t.Fatal("expected a pending tool block")
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("handleCompact returned %T, expected tea.BatchMsg so an initial spinnerTickMsg fires alongside readEvents", msg)
 	}
-	// Find the Compact tool block and check its summary carries the instructions.
-	const wantSummary = "Compacting conversation (focus on the bug fix)"
-	for _, tc := range a.repl.pendingTool {
-		if tc.Name == "Compact" && tc.Summary == wantSummary {
-			return
+
+	foundTick := false
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(sub)
+		select {
+		case m := <-done:
+			if _, ok := m.(spinnerTickMsg); ok {
+				foundTick = true
+			}
+		case <-time.After(500 * time.Millisecond):
+			// readEvents blocks on appCh (nil-compactor engine emits no
+			// events); that's expected — skip it.
 		}
 	}
-	t.Errorf("Compact tool block summary = want %q, pendingTool=%+v", wantSummary, a.repl.pendingTool)
+	// Unblock the lingering readEvents goroutine: close idleStop so its
+	// select returns idleAbortedMsg and the goroutine exits instead of
+	// leaking until process exit. We do NOT nil the field — that write
+	// races with readEvents' read of a.idleStop in the select.
+	if a.idleStop != nil {
+		close(a.idleStop)
+	}
+	if !foundTick {
+		t.Error("no spinnerTickMsg in batched cmd — progress line will freeze during /compact")
+	}
 }
 
 // TestHandleCompact_Streaming_Rejects verifies that /compact while streaming
@@ -229,7 +209,8 @@ func TestApp_CompactToolEndMsg_SyncsContextUsed(t *testing.T) {
 	// post-compact precise value.
 	a.engine.ContextTokens = 15000
 
-	// Build the toolEndMsg that handleCompact's async cmd produces.
+	// Build the toolEndMsg that readEvents produces from the engine's
+	// EventToolEnd (compact-manual- prefix).
 	tem := toolEndMsg{
 		ToolUseID: "compact-manual-abc12345",
 		Output:    "Compacted: 80k → 15k tokens",
@@ -241,4 +222,13 @@ func TestApp_CompactToolEndMsg_SyncsContextUsed(t *testing.T) {
 		t.Errorf("after compact toolEndMsg, contextUsed = %d, want 15000 (engine's post-compact ContextTokens) — status bar must reflect the compacted size, not the pre-compact value",
 			got)
 	}
+}
+
+func lastUserMessageText(msgs []MessageView) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && len(msgs[i].Blocks) > 0 {
+			return msgs[i].Blocks[0].Text
+		}
+	}
+	return ""
 }

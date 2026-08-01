@@ -2794,6 +2794,24 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 		return nil, fmt.Errorf("compaction not configured")
 	}
 
+	compactID := "compact-manual-" + uuid.New().String()[:8]
+	summary := "Compacting conversation..."
+	if customInstructions != "" {
+		summary = fmt.Sprintf("Compacting conversation (%s)", customInstructions)
+	}
+	e.emitEvent(types.QueryEvent{
+		Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{
+			ID:      compactID,
+			Name:    "Compact",
+			Summary: summary,
+		},
+	})
+	e.emitEvent(types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+	})
+
 	e.fireCompactHooks(ctx, "manual", "pre")
 
 	var result *short.CompactResult
@@ -2822,6 +2840,14 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 			result, err = comp.Compact(ctx, e.Messages())
 		}
 		if err != nil {
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     compactID,
+					DisplayOutput: fmt.Sprintf("Compact failed: %v", err),
+					IsError:       true,
+				},
+			})
 			return nil, err
 		}
 	}
@@ -2839,6 +2865,21 @@ func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (
 	e.markAllPersisted()
 	e.mu.Unlock()
 	e.persistContextTokens()
+
+	e.emitEvent(types.QueryEvent{
+		Type: types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{
+			ID:      compactID,
+			Summary: CompactSummaryLine(result),
+		},
+	})
+	e.emitEvent(types.QueryEvent{
+		Type: types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     compactID,
+			DisplayOutput: FormatCompactOutput(result),
+		},
+	})
 
 	suppressCompactWarning()
 	e.fireCompactHooks(ctx, "manual", "post")
