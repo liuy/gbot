@@ -61,3 +61,4 @@ app/android/app/src/main/assets/rg-arm64
 app/android/app/src/main/jniLibs/
 wails
 gbot-android
+local.properties
