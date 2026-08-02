@@ -587,8 +587,8 @@ func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
 	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
 		t.Fatalf("expected single text block, got %+v", parsed)
 	}
-	if parsed[0].Text != "User rejected tool use" {
-		t.Errorf("expected 'User rejected tool use', got %q", parsed[0].Text)
+	if parsed[0].Text != userRejectMessage {
+		t.Errorf("expected userRejectMessage, got %q", parsed[0].Text)
 	}
 }
 
@@ -2650,5 +2650,204 @@ func TestExtractErrMsg_ArrayForm(t *testing.T) {
 	strIn := json.RawMessage(`"plain string"`)
 	if got := extractErrMsg(strIn); got != `"plain string"` {
 		t.Errorf("string form: got %q, want %q", got, `"plain string"`)
+	}
+}
+
+// TestExecuteTool_UserCancelReturnsUnifiedMessage verifies that when a tool
+// is cancelled mid-execution by the user (rootCtx cancelled), the tool_result
+// uses the unified "Tool execution was cancelled by the user." message instead
+// of the raw context.Canceled error string. The IsError flag stays true.
+func TestExecuteTool_UserCancelReturnsUnifiedMessage(t *testing.T) {
+	t.Parallel()
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	toolMap := map[string]tool.Tool{
+		"slow": &testTool{
+			name: "slow",
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				rootCancel() // simulate user ESC during tool execution
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		},
+	}
+	tctx := &tool.ToolUseContext{}
+
+	var capturedEvt types.QueryEvent
+	var emitMu sync.Mutex
+	emit := func(evt types.QueryEvent) {
+		if evt.Type == types.EventToolEnd {
+			emitMu.Lock()
+			capturedEvt = evt
+			emitMu.Unlock()
+		}
+	}
+
+	e := NewStreamingToolExecutor(toolMap, tctx, emit, rootCtx)
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_cancel", Name: "slow", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if !block.IsError {
+		t.Fatal("IsError must be true for cancelled tool")
+	}
+
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal error block: %v", err)
+	}
+	if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", parsed)
+	}
+	wantMsg := userRejectMessage
+	if parsed[0].Text != wantMsg {
+		t.Errorf("cancel message = %q, want %q", parsed[0].Text, wantMsg)
+	}
+
+	emitMu.Lock()
+	defer emitMu.Unlock()
+	if capturedEvt.Type != types.EventToolEnd {
+		t.Fatalf("captured event type = %v, want EventToolEnd", capturedEvt.Type)
+	}
+	if capturedEvt.ToolResult == nil {
+		t.Fatal("captured event has nil ToolResult")
+	}
+	if !capturedEvt.ToolResult.IsError {
+		t.Error("captured event IsError must be true")
+	}
+	if capturedEvt.ToolResult.DisplayOutput == "" {
+		t.Error("DisplayOutput must be non-empty for cancelled tool")
+	}
+}
+
+// TestExecuteTool_UserCancel_SignalKilledError verifies that when a tool
+// (like Bash) is killed via signal during user cancel, the tool_result still
+// gets the unified message. Bash returns "signal: killed" (not
+// context.Canceled) because the process group gets SIGKILL — but the engine
+// should detect user-cancel via rootCtx.Err() and override regardless.
+func TestExecuteTool_UserCancel_SignalKilledError(t *testing.T) {
+	t.Parallel()
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	toolMap := map[string]tool.Tool{
+		"Bash": &testTool{
+			name: "Bash",
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				rootCancel() // user ESC
+				<-ctx.Done()
+				// Simulate what os/exec returns after SIGKILL: signal error,
+				// NOT context.Canceled.
+				return nil, errors.New("signal: killed")
+			},
+		},
+	}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(types.QueryEvent) {}, rootCtx)
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_bash_sig", Name: "Bash", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if !block.IsError {
+		t.Fatal("IsError must be true")
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantMsg := userRejectMessage
+	if parsed[0].Text != wantMsg {
+		t.Errorf("cancel message = %q, want %q (signal: killed should be overridden when rootCtx cancelled)", parsed[0].Text, wantMsg)
+	}
+}
+
+// TestExecuteTool_NormalErrorUnchanged verifies that non-cancel errors are
+// NOT rewritten — only user-cancel gets the unified message.
+func TestExecuteTool_NormalErrorUnchanged(t *testing.T) {
+	t.Parallel()
+
+	toolMap := map[string]tool.Tool{
+		"boom": &testTool{
+			name: "boom",
+			callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("command failed: exit code 1")
+			},
+		},
+	}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(types.QueryEvent) {}, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_boom", Name: "boom", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if !block.IsError {
+		t.Fatal("IsError must be true for error tool")
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed[0].Text != "command failed: exit code 1" {
+		t.Errorf("normal error = %q, want original error message unchanged", parsed[0].Text)
+	}
+}
+
+// TestExecuteTool_SiblingCancelUsesUnifiedMessage verifies that when a tool
+// is cancelled by a Bash sibling error mid-execution (NOT user interrupt),
+// the tool_result uses the unified "Cancelled: parallel tool call errored"
+// message — aligned with TS StreamingToolExecutor.ts.
+func TestExecuteTool_SiblingCancelUsesUnifiedMessage(t *testing.T) {
+	t.Parallel()
+
+	slowEntered := make(chan struct{})
+	toolMap := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name: "Bash", isSafe: true,
+			callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+				<-slowEntered
+				return nil, errors.New("bash boom")
+			},
+		},
+		"slow": &concurrentTool{
+			name: "slow", isSafe: true,
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(slowEntered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		},
+	}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(types.QueryEvent) {}, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_bash", Name: "Bash", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_slow", Name: "slow", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(res.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(res.ToolResultBlocks))
+	}
+	slowBlock := &res.ToolResultBlocks[1]
+	if !slowBlock.IsError {
+		t.Fatal("IsError must be true for sibling-cancelled tool")
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(slowBlock.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantMsg := "Cancelled: parallel tool call Bash errored"
+	if parsed[0].Text != wantMsg {
+		t.Errorf("sibling-cancel message = %q, want %q", parsed[0].Text, wantMsg)
 	}
 }

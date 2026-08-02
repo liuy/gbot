@@ -112,8 +112,8 @@ func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 	if parsed[0].Type != types.ContentTypeText {
 		t.Errorf("expected inner Type text, got %s", parsed[0].Type)
 	}
-	if parsed[0].Text != "User rejected tool use" {
-		t.Errorf("unexpected error message: %q", parsed[0].Text)
+	if parsed[0].Text != userRejectMessage {
+		t.Errorf("unexpected error message: %q, want userRejectMessage", parsed[0].Text)
 	}
 }
 

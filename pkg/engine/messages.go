@@ -66,7 +66,7 @@ func CreateSyntheticErrorBlock(toolUseID, reason string) types.ContentBlock {
 	var msg string
 	switch reason {
 	case AbortReasonUserInterrupted:
-		msg = "User rejected tool use"
+		msg = userRejectMessage
 	case AbortReasonStreamingFallback:
 		msg = "Error: Streaming fallback - tool execution discarded"
 	default:

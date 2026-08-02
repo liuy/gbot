@@ -1033,7 +1033,26 @@ func marshalBlocks(blocks []types.ContentBlock) json.RawMessage {
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
 func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err error) {
 	e.firePostToolUseHook(tt, true)
+	// Abort message alignment with TS (StreamingToolExecutor.ts:153-205):
+	//   - User cancel (rootCtx cancelled): use userRejectMessage (REJECT_MESSAGE)
+	//   - Sibling error cancel (only siblingCtx cancelled): use "Cancelled: parallel tool call errored"
+	//   - Normal error: preserve raw err.Error()
+	// rootCtx.Err() is the user-interrupt signal (Abort() cancels rootCtx).
+	// We check rootCtx (not err type) because Bash returns "signal: killed"
+	// (SIGKILL on process group) instead of context.Canceled.
 	fullErr := err.Error()
+	if e.rootCtx.Err() != nil {
+		fullErr = userRejectMessage
+	} else if e.siblingCtx.Err() != nil {
+		e.mu.Lock()
+		desc := e.errToolDesc
+		e.mu.Unlock()
+		if desc != "" {
+			fullErr = fmt.Sprintf("Cancelled: parallel tool call %s errored", desc)
+		} else {
+			fullErr = "Cancelled: parallel tool call errored"
+		}
+	}
 	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
 	errJSON := marshalBlocks([]types.ContentBlock{types.NewTextBlock(fullErr)})
 	// Let the tool decide how to display its own errors via RenderResult.
@@ -1041,6 +1060,9 @@ func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err 
 	// dumping the full search string. The full error is still sent to
 	// the LLM via Output (errJSON).
 	displayErr := t.RenderResult(fullErr)
+	if displayErr == "" {
+		displayErr = fullErr
+	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{

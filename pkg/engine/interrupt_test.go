@@ -179,8 +179,8 @@ func TestAppendInlineInterruptMessage_AddsSyntheticToolResults(t *testing.T) {
 			if len(content) != 1 || content[0].Type != types.ContentTypeText {
 				t.Fatalf("expected single text block, got %+v", content)
 			}
-			if !strings.Contains(content[0].Text, "User rejected tool use") {
-				t.Errorf("tool_result content = %q, want interrupt message", content[0].Text)
+			if content[0].Text != userRejectMessage {
+				t.Errorf("tool_result content = %q, want userRejectMessage", content[0].Text)
 			}
 		}
 	}

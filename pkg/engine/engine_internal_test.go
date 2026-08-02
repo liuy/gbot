@@ -3526,8 +3526,8 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 			if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
 				t.Fatalf("expected single text block, got %+v", parsed)
 			}
-			if !strings.Contains(parsed[0].Text, "User rejected") {
-				t.Errorf("error = %q, want to contain 'User rejected'", parsed[0].Text)
+			if parsed[0].Text != userRejectMessage {
+				t.Errorf("error = %q, want userRejectMessage", parsed[0].Text)
 			}
 		}
 	}
