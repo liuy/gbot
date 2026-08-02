@@ -48,7 +48,7 @@ if [ ! -f "${RG_CACHE}" ]; then
     echo "Downloading ripgrep ${RG_VERSION} aarch64-musl..."
     curl -fL --retry 3 -o "${RG_CACHE}" "${RG_URL}"
 fi
-TMP=$(mktemp -d); trap 'rm -rf "${TMP}"' EXIT
+TMP=$(mktemp -d)
 tar -xzf "${RG_CACHE}" -C "${TMP}"
 RG_BIN=$(find "${TMP}" -name rg -type f | head -1)
 if [ -z "${RG_BIN}" ]; then
@@ -58,31 +58,41 @@ cp "${RG_BIN}" "${ASSETS}/rg-arm64"
 chmod +x "${ASSETS}/rg-arm64"
 echo "Staged assets/rg-arm64 ($(du -h "${ASSETS}/rg-arm64" | cut -f1))"
 
-# 4. Cross-compile gbot as arm64-linux binary
+# 4. Build gbot arm64 binary.
+# On Termux (detected via PREFIX containing com.termux), we run natively.
+# On desktop (x86 Linux/macOS), cross-compile via NDK toolchain.
 echo "Building gbot arm64 binary..."
 cd "${ROOT}"
-NDK_VERSION="${NDK_VERSION:-26.3.11579264}"
-MIN_SDK="21"
-SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
-NDK_ROOT="${ANDROID_NDK_HOME:-${SDK_ROOT}/ndk/${NDK_VERSION}}"
-if [ ! -d "${NDK_ROOT}" ]; then
-    NDK_ROOT=$(ls -d "${SDK_ROOT}"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
+if [ -n "${PREFIX:-}" ] && case "${PREFIX}" in */com.termux/*) true;; *) false;; esac; then
+    # Termux: native arm64, use system Go directly
+    go build -tags production,netcgo \
+        -trimpath -buildvcs=false -ldflags="-w -s" \
+        -o "${ASSETS}/gbot-arm64" \
+        ./cmd/gbot/
+else
+    NDK_VERSION="${NDK_VERSION:-26.3.11579264}"
+    MIN_SDK="21"
+    SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+    NDK_ROOT="${ANDROID_NDK_HOME:-${SDK_ROOT}/ndk/${NDK_VERSION}}"
+    if [ ! -d "${NDK_ROOT}" ]; then
+        NDK_ROOT=$(ls -d "${SDK_ROOT}"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
+    fi
+    case "$(uname -s)" in
+        Darwin) HOST_TAG="darwin-x86_64" ;;
+        Linux)  HOST_TAG="linux-x86_64" ;;
+        *)      echo "ERROR: unsupported host OS" >&2; exit 1 ;;
+    esac
+    TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/${HOST_TAG}"
+    export CC="${TOOLCHAIN}/bin/aarch64-linux-android${MIN_SDK}-clang"
+    export CXX="${TOOLCHAIN}/bin/aarch64-linux-android${MIN_SDK}-clang++"
+    export CGO_ENABLED=1
+    export GOOS=android
+    export GOARCH=arm64
+    go build -tags android,production,netcgo \
+        -trimpath -buildvcs=false -ldflags="-w -s" \
+        -o "${ASSETS}/gbot-arm64" \
+        ./cmd/gbot/
 fi
-case "$(uname -s)" in
-    Darwin) HOST_TAG="darwin-x86_64" ;;
-    Linux)  HOST_TAG="linux-x86_64" ;;
-    *)      echo "ERROR: unsupported host OS" >&2; exit 1 ;;
-esac
-TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/${HOST_TAG}"
-export CC="${TOOLCHAIN}/bin/aarch64-linux-android${MIN_SDK}-clang"
-export CXX="${TOOLCHAIN}/bin/aarch64-linux-android${MIN_SDK}-clang++"
-export CGO_ENABLED=1
-export GOOS=android
-export GOARCH=arm64
-go build -tags android,production,netcgo \
-    -trimpath -buildvcs=false -ldflags="-w -s" \
-    -o "${ASSETS}/gbot-arm64" \
-    ./cmd/gbot/
 chmod +x "${ASSETS}/gbot-arm64"
 echo "Staged assets/gbot-arm64 ($(du -h "${ASSETS}/gbot-arm64" | cut -f1))"
 
@@ -94,18 +104,34 @@ KT_FILE="${APP_DIR}/src/main/kotlin/com/gbot/android/BootstrapInstaller.kt"
 ASSET_HASH=$(cat "${ASSETS}/gbot-arm64" "${ASSETS}/rg-arm64" | md5sum | cut -c1-8)
 sed -i "s/BOOTSTRAP_VERSION = \"[^\"]*\"/BOOTSTRAP_VERSION = \"${ASSET_HASH}\"/" "${KT_FILE}"
 echo "Stamped BOOTSTRAP_VERSION=${ASSET_HASH}"
-trap 'sed -i "s/BOOTSTRAP_VERSION = \"[^\"]*\"/BOOTSTRAP_VERSION = \"dev\"/" "${KT_FILE}"; echo "Restored BOOTSTRAP_VERSION=dev"' EXIT
+trap 'sed -i "s/BOOTSTRAP_VERSION = \"[^\"]*\"/BOOTSTRAP_VERSION = \"dev\"/" "${KT_FILE}"; sed -i "/android.aapt2FromMavenOverride/d" "${ANDROID_DIR}/gradle.properties"; rm -rf "${TMP}"; echo "Restored BOOTSTRAP_VERSION=dev, gradle.properties"' EXIT
 
 # 5. Remove jniLibs (no longer needed — targetSdk 28 allows exec from filesDir)
 rm -rf "${APP_DIR}/src/main/jniLibs"
+
+# 5.5. On Termux, inject aapt2 override into gradle.properties (AGP's
+# Maven-downloaded aapt2 is x86; Termux has a native arm64 one). The unified
+# EXIT trap in step 4.5 removes it after build so git stays clean.
+if [ -n "${PREFIX:-}" ] && case "${PREFIX}" in */com.termux/*) true;; *) false;; esac; then
+    AAPT2_PATH=$(command -v aapt2 || true)
+    if [ -n "${AAPT2_PATH}" ]; then
+        echo "android.aapt2FromMavenOverride=${AAPT2_PATH}" >> "${ANDROID_DIR}/gradle.properties"
+        echo "Injected aapt2 override: ${AAPT2_PATH}"
+    fi
+fi
 
 # 6. Build APK via Gradle — --rerun-tasks forces repackaging so assets
 # (gbot/rg/bootstrap) are always fresh; without it gradle's incremental
 # cache can serve a stale APK with old binaries.
 echo "Running gradle assembleDebug..."
 cd "${ANDROID_DIR}"
-chmod +x ./gradlew
-./gradlew assembleDebug --rerun-tasks
+if [ -n "${PREFIX:-}" ] && case "${PREFIX}" in */com.termux/*) true;; *) false;; esac; then
+    # Termux: use system gradle (gradlew downloads x86 wrapper that can't run)
+    gradle assembleDebug --rerun-tasks
+else
+    chmod +x ./gradlew
+    ./gradlew assembleDebug --rerun-tasks
+fi
 APK="${APP_DIR}/build/outputs/apk/debug/app-debug.apk"
 if [ ! -f "${APK}" ]; then
     echo "ERROR: expected APK at ${APK}" >&2; exit 1
