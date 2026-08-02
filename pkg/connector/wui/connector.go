@@ -2116,25 +2116,12 @@ func (c *WUIConnector) buildEngineList() []byte {
 	return payload
 }
 
-// buildSessionBusy is the fixed error frame for busy-guarded handlers.
-func buildSessionBusy() []byte {
-	out, _ := json.Marshal(struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}{Type: "error", Message: "Session is busy — please wait for the current request to finish, then try again"})
-	return out
-}
-
 // handleSessionSwitch loads the target session into the active engine, then
-// pushes connect_status + history + config + stats. Rejects when the engine
-// is streaming so the active turn is never disturbed.
+// pushes connect_status + history + config + stats. Streaming protection is
+// handled by the frontend (pointer-events-none on picker items during streaming).
 func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	eng := c.activeEngine()
 	if eng == nil {
-		return
-	}
-	if eng.IsBusy() {
-		c.sendWS(buildSessionBusy())
 		return
 	}
 	if err := eng.SwitchSession(sessionID); err != nil {
@@ -2151,14 +2138,10 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 }
 
 // handleSessionNew creates a fresh session on the active engine, then pushes
-// connect_status + config + stats. Rejects when the engine is streaming.
+// connect_status + config + stats. Streaming protection is frontend-side.
 func (c *WUIConnector) handleSessionNew() {
 	eng := c.activeEngine()
 	if eng == nil {
-		return
-	}
-	if eng.IsBusy() {
-		c.sendWS(buildSessionBusy())
 		return
 	}
 	if _, err := eng.NewSession(); err != nil {
@@ -2183,10 +2166,6 @@ func (c *WUIConnector) handleSessionNew() {
 func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 	eng := c.activeEngine()
 	if eng == nil {
-		return
-	}
-	if eng.IsBusy() {
-		c.sendWS(buildSessionBusy())
 		return
 	}
 	provider, ok := c.providers[providerName]

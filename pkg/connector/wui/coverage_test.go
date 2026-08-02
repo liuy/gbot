@@ -424,30 +424,6 @@ func TestHandleEngineNew_Success(t *testing.T) {
 	}
 }
 
-func TestHandleSessionNew_EngineBusy(t *testing.T) {
-	c := newTestConnector(t)
-	c.mock().isBusyFn = func() bool { return true }
-	ws := dialAndStore(t, c)
-
-	c.handleSessionNew()
-
-	msg := readWSMessage(t, ws)
-	var env struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if env.Type != "error" {
-		t.Errorf("type = %q, want \"error\"", env.Type)
-	}
-	wantSubstr := "Session is busy"
-	if !contains(env.Message, wantSubstr) {
-		t.Errorf("message = %q, want it to contain %q", env.Message, wantSubstr)
-	}
-}
-
 func TestHandleSessionNew_NewSessionError(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().newSessionFn = func() (string, error) {

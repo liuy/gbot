@@ -598,3 +598,94 @@ describe('Header Compact button', () => {
     expect(btn.className).not.toContain('pointer-events-none')
   })
 })
+
+describe('Header picker streaming state', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function modelTrigger(): HTMLButtonElement {
+    const triggers = header.root.querySelectorAll('button.text-\\[15px\\]:not(.hidden)')
+    return triggers[triggers.length - 1] as HTMLButtonElement
+  }
+
+  function engineTrigger(): HTMLButtonElement {
+    return header.root.querySelector('button.text-\\[15px\\]:not(.hidden)') as HTMLButtonElement
+  }
+
+  function visibleModelPanel(): HTMLElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      const hasModelSearch = !!p.querySelector('textarea[placeholder="Search..."]')
+      if (hasModelSearch && !p.classList.contains('hidden')) return p as HTMLElement
+    }
+    return null
+  }
+
+  function visibleEnginePanel(): HTMLElement | null {
+    const panels = document.body.querySelectorAll('[data-testid="engine-picker-panel"]')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLElement
+    }
+    return null
+  }
+
+  it('model picker items greyed out when streaming', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    header.setStreaming(true)
+
+    const panel = visibleModelPanel()!
+    const items = panel.querySelectorAll('button')
+    for (const item of items) {
+      if (!item.querySelector('textarea')) {
+        expect(item.className).toContain('pointer-events-none')
+      }
+    }
+  })
+
+  it('engine picker non-active items greyed out when streaming', () => {
+    header.setEngines(
+      [{ id: 'main', name: 'Main', model: 'gpt-5' }, { id: 'second', name: 'Second', model: 'claude' }],
+      'main',
+    )
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    header.setStreaming(true)
+
+    const panel = visibleEnginePanel()!
+    const items = panel.querySelectorAll('button')
+    let foundDisabled = false
+    for (const item of items) {
+      // active item (contains "Main") should NOT have pointer-events-none
+      // non-active items (contains "Second") should have it
+      if (item.textContent?.includes('Second')) {
+        expect(item.className).toContain('pointer-events-none')
+        foundDisabled = true
+      }
+    }
+    expect(foundDisabled).toBe(true)
+  })
+
+  it('model picker items restored when streaming ends', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    header.setStreaming(true)
+    header.setStreaming(false)
+
+    const panel = visibleModelPanel()!
+    const items = panel.querySelectorAll('button')
+    for (const item of items) {
+      if (!item.querySelector('textarea')) {
+        expect(item.className).not.toContain('pointer-events-none')
+      }
+    }
+  })
+})

@@ -37,7 +37,7 @@ interface EngineEntry {
 function createModelPicker(
   onSelect: (provider: string, model: string) => void,
   onRequestQuota?: () => void,
-): { wrap: HTMLElement; setLabel: (text: string) => void; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void } {
+): { wrap: HTMLElement; setLabel: (text: string) => void; setModels: (models: ModelEntry[], curProvider: string, curModel: string) => void; setQuota: (provider: string, quota: string) => void; setStreaming: (s: boolean) => void } {
   const searchWrap = createElement('div', 'flex items-center gap-2 mx-3 my-2 px-3 py-2 rounded-lg bg-ink3/40')
   searchWrap.appendChild(renderIcon('search', { size: 14, className: 'text-t3 shrink-0' }))
   const searchInput = createNode('textarea', {
@@ -55,6 +55,7 @@ function createModelPicker(
   let allModels: ModelEntry[] = []
   let currentProvider = ''
   let currentModel = ''
+  let streaming = false
   const quotaByProvider = new Map<string, string>()
 
   const renderList = () => {
@@ -79,12 +80,17 @@ function createModelPicker(
         header.textContent = entry.provider
         listContainer.appendChild(header)
       }
+      const isActive = entry.provider === currentProvider && entry.model === currentModel
       const item = createElement(
         'button',
-        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50',
+        cx(
+          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
+          streaming ? 'pointer-events-none' : 'hover:bg-ink3/50',
+        ),
       )
-      const isActive = entry.provider === currentProvider && entry.model === currentModel
-      const span = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
+      const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
+      item.appendChild(dot)
+      const span = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : streaming ? 'text-t3' : 'text-t2'))
       span.textContent = entry.model
       item.appendChild(span)
       const qText = entry.quota ?? quotaByProvider.get(entry.provider)
@@ -145,17 +151,24 @@ function createModelPicker(
     if (open) renderList()
   }
 
-  return { wrap: combo.wrap, setLabel: combo.setLabel, setModels, setQuota }
+  const setStreaming = (s: boolean) => {
+    streaming = s
+    if (open) renderList()
+  }
+
+  return { wrap: combo.wrap, setLabel: combo.setLabel, setModels, setQuota, setStreaming }
 }
 
 function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
-): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
+): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void; setStreaming: (s: boolean) => void } {
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
+  let streaming = false
+  let open = false
 
   const renderList = () => {
     listContainer.innerHTML = ''
@@ -163,11 +176,14 @@ function createEnginePicker(
       const isActive = entry.id === activeID
       const item = createElement(
         'button',
-        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50',
+        cx(
+          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
+          streaming && !isActive ? 'pointer-events-none' : 'hover:bg-ink3/50',
+        ),
       )
       const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
       item.appendChild(dot)
-      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
+      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : streaming ? 'text-t3' : 'text-t2'))
       nameSpan.textContent = entry.name || entry.id
       item.appendChild(nameSpan)
       const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
@@ -189,11 +205,13 @@ function createEnginePicker(
     const footer = createIconButton({
       icon: 'plus',
       label: 'New engine',
-      variant: 'default',
+      variant: streaming ? 'ghost' : 'default',
       size: 'md',
       iconSize: 18,
-      className:
-        'w-full justify-center px-3 py-2 rounded-lg hover:bg-ink3/50 border-t border-hairline mt-1',
+      className: cx(
+        'w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1',
+        streaming ? 'text-t3 pointer-events-none' : 'hover:bg-ink3/50',
+      ),
       onClick: () => {
         onNew()
         combo.close()
@@ -212,7 +230,11 @@ function createEnginePicker(
         panel.appendChild(listContainer)
         panelSetup = true
       }
+      open = true
       renderList()
+    },
+    onClose: () => {
+      open = false
     },
   })
 
@@ -223,7 +245,12 @@ function createEnginePicker(
     if (cur) combo.setLabel(cur.name || cur.id)
   }
 
-  return { wrap: combo.wrap, setEngines }
+  const setStreaming = (s: boolean) => {
+    streaming = s
+    if (open) renderList()
+  }
+
+  return { wrap: combo.wrap, setEngines, setStreaming }
 }
 
 const ANSI_TO_CSS: Record<string, string> = {
@@ -675,5 +702,11 @@ export function createHeader(opts: {
     ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming: ctxPopover.setStreaming }
+  const setStreaming = (s: boolean) => {
+    ctxPopover.setStreaming(s)
+    modelPicker.setStreaming(s)
+    enginePicker.setStreaming(s)
+  }
+
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming }
 }

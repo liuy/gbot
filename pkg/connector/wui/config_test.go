@@ -283,44 +283,6 @@ func TestModelSwitch_UnknownProvider(t *testing.T) {
 	}
 }
 
-func TestModelSwitch_Busy(t *testing.T) {
-	c := newTestConnectorWithConfig(t, hub.NewHub(), buildTestProviders(), buildTestProviderConfigs())
-	c.mock().isBusyFn = func() bool { return true }
-
-	ws := dialAndStore(t, c)
-	defer ws.Close()
-
-	switchMsg, _ := json.Marshal(map[string]string{
-		"type":     "model_switch",
-		"provider": "openai",
-		"model":    "gpt-5",
-	})
-	if err := ws.WriteMessage(websocket.TextMessage, switchMsg); err != nil {
-		t.Fatalf("write model_switch: %v", err)
-	}
-
-	data := readWSMessage(t, ws)
-	var resp struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if resp.Type != "error" {
-		t.Fatalf("type = %q, want error", resp.Type)
-	}
-	if resp.Message != "Session is busy — please wait for the current request to finish, then try again" {
-		t.Errorf("message = %q, want session busy message", resp.Message)
-	}
-
-	c.mock().mu.Lock()
-	defer c.mock().mu.Unlock()
-	if len(c.mock().setProviderCalls) != 0 {
-		t.Errorf("setProviderCalls = %v, want empty", c.mock().setProviderCalls)
-	}
-}
-
 func TestModelSwitch_UnknownModel(t *testing.T) {
 	c := newTestConnectorWithConfig(t, hub.NewHub(), buildTestProviders(), buildTestProviderConfigs())
 

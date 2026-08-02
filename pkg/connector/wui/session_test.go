@@ -226,66 +226,6 @@ func TestSessionNew(t *testing.T) {
 	}
 }
 
-func TestSessionSwitchBusy(t *testing.T) {
-	c := newTestConnector(t)
-	c.mock().isBusyFn = func() bool { return true }
-
-	ws := dialAndStore(t, c)
-
-	sendJSON(t, ws, map[string]string{"type": "session_switch", "sessionID": "target"})
-
-	data := readWSMessage(t, ws)
-	var msg struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if msg.Type != "error" {
-		t.Fatalf("expected type error, got %s", msg.Type)
-	}
-	if msg.Message != "Session is busy — please wait for the current request to finish, then try again" {
-		t.Fatalf("expected session busy message, got %q", msg.Message)
-	}
-
-	c.mock().mu.Lock()
-	defer c.mock().mu.Unlock()
-	if len(c.mock().switchSessionCalls) != 0 {
-		t.Fatalf("expected 0 switchSession calls (engine busy), got %d", len(c.mock().switchSessionCalls))
-	}
-}
-
-func TestSessionNewBusy(t *testing.T) {
-	c := newTestConnector(t)
-	c.mock().isBusyFn = func() bool { return true }
-
-	ws := dialAndStore(t, c)
-
-	sendJSON(t, ws, map[string]string{"type": "session_new"})
-
-	data := readWSMessage(t, ws)
-	var msg struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if msg.Type != "error" {
-		t.Fatalf("expected type error, got %s", msg.Type)
-	}
-	if msg.Message != "Session is busy — please wait for the current request to finish, then try again" {
-		t.Fatalf("expected session busy message, got %q", msg.Message)
-	}
-
-	c.mock().mu.Lock()
-	defer c.mock().mu.Unlock()
-	if c.mock().newSessionCalls != 0 {
-		t.Fatalf("expected 0 newSession calls (engine busy), got %d", c.mock().newSessionCalls)
-	}
-}
-
 // sendJSON marshals v and writes it as a WS text message.
 func sendJSON(t *testing.T, ws *websocket.Conn, v any) {
 	t.Helper()

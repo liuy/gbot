@@ -1037,27 +1037,6 @@ func TestHandleModelSwitch_UnknownProvider(t *testing.T) {
 	}
 }
 
-// TestHandleModelSwitch_Busy verifies handleModelSwitch rejects when busy.
-func TestHandleModelSwitch_Busy(t *testing.T) {
-	c := newTestConnector(t)
-	c.mock().isBusyFn = func() bool { return true }
-	ws := dialAndStore(t, c)
-
-	c.handleModelSwitch("p", "m")
-
-	msg := readWSMessage(t, ws)
-	var env struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !strings.Contains(env.Message, "busy") {
-		t.Errorf("message = %q, want it to contain 'busy'", env.Message)
-	}
-}
-
 // ---- Section 18: handleSessionSwitch error paths ----
 
 // TestHandleSessionSwitch_NilEngine verifies handleSessionSwitch is safe
@@ -1101,26 +1080,6 @@ func TestHandleSessionSwitch_SwitchError(t *testing.T) {
 	}
 	if env.Message != "session not found" {
 		t.Errorf("message = %q, want 'session not found'", env.Message)
-	}
-}
-
-// TestHandleSessionSwitch_Busy verifies handleSessionSwitch rejects when busy.
-func TestHandleSessionSwitch_Busy(t *testing.T) {
-	c := newTestConnector(t)
-	c.mock().isBusyFn = func() bool { return true }
-	ws := dialAndStore(t, c)
-
-	c.handleSessionSwitch("session-1")
-
-	msg := readWSMessage(t, ws)
-	var env struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if env.Type != "error" {
-		t.Errorf("type = %q, want 'error'", env.Type)
 	}
 }
 
