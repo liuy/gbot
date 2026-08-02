@@ -51,7 +51,7 @@ func TestEngineSwitch_PersistsToMetaJSON(t *testing.T) {
 	defer ws.Close()
 
 	switchMsg, _ := json.Marshal(map[string]string{
-		"type":      "engine_switch",
+		"type":     "engine_switch",
 		"engineID": "e2",
 	})
 	if err := ws.WriteMessage(websocket.TextMessage, switchMsg); err != nil {

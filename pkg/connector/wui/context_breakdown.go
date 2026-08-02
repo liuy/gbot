@@ -1,10 +1,14 @@
 package wui
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 type contextBreakdownOutbound struct {
@@ -251,5 +255,21 @@ func (c *WUIConnector) handleContextRequest() {
 	payload := buildContextBreakdown(bd)
 	if payload != nil {
 		c.sendWS(payload)
+	}
+}
+
+func (c *WUIConnector) handleCompactRequest() {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
+	userMsg := types.Message{
+		ID:        uuid.New().String(),
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock("/compact")},
+		Timestamp: time.Now(),
+	}
+	if _, err := eng.ManualCompact(context.Background(), userMsg, ""); err != nil {
+		slog.Warn("wui: manual compact failed", "error", err)
 	}
 }

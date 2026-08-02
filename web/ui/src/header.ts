@@ -19,6 +19,7 @@ export interface HeaderHandles {
   setContext: (used: number, total: number) => void
   setContextBreakdown: (data: ContextBreakdownData | null) => void
   hideContextBreakdown: () => void
+  setStreaming: (streaming: boolean) => void
 }
 
 interface ModelEntry {
@@ -265,20 +266,34 @@ function createDetailRow(name: string, tokens: number): HTMLDivElement {
   return row
 }
 
-function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData) {
+function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData, onCompact?: () => void, streaming?: boolean) {
   panel.innerHTML = ''
 
-  const titleBar = createElement('div', 'px-4 pt-3 pb-1')
+  const titleBar = createElement('div', 'flex items-start justify-between px-4 pt-3 pb-1')
+  const titleCol = createElement('div')
   const title = createNode('div', {
     className: 'text-[14px] font-semibold text-t1',
     text: 'Context Usage',
   })
-  titleBar.appendChild(title)
+  titleCol.appendChild(title)
   const total = createElement('div', 'mono text-[12px] text-t3 mt-0.5')
   total.textContent =
     formatTokenCount(data.totalTokens) + ' / ' + formatTokenCount(data.contextWindow) +
     ' (' + data.percentage.toFixed(1) + '%)'
-  titleBar.appendChild(total)
+  titleCol.appendChild(total)
+  titleBar.appendChild(titleCol)
+  if (onCompact) {
+    const compactBtn = createTextButton({
+      text: 'Compact',
+      variant: 'link',
+      className: streaming
+        ? 'text-[13px] text-t3 shrink-0 pointer-events-none'
+        : 'text-[13px] text-blue shrink-0',
+    })
+    compactBtn.dataset.testid = 'compact-btn'
+    compactBtn.addEventListener('click', onCompact)
+    titleBar.appendChild(compactBtn)
+  }
   panel.appendChild(titleBar)
 
   const barWrap = createElement('div', 'px-4 py-2')
@@ -404,10 +419,11 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 }
 
-function createContextPopover(onRequest: () => void): {
+function createContextPopover(onRequest: () => void, onCompact?: () => void): {
   trigger: HTMLButtonElement
   setBreakdown: (data: ContextBreakdownData | null) => void
   hide: () => void
+  setStreaming: (streaming: boolean) => void
 } {
   // contextPopover keeps its own 3-state click handler (close-if-open /
   // show-loading / show-panel) instead of going through createComboButton —
@@ -427,6 +443,7 @@ function createContextPopover(onRequest: () => void): {
   let breakdown: ContextBreakdownData | null = null
   let dataReceived = false
   let open = false
+  let streaming = false
 
   const outsideClick = createOutsideClick(trigger, panel, () => {
     open = false
@@ -439,7 +456,7 @@ function createContextPopover(onRequest: () => void): {
     panel.classList.remove('hidden')
     panel.innerHTML = ''
     if (breakdown) {
-      renderBreakdownContent(panel, breakdown)
+      renderBreakdownContent(panel, breakdown, onCompact, streaming)
     } else {
       panel.appendChild(createNode('div', {
         className: 'px-4 py-6 text-center text-[13px] text-t3',
@@ -484,7 +501,7 @@ function createContextPopover(onRequest: () => void): {
     dataReceived = true
     if (open) {
       if (data) {
-        renderBreakdownContent(panel, data)
+        renderBreakdownContent(panel, data, onCompact, streaming)
       } else {
         panel.innerHTML = ''
         panel.appendChild(createNode('div', {
@@ -495,7 +512,14 @@ function createContextPopover(onRequest: () => void): {
     }
   }
 
-  return { trigger, setBreakdown, hide: closePanel }
+  const setStreaming = (s: boolean) => {
+    streaming = s
+    if (open && breakdown) {
+      renderBreakdownContent(panel, breakdown, onCompact, streaming)
+    }
+  }
+
+  return { trigger, setBreakdown, hide: closePanel, setStreaming }
 }
 
 export function createHeader(opts: {
@@ -503,6 +527,7 @@ export function createHeader(opts: {
   onEngineSwitch: (engineID: string) => void
   onEngineNew: () => void
   onContextRequest?: () => void
+  onContextCompact?: () => void
   onRequestQuota?: () => void
 }): HeaderHandles {
   const root = createElement('header', 'sticky top-0 z-30 card-bg')
@@ -601,7 +626,10 @@ export function createHeader(opts: {
   const spacer = createElement('div', 'flex-1')
   inner.appendChild(spacer)
 
-  const ctxPopover = createContextPopover(() => opts.onContextRequest?.())
+  const ctxPopover = createContextPopover(
+    () => opts.onContextRequest?.(),
+    opts.onContextCompact,
+  )
   inner.appendChild(ctxPopover.trigger)
 
   root.appendChild(inner)
@@ -647,5 +675,5 @@ export function createHeader(opts: {
     ctxPopover.trigger.textContent = formatTokenCount(used) + '/' + formatTokenCount(total)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide }
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming: ctxPopover.setStreaming }
 }

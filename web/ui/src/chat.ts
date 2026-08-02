@@ -437,6 +437,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     onEngineSwitch: (engineID) => conn.send({ type: 'engine_switch', engineID }),
     onEngineNew: () => conn.send({ type: 'engine_new' }),
     onContextRequest: () => conn.send({ type: 'context_request' }),
+    onContextCompact: () => {
+      header.hideContextBreakdown()
+      conn.send({ type: 'compact_request' })
+    },
     onRequestQuota: () => conn.send({ type: 'quota_request' }),
   })
   header.setStatus(initial.connected)
@@ -475,6 +479,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputWrapper.appendChild(inputBar.root)
   mainContent.appendChild(inputWrapper)
   mainContent.appendChild(taskPanel.root)
+
+  const setStreaming = (s: boolean) => {
+    streaming = s
+    header.setStreaming(s)
+    inputBar.setStreaming(s)
+  }
 
   root.appendChild(mainContent)
 
@@ -624,9 +634,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const resetAllState = () => {
     cleanupStreamingRefs()
     resetProgressUsage()
-    streaming = false
+    setStreaming(false)
     console.debug('[chat] resetAllState')
-    inputBar.setStreaming(false)
     queuedMsgs = []
     pendingCancel = null
     inputBar.setQueuedMsgs([])
@@ -837,8 +846,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       appendMsgWithDivider(messagesContainer, m.role, m.startedAt, outer)
       messages.push(m)
     }
-    streaming = false
-    inputBar.setStreaming(false)
+    setStreaming(false)
     queuedMsgs = []
     inputBar.setQueuedMsgs([])
     cleanupStreamingRefs()
@@ -910,8 +918,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           knownToolIDs.add(rt.id)
         }
         if (runningTools.length > 0 && !streaming) {
-          streaming = true
-          inputBar.setStreaming(true)
+          setStreaming(true)
           streamContainer = content
           if (streamStartedAt === 0) {
             streamStartedAt = Date.now()
@@ -989,8 +996,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (streamStartedAt === 0) {
       streamStartedAt = Date.now()
     }
-    streaming = true
-    inputBar.setStreaming(true)
+    setStreaming(true)
     setupStreaming()
     console.debug('[chat] initStreaming reason=' + reason + ' streamContainer=' + !!streamContainer + ' progressHandles=' + !!progressHandles)
   }
@@ -1145,8 +1151,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           }
         }
 
-        streaming = false
-        inputBar.setStreaming(false)
+        setStreaming(false)
         queuedMsgs = []
         inputBar.setQueuedMsgs([])
         // Finalize progress bar to static stats before cleanup nulls its refs.

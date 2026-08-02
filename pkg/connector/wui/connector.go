@@ -89,6 +89,7 @@ type engineClient interface {
 	// PreCompactMessages pages SQLite messages that live before the last
 	// compact boundary. See engineAdapter.PreCompactMessages for contract.
 	PreCompactMessages(delivered, limit int) (msgs []*short.TranscriptMessage, total int, hasBoundary bool)
+	ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error)
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -170,6 +171,10 @@ func (a *engineAdapter) PreCompactMessages(delivered, limit int) ([]*short.Trans
 		return nil, 0, false
 	}
 	return preCompactMessages(store, a.eng.SessionID(), delivered, limit)
+}
+
+func (a *engineAdapter) ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error) {
+	return a.eng.ManualCompact(ctx, userMsg, customInstructions)
 }
 
 // queryStats accumulates per-query stats (usage + start time + tool count +

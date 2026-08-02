@@ -73,6 +73,7 @@ type mockEngine struct {
 	setInputModFn      func([]string)
 	updateAutoFn       func(engine.AutoCompactConfig)
 	preCompactFn       func(delivered, limit int) ([]*short.TranscriptMessage, int, bool)
+	manualCompactFn    func(ctx context.Context, userMsg types.Message, instructions string) (*short.CompactResult, error)
 
 	// Recorded calls for assertions.
 	queryCalls            []queryCall
@@ -80,6 +81,8 @@ type mockEngine struct {
 	enqueueCalls          []types.QueuedItem
 	abortCount            int
 	rewindCalls           []int
+	manualCompactCalls    int
+	manualCompactMsgs     []types.Message
 	removeAttachment      []string
 	removeAttachmentFn    func(uuid string) bool
 	switchSessionCalls    []string
@@ -359,6 +362,18 @@ func (m *mockEngine) PreCompactMessages(delivered, limit int) ([]*short.Transcri
 		return m.preCompactFn(delivered, limit)
 	}
 	return nil, 0, false
+}
+
+func (m *mockEngine) ManualCompact(ctx context.Context, userMsg types.Message, instructions string) (*short.CompactResult, error) {
+	m.mu.Lock()
+	m.manualCompactCalls++
+	m.manualCompactMsgs = append(m.manualCompactMsgs, userMsg)
+	fn := m.manualCompactFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, userMsg, instructions)
+	}
+	return nil, nil
 }
 
 // newTestConnectorWithHub builds a WUIConnector with a mockEngine and the

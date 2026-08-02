@@ -484,3 +484,117 @@ describe('Header engine picker popover', () => {
     expect(panel!.children.length).toBe(1)
   })
 })
+
+describe('Header Compact button', () => {
+  let header: ReturnType<typeof createHeader>
+
+  function sampleBreakdown(): ContextBreakdownData {
+    return {
+      model: 'test',
+      contextWindow: 200000,
+      totalTokens: 50000,
+      percentage: 25,
+      isAutoCompact: false,
+      categories: [
+        { name: 'Messages', tokens: 50000, percentage: 25, color: '255', isFree: false, isReserved: false },
+      ],
+      mcpToolsLoaded: [],
+      mcpToolsDeferred: [],
+      deferredBuiltinTools: [],
+      systemTools: [],
+      systemPromptSections: [],
+      memoryFiles: [],
+      agents: [],
+      skills: [],
+    }
+  }
+
+  function getPanel(): HTMLElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLElement
+    }
+    return null
+  }
+
+  function openPopover() {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    const trigger = header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    trigger.click()
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('not rendered when onContextCompact not provided', () => {
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    openPopover()
+    const btn = getPanel()!.querySelector('[data-testid="compact-btn"]')
+    expect(btn).toBeNull()
+  })
+
+  it('blue and clickable when not streaming', () => {
+    let clicked = false
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onContextCompact: () => { clicked = true },
+    })
+    document.body.appendChild(header.root)
+    openPopover()
+
+    const btn = getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.className).toContain('text-blue')
+    expect(btn.className).not.toContain('pointer-events-none')
+
+    btn.click()
+    expect(clicked).toBe(true)
+  })
+
+  it('grey and disabled when streaming', () => {
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onContextCompact: () => {},
+    })
+    document.body.appendChild(header.root)
+    openPopover()
+
+    header.setStreaming(true)
+
+    const btn = getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
+    expect(btn.className).toContain('text-t3')
+    expect(btn.className).toContain('pointer-events-none')
+  })
+
+  it('updates from disabled to enabled when streaming ends', () => {
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onContextCompact: () => {},
+    })
+    document.body.appendChild(header.root)
+    openPopover()
+    header.setStreaming(true)
+
+    let btn = getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
+    expect(btn.className).toContain('pointer-events-none')
+
+    header.setStreaming(false)
+
+    btn = getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
+    expect(btn.className).toContain('text-blue')
+    expect(btn.className).not.toContain('pointer-events-none')
+  })
+})
