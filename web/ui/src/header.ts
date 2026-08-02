@@ -558,6 +558,7 @@ export function createHeader(opts: {
   onRequestQuota?: () => void
 }): HeaderHandles {
   const root = createElement('header', 'sticky top-0 z-30 card-bg')
+  root.style.paddingTop = 'env(safe-area-inset-top)'
 
   const inner = createElement('div', 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto')
 

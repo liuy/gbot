@@ -19,6 +19,7 @@ import android.webkit.WebViewClient
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.Fragment
 import java.io.File
 
@@ -156,6 +157,7 @@ class ChatFragment : Fragment() {
         }
 
         tryLoad()
+        updateStatusBarIcons()
     }
 
     private fun retryLoad() {
@@ -175,6 +177,7 @@ class ChatFragment : Fragment() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         applySystemTheme(webView)
+        updateStatusBarIcons()
     }
 
     private fun applySystemTheme(view: WebView?) {
@@ -184,6 +187,14 @@ class ChatFragment : Fragment() {
             "window.__gbotApplySystemTheme && window.__gbotApplySystemTheme($isLight);",
             null,
         )
+    }
+
+    private fun updateStatusBarIcons() {
+        val isLight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_NO
+        activity?.window?.let { window ->
+            WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = isLight
+        }
     }
 
     override fun onDestroyView() {
