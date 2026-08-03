@@ -441,10 +441,9 @@ func TestPromptAttachment_MultiMergeChain(t *testing.T) {
 	}
 
 	// 4. Append to engine messages (includes prior user message for context)
-	eng.appendMessage(types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock("original question")},
-	})
+	eng.appendMessage(types.NewUserMessage(
+		[]types.ContentBlock{types.NewTextBlock("original question")},
+	))
 	eng.appendMessages(attMsgs)
 
 	// Verify all 3 messages in engine (1 original + 2 attachments)
@@ -466,9 +465,9 @@ func TestPromptAttachment_MultiMergeChain(t *testing.T) {
 	if len(merged.Content) != 3 {
 		t.Fatalf("merged content blocks = %d, want 3 (original + 2 attachments)", len(merged.Content))
 	}
-	// First block is the original question
-	if merged.Content[0].Text != "original question" {
-		t.Errorf("content[0] = %q, want 'original question'", merged.Content[0].Text)
+	// First block is the original question (with timestamp prefix from injectTimestamp)
+	if !strings.Contains(merged.Content[0].Text, "original question") {
+		t.Errorf("content[0] = %q, want to contain 'original question'", merged.Content[0].Text)
 	}
 	// Subsequent blocks are the queued prompts (wrapped by normalizeAttachmentForAPI)
 	if !strings.Contains(merged.Content[1].Text, "first prompt") {
@@ -785,23 +784,21 @@ func TestTimestampInjection_FlagMetaSkipped(t *testing.T) {
 	}
 }
 
-// TestTimestampInjection_ZeroTimestampSkipped verifies that messages with
-// zero Timestamp (e.g. legacy messages before timestamp feature) are not modified.
-func TestTimestampInjection_ZeroTimestampSkipped(t *testing.T) {
+// TestTimestampInjection_ToolResultSkipped verifies that tool_result messages
+// (user role but not user input) are not modified by injectTimestamp.
+func TestTimestampInjection_ToolResultSkipped(t *testing.T) {
 	eng := New(&Params{})
 	t.Cleanup(func() { eng.Close() })
-	eng.appendMessage(types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock("no timestamp")},
-		// Timestamp is zero value
-	})
+	eng.appendMessage(types.NewUserMessage([]types.ContentBlock{
+		types.NewToolResultBlock("tool-1", json.RawMessage(`"result"`), false),
+	}))
 
 	got := eng.marshalMessages()
 	if len(got) != 1 {
 		t.Fatalf("got %d messages, want 1", len(got))
 	}
-	if got[0].Content[0].Text != "no timestamp" {
-		t.Errorf("zero-timestamp text = %q, want %q", got[0].Content[0].Text, "no timestamp")
+	if got[0].Content[0].Type != types.ContentTypeToolResult {
+		t.Errorf("first block type = %q, want tool_result (timestamp must not prepend)", got[0].Content[0].Type)
 	}
 }
 

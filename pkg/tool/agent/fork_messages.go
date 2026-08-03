@@ -65,17 +65,15 @@ func BuildForkMessages(triggerAssistantMsg *types.Message, contextHistory []type
 		// Source: runAgent.ts:370-373 — [...filterIncompleteToolCalls(forkContextMessages), ...promptMessages]
 		result := make([]types.Message, 0, len(filteredHistory)+1)
 		result = append(result, filteredHistory...)
-		result = append(result, types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(buildForkDirective(prompt))},
-		})
+		result = append(result, types.NewUserMessage(
+			[]types.ContentBlock{types.NewTextBlock(buildForkDirective(prompt))},
+		))
 		return result
 	}
 
-	clonedAssistant := types.Message{
-		Role:    types.RoleAssistant,
-		Content: make([]types.ContentBlock, len(triggerAssistantMsg.Content)),
-	}
+	clonedAssistant := types.NewAssistantMessage(
+		make([]types.ContentBlock, len(triggerAssistantMsg.Content)),
+	)
 	copy(clonedAssistant.Content, triggerAssistantMsg.Content)
 
 	var toolResultBlocks []types.ContentBlock

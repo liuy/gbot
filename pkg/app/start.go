@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/connector/wechat"
 	"github.com/liuy/gbot/pkg/connector/wui"
@@ -354,11 +352,9 @@ func Start(opts Options) (*Instance, error) {
 						}
 					}
 				}
-				extractionUserMsg := types.Message{
-					ID:      uuid.New().String(),
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(prompt)},
-				}
+				extractionUserMsg := types.NewUserMessage(
+					[]types.ContentBlock{types.NewTextBlock(prompt)},
+				)
 				forkMessages := append(slices.Clone(messages), extractionUserMsg)
 				result := subEng.RunForkedQuery(ctx, forkMessages, sysPrompt)
 				if err := session.SanitizeNotes(notesPath); err != nil {

@@ -247,34 +247,22 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	// 5a. Metadata message
 	// Source: SkillTool.ts:1104 — isMeta: true on all skill messages
 	metadata := formatCommandLoadingMetadata(cmd, args)
-	newMessages = append(newMessages, types.Message{
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			{Type: "text", Text: metadata},
-		},
-		Flags: types.FlagMeta,
-	})
+	metaMsg := types.NewUserMessage([]types.ContentBlock{{Type: "text", Text: metadata}})
+	metaMsg.Flags = types.FlagMeta
+	newMessages = append(newMessages, metaMsg)
 
 	// 5b. Content message (skill body with substituted args)
-	newMessages = append(newMessages, types.Message{
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			{Type: "text", Text: content},
-		},
-		Flags: types.FlagMeta,
-	})
+	contentMsg := types.NewUserMessage([]types.ContentBlock{{Type: "text", Text: content}})
+	contentMsg.Flags = types.FlagMeta
+	newMessages = append(newMessages, contentMsg)
 
 	// 5c. Command permissions attachment
 	// allowedTools + model as XML message
 	if len(cmd.AllowedTools) > 0 || cmd.Model != "" {
 		perms := formatCommandPermissions(cmd.AllowedTools, cmd.Model)
-		newMessages = append(newMessages, types.Message{
-			Role: types.RoleUser,
-			Content: []types.ContentBlock{
-				{Type: "text", Text: perms},
-			},
-			Flags: types.FlagMeta,
-		})
+		permsMsg := types.NewUserMessage([]types.ContentBlock{{Type: "text", Text: perms}})
+		permsMsg.Flags = types.FlagMeta
+		newMessages = append(newMessages, permsMsg)
 	}
 
 	return &tool.ToolResult{

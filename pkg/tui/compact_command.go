@@ -6,7 +6,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -37,12 +36,7 @@ func (a *App) handleCompact(args string, commitCmd tea.Cmd) tea.Cmd {
 	a.spinner.Start()
 	a.markViewportDirty()
 
-	userMsg := types.Message{
-		ID:        uuid.New().String(),
-		Role:      types.RoleUser,
-		Content:   []types.ContentBlock{types.NewTextBlock(displayInput)},
-		Timestamp: time.Now(),
-	}
+	userMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(displayInput)})
 	customInstructions := args
 	eng := a.engine
 	ctx := context.Background()

@@ -80,12 +80,9 @@ func BuildSkillMessages(skills []types.SkillCommand) []types.Message {
 			"<command-message>%s</command-message>\n<command-name>%s</command-name>\n<skill-format>true</skill-format>",
 			skill.Name, skill.Name,
 		)
-		messages = append(messages, types.Message{
-			Role: types.RoleUser,
-			Content: []types.ContentBlock{
-				types.NewTextBlock(metadata + "\n" + skill.Content),
-			},
-		})
+		messages = append(messages, types.NewUserMessage([]types.ContentBlock{
+			types.NewTextBlock(metadata + "\n" + skill.Content),
+		}))
 	}
 	return messages
 }

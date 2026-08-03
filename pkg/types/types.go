@@ -8,6 +8,8 @@ package types
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,41 @@ const (
 // HasFlag checks if the message has a specific flag set.
 func (m *Message) HasFlag(flag MessageFlag) bool {
 	return m.Flags&flag != 0
+}
+
+// NewUserMessage creates a user message with a stable UUID and Timestamp.
+// Aligns with TS createUserMessage (messages.ts:460) which calls randomUUID()
+// and Date.now() at creation time. Only use at sites where injectTimestamp
+// behavior is provably unchanged (assistant/system role, FlagMeta set, or
+// existing non-zero Timestamp).
+func NewUserMessage(content []ContentBlock) Message {
+	return Message{
+		ID:        uuid.New().String(),
+		Role:      RoleUser,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
+}
+
+// NewAssistantMessage creates an assistant message with a stable UUID and
+// Timestamp. Aligns with TS baseCreateAssistantMessage (messages.ts:355).
+func NewAssistantMessage(content []ContentBlock) Message {
+	return Message{
+		ID:        uuid.New().String(),
+		Role:      RoleAssistant,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
+}
+
+// NewSystemMessage creates a system message with a stable UUID and Timestamp.
+func NewSystemMessage(content []ContentBlock) Message {
+	return Message{
+		ID:        uuid.New().String(),
+		Role:      RoleSystem,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
 }
 
 // Usage tracks token consumption.

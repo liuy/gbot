@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -304,22 +303,16 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	if boundaryContent == "" {
 		boundaryContent = "Previous conversation compacted"
 	}
-	msgs = append(msgs, types.Message{
-		Role:      types.RoleUser,
-		Content:   []types.ContentBlock{types.NewTextBlock(boundaryContent)},
-		Timestamp: time.Now(),
-		Flags:     types.FlagCompactSummary,
-	})
+	boundaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(boundaryContent)})
+	boundaryMsg.Flags = types.FlagCompactSummary
+	msgs = append(msgs, boundaryMsg)
 
 	// Summary message (if available)
 	if summaryText != "" {
 		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "recent messages are preserved")
-		msgs = append(msgs, types.Message{
-			Role:      types.RoleUser,
-			Content:   []types.ContentBlock{types.NewTextBlock(summaryContent)},
-			Timestamp: time.Now(),
-			Flags:     types.FlagCompactSummary,
-		})
+		summaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(summaryContent)})
+		summaryMsg.Flags = types.FlagCompactSummary
+		msgs = append(msgs, summaryMsg)
 	}
 
 	// Kept messages (converted back to types.Message)
@@ -349,22 +342,16 @@ func (c *AutoCompactor) buildCompactAllResult(summaryText string, trigger string
 		"compactMetadata": map[string]any{"trigger": trigger, "preTokens": preTokens},
 	}
 	boundaryBytes, _ := json.Marshal(contentMap)
-	msgs = append(msgs, types.Message{
-		Role:      types.RoleUser,
-		Content:   []types.ContentBlock{types.NewTextBlock(string(boundaryBytes))},
-		Timestamp: time.Now(),
-		Flags:     types.FlagCompactSummary,
-	})
+	boundaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(string(boundaryBytes))})
+	boundaryMsg.Flags = types.FlagCompactSummary
+	msgs = append(msgs, boundaryMsg)
 
 	// Summary message
 	if summaryText != "" {
 		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "entire conversation was compacted")
-		msgs = append(msgs, types.Message{
-			Role:      types.RoleUser,
-			Content:   []types.ContentBlock{types.NewTextBlock(summaryContent)},
-			Timestamp: time.Now(),
-			Flags:     types.FlagCompactSummary,
-		})
+		summaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(summaryContent)})
+		summaryMsg.Flags = types.FlagCompactSummary
+		msgs = append(msgs, summaryMsg)
 	}
 
 	return msgs

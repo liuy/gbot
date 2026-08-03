@@ -640,11 +640,9 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	}
 	ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
 	if ctxText != "" {
-		userCtxMsgs = append(userCtxMsgs, types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
-			Flags:   types.FlagMeta,
-		})
+		ctxMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(ctxText)})
+		ctxMsg.Flags = types.FlagMeta
+		userCtxMsgs = append(userCtxMsgs, ctxMsg)
 	}
 
 	// Skill preloading
@@ -703,10 +701,9 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		}
 		for _, r := range e.sharedDeps.Hooks.SubagentStart(ctx, hookInput) {
 			if r.AdditionalContext != "" {
-				userCtxMsgs = append(userCtxMsgs, types.Message{
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
-				})
+				userCtxMsgs = append(userCtxMsgs, types.NewUserMessage(
+					[]types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
+				))
 			}
 		}
 	}
@@ -714,11 +711,9 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	// Assemble messages
 	messages := userCtxMsgs
 	if opts.Prompt != "" {
-		messages = append(messages, types.Message{
-			ID:      uuid.New().String(),
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
-		})
+		messages = append(messages, types.NewUserMessage(
+			[]types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+		))
 	}
 	if len(opts.ForkMessages) > 0 {
 		messages = append(opts.ForkMessages, messages...)
@@ -818,12 +813,9 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 		if cmd.Context == "fork" || cmd.Context == "new" {
 			// Emit QueryStart first so TUI creates the assistant message
 			// placeholder. Tool events need an assistant message to attach to.
-			userMsg := types.Message{
-				ID:        uuid.New().String(),
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock("/" + skillName)},
-				Timestamp: time.Now(),
-			}
+			userMsg := types.NewUserMessage(
+				[]types.ContentBlock{types.NewTextBlock("/" + skillName)},
+			)
 			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
@@ -872,22 +864,15 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 			}
 			// Sub-agent result is already shown via the virtual tool card.
 			// Append it as an assistant message context, then run the main loop.
-			e.appendMessage(types.Message{
-				ID:        uuid.New().String(),
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock("Skill \"" + skillName + "\" completed.\n\n" + resultText)},
-				Timestamp: time.Now(),
-				Flags:     types.FlagMeta,
-			})
+			skillResultMsg := types.NewUserMessage(
+				[]types.ContentBlock{types.NewTextBlock("Skill \"" + skillName + "\" completed.\n\n" + resultText)},
+			)
+			skillResultMsg.Flags = types.FlagMeta
+			e.appendMessage(skillResultMsg)
 			e.runTurns(ctx, systemPrompt)
 		} else {
 			// Inline skill: skill content becomes the user message directly.
-			userMsg := types.Message{
-				ID:        uuid.New().String(),
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock(content)},
-				Timestamp: time.Now(),
-			}
+			userMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(content)})
 			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
@@ -1254,12 +1239,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // appends it, emits EventQueryStart (so subscribers render the assembled
 // message, including any image blocks), and runs the turn loop.
 func (e *Engine) queryLoopWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) QueryResult {
-	userMsg := types.Message{
-		ID:        uuid.New().String(),
-		Role:      types.RoleUser,
-		Content:   content,
-		Timestamp: time.Now(),
-	}
+	userMsg := types.NewUserMessage(content)
 	e.snapshotQueryStart()
 	e.currentTurnMsgID = userMsg.ID
 	e.appendMessage(userMsg)
@@ -1650,26 +1630,20 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			// max_tokens: continuation is safe for all agents (no compact involved).
 			if resp.StopReason == stopReasonMaxTokens && maxTokensRecoveryCount < maxTokensRecoveryLimit {
 				maxTokensRecoveryCount++
-				e.appendMessage(types.Message{
-					Role: types.RoleUser,
-					Content: []types.ContentBlock{
-						types.NewTextBlock(continuationPrompt),
-					},
-					Flags: types.FlagMeta,
+				contMsg := types.NewUserMessage([]types.ContentBlock{
+					types.NewTextBlock(continuationPrompt),
 				})
+				contMsg.Flags = types.FlagMeta
+				e.appendMessage(contMsg)
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				continue
 			}
-			// Stop/SubagentStop hook — blocking result gives LLM another turn.
-			// Source: stopHooks.ts — handleStopHooks.
 			if blockResult := e.runStopHook(ctx); blockResult != nil {
 				e.logger.Info("stop hook blocked, continuing turn")
-				e.appendMessage(types.Message{
-					Role: types.RoleUser,
-					Content: []types.ContentBlock{
-						types.NewTextBlock("[hook] " + blockResult.Stderr),
-					},
+				hookMsg := types.NewUserMessage([]types.ContentBlock{
+					types.NewTextBlock("[hook] " + blockResult.Stderr),
 				})
+				e.appendMessage(hookMsg)
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.turnCount++
 				e.firePostTurnHooks(ctx)
@@ -1723,10 +1697,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// TS reference: toolExecution.ts — addToolResult() line 1456 first,
 		// then newMessages line 1566 after.
 		if len(execResult.ToolResultBlocks) > 0 {
-			e.appendMessage(types.Message{
-				Role:    types.RoleUser,
-				Content: execResult.ToolResultBlocks,
-			})
+			e.appendMessage(types.NewUserMessage(execResult.ToolResultBlocks))
 		}
 
 		// Post-tool abort check — must come before attachment drain.
@@ -2220,19 +2191,12 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 				streamingExecutor.Discard()
 			}
 			if len(contentBlocks) > 0 {
-				e.appendMessage(types.Message{
-					Role:       types.RoleAssistant,
-					Content:    contentBlocks,
-					Model:      model,
-					StopReason: stopReason,
-					Usage:      nil, // interrupted: no real usage from message_delta
-					Timestamp:  time.Now(),
-				})
+				intMsg := types.NewAssistantMessage(contentBlocks)
+				intMsg.Model = model
+				intMsg.StopReason = stopReason
+				e.appendMessage(intMsg)
 				if len(orphanedBlocks) > 0 {
-					e.appendMessage(types.Message{
-						Role:    types.RoleUser,
-						Content: orphanedBlocks,
-					})
+					e.appendMessage(types.NewUserMessage(orphanedBlocks))
 				}
 			}
 			return nil, nil, ShouldAbort(ctx, "streaming")
@@ -2253,19 +2217,12 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 				streamingExecutor.Discard()
 			}
 			if len(contentBlocks) > 0 {
-				e.appendMessage(types.Message{
-					Role:       types.RoleAssistant,
-					Content:    contentBlocks,
-					Model:      model,
-					StopReason: stopReason,
-					Usage:      nil,
-					Timestamp:  time.Now(),
-				})
+				intMsg := types.NewAssistantMessage(contentBlocks)
+				intMsg.Model = model
+				intMsg.StopReason = stopReason
+				e.appendMessage(intMsg)
 				if len(orphanedBlocks) > 0 {
-					e.appendMessage(types.Message{
-						Role:    types.RoleUser,
-						Content: orphanedBlocks,
-					})
+					e.appendMessage(types.NewUserMessage(orphanedBlocks))
 				}
 			}
 			return nil, nil, event.Error
@@ -2515,19 +2472,12 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 				streamingExecutor.Discard()
 			}
 			if len(contentBlocks) > 0 {
-				e.appendMessage(types.Message{
-					Role:       types.RoleAssistant,
-					Content:    contentBlocks,
-					Model:      model,
-					StopReason: stopReason,
-					Usage:      nil, // interrupted: no real usage from message_delta
-					Timestamp:  time.Now(),
-				})
+				intMsg := types.NewAssistantMessage(contentBlocks)
+				intMsg.Model = model
+				intMsg.StopReason = stopReason
+				e.appendMessage(intMsg)
 				if len(orphanedBlocks) > 0 {
-					e.appendMessage(types.Message{
-						Role:    types.RoleUser,
-						Content: orphanedBlocks,
-					})
+					e.appendMessage(types.NewUserMessage(orphanedBlocks))
 				}
 			}
 			return nil, nil, ShouldAbort(ctx, "streaming")
@@ -2549,14 +2499,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		return nil, nil, &StreamEndedError{}
 	}
 
-	return &types.Message{
-		Role:       types.RoleAssistant,
-		Content:    contentBlocks,
-		Model:      model,
-		StopReason: stopReason,
-		Usage:      &usage,
-		Timestamp:  time.Now(),
-	}, streamingExecutor, nil
+	msg := types.NewAssistantMessage(contentBlocks)
+	msg.Model = model
+	msg.StopReason = stopReason
+	msg.Usage = &usage
+	return &msg, streamingExecutor, nil
 }
 
 // computeSummary returns a human-readable summary for a tool invocation.
@@ -2893,7 +2840,10 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 // injectTimestamp prepends [HH:MM:SS] to the first text block of user messages
 // so the LLM knows when each query was sent. Skips FlagMeta (system-generated) messages.
 func injectTimestamp(blocks []types.ContentBlock, msg types.Message) []types.ContentBlock {
-	if msg.Role != types.RoleUser || msg.Flags&types.FlagMeta != 0 || msg.Timestamp.IsZero() {
+	if msg.Role != types.RoleUser || msg.Flags&types.FlagMeta != 0 {
+		return blocks
+	}
+	if len(blocks) > 0 && blocks[0].Type == types.ContentTypeToolResult {
 		return blocks
 	}
 	ts := "[" + msg.Timestamp.Format("2006-01-02 15:04:05 MST") + "]"
@@ -3140,13 +3090,9 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 }
 
 func (e *Engine) AddSystemMessage(content string) {
-	e.appendMessage(types.Message{
-		Role: types.RoleSystem,
-		Content: []types.ContentBlock{
-			types.NewTextBlock(content),
-		},
-		Timestamp: time.Now(),
-	})
+	e.appendMessage(types.NewSystemMessage([]types.ContentBlock{
+		types.NewTextBlock(content),
+	}))
 }
 
 // Messages returns a copy of the current message history.
@@ -3692,10 +3638,8 @@ func (e *Engine) appendSyntheticToolResultsLocked() {
 		blocks = append(blocks, CreateSyntheticErrorBlock(id, AbortReasonUserInterrupted))
 	}
 
-	e.messages = append(e.messages, types.Message{
-		Role:    types.RoleUser,
-		Content: blocks,
-	})
+	synthMsg := types.NewUserMessage(blocks)
+	e.messages = append(e.messages, synthMsg)
 }
 
 // appendMessages adds multiple messages to the history under Lock.

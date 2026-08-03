@@ -1,47 +1,26 @@
 package engine
 
 import (
-	"time"
-
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
 // CreateUserMessage creates a user message from a text string.
-// Source: utils/messages.ts — createUserMessage()
 func CreateUserMessage(text string) types.Message {
-	return types.Message{
-		ID:   uuid.New().String(),
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			types.NewTextBlock(text),
-		},
-		Timestamp: time.Now(),
-	}
+	return types.NewUserMessage([]types.ContentBlock{
+		types.NewTextBlock(text),
+	})
 }
 
 // CreateAssistantMessage creates an assistant message with text content.
-// Source: utils/messages.ts — used in synthetic message construction.
 func CreateAssistantMessage(text string) types.Message {
-	return types.Message{
-		Role: types.RoleAssistant,
-		Content: []types.ContentBlock{
-			types.NewTextBlock(text),
-		},
-		Timestamp: time.Now(),
-	}
+	return types.NewAssistantMessage([]types.ContentBlock{
+		types.NewTextBlock(text),
+	})
 }
 
 // CreateToolResultMessage creates a user message containing tool result blocks.
-// Source: StreamingToolExecutor.ts — createUserMessage with tool_result content.
-// After tools execute, results are appended as a user message with tool_result blocks.
 func CreateToolResultMessage(blocks []types.ContentBlock) types.Message {
-	return types.Message{
-		ID:        uuid.New().String(),
-		Role:      types.RoleUser,
-		Content:   blocks,
-		Timestamp: time.Now(),
-	}
+	return types.NewUserMessage(blocks)
 }
 
 // CreateToolErrorBlock creates a tool_result content block for an error.

@@ -2,12 +2,16 @@ package types_test
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
+
+// uuidV4Regex matches a RFC 4122 v4 UUID string.
+var uuidV4Regex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // ---------------------------------------------------------------------------
 // Role constants
@@ -1273,5 +1277,76 @@ func TestQueryEventAskField(t *testing.T) {
 	}
 	if evt.Ask.RuleDetail != "Write(*.go) from user settings" {
 		t.Errorf("RuleDetail = %q, want %q", evt.Ask.RuleDetail, "Write(*.go) from user settings")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Factory functions — NewUserMessage / NewAssistantMessage / NewSystemMessage
+// ---------------------------------------------------------------------------
+
+func TestNewUserMessage_AssignsUUID(t *testing.T) {
+	t.Parallel()
+
+	msg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("test")})
+	if !uuidV4Regex.MatchString(msg.ID) {
+		t.Errorf("ID = %q, want a valid UUID v4", msg.ID)
+	}
+	if msg.Role != types.RoleUser {
+		t.Errorf("Role = %q, want %q", msg.Role, types.RoleUser)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(msg.Content))
+	}
+	if msg.Content[0].Text != "test" {
+		t.Errorf("Content[0].Text = %q, want %q", msg.Content[0].Text, "test")
+	}
+	if msg.Timestamp.IsZero() {
+		t.Error("Timestamp is zero, want non-zero")
+	}
+}
+
+func TestNewUserMessage_UniqueIDs(t *testing.T) {
+	t.Parallel()
+
+	a := types.NewUserMessage(nil)
+	b := types.NewUserMessage(nil)
+	if a.ID == b.ID {
+		t.Errorf("two calls produced same ID: %q — UUIDs must be unique", a.ID)
+	}
+}
+
+func TestNewAssistantMessage_AssignsUUID(t *testing.T) {
+	t.Parallel()
+
+	msg := types.NewAssistantMessage([]types.ContentBlock{types.NewTextBlock("test")})
+	if !uuidV4Regex.MatchString(msg.ID) {
+		t.Errorf("ID = %q, want a valid UUID v4", msg.ID)
+	}
+	if msg.Role != types.RoleAssistant {
+		t.Errorf("Role = %q, want %q", msg.Role, types.RoleAssistant)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(msg.Content))
+	}
+	if msg.Timestamp.IsZero() {
+		t.Error("Timestamp is zero, want non-zero")
+	}
+}
+
+func TestNewSystemMessage_AssignsUUID(t *testing.T) {
+	t.Parallel()
+
+	msg := types.NewSystemMessage([]types.ContentBlock{types.NewTextBlock("test")})
+	if !uuidV4Regex.MatchString(msg.ID) {
+		t.Errorf("ID = %q, want a valid UUID v4", msg.ID)
+	}
+	if msg.Role != types.RoleSystem {
+		t.Errorf("Role = %q, want %q", msg.Role, types.RoleSystem)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1", len(msg.Content))
+	}
+	if msg.Timestamp.IsZero() {
+		t.Error("Timestamp is zero, want non-zero")
 	}
 }

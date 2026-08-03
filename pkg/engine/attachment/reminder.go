@@ -116,11 +116,9 @@ func WrapInSystemReminder(content string) string {
 // rewind/brief, used for system-injected content).
 // TS reference: utils/messages.ts — createUserMessage({ isMeta: true }).
 func NewMetaUserMessage(content string) types.Message {
-	return types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock(content)},
-		Flags:   types.FlagMeta,
-	}
+	msg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(content)})
+	msg.Flags = types.FlagMeta
+	return msg
 }
 
 // CountAssistantTurnsSinceLastEvent scans messages backwards and counts

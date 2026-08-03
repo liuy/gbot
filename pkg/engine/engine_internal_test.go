@@ -1201,9 +1201,253 @@ func TestMarshalMessages_PreservesToolUseAndResult(t *testing.T) {
 	}
 }
 
+// uuidV4Regex matches a RFC 4122 v4 UUID string.
+var uuidV4Regex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 // ---------------------------------------------------------------------------
-// NormalizeMessagesForAPI tests
+// Stable UUID — factory functions produce UUIDs that survive re-conversion
 // ---------------------------------------------------------------------------
+
+func TestAppendMessage_AssignsStableUUID(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.appendMessage(types.NewUserMessage(
+		[]types.ContentBlock{types.NewTextBlock("hello")},
+	))
+
+	msgs := eng.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("len(Messages()) = %d, want 1", len(msgs))
+	}
+	if !uuidV4Regex.MatchString(msgs[0].ID) {
+		t.Fatalf("msgs[0].ID = %q, want a valid UUID v4", msgs[0].ID)
+	}
+
+	store1, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (1st): %v", err)
+	}
+	store2, err := short.EngineMessagesToStore(eng.Messages())
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
+	}
+	if len(store1) != 1 || len(store2) != 1 {
+		t.Fatalf("store lengths = %d, %d, want 1, 1", len(store1), len(store2))
+	}
+	if store1[0].UUID != store2[0].UUID {
+		t.Errorf("store UUIDs differ across calls: %q vs %q — re-persist would create duplicate DB rows", store1[0].UUID, store2[0].UUID)
+	}
+	if store1[0].UUID != msgs[0].ID {
+		t.Errorf("store UUID = %q, message ID = %q — must match for persist consistency", store1[0].UUID, msgs[0].ID)
+	}
+}
+
+func TestAppendMessage_PreservesPreSetID(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+
+	const preSet = "11111111-1111-4111-8111-111111111111"
+	eng.appendMessage(types.Message{
+		ID:      preSet,
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("hello")},
+	})
+
+	msgs := eng.Messages()
+	if msgs[0].ID != preSet {
+		t.Errorf("ID = %q, want %q (pre-set ID must not be overwritten)", msgs[0].ID, preSet)
+	}
+}
+
+func TestSetMessages_AssignsStableUUID(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.setMessages([]types.Message{
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("a")}),
+		types.NewAssistantMessage([]types.ContentBlock{types.NewTextBlock("b")}),
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("c")}),
+	})
+
+	msgs := eng.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("len(Messages()) = %d, want 3", len(msgs))
+	}
+	for i, m := range msgs {
+		if !uuidV4Regex.MatchString(m.ID) {
+			t.Errorf("msgs[%d].ID = %q, want a valid UUID v4", i, m.ID)
+		}
+	}
+	if msgs[0].ID == msgs[1].ID || msgs[1].ID == msgs[2].ID || msgs[0].ID == msgs[2].ID {
+		t.Errorf("IDs must be unique: %q, %q, %q", msgs[0].ID, msgs[1].ID, msgs[2].ID)
+	}
+
+	store1, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (1st): %v", err)
+	}
+	store2, err := short.EngineMessagesToStore(eng.Messages())
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
+	}
+	for i := range store1 {
+		if store1[i].UUID != store2[i].UUID {
+			t.Errorf("store[%d] UUIDs differ: %q vs %q", i, store1[i].UUID, store2[i].UUID)
+		}
+	}
+}
+
+func TestSetMessages_MixedIDsPreservesExisting(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+
+	const existing = "22222222-2222-4222-8222-222222222222"
+	withID := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("has-id")})
+	withID.ID = existing
+	eng.setMessages([]types.Message{
+		withID,
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("no-id")}),
+	})
+
+	msgs := eng.Messages()
+	if msgs[0].ID != existing {
+		t.Errorf("msgs[0].ID = %q, want %q (existing ID must survive)", msgs[0].ID, existing)
+	}
+	if !uuidV4Regex.MatchString(msgs[1].ID) {
+		t.Errorf("msgs[1].ID = %q, want a valid UUID v4", msgs[1].ID)
+	}
+}
+
+func TestRunCompact_BoundaryMessagesHaveStableUUID(t *testing.T) {
+	t.Parallel()
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
+			boundary := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("boundary")})
+			boundary.Flags = types.FlagCompactSummary
+			summary := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("summary")})
+			summary.Flags = types.FlagCompactSummary
+			kept := types.NewAssistantMessage([]types.ContentBlock{types.NewTextBlock("kept msg")})
+			return &short.CompactResult{
+				BeforeTokens: 100,
+				AfterTokens:  50,
+				Messages:     []types.Message{boundary, summary, kept},
+			}, nil
+		},
+	}
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetCompactor(compactor, AutoCompactConfig{ContextWindow: 100000})
+	eng.setMessages([]types.Message{
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("original msg")}),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := eng.runCompact(ctx); err != nil {
+		t.Fatalf("runCompact: %v", err)
+	}
+
+	msgs := eng.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("len(Messages()) = %d, want 3 (boundary + summary + kept)", len(msgs))
+	}
+	for i, m := range msgs {
+		if !uuidV4Regex.MatchString(m.ID) {
+			t.Errorf("msgs[%d].ID = %q, want a valid UUID v4", i, m.ID)
+		}
+	}
+
+	if !msgs[0].HasFlag(types.FlagCompactSummary) {
+		t.Error("msgs[0] should have FlagCompactSummary (boundary message)")
+	}
+
+	store1, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (1st): %v", err)
+	}
+	store2, err := short.EngineMessagesToStore(eng.Messages())
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
+	}
+	for i := range store1 {
+		if store1[i].UUID != store2[i].UUID {
+			t.Errorf("store[%d] UUIDs differ across calls: %q vs %q — re-persist after compact would create duplicate DB rows", i, store1[i].UUID, store2[i].UUID)
+		}
+		if store1[i].UUID != msgs[i].ID {
+			t.Errorf("store[%d].UUID = %q, msgs[%d].ID = %q — must match", i, store1[i].UUID, i, msgs[i].ID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// injectTimestamp interaction — verifies safe vs unsafe conversion sites
+// ---------------------------------------------------------------------------
+
+func TestMarshalMessages_ToolResultNoTimestampInjection(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+	eng.messages = []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("toolu_1", json.RawMessage(`"output"`), false),
+			},
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Content[0].Type != types.ContentTypeToolResult {
+		t.Fatalf("first block type = %q, want tool_result — injectTimestamp must not prepend a text block before tool_result (breaks Anthropic API)", got[0].Content[0].Type)
+	}
+	if got[0].Content[0].ToolUseID != "toolu_1" {
+		t.Errorf("ToolUseID = %q, want toolu_1", got[0].Content[0].ToolUseID)
+	}
+}
+
+func TestMarshalMessages_FlagMetaNoTimestampInjection(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+	eng.messages = []types.Message{
+		{
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock("meta content")},
+			Flags:     types.FlagMeta,
+			Timestamp: time.Now(), // REAL-TIME: tests injectTimestamp skip on FlagMeta despite non-zero Timestamp
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Content[0].Type != types.ContentTypeText {
+		t.Fatalf("first block type = %q, want text", got[0].Content[0].Type)
+	}
+	if got[0].Content[0].Text != "meta content" {
+		t.Errorf("text = %q, want %q (FlagMeta messages must not get [timestamp] prefix)", got[0].Content[0].Text, "meta content")
+	}
+}
 
 func TestNormalizeMessagesForAPI_FiltersSystemMessages(t *testing.T) {
 	t.Parallel()
