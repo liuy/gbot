@@ -19,8 +19,6 @@ function wireCopyButtons(container: HTMLElement) {
     const header = wrapper.querySelector('.code-header')
     const code = wrapper.querySelector('code')
     if (!header || !code) continue
-    // morphdom preserves existing copy buttons across re-renders; skip
-    // wrappers that already have one to avoid duplicates.
     if (header.querySelector('.copy-btn')) continue
     const btn = createCopyButton(() => code.textContent ?? '')
     btn.classList.add('ml-auto')

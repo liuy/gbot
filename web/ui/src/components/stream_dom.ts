@@ -8,6 +8,8 @@
 
 import { formatDurationNs, formatTokenCount, summarize } from '../utils'
 import { renderToolOutput } from '../tool_render'
+import { renderMarkdown } from '../markdown'
+import { morphHtml } from '../morph'
 import hljs from 'highlight.js'
 import {
   toolHeaderBtn,
@@ -211,7 +213,12 @@ export function appendThinkingBlock(
 }
 
 export function writeThinkingText(p: HTMLParagraphElement, text: string): void {
-  p.textContent = text
+  const html = renderMarkdown(text)
+  if (p.children.length > 0) {
+    morphHtml(p, html)
+  } else {
+    p.innerHTML = html
+  }
 }
 
 export function refreshThinkingLabel(labelEl: HTMLSpanElement, startedAt: number): void {

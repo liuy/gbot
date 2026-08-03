@@ -83,7 +83,7 @@ describe('stream_dom className snapshot guards', () => {
       expect(prefix.className).toBe('shrink-0 w-6')
       expect(glyph.className).toBe('text-amber text-sm inline-block w-3 text-center heartbeat')
       expect(labelEl.className).toBe('text-amber text-sm')
-      expect(p.className).toBe('ml-6 text-t2 text-sm italic whitespace-pre-wrap break-words')
+      expect(p.className).toBe('md-body md-text ml-6 text-t2 text-sm break-words')
       expect(svg.getAttribute('class')).toBe('inline-block align-middle text-t3 transition-transform rotate-90')
     })
   })

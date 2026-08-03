@@ -66,8 +66,8 @@ body {
 }
 
 .scroll-ring { opacity: 0.15; }
-.diff-add { background: rgba(61,214,140,0.1); }
-.diff-del { background: rgba(255,92,92,0.1); }
+.md-body .diff-add { background: rgba(61,214,140,0.1); margin-top: 0; }
+.md-body .diff-del { background: rgba(255,92,92,0.1); margin-top: 0; }
 .glow-blue { box-shadow: 0 0 20px -6px rgba(0,180,255,0.5); }
 .fade-top { background: linear-gradient(to bottom, #06080F 60%, rgba(6,8,15,0)); }
 .truncate-sm { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -203,6 +203,8 @@ body {
   max-width: 100%;
   overflow-x: auto;
   margin: 0.5em 0;
+  font-size: 0.875rem;
+  color: var(--color-t1);
 }
 
 /* Code block: header row + code body. Fully transparent — hljs only

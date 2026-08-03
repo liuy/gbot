@@ -112,10 +112,10 @@ describe('appendThinkingBlock', () => {
     expect(dot?.textContent).toBe('✦')
   })
 
-  it('p has break-words to prevent overflow on long unbroken thinking text', () => {
+  it('p has md-body scope and break-words for markdown rendering', () => {
     const parent = newParent()
     const { p } = appendThinkingBlock(parent, Date.now())
-    expect(p.className).toContain('whitespace-pre-wrap')
+    expect(p.className).toContain('md-body')
     expect(p.className).toContain('break-words')
   })
 })

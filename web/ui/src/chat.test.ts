@@ -122,7 +122,7 @@ describe('chat integration', () => {
       { type: 'text_delta', text: '**bo' },
       { type: 'text_delta', text: 'ld**' },
     ])
-    const mdBody = document.querySelector('.md-body') as HTMLElement
+    const mdBody = document.querySelector('.md-body.text-t1') as HTMLElement
     expect(mdBody.querySelector('strong')?.textContent).toBe('bold')
   })
 
@@ -140,7 +140,7 @@ describe('chat integration', () => {
         tool_use: { id: 't-1', name: 'Bash' },
       },
     ])
-    const mdBody = document.querySelector('.md-body') as HTMLElement
+    const mdBody = document.querySelector('.md-body.text-t1') as HTMLElement
     expect(mdBody.textContent).toContain('keep me')
   })
 
@@ -190,7 +190,7 @@ describe('chat integration', () => {
       { type: 'text_start' },
       { type: 'text_delta', text: 'answer' },
     ])
-    const mdBody = document.querySelector('.md-body') as HTMLElement
+    const mdBody = document.querySelector('.md-body.text-t1') as HTMLElement
     expect(mdBody.textContent).toContain('answer')
     expect(document.body.textContent).toContain('deep thought')
   })
@@ -1328,7 +1328,7 @@ describe('chat integration', () => {
     const agentTool = document.querySelector('[data-tool-name^="Agent"]')
     expect(agentTool).toBeTruthy()
     const toolRoot = agentTool!.closest('[data-tool-root]')
-    const mdBody = toolRoot?.querySelector('.md-body')
+    const mdBody = toolRoot?.querySelector('.md-body.text-t1')
     expect(mdBody).toBeTruthy()
     expect(mdBody!.innerHTML).toContain('<h2>')
     expect(mdBody!.innerHTML).toContain('<code>')

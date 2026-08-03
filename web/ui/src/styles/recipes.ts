@@ -41,7 +41,7 @@ export const thinkingLabel = tv({ base: 'text-amber text-sm' })
 export const textBlock = tv({ base: 'md-body md-text text-t1 text-[15px] break-words' })
 export const userEchoBlock = tv({ base: 'text-[13px] text-t2 italic ml-2 my-1' })
 export const userTextSpan = tv({ base: 'whitespace-pre-wrap break-words' })
-export const thinkingText = tv({ base: 'ml-6 text-t2 text-sm italic whitespace-pre-wrap break-words' })
+export const thinkingText = tv({ base: 'md-body md-text ml-6 text-t2 text-sm break-words' })
 
 export const toolName = tv({ base: 'font-mono text-sm text-blue' })
 export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all' })
