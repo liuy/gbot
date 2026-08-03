@@ -43,17 +43,17 @@ export const userEchoBlock = tv({ base: 'text-[13px] text-t2 italic ml-2 my-1' }
 export const userTextSpan = tv({ base: 'whitespace-pre-wrap break-words' })
 export const thinkingText = tv({ base: 'ml-6 text-t2 text-sm italic whitespace-pre-wrap break-words' })
 
-export const toolName = tv({ base: 'font-mono text-sm text-blue align-middle' })
-export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all align-middle' })
+export const toolName = tv({ base: 'font-mono text-sm text-blue' })
+export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all' })
 export const toolDuration = tv({
-  base: 'font-mono text-xs align-middle',
+  base: 'font-mono text-xs',
   variants: { state: { running: 'text-blue', done: 'text-t3', error: 'text-red' } },
 })
 export const toolBody = tv({ base: 'ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden' })
 export const toolChildren = tv({ base: 'ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden' })
 
-export const groupSummary = tv({ base: 'font-mono text-sm text-blue align-middle' })
-export const groupDuration = tv({ base: 'font-mono text-xs align-middle text-t3' })
+export const groupSummary = tv({ base: 'font-mono text-sm text-blue' })
+export const groupDuration = tv({ base: 'font-mono text-xs text-t3' })
 export const groupToolsContainer = tv({ base: 'ml-6 hidden' })
 
 // contentArea has no base — role variant is the whole output.

@@ -104,9 +104,9 @@ describe('stream_dom className snapshot guards', () => {
       expect(h.dot.className).toBe('text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat')
       expect(svg.getAttribute('class')).toBe('inline-block align-middle text-t3 transition-transform')
       expect(content.className).toBe('flex-1 min-w-0')
-      expect(nameEl.className).toBe('font-mono text-sm text-blue align-middle')
-      expect(summaryEl.className).toBe('text-sm text-t2 font-light break-all align-middle')
-      expect(h.durEl.className).toBe('font-mono text-xs align-middle text-blue')
+      expect(nameEl.className).toBe('font-mono text-sm text-blue')
+      expect(summaryEl.className).toBe('text-sm text-t2 font-light break-all')
+      expect(h.durEl.className).toBe('font-mono text-xs text-blue')
       expect(h.body.className).toBe('ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden')
       expect(h.childrenContainer.className).toBe('ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden')
     })
@@ -117,14 +117,14 @@ describe('stream_dom className snapshot guards', () => {
       const parent = document.createElement('div')
       const h = appendToolBlock(parent, 'Bash')
       finishTool(h, { isError: false, durationNs: 0, output: '' })
-      expect(h.durEl.className).toBe('font-mono text-xs align-middle text-t3')
+      expect(h.durEl.className).toBe('font-mono text-xs text-t3')
     })
 
     it('error: className ends with text-red', () => {
       const parent = document.createElement('div')
       const h = appendToolBlock(parent, 'Bash')
       finishTool(h, { isError: true, durationNs: 0, output: '' })
-      expect(h.durEl.className).toBe('font-mono text-xs align-middle text-red')
+      expect(h.durEl.className).toBe('font-mono text-xs text-red')
     })
   })
 
@@ -147,8 +147,8 @@ describe('stream_dom className snapshot guards', () => {
       const duration = group.querySelector('[data-group-duration]') as HTMLElement
       const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
 
-      expect(summary.className).toBe('font-mono text-sm text-blue align-middle')
-      expect(duration.className).toBe('font-mono text-xs align-middle text-t3')
+      expect(summary.className).toBe('font-mono text-sm text-blue')
+      expect(duration.className).toBe('font-mono text-xs text-t3')
       expect(toolsContainer.className).toBe('ml-6 hidden')
     })
   })
