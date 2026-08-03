@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -980,6 +982,52 @@ func TestAutoCompactor_BuildResultMessages_WithSummary(t *testing.T) {
 	msgs := c.buildResultMessages(pcr, "test summary")
 	if len(msgs) != 3 {
 		t.Fatalf("expected 3 messages (boundary+summary+kept), got %d", len(msgs))
+	}
+}
+
+// MessagesToKeep may contain boundary/summary from a previous compact round
+// (when findKeepFrom's tail budget includes them). These must be filtered out
+// — otherwise consecutive compacts produce stacked dividers.
+func TestAutoCompactor_BuildResultMessages_FiltersStaleCompactMarkers(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	mp := &compactMockProvider{}
+	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
+
+	// Simulate a previous compact boundary + summary that landed in the tail.
+	prevBoundary := short.CreateCompactBoundaryMessage("auto", 10000, "")
+	prevSummary := &short.TranscriptMessage{
+		UUID:    uuid.New().String(),
+		Type:    "user",
+		Content: `[{"type":"text","text":"summary of prev compact"}]`,
+	}
+	tmpMsg := types.Message{Flags: types.FlagCompactSummary}
+	prevSummary.Metadata = tmpMsg.MetadataToJSON()
+
+	normalKept := &short.TranscriptMessage{
+		UUID:    uuid.New().String(),
+		Type:    "user",
+		Content: `[{"type":"text","text":"normal kept message"}]`,
+	}
+
+	pcr := &short.CompactResult{
+		BoundaryMarker: short.CreateCompactBoundaryMessage("auto", 5000, ""),
+		MessagesToKeep: []*short.TranscriptMessage{prevBoundary, prevSummary, normalKept},
+	}
+	msgs := c.buildResultMessages(pcr, "new summary")
+
+	// Expect: [new boundary, new summary, normalKept] = 3
+	// NOT: [new boundary, new summary, prev boundary, prev summary, normalKept] = 5
+	if len(msgs) != 3 {
+		var texts []string
+		for _, m := range msgs {
+			texts = append(texts, m.Content[0].Text)
+		}
+		t.Fatalf("expected 3 messages, got %d: %v", len(msgs), texts)
+	}
+	if !strings.Contains(msgs[2].Content[0].Text, "normal kept message") {
+		t.Errorf("last message should be normal kept, got %q", msgs[2].Content[0].Text)
 	}
 }
 

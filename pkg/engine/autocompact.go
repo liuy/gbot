@@ -315,9 +315,14 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 		msgs = append(msgs, summaryMsg)
 	}
 
-	// Kept messages (converted back to types.Message)
+	// Kept messages (converted back to types.Message).
+	// Filter out stale compact markers (boundary/summary from a previous round)
+	// that landed in the tail — otherwise consecutive compacts stack dividers.
 	for _, m := range result.MessagesToKeep {
 		converted := short.StoreMessageToEngine(m)
+		if converted.Flags&types.FlagCompactSummary != 0 {
+			continue
+		}
 		msgs = append(msgs, converted)
 	}
 
