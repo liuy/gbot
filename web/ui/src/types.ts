@@ -32,7 +32,7 @@ export type ServerMessage =
       deadline_unix?: number
     }
   | { type: 'error'; message: string }
-  | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean; compactBoundary?: boolean }
+  | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
   | { type: 'task_list'; tasks: TaskWireItem[] }
   | { type: 'engine_list'; engines: EngineListItem[]; activeID: string }
   | { type: 'session_list'; sessions: SessionListItem[] }

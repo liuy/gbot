@@ -1188,7 +1188,7 @@ func preCompactMessages(store *short.Store, sessionID string, delivered, limit i
 		if m.Type == "attachment" {
 			continue
 		}
-		if hasFilteredFlag(m) {
+		if m.Subtype != "compact_boundary" && hasFilteredFlag(m) {
 			continue
 		}
 		filtered = append(filtered, m)
@@ -1202,8 +1202,8 @@ func preCompactMessages(store *short.Store, sessionID string, delivered, limit i
 }
 
 // hasFilteredFlag decodes the message's metadata JSON and reports whether
-// FlagMeta or FlagCompactSummary is set. Markers (compact_boundary) carry no
-// Metadata and pass; compact summaries and meta-tagged rows are dropped.
+// FlagMeta or FlagCompactSummary is set. Used to drop compact summaries and
+// meta-tagged rows. Boundary markers are excluded by the caller (subtype check).
 func hasFilteredFlag(m *short.TranscriptMessage) bool {
 	if m.Metadata == "" {
 		return false
@@ -1367,6 +1367,18 @@ func (c *WUIConnector) historyImageDataURL(cb types.ContentBlock) (string, bool)
 // cursor has two namespaces: "" or "N" for in-memory paging (current
 // behavior); "precompact:D" hands off to buildPreCompactHistory which reads
 // SQLite rows strictly before the last compact boundary.
+// isCompactBoundaryMarker checks whether a FlagCompactSummary message is a
+// compact_boundary marker (as opposed to the human-readable summary). The
+// boundary marker's content is a JSON string containing "subtype":"compact_boundary".
+func isCompactBoundaryMarker(m types.Message) bool {
+	for _, cb := range m.Content {
+		if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, `"compact_boundary"`) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) []byte {
 	if slot == nil {
 		return nil
@@ -1403,10 +1415,25 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 
 	var out []historyChatMsg
 	for _, m := range msgs {
-		if m.Role == types.RoleSystem {
+		if m.Role == types.RoleSystem && !isCompactBoundaryMarker(m) {
 			continue
 		}
-		if m.HasFlag(types.FlagMeta) || m.HasFlag(types.FlagCompactSummary) {
+		if m.HasFlag(types.FlagMeta) {
+			continue
+		}
+		if m.HasFlag(types.FlagCompactSummary) {
+			// FlagCompactSummary covers both compact_boundary markers and
+			// the human-readable compact summary message. Only the boundary
+			// marker becomes a divider; the summary is skipped (its content
+			// is a system instruction for the LLM, not user-visible).
+			if isCompactBoundaryMarker(m) {
+				out = append(out, historyChatMsg{
+					ID:              m.ID,
+					Role:            "system",
+					CompactBoundary: true,
+					StartedAt:       m.Timestamp.UnixMilli(),
+				})
+			}
 			continue
 		}
 		out = append(out, c.buildHistoryChatMsg(m, tools, toolResults))
@@ -1443,26 +1470,21 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 	// When the in-memory top is reached AND the engine has a compact boundary,
 	// extend pagination into the SQLite pre-compact region. The limit=0 probe
 	// avoids loading any messages — preCompactMessages returns hasBoundary
-	// without touching the DB rows. compactBoundary=true tells the client to
-	// render a divider at the END of the in-memory page's fragment (between
-	// the in-memory messages and whatever loads next from the precompact pages).
-	compactBoundary := false
+	// without touching the DB rows.
 	if !hasMore {
 		_, _, hasBoundary := slot.engine.PreCompactMessages(0, 0)
 		if hasBoundary {
 			hasMore = true
 			nextCursor = "precompact:0"
-			compactBoundary = true
 		}
 	}
 
 	payload, _ := json.Marshal(struct {
-		Type            string           `json:"type"`
-		Messages        []historyChatMsg `json:"messages"`
-		NextCursor      string           `json:"nextCursor"`
-		HasMore         bool             `json:"hasMore"`
-		CompactBoundary bool             `json:"compactBoundary,omitempty"`
-	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore, CompactBoundary: compactBoundary})
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
+	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore})
 	return payload
 }
 
@@ -1470,9 +1492,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 // delivered offset from cursor "precompact:D" (malformed → 0), pages through
 // preCompactMessages, runs each non-marker message through buildHistoryChatMsg,
 // and emits in-page compact_boundary markers as synthetic
-// historyChatMsg{role:"system", compactBoundary:true}. The envelope
-// compactBoundary flag is owned by buildHistory (in-memory → pre-compact
-// transition) — this function never sets it.
+// historyChatMsg{role:"system", compactBoundary:true}.
 func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, limit int) []byte {
 	if slot == nil {
 		return nil
@@ -1495,11 +1515,10 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 		// between requests (e.g. session switch). Return an empty page with
 		// hasMore=false so the client stops paging.
 		payload, _ := json.Marshal(struct {
-			Type            string           `json:"type"`
-			Messages        []historyChatMsg `json:"messages"`
-			NextCursor      string           `json:"nextCursor"`
-			HasMore         bool             `json:"hasMore"`
-			CompactBoundary bool             `json:"compactBoundary,omitempty"`
+			Type       string           `json:"type"`
+			Messages   []historyChatMsg `json:"messages"`
+			NextCursor string           `json:"nextCursor"`
+			HasMore    bool             `json:"hasMore"`
 		}{Type: "history", Messages: []historyChatMsg{}, NextCursor: "", HasMore: false})
 		return payload
 	}
@@ -1541,11 +1560,10 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 	}
 
 	payload, _ := json.Marshal(struct {
-		Type            string           `json:"type"`
-		Messages        []historyChatMsg `json:"messages"`
-		NextCursor      string           `json:"nextCursor"`
-		HasMore         bool             `json:"hasMore"`
-		CompactBoundary bool             `json:"compactBoundary,omitempty"`
+		Type       string           `json:"type"`
+		Messages   []historyChatMsg `json:"messages"`
+		NextCursor string           `json:"nextCursor"`
+		HasMore    bool             `json:"hasMore"`
 	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore})
 	return payload
 }

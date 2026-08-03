@@ -1540,6 +1540,59 @@ func TestBuildErrorMessage_APIError(t *testing.T) {
 	}
 }
 
+// TestBuildHistory_DBBoundaryNotSkipped verifies that a compact boundary
+// loaded from DB (Role=RoleSystem, FlagCompactSummary set via metadata,
+// content contains "compact_boundary") is NOT skipped by the RoleSystem
+// filter — it must be emitted as a divider message.
+func TestBuildHistory_DBBoundaryNotSkipped(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().messagesFn = func() []types.Message {
+		return []types.Message{
+			{
+				ID:        "boundary-1",
+				Role:      types.RoleSystem,
+				Flags:     types.FlagCompactSummary,
+				Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeText, Text: `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}`},
+				},
+			},
+			{
+				ID:        "user-1",
+				Role:      types.RoleUser,
+				Timestamp: time.Unix(1001, 0),
+				Content:   []types.ContentBlock{{Type: types.ContentTypeText, Text: "post-compact message"}},
+			},
+		}
+	}
+	c.mock().toolsFn = func() map[string]tool.Tool { return nil }
+	c.mock().isBusyFn = func() bool { return false }
+
+	payload := c.buildHistory(c.activeSlot(), "", 10)
+	if payload == nil {
+		t.Fatal("buildHistory returned nil")
+	}
+	var result struct {
+		Messages []historyChatMsg `json:"messages"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2 (boundary divider + user msg)", len(result.Messages))
+	}
+	if !result.Messages[0].CompactBoundary {
+		t.Errorf("messages[0] should be compact boundary divider, got %+v", result.Messages[0])
+	}
+	if result.Messages[0].ID != "boundary-1" {
+		t.Errorf("messages[0].ID = %q, want boundary-1", result.Messages[0].ID)
+	}
+	if result.Messages[1].ID != "user-1" {
+		t.Errorf("messages[1].ID = %q, want user-1", result.Messages[1].ID)
+	}
+}
+
 func TestBuildErrorMessage_GenericError(t *testing.T) {
 	t.Parallel()
 	err := fmt.Errorf("invalid config: missing provider")

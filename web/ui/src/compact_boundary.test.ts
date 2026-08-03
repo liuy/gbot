@@ -71,29 +71,6 @@ beforeEach(() => {
 })
 
 describe('compact boundary divider (client)', () => {
-  it('renders divider as LAST child of prepended fragment on final page', () => {
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [userMsg('pre-0', 'a'), userMsg('pre-1', 'b'), userMsg('pre-2', 'c')],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    const dividers = dividerElements()
-    expect(dividers.length).toBe(1)
-    const divider = dividers[0]
-    // Container layout: [timeDiv(anchor), m1, m2, m3, compactDiv]. The anchor
-    // fires on the first message (prev=null); the Compact divider sits at the
-    // end as the fifth child (index 4).
-    const container = messagesContainer()
-    const dividerContainer = divider.parentElement as HTMLElement
-    expect(dividerContainer.parentElement).toBe(container)
-    const containerChildren = Array.from(container.children)
-    const dividerIdx = containerChildren.indexOf(dividerContainer)
-    expect(dividerIdx).toBe(4)
-  })
-
   it('intermediate page without compactBoundary emits NO divider', () => {
     mount()
     dispatch({
@@ -103,85 +80,6 @@ describe('compact boundary divider (client)', () => {
       hasMore: true,
     })
     expect(dividerElements().length).toBe(0)
-  })
-
-  it('multi-page flow: only the final flagged page renders one divider', () => {
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [userMsg('p1-0', 'a')],
-      nextCursor: 'precompact:30',
-      hasMore: true,
-    })
-    expect(dividerElements().length).toBe(0)
-    dispatch({
-      type: 'history',
-      messages: [userMsg('p2-0', 'b')],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    expect(dividerElements().length).toBe(1)
-  })
-
-  it('resetAllState (connect_status) clears the divider', () => {
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [userMsg('pre-0', 'a')],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    expect(dividerElements().length).toBe(1)
-    // Trigger resetAllState via a fresh connect_status with new engineID.
-    dispatch({
-      type: 'connect_status',
-      connected: true,
-      engineID: 'new-engine',
-    })
-    expect(dividerElements().length).toBe(0)
-  })
-
-  it('divider uses the exact design-token class names', () => {
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [userMsg('pre-0', 'a')],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    const container = messagesContainer()
-    // Time dividers share buildCompactDivider's class signature, so filter by
-    // label textContent to pick the Compact divider specifically.
-    const dividerContainer = Array.from(container.children).find((c) => {
-      const el = c as HTMLElement
-      return el.querySelector('.text-blue')?.textContent === 'Compact'
-    }) as HTMLElement
-    expect(dividerContainer).toBeTruthy()
-    expect(dividerContainer.className).toBe('flex items-center gap-2 my-4 px-4')
-    const lines = dividerContainer.querySelectorAll('.flex-1.border-t.border-hairline')
-    expect(lines.length).toBe(2)
-    const label = dividerContainer.querySelector('.text-blue.text-\\[10px\\].shrink-0') as HTMLElement
-    expect(label).toBeTruthy()
-    expect(label.textContent).toBe('Compact')
-  })
-
-  it('empty page with compactBoundary still renders exactly one divider', () => {
-    mount()
-    dispatch({
-      type: 'history',
-      messages: [],
-      nextCursor: '',
-      hasMore: false,
-      compactBoundary: true,
-    })
-    const dividers = dividerElements()
-    expect(dividers.length).toBe(1)
-    const container = messagesContainer()
-    // The divider is the only child (no messages were prepended).
-    expect(container.children.length).toBe(1)
   })
 
   it('in-page compactBoundary marker renders divider at marker position', () => {

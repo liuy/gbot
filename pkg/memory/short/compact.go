@@ -68,12 +68,19 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 	textBlock := types.ContentBlock{Type: "text", Text: string(contentBytes)}
 	blockBytes, _ := json.Marshal([]types.ContentBlock{textBlock})
 
+	// Metadata carries FlagCompactSummary so StoreMessageToEngine restores it
+	// on DB round-trip. Without this, the boundary message loses its flag
+	// when reloaded from DB (metadata column = NULL → flags = 0).
+	tmp := types.Message{Flags: types.FlagCompactSummary}
+	metadata := tmp.MetadataToJSON()
+
 	return &TranscriptMessage{
 		UUID:       msgUUID,
 		ParentUUID: "", // Boundary is always chain root
 		Type:       "system",
 		Subtype:    "compact_boundary",
 		Content:    string(blockBytes),
+		Metadata:   metadata,
 		CreatedAt:  now,
 	}
 }

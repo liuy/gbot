@@ -192,12 +192,11 @@ describe('chat.ts className snapshot guards (via createChat + dispatch)', () => 
     dispatch({
       type: 'history',
       messages: [{
-        id: 'a-1', role: 'assistant', text: 'hi', thinking: [], tools: [], blocks: [{ kind: 'text', text: 'hi' }],
+        id: 'b1', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [],
         usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
         error: '', status: 'done', startedAt: 0,
       }],
       nextCursor: '', hasMore: false,
-      compactBoundary: true,
     })
     const container = Array.from(document.querySelectorAll('div'))
       .find((d) => d.className === 'flex items-center gap-2 my-4 px-4') as HTMLElement

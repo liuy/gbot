@@ -954,13 +954,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     flushBatch()
 
-    // Envelope-level compactBoundary (in-memory → precompact transition).
-    // Rendered at END of frag so the divider sits between the in-memory
-    // messages and whatever the client loads next.
-    if (msg.compactBoundary === true) {
-      frag.appendChild(buildCompactDivider())
-    }
-
     messagesContainer.insertBefore(frag, before)
     // On first load, lastUserAt was advanced through the page and ended at
     // the newest user message (page is ASC). That's exactly what streaming

@@ -108,6 +108,19 @@ func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 	}
 }
 
+func TestCreateCompactBoundaryMessage_MetadataHasFlagCompactSummary(t *testing.T) {
+	msg := CreateCompactBoundaryMessage("manual", 5000, "")
+
+	if msg.Metadata == "" {
+		t.Fatal("Metadata is empty — FlagCompactSummary lost on DB round-trip")
+	}
+
+	engineMsg := StoreMessageToEngine(msg)
+	if !engineMsg.HasFlag(types.FlagCompactSummary) {
+		t.Errorf("FlagCompactSummary not restored from metadata")
+	}
+}
+
 func TestCreateCompactBoundaryMessage_CreatedAtIsLocalTime(t *testing.T) {
 	msg := CreateCompactBoundaryMessage("auto", 1000, "")
 
