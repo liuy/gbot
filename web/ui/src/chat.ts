@@ -7,7 +7,7 @@ import {
 } from './model'
 import { classifyTool, isCollapsibleBlock, timeDividerLabel } from './utils'
 import { createCopyButton } from './utils/copy_button'
-import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
+import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
 
 // wireCopyButtons must be called after every innerHTML assignment that may
@@ -338,13 +338,12 @@ function renderCommittedMessageDOM(
           isError: b.state === 'error',
           durationNs: b.timingNs,
           output: b.displayOutput,
-          skipHighlight: true,
         })
       }
     } else if (b.kind === 'text') {
       if (!b.text) continue
       const div = appendTextBlock(content)
-      div.innerHTML = renderMarkdownNoHighlight(b.text)
+      div.innerHTML = renderMarkdown(b.text)
       wireCopyButtons(div)
     } else if (b.kind === 'image') {
       // Assistant image blocks should not occur in normal flow (assistant is
