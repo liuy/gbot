@@ -162,12 +162,11 @@ function createModelPicker(
 function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
-): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void; setStreaming: (s: boolean) => void } {
+): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
-  let streaming = false
   let open = false
 
   const renderList = () => {
@@ -178,12 +177,12 @@ function createEnginePicker(
         'button',
         cx(
           'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
-          streaming && !isActive ? 'pointer-events-none' : 'hover:bg-ink3/50',
+          'hover:bg-ink3/50',
         ),
       )
       const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
       item.appendChild(dot)
-      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : streaming ? 'text-t3' : 'text-t2'))
+      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
       nameSpan.textContent = entry.name || entry.id
       item.appendChild(nameSpan)
       const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
@@ -199,19 +198,13 @@ function createEnginePicker(
       }
       listContainer.appendChild(item)
     }
-    // Footer is the "+ new engine" CTA. variant=default + text-blue matches
-    // the previous style.color = var(--color-blue); the list-row decoration
-    // classes (border-t, mt-1, w-full, hover-bg) layer on top via className.
     const footer = createIconButton({
       icon: 'plus',
       label: 'New engine',
-      variant: streaming ? 'ghost' : 'default',
+      variant: 'default',
       size: 'md',
       iconSize: 18,
-      className: cx(
-        'w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1',
-        streaming ? 'text-t3 pointer-events-none' : 'hover:bg-ink3/50',
-      ),
+      className: 'w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1 hover:bg-ink3/50',
       onClick: () => {
         onNew()
         combo.close()
@@ -245,12 +238,7 @@ function createEnginePicker(
     if (cur) combo.setLabel(cur.name || cur.id)
   }
 
-  const setStreaming = (s: boolean) => {
-    streaming = s
-    if (open) renderList()
-  }
-
-  return { wrap: combo.wrap, setEngines, setStreaming }
+  return { wrap: combo.wrap, setEngines }
 }
 
 const ANSI_TO_CSS: Record<string, string> = {
@@ -706,7 +694,6 @@ export function createHeader(opts: {
   const setStreaming = (s: boolean) => {
     ctxPopover.setStreaming(s)
     modelPicker.setStreaming(s)
-    enginePicker.setStreaming(s)
   }
 
   return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming }

@@ -652,7 +652,7 @@ describe('Header picker streaming state', () => {
     }
   })
 
-  it('engine picker non-active items greyed out when streaming', () => {
+  it('engine picker items remain interactive when streaming', () => {
     header.setEngines(
       [{ id: 'main', name: 'Main', model: 'gpt-5' }, { id: 'second', name: 'Second', model: 'claude' }],
       'main',
@@ -662,16 +662,16 @@ describe('Header picker streaming state', () => {
 
     const panel = visibleEnginePanel()!
     const items = panel.querySelectorAll('button')
-    let foundDisabled = false
+    let foundNonActive = false
     for (const item of items) {
-      // active item (contains "Main") should NOT have pointer-events-none
-      // non-active items (contains "Second") should have it
+      // Engine switch is a pointer swap, not a query — all items stay
+      // interactive during streaming.
       if (item.textContent?.includes('Second')) {
-        expect(item.className).toContain('pointer-events-none')
-        foundDisabled = true
+        expect(item.className).not.toContain('pointer-events-none')
+        foundNonActive = true
       }
     }
-    expect(foundDisabled).toBe(true)
+    expect(foundNonActive).toBe(true)
   })
 
   it('model picker items restored when streaming ends', () => {
