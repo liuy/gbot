@@ -8,6 +8,7 @@ import {
 import { classifyTool, isCollapsibleBlock, timeDividerLabel } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { renderMarkdown, renderMarkdownNoHighlight } from './markdown'
+import { morphHtml } from './morph'
 
 // wireCopyButtons must be called after every innerHTML assignment that may
 // contain rendered markdown — innerHTML wipes prior DOM, so the injected
@@ -18,6 +19,9 @@ function wireCopyButtons(container: HTMLElement) {
     const header = wrapper.querySelector('.code-header')
     const code = wrapper.querySelector('code')
     if (!header || !code) continue
+    // morphdom preserves existing copy buttons across re-renders; skip
+    // wrappers that already have one to avoid duplicates.
+    if (header.querySelector('.copy-btn')) continue
     const btn = createCopyButton(() => code.textContent ?? '')
     btn.classList.add('ml-auto')
     header.appendChild(btn)
@@ -777,7 +781,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
       wireCopyButtons(currentTextDiv)
     } else if (currentTextDiv && currentPendingText) {
-      currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+      morphHtml(currentTextDiv, renderMarkdown(currentPendingText.block.text))
       wireCopyButtons(currentTextDiv)
     }
     // Late thinking deltas wrote into currentThinking.pendingBlock.text.
@@ -1287,7 +1291,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               div = appendTextBlock(domContainer)
               currentSubAgentTextDiv.set(parentID, div)
             }
-            div.innerHTML = renderMarkdown((last as { text: string }).text)
+            morphHtml(div, renderMarkdown((last as { text: string }).text))
             wireCopyButtons(div)
           }
           return
@@ -1299,7 +1303,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           currentPendingText.block.text += e.text
           tokenRate.add(e.text)
           if (currentTextDiv) {
-            currentTextDiv.innerHTML = renderMarkdown(currentPendingText.block.text)
+            morphHtml(currentTextDiv, renderMarkdown(currentPendingText.block.text))
       wireCopyButtons(currentTextDiv)
           } else if (streamContainer) {
             // Late delta: sink not yet mounted. Mount inline now.

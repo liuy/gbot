@@ -167,7 +167,6 @@ function createEnginePicker(
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
-  let open = false
 
   const renderList = () => {
     listContainer.innerHTML = ''
@@ -223,12 +222,9 @@ function createEnginePicker(
         panel.appendChild(listContainer)
         panelSetup = true
       }
-      open = true
       renderList()
     },
-    onClose: () => {
-      open = false
-    },
+    onClose: () => {},
   })
 
   const setEngines = (engines: EngineEntry[], active: string) => {
