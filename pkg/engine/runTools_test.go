@@ -2768,6 +2768,53 @@ func TestExecuteTool_UserCancel_SignalKilledError(t *testing.T) {
 	}
 }
 
+// TestExecuteTool_UserCancel_BashReturnsSuccessWithExit137 verifies the
+// post-execution abort check: when a tool (like Bash) returns err=nil with
+// a non-zero exit code after being killed mid-execution, the engine detects
+// rootCtx cancellation and routes through emitToolError instead of treating
+// it as a normal result.
+func TestExecuteTool_UserCancel_BashReturnsSuccessWithExit137(t *testing.T) {
+	t.Parallel()
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	toolMap := map[string]tool.Tool{
+		"Bash": &testTool{
+			name: "Bash",
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				rootCancel() // user ESC
+				<-ctx.Done()
+				// Bash returns err=nil with exitCode=137 (SIGKILL), NOT context.Canceled
+				return &tool.ToolResult{
+					Data: &struct {
+						Stdout   string `json:"stdout"`
+						ExitCode int    `json:"exitCode"`
+					}{Stdout: "", ExitCode: 137},
+				}, nil
+			},
+		},
+	}
+	tctx := &tool.ToolUseContext{}
+	e := NewStreamingToolExecutor(toolMap, tctx, func(types.QueryEvent) {}, rootCtx)
+	res := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_bash_137", Name: "Bash", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("len(ToolResultBlocks) = %d, want 1", len(res.ToolResultBlocks))
+	}
+	block := res.ToolResultBlocks[0]
+	if !block.IsError {
+		t.Fatal("IsError must be true — post-exec abort should route through emitToolError")
+	}
+	var parsed []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed[0].Text != userRejectMessage {
+		t.Errorf("message = %q, want userRejectMessage (Bash exitCode=137 + rootCtx cancel should be treated as user abort)", parsed[0].Text)
+	}
+}
+
 // TestExecuteTool_NormalErrorUnchanged verifies that non-cancel errors are
 // NOT rewritten — only user-cancel gets the unified message.
 func TestExecuteTool_NormalErrorUnchanged(t *testing.T) {

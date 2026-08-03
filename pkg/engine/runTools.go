@@ -938,6 +938,23 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		return
 	}
 
+	// Post-execution abort check: Bash returns err=nil with exitCode=137
+	// when killed mid-execution (not context.Canceled). Without this check,
+	// the user sees a normal result (empty output + 137) instead of the
+	// unified abort message.
+	// InterruptBlock tools are excluded — they survive user interrupt,
+	// matching the pre-execution getAbortReason logic (line 584).
+	if t.InterruptBehavior() != tool.InterruptBlock {
+		if e.rootCtx.Err() != nil {
+			e.emitToolError(t, tt, context.Canceled)
+			return
+		}
+		if e.siblingCtx.Err() != nil {
+			e.emitToolError(t, tt, context.Canceled)
+			return
+		}
+	}
+
 	if result == nil {
 		// Tool returned nil result without error — treat as empty.
 		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, marshalBlocks([]types.ContentBlock{types.NewTextBlock("null")}), false)}
