@@ -107,8 +107,10 @@ func TestSearchMessages_Chinese(t *testing.T) {
 		}
 	}
 
-	// Search for "会话管理" (session management)
-	results, err := store.SearchMessages("会话管理", &SearchOptions{
+	// Search for "会话 管理" — space-separated because SearchMessages no
+	// longer Segments the query; gse splits compound Chinese terms in the
+	// index, so the query must match gse's token boundaries.
+	results, err := store.SearchMessages("会话 管理", &SearchOptions{
 		SessionID: sessionID,
 		Limit:     10,
 	})
@@ -117,7 +119,7 @@ func TestSearchMessages_Chinese(t *testing.T) {
 	}
 
 	if len(results) == 0 {
-		t.Errorf("expected at least 1 result for '会话管理', got %d", len(results))
+		t.Errorf("expected at least 1 result for '会话 管理', got %d", len(results))
 	}
 
 	// Verify the result contains the search term
@@ -791,10 +793,14 @@ func TestSanitizeFTSQuery(t *testing.T) {
 		{"normal", "hello world", "hello world"},
 		{"star", "test*", "test"},
 		{"quotes", `"phrase"`, "phrase"},
-		{"parens", "(a OR b)", "a b"},
+		// Parens are stripped by ftsSpecialRe; OR is preserved.
+		{"parens", "(a OR b)", "a OR b"},
+		// Bare NEAR is stripped (invalid FTS5 syntax without /N).
 		{"near", "foo NEAR bar", "foo bar"},
-		{"and", "foo AND bar", "foo bar"},
-		{"long", strings.Repeat("a", 600), strings.Repeat("a", 500)},
+		// AND/OR/NOT are now preserved as FTS5 boolean operators.
+		{"and", "foo AND bar", "foo AND bar"},
+		// 500-char truncation was removed — mid-query truncation breaks syntax.
+		{"long", strings.Repeat("a", 600), strings.Repeat("a", 600)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -894,20 +900,23 @@ func TestSanitizeFTSQuery_EdgeCases(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"leading AND", "AND hello", "hello"},
-		{"trailing AND", "hello AND", "hello"},
-		{"leading OR", "OR hello", "hello"},
-		{"trailing OR", "hello OR", "hello"},
-		{"leading NOT", "NOT hello", "hello"},
-		{"trailing NOT", "hello NOT", "hello"},
-		{"multiple keywords", "AND hello OR world NOT test", "hello world test"},
-		{"AND in middle", "hello AND world", "hello world"},
-		{"OR in middle", "hello OR world", "hello world"},
-		{"NOT in middle", "hello NOT world", "hello world"},
-		{"NEAR in middle", "hello NEAR world", "hello world"},
-		{"mixed operators", "foo AND bar OR baz NEAR qux", "foo bar baz qux"},
-		{"only operators", "AND OR NOT", "NOT"}, // trailing NOT not removed by current impl
-		{"operators with spaces", "  AND  hello  OR  ", "hello"},
+		// AND/OR/NOT are preserved as FTS5 boolean operators.
+		{"foo AND bar", "foo AND bar", "foo AND bar"},
+		{"foo OR bar", "foo OR bar", "foo OR bar"},
+		{"foo NOT bar", "foo NOT bar", "foo NOT bar"},
+		{"leading AND", "AND hello", "AND hello"},
+		{"trailing AND", "hello AND", "hello AND"},
+		{"all operators", "AND OR NOT", "AND OR NOT"},
+		// Bare NEAR is stripped (invalid syntax); NEAR/N is preserved.
+		{"bare NEAR", "foo NEAR bar", "foo bar"},
+		{"NEAR with /N", "foo NEAR/3 bar", "foo NEAR/3 bar"},
+		{"case-insensitive near", "foo near bar", "foo bar"},
+		// ftsSpecialRe still strips dangerous chars.
+		{"star only", "*", ""},
+		{"parens", "(test)", "test"},
+		{"brackets", "[test]", "test"},
+		// Trailing/leading whitespace is trimmed.
+		{"extra spaces", "  AND  hello  OR  ", "AND  hello  OR"},
 	}
 
 	for _, tt := range tests {
@@ -917,6 +926,112 @@ func TestSanitizeFTSQuery_EdgeCases(t *testing.T) {
 				t.Errorf("sanitizeFTSQuery(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSearchMessages_AndOrNot verifies that after removing Segment(query) from
+// SearchMessages, FTS5 boolean operators AND/OR/NOT work against the
+// gse-pre-segmented index. Content is pre-segmented manually so the test does
+// not depend on gse dictionary load timing.
+func TestSearchMessages_AndOrNot(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	sess, err := store.CreateSession("/test/project", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sessionID := sess.SessionID
+
+	// Pre-segmented content (identity segmenter equivalent): each Chinese
+	// token separated by spaces so unicode61 can split on whitespace.
+	messages := []struct {
+		uuid    string
+		content string
+	}{
+		{"msg-1", `[{"type":"text","text":"张三 喜欢 蓝色"}]`},
+		{"msg-2", `[{"type":"text","text":"张三 喜欢 红色"}]`},
+		{"msg-3", `[{"type":"text","text":"王丽君 是 教师"}]`},
+	}
+
+	for _, m := range messages {
+		_, err := store.db.Exec(
+			"INSERT INTO messages (session_id, uuid, type, content) VALUES (?, ?, ?, ?)",
+			sessionID, m.uuid, "user", m.content,
+		)
+		if err != nil {
+			t.Fatalf("insert message: %v", err)
+		}
+		var seq int64
+		if err := store.db.QueryRow("SELECT seq FROM messages WHERE uuid = ?", m.uuid).Scan(&seq); err != nil {
+			t.Fatalf("get seq: %v", err)
+		}
+		// insertFTS calls store.Segment internally; since gse may not be
+		// loaded yet it falls back to raw text. The content is already
+		// space-separated so it round-trips correctly either way.
+		if err := store.insertFTS(store.db, seq, m.content); err != nil {
+			t.Fatalf("insertFTS: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		wantHits int
+	}{
+		{"AND hit", "蓝色 AND 张三", 1},
+		{"AND miss", "蓝色 AND 红色", 0},
+		{"NOT exclusion", "教师 NOT 张三", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := store.SearchMessages(tt.query, &SearchOptions{
+				SessionID: sessionID,
+				Limit:     10,
+			})
+			if err != nil {
+				t.Fatalf("SearchMessages(%q): %v", tt.query, err)
+			}
+			if len(results) != tt.wantHits {
+				t.Errorf("query %q: got %d hits, want %d", tt.query, len(results), tt.wantHits)
+			}
+		})
+	}
+}
+
+// TestSearchMessages_Malformed verifies that a malformed FTS5 query yields
+// (nil, nil) instead of an error.
+func TestSearchMessages_Malformed(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	sess, err := store.CreateSession("/test/project", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	results, err := store.SearchMessages("(", &SearchOptions{
+		SessionID: sess.SessionID,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("malformed query should not return error, got: %v", err)
+	}
+	if results != nil {
+		t.Errorf("malformed query should return nil results, got %d", len(results))
+	}
+}
+
+// TestSearchMessages_EmptyQuery verifies that an empty query returns no results.
+func TestSearchMessages_EmptyQuery(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	results, err := store.SearchMessages("", &SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("empty query should not error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("empty query should return nil results, got %d", len(results))
 	}
 }
 

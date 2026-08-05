@@ -547,6 +547,125 @@ func TestMessageExists(t *testing.T) {
 	}
 }
 
+func TestMessagesSince(t *testing.T) {
+	store := openTestStore(t)
+	sessionA := "session-a"
+	sessionB := "session-b"
+	createTestSession(t, store, sessionA)
+	createTestSession(t, store, sessionB)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldMsg := &TranscriptMessage{
+		UUID:      "uuid-old",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"old"}]`,
+		CreatedAt: base,
+	}
+	newMsg1 := &TranscriptMessage{
+		UUID:      "uuid-new-1",
+		Type:      "assistant",
+		Content:   `[{"type":"text","text":"new1"}]`,
+		CreatedAt: base.Add(2 * time.Hour),
+	}
+	newMsg2 := &TranscriptMessage{
+		UUID:      "uuid-new-2",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"new2"}]`,
+		CreatedAt: base.Add(3 * time.Hour),
+	}
+	if err := store.AppendMessage(sessionA, oldMsg); err != nil {
+		t.Fatalf("AppendMessage old: %v", err)
+	}
+	if err := store.AppendMessage(sessionA, newMsg1); err != nil {
+		t.Fatalf("AppendMessage new1: %v", err)
+	}
+	if err := store.AppendMessage(sessionB, newMsg2); err != nil {
+		t.Fatalf("AppendMessage new2: %v", err)
+	}
+
+	// Query messages after base+1h — should get newMsg1 and newMsg2, not oldMsg
+	result, err := store.MessagesSince(base.Add(1 * time.Hour))
+	if err != nil {
+		t.Fatalf("MessagesSince: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("got %d messages, want 2", len(result))
+	}
+	if result[0].UUID != "uuid-new-1" {
+		t.Errorf("result[0] UUID = %q, want uuid-new-1", result[0].UUID)
+	}
+	if result[1].UUID != "uuid-new-2" {
+		t.Errorf("result[1] UUID = %q, want uuid-new-2", result[1].UUID)
+	}
+}
+
+func TestMessagesSince_FiltersSidechainAndSystem(t *testing.T) {
+	store := openTestStore(t)
+	sid := "test-session"
+	createTestSession(t, store, sid)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Regular user message — should be included
+	userMsg := &TranscriptMessage{
+		UUID:      "uuid-user",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"hello"}]`,
+		CreatedAt: base.Add(1 * time.Hour),
+	}
+	// Sidechain message — should be excluded
+	sidechainMsg := &TranscriptMessage{
+		UUID:        "uuid-sidechain",
+		Type:        "assistant",
+		Content:     `[{"type":"text","text":"sub-agent"}]`,
+		IsSidechain: 1,
+		CreatedAt:   base.Add(2 * time.Hour),
+	}
+	// System message — should be excluded
+	systemMsg := &TranscriptMessage{
+		UUID:      "uuid-system",
+		Type:      "system",
+		Subtype:   "compact_boundary",
+		Content:   `[{"type":"text","text":"boundary"}]`,
+		CreatedAt: base.Add(3 * time.Hour),
+	}
+	// Progress message — should be excluded
+	progressMsg := &TranscriptMessage{
+		UUID:      "uuid-progress",
+		Type:      "progress",
+		Content:   `[{"type":"text","text":"progress"}]`,
+		CreatedAt: base.Add(4 * time.Hour),
+	}
+
+	for _, msg := range []*TranscriptMessage{userMsg, sidechainMsg, systemMsg, progressMsg} {
+		if err := store.AppendMessage(sid, msg); err != nil {
+			t.Fatalf("AppendMessage %s: %v", msg.UUID, err)
+		}
+	}
+
+	result, err := store.MessagesSince(base)
+	if err != nil {
+		t.Fatalf("MessagesSince: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1 (only user/assistant non-sidechain)", len(result))
+	}
+	if result[0].UUID != "uuid-user" {
+		t.Errorf("result[0] UUID = %q, want uuid-user", result[0].UUID)
+	}
+}
+
+func TestMessagesSince_Empty(t *testing.T) {
+	store := openTestStore(t)
+	result, err := store.MessagesSince(time.Now()) // REAL-TIME: querying from now returns nothing in a fresh DB
+	if err != nil {
+		t.Fatalf("MessagesSince: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(result))
+	}
+}
+
 func TestRemoveMessageByUUID(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"

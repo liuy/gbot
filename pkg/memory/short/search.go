@@ -12,7 +12,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// ftsSpecialRe matches FTS5 query operators that could be exploited.
+// ftsSpecialRe matches FTS5 query operators that could be exploited or break
+// parsing. Kept (parens stripped) for SearchMessages — recall bypasses
+// sanitizeFTSQuery entirely to support grouped expressions.
 var ftsSpecialRe = regexp.MustCompile(`[*()"[\]{}^~]`)
 
 // validMessageTypes is the allowlist for message type filtering.
@@ -21,23 +23,75 @@ var validMessageTypes = map[string]bool{
 	"progress": true, "attachment": true, "result": true,
 }
 
-// sanitizeFTSQuery strips FTS5 special operators from user input.
+// sanitizeFTSQuery strips dangerous FTS5 operators while preserving the
+// AND/OR/NOT keywords so SearchMessages supports boolean expressions.
+// Parens are intentionally stripped here (recall needs them and uses a raw
+// query path instead). Mid-query truncation was removed because cutting a
+// query mid-token produces invalid FTS5 syntax; malformed queries are handled
+// by isMalformedFTSError at the call site.
 func sanitizeFTSQuery(query string) string {
 	sanitized := ftsSpecialRe.ReplaceAllString(query, " ")
-	// Remove FTS5 keywords that could appear as standalone tokens
-	for _, kw := range []string{"AND", "OR", "NOT", "NEAR"} {
-		sanitized = strings.ReplaceAll(sanitized, " "+kw+" ", " ")
-		if after, ok := strings.CutPrefix(sanitized, kw+" "); ok {
-			sanitized = after
-		}
-		if before, ok := strings.CutSuffix(sanitized, " "+kw); ok {
-			sanitized = before
-		}
-	}
-	if len(sanitized) > 500 {
-		sanitized = sanitized[:500]
-	}
+	sanitized = removeBareNear(sanitized)
 	return strings.TrimSpace(sanitized)
+}
+
+// removeBareNear strips NEAR keywords that are not immediately followed by /N.
+// NEAR/N is valid FTS5 syntax and must be preserved. RE2 lacks lookahead, so
+// we walk the string and rebuild it token by token. A stripped bare NEAR also
+// consumes one adjacent space to avoid leaving double spaces — this mirrors
+// the previous ReplaceAll(" NEAR ", " ") behavior.
+func removeBareNear(s string) string {
+	if !strings.Contains(strings.ToLower(s), "near") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if isWordBoundary(s, i) && i+4 <= len(s) && strings.EqualFold(s[i:i+4], "NEAR") {
+			after := i + 4
+			isNearWithN := after < len(s) && s[after] == '/' && after+1 < len(s) && s[after+1] >= '0' && s[after+1] <= '9'
+			if isNearWithN {
+				b.WriteString(s[i : after+2])
+				i = after + 2
+				continue
+			}
+			// Bare NEAR — strip it. Consume one trailing space to avoid
+			// "foo  bar" from "foo NEAR bar". If no trailing space, the
+			// leading space (already written) collapses via TrimSpace.
+			if after < len(s) && s[after] == ' ' {
+				i = after + 1
+				continue
+			}
+			i = after
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// isWordBoundary reports whether position i in s starts a word (preceded by a
+// non-word byte or the start of the string).
+func isWordBoundary(s string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	c := s[i-1]
+	isWord := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_'
+	return !isWord
+}
+
+// isMalformedFTSError reports whether err is an FTS5 syntax / malformed-query
+// error. Local copy to avoid a reverse dependency on pkg/memory/facts.
+func isMalformedFTSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(strings.ToLower(msg), "fts5") || strings.Contains(msg, "syntax error")
 }
 
 // SearchMessages performs FTS5 full-text search on messages.
@@ -53,15 +107,18 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		opts.Offset = 0
 	}
 
-	// Segment query for Chinese + English mixed search
-	segmentedQuery := s.Segment(sanitizeFTSQuery(query))
+	// Raw FTS5 query after sanitization. We do NOT Segment the query: gse
+	// lowercases AND/OR/NOT and breaks boolean syntax, while the gse-segmented
+	// index still matches raw terms because FTS5 unicode61 tokenizes on
+	// whitespace and the indexed content was pre-segmented with spaces.
+	sanitizedQuery := sanitizeFTSQuery(query)
 
 	var whereClauses []string
 	var args []any
 
 	// FTS5 MATCH must come first
 	whereClauses = append(whereClauses, "f.segmented_content MATCH ?")
-	args = append(args, segmentedQuery)
+	args = append(args, sanitizedQuery)
 
 	// Optional filters
 	if opts.SessionID != "" {
@@ -108,6 +165,9 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 
 	rows, err := s.db.Query(querySQL, args...)
 	if err != nil {
+		if isMalformedFTSError(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("search messages: %w", err)
 	}
 	defer rows.Close()

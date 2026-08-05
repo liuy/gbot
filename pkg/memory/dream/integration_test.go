@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // setupIntegrationStore creates a real SQLite store in a temp directory.
@@ -26,18 +28,29 @@ func setupIntegrationStore(t *testing.T) *short.Store {
 	return store
 }
 
-// createSessions inserts n sessions into the store for the given projectDir.
-func createSessions(t *testing.T, store *short.Store, projectDir string, n int) []string {
+// createSessionWithMessages inserts a session and n user/assistant messages.
+func createSessionWithMessages(t *testing.T, store *short.Store, projectDir string, n int) string {
 	t.Helper()
-	var ids []string
-	for range n {
-		s, err := store.CreateSession(projectDir, "test-model")
-		if err != nil {
-			t.Fatalf("create session: %v", err)
-		}
-		ids = append(ids, s.SessionID)
+	ses, err := store.CreateSession(projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
 	}
-	return ids
+	for i := range n {
+		msgType := "user"
+		if i%2 == 1 {
+			msgType = "assistant"
+		}
+		msg := &short.TranscriptMessage{
+			UUID:      fmt.Sprintf("msg-%s-%d", ses.SessionID[:8], i),
+			Type:      msgType,
+			Content:   fmt.Sprintf(`[{"type":"text","text":"conversation turn %d"}]`, i),
+			CreatedAt: time.Now(), // REAL-TIME: messages need current timestamp so MessagesSince finds them
+		}
+		if err := store.AppendMessage(ses.SessionID, msg); err != nil {
+			t.Fatalf("append message %d: %v", i, err)
+		}
+	}
+	return ses.SessionID
 }
 
 // setLockAge creates a lock file with mtime set to duration ago.
@@ -65,6 +78,13 @@ func waitForEvents(t *testing.T, d *mockDispatcher, n int) {
 	}
 }
 
+// idleTime sets mgr.lastAssistantAt far enough back to pass the idle gate.
+func idleTime(m *Manager) {
+	m.mu.Lock()
+	m.lastAssistantAt = time.Now().Add(-3 * time.Hour) // REAL-TIME: past idle threshold
+	m.mu.Unlock()
+}
+
 // ---------------------------------------------------------------------------
 // Cold start: no lock file, empty DB
 // ---------------------------------------------------------------------------
@@ -80,9 +100,9 @@ func TestIntegration_ColdStart_EmptyDB(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, "/project", &fakeEngine{sid: "current-sid"},
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
 
@@ -107,11 +127,10 @@ func TestIntegration_HotPath_FullCycle(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	// Insert 6 sessions (real SQLite)
-	sessions := createSessions(t, store, projectDir, 6)
-	currentSID := sessions[0] // excluded from session gate
+	// Insert a session with messages (real SQLite)
+	createSessionWithMessages(t, store, projectDir, 6)
 
-	// Lock file mtime = 25h ago → past MinHours=24
+	// Lock file mtime = 25h ago → past DreamCooldown=6h
 	setLockAge(t, memoryDir, 25*time.Hour)
 
 	var capturedPrompt string
@@ -121,22 +140,20 @@ func TestIntegration_HotPath_FullCycle(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: currentSID},
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
 
 	// Fire
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
 	waitForEvents(t, dispatcher, 3)
 
-	// 1. DreamRunFn was called with session IDs in prompt
+	// 1. DreamRunFn was called with message text in prompt
 	if capturedPrompt == "" {
 		t.Fatal("DreamRunFn was not called")
 	}
-	for _, id := range sessions[1:] {
-		if !strings.Contains(capturedPrompt, id) {
-			t.Errorf("prompt should contain session ID %s", id)
-		}
+	if !strings.Contains(capturedPrompt, "conversation turn 0") {
+		t.Errorf("prompt should contain message text, got first 200 chars: %s", truncForLog(capturedPrompt, 200))
 	}
 
 	// 2. Virtual tool events: Start → Run → End
@@ -167,15 +184,15 @@ func TestIntegration_HotPath_FullCycle(t *testing.T) {
 		t.Errorf("lock mtime should be recent after RecordConsolidation, got %v", info.ModTime())
 	}
 
-	// 4. Second run should skip — 24h not elapsed since consolidation
+	// 4. Second run should skip — DreamCooldown=6h not elapsed since consolidation
 	dispatcher2 := &mockDispatcher{}
-	mgr2 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: currentSID},
+	mgr2 := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher2, slog.Default())
+	idleTime(mgr2)
 	mgr2.RunPostTurn(context.Background(), nil, 0, "")
 
 	if len(dispatcher2.Events()) != 0 {
-		t.Error("second run should not fire — 24h not elapsed since consolidation")
+		t.Error("second run should not fire — cooldown not elapsed since consolidation")
 	}
 }
 
@@ -188,7 +205,7 @@ func TestIntegration_Recovery_StaleLock(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	createSessions(t, store, projectDir, 6)
+	createSessionWithMessages(t, store, projectDir, 6)
 
 	// Create lock with dead PID and mtime 25h ago
 	lockPath := filepath.Join(memoryDir, lockFileName)
@@ -211,9 +228,9 @@ func TestIntegration_Recovery_StaleLock(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
 	waitForEvents(t, dispatcher, 3)
@@ -232,7 +249,7 @@ func TestIntegration_Recovery_FailedConsolidation(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	createSessions(t, store, projectDir, 6)
+	createSessionWithMessages(t, store, projectDir, 6)
 	setLockAge(t, memoryDir, 25*time.Hour)
 
 	priorTime := time.Now().Add(-25 * time.Hour) // REAL-TIME: prior lock timestamp
@@ -242,9 +259,9 @@ func TestIntegration_Recovery_FailedConsolidation(t *testing.T) {
 		return fmt.Errorf("consolidation crashed")
 	}
 
-	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
 	waitForEvents(t, dispatcher, 3)
@@ -279,32 +296,32 @@ func TestIntegration_Recovery_ProcessRestart(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	createSessions(t, store, projectDir, 6)
+	createSessionWithMessages(t, store, projectDir, 6)
 	setLockAge(t, memoryDir, 25*time.Hour)
 
 	// Process 1: run dream successfully
 	dispatcher1 := &mockDispatcher{}
-	mgr1 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
+	mgr1 := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, func(ctx context.Context, prompt string) error { return nil },
 		dispatcher1, slog.Default())
+	idleTime(mgr1)
 	mgr1.RunPostTurn(context.Background(), nil, 0, "")
 	waitForEvents(t, dispatcher1, 3)
 
 	// Process 2: new Manager instance = simulated process restart
 	dispatcher2 := &mockDispatcher{}
 	var runCalled bool
-	mgr2 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
+	mgr2 := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, func(ctx context.Context, prompt string) error {
 			runCalled = true
 			return nil
 		},
 		dispatcher2, slog.Default())
+	idleTime(mgr2)
 	mgr2.RunPostTurn(context.Background(), nil, 0, "")
 
 	if runCalled {
-		t.Error("new instance should skip — 24h not elapsed since RecordConsolidation")
+		t.Error("new instance should skip — cooldown not elapsed since RecordConsolidation")
 	}
 }
 
@@ -317,7 +334,7 @@ func TestIntegration_CtxCancellation(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	createSessions(t, store, projectDir, 6)
+	createSessionWithMessages(t, store, projectDir, 6)
 	setLockAge(t, memoryDir, 25*time.Hour)
 
 	var runCalled bool
@@ -327,9 +344,9 @@ func TestIntegration_CtxCancellation(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
 		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
 
 	// Cancel context before calling RunPostTurn
 	ctx, cancel := context.WithCancel(context.Background())
@@ -349,14 +366,122 @@ func TestIntegration_CtxCancellation(t *testing.T) {
 
 	// Lock should be rolled back (ctx cancel triggers rollback in RunPostTurn)
 	lockPath := filepath.Join(memoryDir, lockFileName)
-	// The lock file should still exist but be rolled back to prior mtime
-	// Since there was no prior lock (setLockAge created it), rollback unlinks it
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		// Prior lock existed (setLockAge), so rollback rewinds mtime — file still exists
-		// Verify mtime is old (not recent) — proving rollback happened
-		info, statErr := os.Stat(lockPath)
-		if statErr == nil && time.Since(info.ModTime()) < 1*time.Hour {
-			t.Error("lock mtime should be rewound (old), not recent — rollback didn't happen")
-		}
+	info, statErr := os.Stat(lockPath)
+	if statErr == nil && time.Since(info.ModTime()) < 1*time.Hour {
+		t.Error("lock mtime should be rewound (old), not recent — rollback didn't happen")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Dream→remember→DB: runFn calls remember tool, fact lands in facts.Store
+// ---------------------------------------------------------------------------
+
+func TestIntegration_DreamRememberToDB(t *testing.T) {
+	store := setupIntegrationStore(t)
+	projectDir := t.TempDir()
+	memoryDir := t.TempDir()
+
+	createSessionWithMessages(t, store, projectDir, 3)
+	setLockAge(t, memoryDir, 25*time.Hour)
+
+	// Create a real facts store sharing the same DB.
+	factsStore, err := facts.NewStore(store.DB(), func(s string) string {
+		runes := []rune(s)
+		var b strings.Builder
+		for i, r := range runes {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	})
+	if err != nil {
+		t.Fatalf("create facts store: %v", err)
+	}
+
+	dispatcher := &mockDispatcher{target: 3}
+	runFn := func(ctx context.Context, prompt string) error {
+		id, inserted, err := factsStore.AddFact("测试用户 喜欢 蓝色")
+		if err != nil {
+			return fmt.Errorf("AddFact: %w", err)
+		}
+		if !inserted {
+			return fmt.Errorf("AddFact returned inserted=false on fresh content")
+		}
+		t.Logf("AddFact: id=%d inserted=%v", id, inserted)
+		return nil
+	}
+
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
+		store, runFn, dispatcher, slog.Default())
+	idleTime(mgr)
+
+	mgr.RunPostTurn(context.Background(), nil, 0, "")
+	waitForEvents(t, dispatcher, 3)
+
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: brief wait for DB visibility
+
+	results, err := factsStore.SearchFacts("蓝", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 fact in DB, got %d", len(results))
+	}
+	if results[0].Content != "测试用户 喜欢 蓝色" {
+		t.Errorf("fact content = %q, want %q", results[0].Content, "测试用户 喜欢 蓝色")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Idle gate regression: real assistant message (timestamp≈now) must NOT
+// trigger dream on the first turn, but SHOULD trigger after idle.
+// ---------------------------------------------------------------------------
+
+func TestIntegration_IdleGate_RealMessages(t *testing.T) {
+	store := setupIntegrationStore(t)
+	projectDir := t.TempDir()
+	memoryDir := t.TempDir()
+
+	createSessionWithMessages(t, store, projectDir, 3)
+	setLockAge(t, memoryDir, 25*time.Hour)
+
+	dispatcher := &mockDispatcher{target: 3}
+	var runCalled bool
+	runFn := func(ctx context.Context, prompt string) error {
+		runCalled = true
+		return nil
+	}
+
+	mgr := NewManager(DefaultConfig(), memoryDir, 100000,
+		store, runFn, dispatcher, slog.Default())
+
+	// Case 1: fresh messages with timestamp=now → should NOT trigger
+	// (lastAssistantAt is zero → idle gate fails)
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Timestamp: time.Now()}, // REAL-TIME: idle gate test
+	}
+	mgr.RunPostTurn(context.Background(), msgs, 0, "")
+	if runCalled {
+		t.Error("dream should NOT trigger on first turn with fresh messages")
+	}
+
+	// Case 2: set lastAssistantAt to 3h ago, then send fresh messages
+	// ShouldDream checks BEFORE update → sees old timestamp → idle passes
+	idleTime(mgr)
+	mgr.RunPostTurn(context.Background(), msgs, 0, "")
+	waitForEvents(t, dispatcher, 3)
+
+	if !runCalled {
+		t.Error("dream SHOULD trigger when idle threshold met (3h ago + fresh message)")
+	}
+}
+
+// truncForLog returns the first n characters of s for logging.
+func truncForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

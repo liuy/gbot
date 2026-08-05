@@ -3,15 +3,16 @@ package dream
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.MinHours != 24 {
-		t.Errorf("MinHours = %d, want 24", cfg.MinHours)
+	if cfg.IdleThreshold != 2*time.Hour {
+		t.Errorf("IdleThreshold = %v, want 2h", cfg.IdleThreshold)
 	}
-	if cfg.MinSessions != 5 {
-		t.Errorf("MinSessions = %d, want 5", cfg.MinSessions)
+	if cfg.DreamCooldown != 6*time.Hour {
+		t.Errorf("DreamCooldown = %v, want 6h", cfg.DreamCooldown)
 	}
 }
 

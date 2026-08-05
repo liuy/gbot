@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/dream"
+	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -35,12 +36,16 @@ import (
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/agent"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/computer"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
+	"github.com/liuy/gbot/pkg/tool/memory/forget"
+	"github.com/liuy/gbot/pkg/tool/memory/recall"
+	"github.com/liuy/gbot/pkg/tool/memory/remember"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
@@ -206,6 +211,29 @@ func Start(opts Options) (*Instance, error) {
 		slog.Info("ws:listen", "addr", wsAddr)
 	}
 
+	var store *short.Store
+	{
+		dbPath := filepath.Join(projectDir, "memory", "memory.db")
+		s, err := short.NewStore(dbPath)
+		if err != nil {
+			slog.Warn("main: failed to open short-term store, persistence disabled", "error", err)
+		} else {
+			store = s
+		}
+	}
+
+	// factsStore shares the same SQLite handle as the short store. Fallback to
+	// nil on failure: recall is not registered, dream skips facts extraction.
+	var factsStore *facts.Store
+	if store != nil {
+		fs, err := facts.NewStore(store.DB(), store.Segment)
+		if err != nil {
+			slog.Warn("main: failed to open facts store, facts/recall disabled", "error", err)
+		} else {
+			factsStore = fs
+		}
+	}
+
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
 		GitStatus:  gitStatus,
@@ -215,6 +243,8 @@ func Start(opts Options) (*Instance, error) {
 		Cfg:        cfg,
 		LSPReg:     lspReg,
 		WSRegistry: wsRegistry,
+		FactsStore: factsStore,
+		ShortStore: store,
 	}
 
 	mainTaskList := task.NewList("")
@@ -238,17 +268,6 @@ func Start(opts Options) (*Instance, error) {
 		}
 	}
 	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, lspReg, "")
-
-	var store *short.Store
-	{
-		dbPath := filepath.Join(projectDir, "memory", "memory.db")
-		s, err := short.NewStore(dbPath)
-		if err != nil {
-			slog.Warn("main: failed to open short-term store, persistence disabled", "error", err)
-		} else {
-			store = s
-		}
-	}
 
 	engineFactory := func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
 		engineProvider := provider
@@ -379,6 +398,15 @@ func Start(opts Options) (*Instance, error) {
 					"Write": filewrite.New(),
 					"Grep":  grep.New(),
 					"Glob":  glob.New(),
+					// Dream is an independent agent that needs Bash to read
+					// files and run commands. A fresh registry per call binds
+					// commands to the 5min context above.
+					"Bash": bash.New(bash.NewBackgroundJobRegistry()),
+				}
+				if factsStore != nil {
+					dreamTools["recall"] = recall.New(factsStore, store)
+					dreamTools["remember"] = remember.New(factsStore)
+					dreamTools["forget"] = forget.New(factsStore)
 				}
 				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
 					SystemPrompt:    "",
@@ -393,7 +421,7 @@ func Start(opts Options) (*Instance, error) {
 				return result.Error
 			}
 			memoryDir := long.GetMemoryPath(workingDir)
-			dreamMgr := dream.NewManager(dreamCfg, memoryDir, projectDir, newEng,
+			dreamMgr := dream.NewManager(dreamCfg, memoryDir, contextWindow,
 				store, dreamRunFn, newEng.Dispatcher(), slog.Default())
 			newEng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
 			slog.Info("dream: wired", "engine_id", id)

@@ -6,47 +6,85 @@ import (
 	"github.com/liuy/gbot/pkg/memory/long"
 )
 
-// BuildConsolidationPrompt builds the 4-phase dream prompt.
-// TS source: consolidationPrompt.ts:10-65 — buildConsolidationPrompt.
-func BuildConsolidationPrompt(memoryRoot, projectDir, extra string) string {
-	dirExistsGuidance := "This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence)."
+// factsExtractionSection teaches the dream agent how to use
+// recall/remember/forget and sets the filtering criteria for what
+// qualifies as a durable fact.
+const factsExtractionSection = `You have three tools for structured memory:
+- recall(query): search existing facts AND message history (FTS5 syntax: AND/OR/NOT, parentheses, e.g. "Alex AND blue")
+- remember(content): store a new atomic fact
+- forget(fact_id): delete a fact by id (from recall results)
 
+Before writing new facts, recall existing ones to avoid duplicates and detect contradictions. If a new fact contradicts an old one, forget the old fact_id and remember the new one.
+
+[Scope] About the user (use their real name from memory/*.md) and their close relationships (family/friends/colleagues).
+
+[Extract]
+1. Long-term stable facts
+   - User identity, preferences, habits
+   - Family/social relationships
+   - Life experiences
+
+2. Life events (one-off but milestone-worthy)
+   - Must include: date + what happened + emotional context
+   - Example: "Alex's daughter (Lily) born 2026-08-06, overjoyed"
+   - Example: "Alex received poor annual review in Jan 2026, felt discouraged"
+
+3. Persistent states (lasting days/weeks)
+   - Stress levels or moods sustained over a period
+   - Must include: time range + trigger
+   - Example: "Alex under heavy work pressure during Aug 2026"
+
+[Do NOT extract]
+- Project/code/tech knowledge → goes to notes
+- Objective world knowledge → skip
+- Current work in progress → goes to notes
+- Transient emotions without milestone → skip (e.g. "had a good lunch")
+
+[Decision criteria]
+1. Will this fact still matter in 5 years? (Long-term stable or life event)
+2. Is it a persistent state? (Lasting days/weeks)
+3. Is it about the user's life world?
+
+[Each fact must include]
+- Subject (who) — always
+- Time (when) — required for non-permanent facts
+- Relation (to whom) — required when involving others
+- Trigger (why) — required for emotions/states
+
+[Language]
+- Use the user's conversational language, keep their wording
+- Do not translate or unify languages
+- Keep proper nouns in original form
+
+[Format]
+- One fact = one atomic fact
+- Self-contained, understandable without other facts`
+
+// BuildConsolidationPrompt builds the dream prompt. The facts extraction
+// section is always included — facts are an integral part of dream.
+func BuildConsolidationPrompt(memoryDir, extra string) string {
 	prompt := "# Dream: Memory Consolidation\n\n" +
-		"You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories so that future sessions can orient quickly.\n\n" +
-		fmt.Sprintf("Memory directory: `%s`\n", memoryRoot) +
-		dirExistsGuidance + "\n\n" +
-		fmt.Sprintf("Session transcripts: `%s` (large JSONL files — grep narrowly, don't read whole files)\n\n", projectDir) +
-		"---\n\n" +
-		"## Phase 1 — Orient\n\n" +
-		"- `ls` the memory directory to see what already exists\n" +
-		fmt.Sprintf("- Read `%s` to understand the current index\n", long.EntrypointName) +
-		"- Skim existing topic files so you improve them rather than creating duplicates\n" +
-		"- If `logs/` or `sessions/` subdirectories exist (assistant-mode layout), review recent entries there\n\n" +
-		"## Phase 2 — Gather recent signal\n\n" +
-		"Look for new information worth persisting. Sources in rough priority order:\n\n" +
-		"1. **Daily logs** (`logs/YYYY/MM/YYYY-MM-DD.md`) if present — these are the append-only stream\n" +
-		"2. **Existing memories that drifted** — facts that contradict something you see in the codebase now\n" +
-		"3. **Transcript search** — if you need specific context (e.g., \"what was the error message from yesterday's build failure?\"), grep the JSONL transcripts for narrow terms:\n" +
-		fmt.Sprintf("   `grep -rn \"<narrow term>\" %s/ --include=\"*.jsonl\" | tail -50`\n\n", projectDir) +
-		"Don't exhaustively read transcripts. Look only for things you already suspect matter.\n\n" +
-		"## Phase 3 — Consolidate\n\n" +
-		"For each thing worth remembering, write or update a memory file at the top level of the memory directory. Use the memory file format and type conventions from your system prompt's auto-memory section — it's the source of truth for what to save, how to structure it, and what NOT to save.\n\n" +
-		"Focus on:\n" +
-		"- Merging new signal into existing topic files rather than creating near-duplicates\n" +
-		"- Converting relative dates (\"yesterday\", \"last week\") to absolute dates so they remain interpretable after time passes\n" +
-		"- Deleting contradicted facts — if today's investigation disproves an old memory, fix it at the source\n\n" +
-		"## Phase 4 — Prune and index\n\n" +
-		fmt.Sprintf("Update `%s` so it stays under %d lines AND under ~25KB. It's an **index**, not a dump — each entry should be one line under ~150 characters: `- [Title](file.md) — one-line hook`. Never write memory content directly into it.\n\n", long.EntrypointName, long.MaxEntrypointLines) +
-		"- Remove pointers to memories that are now stale, wrong, or superseded\n" +
-		"- Demote verbose entries: if an index line is over ~200 chars, it's carrying content that belongs in the topic file — shorten the line, move the detail\n" +
-		"- Add pointers to newly important memories\n" +
-		"- Resolve contradictions — if two files disagree, fix the wrong one\n\n" +
-		"---\n\n" +
-		"Return a brief summary of what you consolidated, updated, or pruned. If nothing changed (memories are already tight), say so."
+		"You are reviewing recent conversations and updating memory.\n\n" +
+		fmt.Sprintf("Memory directory: `%s`\n", memoryDir) +
+		"This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).\n\n" +
+		"---\n\n"
 
 	if extra != "" {
-		prompt += "\n\n## Additional context\n\n" + extra
+		prompt += "## Recent conversations\n\n" + extra + "\n---\n\n"
 	}
+
+	prompt += "## Step 1 — Notes\n\n" +
+		"1. ls the memory directory, Read MEMORY.md and existing topic files\n" +
+		"2. From the conversations above, update notes (Write/Edit memory/*.md)\n" +
+		fmt.Sprintf("3. Update `%s` index (under %d lines, one line per entry: `- [Title](file.md) — one-line hook`)\n\n",
+			long.EntrypointName, long.MaxEntrypointLines) +
+		"## Step 2 — Facts\n\n" +
+		"4. recall existing facts related to the conversations to avoid duplicates and detect contradictions\n" +
+		"5. forget stale or contradicted facts\n" +
+		"6. Extract new durable facts and remember them\n\n" +
+		factsExtractionSection + "\n\n" +
+		"---\n\n" +
+		"Return a brief summary of what you updated."
 
 	return prompt
 }

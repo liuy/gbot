@@ -144,6 +144,7 @@ func (s *Store) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages(session_id, seq);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_uuid ON messages(uuid);
+	CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
 	CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
 		USING fts5(

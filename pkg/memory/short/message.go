@@ -285,6 +285,37 @@ func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {
 	return exists, nil
 }
 
+// MessagesSince returns all user/assistant messages across all sessions
+// with created_at > since, ordered chronologically. Filters out sidechain
+// (sub-agent) messages, progress, and system entries — dream only needs
+// the main conversation surface.
+func (s *Store) MessagesSince(since time.Time) ([]*TranscriptMessage, error) {
+	query := `
+		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
+		       is_sidechain, type, subtype, content, metadata, created_at
+		FROM messages
+		WHERE created_at > ? AND is_sidechain = 0 AND type IN ('user', 'assistant')
+		ORDER BY created_at ASC, seq ASC
+	`
+
+	rows, err := s.db.Query(query, since)
+	if err != nil {
+		return nil, fmt.Errorf("query messages since: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []*TranscriptMessage
+	for rows.Next() {
+		msg, err := s.scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, rows.Err()
+}
+
 // RecordSidechainTranscript stores a sub-agent's transcript.
 // Messages are marked with is_sidechain=1.
 // TS align: recordSidechainTranscript (sessionStorage.ts:2800-2830)

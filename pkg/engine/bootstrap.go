@@ -12,6 +12,8 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/facts"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -24,6 +26,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
 	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
+	"github.com/liuy/gbot/pkg/tool/memory/recall"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -44,6 +47,11 @@ type SharedDeps struct {
 	// TUI mode / sub-agent-only contexts — regDial then returns "daemon not
 	// running". Set only by the daemon entrypoint (cmd/gbot).
 	WSRegistry *computer.ConnectionRegistry
+
+	// FactsStore and ShortStore enable the recall tool for the main agent.
+	// Both must be non-nil for recall to register; nil = recall unavailable.
+	FactsStore *facts.Store
+	ShortStore *short.Store
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -113,6 +121,13 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// "daemon not running" error; with a registry (daemon mode) it resolves
 	// against the inbound device pool.
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
+
+	// recall: read-only search of facts + messages. Only registered when both
+	// stores are available; nil guards let the rest of the toolset work when
+	// facts/persistence is disabled.
+	if deps.FactsStore != nil && deps.ShortStore != nil {
+		reg.MustRegister(recall.New(deps.FactsStore, deps.ShortStore))
+	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

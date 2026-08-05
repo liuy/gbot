@@ -3,23 +3,28 @@ package dream
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
-// Config controls auto-dream scheduling.
-// TS source: autoDream.ts:58-66 — AutoDreamConfig + DEFAULTS.
+// Config controls auto-dream scheduling based on user idle time.
 type Config struct {
-	MinHours    int // default 24
-	MinSessions int // default 5
+	// IdleThreshold is how long the user must be idle (no assistant message)
+	// before dream fires. Default: 2h.
+	IdleThreshold time.Duration
+	// DreamCooldown is the minimum gap between dream runs. Default: 6h.
+	DreamCooldown time.Duration
 }
 
 // DefaultConfig returns the default dream configuration.
 func DefaultConfig() Config {
-	return Config{MinHours: 24, MinSessions: 5}
+	return Config{
+		IdleThreshold: 2 * time.Hour,
+		DreamCooldown: 6 * time.Hour,
+	}
 }
 
 // IsEnabled returns whether dream is enabled.
 // gbot: GBOT_AUTO_DREAM env var (default: true when unset).
-// TS: settings.autoDreamEnabled + GrowthBook tengu_onyx_plover.
 func IsEnabled() bool {
 	v := os.Getenv("GBOT_AUTO_DREAM")
 	if v == "" {
