@@ -121,11 +121,10 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// against the inbound device pool.
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
-	// recall: read-only search of facts + messages. ShortStore satisfies both
-	// the FactSearcher and MessageSearcher interfaces. nil guard lets the rest
-	// of the toolset work when persistence is disabled.
+	// recall: read-only search of facts + messages. ShortStore is nil-guarded
+	// upstream — recall is only registered when the store is available.
 	if deps.ShortStore != nil {
-		reg.MustRegister(recall.New(deps.ShortStore, deps.ShortStore))
+		reg.MustRegister(recall.New(deps.ShortStore))
 	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}

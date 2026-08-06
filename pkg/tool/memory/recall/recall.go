@@ -16,24 +16,9 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 )
 
-// MessageSearcher abstracts the short store so tests can inject a fake.
-// *short.Store satisfies this interface.
-type MessageSearcher interface {
-	SearchMessages(query string, opts *short.SearchOptions) ([]*short.SearchResult, error)
-}
-
-// Deps holds the stores recall queries. Either may be nil at construction
-// time — a nil Facts Store makes recall search only messages, and vice versa.
-// In practice both are non-nil when facts is enabled.
+// Deps holds the store recall queries.
 type Deps struct {
-	Facts    FactSearcher
-	Messages MessageSearcher
-}
-
-// FactSearcher abstracts the fact store so tests can inject a fake.
-// *short.Store satisfies this interface.
-type FactSearcher interface {
-	SearchFacts(query string, limit int) ([]short.Fact, error)
+	Store *short.Store
 }
 
 // Input is the recall tool input schema.
@@ -62,9 +47,9 @@ type Output struct {
 	Messages []msgHit  `json:"messages"`
 }
 
-// New creates the recall tool. factsStore and msgs may be nil individually;
-// at least one must be non-nil or the tool is inert (returns empty results).
-func New(factsStore FactSearcher, msgs MessageSearcher) tool.Tool {
+// New creates the recall tool. store must be non-nil — if the store is
+// unavailable, recall should not be registered at all.
+func New(store *short.Store) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["query"],
@@ -93,7 +78,7 @@ func New(factsStore FactSearcher, msgs MessageSearcher) tool.Tool {
 			return in.Query, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return execute(ctx, input, Deps{Facts: factsStore, Messages: msgs})
+			return execute(ctx, input, Deps{Store: store})
 		},
 		IsReadOnly_: func(json.RawMessage) bool {
 			return true
@@ -162,32 +147,28 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		Messages: []msgHit{},
 	}
 
-	if deps.Facts != nil {
-		facts, err := deps.Facts.SearchFacts(in.Query, limit)
-		if err != nil {
-			slog.Warn("recall: facts search failed, continuing with messages", "error", err)
-		} else {
-			for _, f := range facts {
-				out.Facts = append(out.Facts, factHit{
-					FactID:  f.ID,
-					Content: f.Content,
-					Date:    f.CreatedAt.Format("2006-01-02"),
-				})
-			}
+	facts, err := deps.Store.SearchFacts(in.Query, limit)
+	if err != nil {
+		slog.Warn("recall: facts search failed, continuing with messages", "error", err)
+	} else {
+		for _, f := range facts {
+			out.Facts = append(out.Facts, factHit{
+				FactID:  f.ID,
+				Content: f.Content,
+				Date:    f.CreatedAt.Format("2006-01-02"),
+			})
 		}
 	}
 
-	if deps.Messages != nil {
-		results, err := deps.Messages.SearchMessages(in.Query, &short.SearchOptions{Limit: limit})
-		if err != nil {
-			slog.Warn("recall: messages search failed", "error", err)
-		} else {
-			for _, r := range results {
-				out.Messages = append(out.Messages, msgHit{
-					Content: short.ExtractTextFromJSON(r.TranscriptMessage.Content),
-					Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02"),
-				})
-			}
+	results, err := deps.Store.SearchMessages(in.Query, &short.SearchOptions{Limit: limit})
+	if err != nil {
+		slog.Warn("recall: messages search failed", "error", err)
+	} else {
+		for _, r := range results {
+			out.Messages = append(out.Messages, msgHit{
+				Content: short.ExtractTextFromJSON(r.TranscriptMessage.Content),
+				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02"),
+			})
 		}
 	}
 

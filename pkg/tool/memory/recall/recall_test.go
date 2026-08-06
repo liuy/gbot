@@ -23,19 +23,9 @@ func openFactStore(t *testing.T) *short.Store {
 	return store
 }
 
-// fakeMessages is a controllable MessageSearcher for recall tests.
-type fakeMessages struct {
-	results []*short.SearchResult
-	err     error
-}
-
-func (f *fakeMessages) SearchMessages(query string, opts *short.SearchOptions) ([]*short.SearchResult, error) {
-	return f.results, f.err
-}
-
 func TestRecall_MissingQuery(t *testing.T) {
 	fs := openFactStore(t)
-	r := New(fs, &fakeMessages{})
+	r := New(fs)
 	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error for missing query")
@@ -51,18 +41,21 @@ func TestRecall_HitsBothSources(t *testing.T) {
 		t.Fatalf("AddFact: %v", err)
 	}
 
-	msgs := &fakeMessages{
-		results: []*short.SearchResult{
-			{
-				TranscriptMessage: &short.TranscriptMessage{
-					Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
-					CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
-				},
-			},
-		},
+	sess, err := fs.CreateSession("/test", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	msg := &short.TranscriptMessage{
+		UUID:      "msg-blue-1",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
+		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+	}
+	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	r := New(fs, msgs)
+	r := New(fs)
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -102,7 +95,7 @@ func TestRecall_MalformedQuery(t *testing.T) {
 		t.Fatalf("AddFact: %v", err)
 	}
 
-	r := New(fs, &fakeMessages{})
+	r := New(fs)
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"("}`), nil)
 	if err != nil {
 		t.Fatalf("malformed query should not error: %v", err)
@@ -119,7 +112,7 @@ func TestRecall_MalformedQuery(t *testing.T) {
 func TestRecall_EmptyResults(t *testing.T) {
 	fs := openFactStore(t)
 
-	r := New(fs, &fakeMessages{})
+	r := New(fs)
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"nothinghere"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -146,15 +139,15 @@ func TestRecall_EmptyResults(t *testing.T) {
 func TestRecall_LimitClamp(t *testing.T) {
 	fs := openFactStore(t)
 
-	r := New(fs, &fakeMessages{})
+	r := New(fs)
 
-	// limit=0 → default 50
+	// limit=0 -> default 50
 	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":0}`), nil)
 	if err != nil {
 		t.Fatalf("limit=0: %v", err)
 	}
 
-	// limit=500 → clamped to 200, should not error
+	// limit=500 -> clamped to 200, should not error
 	_, err = r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":500}`), nil)
 	if err != nil {
 		t.Fatalf("limit=500: %v", err)
@@ -163,7 +156,7 @@ func TestRecall_LimitClamp(t *testing.T) {
 
 func TestRecall_IsReadOnly(t *testing.T) {
 	fs := openFactStore(t)
-	r := New(fs, &fakeMessages{})
+	r := New(fs)
 	if !r.IsReadOnly(nil) {
 		t.Error("recall should be read-only")
 	}
@@ -176,7 +169,7 @@ func TestRecall_IsReadOnly(t *testing.T) {
 }
 
 func TestRecall_RenderResult(t *testing.T) {
-	r := New(nil, nil)
+	r := New(nil)
 	rendered := r.RenderResult(&Output{
 		Facts:    []factHit{{FactID: 5, Content: "test fact", Date: "2026-01-01"}},
 		Messages: []msgHit{{Content: "test msg", Date: "2026-01-02"}},
@@ -199,7 +192,7 @@ func TestRecall_RenderResult(t *testing.T) {
 }
 
 func TestRecall_DecodeResult(t *testing.T) {
-	r := New(nil, nil)
+	r := New(nil)
 	decoder, ok := r.(tool.ToolWithDecodeResult)
 	if !ok {
 		t.Fatal("recall tool should implement ToolWithDecodeResult")
@@ -223,5 +216,28 @@ func TestRecall_DecodeResult(t *testing.T) {
 	}
 	if out.Facts[0].Content != "hello" {
 		t.Errorf("content = %q, want 'hello'", out.Facts[0].Content)
+	}
+}
+
+func TestRecall_ChineseFact(t *testing.T) {
+	fs := openFactStore(t)
+	if _, _, err := fs.AddFact("alice 喜欢 蓝色"); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	r := New(fs)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"蓝色"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", result.Data)
+	}
+	if len(out.Facts) != 1 {
+		t.Fatalf("expected 1 fact hit for Chinese query, got %d", len(out.Facts))
+	}
+	if !strings.Contains(out.Facts[0].Content, "蓝色") {
+		t.Errorf("fact content = %q, want it to contain '蓝色'", out.Facts[0].Content)
 	}
 }

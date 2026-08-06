@@ -243,3 +243,34 @@ func TestSearchFacts_PersistenceAcrossInstances(t *testing.T) {
 		t.Errorf("unexpected content: %q", hits[0].Content)
 	}
 }
+
+func TestAddFact_SegmentsContent(t *testing.T) {
+	store := openTestStore(t)
+
+	id, _, err := store.AddFact("hello world test")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	// facts_fts is a contentless FTS5 table (content='') so segmented_content
+	// can't be SELECTed directly. Instead verify the FTS map has a row for
+	// this fact (proves the insert path ran) and the content is searchable
+	// via MATCH (proves Segment output was indexed).
+	var mapCount int
+	err = store.DB().QueryRow("SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?", id).Scan(&mapCount)
+	if err != nil {
+		t.Fatalf("count facts_fts_map: %v", err)
+	}
+	if mapCount != 1 {
+		t.Fatalf("facts_fts_map should have 1 row for fact_id %d, got %d", id, mapCount)
+	}
+
+	var ftsMatch int
+	err = store.DB().QueryRow("SELECT COUNT(*) FROM facts_fts WHERE segmented_content MATCH ?", "hello").Scan(&ftsMatch)
+	if err != nil {
+		t.Fatalf("MATCH query on facts_fts: %v", err)
+	}
+	if ftsMatch != 1 {
+		t.Errorf("facts_fts MATCH 'hello' should return 1 row, got %d", ftsMatch)
+	}
+}
