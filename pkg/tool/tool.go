@@ -440,6 +440,9 @@ func BuildTool(def ToolDef) Tool {
 			return v, nil
 		}
 	}
+	if schema := def.InputSchema_(); len(schema) > 0 && !json.Valid(schema) {
+		panic(fmt.Sprintf("tool %q has invalid JSON schema: %s", def.Name_, string(schema[:min(len(schema), 200)])))
+	}
 	if def.FormatWireBlocks_ != nil && def.IsSearchOrRead_ != nil {
 		return &builtFullTool{builtTool{def: def}}
 	}

@@ -66,8 +66,7 @@ func New(factsStore *facts.Store, msgs MessageSearcher) tool.Tool {
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators.",
-			},
+				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."			},
 			"limit": {
 				"type": "integer",
 				"default": 50,

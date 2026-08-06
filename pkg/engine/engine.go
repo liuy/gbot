@@ -2931,6 +2931,11 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 					msg.Content[i].Input = json.RawMessage("{}")
 				}
 			}
+			if msg.Content[i].Type == types.ContentTypeToolResult {
+				if len(msg.Content[i].Content) > 0 && !json.Valid(msg.Content[i].Content) {
+					msg.Content[i].Content = json.RawMessage(`[{"type":"text","text":"[corrupted tool result — sanitized]"}]`)
+				}
+			}
 			msg.Content[n] = msg.Content[i]
 			n++
 		}

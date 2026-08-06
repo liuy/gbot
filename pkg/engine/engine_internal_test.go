@@ -1508,6 +1508,32 @@ func TestNormalizeMessagesForAPI_Empty(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessagesForAPI_SanitizesCorruptedToolResultContent(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a crash-corrupted tool_result: Content is raw bytes that
+	// are not valid JSON (e.g. a panic stack trace written into the field).
+	// Without sanitization, json.Marshal of the normalized message panics.
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "call_1", Content: json.RawMessage("panic: runtime error: invalid memory address}")},
+		}},
+	}
+
+	result := NormalizeMessagesForAPI(messages)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	// The critical assertion: marshaling the result must not error.
+	if _, err := json.Marshal(result); err != nil {
+		t.Fatalf("json.Marshal failed after normalize: %v — tool_result.Content with invalid JSON was not sanitized", err)
+	}
+	// Content should be replaced with a valid JSON array.
+	if !json.Valid(result[0].Content[0].Content) {
+		t.Errorf("tool_result.Content still invalid JSON after sanitize")
+	}
+}
+
 func TestNormalizeMessagesForAPI_OnlySystemMessages(t *testing.T) {
 	t.Parallel()
 
