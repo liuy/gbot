@@ -1,5 +1,6 @@
-// Package forget implements the forget tool, which deletes a fact by id. Only
-// the dream agent registers this tool. The fact_id comes from recall results.
+// Package forget implements the forget tool, which deletes a fact by id.
+// Registered for both the dream agent and the main agent so the main agent
+// can honor explicit user requests to forget facts.
 package forget
 
 import (

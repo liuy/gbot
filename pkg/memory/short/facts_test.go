@@ -110,6 +110,116 @@ func TestDeleteFact_NonExistent(t *testing.T) {
 	}
 }
 
+func TestUpdateFact_Normal(t *testing.T) {
+	store := openTestStore(t)
+
+	id1, _, err := store.AddFact("alice likes blue")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	newID, inserted, err := store.UpdateFact(id1, "alice likes red")
+	if err != nil {
+		t.Fatalf("UpdateFact: %v", err)
+	}
+	if !inserted {
+		t.Error("UpdateFact with new content should report inserted=true")
+	}
+	if newID == id1 {
+		t.Error("UpdateFact should produce a new id, not reuse the old one")
+	}
+
+	hitsBlue, err := store.SearchFacts("blue", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts(blue): %v", err)
+	}
+	if len(hitsBlue) != 0 {
+		t.Errorf("old content should be gone, got %d hits", len(hitsBlue))
+	}
+
+	hitsRed, err := store.SearchFacts("red", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts(red): %v", err)
+	}
+	if len(hitsRed) != 1 {
+		t.Fatalf("expected 1 hit for new content, got %d", len(hitsRed))
+	}
+	if hitsRed[0].ID != newID {
+		t.Errorf("hit id = %d, want %d", hitsRed[0].ID, newID)
+	}
+}
+
+func TestUpdateFact_Duplicate(t *testing.T) {
+	store := openTestStore(t)
+
+	idExisting, _, err := store.AddFact("already here")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	idToUpdate, _, err := store.AddFact("to be replaced")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	retID, inserted, err := store.UpdateFact(idToUpdate, "already here")
+	if err != nil {
+		t.Fatalf("UpdateFact: %v", err)
+	}
+	if inserted {
+		t.Error("UpdateFact to duplicate content should report inserted=false")
+	}
+	if retID != idExisting {
+		t.Errorf("should return existing id %d, got %d", idExisting, retID)
+	}
+
+	hits, err := store.SearchFacts("already", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit (the existing fact), got %d", len(hits))
+	}
+	if hits[0].ID != idExisting {
+		t.Errorf("hit id = %d, want existing id %d", hits[0].ID, idExisting)
+	}
+}
+
+func TestUpdateFact_NonExistent(t *testing.T) {
+	store := openTestStore(t)
+
+	newID, inserted, err := store.UpdateFact(99999, "brand new fact")
+	if err != nil {
+		t.Fatalf("UpdateFact: %v", err)
+	}
+	if !inserted {
+		t.Error("UpdateFact on non-existent id should degrade to insert (inserted=true)")
+	}
+	if newID <= 0 {
+		t.Errorf("new id should be > 0, got %d", newID)
+	}
+
+	hits, err := store.SearchFacts("brand", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	if hits[0].ID != newID {
+		t.Errorf("hit id = %d, want %d", hits[0].ID, newID)
+	}
+}
+
+func TestUpdateFact_Empty(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if _, _, err := store.UpdateFact(1, in); err == nil {
+			t.Errorf("UpdateFact(%q) should error", in)
+		}
+	}
+}
+
 func TestSearchFacts_AndOrNot(t *testing.T) {
 	store := openTestStore(t)
 

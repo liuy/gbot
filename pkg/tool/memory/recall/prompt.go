@@ -10,4 +10,4 @@ Input:
 
 Output: { facts: [{fact_id, content, date}], messages: [{content, date}] }
 
-When updating or contradicting a fact, use fact_id with the forget tool.`
+When updating or contradicting a fact, use fact_id with the remember tool to update in place.`

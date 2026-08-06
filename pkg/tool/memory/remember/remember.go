@@ -1,6 +1,7 @@
-// Package remember implements the remember tool, which stores a new atomic
-// fact into the structured facts table. Only the dream agent registers this
-// tool — the main agent has no write access to facts.
+// Package remember implements the remember tool, which stores or updates a
+// fact in the structured facts table. Registered for both the dream agent and
+// the main agent so the main agent can honor explicit user requests to
+// remember or forget facts.
 package remember
 
 import (
@@ -15,6 +16,8 @@ import (
 
 // Input is the remember tool input schema.
 type Input struct {
+	// FactID set = update an existing fact atomically; nil = create.
+	FactID  *int64 `json:"fact_id,omitempty"`
 	Content string `json:"content"`
 }
 
@@ -35,6 +38,10 @@ func New(store *short.Store) tool.Tool {
 			"content": {
 				"type": "string",
 				"description": "The fact to remember. Must be self-contained: subject + (time if not permanent) + relation/condition as needed."
+			},
+			"fact_id": {
+				"type": "integer",
+				"description": "Optional. The fact_id to update. Omit to create a new fact. Use with recall to find the id of an existing fact."
 			}
 		}
 	}`)
@@ -60,6 +67,22 @@ func New(store *short.Store) tool.Tool {
 			}
 			if strings.TrimSpace(in.Content) == "" {
 				return nil, fmt.Errorf("content is required")
+			}
+			if in.FactID != nil {
+				newID, inserted, err := store.UpdateFact(*in.FactID, in.Content)
+				if err != nil {
+					return nil, fmt.Errorf("update fact: %w", err)
+				}
+				msg := "Updated fact."
+				if !inserted {
+					msg = "Fact already exists (duplicate)."
+				}
+				return &tool.ToolResult{Data: &Output{
+					Stored:    inserted,
+					FactID:    newID,
+					Duplicate: !inserted,
+					Message:   msg,
+				}}, nil
 			}
 			id, inserted, err := store.AddFact(in.Content)
 			if err != nil {

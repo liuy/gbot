@@ -25,7 +25,9 @@ import (
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
 	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
+	"github.com/liuy/gbot/pkg/tool/memory/forget"
 	"github.com/liuy/gbot/pkg/tool/memory/recall"
+	"github.com/liuy/gbot/pkg/tool/memory/remember"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -121,10 +123,13 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// against the inbound device pool.
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
-	// recall: read-only search of facts + messages. ShortStore is nil-guarded
-	// upstream — recall is only registered when the store is available.
+	// recall/remember/forget: structured memory tools. ShortStore is
+	// nil-guarded upstream — memory tools are only registered when the
+	// store is available.
 	if deps.ShortStore != nil {
 		reg.MustRegister(recall.New(deps.ShortStore))
+		reg.MustRegister(remember.New(deps.ShortStore))
+		reg.MustRegister(forget.New(deps.ShortStore))
 	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}

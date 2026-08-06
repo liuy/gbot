@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -45,6 +46,30 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 	for _, name := range expectedTools {
 		if _, ok := toolMap[name]; !ok {
 			t.Errorf("expected tool %q to be registered, but it was not found", name)
+		}
+	}
+}
+
+func TestCreateTools_RegistersMemoryToolsWithShortStore(t *testing.T) {
+	t.Parallel()
+	store, err := short.NewStore(filepath.Join(t.TempDir(), "mem.db"))
+	if err != nil {
+		t.Fatalf("short.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+		ShortStore: store,
+	}
+
+	refs := CreateTools(deps, tl)
+	toolMap := refs.Reg.ToolMap()
+	for _, name := range []string{"recall", "remember", "forget"} {
+		if _, ok := toolMap[name]; !ok {
+			t.Errorf("expected tool %q to be registered when ShortStore is set", name)
 		}
 	}
 }

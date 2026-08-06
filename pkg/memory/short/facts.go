@@ -73,6 +73,70 @@ func (s *Store) DeleteFact(factID int64) error {
 	return nil
 }
 
+// UpdateFact replaces an existing fact's content inside one transaction so a
+// failure cannot leave orphaned rows. Deleting an unknown id is not an error
+// (it degrades to a plain insert). If the new content already exists as a
+// different fact, returns that existing id with inserted=false.
+func (s *Store) UpdateFact(factID int64, content string) (newID int64, inserted bool, err error) {
+	if strings.TrimSpace(content) == "" {
+		return 0, false, errors.New("facts: empty content")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, false, fmt.Errorf("facts: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	if _, err := tx.Exec(`DELETE FROM facts_fts_map WHERE fact_id = ?`, factID); err != nil {
+		return 0, false, fmt.Errorf("facts: delete fts map: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM facts WHERE fact_id = ?`, factID); err != nil {
+		return 0, false, fmt.Errorf("facts: delete fact: %w", err)
+	}
+
+	res, err := tx.Exec(`INSERT OR IGNORE INTO facts(content) VALUES(?)`, content)
+	if err != nil {
+		return 0, false, fmt.Errorf("facts: insert: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("facts: rows affected: %w", err)
+	}
+
+	if rows == 0 {
+		var id int64
+		if err := tx.QueryRow(`SELECT fact_id FROM facts WHERE content = ?`, content).Scan(&id); err != nil {
+			return 0, false, fmt.Errorf("facts: lookup duplicate id: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, false, fmt.Errorf("facts: commit: %w", err)
+		}
+		return id, false, nil
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, fmt.Errorf("facts: last insert id: %w", err)
+	}
+
+	segmented := s.Segment(content)
+	if _, err := tx.Exec(`INSERT INTO facts_fts(segmented_content) VALUES(?)`, segmented); err != nil {
+		return 0, false, fmt.Errorf("facts: insert fts: %w", err)
+	}
+	var ftsRowid int64
+	if err := tx.QueryRow(`SELECT last_insert_rowid()`).Scan(&ftsRowid); err != nil {
+		return 0, false, fmt.Errorf("facts: read fts rowid: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO facts_fts_map(fact_id, fts_rowid) VALUES(?, ?)`, id, ftsRowid); err != nil {
+		return 0, false, fmt.Errorf("facts: insert fts map: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("facts: commit: %w", err)
+	}
+	return id, true, nil
+}
+
 // SearchFacts runs an FTS5 query against the facts index and returns matches
 // ranked by relevance. The query is passed through verbatim so FTS5 operators
 // (AND/OR/NOT, parentheses, prefix) are honored — recall relies on this.
