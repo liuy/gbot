@@ -36,16 +36,9 @@ import (
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/agent"
-	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/computer"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
-	"github.com/liuy/gbot/pkg/tool/filewrite"
-	"github.com/liuy/gbot/pkg/tool/glob"
-	"github.com/liuy/gbot/pkg/tool/grep"
-	"github.com/liuy/gbot/pkg/tool/memory/forget"
-	"github.com/liuy/gbot/pkg/tool/memory/recall"
-	"github.com/liuy/gbot/pkg/tool/memory/remember"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
@@ -511,6 +504,9 @@ func Start(opts Options) (*Instance, error) {
 		// at boot. Engines created later via engine_new are wired inside
 		// createEngineForWUI.
 		for _, vs := range engineMgr.List() {
+			if vs.System {
+				continue // dream engine has no mutable registry (no CreateTools)
+			}
 			registerWUISendTool(vs.Engine, wc)
 		}
 		wc.SetCreateEngineFn(func(name string) (string, error) {
@@ -585,24 +581,31 @@ type dreamEngineDeps struct {
 	DaemonMode         bool
 }
 
-// createDreamEngine builds a standalone top-level engine for dream memory
-// consolidation. It has its own tool map (not CreateTools), its own hub,
-// and AutoCompact configured to the dream model's context window.
+// createDreamEngine builds a top-level engine for dream memory consolidation.
+// It reuses the standard CreateTools path (so it gets a proper ToolRefs/Reg),
+// then applies a whitelist filter to keep only the tools dream needs.
 func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, string, int) {
-	bashReg := bash.NewBackgroundJobRegistry()
-	dreamTools := map[string]tool.Tool{
-		"Read":  fileread.New(),
-		"Edit":  fileedit.New(),
-		"Write": filewrite.New(),
-		"Grep":  grep.New(),
-		"Glob":  glob.New(),
-		"Bash":  bash.New(bashReg),
+	// Build the full tool set via the standard path.
+	dreamRefs := engine.CreateTools(engine.SharedDeps{
+		WorkingDir: d.WorkingDir,
+		GitStatus:  nil,
+		SkillReg:   nil,
+		McpReg:     nil,
+		Hooks:      nil,
+		Cfg:        d.Cfg,
+		LSPReg:     nil,
+		WSRegistry: nil,
+		FactsStore: d.FactsStore,
+		ShortStore: d.Store,
+	}, task.NewList(""))
+
+	// Whitelist: only tools dream needs.
+	dreamWhitelist := []string{
+		"Read", "Write", "Edit", "Bash", "Grep", "Glob",
+		"recall", "remember", "forget",
 	}
-	if d.FactsStore != nil {
-		dreamTools["recall"] = recall.New(d.FactsStore, d.Store)
-		dreamTools["remember"] = remember.New(d.FactsStore)
-		dreamTools["forget"] = forget.New(d.FactsStore)
-	}
+	dreamDef := types.AgentDefinition{Tools: dreamWhitelist}
+	dreamTools := agent.ResolveAgentTools(dreamRefs.Reg.ToolMapFn()(), &dreamDef)
 
 	dreamProv := d.Provider
 	dreamModel := d.Model
@@ -649,7 +652,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		TokenBudget:   dreamCtxWindow,
 		AutoCompact: engine.AutoCompactConfig{
 			ContextWindow:          dreamCtxWindow,
-			MaxConsecutiveFailures: 0,
+			MaxConsecutiveFailures: 3,
 		},
 		Compactor:         nil,
 		Logger:            d.Logger,
@@ -663,9 +666,22 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		EngineID:          "dream",
 		InputModalities:   nil,
 	})
+	dreamEng.SetToolRefs(dreamRefs)
+	engine.WireEngine(dreamEng, dreamRefs, engine.SharedDeps{
+		WorkingDir: d.WorkingDir,
+		GitStatus:  nil,
+		SkillReg:   nil,
+		McpReg:     nil,
+		Hooks:      nil,
+		Cfg:        d.Cfg,
+		LSPReg:     nil,
+		WSRegistry: nil,
+		FactsStore: d.FactsStore,
+		ShortStore: d.Store,
+	})
 	dreamEng.SetSystemPrompt(dream.BuildConsolidationPrompt(memoryDir, ""))
 	dreamEng.SetOnClose(func(sessionID string) {
-		bashReg.CleanupCompleted()
+		dreamRefs.BashReg.CleanupCompleted()
 	})
 	return dreamEng, dreamHandler, dreamModel, dreamCtxWindow
 }
