@@ -1269,7 +1269,7 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 		case types.ContentTypeToolUse:
 			entry := historyToolEntry{
 				ID:      cb.ID,
-				Name:    formatToolDisplayName(cb.Name),
+				Name:    historyAgentToolName(cb.Name, cb.Input),
 				Summary: computeToolSummary(cb.Name, cb.Input, tools),
 			}
 			// Compute search/read/list classification from tool definition.
@@ -1578,6 +1578,25 @@ func formatToolDisplayName(name string) string {
 		return name
 	}
 	return parts[1] + " - " + parts[2] + " (MCP)"
+}
+
+// historyAgentToolName returns the display name for a history tool_use block,
+// appending the sub-agent type for Agent tools. The live path appends agent
+// type on the client (updateAgentToolName); history replay must recover it
+// from the persisted input since no tool-start event is replayed.
+func historyAgentToolName(name string, input json.RawMessage) string {
+	display := formatToolDisplayName(name)
+	if name != "Agent" {
+		return display
+	}
+	var parsed types.AgentInput
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return display
+	}
+	if parsed.SubagentType == "" || parsed.SubagentType == "fork" {
+		return display
+	}
+	return display + " " + parsed.SubagentType
 }
 
 // computeToolSummary calls the tool's Description — same as TUI.

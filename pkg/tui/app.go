@@ -619,6 +619,10 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 							Done:       true,
 							Elapsed:    elapsed,
 							SearchRead: srk,
+							// Resume from persisted tool_use input: the live path
+							// fills AgentType from the tool-start event, which is
+							// not replayed here — parse it from the input instead.
+							AgentType: agentTypeFromInput(block.Name, block.Input),
 						},
 					})
 				}

@@ -8866,6 +8866,63 @@ func TestResume_ToolResultError(t *testing.T) {
 	}
 }
 
+func TestResume_AgentToolSetsAgentType(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Agent", Input: json.RawMessage(`{"description":"Plan implementation","prompt":"plan it","subagent_type":"Planner"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"plan done"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	if len(views) != 1 || len(views[0].Blocks) != 1 {
+		t.Fatalf("views=%d blocks=%d", len(views), len(views[0].Blocks))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if tc.Name != "Agent" {
+		t.Errorf("name = %q, want Agent", tc.Name)
+	}
+	if tc.AgentType != "Planner" {
+		t.Errorf("AgentType = %q, want Planner (parsed from subagent_type input)", tc.AgentType)
+	}
+	// Non-agent tool must NOT get an agent type.
+	msgs2 := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_2", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_2", Content: json.RawMessage(`[{"type":"text","text":"file"}]`)},
+		}},
+	}
+	views2 := engineMessagesToViews(msgs2, nil)
+	if len(views2) != 1 || len(views2[0].Blocks) != 1 {
+		t.Fatalf("views2=%d blocks2=%d", len(views2), len(views2[0].Blocks))
+	}
+	if views2[0].Blocks[0].ToolCall.AgentType != "" {
+		t.Errorf("Bash AgentType = %q, want empty", views2[0].Blocks[0].ToolCall.AgentType)
+	}
+	// Agent with subagent_type "fork" must not set AgentType (fork is internal).
+	msgs3 := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_3", Name: "Agent", Input: json.RawMessage(`{"description":"fork task","prompt":"do it","subagent_type":"fork"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_3", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
+		}},
+	}
+	views3 := engineMessagesToViews(msgs3, nil)
+	if tc3 := views3[0].Blocks[0].ToolCall; tc3.AgentType != "" {
+		t.Errorf("fork AgentType = %q, want empty", tc3.AgentType)
+	}
+	// Agent with malformed JSON input must not set AgentType.
+	msgs4 := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_4", Name: "Agent", Input: json.RawMessage(`not json`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_4", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
+		}},
+	}
+	views4 := engineMessagesToViews(msgs4, nil)
+	if tc4 := views4[0].Blocks[0].ToolCall; tc4.AgentType != "" {
+		t.Errorf("malformed AgentType = %q, want empty", tc4.AgentType)
+	}
+}
+
 func TestResume_MessagesWithOnlyTools_NoSkip(t *testing.T) {
 	// Before: messages with only tool blocks were skipped (no text → no view).
 	// Now: tool-only messages should be rendered.

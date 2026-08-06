@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -907,6 +908,24 @@ func agentTypeName(tc *ToolCallView) string {
 		return tc.AgentLogs[0].AgentType
 	}
 	return ""
+}
+
+// agentTypeFromInput extracts the sub-agent type from an Agent tool_use input.
+// The live rendering path gets AgentType from the tool-start event; persisted
+// history replays tool_use blocks without that event, so the type must be
+// recovered from the input. Returns "" for non-Agent tools or unparseable input.
+func agentTypeFromInput(toolName string, input json.RawMessage) string {
+	if toolName != "Agent" {
+		return ""
+	}
+	var parsed types.AgentInput
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return ""
+	}
+	if parsed.SubagentType == "" || parsed.SubagentType == "fork" {
+		return ""
+	}
+	return parsed.SubagentType
 }
 
 func renderStatsText(tcv *ToolCallView) string {

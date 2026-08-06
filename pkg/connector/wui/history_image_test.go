@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -348,3 +349,74 @@ func TestHistoryImageDataURL_Base64CacheHit(t *testing.T) {
 
 // Ensure media package is imported in case future test cases need it.
 var _ = media.CategoryImage
+
+// TestBuildHistoryChatMsg_AgentToolAppendsAgentType verifies the history
+// replay of an Agent tool_use block appends the sub-agent type to the display
+// name, matching what the live streaming path renders ("Agent Planner").
+func TestBuildHistoryChatMsg_AgentToolAppendsAgentType(t *testing.T) {
+	c := newTestConnector(t)
+	m := types.Message{
+		ID:        "m-agent",
+		Role:      types.RoleAssistant,
+		Timestamp: fixedTimestamp,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Agent", Input: json.RawMessage(`{"description":"Plan it","prompt":"plan","subagent_type":"Planner"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
+		},
+	}
+	hm := c.buildHistoryChatMsg(m, nil, nil)
+	if len(hm.Tools) != 1 {
+		t.Fatalf("Tools = %d, want 1", len(hm.Tools))
+	}
+	if got := hm.Tools[0].Name; got != "Agent Planner" {
+		t.Errorf("Tool name = %q, want 'Agent Planner'", got)
+	}
+
+	// Non-Agent tool keeps its plain display name.
+	m2 := types.Message{
+		ID:        "m-bash",
+		Role:      types.RoleAssistant,
+		Timestamp: fixedTimestamp,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_2", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_2", Content: json.RawMessage(`[{"type":"text","text":"file"}]`)},
+		},
+	}
+	hm2 := c.buildHistoryChatMsg(m2, nil, nil)
+	if len(hm2.Tools) != 1 {
+		t.Fatalf("Tools2 = %d, want 1", len(hm2.Tools))
+	}
+	if got := hm2.Tools[0].Name; got != "Bash" {
+		t.Errorf("Bash name = %q, want 'Bash'", got)
+	}
+
+	// Agent with subagent_type "fork" must not append (fork is internal).
+	m3 := types.Message{
+		ID:        "m-fork",
+		Role:      types.RoleAssistant,
+		Timestamp: fixedTimestamp,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_3", Name: "Agent", Input: json.RawMessage(`{"description":"fork task","prompt":"do it","subagent_type":"fork"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_3", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
+		},
+	}
+	hm3 := c.buildHistoryChatMsg(m3, nil, nil)
+	if hm3.Tools[0].Name != "Agent" {
+		t.Errorf("fork Tool name = %q, want 'Agent'", hm3.Tools[0].Name)
+	}
+
+	// Agent with malformed JSON input must not append.
+	m4 := types.Message{
+		ID:        "m-bad",
+		Role:      types.RoleAssistant,
+		Timestamp: fixedTimestamp,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_4", Name: "Agent", Input: json.RawMessage(`not json`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_4", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
+		},
+	}
+	hm4 := c.buildHistoryChatMsg(m4, nil, nil)
+	if hm4.Tools[0].Name != "Agent" {
+		t.Errorf("malformed Tool name = %q, want 'Agent'", hm4.Tools[0].Name)
+	}
+}
