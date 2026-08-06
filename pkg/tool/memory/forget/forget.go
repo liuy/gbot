@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/liuy/gbot/pkg/memory/facts"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 )
 
@@ -24,7 +24,7 @@ type Output struct {
 }
 
 // New creates the forget tool.
-func New(store *facts.Store) tool.Tool {
+func New(store *short.Store) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["fact_id"],

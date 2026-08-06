@@ -12,7 +12,6 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
-	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
@@ -48,9 +47,9 @@ type SharedDeps struct {
 	// running". Set only by the daemon entrypoint (cmd/gbot).
 	WSRegistry *computer.ConnectionRegistry
 
-	// FactsStore and ShortStore enable the recall tool for the main agent.
-	// Both must be non-nil for recall to register; nil = recall unavailable.
-	FactsStore *facts.Store
+	// ShortStore enables the recall tool for the main agent. When non-nil,
+	// recall searches both structured facts and message history.
+	// nil = recall unavailable.
 	ShortStore *short.Store
 }
 
@@ -122,11 +121,11 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// against the inbound device pool.
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
-	// recall: read-only search of facts + messages. Only registered when both
-	// stores are available; nil guards let the rest of the toolset work when
-	// facts/persistence is disabled.
-	if deps.FactsStore != nil && deps.ShortStore != nil {
-		reg.MustRegister(recall.New(deps.FactsStore, deps.ShortStore))
+	// recall: read-only search of facts + messages. ShortStore satisfies both
+	// the FactSearcher and MessageSearcher interfaces. nil guard lets the rest
+	// of the toolset work when persistence is disabled.
+	if deps.ShortStore != nil {
+		reg.MustRegister(recall.New(deps.ShortStore, deps.ShortStore))
 	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}

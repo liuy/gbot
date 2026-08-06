@@ -2,45 +2,30 @@ package remember
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/memory/facts"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
-	_ "modernc.org/sqlite"
 )
 
-func openTestDB(t *testing.T) (*sql.DB, func()) {
+func openFactStore(t *testing.T) *short.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite", dbPath)
+	store, err := short.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("short.NewStore: %v", err)
 	}
-	for _, p := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"} {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			t.Fatalf("pragma %q: %v", p, err)
-		}
-	}
-	return db, func() { _ = db.Close() }
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
-func identitySegmenter(s string) string { return s }
-
 func TestRemember_New(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
-	input, _ := json.Marshal(Input{Content: "张三 喜欢 蓝色"})
+	input, _ := json.Marshal(Input{Content: "alice likes blue"})
 	result, err := r.Call(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -60,7 +45,7 @@ func TestRemember_New(t *testing.T) {
 	}
 
 	// Verify the fact was persisted.
-	hits, err := fs.SearchFacts("蓝色", 10)
+	hits, err := fs.SearchFacts("blue", 10)
 	if err != nil {
 		t.Fatalf("SearchFacts: %v", err)
 	}
@@ -73,12 +58,7 @@ func TestRemember_New(t *testing.T) {
 }
 
 func TestRemember_Duplicate(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
 	// First call — stores.
@@ -111,16 +91,11 @@ func TestRemember_Duplicate(t *testing.T) {
 }
 
 func TestRemember_EmptyContent(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
 	input, _ := json.Marshal(Input{Content: ""})
-	_, err = r.Call(context.Background(), input, nil)
+	_, err := r.Call(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("empty content should error")
 	}
@@ -130,27 +105,17 @@ func TestRemember_EmptyContent(t *testing.T) {
 }
 
 func TestRemember_MissingContent(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
-	_, err = r.Call(context.Background(), json.RawMessage(`{}`), nil)
+	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("missing content should error")
 	}
 }
 
 func TestRemember_NotReadOnly(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 	if r.IsReadOnly(nil) {
 		t.Error("remember should NOT be read-only")

@@ -1,5 +1,5 @@
 // Package recall implements the recall tool: a combined FTS5 search across
-// structured facts (pkg/memory/facts) and message history (pkg/memory/short).
+// structured facts and message history (both in pkg/memory/short).
 // The query is passed raw to both stores so FTS5 boolean operators (AND, OR,
 // NOT) and parentheses are honored — the LLM uses these to express precise
 // queries. Malformed queries degrade to empty results rather than failing.
@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -27,8 +26,14 @@ type MessageSearcher interface {
 // time — a nil Facts Store makes recall search only messages, and vice versa.
 // In practice both are non-nil when facts is enabled.
 type Deps struct {
-	Facts    *facts.Store
+	Facts    FactSearcher
 	Messages MessageSearcher
+}
+
+// FactSearcher abstracts the fact store so tests can inject a fake.
+// *short.Store satisfies this interface.
+type FactSearcher interface {
+	SearchFacts(query string, limit int) ([]short.Fact, error)
 }
 
 // Input is the recall tool input schema.
@@ -59,7 +64,7 @@ type Output struct {
 
 // New creates the recall tool. factsStore and msgs may be nil individually;
 // at least one must be non-nil or the tool is inert (returns empty results).
-func New(factsStore *facts.Store, msgs MessageSearcher) tool.Tool {
+func New(factsStore FactSearcher, msgs MessageSearcher) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["query"],

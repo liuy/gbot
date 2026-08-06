@@ -1,0 +1,245 @@
+package short
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestAddFact_Insert(t *testing.T) {
+	store := openTestStore(t)
+
+	id, inserted, err := store.AddFact("alice likes blue")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if !inserted {
+		t.Error("first AddFact should report inserted=true")
+	}
+	if id <= 0 {
+		t.Errorf("fact_id should be > 0, got %d", id)
+	}
+	hits, err := store.SearchFacts("blue", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	if hits[0].ID != id {
+		t.Errorf("hit id = %d, want %d", hits[0].ID, id)
+	}
+	if hits[0].Content != "alice likes blue" {
+		t.Errorf("content = %q, want original", hits[0].Content)
+	}
+}
+
+func TestAddFact_Duplicate(t *testing.T) {
+	store := openTestStore(t)
+
+	id1, inserted1, err := store.AddFact("dup fact")
+	if err != nil {
+		t.Fatalf("first AddFact: %v", err)
+	}
+	id2, inserted2, err := store.AddFact("dup fact")
+	if err != nil {
+		t.Fatalf("second AddFact: %v", err)
+	}
+	if inserted2 {
+		t.Error("duplicate AddFact should report inserted=false")
+	}
+	if id1 != id2 {
+		t.Errorf("duplicate should return same id: got %d and %d", id1, id2)
+	}
+	if !inserted1 {
+		t.Error("first insert should report inserted=true")
+	}
+	// Verify no duplicate FTS map row was added on the second call.
+	var mapCount int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id1).Scan(&mapCount); err != nil {
+		t.Fatalf("count map rows: %v", err)
+	}
+	if mapCount != 1 {
+		t.Errorf("facts_fts_map should have exactly 1 row for this fact, got %d", mapCount)
+	}
+}
+
+func TestAddFact_Empty(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if _, _, err := store.AddFact(in); err == nil {
+			t.Errorf("AddFact(%q) should error", in)
+		}
+	}
+}
+
+func TestDeleteFact_Cascade(t *testing.T) {
+	store := openTestStore(t)
+
+	id, _, err := store.AddFact("to be deleted")
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := store.DeleteFact(id); err != nil {
+		t.Fatalf("DeleteFact: %v", err)
+	}
+	hits, err := store.SearchFacts("deleted", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts after delete: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("expected 0 hits after delete, got %d", len(hits))
+	}
+	// facts_fts_map row must be cleared so the orphaned FTS row can't JOIN back.
+	var mapCount int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id).Scan(&mapCount); err != nil {
+		t.Fatalf("count map: %v", err)
+	}
+	if mapCount != 0 {
+		t.Errorf("map should be empty after delete, got %d rows", mapCount)
+	}
+}
+
+func TestDeleteFact_NonExistent(t *testing.T) {
+	store := openTestStore(t)
+
+	// Deleting an unknown id must not error.
+	if err := store.DeleteFact(99999); err != nil {
+		t.Errorf("DeleteFact(unknown) returned error: %v", err)
+	}
+}
+
+func TestSearchFacts_AndOrNot(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, c := range []string{
+		"alice likes blue",
+		"alice likes red",
+		"bob is teacher",
+	} {
+		if _, _, err := store.AddFact(c); err != nil {
+			t.Fatalf("AddFact(%q): %v", c, err)
+		}
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		wantHits int
+	}{
+		{"AND hit", "blue AND alice", 1},
+		{"AND miss", "blue AND red", 0},
+		{"OR both colors", "alice AND (blue OR red)", 2},
+		{"NOT teacher", "teacher NOT alice", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hits, err := store.SearchFacts(tt.query, 10)
+			if err != nil {
+				t.Fatalf("SearchFacts(%q): %v", tt.query, err)
+			}
+			if len(hits) != tt.wantHits {
+				t.Errorf("query %q: got %d hits, want %d", tt.query, len(hits), tt.wantHits)
+				for _, h := range hits {
+					t.Logf("  hit: id=%d content=%q", h.ID, h.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchFacts_Malformed(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, q := range []string{"(", "*", "AND"} {
+		hits, err := store.SearchFacts(q, 10)
+		if err != nil {
+			t.Errorf("SearchFacts(%q) should not error on malformed query, got: %v", q, err)
+		}
+		if hits != nil {
+			t.Errorf("SearchFacts(%q) should return nil, got %d hits", q, len(hits))
+		}
+	}
+}
+
+func TestSearchFacts_Empty(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, q := range []string{"", "   ", "\t"} {
+		hits, err := store.SearchFacts(q, 10)
+		if err != nil {
+			t.Fatalf("SearchFacts(%q): %v", q, err)
+		}
+		if hits != nil {
+			t.Errorf("SearchFacts(%q) should return nil, got %d hits", q, len(hits))
+		}
+	}
+}
+
+func TestSearchFacts_LimitClamp(t *testing.T) {
+	store := openTestStore(t)
+
+	// Insert 3 facts sharing the "apple" token.
+	for i := range 3 {
+		if _, _, err := store.AddFact("apple variant " + string(rune('a'+i))); err != nil {
+			t.Fatalf("AddFact: %v", err)
+		}
+	}
+	// limit <= 0 → default 50 → returns all 3
+	hits, err := store.SearchFacts("apple", 0)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Errorf("default limit: got %d hits, want 3", len(hits))
+	}
+	// limit > 200 → clamped to 200 (still returns all 3 here)
+	hits, err = store.SearchFacts("apple", 500)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Errorf("clamped limit: got %d hits, want 3", len(hits))
+	}
+	// limit = 1
+	hits, err = store.SearchFacts("apple", 1)
+	if err != nil {
+		t.Fatalf("SearchFacts: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Errorf("limit=1: got %d hits, want 1", len(hits))
+	}
+}
+
+func TestSearchFacts_PersistenceAcrossInstances(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	s1, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore s1: %v", err)
+	}
+	if _, _, err := s1.AddFact("persist me"); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	s2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore s2: %v", err)
+	}
+	defer s2.Close()
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close s1: %v", err)
+	}
+
+	hits, err := s2.SearchFacts("persist", 10)
+	if err != nil {
+		t.Fatalf("SearchFacts s2: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Errorf("s2 should see persisted fact: got %d hits", len(hits))
+	}
+	if !strings.Contains(hits[0].Content, "persist") {
+		t.Errorf("unexpected content: %q", hits[0].Content)
+	}
+}

@@ -1,59 +1,18 @@
-// Package facts implements structured fact storage on top of the same SQLite
-// database that backs pkg/memory/short. The facts table holds long-lived,
-// user-centric facts extracted by the dream agent; recall/remember/forget are
-// the tools the LLM uses to query and mutate it.
-//
-// Architecture mirrors messages_fts: a contentless FTS5 virtual table plus a
-// map table. gse pre-segmentation is injected via Segmenter so the package has
-// no dependency on pkg/memory/short.
-package facts
+package short
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// Segmenter tokenizes text for FTS5 indexing (gse pre-segmentation). Injected
-// from the caller (short.Store.Segment) so facts has no dependency on the
-// short package or gse directly.
-type Segmenter func(string) string
-
-// Store owns the facts schema and queries. It shares a *sql.DB with the short
-// store (same memory.db file); it never closes the handle — the caller owns it.
-type Store struct {
-	db      *sql.DB
-	segment Segmenter
-}
-
-// Fact is one row of the facts table.
+// Fact represents one structured fact row.
 type Fact struct {
 	ID        int64
 	Content   string
 	CreatedAt time.Time
 }
-
-// NewStore attaches a facts schema to db and runs initSchema. db is owned by
-// the caller (typically short.Store.DB()). segment is invoked before every FTS
-// write to pre-tokenize content.
-func NewStore(db *sql.DB, segment Segmenter) (*Store, error) {
-	if db == nil {
-		return nil, errors.New("facts: nil db")
-	}
-	if segment == nil {
-		return nil, errors.New("facts: nil segmenter")
-	}
-	s := &Store{db: db, segment: segment}
-	if err := s.initSchema(); err != nil {
-		return nil, fmt.Errorf("facts: init schema: %w", err)
-	}
-	return s, nil
-}
-
-// Close is a no-op: db is shared with short.Store, which owns the lifecycle.
-func (s *Store) Close() error { return nil }
 
 // AddFact stores content if it is not already present. Returns the fact_id and
 // whether a new row was inserted (false = duplicate). On duplicate the
@@ -87,7 +46,7 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 		return 0, false, fmt.Errorf("facts: last insert id: %w", err)
 	}
 
-	segmented := s.segment(content)
+	segmented := s.Segment(content)
 	if _, err := s.db.Exec(`INSERT INTO facts_fts(segmented_content) VALUES(?)`, segmented); err != nil {
 		return 0, false, fmt.Errorf("facts: insert fts: %w", err)
 	}
@@ -103,7 +62,7 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 
 // DeleteFact removes a fact and its FTS map entry. Deleting an unknown id is
 // not an error. The contentless FTS row is orphaned (JOIN via the map table
-// breaks, so it stops matching) — matches deleteFTS in pkg/memory/short.
+// breaks, so it stops matching) — matches deleteFTS for messages.
 func (s *Store) DeleteFact(factID int64) error {
 	if _, err := s.db.Exec(`DELETE FROM facts_fts_map WHERE fact_id = ?`, factID); err != nil {
 		return fmt.Errorf("facts: delete fts map: %w", err)

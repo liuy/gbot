@@ -2,34 +2,25 @@ package recall
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
-	_ "modernc.org/sqlite"
 )
 
-// openTestDB opens a fresh SQLite database in a temp dir.
-func openTestDB(t *testing.T) (*sql.DB, func()) {
+// openFactStore creates a short.Store in a temp dir for testing.
+func openFactStore(t *testing.T) *short.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite", dbPath)
+	store, err := short.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("short.NewStore: %v", err)
 	}
-	for _, p := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"} {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			t.Fatalf("pragma %q: %v", p, err)
-		}
-	}
-	return db, func() { _ = db.Close() }
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 // fakeMessages is a controllable MessageSearcher for recall tests.
@@ -42,17 +33,10 @@ func (f *fakeMessages) SearchMessages(query string, opts *short.SearchOptions) (
 	return f.results, f.err
 }
 
-func identitySegmenter(s string) string { return s }
-
 func TestRecall_MissingQuery(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs, &fakeMessages{})
-	_, err = r.Call(context.Background(), json.RawMessage(`{}`), nil)
+	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error for missing query")
 	}
@@ -62,13 +46,8 @@ func TestRecall_MissingQuery(t *testing.T) {
 }
 
 func TestRecall_HitsBothSources(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
-	if _, _, err := fs.AddFact("张三 喜欢 蓝色"); err != nil {
+	fs := openFactStore(t)
+	if _, _, err := fs.AddFact("alice likes blue"); err != nil {
 		t.Fatalf("AddFact: %v", err)
 	}
 
@@ -76,7 +55,7 @@ func TestRecall_HitsBothSources(t *testing.T) {
 		results: []*short.SearchResult{
 			{
 				TranscriptMessage: &short.TranscriptMessage{
-					Content:   `[{"type":"text","text":"张三 mentioned 蓝色 today"}]`,
+					Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
 					CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
 				},
 			},
@@ -84,7 +63,7 @@ func TestRecall_HitsBothSources(t *testing.T) {
 	}
 
 	r := New(fs, msgs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"蓝色"}`), nil)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -95,7 +74,7 @@ func TestRecall_HitsBothSources(t *testing.T) {
 	if len(out.Facts) != 1 {
 		t.Errorf("expected 1 fact hit, got %d", len(out.Facts))
 	} else {
-		if out.Facts[0].Content != "张三 喜欢 蓝色" {
+		if out.Facts[0].Content != "alice likes blue" {
 			t.Errorf("fact content = %q", out.Facts[0].Content)
 		}
 		if out.Facts[0].Date == "" {
@@ -108,7 +87,7 @@ func TestRecall_HitsBothSources(t *testing.T) {
 	if len(out.Messages) != 1 {
 		t.Errorf("expected 1 message hit, got %d", len(out.Messages))
 	} else {
-		if out.Messages[0].Content != "张三 mentioned 蓝色 today" {
+		if out.Messages[0].Content != "alice mentioned blue today" {
 			t.Errorf("msg content = %q", out.Messages[0].Content)
 		}
 		if out.Messages[0].Date != "2026-07-15" {
@@ -118,12 +97,7 @@ func TestRecall_HitsBothSources(t *testing.T) {
 }
 
 func TestRecall_MalformedQuery(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	if _, _, err := fs.AddFact("apple banana"); err != nil {
 		t.Fatalf("AddFact: %v", err)
 	}
@@ -143,12 +117,7 @@ func TestRecall_MalformedQuery(t *testing.T) {
 }
 
 func TestRecall_EmptyResults(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 
 	r := New(fs, &fakeMessages{})
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"nothinghere"}`), nil)
@@ -175,17 +144,12 @@ func TestRecall_EmptyResults(t *testing.T) {
 }
 
 func TestRecall_LimitClamp(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 
 	r := New(fs, &fakeMessages{})
 
 	// limit=0 → default 50
-	_, err = r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":0}`), nil)
+	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":0}`), nil)
 	if err != nil {
 		t.Fatalf("limit=0: %v", err)
 	}
@@ -198,12 +162,7 @@ func TestRecall_LimitClamp(t *testing.T) {
 }
 
 func TestRecall_IsReadOnly(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs, &fakeMessages{})
 	if !r.IsReadOnly(nil) {
 		t.Error("recall should be read-only")

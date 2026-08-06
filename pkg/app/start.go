@@ -25,7 +25,6 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/dream"
-	"github.com/liuy/gbot/pkg/memory/facts"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -219,18 +218,6 @@ func Start(opts Options) (*Instance, error) {
 		}
 	}
 
-	// factsStore shares the same SQLite handle as the short store. Fallback to
-	// nil on failure: recall is not registered, dream skips facts extraction.
-	var factsStore *facts.Store
-	if store != nil {
-		fs, err := facts.NewStore(store.DB(), store.Segment)
-		if err != nil {
-			slog.Warn("main: failed to open facts store, facts/recall disabled", "error", err)
-		} else {
-			factsStore = fs
-		}
-	}
-
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
 		GitStatus:  gitStatus,
@@ -240,7 +227,6 @@ func Start(opts Options) (*Instance, error) {
 		Cfg:        cfg,
 		LSPReg:     lspReg,
 		WSRegistry: wsRegistry,
-		FactsStore: factsStore,
 		ShortStore: store,
 	}
 
@@ -414,7 +400,6 @@ func Start(opts Options) (*Instance, error) {
 			PrimaryProviderCfg: primaryProviderCfg,
 			Model:              model,
 			WorkingDir:         workingDir,
-			FactsStore:         factsStore,
 			Store:              store,
 			Logger:             logger,
 			DaemonMode:         opts.DaemonMode,
@@ -576,7 +561,6 @@ type dreamEngineDeps struct {
 	Model              string
 	WorkingDir         string
 	Store              *short.Store
-	FactsStore         *facts.Store
 	Logger             *slog.Logger
 	DaemonMode         bool
 }
@@ -595,7 +579,6 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		Cfg:        d.Cfg,
 		LSPReg:     nil,
 		WSRegistry: nil,
-		FactsStore: d.FactsStore,
 		ShortStore: d.Store,
 	}, task.NewList(""))
 
@@ -676,7 +659,6 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		Cfg:        d.Cfg,
 		LSPReg:     nil,
 		WSRegistry: nil,
-		FactsStore: d.FactsStore,
 		ShortStore: d.Store,
 	})
 	dreamEng.SetSystemPrompt(dream.BuildConsolidationPrompt(memoryDir, ""))

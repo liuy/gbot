@@ -2,41 +2,26 @@ package forget
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/memory/facts"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
-	_ "modernc.org/sqlite"
 )
 
-func openTestDB(t *testing.T) (*sql.DB, func()) {
+func openFactStore(t *testing.T) *short.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite", dbPath)
+	store, err := short.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("short.NewStore: %v", err)
 	}
-	for _, p := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"} {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			t.Fatalf("pragma %q: %v", p, err)
-		}
-	}
-	return db, func() { _ = db.Close() }
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
-func identitySegmenter(s string) string { return s }
-
 func TestForget_DeletesExisting(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	id, _, err := fs.AddFact("to be forgotten")
 	if err != nil {
 		t.Fatalf("AddFact: %v", err)
@@ -70,12 +55,7 @@ func TestForget_DeletesExisting(t *testing.T) {
 }
 
 func TestForget_NonExistentId(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
 	input, _ := json.Marshal(Input{FactID: 99999})
@@ -90,27 +70,17 @@ func TestForget_NonExistentId(t *testing.T) {
 }
 
 func TestForget_InvalidJSON(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 
-	_, err = r.Call(context.Background(), json.RawMessage(`not json`), nil)
+	_, err := r.Call(context.Background(), json.RawMessage(`not json`), nil)
 	if err == nil {
 		t.Fatal("invalid JSON should error")
 	}
 }
 
 func TestForget_NotReadOnly(t *testing.T) {
-	db, cleanup := openTestDB(t)
-	defer cleanup()
-	fs, err := facts.NewStore(db, identitySegmenter)
-	if err != nil {
-		t.Fatalf("facts.NewStore: %v", err)
-	}
+	fs := openFactStore(t)
 	r := New(fs)
 	if r.IsReadOnly(nil) {
 		t.Error("forget should NOT be read-only")
