@@ -665,7 +665,8 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 	dreamEng.SetOnClose(func(sessionID string) {
 		dreamRefs.BashReg.CleanupCompleted()
 	})
-	return dreamEng, dreamHandler, dreamModel, dreamCtxWindow
+	dreamDisplayModel := dreamProv.Name() + "/" + dreamModel
+	return dreamEng, dreamHandler, dreamDisplayModel, dreamCtxWindow
 }
 
 // dreamEngineAdapter bridges *engine.Engine to the dream.DreamEngine interface.
