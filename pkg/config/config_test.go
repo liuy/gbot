@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/types"
@@ -1144,5 +1145,96 @@ func TestIsPluginEnabled(t *testing.T) {
 				t.Errorf("IsPluginEnabled(%q) = %v, want %v", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDreamConfig_Defaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		json         string
+		wantEnabled  bool
+		wantIdle     time.Duration
+		wantCooldown time.Duration
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "missing key defaults enabled with 2h idle 6h cooldown",
+			json:         `{}`,
+			wantEnabled:  true,
+			wantIdle:     2 * time.Hour,
+			wantCooldown: 6 * time.Hour,
+		},
+		{
+			name:         "explicit disable",
+			json:         `{"dream":{"disabled":true}}`,
+			wantEnabled:  false,
+			wantIdle:     2 * time.Hour,
+			wantCooldown: 6 * time.Hour,
+		},
+		{
+			name:         "custom durations",
+			json:         `{"dream":{"idle_threshold":"30m","cooldown":"1h"}}`,
+			wantEnabled:  true,
+			wantIdle:     30 * time.Minute,
+			wantCooldown: 1 * time.Hour,
+		},
+		{
+			name:        "invalid idle_threshold",
+			json:        `{"dream":{"idle_threshold":"notaduration"}}`,
+			wantErr:     true,
+			errContains: "idle_threshold",
+		},
+		{
+			name:        "invalid cooldown",
+			json:        `{"dream":{"cooldown":"bad"}}`,
+			wantErr:     true,
+			errContains: "cooldown",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var cfg config.Config
+			if err := json.Unmarshal([]byte(tc.json), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			enabled, idle, cooldown, err := cfg.Dream.Defaults()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errContains)
+				}
+				if !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if enabled != tc.wantEnabled {
+				t.Errorf("enabled = %v, want %v", enabled, tc.wantEnabled)
+			}
+			if idle != tc.wantIdle {
+				t.Errorf("idle = %v, want %v", idle, tc.wantIdle)
+			}
+			if cooldown != tc.wantCooldown {
+				t.Errorf("cooldown = %v, want %v", cooldown, tc.wantCooldown)
+			}
+		})
+	}
+}
+
+func TestDreamConfig_ModelPassthrough(t *testing.T) {
+	t.Parallel()
+	raw := `{"dream":{"model":"zhipu/glm-flash"}}`
+	var cfg config.Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.Dream.Model != "zhipu/glm-flash" {
+		t.Errorf("Model = %q, want %q", cfg.Dream.Model, "zhipu/glm-flash")
 	}
 }

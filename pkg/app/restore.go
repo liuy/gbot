@@ -86,6 +86,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
 			ReadOnly:        false,
+			System:          false,
 		})
 	}
 

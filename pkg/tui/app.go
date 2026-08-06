@@ -226,6 +226,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
 			ReadOnly:        false,
+			System:          false,
 		})
 	}
 	return NewAppWithManager(mgr, systemPrompt, h)

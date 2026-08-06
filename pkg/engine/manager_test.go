@@ -377,5 +377,38 @@ func TestPersistMeta_EmptyProjectDir_Noop(t *testing.T) {
 	}
 }
 
+func TestPersistMeta_SkipsSystemEngines(t *testing.T) {
+	dir := t.TempDir()
+	m := NewEngineManager()
+	m.Add(&EngineViewState{
+		ID:              "main",
+		Name:            "main",
+		Model:           "sonnet",
+		ActiveSessionID: "sess-main",
+		Repl:            fakeRepl{},
+	})
+	m.Add(&EngineViewState{
+		ID:              "dream",
+		Name:            "Dream",
+		Model:           "sonnet",
+		ActiveSessionID: "sess-dream",
+		Repl:            fakeRepl{},
+		System:          true,
+	})
+	if err := m.PersistMeta(dir); err != nil {
+		t.Fatalf("PersistMeta: %v", err)
+	}
+	meta, err := short.ReadWorkspaceMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.Engines) != 1 {
+		t.Fatalf("expected 1 engine in meta (dream excluded), got %d", len(meta.Engines))
+	}
+	if meta.Engines[0].ID != "main" {
+		t.Errorf("engine[0].ID = %q, want main", meta.Engines[0].ID)
+	}
+}
+
 // Ensure time is referenced (used by fakeRepl test setups above for future fields).
 var _ = time.Now

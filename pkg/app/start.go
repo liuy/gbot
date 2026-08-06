@@ -84,8 +84,12 @@ func Start(opts Options) (*Instance, error) {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	var dreamCancel context.CancelFunc
 	go func() {
 		<-sigCh
+		if dreamCancel != nil {
+			dreamCancel()
+		}
 		pidCleanup()
 		os.Exit(0)
 	}()
@@ -387,46 +391,6 @@ func Start(opts Options) (*Instance, error) {
 			slog.Info("session memory: wired", "engine_id", id)
 		}
 
-		if dream.IsEnabled() && store != nil && contextWindow > 0 {
-			dreamCfg := dream.DefaultConfig()
-			dreamRunFn := func(ctx context.Context, prompt string) error {
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				dreamTools := map[string]tool.Tool{
-					"Read":  fileread.New(),
-					"Edit":  fileedit.New(),
-					"Write": filewrite.New(),
-					"Grep":  grep.New(),
-					"Glob":  glob.New(),
-					// Dream is an independent agent that needs Bash to read
-					// files and run commands. A fresh registry per call binds
-					// commands to the 5min context above.
-					"Bash": bash.New(bash.NewBackgroundJobRegistry()),
-				}
-				if factsStore != nil {
-					dreamTools["recall"] = recall.New(factsStore, store)
-					dreamTools["remember"] = remember.New(factsStore)
-					dreamTools["forget"] = forget.New(factsStore)
-				}
-				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
-					SystemPrompt:    "",
-					Tools:           dreamTools,
-					Model:           "",
-					ParentToolUseID: "",
-					AgentType:       "auto_dream",
-					MaxTurns:        30,
-				})
-				defer subEng.Close()
-				result := subEng.QuerySync(ctx, "", prompt)
-				return result.Error
-			}
-			memoryDir := long.GetMemoryPath(workingDir)
-			dreamMgr := dream.NewManager(dreamCfg, memoryDir, contextWindow,
-				store, dreamRunFn, newEng.Dispatcher(), slog.Default())
-			newEng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
-			slog.Info("dream: wired", "engine_id", id)
-		}
-
 		newEng.SetToolRefs(refs)
 		return newEng, handler, nil
 	}
@@ -441,6 +405,61 @@ func Start(opts Options) (*Instance, error) {
 			projectDir: projectDir,
 			model:      model,
 		})
+	}
+
+	dreamEnabled, _, _, dreamCfgErr := cfg.Dream.Defaults()
+	if dreamCfgErr != nil {
+		slog.Warn("dream: config error, dream disabled", "error", dreamCfgErr)
+		dreamEnabled = false
+	}
+	if dreamEnabled && store != nil && contextWindow > 0 {
+		memoryDir := long.GetMemoryPath(workingDir)
+		dreamEng, dreamHandler, dreamModel, dreamCtxWindow := createDreamEngine(dreamEngineDeps{
+			Cfg:                cfg,
+			ProviderMap:        providerMap,
+			Provider:           provider,
+			PrimaryProviderCfg: primaryProviderCfg,
+			Model:              model,
+			WorkingDir:         workingDir,
+			FactsStore:         factsStore,
+			Store:              store,
+			Logger:             logger,
+			DaemonMode:         opts.DaemonMode,
+		})
+		dreamEng.SetStore(store, projectDir)
+		resumeDreamSession(dreamEng, store, projectDir)
+
+		engineMgr.Add(&engine.EngineViewState{
+			Engine:          dreamEng,
+			Handler:         dreamHandler,
+			Repl:            tui.NewReplSnapshot(),
+			History:         nil,
+			ID:              "dream",
+			Name:            "Dream",
+			ActiveSessionID: dreamEng.SessionID(),
+			Model:           dreamModel,
+			CreatedAt:       time.Now(),
+			LastActiveAt:    time.Now(),
+			ReadOnly:        false,
+			System:          true,
+		})
+
+		dreamCtx, dreamCancelFn := context.WithCancel(context.Background())
+		dreamCancel = dreamCancelFn
+		_, idle, cooldown, _ := cfg.Dream.Defaults()
+		go dream.RunDreamTimer(dreamCtx, dream.TimerParams{
+			Engine:        &dreamEngineAdapter{eng: dreamEng},
+			Store:         store,
+			IdleQuerier:   store,
+			MemoryDir:     memoryDir,
+			ContextWindow: dreamCtxWindow,
+			IdleThreshold: idle,
+			Cooldown:      cooldown,
+			TickInterval:  10 * time.Minute,
+			Logger:        logger,
+		})
+		slog.Info("dream: persistent engine started",
+			"model", dreamModel, "context_window", dreamCtxWindow)
 	}
 
 	states, _ := wechat.LoadAllStates(projectDir)
@@ -550,4 +569,132 @@ func Start(opts Options) (*Instance, error) {
 		Logger:             logger,
 		PIDCleanup:         pidCleanup,
 	}, nil
+}
+
+// dreamEngineDeps holds the dependencies for building the persistent dream engine.
+type dreamEngineDeps struct {
+	Cfg                *config.Config
+	ProviderMap        map[string]llm.Provider
+	Provider           llm.Provider
+	PrimaryProviderCfg *config.Provider
+	Model              string
+	WorkingDir         string
+	Store              *short.Store
+	FactsStore         *facts.Store
+	Logger             *slog.Logger
+	DaemonMode         bool
+}
+
+// createDreamEngine builds a standalone top-level engine for dream memory
+// consolidation. It has its own tool map (not CreateTools), its own hub,
+// and AutoCompact configured to the dream model's context window.
+func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, string, int) {
+	bashReg := bash.NewBackgroundJobRegistry()
+	dreamTools := map[string]tool.Tool{
+		"Read":  fileread.New(),
+		"Edit":  fileedit.New(),
+		"Write": filewrite.New(),
+		"Grep":  grep.New(),
+		"Glob":  glob.New(),
+		"Bash":  bash.New(bashReg),
+	}
+	if d.FactsStore != nil {
+		dreamTools["recall"] = recall.New(d.FactsStore, d.Store)
+		dreamTools["remember"] = remember.New(d.FactsStore)
+		dreamTools["forget"] = forget.New(d.FactsStore)
+	}
+
+	dreamProv := d.Provider
+	dreamModel := d.Model
+	if d.Cfg.Dream.Model != "" {
+		if dp, dm, err := d.Cfg.ResolveModelByName(d.Cfg.Dream.Model); err != nil {
+			slog.Warn("dream: resolve model failed, using default", "model", d.Cfg.Dream.Model, "error", err)
+		} else if dp != nil {
+			if p, ok := d.ProviderMap[dp.Name]; ok {
+				dreamProv = p
+				dreamModel = dm
+			}
+		}
+	}
+
+	dreamProviderCfg := d.PrimaryProviderCfg
+	if dreamProv != d.Provider {
+		for i := range d.Cfg.Providers {
+			if d.Cfg.Providers[i].Name == dreamProv.Name() {
+				dreamProviderCfg = &d.Cfg.Providers[i]
+				break
+			}
+		}
+	}
+	dreamCtxWindow := dreamProviderCfg.ResolveContext(dreamModel)
+	dreamMaxTokens := dreamProviderCfg.ResolveMaxTokens(dreamModel)
+
+	var dreamHub types.EventDispatcher
+	var dreamHandler *tui.TUIHandler
+	if d.DaemonMode {
+		dreamHub = hub.NewHub()
+	} else {
+		h, handler := tui.NewEngineHubWithHandler("dream", nil)
+		dreamHub = h
+		dreamHandler = handler
+	}
+
+	memoryDir := long.GetMemoryPath(d.WorkingDir)
+	dreamEng := engine.New(&engine.Params{
+		Provider:      dreamProv,
+		ToolsProvider: func() map[string]tool.Tool { return dreamTools },
+		Model:         dreamModel,
+		MaxTokens:     dreamMaxTokens,
+		MaxTurns:      0,
+		TokenBudget:   dreamCtxWindow,
+		AutoCompact: engine.AutoCompactConfig{
+			ContextWindow:          dreamCtxWindow,
+			MaxConsecutiveFailures: 0,
+		},
+		Compactor:         nil,
+		Logger:            d.Logger,
+		Dispatcher:        dreamHub,
+		MCPRegistry:       nil,
+		Hooks:             nil,
+		PermissionChecker: nil,
+		WorkingDir:        d.WorkingDir,
+		TaskList:          task.NewList(""),
+		ModelThinking:     nil,
+		EngineID:          "dream",
+		InputModalities:   nil,
+	})
+	dreamEng.SetSystemPrompt(dream.BuildConsolidationPrompt(memoryDir, ""))
+	dreamEng.SetOnClose(func(sessionID string) {
+		bashReg.CleanupCompleted()
+	})
+	return dreamEng, dreamHandler, dreamModel, dreamCtxWindow
+}
+
+// dreamEngineAdapter bridges *engine.Engine to the dream.DreamEngine interface.
+type dreamEngineAdapter struct {
+	eng *engine.Engine
+}
+
+func (a *dreamEngineAdapter) IsBusy() bool {
+	return a.eng.IsBusy()
+}
+
+func (a *dreamEngineAdapter) RunChunk(ctx context.Context, userMessage string) error {
+	result := a.eng.QuerySync(ctx, userMessage, a.eng.SystemPrompt())
+	return result.Error
+}
+
+// resumeDreamSession restores the dream engine's previous session if one
+// exists, otherwise creates a fresh one.
+func resumeDreamSession(eng *engine.Engine, store *short.Store, projectDir string) {
+	sessions, err := store.ListSessionsByEngine(projectDir, "dream", 1)
+	if err == nil && len(sessions) > 0 {
+		if _, err := eng.SwitchSession(sessions[0].SessionID); err == nil {
+			slog.Info("dream: resumed session", "sessionID", sessions[0].SessionID[:8])
+			return
+		}
+	}
+	if err := eng.NewSession(projectDir, "Dream"); err != nil {
+		slog.Warn("dream: create session failed", "error", err)
+	}
 }

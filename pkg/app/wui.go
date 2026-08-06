@@ -69,6 +69,7 @@ func createEngineForWUI(
 		Repl:            nil,
 		History:         nil,
 		ReadOnly:        false,
+		System:          false,
 	}
 	mgr.Add(vs)
 	connector.RegisterEngine(vs)

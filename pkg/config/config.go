@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
 	"github.com/liuy/gbot/pkg/llm"
@@ -54,12 +55,50 @@ type Config struct {
 	// Model is optional: "provider/model" or "model" (fuzzy search);
 	// empty = inherit parent engine's model.
 	SessionNotes SessionNotesConfig `json:"session_notes"`
+
+	// Dream controls the persistent background dream engine that
+	// consolidates conversation memory. Disabled defaults to false (enabled)
+	// using inverted Disabled semantics matching SessionNotes.
+	Dream DreamConfig `json:"dream"`
 }
 
 // SessionNotesConfig configures the session memory sub-agent.
 type SessionNotesConfig struct {
 	Disabled bool   `json:"disabled,omitempty"`
 	Model    string `json:"model,omitempty"`
+}
+
+// DreamConfig configures the persistent dream engine. Uses Disabled (inverted
+// semantics) so omitting the key from settings.json leaves dream enabled.
+type DreamConfig struct {
+	Disabled      bool   `json:"disabled,omitempty"`
+	IdleThreshold string `json:"idle_threshold,omitempty"` // duration string: "2h", "30m"
+	Cooldown      string `json:"cooldown,omitempty"`       // duration string: "6h"
+	Model         string `json:"model,omitempty"`          // "provider/model" or "model"
+}
+
+// Defaults resolves the dream configuration into concrete values. Empty
+// IdleThreshold defaults to 2h, empty Cooldown defaults to 6h. Returns the
+// enabled flag, parsed durations, and a parse error for invalid strings.
+func (d DreamConfig) Defaults() (enabled bool, idle, cooldown time.Duration, err error) {
+	enabled = !d.Disabled
+	idleStr := d.IdleThreshold
+	if idleStr == "" {
+		idleStr = "2h"
+	}
+	cooldownStr := d.Cooldown
+	if cooldownStr == "" {
+		cooldownStr = "6h"
+	}
+	idle, err = time.ParseDuration(idleStr)
+	if err != nil {
+		return enabled, 0, 0, fmt.Errorf("dream idle_threshold %q: %w", idleStr, err)
+	}
+	cooldown, err = time.ParseDuration(cooldownStr)
+	if err != nil {
+		return enabled, 0, 0, fmt.Errorf("dream cooldown %q: %w", cooldownStr, err)
+	}
+	return enabled, idle, cooldown, nil
 }
 
 // ModelConfig holds per-model metadata.

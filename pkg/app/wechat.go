@@ -111,6 +111,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 			Model:           d.primaryProviderCfg.Name + "/" + d.model,
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
+			System:          false,
 		})
 	} else {
 		// Restored from meta.json via restoreEngines, which builds the

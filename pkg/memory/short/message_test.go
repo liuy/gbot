@@ -666,6 +666,119 @@ func TestMessagesSince_Empty(t *testing.T) {
 	}
 }
 
+func TestLastAssistantTime_EmptyDB(t *testing.T) {
+	store := openTestStore(t)
+	got, err := store.LastAssistantTime()
+	if err != nil {
+		t.Fatalf("LastAssistantTime: %v", err)
+	}
+	if !got.IsZero() {
+		t.Errorf("expected zero time for empty DB, got %v", got)
+	}
+}
+
+func TestLastAssistantTime_OnlyUserMessages(t *testing.T) {
+	store := openTestStore(t)
+	sid := "test-session"
+	createTestSession(t, store, sid)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	msg := &TranscriptMessage{
+		UUID:      "uuid-user",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"hello"}]`,
+		CreatedAt: base,
+	}
+	if err := store.AppendMessage(sid, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	got, err := store.LastAssistantTime()
+	if err != nil {
+		t.Fatalf("LastAssistantTime: %v", err)
+	}
+	if !got.IsZero() {
+		t.Errorf("expected zero time with only user messages, got %v", got)
+	}
+}
+
+func TestLastAssistantTime_ReturnsMax(t *testing.T) {
+	store := openTestStore(t)
+	sid := "test-session"
+	createTestSession(t, store, sid)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	early := &TranscriptMessage{
+		UUID:      "uuid-early",
+		Type:      "assistant",
+		Content:   `[{"type":"text","text":"early"}]`,
+		CreatedAt: base,
+	}
+	late := &TranscriptMessage{
+		UUID:      "uuid-late",
+		Type:      "assistant",
+		Content:   `[{"type":"text","text":"late"}]`,
+		CreatedAt: base.Add(3 * time.Hour),
+	}
+	userMsg := &TranscriptMessage{
+		UUID:      "uuid-user",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"between"}]`,
+		CreatedAt: base.Add(2 * time.Hour),
+	}
+	if err := store.AppendMessage(sid, early); err != nil {
+		t.Fatalf("AppendMessage early: %v", err)
+	}
+	if err := store.AppendMessage(sid, userMsg); err != nil {
+		t.Fatalf("AppendMessage user: %v", err)
+	}
+	if err := store.AppendMessage(sid, late); err != nil {
+		t.Fatalf("AppendMessage late: %v", err)
+	}
+	got, err := store.LastAssistantTime()
+	if err != nil {
+		t.Fatalf("LastAssistantTime: %v", err)
+	}
+	want := base.Add(3 * time.Hour)
+	if !got.Equal(want) {
+		t.Errorf("LastAssistantTime = %v, want %v (max of assistant messages)", got, want)
+	}
+}
+
+func TestLastAssistantTime_ExcludesSidechain(t *testing.T) {
+	store := openTestStore(t)
+	sid := "test-session"
+	createTestSession(t, store, sid)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mainAssistant := &TranscriptMessage{
+		UUID:      "uuid-main",
+		Type:      "assistant",
+		Content:   `[{"type":"text","text":"main"}]`,
+		CreatedAt: base,
+	}
+	// Sidechain assistant has a later timestamp but must be excluded.
+	sidechain := &TranscriptMessage{
+		UUID:        "uuid-side",
+		Type:        "assistant",
+		Content:     `[{"type":"text","text":"side"}]`,
+		CreatedAt:   base.Add(5 * time.Hour),
+		IsSidechain: 1,
+	}
+	if err := store.AppendMessage(sid, mainAssistant); err != nil {
+		t.Fatalf("AppendMessage main: %v", err)
+	}
+	if err := store.AppendMessage(sid, sidechain); err != nil {
+		t.Fatalf("AppendMessage side: %v", err)
+	}
+	got, err := store.LastAssistantTime()
+	if err != nil {
+		t.Fatalf("LastAssistantTime: %v", err)
+	}
+	if !got.Equal(base) {
+		t.Errorf("LastAssistantTime = %v, want %v (sidechain must be excluded)", got, base)
+	}
+}
+
 func TestRemoveMessageByUUID(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"

@@ -41,6 +41,12 @@ type EngineViewState struct {
 	// Read by switchEngine to set the input into a read-only state and by
 	// handleSubmitRepl to reject submits defensively.
 	ReadOnly bool
+
+	// System marks a system-level engine (e.g. dream) that is excluded from
+	// PersistMeta — it is always created fresh after restore, never serialized
+	// to meta.json. Its session IS persisted in SQLite (resumable via
+	// ListSessionsByEngine).
+	System bool
 }
 
 // EngineViewSnapshot is a point-in-time copy of an EngineViewState for
@@ -284,6 +290,9 @@ func (m *EngineManager) PersistMeta(projectDir string) error {
 	}
 	for _, id := range m.order {
 		vs := m.engines[id]
+		if vs.System {
+			continue
+		}
 		em := short.EngineMeta{
 			ID:              vs.ID,
 			Name:            vs.Name,

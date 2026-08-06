@@ -394,6 +394,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		CreatedAt:       time.Now(),
 		LastActiveAt:    time.Now(),
 		ReadOnly:        false,
+		System:          false,
 	}
 	a.engineMgr.Add(vs)
 	// Handler is already subscribed to the engine's own Hub inside the

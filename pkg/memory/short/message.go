@@ -316,6 +316,28 @@ func (s *Store) MessagesSince(since time.Time) ([]*TranscriptMessage, error) {
 	return messages, rows.Err()
 }
 
+// LastAssistantTime returns the latest created_at among main-thread assistant
+// messages (is_sidechain = 0). Returns a zero time.Time when no assistant
+// message exists. Used by the dream timer to evaluate the idle gate.
+func (s *Store) LastAssistantTime() (time.Time, error) {
+	query := `
+		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
+		       is_sidechain, type, subtype, content, metadata, created_at
+		FROM messages
+		WHERE type = 'assistant' AND is_sidechain = 0
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	msg, err := s.queryOneMessage(query)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("query last assistant time: %w", err)
+	}
+	return msg.CreatedAt, nil
+}
+
 // RecordSidechainTranscript stores a sub-agent's transcript.
 // Messages are marked with is_sidechain=1.
 // TS align: recordSidechainTranscript (sessionStorage.ts:2800-2830)
