@@ -383,4 +383,54 @@ func TestAddFact_SegmentsContent(t *testing.T) {
 	if ftsMatch != 1 {
 		t.Errorf("facts_fts MATCH 'hello' should return 1 row, got %d", ftsMatch)
 	}
+
+	// CJK content is bigram-indexed: "事务化验证" -> "事务 务化 化验 验证".
+	// Searching the "验证" bigram must hit the indexed row.
+	id2, _, err := store.AddFact("事务化验证")
+	if err != nil {
+		t.Fatalf("AddFact CJK: %v", err)
+	}
+	var cjkMatch int
+	err = store.DB().QueryRow("SELECT COUNT(*) FROM facts_fts WHERE segmented_content MATCH ?", "验证").Scan(&cjkMatch)
+	if err != nil {
+		t.Fatalf("MATCH CJK query on facts_fts: %v", err)
+	}
+	if cjkMatch != 1 {
+		t.Errorf("facts_fts MATCH '验证' should return 1 row for fact_id %d, got %d", id2, cjkMatch)
+	}
+}
+
+// TestSearchFacts_CJKQuery verifies that SearchFacts segments the query the
+// same way as the index, so CJK terms hit. Without SegmentQuery on the query
+// side, "事务" would fail to match bigram-indexed "事务化验证".
+func TestSearchFacts_CJKQuery(t *testing.T) {
+	store := openTestStore(t)
+
+	if _, _, err := store.AddFact("事务化验证"); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		wantHits int
+	}{
+		// bigram query "事务" matches indexed bigram of "事务化验证"
+		{"single bigram", "事务", 1},
+		// "验证" is the trailing bigram
+		{"trailing bigram", "验证", 1},
+		// "事务化" segments to "事务 务化" — both present, implicit AND -> hit
+		{"multi bigram AND", "事务化", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hits, err := store.SearchFacts(tt.query, 10)
+			if err != nil {
+				t.Fatalf("SearchFacts(%q): %v", tt.query, err)
+			}
+			if len(hits) != tt.wantHits {
+				t.Errorf("query %q: got %d hits, want %d", tt.query, len(hits), tt.wantHits)
+			}
+		})
+	}
 }

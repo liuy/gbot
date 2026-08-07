@@ -1,10 +1,12 @@
 package short
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestNewStore_ErrorPaths verifies NewStore error handling.
@@ -56,16 +58,22 @@ func TestDBPath_ReturnsPath(t *testing.T) {
 	}
 }
 
-// TestSegment_Fallback verifies Segment works with a bare Store.
-// gse is a global singleton, so if already loaded by another test,
-// Segment will produce tokenized output. If not yet loaded, it returns
-// the original text. Either outcome is acceptable.
-func TestSegment_Fallback(t *testing.T) {
+// TestSegment_BareStore verifies Segment works with a bare Store (no DB needed)
+// via the package-level bigram analyzer. CJK ideographs become bigrams.
+func TestSegment_BareStore(t *testing.T) {
 	store := &Store{}
-	text := "测试中文segmentation"
-	result := store.Segment(text)
-	if result == "" {
-		t.Error("Segment() should not return empty string")
+	// 4 ideographs -> bigrams "事务 务化" (no trailing unigram with outputUnigram=false)
+	result := store.Segment("事务化")
+	if result != "事务 务化" {
+		t.Errorf("Segment(\"事务化\") = %q, want \"事务 务化\"", result)
+	}
+	// Latin stays whole.
+	if got := store.Segment("hello world"); got != "hello world" {
+		t.Errorf("Segment(\"hello world\") = %q, want \"hello world\"", got)
+	}
+	// Empty input short-circuits.
+	if got := store.Segment(""); got != "" {
+		t.Errorf("Segment(\"\") = %q, want \"\"", got)
 	}
 }
 
@@ -262,13 +270,6 @@ func TestNewStore_PragmaError(t *testing.T) {
 	t.Skip("requires mocking sql.DB.Exec to fail on pragma")
 }
 
-// TestNewStore_GseFailure verifies NewStore handles gse init failures.
-func TestNewStore_GseFailure(t *testing.T) {
-	// gse init failures are hard to mock without changing the code
-	// The gse init is tested indirectly via successful tests
-	t.Skip("requires mocking gse.LoadDict")
-}
-
 // Lines 53-55: NewStore — sql.Open error
 func TestNewStore_SQLOpenError(t *testing.T) {
 	// Use an invalid database path that will fail to open
@@ -293,12 +294,6 @@ func TestNewStore_PragmaFailure(t *testing.T) {
 	}
 }
 
-// Lines 70-73: NewStore — gse init error (hard to trigger)
-func TestNewStore_GseInitError(t *testing.T) {
-	// gse init is a singleton, can't easily force failure.
-	// Already tested indirectly via successful tests.
-}
-
 // Lines 76-79: NewStore — initSchema error
 func TestNewStore_InitSchemaError(t *testing.T) {
 	// Create a read-only directory
@@ -318,12 +313,15 @@ func TestNewStore_InitSchemaError(t *testing.T) {
 	}
 }
 
-// TestNewStore_PragmaError tests NewStore failing when pragma fails.
+// TestNewStore_PragmaError tests NewStore failing on a corrupted database file.
+// With DSN-based pragmas, the failure surfaces during schema init (the
+// corrupted file can't be read as SQLite), not during a db.Exec("PRAGMA")
+// call.
 func TestNewStore_PragmaError_V2(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := dir + "/test.db"
 
-	// Write garbage to make SQLite fail on pragmas
+	// Write garbage to make SQLite fail on open/schema.
 	if err := writeGarbageFile(dbPath); err != nil {
 		t.Fatalf("writeGarbageFile: %v", err)
 	}
@@ -332,10 +330,14 @@ func TestNewStore_PragmaError_V2(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewStore should fail with corrupted database file")
 	}
-	// The error should mention pragma or open
+	// The error should mention schema/open/database/file — any indicator that
+	// SQLite rejected the file. We don't assert a specific wording since the
+	// failure point (DSN pragma vs schema init) is driver-dependent.
 	errStr := err.Error()
-	if !strings.Contains(errStr, "pragma") && !strings.Contains(errStr, "open") && !strings.Contains(errStr, "SQL") {
-		t.Errorf("error should mention pragma/open/SQL, got: %v", errStr)
+	if !strings.Contains(errStr, "schema") && !strings.Contains(errStr, "open") &&
+		!strings.Contains(errStr, "SQL") && !strings.Contains(errStr, "database") &&
+		!strings.Contains(errStr, "file") {
+		t.Errorf("error should mention schema/open/database/file, got: %v", errStr)
 	}
 }
 
@@ -343,4 +345,64 @@ func TestNewStore_PragmaError_V2(t *testing.T) {
 func writeGarbageFile(path string) error {
 	garbage := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD, 0x80, 0x81}
 	return os.WriteFile(path, garbage, 0644)
+}
+
+// TestAddFact_ConcurrentWithMessageWrites verifies that AddFact running on
+// one connection while messages are written on another does not hit
+// SQLITE_BUSY. With _txlock=immediate in the DSN, every tx.Begin() acquires
+// the reserved lock up front, so busy_timeout covers all contention. Without
+// it, two connections can deadlock trying to upgrade from read to write.
+func TestAddFact_ConcurrentWithMessageWrites(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Seed a session so message inserts succeed.
+	_, _ = store.DB().Exec(`INSERT INTO sessions(session_id, project_dir) VALUES('s1', '/tmp')`)
+
+	// Hammer messages from one goroutine (simulates engine streaming writes).
+	stop := make(chan struct{})
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = store.DB().Exec(
+					`INSERT INTO messages(session_id, uuid, type, content) VALUES('s1', ?, 'user', ?)`,
+					fmt.Sprintf("msg-%d", i), strings.Repeat("x", 200),
+				)
+				i++
+			}
+		}
+	}()
+
+	// Call AddFact repeatedly — each opens its own transaction.
+	// If any connection lacks busy_timeout or txlock, some calls will fail.
+	var busyCount, okCount int
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case <-timeout:
+			goto done
+		default:
+		}
+		_, _, err := store.AddFact(fmt.Sprintf("fact %d", okCount))
+		if err != nil {
+			if strings.Contains(err.Error(), "BUSY") || strings.Contains(err.Error(), "locked") {
+				busyCount++
+			}
+			continue
+		}
+		okCount++
+	}
+done:
+	close(stop)
+
+	if busyCount > 0 {
+		t.Errorf("got %d SQLITE_BUSY errors out of %d attempts — _txlock=immediate or _pragma not applied to all connections", busyCount, okCount+busyCount)
+	}
 }

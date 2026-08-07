@@ -67,9 +67,8 @@ func TestSearchMessages_English(t *testing.T) {
 	}
 }
 
-// TestSearchMessages_Chinese tests Chinese full-text search with gse segmentation.
+// TestSearchMessages_Chinese tests Chinese full-text search with bigram segmentation.
 func TestSearchMessages_Chinese(t *testing.T) {
-	initGse() // block until gse dictionary is loaded
 	store, cleanup := testStore(t)
 	defer cleanup()
 
@@ -107,10 +106,9 @@ func TestSearchMessages_Chinese(t *testing.T) {
 		}
 	}
 
-	// Search for "会话 管理" — space-separated because SearchMessages no
-	// longer Segments the query; gse splits compound Chinese terms in the
-	// index, so the query must match gse's token boundaries.
-	results, err := store.SearchMessages("会话 管理", &SearchOptions{
+	// Search for "会话管理" — SegmentQuery segments it into bigrams
+	// ("会话 话管 管理") which all match the indexed bigrams of "会话管理功能".
+	results, err := store.SearchMessages("会话管理", &SearchOptions{
 		SessionID: sessionID,
 		Limit:     10,
 	})
@@ -119,7 +117,7 @@ func TestSearchMessages_Chinese(t *testing.T) {
 	}
 
 	if len(results) == 0 {
-		t.Errorf("expected at least 1 result for '会话 管理', got %d", len(results))
+		t.Errorf("expected at least 1 result for '会话管理', got %d", len(results))
 	}
 
 	// Verify the result contains the search term
@@ -929,10 +927,9 @@ func TestSanitizeFTSQuery_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestSearchMessages_AndOrNot verifies that after removing Segment(query) from
-// SearchMessages, FTS5 boolean operators AND/OR/NOT work against the
-// gse-pre-segmented index. Content is pre-segmented manually so the test does
-// not depend on gse dictionary load timing.
+// TestSearchMessages_AndOrNot verifies that after SegmentQuery, FTS5 boolean
+// operators AND/OR/NOT work against the bigram-pre-segmented index. Content is
+// pre-segmented manually so the test does not depend on segmentation timing.
 func TestSearchMessages_AndOrNot(t *testing.T) {
 	store, cleanup := testStore(t)
 	defer cleanup()
@@ -966,9 +963,8 @@ func TestSearchMessages_AndOrNot(t *testing.T) {
 		if err := store.db.QueryRow("SELECT seq FROM messages WHERE uuid = ?", m.uuid).Scan(&seq); err != nil {
 			t.Fatalf("get seq: %v", err)
 		}
-		// insertFTS calls store.Segment internally; since gse may not be
-		// loaded yet it falls back to raw text. The content is already
-		// space-separated so it round-trips correctly either way.
+		// insertFTS calls store.Segment internally; the content is already
+		// space-separated so bigram segmentation keeps each term whole.
 		if err := store.insertFTS(store.db, seq, m.content); err != nil {
 			t.Fatalf("insertFTS: %v", err)
 		}

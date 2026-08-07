@@ -152,8 +152,9 @@ func (s *Store) UpdateFact(factID int64, content string) (newID int64, inserted 
 }
 
 // SearchFacts runs an FTS5 query against the facts index and returns matches
-// ranked by relevance. The query is passed through verbatim so FTS5 operators
-// (AND/OR/NOT, parentheses, prefix) are honored — recall relies on this.
+// ranked by relevance. The query is segmented the same way as the index so
+// CJK tokens match; FTS5 operators (AND/OR/NOT, parentheses, prefix) are
+// preserved by SegmentQuery when present so recall's boolean syntax works.
 // Malformed FTS5 syntax yields (nil, nil) rather than failing the whole call.
 func (s *Store) SearchFacts(query string, limit int) ([]Fact, error) {
 	if strings.TrimSpace(query) == "" {
@@ -166,6 +167,7 @@ func (s *Store) SearchFacts(query string, limit int) ([]Fact, error) {
 		limit = 200
 	}
 
+	segmentedQuery := s.SegmentQuery(query)
 	rows, err := s.db.Query(`
 		SELECT f.fact_id, f.content, f.created_at
 		FROM facts_fts ft
@@ -173,7 +175,7 @@ func (s *Store) SearchFacts(query string, limit int) ([]Fact, error) {
 		JOIN facts f ON fm.fact_id = f.fact_id
 		WHERE ft.segmented_content MATCH ?
 		ORDER BY ft.rank
-		LIMIT ?`, query, limit)
+		LIMIT ?`, segmentedQuery, limit)
 	if err != nil {
 		if isMalformedFTSError(err) {
 			return nil, nil

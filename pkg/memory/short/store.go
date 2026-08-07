@@ -3,43 +3,14 @@ package short
 import (
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
-	"sync/atomic"
 
-	"github.com/go-ego/gse"
 	_ "modernc.org/sqlite"
 )
 
 // DB wraps the underlying sql.DB so callers don't need to import database/sql.
 func (s *Store) DB() *sql.DB { return s.db }
-
-// Package-level singleton gse segmenter. gse.New() loads ~50MB of dictionary
-// files (~2.75s). Sharing one instance across all Store objects avoids repeating
-// this cost on every NewStore call. Cut() is safe for concurrent use.
-var (
-	globalGse      gse.Segmenter
-	globalGseOnce  sync.Once
-	globalGseReady atomic.Bool
-)
-
-func initGse() {
-	globalGseOnce.Do(func() {
-		var seg gse.Segmenter
-		if err := seg.LoadDictEmbed("zh"); err != nil {
-			slog.Warn("gse: failed to load dictionary, FTS segmentation disabled", "error", err)
-			return
-		}
-		globalGse = seg
-		globalGseReady.Store(true)
-	})
-}
-
-// GseReady reports whether the gse dictionary has finished loading.
-func GseReady() bool { return globalGseReady.Load() }
 
 // Store manages short-term memory persistence via SQLite. Both messages and
 // facts live in one database file; facts writes are wrapped in transactions so
@@ -60,11 +31,6 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, err
 	}
 
-	// Load gse dictionary in background — it takes ~2-3s and is not
-	// needed for session resume or message persistence. Segment() degrades
-	// gracefully to raw text while the dictionary loads.
-	go initGse()
-
 	s := &Store{db: db, dbPath: dbPath}
 	if err := s.initSchema(); err != nil {
 		_ = db.Close()
@@ -84,37 +50,25 @@ func (s *Store) DBPath() string {
 	return s.dbPath
 }
 
-// openSQLite opens a SQLite database at path and applies the pragmas required
-// for safe single-process concurrency: WAL for non-blocking reads, and
-// busy_timeout as a safety net for the rare case where two goroutines race
-// for the single writer slot.
+// openSQLite opens a SQLite database at path with pragmas applied via the DSN
+// query string. This is critical: db.Exec("PRAGMA ...") only sets the pragma
+// on whichever connection the pool happens to use for that call — other
+// connections in the pool won't inherit it. Using _pragma=N in the DSN ensures
+// every connection the pool creates runs the pragma on open.
+//
+// _txlock=immediate makes every tx.Begin() use BEGIN IMMEDIATE instead of
+// BEGIN DEFERRED: the transaction acquires the reserved (write) lock up front
+// rather than lazily upgrading from a read lock on first write. This is
+// mandatory for multi-connection correctness — without it, two connections
+// can each hold a shared (read) lock and then deadlock trying to upgrade to a
+// write lock, and busy_timeout does NOT cover that deadlock.
 func openSQLite(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database %q: %w", path, err)
 	}
-	for _, p := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-	} {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("set pragma %q on %q: %w", p, path, err)
-		}
-	}
 	return db, nil
-}
-
-// Segment tokenizes text using gse for FTS5 indexing.
-// Returns space-separated tokens. Falls back to raw text if the
-// dictionary hasn't finished loading yet.
-func (s *Store) Segment(text string) string {
-	if !globalGseReady.Load() {
-		return text
-	}
-	segments := globalGse.Cut(text, true)
-	return strings.Join(segments, " ")
 }
 
 func (s *Store) initSchema() error {

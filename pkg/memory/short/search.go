@@ -108,18 +108,17 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		opts.Offset = 0
 	}
 
-	// Raw FTS5 query after sanitization. We do NOT Segment the query: gse
-	// lowercases AND/OR/NOT and breaks boolean syntax, while the gse-segmented
-	// index still matches raw terms because FTS5 unicode61 tokenizes on
-	// whitespace and the indexed content was pre-segmented with spaces.
-	sanitizedQuery := sanitizeFTSQuery(query)
+	// Sanitize strips dangerous FTS5 chars; SegmentQuery then segments CJK
+	// terms the same way the index does, while preserving AND/OR/NOT when a
+	// boolean expression is detected so grouped queries still work.
+	segmentedQuery := s.SegmentQuery(sanitizeFTSQuery(query))
 
 	var whereClauses []string
 	var args []any
 
 	// FTS5 MATCH must come first
 	whereClauses = append(whereClauses, "f.segmented_content MATCH ?")
-	args = append(args, sanitizedQuery)
+	args = append(args, segmentedQuery)
 
 	// Optional filters
 	if opts.SessionID != "" {
@@ -228,7 +227,7 @@ func (s *Store) SearchSessions(query string, projectDir string, limit int) ([]*S
 		limit = 50
 	}
 
-	segmentedQuery := s.Segment(sanitizeFTSQuery(query))
+	segmentedQuery := s.SegmentQuery(sanitizeFTSQuery(query))
 
 	var whereClause string
 	var args []any
