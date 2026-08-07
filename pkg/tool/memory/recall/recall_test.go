@@ -83,9 +83,9 @@ func TestRecall_HitsBothSources(t *testing.T) {
 		if out.Messages[0].Content != "alice mentioned blue today" {
 			t.Errorf("msg content = %q", out.Messages[0].Content)
 		}
-		if out.Messages[0].Date != "2026-07-15" {
-			t.Errorf("msg date = %q, want 2026-07-15", out.Messages[0].Date)
-		}
+	if out.Messages[0].Date != "2026-07-15 10:00" {
+		t.Errorf("msg date = %q, want 2026-07-15 10:00", out.Messages[0].Date)
+	}
 	}
 }
 

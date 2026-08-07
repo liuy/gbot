@@ -155,7 +155,7 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 			out.Facts = append(out.Facts, factHit{
 				FactID:  f.ID,
 				Content: f.Content,
-				Date:    f.CreatedAt.Format("2006-01-02"),
+				Date:    f.CreatedAt.Format("2006-01-02 15:04"),
 			})
 		}
 	}
@@ -167,7 +167,7 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		for _, r := range results {
 			out.Messages = append(out.Messages, msgHit{
 				Content: short.ExtractTextFromJSON(r.TranscriptMessage.Content),
-				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02"),
+				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
 			})
 		}
 	}
