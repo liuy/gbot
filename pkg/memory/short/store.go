@@ -2,6 +2,7 @@ package short
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,11 @@ import (
 
 // DB wraps the underlying sql.DB so callers don't need to import database/sql.
 func (s *Store) DB() *sql.DB { return s.db }
+
+// FactsDB returns the separate *sql.DB that owns the facts schema.
+// facts live in their own file (facts.db) so fact writes never contend
+// with the high-volume message writes on memory.db.
+func (s *Store) FactsDB() *sql.DB { return s.factDB }
 
 // Package-level singleton gse segmenter. gse.New() loads ~50MB of dictionary
 // files (~2.75s). Sharing one instance across all Store objects avoids repeating
@@ -42,34 +48,57 @@ func initGse() {
 func GseReady() bool { return globalGseReady.Load() }
 
 // Store manages short-term memory persistence via SQLite.
-// Concurrency is handled by SQLite WAL mode + transactions — no Go-level mutex needed.
+// Facts live in a separate database file (facts.db) so writes to facts
+// never block, and are never blocked by, the message stream.
 type Store struct {
 	db     *sql.DB
 	dbPath string
+
+	factDB     *sql.DB
+	factDBPath string
+}
+
+// openSQLite opens a SQLite database at path and applies the pragmas required
+// for safe single-process concurrency: WAL for non-blocking reads, and
+// busy_timeout as a safety net for the rare case where two goroutines race
+// for the single writer slot.
+func openSQLite(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open database %q: %w", path, err)
+	}
+	for _, p := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA busy_timeout=5000",
+	} {
+		if _, err := db.Exec(p); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("set pragma %q on %q: %w", p, path, err)
+		}
+	}
+	return db, nil
 }
 
 // NewStore opens or creates a SQLite database at dbPath and initializes the schema.
+// Facts are stored in a sibling file (facts.db in the same directory) to keep
+// fact writes on a separate lock from message writes.
 func NewStore(dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := openSQLite(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, err
 	}
 
-	// Performance pragmas
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("set pragma %q: %w", p, err)
-		}
+	// facts.db lives next to memory.db so both share the project's memory dir.
+	factPath := filepath.Join(filepath.Dir(dbPath), "facts.db")
+	factDB, err := openSQLite(factPath)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	// Load gse dictionary in background — it takes ~2-3s and is not
@@ -77,23 +106,34 @@ func NewStore(dbPath string) (*Store, error) {
 	// gracefully to raw text while the dictionary loads.
 	go initGse()
 
-	s := &Store{db: db, dbPath: dbPath}
-	if err := s.initSchema(); err != nil {
+	s := &Store{db: db, dbPath: dbPath, factDB: factDB, factDBPath: factPath}
+	if err := s.initMsgSchema(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
+		_ = factDB.Close()
+		return nil, fmt.Errorf("init msg schema: %w", err)
+	}
+	if err := s.initFactsSchema(); err != nil {
+		_ = db.Close()
+		_ = factDB.Close()
+		return nil, fmt.Errorf("init facts schema: %w", err)
 	}
 
 	return s, nil
 }
 
-// Close shuts down the database connection.
+// Close shuts down both database connections.
 func (s *Store) Close() error {
-	return s.db.Close()
+	return errors.Join(s.db.Close(), s.factDB.Close())
 }
 
-// DBPath returns the database file path.
+// DBPath returns the message database file path.
 func (s *Store) DBPath() string {
 	return s.dbPath
+}
+
+// FactsDBPath returns the facts database file path.
+func (s *Store) FactsDBPath() string {
+	return s.factDBPath
 }
 
 // Segment tokenizes text using gse for FTS5 indexing.
@@ -107,7 +147,7 @@ func (s *Store) Segment(text string) string {
 	return strings.Join(segments, " ")
 }
 
-func (s *Store) initSchema() error {
+func (s *Store) initMsgSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
 		session_id        TEXT PRIMARY KEY,
@@ -175,7 +215,25 @@ func (s *Store) initSchema() error {
 		replacements  TEXT NOT NULL,
 		created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
+	`
+	if _, err := s.db.Exec(schema); err != nil {
+		return fmt.Errorf("init msg schema: %w", err)
+	}
 
+	// Migrate: add metadata column if missing (pre-metadata databases).
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
+
+	// Migrate: add engine_id column to sessions (multi-engine support).
+	// Existing rows backfill to 'main' via DEFAULT.
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN engine_id TEXT NOT NULL DEFAULT 'main'`)
+
+	return nil
+}
+
+// initFactsSchema creates the facts tables on the facts database. Kept separate
+// from initMsgSchema so facts live in their own file (see NewStore).
+func (s *Store) initFactsSchema() error {
+	const schema = `
 	-- Structured facts extracted by the dream agent. Layout mirrors
 	-- messages_fts: a contentless FTS5 index + map table so deletes don't
 	-- need the 'delete' command with old values — removing the map row
@@ -195,17 +253,8 @@ func (s *Store) initSchema() error {
 		PRIMARY KEY (fact_id, fts_rowid)
 	);
 	`
-	_, err := s.db.Exec(schema)
-	if err != nil {
-		return fmt.Errorf("init schema: %w", err)
+	if _, err := s.factDB.Exec(schema); err != nil {
+		return fmt.Errorf("init facts schema: %w", err)
 	}
-
-	// Migrate: add metadata column if missing (pre-metadata databases).
-	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
-
-	// Migrate: add engine_id column to sessions (multi-engine support).
-	// Existing rows backfill to 'main' via DEFAULT.
-	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN engine_id TEXT NOT NULL DEFAULT 'main'`)
-
 	return nil
 }

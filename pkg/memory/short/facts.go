@@ -23,7 +23,7 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 		return 0, false, errors.New("facts: empty content")
 	}
 
-	res, err := s.db.Exec(`INSERT OR IGNORE INTO facts(content) VALUES(?)`, content)
+	res, err := s.factDB.Exec(`INSERT OR IGNORE INTO facts(content) VALUES(?)`, content)
 	if err != nil {
 		return 0, false, fmt.Errorf("facts: insert: %w", err)
 	}
@@ -35,7 +35,7 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 	if rows == 0 {
 		// Duplicate — resolve the existing id so callers can still operate on it.
 		var id int64
-		if err := s.db.QueryRow(`SELECT fact_id FROM facts WHERE content = ?`, content).Scan(&id); err != nil {
+		if err := s.factDB.QueryRow(`SELECT fact_id FROM facts WHERE content = ?`, content).Scan(&id); err != nil {
 			return 0, false, fmt.Errorf("facts: lookup duplicate id: %w", err)
 		}
 		return id, false, nil
@@ -47,14 +47,14 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 	}
 
 	segmented := s.Segment(content)
-	if _, err := s.db.Exec(`INSERT INTO facts_fts(segmented_content) VALUES(?)`, segmented); err != nil {
+	if _, err := s.factDB.Exec(`INSERT INTO facts_fts(segmented_content) VALUES(?)`, segmented); err != nil {
 		return 0, false, fmt.Errorf("facts: insert fts: %w", err)
 	}
 	var ftsRowid int64
-	if err := s.db.QueryRow(`SELECT last_insert_rowid()`).Scan(&ftsRowid); err != nil {
+	if err := s.factDB.QueryRow(`SELECT last_insert_rowid()`).Scan(&ftsRowid); err != nil {
 		return 0, false, fmt.Errorf("facts: read fts rowid: %w", err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO facts_fts_map(fact_id, fts_rowid) VALUES(?, ?)`, id, ftsRowid); err != nil {
+	if _, err := s.factDB.Exec(`INSERT INTO facts_fts_map(fact_id, fts_rowid) VALUES(?, ?)`, id, ftsRowid); err != nil {
 		return 0, false, fmt.Errorf("facts: insert fts map: %w", err)
 	}
 	return id, true, nil
@@ -64,10 +64,10 @@ func (s *Store) AddFact(content string) (factID int64, inserted bool, err error)
 // not an error. The contentless FTS row is orphaned (JOIN via the map table
 // breaks, so it stops matching) — matches deleteFTS for messages.
 func (s *Store) DeleteFact(factID int64) error {
-	if _, err := s.db.Exec(`DELETE FROM facts_fts_map WHERE fact_id = ?`, factID); err != nil {
+	if _, err := s.factDB.Exec(`DELETE FROM facts_fts_map WHERE fact_id = ?`, factID); err != nil {
 		return fmt.Errorf("facts: delete fts map: %w", err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM facts WHERE fact_id = ?`, factID); err != nil {
+	if _, err := s.factDB.Exec(`DELETE FROM facts WHERE fact_id = ?`, factID); err != nil {
 		return fmt.Errorf("facts: delete fact: %w", err)
 	}
 	return nil
@@ -81,7 +81,7 @@ func (s *Store) UpdateFact(factID int64, content string) (newID int64, inserted 
 	if strings.TrimSpace(content) == "" {
 		return 0, false, errors.New("facts: empty content")
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.factDB.Begin()
 	if err != nil {
 		return 0, false, fmt.Errorf("facts: begin tx: %w", err)
 	}
@@ -152,7 +152,7 @@ func (s *Store) SearchFacts(query string, limit int) ([]Fact, error) {
 		limit = 200
 	}
 
-	rows, err := s.db.Query(`
+	rows, err := s.factDB.Query(`
 		SELECT f.fact_id, f.content, f.created_at
 		FROM facts_fts ft
 		JOIN facts_fts_map fm ON ft.rowid = fm.fts_rowid

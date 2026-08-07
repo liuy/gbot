@@ -56,7 +56,7 @@ func TestAddFact_Duplicate(t *testing.T) {
 	}
 	// Verify no duplicate FTS map row was added on the second call.
 	var mapCount int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id1).Scan(&mapCount); err != nil {
+	if err := store.FactsDB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id1).Scan(&mapCount); err != nil {
 		t.Fatalf("count map rows: %v", err)
 	}
 	if mapCount != 1 {
@@ -93,7 +93,7 @@ func TestDeleteFact_Cascade(t *testing.T) {
 	}
 	// facts_fts_map row must be cleared so the orphaned FTS row can't JOIN back.
 	var mapCount int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id).Scan(&mapCount); err != nil {
+	if err := store.FactsDB().QueryRow(`SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?`, id).Scan(&mapCount); err != nil {
 		t.Fatalf("count map: %v", err)
 	}
 	if mapCount != 0 {
@@ -367,7 +367,7 @@ func TestAddFact_SegmentsContent(t *testing.T) {
 	// this fact (proves the insert path ran) and the content is searchable
 	// via MATCH (proves Segment output was indexed).
 	var mapCount int
-	err = store.DB().QueryRow("SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?", id).Scan(&mapCount)
+	err = store.FactsDB().QueryRow("SELECT COUNT(*) FROM facts_fts_map WHERE fact_id = ?", id).Scan(&mapCount)
 	if err != nil {
 		t.Fatalf("count facts_fts_map: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestAddFact_SegmentsContent(t *testing.T) {
 	}
 
 	var ftsMatch int
-	err = store.DB().QueryRow("SELECT COUNT(*) FROM facts_fts WHERE segmented_content MATCH ?", "hello").Scan(&ftsMatch)
+	err = store.FactsDB().QueryRow("SELECT COUNT(*) FROM facts_fts WHERE segmented_content MATCH ?", "hello").Scan(&ftsMatch)
 	if err != nil {
 		t.Fatalf("MATCH query on facts_fts: %v", err)
 	}
