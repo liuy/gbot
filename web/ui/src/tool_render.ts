@@ -30,7 +30,10 @@ function renderDiff(output: string, skipHighlight = false): string {
     const content = skipHighlight ? escapeHtml(line) : highlightLine(line)
     return `<div class="${cls} whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">${content}</div>`
   })
-  return DOMPurify.sanitize(html.join(''), { USE_PROFILES: { html: true } })
+  // Wrap in a container so diff rows are grandchildren of .md-body, not direct
+  // children — .md-body > * + * adds margin-top:0.4em between siblings, which
+  // would gap diff lines apart. The wrapper absorbs that single margin.
+  return `<div class="diff-block">${DOMPurify.sanitize(html.join(''), { USE_PROFILES: { html: true } })}</div>`
 }
 
 function highlightLine(line: string): string {

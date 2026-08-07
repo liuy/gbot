@@ -130,8 +130,8 @@ describe('renderToolOutput integration', () => {
     expect(html).toContain('diff-del')
     expect(html).toContain('diff-add')
     expect(html).toContain('text-t2')
-    // Lines are in separate divs
+    // Lines are in separate divs (3 content divs + 1 diff-block wrapper)
     const divCount = (html.match(/<div /g) || []).length
-    expect(divCount).toBe(3)
+    expect(divCount).toBe(4)
   })
 })
