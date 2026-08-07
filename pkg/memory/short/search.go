@@ -142,6 +142,10 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		}
 		whereClauses = append(whereClauses, fmt.Sprintf("m.type IN (%s)", strings.Join(placeholders, ",")))
 	}
+	if !opts.Since.IsZero() {
+		whereClauses = append(whereClauses, "m.created_at > ?")
+		args = append(args, opts.Since)
+	}
 
 	// Join with sessions table for project_dir filter
 	joinClause := ""
@@ -324,7 +328,7 @@ type dbExec interface {
 // to avoid SQLITE_BUSY from a second connection.
 func (s *Store) insertFTS(db dbExec, seq int64, content string) error {
 	// Extract searchable text from JSON content
-	text := extractTextFromJSON(content)
+	text := ExtractSearchableText(content)
 	segmented := s.Segment(text)
 
 	// Insert into FTS table
@@ -365,23 +369,23 @@ func (s *Store) deleteFTS(seq int64) error {
 	return nil
 }
 
-// extractTextFromJSON extracts plain searchable text from message content JSON.
+// ExtractSearchableText extracts plain searchable text from message content JSON.
+// Includes text blocks, tool_use inputs, and tool_result outputs — matching
+// what insertFTS indexes so callers (e.g. recall snippet) see the same text
+// the FTS index was built from.
 // Mirrors TS transcriptSearch.ts renderableSearchText() logic:
 // - text blocks: include text
 // - tool_use blocks: include input fields (command, pattern, file_path, etc.)
 // - tool_result blocks: include output content (stdout, content, etc.)
 // - thinking blocks: skip (hidden in UI)
 // - system-reminder tags: strip (Claude context, not user-visible)
-func extractTextFromJSON(contentJSON string) string {
-	// Try to parse as JSON array of content blocks
+func ExtractSearchableText(contentJSON string) string {
 	var blocks []json.RawMessage
 	if err := json.Unmarshal([]byte(contentJSON), &blocks); err != nil {
-		// Not an array, try as single block or plain text
 		var singleBlock map[string]any
 		if err2 := json.Unmarshal([]byte(contentJSON), &singleBlock); err2 == nil {
 			blocks = []json.RawMessage{[]byte(contentJSON)}
 		} else {
-			// Plain text string
 			return stripSystemReminders(contentJSON)
 		}
 	}
@@ -392,82 +396,18 @@ func extractTextFromJSON(contentJSON string) string {
 		if err := json.Unmarshal(block, &blockMap); err != nil {
 			continue
 		}
-
 		blockType, _ := blockMap["type"].(string)
-
-		switch blockType {
-		case "text":
-			if text, ok := blockMap["text"].(string); ok {
-				parts = append(parts, text)
-			}
-		case "tool_use":
-			// Extract input fields for searchability
-			if input, ok := blockMap["input"].(map[string]any); ok {
-				parts = append(parts, extractToolUseInput(input)...)
-			}
-		case "tool_result":
-			// Skip "content" field (metadata placeholder), extract actual output
-			// Duck-type common result shapes
-			for _, key := range []string{"stdout", "stderr", "output", "result", "text"} {
-				if val, ok := blockMap[key].(string); ok {
-					parts = append(parts, val)
-				}
-			}
-			// Nested file content (Read tool)
-			if file, ok := blockMap["file"].(map[string]any); ok {
-				if content, ok := file["content"].(string); ok {
-					parts = append(parts, content)
-				}
-			}
-		case "thinking":
-			// Skip - hidden in UI
-		default:
-			// For unknown block types, try to extract any text field
+		if blockType == "text" {
 			if text, ok := blockMap["text"].(string); ok {
 				parts = append(parts, text)
 			}
 		}
 	}
 
-	result := strings.Join(parts, "\n")
-	return stripSystemReminders(result)
-}
-
-// extractToolUseInput extracts searchable fields from tool_use input.
-// Mirrors TS transcriptSearch.ts toolUseSearchText().
-func extractToolUseInput(input map[string]any) []string {
-	var parts []string
-
-	// Primary argument fields shown in UI
-	for _, key := range []string{
-		"command", "pattern", "file_path", "path", "prompt",
-		"description", "query", "url", "skill",
-	} {
-		if val, ok := input[key].(string); ok {
-			parts = append(parts, val)
-		}
-	}
-
-	// Array fields like args[], files[]
-	for _, key := range []string{"args", "files"} {
-		if val, ok := input[key].([]any); ok {
-			var strs []string
-			for _, v := range val {
-				if s, ok := v.(string); ok {
-					strs = append(strs, s)
-				}
-			}
-			if len(strs) > 0 {
-				parts = append(parts, strings.Join(strs, " "))
-			}
-		}
-	}
-
-	return parts
+	return stripSystemReminders(strings.Join(parts, "\n"))
 }
 
 // stripSystemReminders removes <system-reminder> tags and their content.
-// Mirrors TS transcriptSearch.ts system reminder stripping logic.
 func stripSystemReminders(text string) string {
 	const openTag = "<system-reminder>"
 	const closeTag = "</system-reminder>"

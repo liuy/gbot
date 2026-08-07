@@ -72,6 +72,7 @@ type SearchOptions struct {
 	Types      []string // Filter by message type
 	Limit      int
 	Offset     int
+	Since      time.Time // Zero value = no time filter
 }
 
 // SearchResult holds a matched message with its relevance score.

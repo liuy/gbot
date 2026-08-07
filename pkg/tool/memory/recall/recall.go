@@ -10,11 +10,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 )
+
+// sinceRe parses the since parameter: a count + unit (h/d/w/m/y).
+var sinceRe = regexp.MustCompile(`^(\d+)([hdwmy])$`)
+
+// ftsTermSplitRe splits an FTS5 query into candidate terms for snippet
+// centering. Operators (AND, OR, NOT, NEAR) and syntax chars are delimiters.
+var ftsTermSplitRe = regexp.MustCompile(`[\s()"*~^{}\[\]]+`)
 
 // Deps holds the store recall queries.
 type Deps struct {
@@ -23,8 +34,10 @@ type Deps struct {
 
 // Input is the recall tool input schema.
 type Input struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit,omitempty"`
+	Query  string `json:"query"`
+	Source string `json:"source,omitempty"` // "facts" | "messages" | "all"; default "facts"
+	Since  string `json:"since,omitempty"`  // "7d" | "12h" | "2w" | "3m" | "1y"
+	Limit  int    `json:"limit,omitempty"`
 }
 
 // factHit is one structured-fact match.
@@ -56,7 +69,19 @@ func New(store *short.Store) tool.Tool {
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."			},
+				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."
+			},
+			"source": {
+				"type": "string",
+				"enum": ["facts", "messages", "all"],
+				"description": "Search scope. 'facts' = structured facts only (default), 'messages' = conversation history only, 'all' = both.",
+				"default": "facts"
+			},
+			"since": {
+				"type": "string",
+				"description": "Time range filter (e.g. '7d' for 7 days, '12h' for 12 hours, '2w' for 2 weeks, '3m' for 3 months, '1y' for 1 year). Omit for no limit.",
+				"pattern": "^\\d+[hdwmy]$"
+			},
 			"limit": {
 				"type": "integer",
 				"default": 50,
@@ -124,7 +149,8 @@ func New(store *short.Store) tool.Tool {
 	})
 }
 
-// execute runs the recall query against both stores and merges results.
+// execute runs the recall query against the selected source(s) and merges
+// results.
 func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -132,6 +158,19 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 	}
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, fmt.Errorf("query is required")
+	}
+
+	source := in.Source
+	if source == "" {
+		source = "facts"
+	}
+	if source != "facts" && source != "messages" && source != "all" {
+		return nil, fmt.Errorf("invalid source %q (use 'facts', 'messages', or 'all')", source)
+	}
+
+	sinceTime, err := parseSince(in.Since)
+	if err != nil {
+		return nil, fmt.Errorf("parse since: %w", err)
 	}
 
 	limit := in.Limit
@@ -147,30 +186,136 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		Messages: []msgHit{},
 	}
 
-	facts, err := deps.Store.SearchFacts(in.Query, limit)
-	if err != nil {
-		slog.Warn("recall: facts search failed, continuing with messages", "error", err)
-	} else {
-		for _, f := range facts {
-			out.Facts = append(out.Facts, factHit{
-				FactID:  f.ID,
-				Content: f.Content,
-				Date:    f.CreatedAt.Format("2006-01-02 15:04"),
-			})
+	if source == "facts" || source == "all" {
+		facts, err := deps.Store.SearchFacts(in.Query, limit)
+		if err != nil {
+			slog.Warn("recall: facts search failed", "error", err)
+		} else {
+			for _, f := range facts {
+				if !sinceTime.IsZero() && f.CreatedAt.Before(sinceTime) {
+					continue
+				}
+				out.Facts = append(out.Facts, factHit{
+					FactID:  f.ID,
+					Content: f.Content,
+					Date:    f.CreatedAt.Format("2006-01-02 15:04"),
+				})
+			}
 		}
 	}
 
-	results, err := deps.Store.SearchMessages(in.Query, &short.SearchOptions{Limit: limit})
-	if err != nil {
-		slog.Warn("recall: messages search failed", "error", err)
-	} else {
-		for _, r := range results {
-			out.Messages = append(out.Messages, msgHit{
-				Content: short.ExtractTextFromJSON(r.TranscriptMessage.Content),
-				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
-			})
+	if source == "messages" || source == "all" {
+		opts := &short.SearchOptions{Limit: limit}
+		if !sinceTime.IsZero() {
+			opts.Since = sinceTime
+		}
+		results, err := deps.Store.SearchMessages(in.Query, opts)
+		if err != nil {
+			slog.Warn("recall: messages search failed", "error", err)
+		} else {
+			for _, r := range results {
+				text := short.ExtractSearchableText(r.TranscriptMessage.Content)
+				out.Messages = append(out.Messages, msgHit{
+					Content: makeSnippet(text, in.Query, 50),
+					Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
+				})
+			}
 		}
 	}
 
 	return &tool.ToolResult{Data: out}, nil
+}
+
+// parseSince converts a shorthand duration string ("7d", "12h", "2w", "3m",
+// "1y") into the cutoff time.Time. An empty string returns the zero value
+// (no filter). Month = 30d, year = 365d — approximate, avoids calendar math.
+func parseSince(since string) (time.Time, error) {
+	if since == "" {
+		return time.Time{}, nil
+	}
+	m := sinceRe.FindStringSubmatch(since)
+	if m == nil {
+		return time.Time{}, fmt.Errorf("invalid since format %q (use e.g. '7d', '12h', '2w', '3m', '1y')", since)
+	}
+	n, _ := strconv.Atoi(m[1])
+	// Cap count to avoid time.Duration overflow (~290 years at hour resolution).
+	if n > 100000 {
+		n = 100000
+	}
+	var dur time.Duration
+	switch m[2] {
+	case "h":
+		dur = time.Duration(n) * time.Hour
+	case "d":
+		dur = time.Duration(n) * 24 * time.Hour
+	case "w":
+		dur = time.Duration(n) * 7 * 24 * time.Hour
+	case "m":
+		dur = time.Duration(n) * 30 * 24 * time.Hour
+	case "y":
+		dur = time.Duration(n) * 365 * 24 * time.Hour
+	}
+	return time.Now().Add(-dur), nil
+}
+
+// makeSnippet extracts a maxRunes-length window from text, centered on the
+// first query term found. If the text fits within maxRunes it is returned
+// verbatim. If no query term is found, the window starts from the beginning.
+// Ellipses mark truncation on either side.
+func makeSnippet(text string, query string, maxRunes int) string {
+	if text == "" || maxRunes <= 0 {
+		return text
+	}
+	if utf8.RuneCountInString(text) <= maxRunes {
+		return text
+	}
+
+	runes := []rune(text)
+	half := maxRunes / 2
+
+	start := 0
+	end := maxRunes
+
+	if term := firstQueryTerm(query); term != "" {
+		lower := strings.ToLower(text)
+		byteIdx := strings.Index(lower, strings.ToLower(term))
+		if byteIdx >= 0 {
+			runePos := utf8.RuneCountInString(text[:byteIdx])
+			matchLen := utf8.RuneCountInString(term)
+			center := runePos + matchLen/2
+			start = max(center-half, 0)
+			end = start + maxRunes
+			if end > len(runes) {
+				end = len(runes)
+				start = max(end-maxRunes, 0)
+			}
+		}
+	}
+
+	if end > len(runes) {
+		end = len(runes)
+	}
+
+	snippet := string(runes[start:end])
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(runes) {
+		snippet = snippet + "..."
+	}
+	return snippet
+}
+
+// firstQueryTerm extracts the first non-operator word from an FTS5 query
+// string, used to center message snippets on the search term.
+func firstQueryTerm(query string) string {
+	fields := ftsTermSplitRe.Split(query, -1)
+	for _, f := range fields {
+		switch strings.ToUpper(f) {
+		case "AND", "OR", "NOT", "NEAR", "":
+			continue
+		}
+		return f
+	}
+	return ""
 }

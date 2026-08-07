@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSearchMessages_English tests English full-text search.
@@ -507,14 +508,14 @@ func TestExtractTextFromJSON(t *testing.T) {
 			expected: "First\nSecond",
 		},
 		{
-			name:     "tool_use block",
+			name:     "tool_use block - not indexed",
 			content:  `[{"type":"tool_use","id":"test","name":"bash","input":{"command":"ls -la"}}]`,
-			expected: "ls -la",
+			expected: "",
 		},
 		{
-			name:     "tool_result with stdout",
+			name:     "tool_result with stdout - not indexed",
 			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","stdout":"file1.txt\nfile2.txt"}]`,
-			expected: "file1.txt\nfile2.txt",
+			expected: "",
 		},
 		{
 			name:     "thinking block - should be skipped",
@@ -527,17 +528,17 @@ func TestExtractTextFromJSON(t *testing.T) {
 			expected: "Before  After",
 		},
 		{
-			name:     "tool_result with nested file content",
+			name:     "tool_result with nested file content - not indexed",
 			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","file":{"content":"File content here"}}]`,
-			expected: "File content here",
+			expected: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractTextFromJSON(tt.content)
+			result := ExtractSearchableText(tt.content)
 			if result != tt.expected {
-				t.Errorf("extractTextFromJSON(%q) = %q, want %q", tt.content, result, tt.expected)
+				t.Errorf("ExtractSearchableText(%q) = %q, want %q", tt.content, result, tt.expected)
 			}
 		})
 	}
@@ -582,61 +583,6 @@ func TestStripSystemReminders(t *testing.T) {
 			result := stripSystemReminders(tt.input)
 			if result != tt.expected {
 				t.Errorf("stripSystemReminders(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestExtractToolUseInput tests tool_use input field extraction.
-func TestExtractToolUseInput(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    map[string]any
-		expected []string
-	}{
-		{
-			name:     "bash command",
-			input:    map[string]any{"command": "ls -la", "other": "ignored"},
-			expected: []string{"ls -la"},
-		},
-		{
-			name:     "grep pattern",
-			input:    map[string]any{"pattern": "func.*Test", "path": "./"},
-			expected: []string{"func.*Test", "./"},
-		},
-		{
-			name:     "read file",
-			input:    map[string]any{"file_path": "/path/to/file.txt"},
-			expected: []string{"/path/to/file.txt"},
-		},
-		{
-			name:     "agent prompt",
-			input:    map[string]any{"prompt": "Help me write code"},
-			expected: []string{"Help me write code"},
-		},
-		{
-			name:     "array args",
-			input:    map[string]any{"args": []any{"arg1", "arg2", "arg3"}},
-			expected: []string{"arg1 arg2 arg3"},
-		},
-		{
-			name:     "mixed fields",
-			input:    map[string]any{"command": "git", "args": []any{"status"}},
-			expected: []string{"git", "status"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractToolUseInput(tt.input)
-			if len(result) != len(tt.expected) {
-				t.Errorf("extractToolUseInput() returned %d items, want %d", len(result), len(tt.expected))
-				return
-			}
-			for i, exp := range tt.expected {
-				if result[i] != exp {
-					t.Errorf("extractToolUseInput()[%d] = %q, want %q", i, result[i], exp)
-				}
 			}
 		})
 	}
@@ -1135,50 +1081,6 @@ func TestSearchSessions_WithProjectDir(t *testing.T) {
 	}
 }
 
-// TestExtractTextFromJSON_ToolResult tests extractTextFromJSON with tool_result blocks.
-func TestExtractTextFromJSON_ToolResult(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		expected string
-	}{
-		{
-			name:     "tool_result with stdout",
-			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","stdout":"output here"}]`,
-			expected: "output here",
-		},
-		{
-			name:     "tool_result with stderr",
-			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","stderr":"error here"}]`,
-			expected: "error here",
-		},
-		{
-			name:     "tool_result with output field",
-			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","output":"result here"}]`,
-			expected: "result here",
-		},
-		{
-			name:     "tool_result with nested file content",
-			content:  `[{"type":"tool_result","tool_use_id":"test","content":"placeholder","file":{"content":"file content"}}]`,
-			expected: "file content",
-		},
-		{
-			name:     "tool_result with multiple fields",
-			content:  `[{"type":"tool_result","tool_use_id":"test","stdout":"out","stderr":"err"}]`,
-			expected: "out\nerr",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractTextFromJSON(tt.content)
-			if result != tt.expected {
-				t.Errorf("extractTextFromJSON() = %q, want %q", result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestStripSystemReminders_NestedTags tests stripSystemReminders with nested tags.
 func TestStripSystemReminders_NestedTags(t *testing.T) {
 	tests := []struct {
@@ -1441,31 +1343,22 @@ func TestInsertFTS_MapInsertError(t *testing.T) {
 	}
 }
 
-// Lines 330-332: extractTextFromJSON — single block JSON (not array)
+// Lines 330-332: ExtractSearchableText — single block JSON (not array)
 func TestExtractTextFromJSON_SingleBlockJSON(t *testing.T) {
 	// Content that is valid JSON object but not array
 	content := `{"type":"text","text":"hello from single block"}`
-	result := extractTextFromJSON(content)
+	result := ExtractSearchableText(content)
 	if result != "hello from single block" {
 		t.Errorf("got %q, want 'hello from single block'", result)
 	}
 }
 
-// Lines 341-342: extractTextFromJSON — tool_use input not a map
-func TestExtractTextFromJSON_ToolUseInputNotMap(t *testing.T) {
-	content := `[{"type":"tool_use","id":"tu1","name":"bash","input":"not-a-map"}]`
-	result := extractTextFromJSON(content)
-	if result != "" {
-		t.Errorf("got %q, want empty (input not map)", result)
-	}
-}
-
-// Lines 373-377: extractTextFromJSON — default block type with text field
+// Lines 373-377: ExtractSearchableText — default block type, only "text" type is indexed
 func TestExtractTextFromJSON_DefaultBlockWithText(t *testing.T) {
 	content := `[{"type":"custom_type","text":"custom text content"}]`
-	result := extractTextFromJSON(content)
-	if result != "custom text content" {
-		t.Errorf("got %q, want 'custom text content'", result)
+	result := ExtractSearchableText(content)
+	if result != "" {
+		t.Errorf("got %q, want empty (non-text block type not indexed)", result)
 	}
 }
 
@@ -1616,8 +1509,62 @@ func TestInsertFTS_InsertError(t *testing.T) {
 func TestExtractTextFromJSON_NonObjectBlock(t *testing.T) {
 	// Array with a valid object and a number (not an object)
 	content := `[{"type":"text","text":"valid"},123]`
-	result := extractTextFromJSON(content)
+	result := ExtractSearchableText(content)
 	if !strings.Contains(result, "valid") {
 		t.Errorf("should extract valid text, got: %q", result)
+	}
+}
+
+func TestSearchMessages_SinceFilter(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	oldMsg := testMessage(0, "user", "uuid-old", "", `[{"type":"text","text":"old findme message"}]`)
+	oldMsg.CreatedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.AppendMessage(sessionID, oldMsg); err != nil {
+		t.Fatalf("AppendMessage old: %v", err)
+	}
+
+	recentMsg := testMessage(0, "user", "uuid-recent", "uuid-old", `[{"type":"text","text":"recent findme message"}]`)
+	recentMsg.CreatedAt = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.AppendMessage(sessionID, recentMsg); err != nil {
+		t.Fatalf("AppendMessage recent: %v", err)
+	}
+
+	// No Since filter: both messages returned.
+	results, err := store.SearchMessages("findme", &SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchMessages no filter: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("no filter: expected 2 results, got %d", len(results))
+	}
+
+	// Since=2025: only recent message (2026) returned, old (2020) excluded.
+	results, err = store.SearchMessages("findme", &SearchOptions{
+		Limit: 10,
+		Since: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("SearchMessages since=2025: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("since=2025: expected 1 result, got %d", len(results))
+	}
+	if results[0].TranscriptMessage.UUID != "uuid-recent" {
+		t.Errorf("since=2025: expected uuid-recent, got %q", results[0].TranscriptMessage.UUID)
+	}
+
+	// Since=2019: both returned (both after 2019).
+	results, err = store.SearchMessages("findme", &SearchOptions{
+		Limit: 10,
+		Since: time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("SearchMessages since=2019: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("since=2019: expected 2 results, got %d", len(results))
 	}
 }
