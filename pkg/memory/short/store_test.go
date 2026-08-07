@@ -56,27 +56,6 @@ func TestDBPath_ReturnsPath(t *testing.T) {
 	}
 }
 
-// TestFactsDBPath_ReturnsPath verifies FactsDBPath() returns the sibling
-// facts.db path derived from the message db path.
-func TestFactsDBPath_ReturnsPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	wantFactsPath := filepath.Join(tmpDir, "facts.db")
-	if store.FactsDBPath() != wantFactsPath {
-		t.Errorf("FactsDBPath() = %q, want %q", store.FactsDBPath(), wantFactsPath)
-	}
-	if store.FactsDB() == nil {
-		t.Error("FactsDB() = nil, want non-nil *sql.DB")
-	}
-}
-
 // TestSegment_Fallback verifies Segment works with a bare Store.
 // gse is a global singleton, so if already loaded by another test,
 // Segment will produce tokenized output. If not yet loaded, it returns

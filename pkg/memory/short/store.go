@@ -2,7 +2,6 @@ package short
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,11 +16,6 @@ import (
 
 // DB wraps the underlying sql.DB so callers don't need to import database/sql.
 func (s *Store) DB() *sql.DB { return s.db }
-
-// FactsDB returns the separate *sql.DB that owns the facts schema.
-// facts live in their own file (facts.db) so fact writes never contend
-// with the high-volume message writes on memory.db.
-func (s *Store) FactsDB() *sql.DB { return s.factDB }
 
 // Package-level singleton gse segmenter. gse.New() loads ~50MB of dictionary
 // files (~2.75s). Sharing one instance across all Store objects avoids repeating
@@ -47,15 +41,47 @@ func initGse() {
 // GseReady reports whether the gse dictionary has finished loading.
 func GseReady() bool { return globalGseReady.Load() }
 
-// Store manages short-term memory persistence via SQLite.
-// Facts live in a separate database file (facts.db) so writes to facts
-// never block, and are never blocked by, the message stream.
+// Store manages short-term memory persistence via SQLite. Both messages and
+// facts live in one database file; facts writes are wrapped in transactions so
+// they don't collide with the high-volume message stream on the same lock.
 type Store struct {
 	db     *sql.DB
 	dbPath string
+}
 
-	factDB     *sql.DB
-	factDBPath string
+// NewStore opens or creates a SQLite database at dbPath and initializes the schema.
+func NewStore(dbPath string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create db directory: %w", err)
+	}
+
+	db, err := openSQLite(dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load gse dictionary in background — it takes ~2-3s and is not
+	// needed for session resume or message persistence. Segment() degrades
+	// gracefully to raw text while the dictionary loads.
+	go initGse()
+
+	s := &Store{db: db, dbPath: dbPath}
+	if err := s.initSchema(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("init schema: %w", err)
+	}
+
+	return s, nil
+}
+
+// Close shuts down the database connection.
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+// DBPath returns the database file path.
+func (s *Store) DBPath() string {
+	return s.dbPath
 }
 
 // openSQLite opens a SQLite database at path and applies the pragmas required
@@ -80,62 +106,6 @@ func openSQLite(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// NewStore opens or creates a SQLite database at dbPath and initializes the schema.
-// Facts are stored in a sibling file (facts.db in the same directory) to keep
-// fact writes on a separate lock from message writes.
-func NewStore(dbPath string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create db directory: %w", err)
-	}
-
-	db, err := openSQLite(dbPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// facts.db lives next to memory.db so both share the project's memory dir.
-	factPath := filepath.Join(filepath.Dir(dbPath), "facts.db")
-	factDB, err := openSQLite(factPath)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	// Load gse dictionary in background — it takes ~2-3s and is not
-	// needed for session resume or message persistence. Segment() degrades
-	// gracefully to raw text while the dictionary loads.
-	go initGse()
-
-	s := &Store{db: db, dbPath: dbPath, factDB: factDB, factDBPath: factPath}
-	if err := s.initMsgSchema(); err != nil {
-		_ = db.Close()
-		_ = factDB.Close()
-		return nil, fmt.Errorf("init msg schema: %w", err)
-	}
-	if err := s.initFactsSchema(); err != nil {
-		_ = db.Close()
-		_ = factDB.Close()
-		return nil, fmt.Errorf("init facts schema: %w", err)
-	}
-
-	return s, nil
-}
-
-// Close shuts down both database connections.
-func (s *Store) Close() error {
-	return errors.Join(s.db.Close(), s.factDB.Close())
-}
-
-// DBPath returns the message database file path.
-func (s *Store) DBPath() string {
-	return s.dbPath
-}
-
-// FactsDBPath returns the facts database file path.
-func (s *Store) FactsDBPath() string {
-	return s.factDBPath
-}
-
 // Segment tokenizes text using gse for FTS5 indexing.
 // Returns space-separated tokens. Falls back to raw text if the
 // dictionary hasn't finished loading yet.
@@ -147,7 +117,7 @@ func (s *Store) Segment(text string) string {
 	return strings.Join(segments, " ")
 }
 
-func (s *Store) initMsgSchema() error {
+func (s *Store) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
 		session_id        TEXT PRIMARY KEY,
@@ -215,25 +185,7 @@ func (s *Store) initMsgSchema() error {
 		replacements  TEXT NOT NULL,
 		created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
-	`
-	if _, err := s.db.Exec(schema); err != nil {
-		return fmt.Errorf("init msg schema: %w", err)
-	}
 
-	// Migrate: add metadata column if missing (pre-metadata databases).
-	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
-
-	// Migrate: add engine_id column to sessions (multi-engine support).
-	// Existing rows backfill to 'main' via DEFAULT.
-	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN engine_id TEXT NOT NULL DEFAULT 'main'`)
-
-	return nil
-}
-
-// initFactsSchema creates the facts tables on the facts database. Kept separate
-// from initMsgSchema so facts live in their own file (see NewStore).
-func (s *Store) initFactsSchema() error {
-	const schema = `
 	-- Structured facts extracted by the dream agent. Layout mirrors
 	-- messages_fts: a contentless FTS5 index + map table so deletes don't
 	-- need the 'delete' command with old values — removing the map row
@@ -253,8 +205,16 @@ func (s *Store) initFactsSchema() error {
 		PRIMARY KEY (fact_id, fts_rowid)
 	);
 	`
-	if _, err := s.factDB.Exec(schema); err != nil {
-		return fmt.Errorf("init facts schema: %w", err)
+	if _, err := s.db.Exec(schema); err != nil {
+		return fmt.Errorf("init schema: %w", err)
 	}
+
+	// Migrate: add metadata column if missing (pre-metadata databases).
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
+
+	// Migrate: add engine_id column to sessions (multi-engine support).
+	// Existing rows backfill to 'main' via DEFAULT.
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN engine_id TEXT NOT NULL DEFAULT 'main'`)
+
 	return nil
 }
