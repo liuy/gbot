@@ -38,8 +38,8 @@ func New(store *short.Store) tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "forget",
-		Aliases_:     []string{"Forget"},
+		Name_:        "Forget",
+		Aliases_:     []string{"forget"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input

@@ -67,8 +67,8 @@ func New(store *short.Store) tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "recall",
-		Aliases_:     []string{"Recall"},
+		Name_:        "Recall",
+		Aliases_:     []string{"recall"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input

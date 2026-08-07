@@ -1,14 +1,14 @@
 package remember
 
 // prompt is the tool prompt for remember.
-const prompt = `# remember
+const prompt = `# Remember
 Store a new atomic fact about the user or their close relationships, or update an existing fact in place.
 
 Two call forms:
-- remember(content): create a new fact
-- remember(fact_id, content): update an existing fact (use recall to find the fact_id)
+- Remember(content): create a new fact
+- Remember(fact_id, content): update an existing fact (use Recall to find the fact_id)
 
-Before remembering, call recall to check for existing or contradictory facts. If a new fact contradicts or supersedes an old one, recall to find its fact_id, then remember(fact_id, new_content) to update in place.
+Before remembering, call Recall to check for existing or contradictory facts. If a new fact contradicts or supersedes an old one, Recall to find its fact_id, then Remember(fact_id, new_content) to update in place.
 
 Each fact must be:
 - Self-contained (understandable without other facts)

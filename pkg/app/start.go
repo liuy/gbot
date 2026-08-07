@@ -585,7 +585,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 	// Whitelist: only tools dream needs.
 	dreamWhitelist := []string{
 		"Read", "Write", "Edit", "Bash", "Grep", "Glob",
-		"recall", "remember", "forget",
+		"Recall", "Remember", "Forget",
 	}
 	dreamDef := types.AgentDefinition{Tools: dreamWhitelist}
 	dreamTools := agent.ResolveAgentTools(dreamRefs.Reg.ToolMapFn()(), &dreamDef)

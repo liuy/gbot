@@ -70,7 +70,7 @@ func TestBuildConsolidationPrompt_NoExtra(t *testing.T) {
 
 func TestBuildConsolidationPrompt_AlwaysIncludesFactsSection(t *testing.T) {
 	result := BuildConsolidationPrompt("/mem", "")
-	for _, marker := range []string{"recall", "remember", "forget"} {
+	for _, marker := range []string{"Recall", "Remember", "Forget"} {
 		if !strings.Contains(result, marker) {
 			t.Errorf("prompt should contain %q", marker)
 		}

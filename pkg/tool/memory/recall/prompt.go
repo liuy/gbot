@@ -1,7 +1,7 @@
 package recall
 
 // prompt is the tool prompt for recall.
-const prompt = `# recall
+const prompt = `# Recall
 Search the user's structured facts and conversation history. Use this to look up things the user has told you before (preferences, personal context, past decisions).
 
 Input:
@@ -10,4 +10,4 @@ Input:
 
 Output: { facts: [{fact_id, content, date}], messages: [{content, date}] }
 
-When updating or contradicting a fact, use fact_id with the remember tool to update in place.`
+When updating or contradicting a fact, use fact_id with the Remember tool to update in place.`

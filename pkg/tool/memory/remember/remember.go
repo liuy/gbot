@@ -41,14 +41,14 @@ func New(store *short.Store) tool.Tool {
 			},
 			"fact_id": {
 				"type": "integer",
-				"description": "Optional. The fact_id to update. Omit to create a new fact. Use with recall to find the id of an existing fact."
+				"description": "Optional. The fact_id to update. Omit to create a new fact. Use with Recall to find the id of an existing fact."
 			}
 		}
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "remember",
-		Aliases_:     []string{"Remember"},
+		Name_:        "Remember",
+		Aliases_:     []string{"remember"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input

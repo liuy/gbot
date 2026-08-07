@@ -10,12 +10,12 @@ import (
 // recall/remember/forget and sets the filtering criteria for what
 // qualifies as a durable fact.
 const factsExtractionSection = `You have three tools for structured memory:
-- recall(query): search existing facts AND message history (FTS5 syntax: AND/OR/NOT, parentheses, e.g. "Alex AND blue")
-- remember(content): store a new atomic fact
-- remember(fact_id, content): update an existing fact (use recall to find fact_id)
-- forget(fact_id): delete a fact by id (from recall results)
+- Recall(query): search existing facts AND message history (FTS5 syntax: AND/OR/NOT, parentheses, e.g. "Alex AND blue")
+- Remember(content): store a new atomic fact
+- Remember(fact_id, content): update an existing fact (use Recall to find fact_id)
+- Forget(fact_id): delete a fact by id (from Recall results)
 
-Before writing new facts, recall existing ones to avoid duplicates and detect contradictions. If a new fact contradicts or supersedes an old one, update it with remember(fact_id, new_content). Only forget when the fact is truly obsolete or the user asked to remove it.
+Before writing new facts, recall existing ones to avoid duplicates and detect contradictions. If a new fact contradicts or supersedes an old one, update it with Remember(fact_id, new_content). Only Forget when the fact is truly obsolete or the user asked to remove it.
 
 [Scope] About the user (use their real name from memory/*.md) and their close relationships (family/friends/colleagues).
 
@@ -80,9 +80,9 @@ func BuildConsolidationPrompt(memoryDir, extra string) string {
 		fmt.Sprintf("3. Update `%s` index (under %d lines, one line per entry: `- [Title](file.md) — one-line hook`)\n\n",
 			long.EntrypointName, long.MaxEntrypointLines) +
 		"## Step 2 — Facts\n\n" +
-		"4. recall existing facts related to the conversations to avoid duplicates and detect contradictions\n" +
-		"5. update stale or contradicted facts via remember(fact_id, content)\n" +
-		"6. Extract new durable facts and remember them\n\n" +
+		"4. Recall existing facts related to the conversations to avoid duplicates and detect contradictions\n" +
+		"5. update stale or contradicted facts via Remember(fact_id, content)\n" +
+		"6. Extract new durable facts and Remember them\n\n" +
 		factsExtractionSection + "\n\n" +
 		"---\n\n" +
 		"Return a brief summary of what you updated."
