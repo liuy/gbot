@@ -100,7 +100,15 @@ func New(store *short.Store) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Search structured facts and message history", nil
 			}
-			return in.Query, nil
+			source := in.Source
+			if source == "" {
+				source = "facts"
+			}
+			s := source + ": " + in.Query
+			if in.Since != "" {
+				s += " (" + in.Since + ")"
+			}
+			return s, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return execute(ctx, input, Deps{Store: store})
