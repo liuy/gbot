@@ -452,6 +452,9 @@ export function setToolSummary(handles: ToolDomHandles, summary: string, toolNam
   if (toolName === 'Bash') {
     const highlighted = hljs.highlight(summary, { language: 'bash' }).value
     handles.summaryEl.innerHTML = ` (${highlighted})`
+  } else if (toolName === 'Repl') {
+    const highlighted = hljs.highlight(summary, { language: 'javascript' }).value
+    handles.summaryEl.innerHTML = ` (${highlighted})`
   } else {
     handles.summaryEl.textContent = ` (${summary})`
   }

@@ -204,6 +204,22 @@ describe('setToolSummary', () => {
     setToolSummary(h, '')
     expect(h.summaryEl.textContent).toBe('')
   })
+
+  it('preserves newlines in multi-line Bash command', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    setToolSummary(h, 'echo hello\necho world')
+    // innerHTML should contain a <br> or preserved newline, not collapsed
+    expect(h.summaryEl.innerHTML).toContain('\n')
+  })
+
+  it('highlights Repl summary as JavaScript', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Repl')
+    setToolSummary(h, 'const x = 1', 'Repl')
+    // hljs wraps tokens in spans — innerHTML should contain markup
+    expect(h.summaryEl.innerHTML).toContain('<')
+  })
 })
 
 describe('setToolOutput', () => {

@@ -44,7 +44,7 @@ export const userTextSpan = tv({ base: 'whitespace-pre-wrap break-words' })
 export const thinkingText = tv({ base: 'md-body md-text ml-6 text-t2 text-sm break-words' })
 
 export const toolName = tv({ base: 'font-mono text-sm text-blue' })
-export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all' })
+export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all whitespace-pre-wrap' })
 export const toolDuration = tv({
   base: 'font-mono text-xs',
   variants: { state: { running: 'text-blue', done: 'text-t3', error: 'text-red' } },
