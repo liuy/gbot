@@ -1050,7 +1050,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           isError: block.state === 'error',
           durationNs: block.timingNs,
           output: block.displayOutput,
-          skipHighlight: true,
         })
       }
       if (block.children && block.children.length > 0) {

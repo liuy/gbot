@@ -745,6 +745,21 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			Children:  []streamBlock{},
 		})
 
+	case types.EventTurnStart:
+		// Sub-agent turn_start: update parent Agent block's name with the
+		// agent type so snapshot/historical replay shows "Agent Planner"
+		// instead of just "Agent". The live streaming path does this in
+		// the frontend via updateAgentToolName; updateStreamState needs to
+		// mirror it for snapshot consistency.
+		if event.Agent != nil && event.Agent.AgentType != "" && event.Agent.AgentType != "fork" {
+			if event.Agent.ParentToolUseID != "" {
+				parent := findBlock(ss.blocks, event.Agent.ParentToolUseID)
+				if parent != nil && !strings.Contains(parent.Name, event.Agent.AgentType) {
+					parent.Name = parent.Name + " " + event.Agent.AgentType
+				}
+			}
+		}
+
 	case types.EventToolParamDelta:
 		if event.PartialInput == nil {
 			return

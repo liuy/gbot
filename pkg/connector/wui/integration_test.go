@@ -493,6 +493,38 @@ func TestOnEngineEvent_AskDroppedForInactiveEngine(t *testing.T) {
 
 // ---- Section 5: updateStreamState nil edge cases ----
 
+// TestUpdateStreamState_AgentTurnStartUpdatesParentName verifies that when a
+// sub-agent sends a TurnStart event, the parent Agent tool block's Name is
+// updated to include the agent type (e.g. "Agent Planner"). Without this the
+// snapshot/historical replay shows just "Agent" while live streaming shows
+// "Agent Planner".
+func TestUpdateStreamState_AgentTurnStartUpdatesParentName(t *testing.T) {
+	var ss streamState
+
+	// Create an Agent tool block.
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "agent-1", Name: "Agent"},
+	})
+
+	if ss.blocks[0].Name != "Agent" {
+		t.Fatalf("initial name = %q, want Agent", ss.blocks[0].Name)
+	}
+
+	// Sub-agent turn_start — should append agent type to parent name.
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventTurnStart,
+		Agent: &types.AgentMeta{
+			ParentToolUseID: "agent-1",
+			AgentType:       "Planner",
+		},
+	})
+
+	if ss.blocks[0].Name != "Agent Planner" {
+		t.Errorf("parent name = %q, want 'Agent Planner'", ss.blocks[0].Name)
+	}
+}
+
 // TestUpdateStreamState_NilToolParamDelta verifies that a ToolParamDelta
 // event with nil PartialInput is a no-op (no panic).
 func TestUpdateStreamState_NilToolParamDelta(t *testing.T) {
