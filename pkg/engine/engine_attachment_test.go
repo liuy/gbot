@@ -377,6 +377,28 @@ func TestEngine_RemoveAttachment_AbsentUUID_Noop(t *testing.T) {
 	}
 }
 
+func TestEngine_PendingAttachments_ReturnsSnapshotWithoutDraining(t *testing.T) {
+	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "p-1", Value: "first", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "j-1", Value: "job", Mode: types.ItemModeJob, Timestamp: time.Date(2024, 1, 1, 0, 0, 1, 0, time.UTC)})
+
+	snap := eng.PendingAttachments()
+	if len(snap) != 2 {
+		t.Fatalf("PendingAttachments returned %d items, want 2", len(snap))
+	}
+	if snap[0].UUID != "p-1" || snap[0].Value != "first" {
+		t.Errorf("snap[0] = {%s, %q}, want {p-1, first}", snap[0].UUID, snap[0].Value)
+	}
+	if snap[1].UUID != "j-1" || snap[1].Value != "job" {
+		t.Errorf("snap[1] = {%s, %q}, want {j-1, job}", snap[1].UUID, snap[1].Value)
+	}
+	if got := eng.AttachmentsLen(); got != 2 {
+		t.Errorf("AttachmentsLen after PendingAttachments = %d, want 2 (must not drain)", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Multi-prompt attachment merge chain test
 // ---------------------------------------------------------------------------

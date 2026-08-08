@@ -1731,6 +1731,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           renderStreamStateBlocks(msg.snapshot.blocks)
         }
 
+        if (msg.queuedMsgs && msg.queuedMsgs.length > 0) {
+          queuedMsgs = msg.queuedMsgs.map((m: { uuid: string; text: string }) => ({ uuid: m.uuid, text: m.text }))
+          inputBar.setQueuedMsgs(queuedMsgs)
+        }
+
         const s = msg.stats
         progressUsage = {
           inputTokens: s.usage?.input_tokens ?? s.usage?.InputTokens ?? 0,

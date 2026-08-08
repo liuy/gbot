@@ -68,6 +68,14 @@ func (q *Queue) DrainByPriority(maxPriority types.QueuePriority) []types.QueuedI
 	return matched
 }
 
+// Snapshot returns the current items for the WUI connector to restore queued
+// messages on takeover. Does not drain.
+func (q *Queue) Snapshot() []types.QueuedItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]types.QueuedItem(nil), q.items...)
+}
+
 // DrainAll drains all items. Used for no-tool-use terminal path.
 func (q *Queue) DrainAll() []types.QueuedItem {
 	q.mu.Lock()

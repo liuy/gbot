@@ -67,6 +67,7 @@ type engineClient interface {
 	Abort()
 	RewindTo(idx int) error
 	RemoveAttachment(uuid string) bool
+	PendingAttachments() []types.QueuedItem
 	SystemPrompt() string
 	TaskList() *task.List
 	SwitchSession(sessionID string) error
@@ -116,8 +117,11 @@ func (a *engineAdapter) EnqueueAttachment(item types.QueuedItem) {
 }
 func (a *engineAdapter) Abort()                            { a.eng.Abort() }
 func (a *engineAdapter) RemoveAttachment(uuid string) bool { return a.eng.RemoveAttachment(uuid) }
-func (a *engineAdapter) SystemPrompt() string              { return a.eng.SystemPrompt() }
-func (a *engineAdapter) TaskList() *task.List              { return a.eng.TaskList() }
+func (a *engineAdapter) PendingAttachments() []types.QueuedItem {
+	return a.eng.PendingAttachments()
+}
+func (a *engineAdapter) SystemPrompt() string { return a.eng.SystemPrompt() }
+func (a *engineAdapter) TaskList() *task.List { return a.eng.TaskList() }
 func (a *engineAdapter) RewindTo(idx int) error {
 	_, err := a.eng.RewindTo(idx)
 	return err
@@ -811,6 +815,10 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			b.IsLsp = true
 		}
 		b.TimingNs = int64(event.ToolResult.Duration)
+	// Agent tool: children were populated by sub-agent streaming events
+	// during execution. Clear them on completion so snapshot/takeover
+	// doesn't render stale sub-agent activity.
+	b.Children = []streamBlock{}
 
 	case types.EventToolOutputDelta:
 		if event.ToolResult == nil {
@@ -2289,19 +2297,22 @@ func (c *WUIConnector) SetMediaCache(store *media.Store) {
 }
 
 // sendMetadata sends a composite metadata message containing connect_status,
-// config, engine_list, task_list, history, snapshot, and stats. The
-// snapshot embeds the current streamState (under ssMu) so the client
-// receives streaming state and history in a single message.
+// config, engine_list, task_list, history, snapshot, queuedMsgs, and stats.
+// The snapshot embeds the current streamState (under ssMu) so the client
+// receives streaming state and history in a single message. queuedMsgs
+// restores user-typed messages still waiting in the attachment queue so a
+// reconnecting client can re-render its pending queue.
 func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 	type metaPayload struct {
-		Type     string          `json:"type"`
-		Connect  json.RawMessage `json:"connect"`
-		Config   json.RawMessage `json:"config"`
-		Engines  json.RawMessage `json:"engines"`
-		Tasks    json.RawMessage `json:"tasks,omitempty"`
-		History  json.RawMessage `json:"history"`
-		Snapshot json.RawMessage `json:"snapshot,omitempty"`
-		Stats    json.RawMessage `json:"stats"`
+		Type       string          `json:"type"`
+		Connect    json.RawMessage `json:"connect"`
+		Config     json.RawMessage `json:"config"`
+		Engines    json.RawMessage `json:"engines"`
+		Tasks      json.RawMessage `json:"tasks,omitempty"`
+		History    json.RawMessage `json:"history"`
+		Snapshot   json.RawMessage `json:"snapshot,omitempty"`
+		QueuedMsgs []queuedMsgJSON `json:"queuedMsgs,omitempty"`
+		Stats      json.RawMessage `json:"stats"`
 	}
 
 	slot.ssMu.Lock()
@@ -2314,17 +2325,53 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 	}
 
 	payload, _ := json.Marshal(metaPayload{
-		Type:     "metadata",
-		Connect:  c.buildConnectStatus(slot),
-		Config:   c.buildConfig(slot),
-		Engines:  c.buildEngineList(),
-		Tasks:    c.buildTaskList(slot),
-		History:  history,
-		Snapshot: snapshot,
-		Stats:    c.buildStats(slot),
+		Type:       "metadata",
+		Connect:    c.buildConnectStatus(slot),
+		Config:     c.buildConfig(slot),
+		Engines:    c.buildEngineList(),
+		Tasks:      c.buildTaskList(slot),
+		History:    history,
+		Snapshot:   snapshot,
+		QueuedMsgs: buildQueuedMsgs(slot.engine.PendingAttachments()),
+		Stats:      c.buildStats(slot),
 	})
 	c.sendWS(payload)
 	slot.ssMu.Unlock()
+}
+
+// queuedMsgJSON is the wire shape for a queued user message restored on
+// takeover. Matches the frontend's queuedMsgs entry type {uuid, text}.
+type queuedMsgJSON struct {
+	UUID string `json:"uuid"`
+	Text string `json:"text"`
+}
+
+// buildQueuedMsgs filters pending attachment items down to user-typed prompt
+// messages and maps them to the wire shape. Job-mode items (system-generated
+// notifications) and meta-tagged items are excluded so only real user input
+// is restored. Text is pulled from Content blocks when present (image/structured
+// attachments), falling back to the plain Value field.
+func buildQueuedMsgs(items []types.QueuedItem) []queuedMsgJSON {
+	var out []queuedMsgJSON
+	for _, item := range items {
+		if item.Mode != types.ItemModePrompt || item.IsMeta {
+			continue
+		}
+		text := item.Value
+		if len(item.Content) > 0 {
+			var sb strings.Builder
+			for _, cb := range item.Content {
+				if cb.Type == types.ContentTypeText {
+					sb.WriteString(cb.Text)
+				}
+			}
+			if sb.Len() > 0 {
+				text = sb.String()
+			}
+		}
+		out = append(out, queuedMsgJSON{UUID: item.UUID, Text: text})
+	}
+	return out
 }
 
 // switchEngine is the unified engine switch (pointer swap only). Deactivates

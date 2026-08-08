@@ -465,6 +465,12 @@ func (e *Engine) RemoveAttachment(uuid string) bool {
 	return false
 }
 
+// PendingAttachments exposes queued items for the WUI connector to restore on
+// takeover. Does not drain.
+func (e *Engine) PendingAttachments() []types.QueuedItem {
+	return e.attachments.Snapshot()
+}
+
 // Abort cancels the currently active query or attachment processing.
 // Safe to call from any goroutine; no-op if nothing is active.
 func (e *Engine) Abort() {

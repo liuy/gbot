@@ -137,3 +137,62 @@ func TestQueue_RemoveByUUID_EmptyQueueReturnsFalse(t *testing.T) {
 		t.Errorf("Len after remove on empty = %d, want 0", got)
 	}
 }
+
+func TestSnapshot_ReturnsCopyWithoutConsuming(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{UUID: "u-1", Value: "a", Mode: types.ItemModePrompt})
+	q.Enqueue(types.QueuedItem{UUID: "u-2", Value: "b", Mode: types.ItemModePrompt})
+	q.Enqueue(types.QueuedItem{UUID: "u-3", Value: "c", Mode: types.ItemModeJob})
+
+	snap := q.Snapshot()
+	if len(snap) != 3 {
+		t.Fatalf("Snapshot returned %d items, want 3", len(snap))
+	}
+	if snap[0].UUID != "u-1" || snap[0].Value != "a" {
+		t.Errorf("snap[0] = {%s, %q}, want {u-1, a}", snap[0].UUID, snap[0].Value)
+	}
+	if snap[1].UUID != "u-2" || snap[1].Value != "b" {
+		t.Errorf("snap[1] = {%s, %q}, want {u-2, b}", snap[1].UUID, snap[1].Value)
+	}
+	if snap[2].UUID != "u-3" || snap[2].Value != "c" {
+		t.Errorf("snap[2] = {%s, %q}, want {u-3, c}", snap[2].UUID, snap[2].Value)
+	}
+	if got := q.Len(); got != 3 {
+		t.Errorf("Len after Snapshot = %d, want 3 (Snapshot must not consume)", got)
+	}
+	drained := q.DrainAll()
+	if len(drained) != 3 {
+		t.Fatalf("DrainAll after Snapshot = %d items, want 3", len(drained))
+	}
+	if drained[0].UUID != "u-1" || drained[1].UUID != "u-2" || drained[2].UUID != "u-3" {
+		t.Errorf("DrainAll after Snapshot = %s, %s, %s; want u-1, u-2, u-3", drained[0].UUID, drained[1].UUID, drained[2].UUID)
+	}
+}
+
+func TestSnapshot_EmptyQueueReturnsNil(t *testing.T) {
+	var q Queue
+	snap := q.Snapshot()
+	if snap != nil {
+		t.Errorf("Snapshot on empty queue = %v, want nil", snap)
+	}
+	if got := q.Len(); got != 0 {
+		t.Errorf("Len after empty Snapshot = %d, want 0", got)
+	}
+}
+
+func TestSnapshot_MutationDoesNotAffectQueue(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{UUID: "u-1", Value: "a"})
+
+	snap := q.Snapshot()
+	snap[0].Value = "mutated"
+	snap[0].UUID = "changed"
+
+	drained := q.DrainAll()
+	if len(drained) != 1 {
+		t.Fatalf("DrainAll = %d items, want 1", len(drained))
+	}
+	if drained[0].Value != "a" || drained[0].UUID != "u-1" {
+		t.Errorf("DrainAll[0] = {%s, %q}, want {u-1, a} (Snapshot copy must be independent)", drained[0].UUID, drained[0].Value)
+	}
+}

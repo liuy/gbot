@@ -85,6 +85,7 @@ type mockEngine struct {
 	manualCompactMsgs     []types.Message
 	removeAttachment      []string
 	removeAttachmentFn    func(uuid string) bool
+	pendingAttachmentsFn  func() []types.QueuedItem
 	switchSessionCalls    []string
 	newSessionCalls       int
 	updateTitleCalls      []struct{ ID, Title string }
@@ -202,6 +203,13 @@ func (m *mockEngine) RemoveAttachment(uuid string) bool {
 		return m.removeAttachmentFn(uuid)
 	}
 	return true
+}
+
+func (m *mockEngine) PendingAttachments() []types.QueuedItem {
+	if m.pendingAttachmentsFn != nil {
+		return m.pendingAttachmentsFn()
+	}
+	return nil
 }
 
 func (m *mockEngine) RewindTo(idx int) error {
@@ -567,13 +575,14 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 // returns the raw JSON of each sub-field. Tests use this to extract connect,
 // config, stats, snapshot, etc. from the composite metadata frame.
 func readMetadata(t *testing.T, ws *websocket.Conn) struct {
-	Connect  json.RawMessage
-	Config   json.RawMessage
-	Engines  json.RawMessage
-	Tasks    json.RawMessage
-	History  json.RawMessage
-	Snapshot json.RawMessage
-	Stats    json.RawMessage
+	Connect    json.RawMessage
+	Config     json.RawMessage
+	Engines    json.RawMessage
+	Tasks      json.RawMessage
+	History    json.RawMessage
+	Snapshot   json.RawMessage
+	QueuedMsgs json.RawMessage
+	Stats      json.RawMessage
 } {
 	t.Helper()
 	data := readWSMessage(t, ws)
@@ -587,33 +596,36 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 		t.Fatalf("expected metadata frame, got type %q", head.Type)
 	}
 	var raw struct {
-		Connect  json.RawMessage `json:"connect"`
-		Config   json.RawMessage `json:"config"`
-		Engines  json.RawMessage `json:"engines"`
-		Tasks    json.RawMessage `json:"tasks"`
-		History  json.RawMessage `json:"history"`
-		Snapshot json.RawMessage `json:"snapshot"`
-		Stats    json.RawMessage `json:"stats"`
+		Connect    json.RawMessage `json:"connect"`
+		Config     json.RawMessage `json:"config"`
+		Engines    json.RawMessage `json:"engines"`
+		Tasks      json.RawMessage `json:"tasks"`
+		History    json.RawMessage `json:"history"`
+		Snapshot   json.RawMessage `json:"snapshot"`
+		QueuedMsgs json.RawMessage `json:"queuedMsgs"`
+		Stats      json.RawMessage `json:"stats"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal metadata body: %v", err)
 	}
 	return struct {
-		Connect  json.RawMessage
-		Config   json.RawMessage
-		Engines  json.RawMessage
-		Tasks    json.RawMessage
-		History  json.RawMessage
-		Snapshot json.RawMessage
-		Stats    json.RawMessage
+		Connect    json.RawMessage
+		Config     json.RawMessage
+		Engines    json.RawMessage
+		Tasks      json.RawMessage
+		History    json.RawMessage
+		Snapshot   json.RawMessage
+		QueuedMsgs json.RawMessage
+		Stats      json.RawMessage
 	}{
-		Connect:  raw.Connect,
-		Config:   raw.Config,
-		Engines:  raw.Engines,
-		Tasks:    raw.Tasks,
-		History:  raw.History,
-		Snapshot: raw.Snapshot,
-		Stats:    raw.Stats,
+		Connect:    raw.Connect,
+		Config:     raw.Config,
+		Engines:    raw.Engines,
+		Tasks:      raw.Tasks,
+		History:    raw.History,
+		Snapshot:   raw.Snapshot,
+		QueuedMsgs: raw.QueuedMsgs,
+		Stats:      raw.Stats,
 	}
 }
 
