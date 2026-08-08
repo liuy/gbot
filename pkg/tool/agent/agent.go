@@ -278,6 +278,8 @@ func (t *AgentTool) RenderResult(data any) string {
 			return fmt.Sprintf("Fork agent %s running in background...", v.AgentID)
 		}
 		return v.Content
+	case string:
+		return v
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)
