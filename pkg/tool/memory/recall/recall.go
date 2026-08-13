@@ -34,13 +34,15 @@ type Deps struct {
 
 // Input is the recall tool input schema.
 type Input struct {
-	Query string `json:"query"`
+	Query string `json:"query,omitempty"`
+	UUID  string `json:"uuid,omitempty"`  // read a single message by UUID
 	Since string `json:"since,omitempty"` // "7d" | "12h" | "2w" | "3m" | "1y"
 	Limit int    `json:"limit,omitempty"`
 }
 
 // msgHit is one message-history match.
 type msgHit struct {
+	UUID    string `json:"uuid"`
 	Content string `json:"content"`
 	Date    string `json:"date"`
 }
@@ -56,11 +58,14 @@ type Output struct {
 func New(store *short.Store) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
-		"required": ["query"],
 		"properties": {
 			"query": {
 				"type": "string",
 				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."
+			},
+			"uuid": {
+				"type": "string",
+				"description": "Read a single message by its UUID (returned from a previous search). Returns full content, not a snippet. Mutually exclusive with query."
 			},
 			"since": {
 				"type": "string",
@@ -84,6 +89,9 @@ func New(store *short.Store) tool.Tool {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Search conversation history", nil
+			}
+			if in.UUID != "" {
+				return "uuid: " + in.UUID, nil
 			}
 			s := in.Query
 			if in.Since != "" {
@@ -141,8 +149,28 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
 	}
+
+	// UUID mode: read single message by UUID, return full content (not snippet).
+	if in.UUID != "" {
+		msg, err := deps.Store.GetMessageByUUID(in.UUID)
+		if err != nil {
+			return nil, fmt.Errorf("get message: %w", err)
+		}
+		if msg == nil {
+			return &tool.ToolResult{Data: &Output{Messages: []msgHit{}}}, nil
+		}
+		text := short.ExtractSearchableText(msg.Content)
+		return &tool.ToolResult{Data: &Output{
+			Messages: []msgHit{{
+				UUID:    msg.UUID,
+				Content: text,
+				Date:    msg.CreatedAt.Format("2006-01-02 15:04"),
+			}},
+		}}, nil
+	}
+
 	if strings.TrimSpace(in.Query) == "" {
-		return nil, fmt.Errorf("query is required")
+		return nil, fmt.Errorf("either query or uuid is required")
 	}
 
 	sinceTime, err := parseSince(in.Since)
@@ -173,6 +201,7 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		for _, r := range results {
 			text := short.ExtractSearchableText(r.TranscriptMessage.Content)
 			out.Messages = append(out.Messages, msgHit{
+				UUID:    r.TranscriptMessage.UUID,
 				Content: makeSnippet(text, in.Query, 50),
 				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
 			})

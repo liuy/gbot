@@ -28,10 +28,10 @@ func TestRecall_MissingQuery(t *testing.T) {
 	r := New(fs)
 	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
-		t.Fatal("expected error for missing query")
+		t.Fatal("expected error for missing query and uuid")
 	}
-	if !strings.Contains(err.Error(), "query is required") {
-		t.Errorf("error = %q, want 'query is required'", err.Error())
+	if !strings.Contains(err.Error(), "either query or uuid is required") {
+		t.Errorf("error = %q, want 'either query or uuid is required'", err.Error())
 	}
 }
 
@@ -62,6 +62,9 @@ func TestRecall_HitsMessages(t *testing.T) {
 	}
 	if len(out.Messages) != 1 {
 		t.Fatalf("expected 1 message hit, got %d", len(out.Messages))
+	}
+	if out.Messages[0].UUID != "msg-blue-1" {
+		t.Errorf("msg uuid = %q, want 'msg-blue-1'", out.Messages[0].UUID)
 	}
 	if out.Messages[0].Content != "alice mentioned blue today" {
 		t.Errorf("msg content = %q", out.Messages[0].Content)
@@ -430,5 +433,79 @@ func TestFirstQueryTerm(t *testing.T) {
 				t.Errorf("firstQueryTerm(%q) = %q, want %q", tt.query, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRecall_UUIDReadsFullContent(t *testing.T) {
+	fs := openStore(t)
+	sess, err := fs.CreateSession("/test", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	longText := "This is a very long message about blue skies and green grass and many other colorful things in nature that goes well beyond fifty runes and keeps going"
+	msg := &short.TranscriptMessage{
+		UUID:      "msg-uuid-full",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"` + longText + `"}]`,
+		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+	}
+	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	r := New(fs)
+	result, err := r.Call(context.Background(),
+		json.RawMessage(`{"uuid":"msg-uuid-full"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", result.Data)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out.Messages))
+	}
+	if out.Messages[0].UUID != "msg-uuid-full" {
+		t.Errorf("uuid = %q, want 'msg-uuid-full'", out.Messages[0].UUID)
+	}
+	if out.Messages[0].Content != longText {
+		t.Errorf("uuid mode should return full content, got snippet %q", out.Messages[0].Content)
+	}
+	if out.Messages[0].Date != "2026-07-15 10:00" {
+		t.Errorf("date = %q, want '2026-07-15 10:00'", out.Messages[0].Date)
+	}
+}
+
+func TestRecall_UUIDNotFoundReturnsEmpty(t *testing.T) {
+	fs := openStore(t)
+	r := New(fs)
+	result, err := r.Call(context.Background(),
+		json.RawMessage(`{"uuid":"does-not-exist"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", result.Data)
+	}
+	if len(out.Messages) != 0 {
+		t.Fatalf("expected 0 messages for missing uuid, got %d", len(out.Messages))
+	}
+	b, _ := json.Marshal(out)
+	jsonStr := string(b)
+	if strings.Contains(jsonStr, `"messages":null`) {
+		t.Errorf("messages should be [], got null: %s", jsonStr)
+	}
+}
+
+func TestRecall_Description_UUID(t *testing.T) {
+	r := New(nil)
+	desc, err := r.Description(json.RawMessage(`{"uuid":"abc-123"}`))
+	if err != nil {
+		t.Fatalf("Description: %v", err)
+	}
+	if desc != "uuid: abc-123" {
+		t.Errorf("description = %q, want 'uuid: abc-123'", desc)
 	}
 }

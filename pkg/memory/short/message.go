@@ -285,6 +285,28 @@ func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {
 	return exists, nil
 }
 
+// GetMessageByUUID retrieves a single message by its UUID, searching across
+// all sessions (UUIDs are globally unique). Returns nil, nil when no message
+// has the given UUID. Used by the recall tool's uuid parameter to read a
+// message's full content after a prior search returned its uuid.
+func (s *Store) GetMessageByUUID(uuid string) (*TranscriptMessage, error) {
+	query := `
+		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
+		       is_sidechain, type, subtype, content, metadata, created_at
+		FROM messages
+		WHERE uuid = ?
+		LIMIT 1
+	`
+	msg, err := s.queryOneMessage(query, uuid)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get message by uuid: %w", err)
+	}
+	return msg, nil
+}
+
 // MessagesSince returns all user/assistant messages across all sessions
 // with created_at > since, ordered chronologically. Filters out sidechain
 // (sub-agent) messages, progress, and system entries — dream only needs

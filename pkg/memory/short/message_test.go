@@ -547,6 +547,80 @@ func TestMessageExists(t *testing.T) {
 	}
 }
 
+func TestGetMessageByUUID(t *testing.T) {
+	store := openTestStore(t)
+	sessionA := "session-a"
+	createTestSession(t, store, sessionA)
+
+	msg := &TranscriptMessage{
+		UUID:      "uuid-getby-1",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"hello world"}]`,
+		CreatedAt: time.Date(2026, 3, 15, 9, 30, 0, 0, time.UTC),
+	}
+	if err := store.AppendMessage(sessionA, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	got, err := store.GetMessageByUUID("uuid-getby-1")
+	if err != nil {
+		t.Fatalf("GetMessageByUUID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil message, want non-nil")
+	}
+	if got.UUID != "uuid-getby-1" {
+		t.Errorf("UUID = %q, want 'uuid-getby-1'", got.UUID)
+	}
+	if got.Content != `[{"type":"text","text":"hello world"}]` {
+		t.Errorf("Content = %q", got.Content)
+	}
+	if !got.CreatedAt.Equal(time.Date(2026, 3, 15, 9, 30, 0, 0, time.UTC)) {
+		t.Errorf("CreatedAt = %v", got.CreatedAt)
+	}
+}
+
+func TestGetMessageByUUID_NotFound(t *testing.T) {
+	store := openTestStore(t)
+	got, err := store.GetMessageByUUID("nonexistent-uuid")
+	if err != nil {
+		t.Fatalf("GetMessageByUUID should not error on missing uuid: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil for missing uuid", got)
+	}
+}
+
+func TestGetMessageByUUID_CrossSession(t *testing.T) {
+	store := openTestStore(t)
+	sessionA := "session-a"
+	sessionB := "session-b"
+	createTestSession(t, store, sessionA)
+	createTestSession(t, store, sessionB)
+
+	msg := &TranscriptMessage{
+		UUID:      "uuid-cross-session",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"cross session"}]`,
+		CreatedAt: time.Date(2026, 3, 15, 9, 30, 0, 0, time.UTC),
+	}
+	if err := store.AppendMessage(sessionA, msg); err != nil {
+		t.Fatalf("AppendMessage to sessionA: %v", err)
+	}
+
+	// GetMessageByUUID doesn't take a sessionID — it finds across all sessions.
+	got, err := store.GetMessageByUUID("uuid-cross-session")
+	if err != nil {
+		t.Fatalf("GetMessageByUUID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want message")
+	}
+	if got.UUID != "uuid-cross-session" {
+		t.Errorf("UUID = %q, want 'uuid-cross-session'", got.UUID)
+	}
+}
+
 func TestMessagesSince(t *testing.T) {
 	store := openTestStore(t)
 	sessionA := "session-a"
