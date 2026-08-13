@@ -2,90 +2,57 @@ package dream
 
 import (
 	"fmt"
-
-	"github.com/liuy/gbot/pkg/memory/long"
+	"time"
 )
 
-// factsExtractionSection teaches the dream agent how to use
-// recall/remember/forget and sets the filtering criteria for what
-// qualifies as a durable fact.
-const factsExtractionSection = `You have three tools for structured memory:
-- Recall(query): search existing facts AND message history (FTS5 syntax: AND/OR/NOT, parentheses, e.g. "Alex AND blue")
-- Remember(content): store a new atomic fact
-- Remember(fact_id, content): update an existing fact (use Recall to find fact_id)
-- Forget(fact_id): delete a fact by id (from Recall results)
+// SystemPrompt returns the static 4-phase consolidation instructions. Set as
+// the dream engine's system prompt once at startup — it survives auto-compact
+// and doesn't contain time-sensitive data.
+const SystemPrompt = `# Dream: Memory Consolidation
 
-Before writing new facts, recall existing ones to avoid duplicates and detect contradictions. If a new fact contradicts or supersedes an old one, update it with Remember(fact_id, new_content). Only Forget when the fact is truly obsolete or the user asked to remove it.
+You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories.
 
-[Scope] About the user (use their real name from memory/*.md) and their close relationships (family/friends/colleagues).
+---
 
-[Extract]
-1. Long-term stable facts
-   - User identity, preferences, habits
-   - Family/social relationships
-   - Life experiences
+## Phase 1 — Orient
 
-2. Life events (one-off but milestone-worthy)
-   - Must include: date + what happened + emotional context
-   - Example: "Alex's daughter (Lily) born 2026-08-06, overjoyed"
-   - Example: "Alex received poor annual review in Jan 2026, felt discouraged"
+- ls the memory directory to see what already exists
+- Read MEMORY.md to understand the current index
+- Skim existing topic files so you improve them rather than creating duplicates
 
-3. Persistent states (lasting days/weeks)
-   - Stress levels or moods sustained over a period
-   - Must include: time range + trigger
-   - Example: "Alex under heavy work pressure during Aug 2026"
+## Phase 2 — Gather recent signal
 
-[Do NOT extract]
-- Project/code/tech knowledge → goes to notes
-- Objective world knowledge → skip
-- Current work in progress → goes to notes
-- Transient emotions without milestone → skip (e.g. "had a good lunch")
+Use Recall to search recent conversations for topics worth remembering:
+- Pick keywords from existing memory files (topics, user preferences, project names)
+- Call Recall(query="<keyword>", source="messages") for each
+- Don't exhaustively search — look only for things you already suspect matter
 
-[Decision criteria]
-1. Will this fact still matter in 5 years? (Long-term stable or life event)
-2. Is it a persistent state? (Lasting days/weeks)
-3. Is it about the user's life world?
+## Phase 3 — Consolidate
 
-[Each fact must include]
-- Subject (who) — always
-- Time (when) — required for non-permanent facts
-- Relation (to whom) — required when involving others
-- Trigger (why) — required for emotions/states
+For each thing worth remembering, write or update a memory file:
+- Merge new signal into existing topic files rather than creating near-duplicates
+- Convert relative dates ("yesterday", "last week") to absolute dates
+- Delete contradicted facts — if today's investigation disproves an old memory, fix it at the source
 
-[Language]
-- Use the user's conversational language, keep their wording
-- Do not translate or unify languages
-- Keep proper nouns in original form
+## Phase 4 — Prune and index
 
-[Format]
-- One fact = one atomic fact
-- Self-contained, understandable without other facts`
+Update MEMORY.md so it stays under ~50 lines AND under ~25KB. It's an index, not a dump:
+- Each entry should be one line under ~150 characters
+- Format: - [Title](file.md) — one-line hook
+- Remove pointers to stale, wrong, or superseded memories
+- Add pointers to newly important memories
+- Never write memory content directly into MEMORY.md
 
-// BuildConsolidationPrompt builds the dream prompt. The facts extraction
-// section is always included — facts are an integral part of dream.
-func BuildConsolidationPrompt(memoryDir, extra string) string {
-	prompt := "# Dream: Memory Consolidation\n\n" +
-		"You are reviewing recent conversations and updating memory.\n\n" +
-		fmt.Sprintf("Memory directory: `%s`\n", memoryDir) +
-		"This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).\n\n" +
-		"---\n\n"
+---
 
-	if extra != "" {
-		prompt += "## Recent conversations\n\n" + extra + "\n---\n\n"
+Return a brief summary of what you consolidated, updated, or pruned. If nothing changed, say so.`
+
+// TriggerMessage returns the per-tick user message with time-sensitive context.
+// Sent as a Query each time the dream timer fires.
+func TriggerMessage(memoryDir string, lastDream time.Time) string {
+	lastDreamStr := "never"
+	if !lastDream.IsZero() {
+		lastDreamStr = lastDream.Format("2006-01-02 15:04")
 	}
-
-	prompt += "## Step 1 — Notes\n\n" +
-		"1. ls the memory directory, Read MEMORY.md and existing topic files\n" +
-		"2. From the conversations above, update notes (Write/Edit memory/*.md)\n" +
-		fmt.Sprintf("3. Update `%s` index (under %d lines, one line per entry: `- [Title](file.md) — one-line hook`)\n\n",
-			long.EntrypointName, long.MaxEntrypointLines) +
-		"## Step 2 — Facts\n\n" +
-		"4. Recall existing facts related to the conversations to avoid duplicates and detect contradictions\n" +
-		"5. update stale or contradicted facts via Remember(fact_id, content)\n" +
-		"6. Extract new durable facts and Remember them\n\n" +
-		factsExtractionSection + "\n\n" +
-		"---\n\n" +
-		"Return a brief summary of what you updated."
-
-	return prompt
+	return fmt.Sprintf("Memory directory: %s\nLast consolidation: %s\nBegin.", memoryDir, lastDreamStr)
 }

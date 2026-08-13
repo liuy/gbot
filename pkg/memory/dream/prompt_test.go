@@ -3,82 +3,76 @@ package dream
 import (
 	"strings"
 	"testing"
-
-	"github.com/liuy/gbot/pkg/memory/long"
+	"time"
 )
 
-func TestBuildConsolidationPrompt_StepStructure(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem", "")
-	for _, step := range []string{"Step 1 — Notes", "Step 2 — Facts"} {
-		if !strings.Contains(result, step) {
-			t.Errorf("prompt missing step header %q", step)
+func TestSystemPrompt_PhaseStructure(t *testing.T) {
+	for _, phase := range []string{"Phase 1 — Orient", "Phase 2 — Gather", "Phase 3 — Consolidate", "Phase 4 — Prune"} {
+		if !strings.Contains(SystemPrompt, phase) {
+			t.Errorf("system prompt missing phase header %q", phase)
 		}
 	}
-	// Should NOT contain old Phase numbering
-	for _, phase := range []string{"Phase 1", "Phase 2", "Phase 3", "Phase 4"} {
-		if strings.Contains(result, phase) {
-			t.Errorf("prompt should not contain old phase header %q", phase)
+	for _, step := range []string{"Step 1", "Step 2"} {
+		if strings.Contains(SystemPrompt, step) {
+			t.Errorf("system prompt should not contain old step header %q", step)
 		}
 	}
 }
 
-func TestBuildConsolidationPrompt_NoGrepOrProjectDir(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem", "")
-	if strings.Contains(result, "grep") {
-		t.Error("prompt should not contain grep instructions")
+func TestSystemPrompt_RecallInstructions(t *testing.T) {
+	if !strings.Contains(SystemPrompt, "Recall") {
+		t.Error("system prompt should instruct the agent to use Recall tool")
 	}
-	if strings.Contains(result, ".jsonl") {
-		t.Error("prompt should not reference .jsonl files")
-	}
-}
-
-func TestBuildConsolidationPrompt_MemoryDir(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem/root", "")
-	if !strings.Contains(result, "/mem/root") {
-		t.Error("prompt missing memoryDir path")
+	if !strings.Contains(SystemPrompt, `source="messages"`) {
+		t.Error("system prompt should instruct Recall with source=messages")
 	}
 }
 
-func TestBuildConsolidationPrompt_EntrypointConstraints(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem", "")
-	if !strings.Contains(result, long.EntrypointName) {
-		t.Error("prompt missing MEMORY.md reference")
+func TestSystemPrompt_NoGrepOrJsonl(t *testing.T) {
+	if strings.Contains(SystemPrompt, "grep") {
+		t.Error("system prompt should not contain grep instructions (uses Recall instead)")
 	}
-	// Should mention the line cap
-	if !strings.Contains(result, "200") {
-		t.Error("prompt missing line cap reference")
+	if strings.Contains(SystemPrompt, ".jsonl") {
+		t.Error("system prompt should not reference .jsonl files")
 	}
 }
 
-func TestBuildConsolidationPrompt_ExtraContext(t *testing.T) {
-	extra := "Recent conversations since last dream (chunk 1/1):\n\n[user 2026-01-01 12:00] hello\n"
-	result := BuildConsolidationPrompt("/mem", extra)
-	if !strings.Contains(result, "Recent conversations") {
-		t.Error("prompt missing 'Recent conversations' section")
+func TestSystemPrompt_NoRememberForget(t *testing.T) {
+	if strings.Contains(SystemPrompt, "Remember") {
+		t.Error("system prompt should not contain Remember instructions")
 	}
-	if !strings.Contains(result, "hello") {
-		t.Error("prompt missing message text from extra")
+	if strings.Contains(SystemPrompt, "Forget") {
+		t.Error("system prompt should not contain Forget instructions")
 	}
 }
 
-func TestBuildConsolidationPrompt_NoExtra(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem", "")
-	if strings.Contains(result, "Recent conversations") {
-		t.Error("prompt should not contain 'Recent conversations' section when extra is empty")
+func TestSystemPrompt_PruneGuidance(t *testing.T) {
+	if !strings.Contains(SystemPrompt, "MEMORY.md") {
+		t.Error("system prompt missing MEMORY.md reference")
+	}
+	if !strings.Contains(SystemPrompt, "~50 lines") {
+		t.Error("system prompt should mention ~50 line index cap")
+	}
+	if !strings.Contains(SystemPrompt, "~150 characters") {
+		t.Error("system prompt should mention ~150 character per-line cap")
 	}
 }
 
-func TestBuildConsolidationPrompt_AlwaysIncludesFactsSection(t *testing.T) {
-	result := BuildConsolidationPrompt("/mem", "")
-	for _, marker := range []string{"Recall", "Remember", "Forget"} {
-		if !strings.Contains(result, marker) {
-			t.Errorf("prompt should contain %q", marker)
-		}
+func TestTriggerMessage_LastDreamNever(t *testing.T) {
+	result := TriggerMessage("/mem", time.Time{})
+	if !strings.Contains(result, "Last consolidation: never") {
+		t.Error("cold-start trigger should say 'Last consolidation: never'")
 	}
-	if !strings.Contains(result, "[Extract]") {
-		t.Error("prompt should contain extraction criteria")
+	if !strings.Contains(result, "/mem") {
+		t.Error("trigger should contain memory dir path")
 	}
-	if !strings.Contains(result, "[Decision criteria]") {
-		t.Error("prompt should contain judgment criteria")
+}
+
+func TestTriggerMessage_LastDreamFormatted(t *testing.T) {
+	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	result := TriggerMessage("/mem", lastDream)
+	expected := "Last consolidation: 2026-03-15 10:30"
+	if !strings.Contains(result, expected) {
+		t.Errorf("trigger should contain %q, got: %s", expected, result)
 	}
 }

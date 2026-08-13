@@ -815,10 +815,10 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			b.IsLsp = true
 		}
 		b.TimingNs = int64(event.ToolResult.Duration)
-	// Agent tool: children were populated by sub-agent streaming events
-	// during execution. Clear them on completion so snapshot/takeover
-	// doesn't render stale sub-agent activity.
-	b.Children = []streamBlock{}
+		// Agent tool: children were populated by sub-agent streaming events
+		// during execution. Clear them on completion so snapshot/takeover
+		// doesn't render stale sub-agent activity.
+		b.Children = []streamBlock{}
 
 	case types.EventToolOutputDelta:
 		if event.ToolResult == nil {

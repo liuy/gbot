@@ -44,12 +44,12 @@ func insertAssistantMessage(t *testing.T, store *short.Store, projectDir string,
 	}
 }
 
-// mockIntegrationEngine captures RunChunk messages for assertion.
+// mockIntegrationEngine captures Query prompts for assertion.
 type mockIntegrationEngine struct {
 	mu       sync.Mutex
 	busy     bool
-	chunkErr error
-	messages []string
+	queryErr error
+	prompts  []string
 }
 
 func (m *mockIntegrationEngine) IsBusy() bool {
@@ -58,17 +58,17 @@ func (m *mockIntegrationEngine) IsBusy() bool {
 	return m.busy
 }
 
-func (m *mockIntegrationEngine) RunChunk(_ context.Context, msg string) error {
+func (m *mockIntegrationEngine) Query(_ context.Context, prompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.messages = append(m.messages, msg)
-	return m.chunkErr
+	m.prompts = append(m.prompts, prompt)
+	return m.queryErr
 }
 
-func (m *mockIntegrationEngine) capturedMessages() []string {
+func (m *mockIntegrationEngine) capturedPrompts() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]string(nil), m.messages...)
+	return append([]string(nil), m.prompts...)
 }
 
 // --- Cold start: fresh DB, no watermark, all conditions met ---
@@ -78,8 +78,8 @@ func TestIntegration_ColdStart(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	// Insert assistant message 3h ago → idle gate passes
-	insertAssistantMessage(t, store, projectDir, time.Now().Add(-3*time.Hour)) // REAL-TIME: idle gate test
+	// Insert assistant message 2h ago → idle gate passes
+	insertAssistantMessage(t, store, projectDir, time.Now().Add(-2*time.Hour)) // REAL-TIME: idle gate test
 
 	eng := &mockIntegrationEngine{}
 	p := TimerParams{
@@ -87,21 +87,28 @@ func TestIntegration_ColdStart(t *testing.T) {
 		Store:         store,
 		IdleQuerier:   store,
 		MemoryDir:     memoryDir,
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
 
 	p.tick(context.Background())
 
-	msgs := eng.capturedMessages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 RunChunk call, got %d", len(msgs))
+	prompts := eng.capturedPrompts()
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 Query call, got %d", len(prompts))
 	}
-	if !strings.Contains(msgs[0], "test user likes blue") {
-		t.Errorf("chunk message should contain conversation text, got: %s", msgs[0])
+	// The prompt is the consolidation prompt — no message data is injected.
+	// It should NOT contain the conversation text.
+	if strings.Contains(prompts[0], "test user likes blue") {
+		t.Errorf("prompt should not contain raw conversation text in self-driven model, got: %s", prompts[0])
+	}
+	if !strings.Contains(prompts[0], "Memory directory:") {
+		t.Errorf("prompt should contain trigger header, got: %s", prompts[0])
+	}
+	if !strings.Contains(prompts[0], "Last consolidation: never") {
+		t.Errorf("cold-start prompt should say 'never', got: %s", prompts[0])
 	}
 
 	// Watermark written on success
@@ -114,19 +121,19 @@ func TestIntegration_ColdStart(t *testing.T) {
 	}
 }
 
-// --- Hot path: watermark exists, new messages arrive, tick consolidates incrementally ---
+// --- Hot path: watermark exists, new messages arrive, tick fires with lastDream time ---
 
-func TestIntegration_HotPath_IncrementalConsolidation(t *testing.T) {
+func TestIntegration_HotPath_LastDreamInPrompt(t *testing.T) {
 	store := setupIntegrationStore(t)
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	// Old assistant message (3h ago)
-	oldMsg := time.Now().Add(-3 * time.Hour) // REAL-TIME: idle gate test
-	insertAssistantMessage(t, store, projectDir, oldMsg)
+	// Old assistant message (2h ago)
+	insertAssistantMessage(t, store, projectDir, time.Now().Add(-2*time.Hour)) // REAL-TIME: idle gate test
 
-	// Watermark written 5 minutes ago (well within cooldown? no — set to 7h ago)
-	writeWatermarkAge(t, memoryDir, 7*time.Hour)
+	// Watermark written 13h ago (past cooldown)
+	knownTime := time.Now().Add(-13 * time.Hour) // REAL-TIME: cooldown gate test
+	writeWatermarkTime(t, memoryDir, knownTime)
 
 	eng := &mockIntegrationEngine{}
 	p := TimerParams{
@@ -134,44 +141,43 @@ func TestIntegration_HotPath_IncrementalConsolidation(t *testing.T) {
 		Store:         store,
 		IdleQuerier:   store,
 		MemoryDir:     memoryDir,
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
 
 	p.tick(context.Background())
 
-	msgs := eng.capturedMessages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 RunChunk call, got %d", len(msgs))
+	prompts := eng.capturedPrompts()
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 Query call, got %d", len(prompts))
 	}
-	// The message should include the conversation from after the watermark
-	if !strings.Contains(msgs[0], "test user likes blue") {
-		t.Errorf("chunk should contain conversation text, got: %s", msgs[0])
+	// The prompt should contain the formatted lastDream time
+	expected := "Last consolidation: " + knownTime.Format("2006-01-02 15:04")
+	if !strings.Contains(prompts[0], expected) {
+		t.Errorf("prompt should contain %q, got: %s", expected, prompts[0])
 	}
 }
 
-// --- Recovery: consolidation fails → watermark not advanced → retry succeeds ---
+// --- Recovery: Query fails → watermark not advanced → retry succeeds ---
 
-func TestIntegration_Recovery_PartialFailureThenSuccess(t *testing.T) {
+func TestIntegration_Recovery_FailureThenSuccess(t *testing.T) {
 	store := setupIntegrationStore(t)
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	insertAssistantMessage(t, store, projectDir, time.Now().Add(-3*time.Hour)) // REAL-TIME: idle gate test
+	insertAssistantMessage(t, store, projectDir, time.Now().Add(-2*time.Hour)) // REAL-TIME: idle gate test
 
 	// First tick: fail
-	engFail := &mockIntegrationEngine{chunkErr: errors.New("llm unavailable")}
+	engFail := &mockIntegrationEngine{queryErr: errors.New("llm unavailable")}
 	p := TimerParams{
 		Engine:        engFail,
 		Store:         store,
 		IdleQuerier:   store,
 		MemoryDir:     memoryDir,
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
@@ -191,8 +197,8 @@ func TestIntegration_Recovery_PartialFailureThenSuccess(t *testing.T) {
 	p.Engine = engSuccess
 	p.tick(context.Background())
 
-	if len(engSuccess.capturedMessages()) != 1 {
-		t.Fatalf("expected 1 RunChunk on retry, got %d", len(engSuccess.capturedMessages()))
+	if len(engSuccess.capturedPrompts()) != 1 {
+		t.Fatalf("expected 1 Query on retry, got %d", len(engSuccess.capturedPrompts()))
 	}
 
 	// Watermark NOW written
@@ -212,7 +218,7 @@ func TestIntegration_BusyEngineSkips(t *testing.T) {
 	projectDir := t.TempDir()
 	memoryDir := t.TempDir()
 
-	insertAssistantMessage(t, store, projectDir, time.Now().Add(-3*time.Hour)) // REAL-TIME: idle gate test
+	insertAssistantMessage(t, store, projectDir, time.Now().Add(-2*time.Hour)) // REAL-TIME: idle gate test
 
 	eng := &mockIntegrationEngine{busy: true}
 	p := TimerParams{
@@ -220,17 +226,16 @@ func TestIntegration_BusyEngineSkips(t *testing.T) {
 		Store:         store,
 		IdleQuerier:   store,
 		MemoryDir:     memoryDir,
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
 
 	p.tick(context.Background())
 
-	if len(eng.capturedMessages()) != 0 {
-		t.Errorf("expected 0 RunChunk calls when busy, got %d", len(eng.capturedMessages()))
+	if len(eng.capturedPrompts()) != 0 {
+		t.Errorf("expected 0 Query calls when busy, got %d", len(eng.capturedPrompts()))
 	}
 }
 
@@ -246,16 +251,15 @@ func TestIntegration_NoAssistantMessage(t *testing.T) {
 		Store:         store,
 		IdleQuerier:   store,
 		MemoryDir:     memoryDir,
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
 
 	p.tick(context.Background())
 
-	if len(eng.capturedMessages()) != 0 {
-		t.Errorf("expected 0 RunChunk calls with no assistant message, got %d", len(eng.capturedMessages()))
+	if len(eng.capturedPrompts()) != 0 {
+		t.Errorf("expected 0 Query calls with no assistant message, got %d", len(eng.capturedPrompts()))
 	}
 }

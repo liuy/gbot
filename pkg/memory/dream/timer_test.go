@@ -3,6 +3,7 @@ package dream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -12,12 +13,28 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
+// testTimeBase is a fixed timestamp for deterministic test data.
+var testTimeBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// testMessages builds n TranscriptMessages with deterministic content.
+func testMessages(n int) []*short.TranscriptMessage {
+	var msgs []*short.TranscriptMessage
+	for i := range n {
+		msgs = append(msgs, &short.TranscriptMessage{
+			Type:      "user",
+			Content:   fmt.Sprintf(`[{"type":"text","text":"msg %d"}]`, i),
+			CreatedAt: testTimeBase.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	return msgs
+}
+
 // mockTimerEngine implements DreamEngine for timer tests.
 type mockTimerEngine struct {
 	mu       sync.Mutex
 	busy     bool
-	chunkErr error // error to return from RunChunk (nil = success)
-	calls    []string
+	queryErr error
+	prompts  []string
 }
 
 func (m *mockTimerEngine) IsBusy() bool {
@@ -26,17 +43,26 @@ func (m *mockTimerEngine) IsBusy() bool {
 	return m.busy
 }
 
-func (m *mockTimerEngine) RunChunk(_ context.Context, userMessage string) error {
+func (m *mockTimerEngine) Query(_ context.Context, prompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, userMessage)
-	return m.chunkErr
+	m.prompts = append(m.prompts, prompt)
+	return m.queryErr
 }
 
 func (m *mockTimerEngine) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.calls)
+	return len(m.prompts)
+}
+
+func (m *mockTimerEngine) lastPrompt() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.prompts) == 0 {
+		return ""
+	}
+	return m.prompts[len(m.prompts)-1]
 }
 
 // mockTimerIdle implements IdleQuerier.
@@ -66,9 +92,8 @@ func baseTimerParams(t *testing.T, eng DreamEngine, store MessageLister, idle Id
 		Store:         store,
 		IdleQuerier:   idle,
 		MemoryDir:     t.TempDir(),
-		ContextWindow: 100000,
-		IdleThreshold: 2 * time.Hour,
-		Cooldown:      6 * time.Hour,
+		IdleThreshold: 1 * time.Hour,
+		Cooldown:      12 * time.Hour,
 		TickInterval:  50 * time.Millisecond,
 		Logger:        slog.Default(),
 	}
@@ -77,110 +102,63 @@ func baseTimerParams(t *testing.T, eng DreamEngine, store MessageLister, idle Id
 // idleReady returns a mockIdle with lastAssistant far enough in the past to
 // pass the idle gate.
 func idleReady() *mockTimerIdle {
-	return &mockTimerIdle{lastAssistant: time.Now().Add(-3 * time.Hour)} // REAL-TIME: testing idle gate
+	return &mockTimerIdle{lastAssistant: time.Now().Add(-2 * time.Hour)} // REAL-TIME: testing idle gate
 }
 
-func singleChunkMessages() *mockTimerStore {
+func someMessages() *mockTimerStore {
 	return &mockTimerStore{msgs: testMessages(3)}
-}
-
-// twoChunkMessages returns messages large enough to force 2 chunks with
-// contextWindow=8000.
-func twoChunkMessages() []*short.TranscriptMessage {
-	return []*short.TranscriptMessage{
-		{
-			Type:      "user",
-			Content:   `[{"type":"text","text":"` + strings.Repeat("abcdefgh", 2000) + `"}]`,
-			CreatedAt: testTimeBase,
-		},
-		{
-			Type:      "assistant",
-			Content:   `[{"type":"text","text":"` + strings.Repeat("xyzwuvrs", 2000) + `"}]`,
-			CreatedAt: testTimeBase.Add(time.Minute),
-		},
-	}
-}
-
-// sequentialErrorEngine wraps a mockTimerEngine and returns an error starting
-// from the failFrom-th call (0-indexed). This tracks calls on the inner engine.
-type sequentialErrorEngine struct {
-	inner    *mockTimerEngine
-	failFrom int
-	calls    int
-	mu       sync.Mutex
-}
-
-func (s *sequentialErrorEngine) IsBusy() bool {
-	return s.inner.IsBusy()
-}
-
-func (s *sequentialErrorEngine) RunChunk(ctx context.Context, msg string) error {
-	s.mu.Lock()
-	idx := s.calls
-	s.calls++
-	s.mu.Unlock()
-	if idx >= s.failFrom {
-		return errors.New("simulated failure")
-	}
-	return s.inner.RunChunk(ctx, msg)
-}
-
-func (s *sequentialErrorEngine) callCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
 }
 
 // --- Gate tests ---
 
 func TestTick_BusyEngine(t *testing.T) {
 	eng := &mockTimerEngine{busy: true}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls when busy, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls when busy, got %d", eng.callCount())
 	}
 }
 
 func TestTick_NotIdle(t *testing.T) {
 	eng := &mockTimerEngine{}
 	idle := &mockTimerIdle{lastAssistant: time.Now().Add(-30 * time.Minute)} // REAL-TIME: testing idle gate
-	p := baseTimerParams(t, eng, singleChunkMessages(), idle)
+	p := baseTimerParams(t, eng, someMessages(), idle)
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls when not idle, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls when not idle, got %d", eng.callCount())
 	}
 }
 
 func TestTick_IdleZero(t *testing.T) {
 	eng := &mockTimerEngine{}
 	idle := &mockTimerIdle{lastAssistant: time.Time{}} // zero = no assistant yet
-	p := baseTimerParams(t, eng, singleChunkMessages(), idle)
+	p := baseTimerParams(t, eng, someMessages(), idle)
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls when no assistant message, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls when no assistant message, got %d", eng.callCount())
 	}
 }
 
 func TestTick_CooldownNotElapsed(t *testing.T) {
 	eng := &mockTimerEngine{}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
-	writeWatermarkAge(t, p.MemoryDir, 1*time.Hour) // cooldown=6h, 1h ago → not elapsed
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
+	writeWatermarkAge(t, p.MemoryDir, 1*time.Hour) // cooldown=12h, 1h ago → not elapsed
 
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls during cooldown, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls during cooldown, got %d", eng.callCount())
 	}
 }
 
 func TestTick_CooldownElapsed(t *testing.T) {
 	eng := &mockTimerEngine{}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
-	writeWatermarkAge(t, p.MemoryDir, 7*time.Hour) // cooldown=6h, 7h ago → elapsed
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
+	writeWatermarkAge(t, p.MemoryDir, 13*time.Hour) // cooldown=12h, 13h ago → elapsed
 
 	p.tick(context.Background())
 	if eng.callCount() != 1 {
-		t.Errorf("expected 1 RunChunk call after cooldown elapsed, got %d", eng.callCount())
+		t.Errorf("expected 1 Query call after cooldown elapsed, got %d", eng.callCount())
 	}
 }
 
@@ -190,7 +168,7 @@ func TestTick_NoNewMessages(t *testing.T) {
 	p := baseTimerParams(t, eng, store, idleReady())
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls with no messages, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls with no messages, got %d", eng.callCount())
 	}
 }
 
@@ -200,49 +178,50 @@ func TestTick_MessagesSinceError(t *testing.T) {
 	p := baseTimerParams(t, eng, store, idleReady())
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls on MessagesSince error, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls on MessagesSince error, got %d", eng.callCount())
 	}
 }
 
 func TestTick_LastAssistantTimeError(t *testing.T) {
 	eng := &mockTimerEngine{}
 	idle := &mockTimerIdle{err: errors.New("db down")}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idle)
+	p := baseTimerParams(t, eng, someMessages(), idle)
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls on LastAssistantTime error, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls on LastAssistantTime error, got %d", eng.callCount())
 	}
 }
 
 func TestTick_ReadWatermarkError(t *testing.T) {
 	eng := &mockTimerEngine{}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
 	// Make memoryDir a path under a file → ReadFile fails with ENOTDIR
 	p.MemoryDir = "/dev/null/x"
 
 	p.tick(context.Background())
 	if eng.callCount() != 0 {
-		t.Errorf("expected 0 RunChunk calls on ReadWatermark error, got %d", eng.callCount())
+		t.Errorf("expected 0 Query calls on ReadWatermark error, got %d", eng.callCount())
 	}
 }
 
-// --- Consolidate tests ---
+// --- Fire tests ---
 
 func TestTick_AllGatesPass(t *testing.T) {
 	eng := &mockTimerEngine{}
-	store := singleChunkMessages()
+	store := someMessages()
 	p := baseTimerParams(t, eng, store, idleReady())
 
 	p.tick(context.Background())
 
 	if eng.callCount() != 1 {
-		t.Fatalf("expected 1 RunChunk call, got %d", eng.callCount())
+		t.Fatalf("expected 1 Query call, got %d", eng.callCount())
 	}
-	eng.mu.Lock()
-	msg := eng.calls[0]
-	eng.mu.Unlock()
-	if len(msg) < 6 || msg[:6] != "[syste" {
-		t.Errorf("RunChunk message should start with [system], got: %q", msg)
+	prompt := eng.lastPrompt()
+	if prompt == "" {
+		t.Fatal("Query prompt should not be empty")
+	}
+	if !strings.Contains(prompt, "Memory directory:") {
+		t.Errorf("Query prompt should contain trigger header, got: %q", truncate(prompt, 80))
 	}
 
 	wm, err := ReadWatermark(p.MemoryDir)
@@ -250,48 +229,67 @@ func TestTick_AllGatesPass(t *testing.T) {
 		t.Fatalf("ReadWatermark: %v", err)
 	}
 	if wm.IsZero() {
-		t.Error("watermark should be written after all chunks succeed")
+		t.Error("watermark should be written after successful Query")
 	}
 }
 
-func TestTick_PartialFailure(t *testing.T) {
-	eng := &mockTimerEngine{}
-	store := &mockTimerStore{msgs: twoChunkMessages()}
-	p := baseTimerParams(t, eng, store, idleReady())
-	p.ContextWindow = 8000
-	wrapped := &sequentialErrorEngine{inner: eng, failFrom: 1}
-	p.Engine = wrapped
-
-	p.tick(context.Background())
-
-	if wrapped.callCount() != 2 {
-		t.Fatalf("expected 2 RunChunk calls, got %d", wrapped.callCount())
-	}
-	wm, err := ReadWatermark(p.MemoryDir)
-	if err != nil {
-		t.Fatalf("ReadWatermark: %v", err)
-	}
-	if !wm.IsZero() {
-		t.Error("watermark should NOT be written on partial failure")
-	}
-}
-
-func TestTick_AllChunksFail(t *testing.T) {
-	eng := &mockTimerEngine{chunkErr: errors.New("llm error")}
-	store := singleChunkMessages()
+func TestTick_QueryFailed_NoWatermark(t *testing.T) {
+	eng := &mockTimerEngine{queryErr: errors.New("llm error")}
+	store := someMessages()
 	p := baseTimerParams(t, eng, store, idleReady())
 
 	p.tick(context.Background())
 
 	if eng.callCount() != 1 {
-		t.Fatalf("expected 1 RunChunk call, got %d", eng.callCount())
+		t.Fatalf("expected 1 Query call, got %d", eng.callCount())
 	}
 	wm, err := ReadWatermark(p.MemoryDir)
 	if err != nil {
 		t.Fatalf("ReadWatermark: %v", err)
 	}
 	if !wm.IsZero() {
-		t.Error("watermark should NOT be written when all chunks fail")
+		t.Error("watermark should NOT be written when Query fails")
+	}
+}
+
+func TestTick_PromptContainsLastDream(t *testing.T) {
+	eng := &mockTimerEngine{}
+	store := someMessages()
+	p := baseTimerParams(t, eng, store, idleReady())
+	// Write a watermark at a known time
+	knownTime := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	writeWatermarkTime(t, p.MemoryDir, knownTime)
+	// Set cooldown to 0 so it passes regardless of how old the watermark is
+	p.Cooldown = 0
+
+	p.tick(context.Background())
+
+	if eng.callCount() != 1 {
+		t.Fatalf("expected 1 Query call, got %d", eng.callCount())
+	}
+	// ReadWatermark round-trips through UnixMilli which shifts timezone,
+	// so compute the expected string the same way the prompt does.
+	roundTripped := time.UnixMilli(knownTime.UnixMilli())
+	expected := "Last consolidation: " + roundTripped.Format("2006-01-02 15:04")
+	prompt := eng.lastPrompt()
+	if !strings.Contains(prompt, expected) {
+		t.Errorf("prompt should contain %q, got: %q", expected, truncate(prompt, 200))
+	}
+}
+
+func TestTick_PromptContainsNeverForColdStart(t *testing.T) {
+	eng := &mockTimerEngine{}
+	store := someMessages()
+	p := baseTimerParams(t, eng, store, idleReady())
+
+	p.tick(context.Background())
+
+	if eng.callCount() != 1 {
+		t.Fatalf("expected 1 Query call, got %d", eng.callCount())
+	}
+	prompt := eng.lastPrompt()
+	if !strings.Contains(prompt, "Last consolidation: never") {
+		t.Errorf("cold-start prompt should say 'never', got: %q", truncate(prompt, 200))
 	}
 }
 
@@ -299,7 +297,7 @@ func TestTick_AllChunksFail(t *testing.T) {
 
 func TestRunDreamTimer_StopsOnCancel(t *testing.T) {
 	eng := &mockTimerEngine{busy: true}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -318,7 +316,7 @@ func TestRunDreamTimer_StopsOnCancel(t *testing.T) {
 
 func TestRunDreamTimer_FiresOnTick(t *testing.T) {
 	eng := &mockTimerEngine{}
-	p := baseTimerParams(t, eng, singleChunkMessages(), idleReady())
+	p := baseTimerParams(t, eng, someMessages(), idleReady())
 	p.TickInterval = 20 * time.Millisecond
 
 	ctx := t.Context()
@@ -331,5 +329,12 @@ func TestRunDreamTimer_FiresOnTick(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond) // REAL-TIME: polling for async timer tick
 	}
-	t.Fatalf("expected at least 1 RunChunk call within 2s, got %d", eng.callCount())
+	t.Fatalf("expected at least 1 Query call within 2s, got %d", eng.callCount())
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

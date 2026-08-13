@@ -430,7 +430,6 @@ func Start(opts Options) (*Instance, error) {
 			Store:         store,
 			IdleQuerier:   store,
 			MemoryDir:     memoryDir,
-			ContextWindow: dreamCtxWindow,
 			IdleThreshold: idle,
 			Cooldown:      cooldown,
 			TickInterval:  10 * time.Minute,
@@ -585,7 +584,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 	// Whitelist: only tools dream needs.
 	dreamWhitelist := []string{
 		"Read", "Write", "Edit", "Bash", "Grep", "Glob",
-		"Recall", "Remember", "Forget",
+		"Recall",
 	}
 	dreamDef := types.AgentDefinition{Tools: dreamWhitelist}
 	dreamTools := agent.ResolveAgentTools(dreamRefs.Reg.ToolMapFn()(), &dreamDef)
@@ -625,7 +624,6 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		dreamHandler = handler
 	}
 
-	memoryDir := long.GetMemoryPath(d.WorkingDir)
 	dreamEng := engine.New(&engine.Params{
 		Provider:      dreamProv,
 		ToolsProvider: func() map[string]tool.Tool { return dreamTools },
@@ -661,7 +659,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		WSRegistry: nil,
 		ShortStore: d.Store,
 	})
-	dreamEng.SetSystemPrompt(dream.BuildConsolidationPrompt(memoryDir, ""))
+	dreamEng.SetSystemPrompt(dream.SystemPrompt)
 	dreamEng.SetOnClose(func(sessionID string) {
 		dreamRefs.BashReg.CleanupCompleted()
 	})
@@ -678,8 +676,8 @@ func (a *dreamEngineAdapter) IsBusy() bool {
 	return a.eng.IsBusy()
 }
 
-func (a *dreamEngineAdapter) RunChunk(ctx context.Context, userMessage string) error {
-	result := a.eng.QuerySync(ctx, userMessage, a.eng.SystemPrompt())
+func (a *dreamEngineAdapter) Query(ctx context.Context, prompt string) error {
+	result := a.eng.QuerySync(ctx, prompt, a.eng.SystemPrompt())
 	return result.Error
 }
 

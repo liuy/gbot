@@ -76,3 +76,14 @@ func writeWatermarkAge(t *testing.T, memoryDir string, age time.Duration) {
 		t.Fatal(err)
 	}
 }
+
+// writeWatermarkTime writes a watermark file with a specific timestamp.
+// Used by timer tests to verify the prompt contains the formatted lastDream.
+func writeWatermarkTime(t *testing.T, memoryDir string, ts time.Time) {
+	t.Helper()
+	path := filepath.Join(memoryDir, watermarkFileName)
+	content := strconv.FormatInt(ts.UnixMilli(), 10)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

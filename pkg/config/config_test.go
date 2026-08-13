@@ -1161,18 +1161,18 @@ func TestDreamConfig_Defaults(t *testing.T) {
 		errContains  string
 	}{
 		{
-			name:         "missing key defaults enabled with 2h idle 6h cooldown",
+			name:         "missing key defaults enabled with 1h idle 12h cooldown",
 			json:         `{}`,
 			wantEnabled:  true,
-			wantIdle:     2 * time.Hour,
-			wantCooldown: 6 * time.Hour,
+			wantIdle:     1 * time.Hour,
+			wantCooldown: 12 * time.Hour,
 		},
 		{
 			name:         "explicit disable",
 			json:         `{"dream":{"disabled":true}}`,
 			wantEnabled:  false,
-			wantIdle:     2 * time.Hour,
-			wantCooldown: 6 * time.Hour,
+			wantIdle:     1 * time.Hour,
+			wantCooldown: 12 * time.Hour,
 		},
 		{
 			name:         "custom durations",

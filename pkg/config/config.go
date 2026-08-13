@@ -78,17 +78,17 @@ type DreamConfig struct {
 }
 
 // Defaults resolves the dream configuration into concrete values. Empty
-// IdleThreshold defaults to 2h, empty Cooldown defaults to 6h. Returns the
+// IdleThreshold defaults to 1h, empty Cooldown defaults to 12h. Returns the
 // enabled flag, parsed durations, and a parse error for invalid strings.
 func (d DreamConfig) Defaults() (enabled bool, idle, cooldown time.Duration, err error) {
 	enabled = !d.Disabled
 	idleStr := d.IdleThreshold
 	if idleStr == "" {
-		idleStr = "2h"
+		idleStr = "1h"
 	}
 	cooldownStr := d.Cooldown
 	if cooldownStr == "" {
-		cooldownStr = "6h"
+		cooldownStr = "12h"
 	}
 	idle, err = time.ParseDuration(idleStr)
 	if err != nil {

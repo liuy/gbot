@@ -8,17 +8,17 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
-// MessageLister provides time-filtered message queries.
+// MessageLister provides time-filtered message queries for the gate check.
+// Only the count matters — messages are not injected into the dream agent.
 // *short.Store implements this.
 type MessageLister interface {
 	MessagesSince(since time.Time) ([]*short.TranscriptMessage, error)
 }
 
-// DreamEngine is the subset of *engine.Engine the timer needs. Decoupling via
-// an interface makes the timer testable without a real engine.
+// DreamEngine is the subset of *engine.Engine the timer needs.
 type DreamEngine interface {
 	IsBusy() bool
-	RunChunk(ctx context.Context, userMessage string) error
+	Query(ctx context.Context, prompt string) error
 }
 
 // IdleQuerier returns the timestamp of the last main-thread assistant message.
@@ -33,14 +33,13 @@ type TimerParams struct {
 	Store         MessageLister
 	IdleQuerier   IdleQuerier
 	MemoryDir     string
-	ContextWindow int
 	IdleThreshold time.Duration
 	Cooldown      time.Duration
 	TickInterval  time.Duration
 	Logger        *slog.Logger
 }
 
-// RunDreamTimer ticks every TickInterval and runs the gate sequence + consolidate
+// RunDreamTimer ticks every TickInterval and runs the gate sequence + Query
 // on each tick. Blocks until ctx is cancelled.
 func RunDreamTimer(ctx context.Context, p TimerParams) {
 	if p.Logger == nil {
@@ -59,7 +58,8 @@ func RunDreamTimer(ctx context.Context, p TimerParams) {
 }
 
 // tick runs the 5-gate sequence. Any gate failure is a silent skip with a
-// debug log. All gates passing triggers consolidate.
+// debug log. All gates passing triggers a single self-driven Query — the
+// agent uses its own tools (ls, Read, Recall, Write/Edit) to consolidate.
 func (p TimerParams) tick(ctx context.Context) {
 	// Gate 1: dream engine busy — user is interacting with it
 	if p.Engine.IsBusy() {
@@ -97,8 +97,8 @@ func (p TimerParams) tick(ctx context.Context) {
 		return
 	}
 
-	// Gate 4: new messages since last consolidation
-	// When lastDream is zero (cold start), MessagesSince(epoch) returns all.
+	// Gate 4: new messages since last consolidation.
+	// Only the count matters — the agent gathers its own context via Recall.
 	msgs, err := p.Store.MessagesSince(lastDream)
 	if err != nil {
 		p.Logger.Warn("dream: MessagesSince failed", "error", err)
@@ -117,38 +117,17 @@ func (p TimerParams) tick(ctx context.Context) {
 	p.Logger.Info("dream: firing",
 		"idle", idleDuration.Round(time.Second),
 		"messages", len(msgs))
-	p.consolidate(ctx, msgs)
-}
 
-// consolidate chunks the messages and injects each chunk into the dream engine
-// sequentially via RunChunk. The watermark is advanced only when ALL chunks
-// succeed — partial/total failure leaves it untouched so the next tick
-// reprocesses (recall + UNIQUE dedup prevents duplicate facts).
-func (p TimerParams) consolidate(ctx context.Context, messages []*short.TranscriptMessage) {
-	chunks := chunkByTokens(messages, p.ContextWindow)
-	if len(chunks) == 0 {
+	prompt := TriggerMessage(p.MemoryDir, lastDream)
+
+	if err := p.Engine.Query(ctx, prompt); err != nil {
+		p.Logger.Warn("dream: query failed", "error", err)
 		return
 	}
 
-	successCount := 0
-	for i, chunk := range chunks {
-		userMsg := "[system] Dream time.\n\n" + formatMessages(chunk, i+1, len(chunks))
-		chunkCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		err := p.Engine.RunChunk(chunkCtx, userMsg)
-		cancel()
-		if err != nil {
-			p.Logger.Warn("dream: chunk failed", "chunk", i+1, "of", len(chunks), "error", err)
-			continue
-		}
-		successCount++
+	if err := WriteWatermark(p.MemoryDir); err != nil {
+		p.Logger.Warn("dream: WriteWatermark failed", "error", err)
 	}
 
-	if successCount == len(chunks) {
-		if err := WriteWatermark(p.MemoryDir); err != nil {
-			p.Logger.Warn("dream: WriteWatermark failed", "error", err)
-		}
-	} else {
-		p.Logger.Warn("dream: partial failure, watermark not advanced",
-			"success", successCount, "total", len(chunks))
-	}
+	p.Logger.Info("dream: completed")
 }
