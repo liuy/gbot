@@ -933,6 +933,10 @@ func (e *Engine) processAttachments(ctx context.Context, systemPrompt string) {
 	}
 	attachmentMsgs := e.createAttachmentMessages(pendingItems)
 	e.appendMessages(attachmentMsgs)
+	// Update queryStartMsgIdx so buildHistory includes all committed messages
+	// (including the previous query's assistant response). Without this, the
+	// stale idx from the prior query truncates history, hiding committed turns.
+	e.snapshotQueryStart()
 	for i := range attachmentMsgs {
 		if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
 			e.emitEvent(types.QueryEvent{

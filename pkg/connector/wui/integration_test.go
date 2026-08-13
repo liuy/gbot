@@ -629,6 +629,52 @@ func TestUpdateStreamState_NilThinkingOnEnd(t *testing.T) {
 	}
 }
 
+func TestUpdateStreamState_AttachmentAddsUserBlock(t *testing.T) {
+	var ss streamState
+
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "make check"},
+			},
+		},
+	})
+
+	if len(ss.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(ss.blocks))
+	}
+	if ss.blocks[0].Kind != "user" {
+		t.Errorf("kind = %q, want user", ss.blocks[0].Kind)
+	}
+	if ss.blocks[0].Text != "make check" {
+		t.Errorf("text = %q, want 'make check'", ss.blocks[0].Text)
+	}
+}
+
+func TestUpdateStreamState_AttachmentNilMessageNoOp(t *testing.T) {
+	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventAttachment})
+	if len(ss.blocks) != 0 {
+		t.Errorf("nil Message should be no-op, got %d blocks", len(ss.blocks))
+	}
+}
+
+func TestUpdateStreamState_AttachmentEmptyTextNoOp(t *testing.T) {
+	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: ""}},
+		},
+	})
+	if len(ss.blocks) != 0 {
+		t.Errorf("empty text should be no-op, got %d blocks", len(ss.blocks))
+	}
+}
+
 // ---- Section 6: Start / Send / SetCreateEngineFn ----
 
 // TestStart_ReturnsNil verifies Start is a no-op returning nil.

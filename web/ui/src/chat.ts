@@ -1013,7 +1013,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     before: Node | null,
     parentID: string | null,
   ) {
-    if (block.kind === 'text') {
+    if (block.kind === 'user') {
+      if (!block.text) return
+      appendUserBlock(parent, block.text, before)
+    } else if (block.kind === 'text') {
       if (!block.text) return
       const div = appendTextBlock(parent, before)
       div.innerHTML = renderMarkdown(block.text)

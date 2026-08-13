@@ -705,3 +705,254 @@ func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
 		t.Errorf("stats.thinkingMs = %d, want 1500", stats.ThinkingMs)
 	}
 }
+
+// TestTakeover_SnapshotIncludesPreAttachmentBlocks verifies that snapshot
+// includes ALL streaming blocks from query start, even when a queued
+// attachment message is drained mid-query at a turn boundary.
+//
+// Scenario: query in progress, turn 1 produces text + tool blocks, then a
+// queued user message is drained (EventAttachment), then turn 2 starts.
+// Takeover snapshot must contain the turn-1 blocks AND the attachment echo.
+func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Conn1 connects first, becomes active.
+	ws1 := dialAndStore(t, c)
+
+	// Empty history — all content comes from streaming.
+	c.mock().SetMessagesFn(func() []types.Message { return nil })
+
+	// Simulate query start
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+
+	// Turn 1: assistant produces text
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hello "})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "world"})
+
+	// Turn 1: assistant uses a tool
+	c.Handle(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tool-1", Name: "Bash", Summary: "ls"},
+	})
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tool-1", DisplayOutput: "file1"},
+	})
+
+	// Turn boundary: queued message "make check" is drained
+	c.Handle(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "make check"},
+			},
+		},
+	})
+
+	// Turn 2: assistant produces more text
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "done"})
+
+	// Conn2 connects → takeover
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+
+	// Drain connect_status that ws1 might get from takeover
+	_ = ws1
+
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+
+	// Snapshot must contain:
+	// 1. text block "hello world" (turn 1)
+	// 2. tool block "Bash" (turn 1)
+	// 3. user block "make check" (attachment)
+	// 4. text block "done" (turn 2)
+	var textContents []string
+	var toolNames []string
+	var userTexts []string
+	for _, b := range snapBlocks {
+		switch b.Kind {
+		case "text":
+			textContents = append(textContents, b.Text)
+		case "tool":
+			toolNames = append(toolNames, b.Name)
+		case "user":
+			userTexts = append(userTexts, b.Text)
+		}
+	}
+
+	// Turn 1 text must be in snapshot
+	foundHello := false
+	for _, t := range textContents {
+		if strings.Contains(t, "hello world") {
+			foundHello = true
+		}
+	}
+	if !foundHello {
+		t.Errorf("snapshot missing turn-1 text 'hello world', texts: %v", textContents)
+	}
+
+	// Turn 1 tool must be in snapshot
+	foundTool := false
+	for _, n := range toolNames {
+		if n == "Bash" {
+			foundTool = true
+		}
+	}
+	if !foundTool {
+		t.Errorf("snapshot missing turn-1 tool 'Bash', tools: %v", toolNames)
+	}
+
+	// Attachment user echo must be in snapshot
+	foundMakeCheck := false
+	for _, u := range userTexts {
+		if strings.Contains(u, "make check") {
+			foundMakeCheck = true
+		}
+	}
+	if !foundMakeCheck {
+		t.Errorf("snapshot missing attachment 'make check', users: %v", userTexts)
+	}
+
+	// Turn 2 text must be in snapshot
+	foundDone := false
+	for _, t := range textContents {
+		if strings.Contains(t, "done") {
+			foundDone = true
+		}
+	}
+	if !foundDone {
+		t.Errorf("snapshot missing turn-2 text 'done', texts: %v", textContents)
+	}
+}
+
+// TestTakeover_SnapshotIncludesAllBlocksWithQueryEndAttachment verifies that
+// snapshot includes ALL streaming blocks when a queued attachment is drained
+// AFTER query_end (processAttachments path). This is the scenario where the
+// user sends a queued message during a query, the query finishes, then
+// processAttachments picks up the queue and starts a new runTurns — all
+// within the same "busy" window from the client's perspective.
+//
+// The key difference from the mid-query case: the first query's query_end
+// fires, clearing streamState. Then processAttachments sends EventAttachment
+// + new streaming. The takeover snapshot must show the attachment + new
+// streaming. The first query's content should be in history (committed to
+// engine.Messages), NOT in snapshot (cleared by query_end).
+func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Conn1 connects first, becomes active.
+	ws1 := dialAndStore(t, c)
+
+	// Engine has: [query1User, query1Response, makeCheckAttachment]
+	// processAttachments calls snapshotQueryStart() after appendMessages,
+	// so idx = 3 (len of all messages). buildHistory returns msgs[:4] =
+	// all 3 messages (including query1Response).
+	var msgs = []types.Message{
+		{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "query1 input"}}},
+		{ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
+			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "query1 response"}}},
+		{ID: "att1", Role: types.RoleUser, Timestamp: time.Unix(1002, 0),
+			Content:     []types.ContentBlock{{Type: types.ContentTypeText, Text: "make check"}},
+			MessageType: types.MessageTypeAttachment},
+	}
+	c.mock().SetMessagesFn(func() []types.Message { return msgs })
+	c.mock().queryStartMsgIdxFn = func() int { return len(msgs) }
+
+	// Query 1: streaming events
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "query1 response"})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+	// After query_end: processAttachments picks up queued "make check"
+	c.Handle(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "make check"},
+			},
+		},
+	})
+
+	// processAttachments: new streaming
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "running make check"})
+
+	// Conn2 connects → takeover
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+
+	_ = ws1
+
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+
+	var textContents []string
+	var userTexts []string
+	for _, b := range snapBlocks {
+		switch b.Kind {
+		case "text":
+			textContents = append(textContents, b.Text)
+		case "user":
+			userTexts = append(userTexts, b.Text)
+		}
+	}
+
+	// Snapshot must contain the attachment echo "make check"
+	foundMakeCheck := false
+	for _, u := range userTexts {
+		if strings.Contains(u, "make check") {
+			foundMakeCheck = true
+		}
+	}
+	if !foundMakeCheck {
+		t.Errorf("snapshot missing attachment 'make check', users: %v", userTexts)
+	}
+
+	// Snapshot must contain the new streaming text "running make check"
+	foundRunning := false
+	for _, txt := range textContents {
+		if strings.Contains(txt, "running make check") {
+			foundRunning = true
+		}
+	}
+	if !foundRunning {
+		t.Errorf("snapshot missing text 'running make check', texts: %v", textContents)
+	}
+
+	// Snapshot must NOT contain query1's text (it was cleared by query_end
+	// and should be in history instead)
+	for _, txt := range textContents {
+		if strings.Contains(txt, "query1 response") {
+			t.Errorf("snapshot should NOT contain query1 text (cleared by query_end, should be in history), got: %v", textContents)
+		}
+	}
+
+	// History must contain query1 response — without snapshotQueryStart in
+	// processAttachments, QueryStartMsgIdx truncation hides committed turns.
+	var hist struct {
+		Messages []struct {
+			Text string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(meta.History, &hist); err != nil {
+		t.Fatalf("unmarshal history: %v", err)
+	}
+	foundQuery1Response := false
+	for _, m := range hist.Messages {
+		if strings.Contains(m.Text, "query1 response") {
+			foundQuery1Response = true
+		}
+	}
+	if !foundQuery1Response {
+		t.Errorf("history missing query1 response — QueryStartMsgIdx truncation")
+	}
+}

@@ -788,6 +788,26 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			b.IsLsp = true
 		}
 
+	case types.EventAttachment:
+		// Queued message drained mid-query at a turn boundary. Append a user
+		// echo block so takeover snapshot includes it.
+		if event.Message == nil {
+			return
+		}
+		var text strings.Builder
+		for _, cb := range event.Message.Content {
+			if cb.Type == types.ContentTypeText {
+				text.WriteString(cb.Text)
+			}
+		}
+		if text.String() == "" {
+			return
+		}
+		ss.blocks = append(ss.blocks, streamBlock{
+			Kind: "user",
+			Text: text.String(),
+		})
+
 	case types.EventToolEnd:
 		if event.ToolResult == nil {
 			return
