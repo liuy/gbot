@@ -12,8 +12,8 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 )
 
-// openFactStore creates a short.Store in a temp dir for testing.
-func openFactStore(t *testing.T) *short.Store {
+// openStore creates a short.Store in a temp dir for testing.
+func openStore(t *testing.T) *short.Store {
 	t.Helper()
 	store, err := short.NewStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -23,43 +23,8 @@ func openFactStore(t *testing.T) *short.Store {
 	return store
 }
 
-// insertFactAt inserts a fact with an explicit created_at, bypassing AddFact
-// which uses CURRENT_TIMESTAMP. Needed to test since-based filtering.
-func insertFactAt(t *testing.T, store *short.Store, content string, createdAt time.Time) {
-	t.Helper()
-	tx, err := store.DB().Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	res, err := tx.Exec(`INSERT INTO facts(content, created_at) VALUES(?, ?)`, content, createdAt)
-	if err != nil {
-		t.Fatalf("insert fact: %v", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("last insert id: %v", err)
-	}
-
-	segmented := store.Segment(content)
-	if _, err := tx.Exec(`INSERT INTO facts_fts(segmented_content) VALUES(?)`, segmented); err != nil {
-		t.Fatalf("insert fts: %v", err)
-	}
-	var ftsRowid int64
-	if err := tx.QueryRow(`SELECT last_insert_rowid()`).Scan(&ftsRowid); err != nil {
-		t.Fatalf("read fts rowid: %v", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO facts_fts_map(fact_id, fts_rowid) VALUES(?, ?)`, id, ftsRowid); err != nil {
-		t.Fatalf("insert fts map: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-}
-
 func TestRecall_MissingQuery(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	r := New(fs)
 	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
@@ -70,12 +35,8 @@ func TestRecall_MissingQuery(t *testing.T) {
 	}
 }
 
-func TestRecall_HitsBothSources(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("alice likes blue"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-
+func TestRecall_HitsMessages(t *testing.T) {
+	fs := openStore(t)
 	sess, err := fs.CreateSession("/test", "test-model")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -91,25 +52,13 @@ func TestRecall_HitsBothSources(t *testing.T) {
 	}
 
 	r := New(fs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","source":"all"}`), nil)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	out, ok := result.Data.(*Output)
 	if !ok {
 		t.Fatalf("Data type = %T, want *Output", result.Data)
-	}
-	if len(out.Facts) != 1 {
-		t.Fatalf("expected 1 fact hit, got %d", len(out.Facts))
-	}
-	if out.Facts[0].Content != "alice likes blue" {
-		t.Errorf("fact content = %q", out.Facts[0].Content)
-	}
-	if out.Facts[0].Date == "" {
-		t.Error("fact date should not be empty")
-	}
-	if out.Facts[0].FactID <= 0 {
-		t.Errorf("fact_id should be > 0, got %d", out.Facts[0].FactID)
 	}
 	if len(out.Messages) != 1 {
 		t.Fatalf("expected 1 message hit, got %d", len(out.Messages))
@@ -122,122 +71,8 @@ func TestRecall_HitsBothSources(t *testing.T) {
 	}
 }
 
-func TestRecall_DefaultSourceFacts(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("alice likes blue"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-
-	sess, err := fs.CreateSession("/test", "test-model")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	msg := &short.TranscriptMessage{
-		UUID:      "msg-blue-default",
-		Type:      "user",
-		Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
-		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
-	}
-	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
-		t.Fatalf("AppendMessage: %v", err)
-	}
-
-	r := New(fs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	out := result.Data.(*Output)
-	if len(out.Facts) != 1 {
-		t.Errorf("default source should search facts, expected 1 hit, got %d", len(out.Facts))
-	}
-	if len(out.Messages) != 0 {
-		t.Errorf("default source should not search messages, got %d", len(out.Messages))
-	}
-}
-
-func TestRecall_SourceMessages(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("alice likes blue"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-
-	sess, err := fs.CreateSession("/test", "test-model")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	msg := &short.TranscriptMessage{
-		UUID:      "msg-blue-src-msg",
-		Type:      "user",
-		Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
-		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
-	}
-	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
-		t.Fatalf("AppendMessage: %v", err)
-	}
-
-	r := New(fs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","source":"messages"}`), nil)
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	out := result.Data.(*Output)
-	if len(out.Facts) != 0 {
-		t.Errorf("source=messages should not search facts, got %d", len(out.Facts))
-	}
-	if len(out.Messages) != 1 {
-		t.Errorf("source=messages should search messages, expected 1 hit, got %d", len(out.Messages))
-	}
-}
-
-func TestRecall_SourceAll(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("alice likes blue"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-
-	sess, err := fs.CreateSession("/test", "test-model")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	msg := &short.TranscriptMessage{
-		UUID:      "msg-blue-src-all",
-		Type:      "user",
-		Content:   `[{"type":"text","text":"alice mentioned blue today"}]`,
-		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
-	}
-	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
-		t.Fatalf("AppendMessage: %v", err)
-	}
-
-	r := New(fs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","source":"all"}`), nil)
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	out := result.Data.(*Output)
-	if len(out.Facts) != 1 {
-		t.Errorf("source=all should search facts, expected 1, got %d", len(out.Facts))
-	}
-	if len(out.Messages) != 1 {
-		t.Errorf("source=all should search messages, expected 1, got %d", len(out.Messages))
-	}
-}
-
-func TestRecall_InvalidSource(t *testing.T) {
-	fs := openFactStore(t)
-	r := New(fs)
-	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","source":"invalid"}`), nil)
-	if err == nil {
-		t.Fatal("expected error for invalid source")
-	}
-	if !strings.Contains(err.Error(), "invalid source") {
-		t.Errorf("error = %q, want 'invalid source'", err.Error())
-	}
-}
-
 func TestRecall_InvalidSince(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	r := New(fs)
 	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","since":"bad"}`), nil)
 	if err == nil {
@@ -249,51 +84,38 @@ func TestRecall_InvalidSince(t *testing.T) {
 }
 
 func TestRecall_MalformedQuery(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("apple banana"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-
+	fs := openStore(t)
 	r := New(fs)
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"("}`), nil)
 	if err != nil {
 		t.Fatalf("malformed query should not error: %v", err)
 	}
 	out := result.Data.(*Output)
-	if len(out.Facts) != 0 {
-		t.Errorf("malformed query should return 0 facts, got %d", len(out.Facts))
-	}
 	if len(out.Messages) != 0 {
 		t.Errorf("malformed query should return 0 messages, got %d", len(out.Messages))
 	}
 }
 
 func TestRecall_EmptyResults(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	r := New(fs)
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"nothinghere"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	out := result.Data.(*Output)
-	if len(out.Facts) != 0 {
-		t.Errorf("expected 0 facts, got %d", len(out.Facts))
-	}
 	if len(out.Messages) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(out.Messages))
 	}
 	b, _ := json.Marshal(out)
 	jsonStr := string(b)
-	if strings.Contains(jsonStr, `"facts":null`) {
-		t.Errorf("facts should be [], got null: %s", jsonStr)
-	}
 	if strings.Contains(jsonStr, `"messages":null`) {
 		t.Errorf("messages should be [], got null: %s", jsonStr)
 	}
 }
 
 func TestRecall_LimitClamp(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	r := New(fs)
 	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":0}`), nil)
 	if err != nil {
@@ -306,7 +128,7 @@ func TestRecall_LimitClamp(t *testing.T) {
 }
 
 func TestRecall_IsReadOnly(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	r := New(fs)
 	if !r.IsReadOnly(nil) {
 		t.Error("recall should be read-only")
@@ -322,19 +144,15 @@ func TestRecall_IsReadOnly(t *testing.T) {
 func TestRecall_RenderResult(t *testing.T) {
 	r := New(nil)
 	rendered := r.RenderResult(&Output{
-		Facts:    []factHit{{FactID: 5, Content: "test fact", Date: "2026-01-01"}},
 		Messages: []msgHit{{Content: "test msg", Date: "2026-01-02"}},
 	})
-	if !strings.Contains(rendered, "[fact 5]") {
-		t.Errorf("render should contain fact line: %s", rendered)
-	}
-	if !strings.Contains(rendered, "test fact") {
-		t.Errorf("render should contain fact content: %s", rendered)
-	}
 	if !strings.Contains(rendered, "[msg]") {
 		t.Errorf("render should contain msg line: %s", rendered)
 	}
-	empty := r.RenderResult(&Output{Facts: []factHit{}, Messages: []msgHit{}})
+	if !strings.Contains(rendered, "test msg") {
+		t.Errorf("render should contain msg content: %s", rendered)
+	}
+	empty := r.RenderResult(&Output{Messages: []msgHit{}})
 	if empty != "No matches found." {
 		t.Errorf("empty render = %q, want 'No matches found.'", empty)
 	}
@@ -346,7 +164,7 @@ func TestRecall_DecodeResult(t *testing.T) {
 	if !ok {
 		t.Fatal("recall tool should implement ToolWithDecodeResult")
 	}
-	innerJSON := `{"facts":[{"fact_id":3,"content":"hello","date":"2026-01-01"}],"messages":[]}`
+	innerJSON := `{"messages":[{"content":"hello","date":"2026-01-01"}]}`
 	wire := tool.WrapSingleBlock(innerJSON)
 	decoded, err := decoder.DecodeResult(wire)
 	if err != nil {
@@ -356,49 +174,19 @@ func TestRecall_DecodeResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("decoded type = %T, want *Output", decoded)
 	}
-	if len(out.Facts) != 1 {
-		t.Fatalf("expected 1 fact, got %d", len(out.Facts))
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out.Messages))
 	}
-	if out.Facts[0].FactID != 3 {
-		t.Errorf("fact_id = %d, want 3", out.Facts[0].FactID)
-	}
-	if out.Facts[0].Content != "hello" {
-		t.Errorf("content = %q, want 'hello'", out.Facts[0].Content)
-	}
-}
-
-func TestRecall_ChineseFact(t *testing.T) {
-	fs := openFactStore(t)
-	if _, _, err := fs.AddFact("alice 喜欢 蓝色"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
-	r := New(fs)
-	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"蓝色"}`), nil)
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	out, ok := result.Data.(*Output)
-	if !ok {
-		t.Fatalf("Data type = %T, want *Output", result.Data)
-	}
-	if len(out.Facts) != 1 {
-		t.Fatalf("expected 1 fact hit for Chinese query, got %d", len(out.Facts))
-	}
-	if !strings.Contains(out.Facts[0].Content, "蓝色") {
-		t.Errorf("fact content = %q, want it to contain '蓝色'", out.Facts[0].Content)
+	if out.Messages[0].Content != "hello" {
+		t.Errorf("content = %q, want 'hello'", out.Messages[0].Content)
 	}
 }
 
 func TestRecall_Since(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	// REAL-TIME: parseSince computes cutoff from time.Now; test needs matching reference.
 	now := time.Now()
 	oldTime := now.Add(-100 * 24 * time.Hour)
-
-	insertFactAt(t, fs, "old blue fact", oldTime)
-	if _, _, err := fs.AddFact("recent blue fact"); err != nil {
-		t.Fatalf("AddFact: %v", err)
-	}
 
 	sess, err := fs.CreateSession("/test", "test-model")
 	if err != nil {
@@ -426,16 +214,11 @@ func TestRecall_Since(t *testing.T) {
 	r := New(fs)
 	// since="1m" (30 days): old data (100 days) excluded, recent included.
 	result, err := r.Call(context.Background(),
-		json.RawMessage(`{"query":"blue","source":"all","since":"1m"}`), nil)
+		json.RawMessage(`{"query":"blue","since":"1m"}`), nil)
 	if err != nil {
 		t.Fatalf("Call since=1m: %v", err)
 	}
 	out := result.Data.(*Output)
-	if len(out.Facts) != 1 {
-		t.Errorf("since=1m: expected 1 recent fact, got %d", len(out.Facts))
-	} else if out.Facts[0].Content != "recent blue fact" {
-		t.Errorf("since=1m: fact content = %q, want 'recent blue fact'", out.Facts[0].Content)
-	}
 	if len(out.Messages) != 1 {
 		t.Errorf("since=1m: expected 1 recent message, got %d", len(out.Messages))
 	} else if out.Messages[0].Content != "recent blue message" {
@@ -444,21 +227,18 @@ func TestRecall_Since(t *testing.T) {
 
 	// since="1y" (365 days): both old and recent included.
 	result, err = r.Call(context.Background(),
-		json.RawMessage(`{"query":"blue","source":"all","since":"1y"}`), nil)
+		json.RawMessage(`{"query":"blue","since":"1y"}`), nil)
 	if err != nil {
 		t.Fatalf("Call since=1y: %v", err)
 	}
 	out = result.Data.(*Output)
-	if len(out.Facts) != 2 {
-		t.Errorf("since=1y: expected 2 facts, got %d", len(out.Facts))
-	}
 	if len(out.Messages) != 2 {
 		t.Errorf("since=1y: expected 2 messages, got %d", len(out.Messages))
 	}
 }
 
 func TestRecall_MessageSnippet(t *testing.T) {
-	fs := openFactStore(t)
+	fs := openStore(t)
 	sess, err := fs.CreateSession("/test", "test-model")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -476,7 +256,7 @@ func TestRecall_MessageSnippet(t *testing.T) {
 
 	r := New(fs)
 	result, err := r.Call(context.Background(),
-		json.RawMessage(`{"query":"blue","source":"messages"}`), nil)
+		json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}

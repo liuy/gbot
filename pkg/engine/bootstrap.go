@@ -25,9 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
 	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
-	"github.com/liuy/gbot/pkg/tool/memory/forget"
 	"github.com/liuy/gbot/pkg/tool/memory/recall"
-	"github.com/liuy/gbot/pkg/tool/memory/remember"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -50,7 +48,7 @@ type SharedDeps struct {
 	WSRegistry *computer.ConnectionRegistry
 
 	// ShortStore enables the recall tool for the main agent. When non-nil,
-	// recall searches both structured facts and message history.
+	// recall searches conversation history.
 	// nil = recall unavailable.
 	ShortStore *short.Store
 }
@@ -123,13 +121,9 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// against the inbound device pool.
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
-	// recall/remember/forget: structured memory tools. ShortStore is
-	// nil-guarded upstream — memory tools are only registered when the
-	// store is available.
+	// recall: conversation history search. ShortStore is nil-guarded upstream.
 	if deps.ShortStore != nil {
 		reg.MustRegister(recall.New(deps.ShortStore))
-		reg.MustRegister(remember.New(deps.ShortStore))
-		reg.MustRegister(forget.New(deps.ShortStore))
 	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}

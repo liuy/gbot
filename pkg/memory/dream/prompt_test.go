@@ -23,8 +23,8 @@ func TestSystemPrompt_RecallInstructions(t *testing.T) {
 	if !strings.Contains(SystemPrompt, "Recall") {
 		t.Error("system prompt should instruct the agent to use Recall tool")
 	}
-	if !strings.Contains(SystemPrompt, `source="messages"`) {
-		t.Error("system prompt should instruct Recall with source=messages")
+	if !strings.Contains(SystemPrompt, `Recall(query=`) {
+		t.Error("system prompt should show Recall call syntax")
 	}
 }
 

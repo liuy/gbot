@@ -24,7 +24,7 @@ You are performing a dream — a reflective pass over your memory files. Synthes
 
 Use Recall to search recent conversations for topics worth remembering:
 - Pick keywords from existing memory files (topics, user preferences, project names)
-- Call Recall(query="<keyword>", source="messages") for each
+- Call Recall(query="<keyword>") for each
 - Don't exhaustively search — look only for things you already suspect matter
 
 ## Phase 3 — Consolidate

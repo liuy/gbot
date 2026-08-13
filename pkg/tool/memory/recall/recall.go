@@ -1,6 +1,6 @@
-// Package recall implements the recall tool: a combined FTS5 search across
-// structured facts and message history (both in pkg/memory/short).
-// The query is passed raw to both stores so FTS5 boolean operators (AND, OR,
+// Package recall implements the recall tool: an FTS5 search across message
+// history in pkg/memory/short.
+// The query is passed raw to the store so FTS5 boolean operators (AND, OR,
 // NOT) and parentheses are honored — the LLM uses these to express precise
 // queries. Malformed queries degrade to empty results rather than failing.
 package recall
@@ -34,17 +34,9 @@ type Deps struct {
 
 // Input is the recall tool input schema.
 type Input struct {
-	Query  string `json:"query"`
-	Source string `json:"source,omitempty"` // "facts" | "messages" | "all"; default "facts"
-	Since  string `json:"since,omitempty"`  // "7d" | "12h" | "2w" | "3m" | "1y"
-	Limit  int    `json:"limit,omitempty"`
-}
-
-// factHit is one structured-fact match.
-type factHit struct {
-	FactID  int64  `json:"fact_id"`
-	Content string `json:"content"`
-	Date    string `json:"date"`
+	Query string `json:"query"`
+	Since string `json:"since,omitempty"` // "7d" | "12h" | "2w" | "3m" | "1y"
+	Limit int    `json:"limit,omitempty"`
 }
 
 // msgHit is one message-history match.
@@ -53,11 +45,10 @@ type msgHit struct {
 	Date    string `json:"date"`
 }
 
-// Output is the combined recall result. Empty slices serialize as `[]` (not
-// `null`) so the LLM sees a stable shape.
+// Output is the recall result. Empty slice serializes as `[]` (not `null`)
+// so the LLM sees a stable shape.
 type Output struct {
-	Facts    []factHit `json:"facts"`
-	Messages []msgHit  `json:"messages"`
+	Messages []msgHit `json:"messages"`
 }
 
 // New creates the recall tool. store must be non-nil — if the store is
@@ -70,12 +61,6 @@ func New(store *short.Store) tool.Tool {
 			"query": {
 				"type": "string",
 				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."
-			},
-			"source": {
-				"type": "string",
-				"enum": ["facts", "messages", "all"],
-				"description": "Search scope. 'facts' = structured facts only (default), 'messages' = conversation history only, 'all' = both.",
-				"default": "facts"
 			},
 			"since": {
 				"type": "string",
@@ -98,13 +83,9 @@ func New(store *short.Store) tool.Tool {
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {
-				return "Search structured facts and message history", nil
+				return "Search conversation history", nil
 			}
-			source := in.Source
-			if source == "" {
-				source = "facts"
-			}
-			s := source + ": " + in.Query
+			s := in.Query
 			if in.Since != "" {
 				s += " (" + in.Since + ")"
 			}
@@ -128,13 +109,10 @@ func New(store *short.Store) tool.Tool {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
-			if len(out.Facts) == 0 && len(out.Messages) == 0 {
+			if len(out.Messages) == 0 {
 				return "No matches found."
 			}
 			var b strings.Builder
-			for _, f := range out.Facts {
-				fmt.Fprintf(&b, "[fact %d] %s (%s)\n", f.FactID, f.Content, f.Date)
-			}
 			for _, m := range out.Messages {
 				fmt.Fprintf(&b, "[msg] %s (%s)\n", m.Content, m.Date)
 			}
@@ -157,8 +135,7 @@ func New(store *short.Store) tool.Tool {
 	})
 }
 
-// execute runs the recall query against the selected source(s) and merges
-// results.
+// execute runs the recall query against message history.
 func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -166,14 +143,6 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 	}
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, fmt.Errorf("query is required")
-	}
-
-	source := in.Source
-	if source == "" {
-		source = "facts"
-	}
-	if source != "facts" && source != "messages" && source != "all" {
-		return nil, fmt.Errorf("invalid source %q (use 'facts', 'messages', or 'all')", source)
 	}
 
 	sinceTime, err := parseSince(in.Since)
@@ -190,44 +159,23 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 	}
 
 	out := &Output{
-		Facts:    []factHit{},
 		Messages: []msgHit{},
 	}
 
-	if source == "facts" || source == "all" {
-		facts, err := deps.Store.SearchFacts(in.Query, limit)
-		if err != nil {
-			slog.Warn("recall: facts search failed", "error", err)
-		} else {
-			for _, f := range facts {
-				if !sinceTime.IsZero() && f.CreatedAt.Before(sinceTime) {
-					continue
-				}
-				out.Facts = append(out.Facts, factHit{
-					FactID:  f.ID,
-					Content: f.Content,
-					Date:    f.CreatedAt.Format("2006-01-02 15:04"),
-				})
-			}
-		}
+	opts := &short.SearchOptions{Limit: limit}
+	if !sinceTime.IsZero() {
+		opts.Since = sinceTime
 	}
-
-	if source == "messages" || source == "all" {
-		opts := &short.SearchOptions{Limit: limit}
-		if !sinceTime.IsZero() {
-			opts.Since = sinceTime
-		}
-		results, err := deps.Store.SearchMessages(in.Query, opts)
-		if err != nil {
-			slog.Warn("recall: messages search failed", "error", err)
-		} else {
-			for _, r := range results {
-				text := short.ExtractSearchableText(r.TranscriptMessage.Content)
-				out.Messages = append(out.Messages, msgHit{
-					Content: makeSnippet(text, in.Query, 50),
-					Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
-				})
-			}
+	results, err := deps.Store.SearchMessages(in.Query, opts)
+	if err != nil {
+		slog.Warn("recall: messages search failed", "error", err)
+	} else {
+		for _, r := range results {
+			text := short.ExtractSearchableText(r.TranscriptMessage.Content)
+			out.Messages = append(out.Messages, msgHit{
+				Content: makeSnippet(text, in.Query, 50),
+				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
+			})
 		}
 	}
 

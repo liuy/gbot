@@ -1,12 +1,10 @@
 package short
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestNewStore_ErrorPaths verifies NewStore error handling.
@@ -345,64 +343,4 @@ func TestNewStore_PragmaError_V2(t *testing.T) {
 func writeGarbageFile(path string) error {
 	garbage := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD, 0x80, 0x81}
 	return os.WriteFile(path, garbage, 0644)
-}
-
-// TestAddFact_ConcurrentWithMessageWrites verifies that AddFact running on
-// one connection while messages are written on another does not hit
-// SQLITE_BUSY. With _txlock=immediate in the DSN, every tx.Begin() acquires
-// the reserved lock up front, so busy_timeout covers all contention. Without
-// it, two connections can deadlock trying to upgrade from read to write.
-func TestAddFact_ConcurrentWithMessageWrites(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	// Seed a session so message inserts succeed.
-	_, _ = store.DB().Exec(`INSERT INTO sessions(session_id, project_dir) VALUES('s1', '/tmp')`)
-
-	// Hammer messages from one goroutine (simulates engine streaming writes).
-	stop := make(chan struct{})
-	go func() {
-		i := 0
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				_, _ = store.DB().Exec(
-					`INSERT INTO messages(session_id, uuid, type, content) VALUES('s1', ?, 'user', ?)`,
-					fmt.Sprintf("msg-%d", i), strings.Repeat("x", 200),
-				)
-				i++
-			}
-		}
-	}()
-
-	// Call AddFact repeatedly — each opens its own transaction.
-	// If any connection lacks busy_timeout or txlock, some calls will fail.
-	var busyCount, okCount int
-	timeout := time.After(2 * time.Second)
-	for {
-		select {
-		case <-timeout:
-			goto done
-		default:
-		}
-		_, _, err := store.AddFact(fmt.Sprintf("fact %d", okCount))
-		if err != nil {
-			if strings.Contains(err.Error(), "BUSY") || strings.Contains(err.Error(), "locked") {
-				busyCount++
-			}
-			continue
-		}
-		okCount++
-	}
-done:
-	close(stop)
-
-	if busyCount > 0 {
-		t.Errorf("got %d SQLITE_BUSY errors out of %d attempts — _txlock=immediate or _pragma not applied to all connections", busyCount, okCount+busyCount)
-	}
 }

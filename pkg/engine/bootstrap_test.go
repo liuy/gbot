@@ -67,7 +67,7 @@ func TestCreateTools_RegistersMemoryToolsWithShortStore(t *testing.T) {
 
 	refs := CreateTools(deps, tl)
 	toolMap := refs.Reg.ToolMap()
-	for _, name := range []string{"Recall", "Remember", "Forget"} {
+	for _, name := range []string{"Recall"} {
 		if _, ok := toolMap[name]; !ok {
 			t.Errorf("expected tool %q to be registered when ShortStore is set", name)
 		}

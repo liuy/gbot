@@ -85,8 +85,8 @@ func isWordBoundary(s string, i int) bool {
 }
 
 // isMalformedFTSError reports whether err is an FTS5 syntax / malformed-query
-// error. Used by both SearchMessages and SearchFacts to gracefully degrade raw
-// LLM-authored FTS5 queries (recall) into empty results.
+// error. Used by SearchMessages to gracefully degrade raw LLM-authored FTS5
+// queries (recall) into empty results.
 func isMalformedFTSError(err error) bool {
 	if err == nil {
 		return false

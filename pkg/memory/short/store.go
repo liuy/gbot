@@ -12,9 +12,7 @@ import (
 // DB wraps the underlying sql.DB so callers don't need to import database/sql.
 func (s *Store) DB() *sql.DB { return s.db }
 
-// Store manages short-term memory persistence via SQLite. Both messages and
-// facts live in one database file; facts writes are wrapped in transactions so
-// they don't collide with the high-volume message stream on the same lock.
+// Store manages short-term memory persistence via SQLite.
 type Store struct {
 	db     *sql.DB
 	dbPath string
@@ -140,24 +138,6 @@ func (s *Store) initSchema() error {
 		created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
-	-- Structured facts extracted by the dream agent. Layout mirrors
-	-- messages_fts: a contentless FTS5 index + map table so deletes don't
-	-- need the 'delete' command with old values — removing the map row
-	-- orphans the FTS entry and the JOIN stops returning it.
-	CREATE TABLE IF NOT EXISTS facts (
-		fact_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-		content    TEXT NOT NULL UNIQUE,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-		segmented_content, content='', tokenize='unicode61'
-	);
-	CREATE TABLE IF NOT EXISTS facts_fts_map (
-		fact_id   INTEGER NOT NULL,
-		fts_rowid INTEGER NOT NULL,
-		PRIMARY KEY (fact_id, fts_rowid)
-	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
