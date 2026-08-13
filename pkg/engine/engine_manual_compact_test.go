@@ -68,9 +68,11 @@ func TestEngine_ManualCompact_Success(t *testing.T) {
 		},
 	}
 
+	ec := newEventCollector()
 	eng := New(&Params{
-		Provider: &testProvider{},
-		Model:    "test-model",
+		Provider:   &testProvider{},
+		Dispatcher: ec,
+		Model:      "test-model",
 	})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{ContextWindow: 100000})
@@ -85,6 +87,15 @@ func TestEngine_ManualCompact_Success(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("ManualCompact returned nil result")
+	}
+
+	// EventUsage must be emitted so WUI can update header context size.
+	usages := ec.FindEvents(types.EventUsage)
+	if len(usages) != 1 {
+		t.Fatalf("usage events = %d, want 1", len(usages))
+	}
+	if usages[0].Usage == nil || usages[0].Usage.InputTokens != 1500 {
+		t.Errorf("usage InputTokens = %+v, want 1500", usages[0].Usage)
 	}
 
 	gotMsgs := eng.Messages()
@@ -348,7 +359,7 @@ func TestEngine_ManualCompact_EmitsToolEvents(t *testing.T) {
 	}
 
 	events := ec.Events()
-	wantCount := 6
+	wantCount := 7
 	if len(events) != wantCount {
 		t.Fatalf("event count = %d, want %d; events: %+v", len(events), wantCount, eventTypes(events))
 	}
@@ -413,11 +424,18 @@ func TestEngine_ManualCompact_EmitsToolEvents(t *testing.T) {
 		t.Errorf("ToolResult.DisplayOutput = %q, want %q (FormatCompactOutput returns result.Summary)", events[4].ToolResult.DisplayOutput, summaryText)
 	}
 
-	if et := events[5].Type; et != types.EventQueryEnd {
-		t.Fatalf("events[5].Type = %s, want %s", et, types.EventQueryEnd)
+	if et := events[5].Type; et != types.EventUsage {
+		t.Fatalf("events[5].Type = %s, want %s", et, types.EventUsage)
 	}
-	if events[5].Error != nil {
-		t.Errorf("QueryEnd.Error = %v, want nil", events[5].Error)
+	if events[5].Usage == nil || events[5].Usage.InputTokens != 1500 {
+		t.Errorf("events[5].Usage = %+v, want InputTokens=1500", events[5].Usage)
+	}
+
+	if et := events[6].Type; et != types.EventQueryEnd {
+		t.Fatalf("events[6].Type = %s, want %s", et, types.EventQueryEnd)
+	}
+	if events[6].Error != nil {
+		t.Errorf("QueryEnd.Error = %v, want nil", events[6].Error)
 	}
 }
 

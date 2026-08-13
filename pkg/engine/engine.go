@@ -2843,6 +2843,10 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 
 	suppressCompactWarning()
 	e.fireCompactHooks(ctx, "manual", "post")
+	e.emitEvent(types.QueryEvent{
+		Type:  types.EventUsage,
+		Usage: &types.UsageEvent{InputTokens: result.AfterTokens},
+	})
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 	return result, nil
 }
