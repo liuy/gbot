@@ -122,17 +122,26 @@ func New(store *short.Store) tool.Tool {
 			if len(out.Messages) == 0 {
 				return "No matches found."
 			}
-			var b strings.Builder
-			for _, m := range out.Messages {
+			blocks := make([]string, 0, len(out.Messages))
+			for i, m := range out.Messages {
+				var b strings.Builder
 				// Score 0 means uuid mode (no relevance concept) — the
 				// score prefix is search-mode-only to avoid "0.00" noise.
 				if m.Score != 0 {
-					fmt.Fprintf(&b, "[msg %.2f] %s (%s)\n", m.Score, m.Content, m.Date)
+					fmt.Fprintf(&b, "%d. [%.2f] %s\n", i+1, m.Score, m.Date)
 				} else {
-					fmt.Fprintf(&b, "[msg] %s (%s)\n", m.Content, m.Date)
+					fmt.Fprintf(&b, "%d. %s\n", i+1, m.Date)
 				}
+				// Indent every line so multi-line snippets stay one visual
+				// block instead of bleeding into the next entry's header.
+				for line := range strings.SplitSeq(m.Content, "\n") {
+					b.WriteString("   " + line + "\n")
+				}
+				// Trim spaces too: empty or trailing-newline content would
+				// otherwise leave a stray 3-space line after the trim of \n.
+				blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
 			}
-			return strings.TrimRight(b.String(), "\n")
+			return strings.Join(blocks, "\n\n")
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
 			text, err := tool.UnmarshalSingleBlock(raw)

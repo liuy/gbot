@@ -150,24 +150,72 @@ func TestRecall_IsReadOnly(t *testing.T) {
 
 func TestRecall_RenderResult(t *testing.T) {
 	r := New(nil)
+	// Single hit, score=1: numbered header then 3-space indented content.
 	rendered := r.RenderResult(&Output{
-		Messages: []msgHit{{Content: "test msg", Date: "2026-01-02", Score: 1.0}},
+		Messages: []msgHit{{Content: "test msg", Date: "2026-08-15 12:37", Score: 1.0}},
 	})
-	if rendered != "[msg 1.00] test msg (2026-01-02)" {
-		t.Errorf("score=1 render = %q, want [msg 1.00] test msg (2026-01-02)", rendered)
+	if rendered != "1. [1.00] 2026-08-15 12:37\n   test msg" {
+		t.Errorf("score=1 render = %q, want \"1. [1.00] 2026-08-15 12:37\\n   test msg\"", rendered)
 	}
-	// Score 0 (uuid mode) has no relevance concept — no score in the prefix.
+	// Score 0 (uuid mode) has no relevance concept — no [score] in the header.
 	rendered = r.RenderResult(&Output{
-		Messages: []msgHit{{Content: "uuid msg", Date: "2026-01-02"}},
+		Messages: []msgHit{{Content: "uuid msg", Date: "2026-08-15 12:37"}},
 	})
-	if rendered != "[msg] uuid msg (2026-01-02)" {
-		t.Errorf("score=0 render = %q, want [msg] uuid msg (2026-01-02)", rendered)
+	if rendered != "1. 2026-08-15 12:37\n   uuid msg" {
+		t.Errorf("score=0 render = %q, want \"1. 2026-08-15 12:37\\n   uuid msg\"", rendered)
 	}
+	// Fractional score truncated to two decimals.
 	rendered = r.RenderResult(&Output{
-		Messages: []msgHit{{Content: "ranked msg", Date: "2026-07-21", Score: 0.4329}},
+		Messages: []msgHit{{Content: "ranked msg", Date: "2026-08-15 14:02", Score: 0.4329}},
 	})
-	if rendered != "[msg 0.43] ranked msg (2026-07-21)" {
-		t.Errorf("fractional score render = %q, want [msg 0.43] ranked msg (2026-07-21)", rendered)
+	if rendered != "1. [0.43] 2026-08-15 14:02\n   ranked msg" {
+		t.Errorf("fractional score render = %q, want \"1. [0.43] 2026-08-15 14:02\\n   ranked msg\"", rendered)
+	}
+	// Multi-line content: every line indented so the snippet stays one visual
+	// block instead of bleeding into the next entry's header.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: "line one\nline two\nline three", Date: "2026-08-15 12:37", Score: 1.0}},
+	})
+	if rendered != "1. [1.00] 2026-08-15 12:37\n   line one\n   line two\n   line three" {
+		t.Errorf("multi-line render = %q, want every line indented 3 spaces", rendered)
+	}
+	// Multiple entries: blank line between entries, none trailing after the last.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{
+			{Content: "first", Date: "2026-08-15 12:37", Score: 1.0},
+			{Content: "second", Date: "2026-08-15 14:02", Score: 0.56},
+		},
+	})
+	want := "1. [1.00] 2026-08-15 12:37\n   first\n\n2. [0.56] 2026-08-15 14:02\n   second"
+	if rendered != want {
+		t.Errorf("two entries render = %q, want %q", rendered, want)
+	}
+	// Multi-line content in a multi-entry list: separator blank line comes
+	// after the indented block, not after the last content line of entry one.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{
+			{Content: "head\n tail", Date: "2026-08-15 12:37", Score: 1.0},
+			{Content: "next", Date: "2026-08-15 14:02", Score: 0.5},
+		},
+	})
+	want = "1. [1.00] 2026-08-15 12:37\n   head\n    tail\n\n2. [0.50] 2026-08-15 14:02\n   next"
+	if rendered != want {
+		t.Errorf("multiline two entries render = %q, want %q", rendered, want)
+	}
+	// Empty content (thinking-only message): header alone, no trailing
+	// whitespace line from indenting the single empty split segment.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: "", Date: "2026-01-02 15:04", Score: 1.0}},
+	})
+	if rendered != "1. [1.00] 2026-01-02 15:04" {
+		t.Errorf("empty content render = %q, want \"1. [1.00] 2026-01-02 15:04\"", rendered)
+	}
+	// Content ending in newline: no trailing whitespace after the last line.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: "line\n", Date: "2026-01-02 15:04", Score: 1.0}},
+	})
+	if rendered != "1. [1.00] 2026-01-02 15:04\n   line" {
+		t.Errorf("trailing-newline content render = %q, want \"1. [1.00] 2026-01-02 15:04\\n   line\"", rendered)
 	}
 	empty := r.RenderResult(&Output{Messages: []msgHit{}})
 	if empty != "No matches found." {
