@@ -151,13 +151,23 @@ func TestRecall_IsReadOnly(t *testing.T) {
 func TestRecall_RenderResult(t *testing.T) {
 	r := New(nil)
 	rendered := r.RenderResult(&Output{
-		Messages: []msgHit{{Content: "test msg", Date: "2026-01-02"}},
+		Messages: []msgHit{{Content: "test msg", Date: "2026-01-02", Score: 1.0}},
 	})
-	if !strings.Contains(rendered, "[msg]") {
-		t.Errorf("render should contain msg line: %s", rendered)
+	if rendered != "[msg 1.00] test msg (2026-01-02)" {
+		t.Errorf("score=1 render = %q, want [msg 1.00] test msg (2026-01-02)", rendered)
 	}
-	if !strings.Contains(rendered, "test msg") {
-		t.Errorf("render should contain msg content: %s", rendered)
+	// Score 0 (uuid mode) has no relevance concept — no score in the prefix.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: "uuid msg", Date: "2026-01-02"}},
+	})
+	if rendered != "[msg] uuid msg (2026-01-02)" {
+		t.Errorf("score=0 render = %q, want [msg] uuid msg (2026-01-02)", rendered)
+	}
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: "ranked msg", Date: "2026-07-21", Score: 0.4329}},
+	})
+	if rendered != "[msg 0.43] ranked msg (2026-07-21)" {
+		t.Errorf("fractional score render = %q, want [msg 0.43] ranked msg (2026-07-21)", rendered)
 	}
 	empty := r.RenderResult(&Output{Messages: []msgHit{}})
 	if empty != "No matches found." {

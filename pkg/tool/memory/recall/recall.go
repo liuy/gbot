@@ -124,7 +124,13 @@ func New(store *short.Store) tool.Tool {
 			}
 			var b strings.Builder
 			for _, m := range out.Messages {
-				fmt.Fprintf(&b, "[msg] %s (%s)\n", m.Content, m.Date)
+				// Score 0 means uuid mode (no relevance concept) — the
+				// score prefix is search-mode-only to avoid "0.00" noise.
+				if m.Score != 0 {
+					fmt.Fprintf(&b, "[msg %.2f] %s (%s)\n", m.Score, m.Content, m.Date)
+				} else {
+					fmt.Fprintf(&b, "[msg] %s (%s)\n", m.Content, m.Date)
+				}
 			}
 			return strings.TrimRight(b.String(), "\n")
 		},
