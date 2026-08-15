@@ -50,10 +50,18 @@ type msgHit struct {
 }
 
 // Output is the recall result. Empty slice serializes as `[]` (not `null`)
-// so the LLM sees a stable shape.
+// so the LLM sees a stable shape. An empty search injects one hint message
+// into Messages instead of a separate field — one semantic place to look.
 type Output struct {
 	Messages []msgHit `json:"messages"`
 }
+
+// emptyHint is returned as the single message on an empty search: it suggests
+// the retry path for keyword-exact misses. Matching is lexical, so the usual
+// cause is vocabulary mismatch — synonyms or the other language usually
+// recover it. Riding in messages[] (not a separate field) keeps one semantic
+// place for the LLM to look.
+const emptyHint = "No matches — matching is keyword-exact, not semantic. Retry with synonyms or the other language (e.g. 调研 → 调查/梳理/survey)."
 
 // New creates the recall tool. store must be non-nil — if the store is
 // unavailable, recall should not be registered at all.
@@ -121,6 +129,13 @@ func New(store *short.Store) tool.Tool {
 			}
 			if len(out.Messages) == 0 {
 				return "No matches found."
+			}
+			// The empty-search hint rides in messages[] for the LLM; for
+			// humans render it bare instead of as a numbered block with an
+			// empty date line. Match on content (not UUID=="") because
+			// uuid-mode hits also carry an empty UUID.
+			if len(out.Messages) == 1 && out.Messages[0].Content == emptyHint {
+				return out.Messages[0].Content
 			}
 			blocks := make([]string, 0, len(out.Messages))
 			for i, m := range out.Messages {
@@ -224,6 +239,10 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 				Score:   r.Score,
 			})
 		}
+	}
+
+	if len(out.Messages) == 0 && err == nil {
+		out.Messages = []msgHit{{Content: emptyHint}}
 	}
 
 	return &tool.ToolResult{Data: out}, nil

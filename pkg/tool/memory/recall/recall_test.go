@@ -76,6 +76,10 @@ func TestRecall_HitsMessages(t *testing.T) {
 	if out.Messages[0].Score != 1.0 {
 		t.Errorf("msg score = %f, want 1.0", out.Messages[0].Score)
 	}
+	// Real hits mean no hint message is injected.
+	if strings.Contains(out.Messages[0].Content, "No matches") {
+		t.Errorf("non-empty search must not inject a hint message, got %v", out.Messages)
+	}
 }
 
 func TestRecall_InvalidSince(t *testing.T) {
@@ -98,8 +102,11 @@ func TestRecall_MalformedQuery(t *testing.T) {
 		t.Fatalf("malformed query should not error: %v", err)
 	}
 	out := result.Data.(*Output)
-	if len(out.Messages) != 0 {
-		t.Errorf("malformed query should return 0 messages, got %d", len(out.Messages))
+	// Malformed FTS degrades to (nil, nil) at the store layer — err is nil,
+	// so the hint message applies: the effective word list is empty and the
+	// retry guidance tells the LLM to rewrite the query.
+	if len(out.Messages) != 1 || out.Messages[0].Content != emptyHint {
+		t.Errorf("malformed query should degrade to the hint message, got %v", out.Messages)
 	}
 }
 
@@ -111,13 +118,45 @@ func TestRecall_EmptyResults(t *testing.T) {
 		t.Fatalf("Call: %v", err)
 	}
 	out := result.Data.(*Output)
-	if len(out.Messages) != 0 {
-		t.Errorf("expected 0 messages, got %d", len(out.Messages))
+	// Empty search degrades to a single hint message — retry guidance rides
+	// in messages[] so the LLM has one semantic place to look.
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected 1 hint message, got %d", len(out.Messages))
 	}
-	b, _ := json.Marshal(out)
-	jsonStr := string(b)
-	if strings.Contains(jsonStr, `"messages":null`) {
-		t.Errorf("messages should be [], got null: %s", jsonStr)
+	if out.Messages[0].Content != emptyHint {
+		t.Errorf("hint message = %q, want emptyHint", out.Messages[0].Content)
+	}
+	if out.Messages[0].UUID != "" {
+		t.Errorf("hint message uuid = %q, want empty (not a real message)", out.Messages[0].UUID)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+	if strings.Contains(string(b), `"messages":null`) || strings.Contains(string(b), `"messages":[]`) {
+		t.Errorf("empty search must serialize the hint message: %s", string(b))
+	}
+}
+
+// TestRecall_SearchError_NoHint verifies a store failure does not produce
+// the synonym-retry hint — infrastructure errors are not vocabulary misses,
+// and retrying with synonyms would waste a turn.
+func TestRecall_SearchError_NoHint(t *testing.T) {
+	fs := openStore(t)
+	if err := fs.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	r := New(fs)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v (search errors degrade to empty results, not tool errors)", err)
+	}
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", result.Data)
+	}
+	if len(out.Messages) != 0 {
+		t.Errorf("search failure messages = %d with content %v, want 0 (no hint)", len(out.Messages), out.Messages)
 	}
 }
 
@@ -163,6 +202,14 @@ func TestRecall_RenderResult(t *testing.T) {
 	})
 	if rendered != "1. 2026-08-15 12:37\n   uuid msg" {
 		t.Errorf("score=0 render = %q, want \"1. 2026-08-15 12:37\\n   uuid msg\"", rendered)
+	}
+	// The empty-search hint (single message, no UUID) renders bare — a
+	// numbered header with an empty date would read as a corrupted hit.
+	rendered = r.RenderResult(&Output{
+		Messages: []msgHit{{Content: emptyHint}},
+	})
+	if rendered != emptyHint {
+		t.Errorf("hint-only render = %q, want bare %q", rendered, emptyHint)
 	}
 	// Fractional score truncated to two decimals.
 	rendered = r.RenderResult(&Output{
