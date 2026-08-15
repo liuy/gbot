@@ -117,8 +117,9 @@ func TestSearchMessages_Chinese(t *testing.T) {
 		t.Fatalf("SearchMessages: %v", err)
 	}
 
-	if len(results) == 0 {
-		t.Errorf("expected at least 1 result for '会话管理', got %d", len(results))
+	// msg-1 and msg-2 both contain "会话管理"; msg-3 (SQLite) does not.
+	if len(results) != 2 {
+		t.Errorf("expected 2 results for '会话管理', got %d", len(results))
 	}
 
 	// Verify the result contains the search term
@@ -181,8 +182,9 @@ func TestSearchMessages_Mixed(t *testing.T) {
 		t.Fatalf("SearchMessages: %v", err)
 	}
 
-	if len(results) == 0 {
-		t.Errorf("expected at least 1 result for '数据库', got %d", len(results))
+	// Both messages contain "数据库" (msg-2 via "数据库优化").
+	if len(results) != 2 {
+		t.Errorf("expected 2 results for '数据库', got %d", len(results))
 	}
 
 	// Search for "optimization" (English)
@@ -194,8 +196,54 @@ func TestSearchMessages_Mixed(t *testing.T) {
 		t.Fatalf("SearchMessages: %v", err)
 	}
 
-	if len(results) == 0 {
-		t.Errorf("expected at least 1 result for 'optimization', got %d", len(results))
+	// Both messages contain "optimization".
+	if len(results) != 2 {
+		t.Errorf("expected 2 results for 'optimization', got %d", len(results))
+	}
+}
+
+// TestSearchMessages_PlusInQuery verifies a query word containing '+' (e.g.
+// "c++") does not zero out the whole search. The analyzer keeps '+' inside
+// Latin tokens (Symbol, not Punct); if sanitizeFTSQuery leaves it in, the
+// MATCH expression fails FTS5 parsing and isMalformedFTSError degrades the
+// entire query to zero results instead of matching the other words.
+func TestSearchMessages_PlusInQuery(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	sess, err := store.CreateSession("/test/project", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	content := `[{"type":"text","text":"c++ database tutorial 数据库优化"}]`
+	_, err = store.db.Exec(
+		"INSERT INTO messages (session_id, uuid, type, content) VALUES (?, ?, ?, ?)",
+		sess.SessionID, "msg-1", "user", content,
+	)
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	var seq int64
+	if err := store.db.QueryRow("SELECT seq FROM messages WHERE uuid = ?", "msg-1").Scan(&seq); err != nil {
+		t.Fatalf("get seq: %v", err)
+	}
+	if err := store.insertFTS(store.db, seq, content); err != nil {
+		t.Fatalf("insertFTS: %v", err)
+	}
+
+	results, err := store.SearchMessages("c++ database", &SearchOptions{
+		SessionID: sess.SessionID,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("query 'c++ database' got %d hits, want 1 (must hit via 'database')", len(results))
+	}
+	if !strings.Contains(results[0].TranscriptMessage.Content, "database") {
+		t.Errorf("hit content = %q, want it to contain 'database'", results[0].TranscriptMessage.Content)
 	}
 }
 
@@ -737,12 +785,14 @@ func TestSanitizeFTSQuery(t *testing.T) {
 		{"normal", "hello world", "hello world"},
 		{"star", "test*", "test"},
 		{"quotes", `"phrase"`, "phrase"},
-		// Parens are stripped by ftsSpecialRe; OR is preserved.
+		// Parens are stripped by ftsSpecialRe; keywords pass through untouched
+		// — SegmentQuery owns stopword handling.
 		{"parens", "(a OR b)", "a OR b"},
-		// Bare NEAR is stripped (invalid FTS5 syntax without /N).
-		{"near", "foo NEAR bar", "foo bar"},
-		// AND/OR/NOT are now preserved as FTS5 boolean operators.
+		{"near", "foo NEAR bar", "foo NEAR bar"},
 		{"and", "foo AND bar", "foo AND bar"},
+		// '+' is a Symbol (not Punct) so the analyzer keeps it inside Latin
+		// tokens — it must be stripped here or it breaks MATCH parsing.
+		{"plus", "c++", "c"},
 		// 500-char truncation was removed — mid-query truncation breaks syntax.
 		{"long", strings.Repeat("a", 600), strings.Repeat("a", 600)},
 	}
@@ -838,23 +888,20 @@ func createSessionsForTest(store *Store, projectDirs []string) ([]*Session, erro
 }
 
 // TestSanitizeFTSQuery_EdgeCases tests edge cases for FTS query sanitization.
+// sanitizeFTSQuery only strips syntax characters — boolean keywords pass
+// through; SegmentQuery drops them as stopwords.
 func TestSanitizeFTSQuery_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
-		// AND/OR/NOT are preserved as FTS5 boolean operators.
+		// Keywords are untouched here (stopword removal is SegmentQuery's job).
 		{"foo AND bar", "foo AND bar", "foo AND bar"},
 		{"foo OR bar", "foo OR bar", "foo OR bar"},
 		{"foo NOT bar", "foo NOT bar", "foo NOT bar"},
-		{"leading AND", "AND hello", "AND hello"},
-		{"trailing AND", "hello AND", "hello AND"},
-		{"all operators", "AND OR NOT", "AND OR NOT"},
-		// Bare NEAR is stripped (invalid syntax); NEAR/N is preserved.
-		{"bare NEAR", "foo NEAR bar", "foo bar"},
+		{"bare NEAR", "foo NEAR bar", "foo NEAR bar"},
 		{"NEAR with /N", "foo NEAR/3 bar", "foo NEAR/3 bar"},
-		{"case-insensitive near", "foo near bar", "foo bar"},
 		// ftsSpecialRe still strips dangerous chars.
 		{"star only", "*", ""},
 		{"parens", "(test)", "test"},
@@ -873,10 +920,12 @@ func TestSanitizeFTSQuery_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestSearchMessages_AndOrNot verifies that after SegmentQuery, FTS5 boolean
-// operators AND/OR/NOT work against the bigram-pre-segmented index. Content is
-// pre-segmented manually so the test does not depend on segmentation timing.
-func TestSearchMessages_AndOrNot(t *testing.T) {
+// TestSearchMessages_OrPhraseRanking verifies the OR+phrase query pipeline
+// against the bigram-pre-segmented index: multi-word queries match any word
+// (recall-first), and bm25 ranks messages matching more words first. Content
+// is pre-segmented manually so the test does not depend on segmentation
+// timing.
+func TestSearchMessages_OrPhraseRanking(t *testing.T) {
 	store, cleanup := testStore(t)
 	defer cleanup()
 
@@ -920,10 +969,16 @@ func TestSearchMessages_AndOrNot(t *testing.T) {
 		name     string
 		query    string
 		wantHits int
+		wantTop  string
 	}{
-		{"AND hit", "蓝色 AND 张三", 1},
-		{"AND miss", "蓝色 AND 红色", 0},
-		{"NOT exclusion", "教师 NOT 张三", 1},
+		// OR across words: msg-1 matches both, msg-2 matches 张三 only.
+		{"or multi-word", "蓝色 张三", 2, "msg-1"},
+		// The old AND semantics zeroed this out; OR returns both matches.
+		{"or across msgs", "蓝色 红色", 2, ""},
+		// Operators degrade to OR: NOT is stripped, not interpreted.
+		{"not stripped", "教师 NOT 张三", 3, ""},
+		// Operator with no effect on the result set.
+		{"and stripped", "张三 AND 蓝色", 2, "msg-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -936,6 +991,15 @@ func TestSearchMessages_AndOrNot(t *testing.T) {
 			}
 			if len(results) != tt.wantHits {
 				t.Errorf("query %q: got %d hits, want %d", tt.query, len(results), tt.wantHits)
+			}
+			if tt.wantTop != "" {
+				if len(results) == 0 {
+					t.Fatalf("query %q: no results, want top %s", tt.query, tt.wantTop)
+				}
+				if results[0].TranscriptMessage.UUID != tt.wantTop {
+					t.Errorf("query %q: top result = %s, want %s (bm25 must rank multi-word hits first)",
+						tt.query, results[0].TranscriptMessage.UUID, tt.wantTop)
+				}
 			}
 		})
 	}

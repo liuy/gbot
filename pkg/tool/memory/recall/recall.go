@@ -1,8 +1,8 @@
 // Package recall implements the recall tool: an FTS5 search across message
 // history in pkg/memory/short.
-// The query is passed raw to the store so FTS5 boolean operators (AND, OR,
-// NOT) and parentheses are honored — the LLM uses these to express precise
-// queries. Malformed queries degrade to empty results rather than failing.
+// Queries are keyword-oriented: words are OR-matched with bm25 ranking, so
+// messages matching more keywords rank first. Boolean operators in the input
+// are stripped as stopwords rather than interpreted.
 package recall
 
 import (
@@ -61,7 +61,7 @@ func New(store *short.Store) tool.Tool {
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "FTS5 query expression (supports AND/OR/NOT and parentheses, e.g. 'alice AND bob', 'blue OR red'). Separate multi-word terms with spaces or operators."
+				"description": "Keywords describing what you are looking for (e.g. 'alice blue', '数据库 migration'). Separate multiple keywords with spaces; messages matching more keywords rank first. Do not use boolean operators."
 			},
 			"uuid": {
 				"type": "string",
