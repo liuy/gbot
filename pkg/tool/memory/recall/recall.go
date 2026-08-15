@@ -40,11 +40,13 @@ type Input struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
-// msgHit is one message-history match.
+// msgHit is one message-history match. Score omits in uuid mode where there
+// is no relevance to report (single deterministic hit, not a ranked search).
 type msgHit struct {
-	UUID    string `json:"uuid"`
-	Content string `json:"content"`
-	Date    string `json:"date"`
+	UUID    string  `json:"uuid"`
+	Content string  `json:"content"`
+	Date    string  `json:"date"`
+	Score   float64 `json:"score,omitempty"`
 }
 
 // Output is the recall result. Empty slice serializes as `[]` (not `null`)
@@ -204,6 +206,7 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 				UUID:    r.TranscriptMessage.UUID,
 				Content: makeSnippet(text, in.Query, 50),
 				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
+				Score:   r.Score,
 			})
 		}
 	}

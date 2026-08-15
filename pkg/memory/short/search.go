@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -167,7 +168,34 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		})
 	}
 
+	normalizeScores(results)
+
 	return results, nil
+}
+
+// normalizeScores converts raw bm25 ranks (negative, lower = better) to
+// relative scores in [0, 1] (higher = better) by dividing each by the batch
+// max. The batch-best result always scores 1.0. Scores are per-query
+// relative — not comparable across different queries or pages.
+func normalizeScores(results []*SearchResult) {
+	if len(results) == 0 {
+		return
+	}
+	maxAbs := 0.0
+	for _, r := range results {
+		maxAbs = max(maxAbs, math.Abs(r.Score))
+	}
+	if maxAbs == 0 {
+		// All-zero batch (bm25 IDF clamp). Pin exact zeros so -0.0 never
+		// reaches the JSON layer.
+		for _, r := range results {
+			r.Score = 0
+		}
+		return
+	}
+	for _, r := range results {
+		r.Score = math.Abs(r.Score) / maxAbs
+	}
 }
 
 // SearchSessions searches sessions by message content.

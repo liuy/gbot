@@ -1005,6 +1005,103 @@ func TestSearchMessages_OrPhraseRanking(t *testing.T) {
 	}
 }
 
+// TestSearchMessages_ScoreNormalized verifies scores are normalized to
+// [0, 1] with the best hit at 1.0: raw bm25 ranks are negative and
+// lower-is-better, which is opaque to callers.
+func TestSearchMessages_ScoreNormalized(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	sess, err := store.CreateSession("/test/project", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sessionID := sess.SessionID
+
+	messages := []struct {
+		uuid    string
+		content string
+	}{
+		{"msg-both", `[{"type":"text","text":"张三 喜欢 蓝色"}]`}, // matches both query words
+		{"msg-one", `[{"type":"text","text":"张三 喜欢 红色"}]`},  // matches one query word
+	}
+	for _, m := range messages {
+		if _, err := store.db.Exec(
+			"INSERT INTO messages (session_id, uuid, type, content) VALUES (?, ?, ?, ?)",
+			sessionID, m.uuid, "user", m.content,
+		); err != nil {
+			t.Fatalf("insert message: %v", err)
+		}
+		var seq int64
+		if err := store.db.QueryRow("SELECT seq FROM messages WHERE uuid = ?", m.uuid).Scan(&seq); err != nil {
+			t.Fatalf("get seq: %v", err)
+		}
+		if err := store.insertFTS(store.db, seq, m.content); err != nil {
+			t.Fatalf("insertFTS: %v", err)
+		}
+	}
+
+	results, err := store.SearchMessages("蓝色 张三", &SearchOptions{SessionID: sessionID, Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].TranscriptMessage.UUID != "msg-both" {
+		t.Errorf("top = %s, want msg-both", results[0].TranscriptMessage.UUID)
+	}
+	if results[0].Score != 1.0 {
+		t.Errorf("top score = %f, want 1.0 (batch best must normalize to 1)", results[0].Score)
+	}
+	if results[1].Score <= 0 || results[1].Score >= 1 {
+		t.Errorf("second score = %f, want in (0, 1)", results[1].Score)
+	}
+}
+
+// TestNormalizeScores exercises the [0, 1] contract directly: batch-best
+// normalizes to 1.0, negatives never leak, and an all-zero batch stays zero
+// (divisor floored, no NaN, no sign flips).
+func TestNormalizeScores(t *testing.T) {
+	t.Run("best hit is 1.0", func(t *testing.T) {
+		rs := []*SearchResult{{Score: -5.9}, {Score: -3.6}, {Score: -2.96}}
+		normalizeScores(rs)
+		if rs[0].Score != 1.0 {
+			t.Errorf("best = %f, want 1.0", rs[0].Score)
+		}
+		// Raw -3.6 is a stronger match than -2.96; normalization must
+		// preserve that ordering.
+		if rs[1].Score <= rs[2].Score {
+			t.Errorf("ordering changed: rs[1]=%f must exceed rs[2]=%f", rs[1].Score, rs[2].Score)
+		}
+		if rs[1].Score <= 0 || rs[1].Score >= 1 || rs[2].Score <= 0 || rs[2].Score >= 1 {
+			t.Errorf("scores must be in (0,1): %v", []float64{rs[1].Score, rs[2].Score})
+		}
+	})
+	t.Run("all-zero batch stays zero", func(t *testing.T) {
+		rs := []*SearchResult{{Score: 0}, {Score: 0}}
+		normalizeScores(rs)
+		if rs[0].Score != 0 || rs[1].Score != 0 {
+			t.Errorf("zero batch must stay zero: %v", []float64{rs[0].Score, rs[1].Score})
+		}
+	})
+	t.Run("tiny negative normalizes to positive", func(t *testing.T) {
+		rs := []*SearchResult{{Score: -1e-10}, {Score: -5e-11}}
+		normalizeScores(rs)
+		for _, r := range rs {
+			if r.Score < 0 || r.Score > 1 {
+				t.Errorf("score %f leaked out of [0,1]", r.Score)
+			}
+		}
+		if rs[0].Score != 1.0 {
+			t.Errorf("best tiny = %f, want 1.0", rs[0].Score)
+		}
+	})
+	t.Run("empty is a no-op", func(t *testing.T) {
+		normalizeScores(nil)
+	})
+}
+
 // TestSearchMessages_Malformed verifies that a malformed FTS5 query yields
 // (nil, nil) instead of an error.
 func TestSearchMessages_Malformed(t *testing.T) {

@@ -72,6 +72,10 @@ func TestRecall_HitsMessages(t *testing.T) {
 	if out.Messages[0].Date != "2026-07-15 10:00" {
 		t.Errorf("msg date = %q, want 2026-07-15 10:00", out.Messages[0].Date)
 	}
+	// Search mode: batch-best hit must carry the normalized top score 1.0.
+	if out.Messages[0].Score != 1.0 {
+		t.Errorf("msg score = %f, want 1.0", out.Messages[0].Score)
+	}
 }
 
 func TestRecall_InvalidSince(t *testing.T) {
@@ -474,6 +478,18 @@ func TestRecall_UUIDReadsFullContent(t *testing.T) {
 	}
 	if out.Messages[0].Date != "2026-07-15 10:00" {
 		t.Errorf("date = %q, want '2026-07-15 10:00'", out.Messages[0].Date)
+	}
+	// uuid mode has no relevance ranking — score must stay zero so the
+	// omitempty tag drops it from the serialized output.
+	if out.Messages[0].Score != 0 {
+		t.Errorf("uuid mode score = %f, want 0 (omitempty drops it)", out.Messages[0].Score)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+	if strings.Contains(string(b), `"score"`) {
+		t.Errorf("uuid mode must not serialize a score field: %s", string(b))
 	}
 }
 
