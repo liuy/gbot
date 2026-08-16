@@ -160,7 +160,7 @@ func (s *Store) RecordCompact(sessionID string, result *CompactResult) error {
 
 	// 5. Update sessions.updated_at
 	_, err = tx.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-		time.Now().Format(time.RFC3339), sessionID)
+		time.Now(), sessionID)
 	if err != nil {
 		return fmt.Errorf("update session timestamp: %w", err)
 	}

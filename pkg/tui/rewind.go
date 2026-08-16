@@ -78,7 +78,8 @@ func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 		if text == "" {
 			continue
 		}
-		label := fmt.Sprintf("%s  %s", msg.Timestamp.Format("15:04"), truncateRunes(text, 60))
+		// Restored timestamps carry UTC location from the driver scan; render local wall clock — store UTC, convert on read.
+		label := fmt.Sprintf("%s  %s", msg.Timestamp.Local().Format("15:04"), truncateRunes(text, 60))
 		options = append(options, DialogOption{Label: label})
 		indices = append(indices, i)
 	}

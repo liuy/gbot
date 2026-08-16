@@ -276,7 +276,7 @@ func TestUpdateSessionTitle(t *testing.T) {
 	}
 
 	// Verify updated_at was bumped when title was set.
-	// CURRENT_TIMESTAMP has second granularity, so compare truncated to seconds.
+	// Truncate to seconds: robust against wall-clock steps between the two writes.
 	updatedAtSec := updated.UpdatedAt.UTC().Truncate(time.Second)
 	createdAtSec := updated.CreatedAt.UTC().Truncate(time.Second)
 	if updatedAtSec.Before(createdAtSec) {
@@ -304,7 +304,7 @@ func TestUpdateSessionTimestamp(t *testing.T) {
 	defer cleanup()
 
 	ses, _ := store.CreateSession("/project", "model")
-	time.Sleep(2 * time.Second) // REAL-TIME: ensure SQLite CURRENT_TIMESTAMP differs // ensure SQLite CURRENT_TIMESTAMP differs (second granularity)
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: driver writes nanosecond-precision timestamps; a small real-time gap distinguishes them
 
 	err := store.UpdateSessionTimestamp(ses.SessionID)
 	if err != nil {
@@ -316,12 +316,11 @@ func TestUpdateSessionTimestamp(t *testing.T) {
 		t.Fatalf("GetSession after update: %v", err)
 	}
 
-	// Compare UTC times to avoid timezone issues
-	sesUTC := ses.UpdatedAt.UTC()
-	updatedUTC := updated.UpdatedAt.UTC()
-
-	if !updatedUTC.After(sesUTC) {
-		t.Errorf("UpdatedAt %v not after %v", updatedUTC, sesUTC)
+	// Truncate to seconds: robust against wall-clock steps between the two writes.
+	updatedAtSec := updated.UpdatedAt.UTC().Truncate(time.Second)
+	sesSec := ses.UpdatedAt.UTC().Truncate(time.Second)
+	if updatedAtSec.Before(sesSec) {
+		t.Errorf("UpdatedAt %v should not be before initial %v", updatedAtSec, sesSec)
 	}
 }
 

@@ -27,6 +27,35 @@ func newTestEngine() *engine.Engine {
 	})
 }
 
+// pinLocalCST fixes the local zone for label assertions: rewind renders
+// message timestamps through time.Local, whose offset otherwise varies by host.
+func pinLocalCST(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.FixedZone("CST-TEST", 8*3600)
+	t.Cleanup(func() { time.Local = orig })
+}
+
+func TestHandleRewind_LabelLocalWallClock(t *testing.T) {
+	pinLocalCST(t)
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)},
+	})
+
+	a := &App{engine: eng, input: NewInput(), repl: NewReplState()}
+	a.width = 80
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("rewind dialog should be open after handleRewind")
+	}
+	// 10:00 UTC == 18:00 in the pinned +08:00 zone; restored timestamps carry
+	// UTC location from the driver scan and must render in local wall clock.
+	if a.activeDialog.options[0].Label != "18:00  hello" {
+		t.Errorf("label = %q, want %q", a.activeDialog.options[0].Label, "18:00  hello")
+	}
+}
+
 func TestMessagesAfterAreOnlySynthetic_Empty(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},

@@ -2876,7 +2876,8 @@ func injectTimestamp(blocks []types.ContentBlock, msg types.Message) []types.Con
 	if len(blocks) > 0 && blocks[0].Type == types.ContentTypeToolResult {
 		return blocks
 	}
-	ts := "[" + msg.Timestamp.Format("2006-01-02 15:04:05 MST") + "]"
+	// Restored messages carry UTC location from the driver scan; render local wall clock — store UTC, convert on read.
+	ts := "[" + msg.Timestamp.Local().Format("2006-01-02 15:04:05 MST") + "]"
 	if len(blocks) > 0 && blocks[0].Type == types.ContentTypeText {
 		blocks[0] = types.ContentBlock{
 			Type: types.ContentTypeText,

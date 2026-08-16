@@ -255,7 +255,8 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 			Messages: []msgHit{{
 				UUID:    msg.UUID,
 				Content: text,
-				Date:    msg.CreatedAt.Format("2006-01-02 15:04"),
+				// Scanned CreatedAt carries UTC location (driver _timezone=UTC); render local wall clock — store UTC, convert on read.
+				Date: msg.CreatedAt.Local().Format("2006-01-02 15:04"),
 			}},
 		}}, nil
 	}
@@ -294,7 +295,7 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 			out.Messages = append(out.Messages, msgHit{
 				UUID:    r.TranscriptMessage.UUID,
 				Content: makeSnippet(text, in.Query, 50),
-				Date:    r.TranscriptMessage.CreatedAt.Format("2006-01-02 15:04"),
+				Date:    r.TranscriptMessage.CreatedAt.Local().Format("2006-01-02 15:04"),
 				Score:   r.Score,
 			})
 		}

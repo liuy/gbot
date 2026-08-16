@@ -10,7 +10,10 @@ import (
 // Equivalent to TS cleanupOldSessionFiles (cleanup.ts:155) which deletes entire old
 // session JSONL files by timestamp cutoff.
 func (s *Store) CleanupOldSessions(maxAge time.Duration) (int, error) {
-	cutoff := time.Now().Add(-maxAge).Format("2006-01-02 15:04:05")
+	// cutoff binds as time.Time so the driver serializes it to the same
+	// canonical UTC format as the stored values; hand-Format-ed local naive
+	// strings would shift the cleanup window by the timezone offset.
+	cutoff := time.Now().Add(-maxAge)
 
 	// Find sessions to delete
 	rows, err := s.db.Query(

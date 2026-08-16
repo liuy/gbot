@@ -747,6 +747,7 @@ func TestForkAgent_EventsForwarded(t *testing.T) {
 // engine message with Timestamp → marshalMessages → injectTimestamp
 // prefixes [HH:MM:SS] to the user message's first text block.
 func TestTimestampInjection_NormalUserMessage(t *testing.T) {
+	pinLocalCST(t)
 	ts := time.Date(2026, 6, 7, 14, 23, 5, 0, time.UTC)
 	eng := New(&Params{})
 	t.Cleanup(func() { eng.Close() })
@@ -765,11 +766,12 @@ func TestTimestampInjection_NormalUserMessage(t *testing.T) {
 		t.Fatalf("got %d messages, want 2", len(got))
 	}
 
-	// User message should have [14:23:05] prefix
 	if got[0].Role != types.RoleUser {
 		t.Errorf("msg[0] role = %q, want user", got[0].Role)
 	}
-	want := "[2026-06-07 14:23:05 UTC] hello"
+	// 14:23:05 UTC == 22:23:05 in the pinned +08:00 zone; timestamps render
+	// in local wall clock regardless of the message's stored location.
+	want := "[2026-06-07 22:23:05 CST-TEST] hello"
 	if got[0].Content[0].Text != want {
 		t.Errorf("user text = %q, want %q", got[0].Content[0].Text, want)
 	}

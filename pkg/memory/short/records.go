@@ -3,6 +3,7 @@ package short
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -19,8 +20,8 @@ func (s *Store) SaveContentReplacementRecords(sessionID string, records []toolre
 		return fmt.Errorf("marshal content replacement records: %w", err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO content_replacements (session_id, replacements) VALUES (?, ?)`,
-		sessionID, string(data),
+		`INSERT INTO content_replacements (session_id, replacements, created_at) VALUES (?, ?, ?)`,
+		sessionID, string(data), time.Now(),
 	)
 	return err
 }
@@ -60,9 +61,9 @@ func (s *Store) SaveFileHistoryState(sessionID string, state filehistory.FileHis
 		return fmt.Errorf("marshal file history state: %w", err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO file_history_snapshots (session_id, snapshot_data) VALUES (?, ?)
-		 ON CONFLICT(session_id) DO UPDATE SET snapshot_data = excluded.snapshot_data, created_at = CURRENT_TIMESTAMP`,
-		sessionID, string(data),
+		`INSERT INTO file_history_snapshots (session_id, snapshot_data, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET snapshot_data = excluded.snapshot_data, created_at = excluded.created_at`,
+		sessionID, string(data), time.Now(),
 	)
 	return err
 }

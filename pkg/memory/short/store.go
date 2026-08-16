@@ -60,8 +60,16 @@ func (s *Store) DBPath() string {
 // mandatory for multi-connection correctness — without it, two connections
 // can each hold a shared (read) lock and then deadlock trying to upgrade to a
 // write lock, and busy_timeout does NOT cover that deadlock.
+//
+// _time_format=sqlite&_timezone=UTC makes the driver serialize every bound
+// time.Time as a canonical UTC string (YYYY-MM-DD HH:MM:SS[.fff]+00:00) and
+// scan TIMESTAMP columns back as UTC, so SQL string comparison (ORDER BY,
+// >, <) equals chronological comparison. Mixing local-zone strings or UTC
+// naive strings into the same columns breaks that ordering. The DDL's
+// DEFAULT CURRENT_TIMESTAMP stays as a forgotten-bind fallback; its naive
+// UTC output compares correctly against canonical strings.
 func openSQLite(path string) (*sql.DB, error) {
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_txlock=immediate"
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_txlock=immediate&_time_format=sqlite&_timezone=UTC"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database %q: %w", path, err)

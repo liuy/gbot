@@ -210,8 +210,8 @@ func (s *Store) listSessionsFiltered(projectDir, engineFilter string, limit int)
 // TS aligned: saveCustomTitle() — first user prompt auto-extracted
 func (s *Store) UpdateSessionTitle(sessionID, title string) error {
 
-	query := `UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`
-	result, err := s.db.Exec(query, title, sessionID)
+	query := `UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?`
+	result, err := s.db.Exec(query, title, time.Now(), sessionID)
 	if err != nil {
 		return fmt.Errorf("update title: %w", err)
 	}
@@ -225,8 +225,8 @@ func (s *Store) UpdateSessionTitle(sessionID, title string) error {
 // UpdateSessionTimestamp updates the updated_at timestamp to now.
 func (s *Store) UpdateSessionTimestamp(sessionID string) error {
 
-	query := `UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`
-	result, err := s.db.Exec(query, sessionID)
+	query := `UPDATE sessions SET updated_at = ? WHERE session_id = ?`
+	result, err := s.db.Exec(query, time.Now(), sessionID)
 	if err != nil {
 		return fmt.Errorf("update timestamp: %w", err)
 	}
@@ -240,7 +240,7 @@ func (s *Store) UpdateSessionTimestamp(sessionID string) error {
 // SessionsTouchedSince returns session IDs with updated_at > since for a project.
 // Used by dream consolidation to count new sessions since last run.
 // Excludes excludeSID (the current session).
-// Note: updated_at column is TIMESTAMP (RFC3339 via SQLite driver), not Unix ms.
+// Note: updated_at is stored as canonical UTC strings (driver _time_format=sqlite&_timezone=UTC); bound time.Time parameters serialize identically so SQL string comparison is chronologically correct.
 func (s *Store) SessionsTouchedSince(projectDir string, since time.Time, excludeSID string) ([]string, error) {
 	rows, err := s.db.Query(
 		"SELECT session_id FROM sessions WHERE project_dir = ? AND updated_at > ? AND session_id != ?",
@@ -315,8 +315,8 @@ func (s *Store) DeleteSession(sessionID string) error {
 // UpdateContextTokens persists the current context token count for a session.
 func (s *Store) UpdateContextTokens(sessionID string, tokens int) error {
 	_, err := s.db.Exec(
-		`UPDATE sessions SET context_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
-		tokens, sessionID)
+		`UPDATE sessions SET context_tokens = ?, updated_at = ? WHERE session_id = ?`,
+		tokens, time.Now(), sessionID)
 	return err
 }
 

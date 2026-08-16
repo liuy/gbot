@@ -30,6 +30,60 @@ func TestPersistNewMessages_NilStore(t *testing.T) {
 	eng.PersistNewMessages() // should not panic
 }
 
+// pinLocalCST fixes the local zone for timestamp rendering assertions:
+// injectTimestamp renders restored messages through time.Local, whose offset
+// otherwise varies by host.
+func pinLocalCST(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.FixedZone("CST-TEST", 8*3600)
+	t.Cleanup(func() { time.Local = orig })
+}
+
+func TestMarshalMessages_RestoredTimestampRenderedLocal(t *testing.T) {
+	pinLocalCST(t)
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)},
+	})
+	eng.PersistNewMessages()
+
+	eng2 := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetStore(store, "")
+	msgs, err := eng2.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("restored message count = %d, want 1", len(msgs))
+	}
+	eng2.SetMessages(msgs)
+
+	got := eng2.marshalMessages()
+	if len(got) != 1 {
+		t.Fatalf("marshalMessages count = %d, want 1", len(got))
+	}
+	if len(got[0].Content) != 1 {
+		t.Fatalf("content block count = %d, want 1", len(got[0].Content))
+	}
+	// 10:00 UTC == 18:00 in the pinned +08:00 zone; restored messages carry a
+	// UTC location from the driver scan and must render in local wall clock
+	// like in-session new messages.
+	if got[0].Content[0].Text != "[2026-07-15 18:00:00 CST-TEST] hello" {
+		t.Errorf("text = %q, want %q", got[0].Content[0].Text, "[2026-07-15 18:00:00 CST-TEST] hello")
+	}
+}
+
 func TestPersistNewMessages_EmptySessionID(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
 	t.Cleanup(func() { eng.Close() })

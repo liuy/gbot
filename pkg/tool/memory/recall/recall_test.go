@@ -23,6 +23,66 @@ func openStore(t *testing.T) *short.Store {
 	return store
 }
 
+// pinLocalCST fixes the local zone for Date assertions: recall renders
+// scanned CreatedAt through time.Local, whose offset otherwise varies by host.
+func pinLocalCST(t *testing.T) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.FixedZone("CST-TEST", 8*3600)
+	t.Cleanup(func() { time.Local = orig })
+}
+
+func TestRecall_DateRenderedInLocalWallClock(t *testing.T) {
+	pinLocalCST(t)
+	fs := openStore(t)
+	sess, err := fs.CreateSession("/test", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// 10:00 UTC == 18:00 in the pinned +08:00 zone; FixedZone keeps the
+	// expected string machine-independent.
+	msg := &short.TranscriptMessage{
+		UUID:      "msg-tz",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"blue zap"}]`,
+		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+	}
+	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	r := New(fs)
+	res, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call(query): %v", err)
+	}
+	out, ok := res.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", res.Data)
+	}
+	if len(out.Messages) != 1 || out.Messages[0].UUID != "msg-tz" {
+		t.Fatalf("query hits = %+v, want single msg-tz", out.Messages)
+	}
+	if out.Messages[0].Date != "2026-07-15 18:00" {
+		t.Errorf("query path date = %q, want 2026-07-15 18:00", out.Messages[0].Date)
+	}
+
+	res, err = r.Call(context.Background(), json.RawMessage(`{"uuid":"msg-tz"}`), nil)
+	if err != nil {
+		t.Fatalf("Call(uuid): %v", err)
+	}
+	out, ok = res.Data.(*Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *Output", res.Data)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("uuid hit count = %d, want 1", len(out.Messages))
+	}
+	if out.Messages[0].Date != "2026-07-15 18:00" {
+		t.Errorf("uuid path date = %q, want 2026-07-15 18:00", out.Messages[0].Date)
+	}
+}
+
 func TestRecall_MissingQuery(t *testing.T) {
 	fs := openStore(t)
 	r := New(fs)
@@ -36,6 +96,7 @@ func TestRecall_MissingQuery(t *testing.T) {
 }
 
 func TestRecall_HitsMessages(t *testing.T) {
+	pinLocalCST(t)
 	fs := openStore(t)
 	sess, err := fs.CreateSession("/test", "test-model")
 	if err != nil {
@@ -69,8 +130,8 @@ func TestRecall_HitsMessages(t *testing.T) {
 	if out.Messages[0].Content != "alice mentioned blue today" {
 		t.Errorf("msg content = %q", out.Messages[0].Content)
 	}
-	if out.Messages[0].Date != "2026-07-15 10:00" {
-		t.Errorf("msg date = %q, want 2026-07-15 10:00", out.Messages[0].Date)
+	if out.Messages[0].Date != "2026-07-15 18:00" {
+		t.Errorf("msg date = %q, want 2026-07-15 18:00", out.Messages[0].Date)
 	}
 	// Search mode: batch-best hit must carry the normalized top score 1.0.
 	if out.Messages[0].Score != 1.0 {
@@ -546,6 +607,7 @@ func TestFirstQueryTerm(t *testing.T) {
 }
 
 func TestRecall_UUIDReadsFullContent(t *testing.T) {
+	pinLocalCST(t)
 	fs := openStore(t)
 	sess, err := fs.CreateSession("/test", "test-model")
 	if err != nil {
@@ -581,8 +643,8 @@ func TestRecall_UUIDReadsFullContent(t *testing.T) {
 	if out.Messages[0].Content != longText {
 		t.Errorf("uuid mode should return full content, got snippet %q", out.Messages[0].Content)
 	}
-	if out.Messages[0].Date != "2026-07-15 10:00" {
-		t.Errorf("date = %q, want '2026-07-15 10:00'", out.Messages[0].Date)
+	if out.Messages[0].Date != "2026-07-15 18:00" {
+		t.Errorf("date = %q, want '2026-07-15 18:00'", out.Messages[0].Date)
 	}
 	// uuid mode has no relevance ranking — score must stay zero so the
 	// omitempty tag drops it from the serialized output.
