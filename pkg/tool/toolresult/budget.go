@@ -224,7 +224,13 @@ func EnforceToolResultBudget(
 			continue
 		}
 
-		// Skip tools with maxResultSizeChars: Infinity (Read) — never persist.
+		// Caller-designated tools are exempt from the aggregate budget.
+		// Marking them seen freezes the exemption across turns — fresh
+		// classification on a later turn would replace content the model
+		// already saw, breaking prompt cache. They don't count toward
+		// freshSize; a group left over the wire limit by exempted tools
+		// alone is accepted — the tool's own size bound applies, not
+		// this wrapper.
 		var eligible []toolResultCandidate
 		for _, c := range partition.fresh {
 			if shouldSkip(c.toolUseID) {

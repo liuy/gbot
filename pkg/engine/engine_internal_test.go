@@ -2463,7 +2463,7 @@ func TestPersistLargeToolResult_BelowThreshold(t *testing.T) {
 		t.Error("short output should not be persisted")
 	}
 
-	// Negative threshold (Read tool): pass through
+	// Negative threshold (persistence opt-out): pass through
 	pr = toolresult.MaybePersistLargeToolResult(input, "Read", -1, "test-id", "session-1")
 	if string(pr.Output) != "hello world" {
 		t.Errorf("negative threshold: got %q, want %q", string(pr.Output), "hello world")

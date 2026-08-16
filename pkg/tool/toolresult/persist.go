@@ -36,7 +36,7 @@ func MaybePersistLargeToolResult(
 
 	// Check threshold.
 	threshold := GetPersistenceThreshold(toolName, declaredMaxResultSize)
-	if threshold < 0 { // -1 = no limit (Read tool)
+	if threshold < 0 { // negative = tool opted out
 		return PersistResult{Output: output}
 	}
 	if len(output) <= threshold {

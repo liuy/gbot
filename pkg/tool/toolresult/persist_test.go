@@ -82,7 +82,7 @@ func TestMaybePersistLargeToolResult_EmptySessionID(t *testing.T) {
 	}
 }
 
-func TestMaybePersistLargeToolResult_UnlimitedThreshold(t *testing.T) {
+func TestMaybePersistLargeToolResult_OptedOutThreshold(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	ResetDirCache()
@@ -90,10 +90,10 @@ func TestMaybePersistLargeToolResult_UnlimitedThreshold(t *testing.T) {
 	bigContent := strings.Repeat("x", 60000)
 	output := mustMarshal(bigContent)
 
-	// threshold -1 means unlimited (Read tool)
+	// threshold -1 means the tool opted out of persistence
 	result := MaybePersistLargeToolResult(output, "Read", -1, "tool-4", "test-session")
 	if result.Persisted {
-		t.Error("should not persist when threshold is -1 (unlimited)")
+		t.Error("should not persist when threshold is -1 (opted out of persistence)")
 	}
 }
 

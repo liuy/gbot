@@ -64,19 +64,16 @@ var (
 )
 
 // GetPersistenceThreshold returns the effective persistence threshold.
-// -1 means no limit (Read tool), never persist.
-// TS: getPersistenceThreshold (toolResultStorage.ts:55-78)
+// The declared value is authoritative — only unset (0) falls back to the
+// default; a negative declaredMax means the tool opted out entirely.
 func GetPersistenceThreshold(toolName string, declaredMax int) int {
-	if declaredMax < 0 { // Infinity/opt-out
+	if declaredMax < 0 { // opt out
 		return declaredMax
 	}
 	if declaredMax == 0 {
 		return DefaultMaxResultSizeChars
 	}
-	if declaredMax < DefaultMaxResultSizeChars {
-		return declaredMax
-	}
-	return DefaultMaxResultSizeChars
+	return declaredMax
 }
 
 // GetSessionDir returns ~/.gbot/sessions/<sessionID>.

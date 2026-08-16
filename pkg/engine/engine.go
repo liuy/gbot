@@ -3078,7 +3078,7 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 	}
 
 	// Apply budget.
-	skipNames := map[string]bool{"Read": true} // Read has Infinity limit — never budget
+	skipNames := map[string]bool{"Read": true} // Read results are the LLM's working set; preview would force a re-Read, and exec-time 50K persistence already caps disasters
 	result, records := toolresult.EnforceToolResultBudget(budgetMsgs, e.contentReplacementState, e.sessionID, skipNames)
 
 	// Persist records to transcript for session resume stability.

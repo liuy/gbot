@@ -122,10 +122,13 @@ func TestGetPersistenceThreshold(t *testing.T) {
 		declared int
 		want     int
 	}{
-		{"negative means unlimited", -1, -1},
+		{"negative means opted out of persistence", -1, -1},
 		{"zero means default", 0, DefaultMaxResultSizeChars},
 		{"small value passes through", 30000, 30000},
-		{"large value capped at default", 100000, DefaultMaxResultSizeChars},
+		{"boundary default passes through", 50000, 50000},
+		{"below default passes through", 49999, 49999},
+		{"declared value is authoritative", 60000, 60000},
+		{"declared value is authoritative 100000", 100000, 100000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
