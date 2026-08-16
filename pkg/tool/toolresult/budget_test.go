@@ -296,6 +296,26 @@ func TestSelectFreshToReplace(t *testing.T) {
 	}
 }
 
+func TestSmallestCandidateSize(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []toolResultCandidate
+		want int
+	}{
+		{"empty returns 0", nil, 0},
+		{"single element", []toolResultCandidate{{toolUseID: "a", size: 42}}, 42},
+		// Smallest at the tail exercises the loop's comparison branch.
+		{"min not at index 0", []toolResultCandidate{{toolUseID: "a", size: 900}, {toolUseID: "b", size: 500}, {toolUseID: "c", size: 700}}, 500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := smallestCandidateSize(tc.in); got != tc.want {
+				t.Errorf("smallestCandidateSize(%v) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPartitionByPriorDecision(t *testing.T) {
 	state := NewContentReplacementState()
 	state.SeenIDs["frozen-id"] = true

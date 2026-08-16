@@ -1131,6 +1131,160 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 	}
 }
 
+// TestMarshalMessages_PreservesAssistantID pins the budget-grouping contract:
+// the content-replacement budget groups tool_results by assistant message ID
+// (budget.go collectCandidatesByMessage), and its input is marshalMessages
+// output. Dropping ID here collapses the whole conversation into one group —
+// frozen then accumulates across turns and every result (even tiny ones) gets
+// force-persisted once the group exceeds the 200K budget.
+func TestMarshalMessages_PreservesAssistantID(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.messages = []types.Message{
+		{
+			ID:        "asst-turn-1",
+			Role:      types.RoleAssistant,
+			Content:   []types.ContentBlock{types.NewTextBlock("first response")},
+			Timestamp: time.Now(), // REAL-TIME: injectTimestamp is a no-op here (assistant); mirrors real message shape
+		},
+		{
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{toolResultBlock(t, "tu-1", "result-1")},
+			Timestamp: time.Now(), // REAL-TIME: injectTimestamp skips tool_result-first messages; mirrors real shape
+		},
+		{
+			ID:        "asst-turn-2",
+			Role:      types.RoleAssistant,
+			Content:   []types.ContentBlock{types.NewTextBlock("second response")},
+			Timestamp: time.Now(), // REAL-TIME: injectTimestamp is a no-op here (assistant); mirrors real message shape
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	// The two assistant messages must keep their distinct IDs so the budget
+	// sees two groups, not one conversation-wide group.
+	if got[0].ID != "asst-turn-1" {
+		t.Errorf("first assistant ID = %q, want asst-turn-1 (budget grouping depends on it)", got[0].ID)
+	}
+	if got[2].ID != "asst-turn-2" {
+		t.Errorf("second assistant ID = %q, want asst-turn-2 (budget grouping depends on it)", got[2].ID)
+	}
+}
+
+// toolResultBlock builds a tool_result content block for budget-grouping tests.
+func toolResultBlock(t *testing.T, toolUseID, text string) types.ContentBlock {
+	t.Helper()
+	raw, err := json.Marshal([]types.ContentBlock{types.NewTextBlock(text)})
+	if err != nil {
+		t.Fatalf("marshal tool result content: %v", err)
+	}
+	return types.NewToolResultBlock(toolUseID, raw, false)
+}
+
+// TestApplyBudget_FrozenDoesNotAccumulateAcrossTurns pins the aggregate
+// budget's grouping contract end-to-end (marshalMessages → applyBudget).
+//
+// Production bug this guards against: when marshalMessages dropped assistant
+// IDs, the budget saw the whole conversation as ONE group. Read results
+// (exempt from replacement) accumulated as frozen across turns; once frozen
+// alone exceeded the 200K limit, every subsequent fresh result — no matter
+// how small — was force-persisted to disk with a preview.
+//
+// The scenario mirrors the real gbot.log: 8 turns of 30KB Read results
+// (exempt, become frozen), then a 40-byte Grep result. With per-assistant
+// grouping each turn is judged alone (frozen=0 for the new group), so the
+// 40-byte result must stay inline.
+func TestApplyBudget_FrozenDoesNotAccumulateAcrossTurns(t *testing.T) {
+	// Persisted outputs land under $HOME — redirect to a temp dir.
+	// t.Setenv forbids t.Parallel, which is fine: the test mutates no globals.
+	t.Setenv("HOME", t.TempDir())
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSessionID("budget-grouping-test")
+	eng.contentReplacementState = toolresult.NewContentReplacementState()
+
+	applyCurrent := func() []types.Message {
+		// The exact production chain (marshal → budget → normalize → pairing)
+		// that callLLM runs — a shortcut here once masked the pairing step
+		// stripping IDs and let the bug pass a green test.
+		return eng.prepareAPIMessages()
+	}
+	wasPersisted := func(msgs []types.Message, toolUseID string) bool {
+		for _, m := range msgs {
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeToolResult && b.ToolUseID == toolUseID {
+					return toolresult.IsContentAlreadyCompacted(b.Content)
+				}
+			}
+		}
+		t.Fatalf("tool_result %s not found", toolUseID)
+		return false
+	}
+
+	// Turns 1-8: one Read result each (30KB, exempt from replacement).
+	// 8 × 30KB = 240KB — over the 200K limit if wrongly pooled into one group.
+	for i := 1; i <= 8; i++ {
+		id := fmt.Sprintf("read-%d", i)
+		eng.appendMessage(types.Message{
+			ID:      fmt.Sprintf("asst-%d", i),
+			Role:    types.RoleAssistant,
+			Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ID: id, Name: "Read"}},
+		})
+		eng.appendMessage(types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{toolResultBlock(t, id, strings.Repeat("r", 30_000))},
+		})
+		out := applyCurrent()
+		if wasPersisted(out, id) {
+			t.Fatalf("turn %d: exempt Read result must never be persisted", i)
+		}
+	}
+
+	// Turn 9: a tiny fresh Grep result. If the budget pooled all history into
+	// one group, frozen alone (240KB) exceeds the limit and this 40-byte
+	// result would be force-persisted — the production symptom.
+	eng.appendMessage(types.Message{
+		ID:      "asst-9",
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "grep-9", Name: "Grep"}},
+	})
+	eng.appendMessage(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{toolResultBlock(t, "grep-9", strings.Repeat("g", 40))},
+	})
+	out := applyCurrent()
+	if wasPersisted(out, "grep-9") {
+		t.Fatal("40-byte fresh result was persisted: frozen accumulated across turns " +
+			"(budget grouped the whole conversation instead of per-assistant-message)")
+	}
+
+	// The budget must still do its real job: a genuinely over-limit fresh
+	// result in a turn of its own gets persisted.
+	eng.appendMessage(types.Message{
+		ID:      "asst-10",
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "bash-10", Name: "Bash"}},
+	})
+	eng.appendMessage(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{toolResultBlock(t, "bash-10", strings.Repeat("b", 210_000))},
+	})
+	out = applyCurrent()
+	if !wasPersisted(out, "bash-10") {
+		t.Fatal("210KB fresh result in its own group must be persisted (over the 200K limit)")
+	}
+}
+
 func TestMarshalMessages_ThinkingBlockJSONField(t *testing.T) {
 	t.Parallel()
 

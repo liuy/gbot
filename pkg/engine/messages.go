@@ -147,11 +147,11 @@ func EnsureToolResultPairing(messages []types.Message) []types.Message {
 						}
 					}
 					if content != nil {
-						msg = types.Message{
-							Role:    msg.Role,
-							Content: content,
-							Flags:   msg.Flags,
-						}
+						// TS rebuilds with object spread ({...msg, message:{...}}),
+						// keeping every field — overriding Content on the local
+						// copy preserves ID/Timestamp/Usage etc. that struct
+						// literals would drop.
+						msg.Content = content
 						result = append(result, msg)
 					}
 					continue
@@ -182,11 +182,12 @@ func EnsureToolResultPairing(messages []types.Message) []types.Message {
 			finalContent = []types.ContentBlock{types.NewTextBlock("[Tool use interrupted]")}
 		}
 
-		result = append(result, types.Message{
-			Role:    msg.Role,
-			Content: finalContent,
-			Flags:   msg.Flags,
-		})
+		// TS rebuilds with object spread ({...msg, message:{...}}), keeping
+		// every field — overriding Content on the local copy preserves
+		// ID/Timestamp/Model etc. that struct literals would drop (the ID
+		// drop once collapsed the budget's per-assistant grouping).
+		msg.Content = finalContent
+		result = append(result, msg)
 
 		// Collect tool_use IDs from this assistant for pairing check.
 		toolUseIDs := make([]string, 0, len(seen))
@@ -267,11 +268,10 @@ func EnsureToolResultPairing(messages []types.Message) []types.Message {
 			patched = append(patched, nextContent...)
 
 			if len(patched) > 0 {
-				result = append(result, types.Message{
-					Role:    types.RoleUser,
-					Content: patched,
-					Flags:   messages[nextIdx].Flags,
-				})
+				// Copy-then-override keeps fields struct literals would drop.
+				nextMsg := messages[nextIdx]
+				nextMsg.Content = patched
+				result = append(result, nextMsg)
 			} else {
 				result = append(result, types.Message{
 					Role:    types.RoleUser,

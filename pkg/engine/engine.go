@@ -2047,30 +2047,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	}())
 
 	// Marshal messages for the API request
-	apiMessages := e.marshalMessages()
-
-	// Filter out messages not intended for the LLM (system messages, etc.)
-	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
-	apiMessages = NormalizeMessagesForAPI(apiMessages)
-
-	// Strip media blocks the current model can't accept. Text-only models
-	// (e.g. glm-5.2) reject image/video content blocks with API errors.
-	// Non-destructive: operates on the marshaled copy, not e.messages.
-	// Only strip when BOTH image and video are unsupported: a model that
-	// accepts either should let that media through rather than have it
-	// replaced by a placeholder.
-	if !e.SupportsModality("image") && !e.SupportsModality("video") {
-		apiMessages = StripMediaFromMessages(apiMessages)
-	}
-
-	// Repair tool_use/tool_result pairing mismatches before sending to API.
-	// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
-	apiMessages = EnsureToolResultPairing(apiMessages)
-
-	// Apply per-message tool result budget (TS: applyToolResultBudget).
-	// Replaces large tool results with previews when aggregate per-message
-	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
-	apiMessages = e.applyBudget(apiMessages)
+	apiMessages := e.prepareAPIMessages()
 
 	// Prepend user context (AGENTS.md/CLAUDE.md/currentDate).
 	// Source: query.ts:660 — prependUserContext(messages, userContext).
@@ -2918,6 +2895,11 @@ func (e *Engine) marshalMessages() []types.Message {
 		contentCopy = injectTimestamp(contentCopy, msg)
 
 		result = append(result, types.Message{
+			// ID must survive: the content-replacement budget groups
+			// tool_results by assistant message ID; dropping it here collapses
+			// the whole conversation into one group and frozen accumulates
+			// across turns (TS normalizeMessagesForAPI keeps message.id).
+			ID:          msg.ID,
 			Role:        msg.Role,
 			Content:     contentCopy,
 			MessageType: msg.MessageType,
@@ -3125,6 +3107,50 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 	return msgs
 }
 
+// prepareAPIMessages runs the full marshal → budget → normalize → strip →
+// pairing pipeline that callLLM sends to the provider. Extracted so tests can
+// exercise the exact production transformation chain.
+func (e *Engine) prepareAPIMessages() []types.Message {
+	apiMessages := e.marshalMessages()
+
+	// Apply per-message tool result budget (TS: applyToolResultBudget).
+	// Replaces large tool results with previews when aggregate per-message
+	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
+	//
+	// MUST run before Normalize/Pairing (TS query.ts:379 runs it at query layer,
+	// pairing is API layer claude.ts:1301): the budget groups tool_results by
+	// assistant message ID, and EnsureToolResultPairing rebuilds messages
+	// without IDs — running the budget after pairing collapses all turns into
+	// one group and frozen accumulates across turns (every tiny result then
+	// gets force-persisted once the group exceeds the limit).
+	apiMessages = e.applyBudget(apiMessages)
+
+	// Budget was the last consumer of message IDs (grouping). The Anthropic
+	// path serializes Request.Messages verbatim, and TS never sends local
+	// message IDs on the wire — clear them like the pairing rebuild does.
+	for i := range apiMessages {
+		apiMessages[i].ID = ""
+	}
+
+	// Filter out messages not intended for the LLM (system messages, etc.)
+	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
+	apiMessages = NormalizeMessagesForAPI(apiMessages)
+
+	// Strip media blocks the current model can't accept. Text-only models
+	// (e.g. glm-5.2) reject image/video content blocks with API errors.
+	// Non-destructive: operates on the marshaled copy, not e.messages.
+	// Only strip when BOTH image and video are unsupported: a model that
+	// accepts either should let that media through rather than have it
+	// replaced by a placeholder.
+	if !e.SupportsModality("image") && !e.SupportsModality("video") {
+		apiMessages = StripMediaFromMessages(apiMessages)
+	}
+
+	// Repair tool_use/tool_result pairing mismatches before sending to API.
+	// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
+	return EnsureToolResultPairing(apiMessages)
+}
+
 func (e *Engine) AddSystemMessage(content string) {
 	e.appendMessage(types.NewSystemMessage([]types.ContentBlock{
 		types.NewTextBlock(content),
@@ -3175,9 +3201,11 @@ type APIRequestDump struct {
 	Tools         []llm.ToolDef
 }
 
-// DumpAPIRequest snapshots engine state and assembles the request exactly as
-// callLLM would, but without side effects. Skips refreshTools (uses current
-// tool snapshot), skips applyBudget (no recordWriter side effect).
+// DumpAPIRequest snapshots engine state and assembles the request as callLLM
+// would, but without side effects. Differences from the real pipeline: skips
+// refreshTools (uses current tool snapshot) and applyBudget / ID-clearing
+// (no recordWriter side effect; IDs stay empty because marshalMessagesFrom
+// never sets them).
 // Used by /context dump for debugging.
 func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	e.mu.RLock()

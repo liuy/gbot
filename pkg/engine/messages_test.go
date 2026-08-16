@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -260,6 +261,38 @@ func TestEnsureToolResultPairing(t *testing.T) {
 		result := EnsureToolResultPairing(msgs)
 		if len(result) != 4 {
 			t.Fatalf("expected 4 messages, got %d", len(result))
+		}
+	})
+
+	// TS rebuilds with object spread, keeping every field; the Go port once
+	// dropped ID/Timestamp on rebuild, which collapsed the budget's
+	// per-assistant grouping when it ran after pairing.
+	t.Run("rebuild preserves message fields (TS object spread)", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			{
+				ID:        "asst-keep-me",
+				Role:      types.RoleAssistant,
+				Content:   []types.ContentBlock{textBlock("hi"), toolUse("tu_1", "Read")},
+				Model:     "glm-5.2",
+				Timestamp: time.Date(2026, 8, 16, 23, 0, 0, 0, time.UTC),
+			},
+			userWithBlocks(toolResult("tu_1", "file content", false)),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(result))
+		}
+		got := result[1]
+		if got.ID != "asst-keep-me" {
+			t.Errorf("assistant ID = %q, want asst-keep-me", got.ID)
+		}
+		if got.Model != "glm-5.2" {
+			t.Errorf("Model = %q, want glm-5.2", got.Model)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("Timestamp zeroed by rebuild")
 		}
 	})
 

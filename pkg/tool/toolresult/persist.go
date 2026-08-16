@@ -48,6 +48,12 @@ func MaybePersistLargeToolResult(
 		return PersistResult{Output: output}
 	}
 
+	slog.Info("toolresult: exec-time persist",
+		"tool", toolName,
+		"size", FormatFileSize(len(output)),
+		"threshold", FormatFileSize(threshold),
+		"tool_use_id", toolUseID)
+
 	// Decode double-wrapped JSON to extract the raw string content.
 	// Correction 4: if decode fails, persist raw bytes directly.
 	var content string

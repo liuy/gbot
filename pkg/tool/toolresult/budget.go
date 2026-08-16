@@ -252,6 +252,12 @@ func EnforceToolResultBudget(
 		var selected []toolResultCandidate
 		if frozenSize+freshSize > limit {
 			selected = selectFreshToReplace(eligible, frozenSize, limit)
+			slog.Info("toolresult: budget over limit, selecting",
+				"frozen", FormatFileSize(frozenSize),
+				"fresh", FormatFileSize(freshSize),
+				"limit", FormatFileSize(limit),
+				"selected", len(selected),
+				"smallest_fresh", FormatFileSize(smallestCandidateSize(eligible)))
 		}
 
 		// Mark non-selected candidates as seen NOW (synchronously).
@@ -408,6 +414,22 @@ func partitionByPriorDecision(
 		}
 	}
 	return p
+}
+
+// smallestCandidateSize returns the size of the smallest candidate, 0 when empty.
+// Diagnostic only — appears in the budget log line to show whether tiny results
+// are being swept up by the over-limit selection.
+func smallestCandidateSize(cs []toolResultCandidate) int {
+	if len(cs) == 0 {
+		return 0
+	}
+	smallest := cs[0].size
+	for _, c := range cs[1:] {
+		if c.size < smallest {
+			smallest = c.size
+		}
+	}
+	return smallest
 }
 
 // selectFreshToReplace picks the largest fresh results to replace until
