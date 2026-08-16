@@ -3,6 +3,7 @@ package dream
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -19,6 +20,9 @@ type MessageLister interface {
 type DreamEngine interface {
 	IsBusy() bool
 	Query(ctx context.Context, prompt string) error
+	// SessionID identifies the dream engine's own session so the trigger's
+	// queries can exclude its transcript — dream must not consolidate itself.
+	SessionID() string
 }
 
 // IdleQuerier returns the timestamp of the last main-thread assistant message.
@@ -98,7 +102,8 @@ func (p TimerParams) tick(ctx context.Context) {
 	}
 
 	// Gate 4: new messages since last consolidation.
-	// Only the count matters — the agent gathers its own context via Recall.
+	// The count feeds the trigger message; the agent gathers its own context
+	// via the embedded DB queries.
 	msgs, err := p.Store.MessagesSince(lastDream)
 	if err != nil {
 		p.Logger.Warn("dream: MessagesSince failed", "error", err)
@@ -118,7 +123,8 @@ func (p TimerParams) tick(ctx context.Context) {
 		"idle", idleDuration.Round(time.Second),
 		"messages", len(msgs))
 
-	prompt := TriggerMessage(p.MemoryDir, lastDream)
+	dbPath := filepath.Join(p.MemoryDir, "memory.db")
+	prompt := TriggerMessage(p.MemoryDir, dbPath, p.Engine.SessionID(), lastDream, len(msgs))
 
 	if err := p.Engine.Query(ctx, prompt); err != nil {
 		p.Logger.Warn("dream: query failed", "error", err)

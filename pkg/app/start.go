@@ -676,6 +676,10 @@ func (a *dreamEngineAdapter) IsBusy() bool {
 	return a.eng.IsBusy()
 }
 
+func (a *dreamEngineAdapter) SessionID() string {
+	return a.eng.SessionID()
+}
+
 func (a *dreamEngineAdapter) Query(ctx context.Context, prompt string) error {
 	result := a.eng.QuerySync(ctx, prompt, a.eng.SystemPrompt())
 	return result.Error

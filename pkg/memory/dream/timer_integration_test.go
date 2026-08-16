@@ -65,6 +65,10 @@ func (m *mockIntegrationEngine) Query(_ context.Context, prompt string) error {
 	return m.queryErr
 }
 
+func (m *mockIntegrationEngine) SessionID() string {
+	return "mock-integration-session"
+}
+
 func (m *mockIntegrationEngine) capturedPrompts() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -153,8 +157,9 @@ func TestIntegration_HotPath_LastDreamInPrompt(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("expected 1 Query call, got %d", len(prompts))
 	}
-	// The prompt should contain the formatted lastDream time
-	expected := "Last consolidation: " + knownTime.Format("2006-01-02 15:04")
+	// The prompt renders the lastDream time as local wall clock + zone name
+	roundTripped := time.UnixMilli(knownTime.UnixMilli())
+	expected := "Last consolidation: " + roundTripped.Local().Format("2006-01-02 15:04 MST")
 	if !strings.Contains(prompts[0], expected) {
 		t.Errorf("prompt should contain %q, got: %s", expected, prompts[0])
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +49,10 @@ func (m *mockTimerEngine) Query(_ context.Context, prompt string) error {
 	defer m.mu.Unlock()
 	m.prompts = append(m.prompts, prompt)
 	return m.queryErr
+}
+
+func (m *mockTimerEngine) SessionID() string {
+	return "mock-dream-session"
 }
 
 func (m *mockTimerEngine) callCount() int {
@@ -223,6 +228,15 @@ func TestTick_AllGatesPass(t *testing.T) {
 	if !strings.Contains(prompt, "Memory directory:") {
 		t.Errorf("Query prompt should contain trigger header, got: %q", truncate(prompt, 80))
 	}
+	// The tick wiring must feed the engine's session ID and the joined DB
+	// path into the trigger — both land inside the embedded queries.
+	if !strings.Contains(prompt, "mock-dream-session") {
+		t.Errorf("prompt must exclude the dream engine's session ID, got: %q", truncate(prompt, 80))
+	}
+	wantDB := filepath.Join(p.MemoryDir, "memory.db")
+	if !strings.Contains(prompt, wantDB) {
+		t.Errorf("prompt must reference the transcript DB at %s", wantDB)
+	}
 
 	wm, err := ReadWatermark(p.MemoryDir)
 	if err != nil {
@@ -268,9 +282,10 @@ func TestTick_PromptContainsLastDream(t *testing.T) {
 		t.Fatalf("expected 1 Query call, got %d", eng.callCount())
 	}
 	// ReadWatermark round-trips through UnixMilli which shifts timezone,
-	// so compute the expected string the same way the prompt does.
+	// so compute the expected string the same way the prompt does — local
+	// wall clock plus zone abbreviation.
 	roundTripped := time.UnixMilli(knownTime.UnixMilli())
-	expected := "Last consolidation: " + roundTripped.Format("2006-01-02 15:04")
+	expected := "Last consolidation: " + roundTripped.Local().Format("2006-01-02 15:04 MST")
 	prompt := eng.lastPrompt()
 	if !strings.Contains(prompt, expected) {
 		t.Errorf("prompt should contain %q, got: %q", expected, truncate(prompt, 200))
