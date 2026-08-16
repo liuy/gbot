@@ -178,6 +178,53 @@ type FileUnchangedOutput struct {
 
 func (FileUnchangedOutput) output() {}
 
+// Source: tools/FileReadTool/prompt.ts — FILE_UNCHANGED_STUB.
+const fileUnchangedStub = "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading."
+
+// addLineNumbers renders content cat -n style: `${n}\t${line}`, line numbers
+// counting up from startLine (1-based).
+// Source: utils/file.ts addLineNumbers — compact format. TS splits on
+// /\r?\n/ (CRLF = one separator) and keeps the empty element a final
+// newline produces, numbering it too.
+func addLineNumbers(content string, startLine int) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		// Go splits on \n only, so drop the \r the /\r?\n/ separator would
+		// have consumed (markitdown/sqlite/archive content is not
+		// CRLF-normalized like executeTextFile output).
+		lines[i] = fmt.Sprintf("%d\t%s", startLine+i, strings.TrimSuffix(line, "\r"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// wireTextBlocks renders a TextOutput as wire content.
+// Source: FileReadTool.ts mapToolResultToToolResultBlockParam 'text' case
+// (688-707). memoryFileFreshnessPrefix and CYBER_RISK_MITIGATION_REMINDER
+// are not ported.
+func wireTextBlocks(out TextOutput) []types.ContentBlock {
+	if out.Content != "" {
+		return []types.ContentBlock{types.NewTextBlock(addLineNumbers(out.Content, out.StartLine))}
+	}
+	if out.TotalLines == 0 {
+		return []types.ContentBlock{types.NewTextBlock("<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>")}
+	}
+	return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf(
+		"<system-reminder>Warning: the file exists but is shorter than the provided offset (%d). The file has %d lines.</system-reminder>",
+		out.StartLine, out.TotalLines))}
+}
+
+// wireImageBlocks renders an ImageOutput as a base64 image block.
+func wireImageBlocks(out ImageOutput) []types.ContentBlock {
+	return []types.ContentBlock{types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: out.MimeType,
+		Data:      out.Base64,
+	})}
+}
+
 // New creates the FileRead tool.
 // Source: tools/FileReadTool/FileReadTool.ts
 func New() tool.Tool {
@@ -219,7 +266,12 @@ func New() tool.Tool {
 			return true // reading is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		MaxResultSizeChars: -1, // -1 = no truncation (TS: Infinity)
+		// 100K covers a full read of even dense code (~3300 lines at 30
+		// chars/line); only true disaster outputs (LIMIT-less SQL, huge
+		// generated files) spill to disk. Literal, not the 50000 default —
+		// that constant is only the unset-tool fallback now.
+		// Images bypass persistence via HasImageBlock.
+		MaxResultSizeChars: 100000,
 		CheckPermissions_: func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 			var in Input
 			if json.Unmarshal(input, &in) != nil {
@@ -255,24 +307,30 @@ func New() tool.Tool {
 				if b.Type != "text" || b.Text == "" {
 					continue
 				}
+				// Dual format: sessions recorded before the line-numbered
+				// wire stored the whole output struct as single-line JSON in
+				// the text block (leading "{" + decodable "type" field). The
+				// new wire is plain numbered text — a JSON file's content
+				// reads back as `1\t{...}` and never enters this branch.
 				var probe struct {
-					Type string `json:"type"`
+					Type *string `json:"type"`
 				}
-				if json.Unmarshal([]byte(b.Text), &probe) != nil {
+				if strings.HasPrefix(b.Text, "{") && json.Unmarshal([]byte(b.Text), &probe) == nil && probe.Type != nil {
+					switch *probe.Type {
+					case "file_unchanged":
+						var o FileUnchangedOutput
+						if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
+							return &o, nil
+						}
+					case "text":
+						var o TextOutput
+						if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
+							return &o, nil
+						}
+					}
 					continue
 				}
-				switch probe.Type {
-				case "file_unchanged":
-					var o FileUnchangedOutput
-					if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
-						return &o, nil
-					}
-				case "text":
-					var o TextOutput
-					if err := json.Unmarshal([]byte(b.Text), &o); err == nil {
-						return &o, nil
-					}
-				}
+				return &TextOutput{Type: "text", Content: b.Text}, nil
 			}
 			return nil, fmt.Errorf("fileread: no decodable block in array form")
 		},
@@ -280,28 +338,35 @@ func New() tool.Tool {
 			return tool.SearchReadKind{IsRead: true}
 		},
 		FormatWireBlocks_: func(data any) []types.ContentBlock {
-			out, ok := data.(ImageOutput)
-			if !ok {
-				if p, ok := data.(*ImageOutput); ok {
-					out = *p
-				} else {
-					raw, _ := json.Marshal(data)
-					raw2 := string(raw)
-					return []types.ContentBlock{types.NewTextBlock(raw2)}
-				}
+			// Source: FileReadTool.ts mapToolResultToToolResultBlockParam —
+			// image → image block; text → line-numbered content / warnings;
+			// file_unchanged → plain-text stub.
+			switch out := data.(type) {
+			case ImageOutput:
+				return wireImageBlocks(out)
+			case *ImageOutput:
+				return wireImageBlocks(*out)
+			case TextOutput:
+				return wireTextBlocks(out)
+			case *TextOutput:
+				return wireTextBlocks(*out)
+			case FileUnchangedOutput:
+				return []types.ContentBlock{types.NewTextBlock(fileUnchangedStub)}
+			case *FileUnchangedOutput:
+				return []types.ContentBlock{types.NewTextBlock(fileUnchangedStub)}
+			default:
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
 			}
-			return []types.ContentBlock{types.NewImageBlock(types.ImageSource{
-				Type:      "base64",
-				MediaType: out.MimeType,
-				Data:      out.Base64,
-			})}
 		},
 	})
 }
 
 // renderResult converts tool output to a human-readable string for the TUI.
-// Mirrors TS FileReadTool/UI.tsx renderToolResultMessage: displays a one-line
-// summary ("Read N lines") rather than the full file content.
+// TextOutput returns the full content because the TUI collapses search/read
+// results to a summary line and expands on demand — an established
+// divergence from TS FileReadTool/UI.tsx renderToolResultMessage, which
+// shows only a one-line "Read N lines" summary.
 func renderResult(data any) string {
 	switch out := data.(type) {
 	case *TextOutput:

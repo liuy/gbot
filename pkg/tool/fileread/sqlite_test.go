@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 )
 
@@ -126,6 +127,31 @@ func TestExecute_Sqlite_NotSqliteFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("expected 'does not exist' error, got: %v", err)
+	}
+}
+
+func TestExecute_Sqlite_SchemaWireNumbersFromLineOne(t *testing.T) {
+	t.Parallel()
+	fp := sqliteDB(t)
+	input := json.RawMessage(`{"file_path":"` + fp + `:users"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	wb, ok := fileread.New().(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatal("fileread tool should implement ToolWithWireBlocks")
+	}
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	// executeSqliteRead's StartLine:1 must reach the wire: numbering starts
+	// at "1\t" over the schema's first line — raw unnumbered content here
+	// would mean the field is dropped somewhere in the pipeline.
+	first := strings.SplitN(blocks[0].Text, "\n", 2)[0]
+	if !strings.HasPrefix(first, "1\tCREATE TABLE users") {
+		t.Errorf("first wire line = %q, want prefix %q", first, "1\\tCREATE TABLE users")
 	}
 }
 

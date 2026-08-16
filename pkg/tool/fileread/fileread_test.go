@@ -10,6 +10,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileread"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1802,5 +1804,168 @@ func TestReadAsImageBlock_NonImageExt(t *testing.T) {
 	block, ok := fileread.ReadAsImageBlock(context.Background(), fp)
 	if ok {
 		t.Errorf("expected (zero, false) for non-image extension, got (%+v, true)", block)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Large-output persistence (engine runTools.go: marshal wire blocks then
+// toolresult.MaybePersistLargeToolResult with t.MaxResultSize())
+// ---------------------------------------------------------------------------
+
+func TestNew_MaxResultSize(t *testing.T) {
+	t.Parallel()
+
+	tt := fileread.New()
+
+	// Literal, deliberately not toolresult.DefaultMaxResultSizeChars: Read's
+	// declaration is its own decision, distinct from the unset-tool fallback.
+	if got := tt.MaxResultSize(); got != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", got)
+	}
+}
+
+func TestRead_LargeTextOutputPersisted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	toolresult.ResetDirCache()
+	defer toolresult.ResetDirCache()
+
+	dir := t.TempDir()
+	// 10500 lines x 11 chars = 115500 raw chars. The line-numbered wire form
+	// (~167K chars) stays above Read's 100000-char persistence threshold
+	// while the file itself stays under the 256KB pre-read cap and the
+	// 115500 x 0.2 = 23100 token estimate under the 25000-token post-read
+	// cap, so Execute succeeds.
+	var sb strings.Builder
+	for range 10500 {
+		sb.WriteString("0123456789\n")
+	}
+	content := sb.String()
+	fp := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	tt := fileread.New()
+	wireTool, ok := tt.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatalf("fileread.New() = %T, want tool.ToolWithWireBlocks", tt)
+	}
+	resultContent, err := json.Marshal(wireTool.FormatWireBlocks(result.Data))
+	if err != nil {
+		t.Fatalf("Marshal wire blocks: %v", err)
+	}
+	if len(resultContent) <= tt.MaxResultSize() {
+		t.Fatalf("wire content = %d chars, want > %d", len(resultContent), tt.MaxResultSize())
+	}
+
+	pr := toolresult.MaybePersistLargeToolResult(resultContent, tt.Name(), tt.MaxResultSize(), "tool-persist-1", "sess-read-persist")
+	if !pr.Persisted {
+		t.Fatal("Persisted = false, want true for >100K text output")
+	}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(pr.Output, &blocks); err != nil {
+		t.Fatalf("Unmarshal persisted output: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, toolresult.PersistedOutputTag) {
+		t.Errorf("preview text lacks %q: %.80s", toolresult.PersistedOutputTag, blocks[0].Text)
+	}
+	if !strings.Contains(blocks[0].Text, "Full output saved to") {
+		t.Errorf("preview text lacks \"Full output saved to\": %.80s", blocks[0].Text)
+	}
+
+	persisted, err := os.ReadFile(pr.FilePath)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", pr.FilePath, err)
+	}
+	// Persisted file holds the bare wire text: line-numbered, multi-line and
+	// therefore paginable (the single-line escaped-JSON form is gone).
+	lines := strings.Split(string(persisted), "\n")
+	if len(lines) != 10501 {
+		t.Fatalf("persisted wire = %d lines, want 10501 (10500 numbered lines + numbered trailing empty element)", len(lines))
+	}
+	if lines[0] != "1\t0123456789" {
+		t.Errorf("first line = %q, want %q", lines[0], "1\t0123456789")
+	}
+	if lines[10499] != "10500\t0123456789" {
+		t.Errorf("line 10500 = %q, want %q", lines[10499], "10500\t0123456789")
+	}
+	// TS split semantics: the empty element the final newline produces gets
+	// numbered too, so the wire ends with "10501\t" and no trailing newline.
+	if lines[10500] != "10501\t" {
+		t.Errorf("trailing element = %q, want %q", lines[10500], "10501\t")
+	}
+}
+
+func TestRead_ImageOutputNotPersisted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	toolresult.ResetDirCache()
+	defer toolresult.ResetDirCache()
+
+	dir := t.TempDir()
+	// Incompressible noise so the base64 wire form exceeds the 100000-char
+	// threshold and the test hits the image-block exemption branch, not the
+	// small-output early return. 400x400 raw PNG stays under the resizer's
+	// 3.75MB passthrough cap, so bytes reach the wire unchanged.
+	img := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	rnd := rand.New(rand.NewSource(1))
+	for y := range 400 {
+		for x := range 400 {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(rnd.Intn(256)), G: uint8(rnd.Intn(256)), B: uint8(rnd.Intn(256)), A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	fp := filepath.Join(dir, "noise.png")
+	if err := os.WriteFile(fp, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	tt := fileread.New()
+	wireTool, ok := tt.(tool.ToolWithWireBlocks)
+	if !ok {
+		t.Fatalf("fileread.New() = %T, want tool.ToolWithWireBlocks", tt)
+	}
+	blocks := wireTool.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 || blocks[0].Type != types.ContentTypeImage {
+		t.Fatalf("wire blocks = %d blocks, want a single image block", len(blocks))
+	}
+	resultContent, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatalf("Marshal wire blocks: %v", err)
+	}
+	if len(resultContent) <= tt.MaxResultSize() {
+		t.Fatalf("image wire content = %d chars, want > %d to reach the exemption branch", len(resultContent), tt.MaxResultSize())
+	}
+
+	pr := toolresult.MaybePersistLargeToolResult(resultContent, tt.Name(), tt.MaxResultSize(), "tool-image-1", "sess-read-persist-img")
+	if pr.Persisted {
+		t.Error("Persisted = true, want false for image output")
+	}
+	if string(pr.Output) != string(resultContent) {
+		t.Errorf("image output was rewritten (len %d), want original bytes (len %d)", len(pr.Output), len(resultContent))
+	}
+	if strings.Contains(string(pr.Output), toolresult.PersistedOutputTag) {
+		t.Errorf("image output contains %q, want unchanged image content", toolresult.PersistedOutputTag)
 	}
 }

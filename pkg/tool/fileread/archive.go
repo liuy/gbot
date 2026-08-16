@@ -138,9 +138,10 @@ func readArchiveFS(fsys fs.FS, subPath string, in Input) (*tool.ToolResult, erro
 		}
 		content := formatArchiveEntries(entries)
 		return &tool.ToolResult{Data: TextOutput{
-			Type:     "text",
-			FilePath: in.FilePath,
-			Content:  content,
+			Type:      "text",
+			FilePath:  in.FilePath,
+			Content:   content,
+			StartLine: 1,
 		}}, nil
 	}
 
@@ -156,20 +157,46 @@ func readArchiveFS(fsys fs.FS, subPath string, in Input) (*tool.ToolResult, erro
 
 	if !isValidUTF8(data) {
 		return &tool.ToolResult{Data: TextOutput{
-			Type:     "text",
-			FilePath: in.FilePath,
-			Content:  fmt.Sprintf("[Cannot read binary archive entry '%s' (%d bytes)]", subPath, len(data)),
+			Type:      "text",
+			FilePath:  in.FilePath,
+			Content:   fmt.Sprintf("[Cannot read binary archive entry '%s' (%d bytes)]", subPath, len(data)),
+			StartLine: 1,
 		}}, nil
 	}
 
 	content := string(data)
-	if in.Offset > 1 || in.Limit > 0 {
+	// Computed before slicing: an out-of-range offset empties Content below,
+	// and the wire warning then needs the member's real line count to report
+	// "shorter than the provided offset" rather than "contents are empty"
+	// (same order as executeTextFile — totals first, then the slice).
+	totalLines := 0
+	if content != "" {
+		totalLines = strings.Count(content, "\n")
+		if !strings.HasSuffix(content, "\n") {
+			totalLines++
+		}
+	}
+	sliced := in.Offset > 1 || in.Limit > 0
+	if sliced {
 		content = applyOffsetLimit(content, in.Offset, in.Limit)
 	}
+	numLines := 0
+	if content != "" {
+		numLines = strings.Count(content, "\n") + 1
+		// Unsliced content ends with the member's own trailing newline —
+		// a separator, not a line (executeTextFile's full-read reports
+		// totalLines for the same bytes).
+		if !sliced && strings.HasSuffix(content, "\n") {
+			numLines--
+		}
+	}
 	return &tool.ToolResult{Data: TextOutput{
-		Type:     "text",
-		FilePath: in.FilePath,
-		Content:  content,
+		Type:       "text",
+		FilePath:   in.FilePath,
+		Content:    content,
+		NumLines:   numLines,
+		StartLine:  max(in.Offset, 1),
+		TotalLines: totalLines,
 	}}, nil
 }
 

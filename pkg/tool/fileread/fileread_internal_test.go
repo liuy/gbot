@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -599,21 +600,20 @@ func TestRenderResult_DefaultCase(t *testing.T) {
 	}
 }
 
-func TestRenderResult_JSONRawMessage(t *testing.T) {
+func TestRenderResult_DecodedWireText(t *testing.T) {
 	t.Parallel()
 	tt := New()
-	// TUI passes marshaled wire array. DecodeResult unwraps the text block,
-	// then renderResult extracts the content field.
-	inner := `{"type":"text","content":"hello world","filePath":"/tmp/x.go","numLines":1}`
-	textBytes, _ := json.Marshal(inner)
-	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	// TUI replay path: marshaled wire array → DecodeResult unwraps the text
+	// block → renderResult returns the line-numbered content for the
+	// collapse view.
+	raw := json.RawMessage(`[{"type":"text","text":"1\thello world"}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
 	}
 	result := renderResult(v)
-	if result != "hello world" {
-		t.Errorf("renderResult(decoded) = %q, want %q", result, "hello world")
+	if result != "1\thello world" {
+		t.Errorf("renderResult(decoded) = %q, want %q", result, "1\thello world")
 	}
 }
 
@@ -882,15 +882,31 @@ func TestOutput_InterfaceConformance(t *testing.T) {
 func TestDecodeResult_TextOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt := New()
-	original := &TextOutput{Type: "text", FilePath: "/tmp/x.go", Content: "hello", NumLines: 1}
-	// Wrap the marshaled struct in array form (the wire shape produced by
-	// FormatWireBlocksOrDefault).
-	inner, err := json.Marshal(original)
+	original := &TextOutput{Type: "text", FilePath: "/tmp/x.go", Content: "hello", StartLine: 3, NumLines: 1, TotalLines: 10}
+	raw, err := json.Marshal(tt.(tool.ToolWithWireBlocks).FormatWireBlocks(original))
 	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+		t.Fatalf("Marshal wire: %v", err)
 	}
-	textBytes, _ := json.Marshal(string(inner))
-	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*TextOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
+	}
+	if got.Content != "3\thello" {
+		t.Errorf("Content = %q, want %q (StartLine-prefixed wire text)", got.Content, "3\thello")
+	}
+}
+
+func TestDecodeResult_LegacyJSONWireStillDecodes(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	// Sessions recorded before the line-numbered wire stored the whole
+	// TextOutput struct as single-line JSON in the text block.
+	inner := `{"type":"text","content":"hello","filePath":"/tmp/x.go","numLines":1}`
+	raw := json.RawMessage(`[{"type":"text","text":` + strconv.Quote(inner) + `}]`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
@@ -900,10 +916,7 @@ func TestDecodeResult_TextOutputRoundTrip(t *testing.T) {
 		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
 	}
 	if got.Content != "hello" || got.FilePath != "/tmp/x.go" {
-		t.Errorf("round-trip lost fields: %+v", got)
-	}
-	if tt.RenderResult(original) != tt.RenderResult(v) {
-		t.Error("stream and history render differ")
+		t.Errorf("legacy decode lost fields: %+v", got)
 	}
 }
 
@@ -942,26 +955,45 @@ func TestRenderResult_ImageNoDims(t *testing.T) {
 func TestDecodeResult_FileUnchangedOutputRoundTrip(t *testing.T) {
 	t.Parallel()
 	tt := New()
-	original := &FileUnchangedOutput{Type: "file_unchanged", FilePath: "/tmp/x.go"}
-	inner, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+
+	// New wire: the plain-text stub decodes as TextOutput carrying the stub
+	// itself (type info is display-only on replay).
+	wire := tt.(tool.ToolWithWireBlocks).FormatWireBlocks(FileUnchangedOutput{Type: "file_unchanged", FilePath: "/tmp/x.go"})
+	if len(wire) != 1 || wire[0].Type != "text" {
+		t.Fatalf("wire = %+v, want single text block", wire)
 	}
-	textBytes, _ := json.Marshal(string(inner))
-	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
+	if wire[0].Text != "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading." {
+		t.Errorf("stub text = %q, want TS FILE_UNCHANGED_STUB verbatim", wire[0].Text)
+	}
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("Marshal wire: %v", err)
+	}
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult: %v", err)
 	}
-	got, ok := v.(*FileUnchangedOutput)
+	got, ok := v.(*TextOutput)
 	if !ok {
-		t.Fatalf("DecodeResult returned %T, want *FileUnchangedOutput", v)
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
 	}
-	if got.FilePath != "/tmp/x.go" {
-		t.Errorf("round-trip lost fields: %+v", got)
+	if got.Content != wire[0].Text {
+		t.Errorf("Content = %q, want the stub text verbatim", got.Content)
 	}
-	if tt.RenderResult(original) != tt.RenderResult(v) {
-		t.Error("stream and history render differ")
+
+	// Legacy wire: struct JSON still decodes to *FileUnchangedOutput.
+	inner := `{"type":"file_unchanged","filePath":"/tmp/x.go"}`
+	legacyRaw := json.RawMessage(`[{"type":"text","text":` + strconv.Quote(inner) + `}]`)
+	lv, err := tt.(tool.ToolWithDecodeResult).DecodeResult(legacyRaw)
+	if err != nil {
+		t.Fatalf("DecodeResult(legacy): %v", err)
+	}
+	lgot, ok := lv.(*FileUnchangedOutput)
+	if !ok {
+		t.Fatalf("DecodeResult(legacy) returned %T, want *FileUnchangedOutput", lv)
+	}
+	if lgot.FilePath != "/tmp/x.go" {
+		t.Errorf("legacy decode lost fields: %+v", lgot)
 	}
 }
 
@@ -972,5 +1004,260 @@ func TestFileRead_DecodeResult_RejectsBareStruct(t *testing.T) {
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"content":"hello","file_path":"/tmp/x.go","num_lines":1}`))
 	if err == nil {
 		t.Error("DecodeResult must reject bare struct form")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatWireBlocks — text wire
+// TS source: FileReadTool.ts mapToolResultToToolResultBlockParam 'text' and
+// 'file_unchanged' cases; line numbers via utils/file.ts addLineNumbers.
+// ---------------------------------------------------------------------------
+
+func TestFormatWireBlocks_TextLineNumbers(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+
+	blocks := wb.FormatWireBlocks(TextOutput{Type: "text", Content: "alpha\nbeta", StartLine: 1, TotalLines: 2})
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	if blocks[0].Text != "1\talpha\n2\tbeta" {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, "1\talpha\n2\tbeta")
+	}
+
+	// Pointer form takes the same branch (engine may hand either shape).
+	pblocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "alpha\nbeta", StartLine: 1})
+	if len(pblocks) != 1 || pblocks[0].Text != "1\talpha\n2\tbeta" {
+		t.Errorf("pointer form Text = %+v, want numbered text", pblocks)
+	}
+}
+
+func TestFormatWireBlocks_TextLineNumbersFromStartLine(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// Offset reads: StartLine carries the 1-based offset (executeTextFile),
+	// so numbering continues from it rather than restarting at 1.
+	blocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "alpha\nbeta", StartLine: 5, TotalLines: 20})
+	if blocks[0].Text != "5\talpha\n6\tbeta" {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, "5\talpha\n6\tbeta")
+	}
+}
+
+func TestFormatWireBlocks_TextTrailingNewline(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// TS split(/\r?\n/) keeps the empty element a final newline produces and
+	// numbers it — off-by-one here would corrupt every offset read.
+	blocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "a\nb\n", StartLine: 1, TotalLines: 2})
+	if blocks[0].Text != "1\ta\n2\tb\n3\t" {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, "1\ta\n2\tb\n3\t")
+	}
+}
+
+func TestFormatWireBlocks_TextCRLFContent(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// /\r?\n/ treats CRLF as one separator. Only executeTextFile normalizes
+	// \r away; markitdown/sqlite/archive content can still carry CRLF.
+	blocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "a\r\nb", StartLine: 1})
+	if blocks[0].Text != "1\ta\n2\tb" {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, "1\ta\n2\tb")
+	}
+}
+
+func TestFormatWireBlocks_TextEmptyFileWarning(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// executeTextFile emits Content:"" TotalLines:0 for an existing empty file.
+	blocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "", StartLine: 1, TotalLines: 0})
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	want := "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"
+	if blocks[0].Text != want {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, want)
+	}
+}
+
+func TestFormatWireBlocks_TextOffsetBeyondEndWarning(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// Offset past EOF: Content:"" with StartLine = requested offset,
+	// TotalLines = actual count (executeTextFile clamps only the slice).
+	blocks := wb.FormatWireBlocks(&TextOutput{Type: "text", Content: "", StartLine: 100, TotalLines: 2})
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	want := "<system-reminder>Warning: the file exists but is shorter than the provided offset (100). The file has 2 lines.</system-reminder>"
+	if blocks[0].Text != want {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, want)
+	}
+}
+
+func TestFormatWireBlocks_FileUnchangedStubPointer(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	blocks := wb.FormatWireBlocks(&FileUnchangedOutput{Type: "file_unchanged", FilePath: "/tmp/x.go"})
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	want := "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading."
+	if blocks[0].Text != want {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, want)
+	}
+}
+
+func TestFormatWireBlocks_ImagePointer(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// Engine paths may hand the pointer form; it must take the image branch.
+	blocks := wb.FormatWireBlocks(&ImageOutput{Type: "image", MimeType: "image/png", Base64: "abc"})
+	if len(blocks) != 1 || blocks[0].Type != "image" {
+		t.Fatalf("blocks = %+v, want single image block", blocks)
+	}
+	if blocks[0].Source == nil || blocks[0].Source.MediaType != "image/png" || blocks[0].Source.Data != "abc" {
+		t.Errorf("source = %+v, want base64 image/png with data %q", blocks[0].Source, "abc")
+	}
+}
+
+func TestFormatWireBlocks_UnknownTypeJSONFallback(t *testing.T) {
+	t.Parallel()
+	wb := New().(tool.ToolWithWireBlocks)
+	// Outputs outside the union still fall back to JSON text (pre-existing
+	// behavior for defensive callers).
+	blocks := wb.FormatWireBlocks("plain")
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	if blocks[0].Text != `"plain"` {
+		t.Errorf("Text = %q, want %q", blocks[0].Text, `"plain"`)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DecodeResult — dual-format (legacy JSON vs line-numbered plain text)
+// ---------------------------------------------------------------------------
+
+func TestDecodeResult_PlainTextWire(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	raw := json.RawMessage(`[{"type":"text","text":"1\thello\n2\tworld"}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*TextOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
+	}
+	if got.Content != "1\thello\n2\tworld" {
+		t.Errorf("Content = %q, want wire text verbatim", got.Content)
+	}
+}
+
+func TestDecodeResult_JSONFileContentNotMisjudged(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	// Reading a file whose content is itself JSON: the wire prefixes line
+	// numbers, so the text starts with "1\t{" — the legacy probe must not
+	// swallow it.
+	inner := "1\t" + `{"type":"text","content":"poison","filePath":"/tmp/evil"}`
+	raw := json.RawMessage(`[{"type":"text","text":` + strconv.Quote(inner) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*TextOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
+	}
+	if got.Content != inner {
+		t.Errorf("Content = %q, want %q (must not enter legacy JSON path)", got.Content, inner)
+	}
+	if got.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty (legacy fields must stay untouched)", got.FilePath)
+	}
+}
+
+func TestDecodeResult_UnrecognizedLegacyTypeStillRejected(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	// Object with a "type" field that is neither text nor file_unchanged is
+	// legacy-shaped garbage — preserved current behavior: no decode.
+	raw := json.RawMessage(`[{"type":"text","text":` + strconv.Quote(`{"type":"notebook","cells":[]}`) + `}]`)
+	if _, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw); err == nil {
+		t.Error("DecodeResult must reject unrecognized legacy type")
+	}
+}
+
+func TestDecodeResult_LongNonArrayPreviewTruncated(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	long := `"` + strings.Repeat("x", 200) + `"`
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(long))
+	if err == nil {
+		t.Fatal("DecodeResult must reject non-array content")
+	}
+	want := "fileread: DecodeResult expects array-form content, got " + strconv.Quote(`"`+strings.Repeat("x", 79))
+	if err.Error() != want {
+		t.Errorf("Error = %.100s..., want preview truncated to 80 chars", err.Error())
+	}
+}
+
+func TestDecodeResult_MalformedArray(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`[{not json}]`))
+	if err == nil {
+		t.Fatal("DecodeResult must reject malformed array JSON")
+	}
+}
+
+func TestDecodeResult_SkipsEmptyAndNonTextBlocks(t *testing.T) {
+	t.Parallel()
+	tt := New()
+	// Empty text block and a non-text block are skipped; the numbered text
+	// block after them still decodes.
+	raw := json.RawMessage(`[{"type":"text","text":""},{"type":"thinking","thinking":"x"},{"type":"text","text":"1\thello"}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	got, ok := v.(*TextOutput)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *TextOutput", v)
+	}
+	if got.Content != "1\thello" {
+		t.Errorf("Content = %q, want %q", got.Content, "1\thello")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// addLineNumbers — TS utils/file.ts compact format
+// ---------------------------------------------------------------------------
+
+func TestAddLineNumbers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		content   string
+		startLine int
+		want      string
+	}{
+		{"empty", "", 1, ""},
+		{"single line", "hello", 1, "1\thello"},
+		{"multi line", "a\nb", 1, "1\ta\n2\tb"},
+		{"trailing newline", "a\n", 1, "1\ta\n2\t"},
+		{"start line offset", "a\nb", 10, "10\ta\n11\tb"},
+		{"crlf separator", "a\r\nb", 1, "1\ta\n2\tb"},
+		{"lone carriage return stays", "a\rb", 1, "1\ta\rb"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := addLineNumbers(tc.content, tc.startLine); got != tc.want {
+				t.Errorf("addLineNumbers(%q, %d) = %q, want %q", tc.content, tc.startLine, got, tc.want)
+			}
+		})
 	}
 }

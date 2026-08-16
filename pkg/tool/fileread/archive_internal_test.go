@@ -230,6 +230,68 @@ func TestTryArchivePath_ReadMemberWithOffsetLimit(t *testing.T) {
 	}
 }
 
+func TestTryArchivePath_OffsetBeyondEndWireWarningVariant(t *testing.T) {
+	t.Parallel()
+	// 4-line member read at offset=100: Content is sliced empty, but the file
+	// has content — the wire warning must be the offset variant with the real
+	// line count, not "contents are empty" (which would send the model
+	// re-reading the member looking for an empty file).
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "lines.zip")
+	if err := makeZip(zipPath, map[string]string{
+		"notes.txt": "one\ntwo\nthree\nfour",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{FilePath: zipPath + ":notes.txt", Offset: 100}
+	result, handled, err := tryArchivePath(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+	wb := New().(tool.ToolWithWireBlocks)
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	want := "<system-reminder>Warning: the file exists but is shorter than the provided offset (100). The file has 4 lines.</system-reminder>"
+	if blocks[0].Text != want {
+		t.Errorf("wire text = %q, want %q", blocks[0].Text, want)
+	}
+}
+
+func TestTryArchivePath_MemberOffsetWireNumbersFromOffset(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "six.zip")
+	if err := makeZip(zipPath, map[string]string{
+		"notes.txt": "l1\nl2\nl3\nl4\nl5\nl6",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{FilePath: zipPath + ":notes.txt", Offset: 5}
+	result, handled, err := tryArchivePath(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+	wb := New().(tool.ToolWithWireBlocks)
+	blocks := wb.FormatWireBlocks(result.Data)
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("blocks = %+v, want single text block", blocks)
+	}
+	// Locks max(in.Offset,1): an offset read numbers from the requested
+	// line, not from 1 — the model relies on the numbers to seek further.
+	want := "5\tl5\n6\tl6"
+	if blocks[0].Text != want {
+		t.Errorf("wire text = %q, want %q", blocks[0].Text, want)
+	}
+}
+
 func TestTryArchivePath_BinaryMember(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -416,9 +416,10 @@ func executeSqliteRead(ctx context.Context, in Input, candidate sqlitePathCandid
 	}
 
 	return &tool.ToolResult{Data: TextOutput{
-		Type:     "text",
-		FilePath: in.FilePath,
-		Content:  content,
+		Type:      "text",
+		FilePath:  in.FilePath,
+		Content:   content,
+		StartLine: 1,
 	}}, nil
 }
 
