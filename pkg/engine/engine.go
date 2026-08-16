@@ -1274,6 +1274,22 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.PersistNewMessages()
 		}
 	}()
+	// Exit-path trace: pairs with the PersistNewMessages defer so a query
+	// whose messages never reach the DB can be attributed to a specific
+	// return path in gbot.log.
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Error("engine:runTurns_panic", "panic", r, "stack", string(debug.Stack()))
+			panic(r)
+		}
+		e.logger.Info("engine:runTurns_exit",
+			"engine_id", e.engineID,
+			"session", fmt.Sprintf("%.8s", e.sessionID),
+			"store_nil", e.store == nil,
+			"messages", len(e.messages),
+			"turns", e.turnCount,
+		)
+	}()
 	// Log query summary on every exit path.
 	defer func() {
 		// Always log; even when tokens are 0 we want the latency breakdown.

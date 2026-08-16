@@ -910,6 +910,107 @@ func TestPersistNewMessages_MultiTurnWithToolUse(t *testing.T) {
 	}
 }
 
+// TestPersistNewMessages_PromptAttachmentPersisted verifies that queued
+// prompt-mode attachments (user messages sent while a query is streaming)
+// survive persist+reload as regular user messages. Without this, every
+// message queued during an interruption vanishes from the DB and replay
+// shows the assistant answering a question that is not there.
+func TestPersistNewMessages_PromptAttachmentPersisted(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+
+	promptMsg := types.Message{
+		ID:          "att-prompt-1",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content:     []types.ContentBlock{types.NewTextBlock("你怎么一直tool use？现在先复现问题")},
+		Attachment: &types.Attachment{
+			Type:   types.AttachmentTypeQueued,
+			Prompt: "你怎么一直tool use？现在先复现问题",
+			Mode:   types.ItemModePrompt,
+		},
+		Timestamp: time.Date(2026, 8, 16, 14, 11, 51, 0, time.UTC),
+	}
+	jobMsg := types.Message{
+		ID:          "att-job-1",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content:     []types.ContentBlock{types.NewTextBlock("<job>bg-1 done</job>")},
+		Attachment: &types.Attachment{
+			Type:   types.AttachmentTypeQueued,
+			Prompt: "<job>bg-1 done</job>",
+			Mode:   types.ItemModeJob,
+		},
+		Timestamp: time.Date(2026, 8, 16, 14, 11, 52, 0, time.UTC),
+	}
+	metaPromptMsg := types.Message{
+		ID:          "att-meta-1",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content:     []types.ContentBlock{types.NewTextBlock("(system-generated prompt)")},
+		Attachment: &types.Attachment{
+			Type:   types.AttachmentTypeQueued,
+			Prompt: "(system-generated prompt)",
+			Mode:   types.ItemModePrompt,
+			IsMeta: true,
+		},
+		Timestamp: time.Date(2026, 8, 16, 14, 11, 53, 0, time.UTC),
+	}
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("previous query")}, Timestamp: time.Date(2026, 8, 16, 14, 10, 0, 0, time.UTC)},
+		promptMsg,
+		jobMsg,
+		metaPromptMsg,
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("收到，我先复现")}, Timestamp: time.Date(2026, 8, 16, 14, 12, 18, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+
+	eng.PersistNewMessages()
+
+	msgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	// Prompt attachment must persist; job and meta-prompt attachments stay ephemeral.
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages in store (user/prompt-as-user/assistant), got %d", len(msgs))
+	}
+	engMsgs, err := short.StoreMessagesToEngine(msgs)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if engMsgs[1].MessageType != types.MessageTypeUser {
+		t.Errorf("prompt attachment reloaded as MessageType=%q, want %q (plain user)",
+			engMsgs[1].MessageType, types.MessageTypeUser)
+	}
+	if engMsgs[1].Attachment != nil {
+		t.Errorf("reloaded prompt attachment still carries Attachment metadata: %+v", engMsgs[1].Attachment)
+	}
+	text := textOfBlocks(engMsgs[1].Content)
+	if text != "你怎么一直tool use？现在先复现问题" {
+		t.Errorf("reloaded prompt attachment text = %q, want original user text", text)
+	}
+}
+
+func textOfBlocks(blocks []types.ContentBlock) string {
+	for _, b := range blocks {
+		if b.Type == types.ContentTypeText {
+			return b.Text
+		}
+	}
+	return ""
+}
+
 // TestListSessions_FilteredByEngineID verifies that Engine.ListSessions
 // only returns sessions created by the same engine. Without the engine_id
 // filter, agent-2 sees agent-1's sessions in the /session picker — which

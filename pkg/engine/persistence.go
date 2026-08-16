@@ -18,6 +18,13 @@ import (
 // e.GetContextTokens() which acquire their own locks and will deadlock.
 func (e *Engine) PersistNewMessages() {
 	if e.store == nil || e.sessionID == "" {
+		// Headless/sub-agent configs legitimately run without a store —
+		// Info, not Warn, so normal deployments don't log noise per query.
+		slog.Info("PersistNewMessages: skip persistence",
+			"store_nil", e.store == nil,
+			"sessionID", e.sessionID,
+			"subagent", e.isSubagent,
+		)
 		return
 	}
 
@@ -25,19 +32,35 @@ func (e *Engine) PersistNewMessages() {
 	defer e.mu.Unlock()
 
 	if len(e.messages) <= e.lastPersistedIdx {
+		slog.Info("PersistNewMessages: nothing new",
+			"messages", len(e.messages),
+			"lastPersistedIdx", e.lastPersistedIdx,
+			"session", fmt.Sprintf("%.8s", e.sessionID),
+		)
 		return // nothing new to persist
 	}
 
 	uncommitted := e.messages[e.lastPersistedIdx:]
 
 	// Attachment messages are ephemeral context for the current LLM call —
-	// they should never be persisted to the conversation DB.
+	// they should never be persisted as-is. Exception: prompt-mode
+	// attachments are real user input queued mid-stream; persisting them as
+	// plain user messages keeps restart-replay coherent (the assistant
+	// answer would otherwise reference a question that never existed in DB).
 	var persistable []types.Message
 	for i := range uncommitted {
-		if uncommitted[i].MessageType == types.MessageTypeAttachment {
+		msg := uncommitted[i]
+		if msg.MessageType != types.MessageTypeAttachment {
+			persistable = append(persistable, msg)
 			continue
 		}
-		persistable = append(persistable, uncommitted[i])
+		if msg.Attachment != nil && msg.Attachment.Mode == types.ItemModePrompt && !msg.Attachment.IsMeta {
+			asUser := msg
+			asUser.MessageType = types.MessageTypeUser
+			asUser.Attachment = nil
+			persistable = append(persistable, asUser)
+		}
+		// Non-prompt attachments (job notifications, reminders) stay ephemeral.
 	}
 
 	storeMsgs, err := short.EngineMessagesToStore(persistable)
