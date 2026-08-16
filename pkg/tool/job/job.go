@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ErrNotFound is returned by Registry methods when a job ID does not exist
@@ -182,7 +184,22 @@ func NewJob(reg Registry) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero JobOutput (unknown fields ignored), which replay
+			// would render as an empty result instead of falling back to
+			// the wire text. Uniform rule across wire-plaintext tools.
+			if o.Poll == nil && o.Stop == nil && o.List == nil {
+				return nil, fmt.Errorf("job: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*JobOutput)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
 		},
 	})
 }
@@ -333,6 +350,73 @@ var (
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+
+// wireText renders the LLM-facing plain-text form. Segments (List, Poll,
+// Stop) join with a blank line in renderJobOutput order.
+func wireText(out *JobOutput) string {
+	var sections []string
+	if out.List != nil {
+		sections = append(sections, wireListText(out.List))
+	}
+	if out.Poll != nil {
+		sections = append(sections, wirePollText(out.Poll))
+	}
+	if out.Stop != nil {
+		sections = append(sections, fmt.Sprintf("Successfully stopped job %s (%s): %s",
+			out.Stop.JobID, out.Stop.JobType, out.Stop.Command))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// wirePollText mirrors TaskOutputTool.tsx:283-308 — XML-tag parts joined
+// with a blank line. Divergences, both deliberate:
+//   - no <error>: JobInfo has no Error field.
+//   - <output> content is not tail-truncated. TS truncates in the tool
+//     because it has no engine-level persistence; gbot's
+//     MaybePersistLargeToolResult runs after the wire is built and keeps
+//     the full log on disk, so tool-level pre-truncation would permanently
+//     discard the head of the log (plan D9).
+func wirePollText(p *PollResult) string {
+	parts := []string{fmt.Sprintf("<retrieval_status>%s</retrieval_status>", p.RetrievalStatus)}
+	if p.Task != nil {
+		j := p.Task
+		parts = append(parts, fmt.Sprintf("<task_id>%s</task_id>", j.ID))
+		parts = append(parts, fmt.Sprintf("<task_type>%s</task_type>", j.Type))
+		parts = append(parts, fmt.Sprintf("<status>%s</status>", j.Status))
+		// Terminal-only: gbot cannot distinguish an unset exit code from a
+		// real 0, and TS only emits the tag when exitCode is defined.
+		if isTerminal(j.Status) {
+			parts = append(parts, fmt.Sprintf("<exit_code>%d</exit_code>", j.ExitCode))
+		}
+		// TS gates on `output?.trim()` — whitespace-only output omits the
+		// block entirely.
+		if strings.TrimSpace(j.Output) != "" {
+			content := strings.TrimRightFunc(j.Output, unicode.IsSpace)
+			parts = append(parts, "<output>\n"+content+"\n</output>")
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// wireListText mirrors renderListResult — one line per job with the
+// command → description → ID fallback (plan D8).
+func wireListText(l *ListResult) string {
+	if len(l.Jobs) == 0 {
+		return "No jobs"
+	}
+	lines := make([]string, 0, len(l.Jobs))
+	for _, j := range l.Jobs {
+		cmd := j.Command
+		if cmd == "" {
+			cmd = j.Description
+		}
+		if cmd == "" {
+			cmd = j.ID
+		}
+		lines = append(lines, fmt.Sprintf("%s [%s] %s", j.ID, j.Status, cmd))
+	}
+	return strings.Join(lines, "\n")
+}
 
 // jobRenderResult renders the unified JobOutput for TUI display.
 func jobRenderResult(data any) string {

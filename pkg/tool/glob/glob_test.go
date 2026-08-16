@@ -460,6 +460,9 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 	}
 }
 
+// An empty legacy glob result (all identifying fields zero) is rejected by
+// design: it is indistinguishable from any other JSON-object wire text, and
+// replay falls back to showing the wire text itself.
 func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
@@ -467,13 +470,9 @@ func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 	inner := `{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`
 	textBytes, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
-	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
-	if err != nil {
-		t.Fatalf("DecodeResult failed: %v", err)
-	}
-	result := tt.RenderResult(v)
-	if result != "" {
-		t.Errorf("RenderResult(decoded empty) = %q, want empty", result)
+	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err == nil || !strings.Contains(err.Error(), "identifying fields") {
+		t.Errorf("DecodeResult(all-zero output) error = %v, want containing %q", err, "identifying fields")
 	}
 }
 

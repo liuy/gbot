@@ -18,6 +18,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // sinceRe parses the since parameter: a count + unit (h/d/w/m/y).
@@ -167,12 +168,70 @@ func New(store *short.Store) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as "No matches found." instead of falling back to the
+			// wire text. Uniform rule across wire-plaintext tools.
+			//
+			// Accepted and recorded false negatives — two reachable paths
+			// produce the all-zero {"messages":[]} Output: a search-storage
+			// error (execute logs it and keeps Messages empty) and a uuid
+			// lookup miss. Both degrade legacy replay to showing the raw
+			// JSON, which loses no information.
+			if len(o.Messages) == 0 {
+				return nil, fmt.Errorf("recall: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
+		},
 	})
+}
+
+// wireText renders the LLM-facing plain-text form: numbered entries with a
+// date header, 3-space-indented content lines, entries separated by a blank
+// line. UUID and score ride on the header because the LLM needs the UUID
+// for uuid-mode follow-up reads (the schema documents that flow) and the
+// score to judge match confidence — the old JSON wire carried both, so the
+// plaintext wire keeps them.
+func wireText(out *Output) string {
+	if len(out.Messages) == 1 && out.Messages[0].Content == emptyHint {
+		return emptyHint
+	}
+	if len(out.Messages) == 0 {
+		return "No matches found."
+	}
+	blocks := make([]string, 0, len(out.Messages))
+	for i, m := range out.Messages {
+		var b strings.Builder
+		header := fmt.Sprintf("%d. %s", i+1, m.Date)
+		if m.Score != 0 {
+			// Score 0 means uuid mode (no relevance concept) — the score
+			// prefix is search-mode-only to avoid "score 0.00" noise.
+			header = fmt.Sprintf("score %.2f  %s  uuid %s", m.Score, header, m.UUID)
+		} else {
+			header = fmt.Sprintf("%s  uuid %s", header, m.UUID)
+		}
+		b.WriteString(header + "\n")
+		// Indent every line so multi-line content stays one visual block
+		// instead of bleeding into the next entry's header. Trailing
+		// whitespace is trimmed so a trailing newline in content does not
+		// leave a stray 3-space line (same reason the render trims).
+		for line := range strings.SplitSeq(m.Content, "\n") {
+			b.WriteString("   " + line + "\n")
+		}
+		blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
+	}
+	return strings.Join(blocks, "\n\n")
 }
 
 // execute runs the recall query against message history.

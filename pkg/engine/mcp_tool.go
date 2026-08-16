@@ -75,13 +75,27 @@ func (t *MCPTool) RenderResult(data any) string {
 	}
 }
 
+// FormatWireBlocks sends the MCP result text as a single text block.
+// Source: MCPTool.ts:70-76 — wire content is the result verbatim;
+// extractMCPText has already joined multi-block text into one string.
+func (t *MCPTool) FormatWireBlocks(data any) []types.ContentBlock {
+	if s, ok := data.(string); ok {
+		return []types.ContentBlock{types.NewTextBlock(s)}
+	}
+	raw, _ := json.Marshal(data)
+	return []types.ContentBlock{types.NewTextBlock(string(raw))}
+}
+
 func (t *MCPTool) DecodeResult(raw json.RawMessage) (any, error) {
 	text, err := tool.UnmarshalSingleBlock(raw)
 	if err != nil {
 		return nil, err
 	}
-	// MCPTool's result type is string; FormatWireBlocksOrDefault JSON-encodes
-	// it, so the wire text is itself a JSON-encoded string. Unwrap once more.
+	// Wire history: pre-plaintext sessions stored json.Marshal(string), so
+	// the wire text is itself a JSON string literal — unwrap once more for
+	// those. New wires carry the raw result; a raw result that happens to
+	// be a valid JSON string literal loses one layer of quotes (accepted
+	// ambiguity, same tradeoff as Repl/Lsp).
 	var s string
 	if json.Unmarshal([]byte(text), &s) == nil {
 		return s, nil

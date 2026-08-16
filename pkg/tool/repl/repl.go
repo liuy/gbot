@@ -216,13 +216,26 @@ func (t *REPLTool) RenderResult(data any) string {
 	}
 }
 
+// FormatWireBlocks sends the raw execution output as a single text block.
+// TS REPLTool has no mapToolResult override, so the raw output is the wire.
+func (t *REPLTool) FormatWireBlocks(data any) []types.ContentBlock {
+	if s, ok := data.(string); ok {
+		return []types.ContentBlock{types.NewTextBlock(s)}
+	}
+	raw, _ := json.Marshal(data)
+	return []types.ContentBlock{types.NewTextBlock(string(raw))}
+}
+
 func (t *REPLTool) DecodeResult(raw json.RawMessage) (any, error) {
 	text, err := tool.UnmarshalSingleBlock(raw)
 	if err != nil {
 		return nil, err
 	}
-	// REPL's result type is string; FormatWireBlocksOrDefault JSON-encodes it,
-	// so the wire text is itself a JSON-encoded string. Unwrap once more.
+	// Wire history: pre-plaintext sessions stored json.Marshal(string), so
+	// the wire text is itself a JSON string literal — unwrap once more for
+	// those. New wires carry the raw output; a raw output that happens to be
+	// a valid JSON string literal loses one layer of quotes (accepted
+	// ambiguity, same tradeoff as Lsp).
 	var s string
 	if json.Unmarshal([]byte(text), &s) == nil {
 		return s, nil

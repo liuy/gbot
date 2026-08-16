@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,6 +23,9 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
+	"github.com/liuy/gbot/pkg/tool/glob"
+	"github.com/liuy/gbot/pkg/tool/grep"
+	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -5669,5 +5673,217 @@ func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestQuery_GrepWirePlainText drives a real Grep tool through the full chain
+// (tool_use → tool.Call → formatWireBlocksOrDefault → marshalBlocks → API
+// request) and asserts the tool_result text sent to the LLM is TS-aligned
+// plain text, not an escaped-JSON blob.
+func TestQuery_GrepWirePlainText(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep not installed; Grep falls back to goGrep path, wire shape differs")
+	}
+
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"))
+	mustWriteFile(t, filepath.Join(dir, "util.go"), []byte("package main\n\nfunc helper() {}\n"))
+
+	toolID := "tool_grep_wire_1"
+	toolInput := `{"pattern":"func","path":"` + dir + `","output_mode":"files_with_matches"}`
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, "Grep", toolInput), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Grep": grep.New()}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "find funcs", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	wire, found := "", false
+	for _, msg := range mp.lastRequestMessages() {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolResult || block.ToolUseID != toolID {
+				continue
+			}
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(block.Content, &blocks); err != nil {
+				t.Fatalf("tool_result.content is not a block array: %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+			}
+			wire = blocks[0].Text
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no tool_result block for tool_grep_wire_1 in captured request")
+	}
+
+	if !strings.HasPrefix(wire, "Found ") {
+		t.Errorf("wire text = %q, want prefix %q", wire, "Found ")
+	}
+	if !strings.Contains(wire, "main.go") {
+		t.Errorf("wire text = %q, want it to mention main.go", wire)
+	}
+	if strings.Contains(wire, `\"filenames\"`) {
+		t.Errorf("wire text = %q, still carries the JSON escape wall", wire)
+	}
+}
+
+// TestQuery_ReplWirePlainText drives a real Repl tool through the full chain
+// (tool_use → tool.Call → formatWireBlocksOrDefault → marshalBlocks → API
+// request) and asserts the tool_result text sent to the LLM is the raw
+// execution output, not the old JSON-encoded default wire.
+func TestQuery_ReplWirePlainText(t *testing.T) {
+	t.Parallel()
+
+	toolID := "tool_repl_wire_1"
+	toolInput := `{"code":"console.log(1+1)"}`
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, "Repl", toolInput), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	replTool := repl.New()
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Repl": replTool}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	t.Cleanup(replTool.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "run js", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	wire, found := "", false
+	for _, msg := range mp.lastRequestMessages() {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolResult || block.ToolUseID != toolID {
+				continue
+			}
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(block.Content, &blocks); err != nil {
+				t.Fatalf("tool_result.content is not a block array: %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+			}
+			wire = blocks[0].Text
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no tool_result block for tool_repl_wire_1 in captured request")
+	}
+
+	// Exact == discriminates the two wires: the JSON default would send the
+	// 5-char quoted form "\"2\\n\"" (quotes + escaped newline); the plain-text
+	// wire sends the raw console.log output. console.log is required — a bare
+	// expression yields empty output (Session.Execute discards the completion
+	// value), which the engine replaces with its no-output notice.
+	if wire != "2\n" {
+		t.Errorf("wire text = %q, want %q", wire, "2\n")
+	}
+}
+
+// TestQuery_GlobWirePlainText drives a real Glob tool through the full chain
+// (tool_use → tool.Call → formatWireBlocksOrDefault → marshalBlocks → API
+// request) and asserts the tool_result text sent to the LLM is the bare
+// relative-path list, not an escaped-JSON blob.
+func TestQuery_GlobWirePlainText(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "main.go"), []byte("package main\n"))
+
+	toolID := "tool_glob_wire_1"
+	toolInput := `{"pattern":"**/*.go","path":"` + dir + `"}`
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, "Glob", toolInput), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Glob": glob.New()}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "find files", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	wire, found := "", false
+	for _, msg := range mp.lastRequestMessages() {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolResult || block.ToolUseID != toolID {
+				continue
+			}
+			var blocks []types.ContentBlock
+			if err := json.Unmarshal(block.Content, &blocks); err != nil {
+				t.Fatalf("tool_result.content is not a block array: %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("len(blocks) = %d, want 1", len(blocks))
+			}
+			wire = blocks[0].Text
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no tool_result block for tool_glob_wire_1 in captured request")
+	}
+
+	// Single file keeps the list deterministic (rg sorts by mtime; two files
+	// created in the same tick could arrive in either order).
+	if wire != "main.go" {
+		t.Errorf("wire text = %q, want %q", wire, "main.go")
+	}
+	if strings.Contains(wire, `\"filenames\"`) {
+		t.Errorf("wire text = %q, still carries the JSON escape wall", wire)
 	}
 }

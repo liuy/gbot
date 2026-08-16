@@ -18,6 +18,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
@@ -442,7 +443,33 @@ func New() tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as a pathless summary instead of falling back to the
+			// wire text. Uniform rule across wire-plaintext tools.
+			if o.Type == "" && o.FilePath == "" {
+				return nil, fmt.Errorf("write: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// Source: FileWriteTool.ts:418-433 — one-line confirmation per
+			// type; the content/diff stays out of the wire (same accepted
+			// replay degradation as Edit).
+			switch out.Type {
+			case WriteTypeCreate:
+				return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("File created successfully at: %s", out.FilePath))}
+			case WriteTypeUpdate:
+				return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("The file %s has been updated successfully.", out.FilePath))}
+			default:
+				raw, _ := json.Marshal(out)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
 		},
 	})
 }

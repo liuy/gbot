@@ -8982,14 +8982,16 @@ func TestStreamErrorGeneratesSyntheticToolResults(t *testing.T) {
 }
 
 // TestReplayChain_EditToolReplayRenderOutput is an end-to-end test for the
-// tool_result replay path. It verifies that content produced by
-// formatWireBlocksOrDefault, when fed through the same logic as
-// renderToolOutput (extract text → renderViaTool), produces the tool's
-// RenderResult output — not raw JSON.
+// tool_result replay path, covering both wire generations:
 //
-// This catches the doubleWrap bug where text blocks contained
-// JSON-string-of-JSON (e.g. "\"{\\\"filePath\\\":...}\"") causing
-// renderToolOutput to skip renderViaTool (text starts with ", not {).
+//   - legacy JSON wire: DecodeResult reconstructs the Output and RenderResult
+//     shows the diff — not raw JSON.
+//   - plain-text wire (current): DecodeResult errors and replay falls back to
+//     the wire text, which is the one-line TS confirmation sentence. The diff
+//     is not on the wire (accepted replay degradation, plan D1).
+//
+// The original doubleWrap bug this test guarded against (text blocks
+// containing JSON-string-of-JSON) is still covered by the legacy segment.
 func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
 	t.Parallel()
 
@@ -9000,7 +9002,35 @@ func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
 		NewString: "new",
 	}
 
-	// Step 1: engine produces wire blocks from tool Data.
+	dt, ok := editTool.(tool.ToolWithDecodeResult)
+	if !ok {
+		t.Fatal("Edit tool must implement ToolWithDecodeResult")
+	}
+
+	// Segment (a): legacy JSON wire still decodes and renders the diff.
+	legacy, err := json.Marshal(editData)
+	if err != nil {
+		t.Fatalf("marshal legacy wire: %v", err)
+	}
+	decoded, err := dt.DecodeResult(tool.WrapSingleBlock(string(legacy)))
+	if err != nil {
+		t.Fatalf("DecodeResult(legacy) failed: %v", err)
+	}
+	rendered := editTool.RenderResult(decoded)
+	if rendered == "" {
+		t.Fatal("RenderResult returned empty string")
+	}
+	// The rendered output must NOT contain raw JSON keys.
+	if strings.Contains(rendered, `"filePath"`) {
+		t.Errorf("RenderResult output contains raw JSON key: %s", rendered)
+	}
+	// The rendered output should contain the diff content, not JSON.
+	if !strings.Contains(rendered, "old") || !strings.Contains(rendered, "new") {
+		t.Errorf("RenderResult output missing diff content: %s", rendered)
+	}
+
+	// Segment (b): plain-text wire → DecodeResult error → replay shows the
+	// confirmation sentence (tui renderToolOutput fallback shape).
 	blocks := formatWireBlocksOrDefault(editTool, editData)
 	if len(blocks) != 1 {
 		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
@@ -9008,31 +9038,26 @@ func TestReplayChain_EditToolReplayRenderOutput(t *testing.T) {
 	if blocks[0].Type != types.ContentTypeText {
 		t.Fatalf("blocks[0].Type = %q, want text", blocks[0].Type)
 	}
-
-	// Step 2: marshalBlocks → tool_result.content (what gets stored/persisted).
 	content := marshalBlocks(blocks)
+	if _, err := dt.DecodeResult(content); err == nil {
+		t.Fatal("DecodeResult(plain-text wire) must fail")
+	} else if !strings.Contains(err.Error(), "invalid character 'T' looking for beginning of value") {
+		t.Errorf("DecodeResult(plain-text wire) err = %v, want json syntax error on 'T'", err)
+	}
 
-	// Step 3: renderViaTool → DecodeResult + RenderResult.
-	// DecodeResult now strictly accepts array-form input (the wire shape
-	// produced by formatWireBlocksOrDefault). Pass the marshaled array
-	// directly — no inner-text extraction.
-	if dt, ok := editTool.(tool.ToolWithDecodeResult); ok {
-		decoded, err := dt.DecodeResult(content)
-		if err != nil {
-			t.Fatalf("DecodeResult failed: %v (content=%.80s)", err, string(content))
-		}
-		rendered := editTool.RenderResult(decoded)
-		if rendered == "" {
-			t.Fatal("RenderResult returned empty string")
-		}
-		// The rendered output must NOT contain raw JSON keys.
-		if strings.Contains(rendered, `"filePath"`) {
-			t.Errorf("RenderResult output contains raw JSON key: %s", rendered)
-		}
-		// The rendered output should contain the diff content, not JSON.
-		if !strings.Contains(rendered, "old") || !strings.Contains(rendered, "new") {
-			t.Errorf("RenderResult output missing diff content: %s", rendered)
-		}
+	// Re-extract the text block the way tui renderToolOutput's fallback does.
+	var wireBlocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &wireBlocks); err != nil {
+		t.Fatalf("unmarshal wire blocks: %v", err)
+	}
+	if len(wireBlocks) != 1 || wireBlocks[0].Type != string(types.ContentTypeText) {
+		t.Fatalf("wire blocks = %+v, want one text block", wireBlocks)
+	}
+	if want := "The file /tmp/test.go has been updated successfully."; wireBlocks[0].Text != want {
+		t.Errorf("replayed wire text = %q, want %q", wireBlocks[0].Text, want)
 	}
 }
 

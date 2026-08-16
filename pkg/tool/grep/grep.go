@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
@@ -193,12 +194,90 @@ func New() tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as empty instead of falling back to the wire text.
+			// Uniform rule across wire-plaintext tools; grep's own wire can
+			// essentially never start with '{', so the check costs one line
+			// and closes the class.
+			if o.Mode == "" && len(o.Matches) == 0 && o.Count == 0 {
+				return nil, fmt.Errorf("grep: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
+		},
 	})
+}
+
+// formatLimitInfo builds the pagination hint "limit: N[, offset: N]".
+// Source: GrepTool.ts:134-142 — formatLimitInfo. Offset mirrors TS truthiness:
+// `if (appliedOffset)` skips 0/undefined alike.
+func formatLimitInfo(appliedLimit, appliedOffset *int) string {
+	var parts []string
+	if appliedLimit != nil {
+		parts = append(parts, fmt.Sprintf("limit: %d", *appliedLimit))
+	}
+	if appliedOffset != nil && *appliedOffset != 0 {
+		parts = append(parts, fmt.Sprintf("offset: %d", *appliedOffset))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// wireText renders the LLM-facing plain-text form.
+// Source: GrepTool.ts:254-309 — mapToolResultToToolResultBlockParam.
+// Mode=="" (goGrep fallback when rg is missing, no TS counterpart) keeps the
+// JSON wire shape — the fallback Output has no mode string to format.
+func wireText(out *Output) string {
+	switch out.Mode {
+	case "content":
+		limitInfo := formatLimitInfo(out.AppliedLimit, out.AppliedOffset)
+		content := out.Content
+		if content == "" {
+			content = "No matches found"
+		}
+		if limitInfo != "" {
+			content += "\n\n[Showing results with pagination = " + limitInfo + "]"
+		}
+		return content
+	case "count":
+		limitInfo := formatLimitInfo(out.AppliedLimit, out.AppliedOffset)
+		raw := out.Content
+		if raw == "" {
+			raw = "No matches found"
+		}
+		paginationSuffix := ""
+		if limitInfo != "" {
+			paginationSuffix = " with pagination = " + limitInfo
+		}
+		return raw + fmt.Sprintf("\n\nFound %d total %s across %d %s.%s",
+			out.NumMatches, tool.PluralWord(out.NumMatches, "occurrences"),
+			out.NumFiles, tool.PluralWord(out.NumFiles, "files"), paginationSuffix)
+	case "files_with_matches":
+		limitInfo := formatLimitInfo(out.AppliedLimit, out.AppliedOffset)
+		if out.NumFiles == 0 {
+			return "No files found"
+		}
+		limitSuffix := ""
+		if limitInfo != "" {
+			limitSuffix = " " + limitInfo
+		}
+		return fmt.Sprintf("Found %d %s%s\n%s",
+			out.NumFiles, tool.PluralWord(out.NumFiles, "files"), limitSuffix,
+			strings.Join(out.Filenames, "\n"))
+	default:
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
 }
 
 // Execute searches file contents using ripgrep.

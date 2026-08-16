@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
@@ -179,9 +181,68 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Same replay concern as grep, and bash is the highest-risk tool:
+			// `cat package.json` or `curl api` produces wire text that is
+			// itself a JSON object and would decode into an all-zero Output.
+			// CWD must count — every Output construction sets it, and
+			// silent-success commands (mkdir, rm, git init) carry no other
+			// non-zero field.
+			if o.Stdout == "" && o.Stderr == "" && !o.TimedOut && o.BackgroundJobID == "" && o.CWD == "" {
+				return nil, fmt.Errorf("bash: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
+		},
 	})
+}
+
+// leadingBlankLinesRe strips leading blank/whitespace-only lines from stdout.
+// Source: BashTool.tsx:584 — stdout.replace(/^(\s*\n)+/, ”). The group needs
+// at least one \n, so "  hello" (spaces, no newline) is left untouched.
+var leadingBlankLinesRe = regexp.MustCompile(`^(?:\s*\n)+`)
+
+// wireText renders the LLM-facing plain-text form.
+// Source: BashTool.tsx:581-622 — mapToolResultToToolResultBlockParam:
+// [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n').
+// isImage/structuredContent/persistedOutputPath and the user/assistant
+// background variants have no gbot counterpart (persistence is engine-level;
+// gbot has a single background path).
+func wireText(out *Output) string {
+	var parts []string
+	processedStdout := out.Stdout
+	if out.Stdout != "" {
+		processedStdout = leadingBlankLinesRe.ReplaceAllString(out.Stdout, "")
+		processedStdout = strings.TrimRightFunc(processedStdout, unicode.IsSpace)
+	}
+	if processedStdout != "" {
+		parts = append(parts, processedStdout)
+	}
+	errorMessage := strings.TrimSpace(out.Stderr)
+	if out.TimedOut {
+		// Source: BashTool.tsx:601-605 — the EOL gate checks the RAW stderr
+		// (`if (stderr)`), not the trimmed message: whitespace-only stderr
+		// still yields a leading newline. The tag text hangs off
+		// is_error:interrupted in TS (user Esc abort); gbot has no
+		// user-abort-success path, so TimedOut is the only producer.
+		if out.Stderr != "" {
+			errorMessage += "\n"
+		}
+		errorMessage += "<error>Command was aborted before completion</error>"
+	}
+	if errorMessage != "" {
+		parts = append(parts, errorMessage)
+	}
+	if out.BackgroundJobID != "" {
+		parts = append(parts, "Command running in background with ID: "+out.BackgroundJobID+". Poll its output with the Job tool.")
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Execute runs a bash command using the global default registry.

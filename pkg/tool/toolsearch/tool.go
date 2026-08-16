@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ToolName is the canonical name of the ToolSearch tool.
@@ -120,7 +121,26 @@ func New() tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as the no-match text instead of falling back to the
+			// wire text. Uniform rule across wire-plaintext tools.
+			if o.Query == "" && len(o.Matches) == 0 {
+				return nil, fmt.Errorf("toolsearch: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// Source: ToolSearchTool.ts:444-470 — no-match text verbatim;
+			// matches render as a plain-text list instead of TS's
+			// tool_reference blocks (types.ContentBlock has no such type).
+			return []types.ContentBlock{types.NewTextBlock(
+				renderToolSearchOutput(out.Matches, out.PendingMCPServers))}
 		},
 	})
 }

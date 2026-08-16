@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils/proc"
 )
 
@@ -107,10 +108,35 @@ func New() tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as empty instead of falling back to the wire text.
+			// Uniform rule across wire-plaintext tools.
+			if len(o.Files) == 0 && o.Count == 0 && o.DurationMs == 0 && !o.Truncated {
+				return nil, fmt.Errorf("glob: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// Source: GlobTool.ts:177-197 — empty → "No files found";
+			// otherwise filenames one per line, truncated results append
+			// the narrowing-hint line as the final entry.
+			if len(out.Files) == 0 {
+				return []types.ContentBlock{types.NewTextBlock("No files found")}
+			}
+			lines := out.Files
+			if out.Truncated {
+				lines = append(lines[:len(lines):len(lines)], "(Results are truncated. Consider using a more specific path or pattern.)")
+			}
+			return []types.ContentBlock{types.NewTextBlock(strings.Join(lines, "\n"))}
 		},
 	})
 }

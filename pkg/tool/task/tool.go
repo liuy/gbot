@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // StatusChange records a status transition.
@@ -320,9 +321,130 @@ func New(list *List) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero TasksOutput (unknown fields ignored), which replay
+			// would render as "No changes" instead of falling back to the
+			// wire text. Uniform rule across wire-plaintext tools.
+			if len(o.Created) == 0 && len(o.Updated) == 0 && len(o.Deleted) == 0 &&
+				o.List == nil && o.Get == nil {
+				return nil, fmt.Errorf("task: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
 		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*TasksOutput)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
+		},
 	})
+}
+
+// wireText renders the LLM-facing plain-text form: one segment per TS task
+// tool, segments joined with a blank line, entries within a segment one per
+// line. Sources: TaskCreateTool.ts:135, TaskUpdateTool.ts:364-405,
+// TaskGetTool.ts:99-127, TaskListTool.ts:91-115. gbot-only shapes (per-entry
+// create errors, the deletes segment) have no TS counterpart; their wording
+// is this codebase's own.
+func wireText(out *TasksOutput) string {
+	var segments []string
+
+	if len(out.Created) > 0 {
+		lines := make([]string, 0, len(out.Created))
+		for _, c := range out.Created {
+			if c.Error != "" {
+				lines = append(lines, fmt.Sprintf("Failed to create task \"%s\": %s", c.Subject, c.Error))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("Task #%s created successfully: %s", c.ID, c.Subject))
+		}
+		segments = append(segments, strings.Join(lines, "\n"))
+	}
+
+	if len(out.Updated) > 0 {
+		lines := make([]string, 0, len(out.Updated))
+		for _, u := range out.Updated {
+			if !u.Success {
+				// Failure rides the normal result so a missing task does not
+				// cancel sibling tools (TaskUpdateTool.ts:373-382).
+				if u.Error != "" {
+					lines = append(lines, u.Error)
+				} else {
+					lines = append(lines, fmt.Sprintf("Task #%s not found", u.TaskID))
+				}
+				continue
+			}
+			// Empty updatedFields keeps the trailing space — the TS template
+			// literal renders "Updated task #5 " verbatim (:384).
+			lines = append(lines, fmt.Sprintf("Updated task #%s %s", u.TaskID, strings.Join(u.UpdatedFields, ", ")))
+		}
+		segments = append(segments, strings.Join(lines, "\n"))
+	}
+
+	if len(out.Deleted) > 0 {
+		lines := make([]string, 0, len(out.Deleted))
+		for _, d := range out.Deleted {
+			if d.Success {
+				lines = append(lines, fmt.Sprintf("Deleted task #%s", d.ID))
+			} else {
+				lines = append(lines, fmt.Sprintf("Failed to delete task #%s: %s", d.ID, d.Error))
+			}
+		}
+		segments = append(segments, strings.Join(lines, "\n"))
+	}
+
+	if out.Get != nil {
+		if out.Get.Task == nil {
+			segments = append(segments, "Task not found")
+		} else {
+			g := out.Get.Task
+			lines := []string{
+				fmt.Sprintf("Task #%s: %s", g.ID, g.Subject),
+				fmt.Sprintf("Status: %s", g.Status),
+				fmt.Sprintf("Description: %s", g.Description),
+			}
+			if len(g.BlockedBy) > 0 {
+				lines = append(lines, "Blocked by: "+prefixedIDs(g.BlockedBy))
+			}
+			if len(g.Blocks) > 0 {
+				lines = append(lines, "Blocks: "+prefixedIDs(g.Blocks))
+			}
+			segments = append(segments, strings.Join(lines, "\n"))
+		}
+	}
+
+	if out.List != nil {
+		if len(out.List.Tasks) == 0 {
+			segments = append(segments, "No tasks found")
+		} else {
+			lines := make([]string, 0, len(out.List.Tasks))
+			for _, tl := range out.List.Tasks {
+				owner := ""
+				if tl.Owner != "" {
+					owner = fmt.Sprintf(" (%s)", tl.Owner)
+				}
+				blocked := ""
+				if len(tl.BlockedBy) > 0 {
+					blocked = fmt.Sprintf(" [blocked by %s]", prefixedIDs(tl.BlockedBy))
+				}
+				lines = append(lines, fmt.Sprintf("#%s [%s] %s%s%s", tl.ID, tl.Status, tl.Subject, owner, blocked))
+			}
+			segments = append(segments, strings.Join(lines, "\n"))
+		}
+	}
+
+	return strings.Join(segments, "\n\n")
+}
+
+// prefixedIDs renders ["1","2"] as "#1, #2" — the TS `#${id}` join(', ').
+func prefixedIDs(ids []string) string {
+	prefixed := make([]string, len(ids))
+	for i, id := range ids {
+		prefixed[i] = "#" + id
+	}
+	return strings.Join(prefixed, ", ")
 }
 
 func tasksDescription(list *List, input json.RawMessage) (string, error) {

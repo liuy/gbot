@@ -11,6 +11,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func init() {
@@ -135,7 +136,31 @@ func New() tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero Output (unknown fields ignored), which replay would
+			// render as an empty diff instead of falling back to the wire
+			// text. Uniform rule across wire-plaintext tools.
+			if o.FilePath == "" {
+				return nil, fmt.Errorf("edit: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// Source: FileEditTool.ts:575-594 — one-line confirmation; the
+			// diff is deliberately absent (TS keeps it only in the local
+			// transcript, which gbot does not store). gbot has no
+			// userModified field, so the modifiedNote is always empty.
+			if out.ReplaceAll {
+				return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf(
+					"The file %s has been updated. All occurrences were successfully replaced.", out.FilePath))}
+			}
+			return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf(
+				"The file %s has been updated successfully.", out.FilePath))}
 		},
 	})
 }

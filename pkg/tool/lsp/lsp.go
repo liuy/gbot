@@ -17,6 +17,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // readonlyActions lists actions that don't mutate workspace or server state.
@@ -124,13 +125,25 @@ func New(reg *lsp.Registry) tool.Tool {
 			if err != nil {
 				return nil, err
 			}
-			// LSP's result type is string; FormatWireBlocksOrDefault JSON-encodes
-			// it, so the wire text is itself a JSON-encoded string. Unwrap once more.
+			// Wire history: pre-plaintext sessions stored json.Marshal(string),
+			// so the wire text is itself a JSON string literal — unwrap once
+			// more for those. New wires carry the raw result; a raw result
+			// that happens to be a valid JSON string literal loses one layer
+			// of quotes (accepted ambiguity, same tradeoff as Repl).
 			var s string
 			if json.Unmarshal([]byte(text), &s) == nil {
 				return s, nil
 			}
 			return text, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			// Source: LSPTool.ts:415-421 — wire content is output.result;
+			// every action handler returns Data as that result string.
+			if v, ok := data.(string); ok {
+				return []types.ContentBlock{types.NewTextBlock(v)}
+			}
+			raw, _ := json.Marshal(data)
+			return []types.ContentBlock{types.NewTextBlock(string(raw))}
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
 			var in Input

@@ -16,6 +16,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/web/scrapers"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 const defaultLimit = 10
@@ -132,7 +133,26 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &o); err != nil {
 				return nil, err
 			}
+			// Wire text that is a bare JSON object (fetching a raw API
+			// endpoint without markdown conversion) decodes into an
+			// all-zero Output, which replay would render as empty instead
+			// of falling back to the wire text — same false-positive class
+			// the other wire-plaintext tools guard against.
+			if o.Mode == "" && o.Content == "" {
+				return nil, fmt.Errorf("web: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &o, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			out, ok := data.(*Output)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// Source: WebFetchTool.ts:300-306 — wire content is the processed
+			// result string verbatim; Content already holds the LLM-ready text
+			// from formatForLLM/BuildResult for both modes of the merged tool.
+			return []types.ContentBlock{types.NewTextBlock(out.Content)}
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}

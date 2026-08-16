@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // FileSender is implemented by connectors that can deliver a local file.
@@ -104,7 +105,24 @@ func New(sender FileSender) tool.Tool {
 			if err := json.Unmarshal([]byte(text), &s); err != nil {
 				return nil, err
 			}
+			// Wire text that happens to be a JSON object decodes into an
+			// all-zero SendResult (unknown fields ignored), which replay
+			// would render as "Sent" instead of falling back to the wire
+			// text. Uniform rule across wire-plaintext tools.
+			if s.FilePath == "" && s.Status == "" {
+				return nil, fmt.Errorf("send: decoded output lacks identifying fields (not a legacy JSON result)")
+			}
 			return &s, nil
+		},
+		FormatWireBlocks_: func(data any) []types.ContentBlock {
+			s, ok := data.(*SendResult)
+			if !ok {
+				raw, _ := json.Marshal(data)
+				return []types.ContentBlock{types.NewTextBlock(string(raw))}
+			}
+			// One-line confirmation (plan D7) — only the delivered path is
+			// the LLM's concern.
+			return []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("File sent: %s", s.FilePath))}
 		},
 	})
 }
