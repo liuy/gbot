@@ -2208,6 +2208,17 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 		c.sendWS(buildError(err))
 		return
 	}
+	// Persist the selection like the TUI picker does (vs.ActiveSessionID +
+	// persistWorkspaceMeta) so a restart resumes the switched-to session
+	// instead of reverting to the last persisted one.
+	if c.mgr != nil {
+		if vs := c.mgr.Active(); vs != nil {
+			vs.ActiveSessionID = sessionID
+		}
+		if err := c.mgr.PersistMeta(eng.ProjectDir()); err != nil {
+			slog.Warn("wui:session switch:PersistMeta failed", "error", err)
+		}
+	}
 	slot := c.activeSlot()
 	if slot == nil {
 		return
@@ -2227,6 +2238,16 @@ func (c *WUIConnector) handleSessionNew() {
 	if _, err := eng.NewSession(); err != nil {
 		c.sendWS(buildError(err))
 		return
+	}
+	// Persist the new session like the TUI /session -n path does, so a
+	// restart resumes into it instead of the previous one.
+	if c.mgr != nil {
+		if vs := c.mgr.Active(); vs != nil {
+			vs.ActiveSessionID = eng.SessionID()
+		}
+		if err := c.mgr.PersistMeta(eng.ProjectDir()); err != nil {
+			slog.Warn("wui:session new:PersistMeta failed", "error", err)
+		}
 	}
 	slot := c.activeSlot()
 	if slot == nil {

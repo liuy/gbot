@@ -3532,9 +3532,17 @@ func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Restore persisted usage before taking the lock (DB call): the context
+	// meter and auto-compact thresholds must reflect the target session, not
+	// the one being left. ResumeOrInitSession does the same on startup.
+	var ctxTokens int
+	if ses, err := e.store.GetSession(sessionID); err == nil && ses.ContextTokens > 0 {
+		ctxTokens = ses.ContextTokens
+	}
 	e.mu.Lock()
 	e.messages = engineMsgs
 	e.sessionID = sessionID
+	e.ContextTokens = ctxTokens
 	e.markAllPersisted()
 	e.forkParentUUID = ""
 	e.setTaskDirForSession(sessionID)
