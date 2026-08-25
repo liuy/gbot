@@ -16,8 +16,9 @@ import (
 
 // createDBWithClosedWriter builds a database via a separate writer process
 // that is then SIGKILLed — the worst-case on-disk state a reader can face.
-// With journal_mode=DELETE there are no -wal/-shm sidecars whose lifecycle
-// can race the reader; rollback journal (-journal) only exists mid-transaction.
+// In WAL mode the kill leaves -wal/-shm behind with committed frames, which
+// is exactly the historical "disk I/O error (522)" trigger: a stale sidecar
+// pair with no live writer.
 func createDBWithClosedWriter(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -65,7 +66,7 @@ func TestHelper_WriterProcess(t *testing.T) {
 	}
 	dbPath := os.Getenv("WRITER_DB_PATH")
 	// Mirror pkg/memory/short's DSN pragmas; journal_mode matches store.go.
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(ON)&_txlock=immediate")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_txlock=immediate")
 	if err != nil {
 		os.Exit(2)
 	}
@@ -85,11 +86,9 @@ func TestHelper_WriterProcess(t *testing.T) {
 }
 
 // TestExecuteSqlite_ReadAfterWriterKill verifies the Read tool can read a
-// database whose writer process was killed without cleanup. This is the
-// regression guard for the WAL-era bug where a live -wal with a missing -shm
-// made every mode=ro open fail with "disk I/O error (522)": with
-// journal_mode=DELETE there are no sidecar files to race, so the read path
-// must be deterministic regardless of how the writer stopped.
+// WAL-mode database whose writer process was SIGKILLed — committed frames
+// sit in an orphaned -wal with a stale -shm. This was the historical
+// "disk I/O error (522)" shape; the mode=ro open must recover it readably.
 func TestExecuteSqlite_ReadAfterWriterKill(t *testing.T) {
 	dbPath := createDBWithClosedWriter(t)
 
@@ -107,17 +106,16 @@ func TestExecuteSqlite_ReadAfterWriterKill(t *testing.T) {
 	}
 }
 
-// TestExecuteSqlite_NoSidecarFilesAfterCommit asserts the on-disk invariant
-// that removes the 522 bug class: outside a transaction there must be no
-// -wal, -shm, or -journal file next to the database. A WAL-mode regression
-// (journal_mode leaking back into the store DSN) would leave -wal/-shm here.
-func TestExecuteSqlite_NoSidecarFilesAfterCommit(t *testing.T) {
+// TestExecuteSqlite_NoJournalFileAfterCommit guards against a different
+// regression class than the WAL-era sidecar check: a rollback -journal must
+// never survive committed transactions (it would mean a torn transaction
+// state), regardless of journal mode. The -wal/-shm pair is EXPECTED in WAL
+// mode after a kill and is covered by the recovery test above.
+func TestExecuteSqlite_NoJournalFileAfterCommit(t *testing.T) {
 	dbPath := createDBWithClosedWriter(t)
 
-	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if _, err := os.Stat(dbPath + suffix); err == nil {
-			t.Errorf("sidecar %s exists after committed transactions; journal_mode must be DELETE, not WAL", dbPath+suffix)
-		}
+	if _, err := os.Stat(dbPath + "-journal"); err == nil {
+		t.Errorf("rollback journal %s exists after committed transactions", dbPath+"-journal")
 	}
 }
 
