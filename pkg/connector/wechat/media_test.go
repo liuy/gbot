@@ -132,7 +132,12 @@ func TestDownloadMedia_Image(t *testing.T) {
 func TestDownloadMedia_File(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
-	plaintext := []byte("%PDF-1.4 fake pdf bytes")
+	// Plain text payload: this test exercises the download→decrypt→store→
+	// read-back chain, not the PDF parser (markitdown has its own PDF tests).
+	// A .pdf payload drags in the PDFium WASM pipeline whose pool init costs
+	// 30s+ under the race detector for a parse that is doomed to fail on
+	// synthetic bytes.
+	plaintext := []byte("plain document body for the file download chain")
 	ciphertext := encryptAesEcbForMediaTest(plaintext, key)
 	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
 
@@ -144,23 +149,23 @@ func TestDownloadMedia_File(t *testing.T) {
 	c, _ := newMediaTestConnector(t)
 	items := []Item{
 		{Type: ItemFile, FileItem: &FileItem{
-			FileName: "report.pdf",
+			FileName: "report.txt",
 			Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
 		}},
 	}
 	block := c.downloadMedia(context.Background(), items)
-	// Documents become a TEXT block containing either parsed content
-	// or a fallback path hint (when the Read tool cannot parse the format).
+	// Documents become a TEXT block whose content includes the parsed body.
 	if block.Type != types.ContentTypeText {
 		t.Fatalf("block.Type = %q, want text", block.Type)
 	}
-	if !strings.Contains(block.Text, "report.pdf") {
+	if !strings.Contains(block.Text, "report.txt") {
 		t.Errorf("Text = %q, want it to contain the file name", block.Text)
 	}
-	// The block must reference the document either as parsed content
-	// ("[Document:") or as a path fallback ("[Document attachment:").
 	if !strings.Contains(block.Text, "[Document") {
 		t.Errorf("Text = %q, want '[Document' marker", block.Text)
+	}
+	if !strings.Contains(block.Text, string(plaintext)) {
+		t.Errorf("Text = %q, want the decrypted document body inside", block.Text)
 	}
 }
 

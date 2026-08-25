@@ -516,13 +516,10 @@ func TestExecute_ImageEmpty(t *testing.T) {
 func TestExecute_ImageResizedWhenOversized(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// Create a 3000x3000 image (exceeds 2000x2000 max)
-	img := image.NewRGBA(image.Rect(0, 0, 3000, 3000))
-	for y := range 3000 {
-		for x := range 3000 {
-			img.SetRGBA(x, y, color.RGBA{255, 0, 0, 255})
-		}
-	}
+	// Create a 2001x2001 image (minimally exceeds the 2000x2000 cap; smaller
+	// fixtures kept this suite fast under the race detector). NewRGBA's zero
+	// value is already a uniform-color image — no pixel fill loop needed.
+	img := image.NewRGBA(image.Rect(0, 0, 2001, 2001))
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
 		t.Fatal(err)
@@ -541,9 +538,9 @@ func TestExecute_ImageResizedWhenOversized(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want ImageOutput", result.Data)
 	}
-	// Original dimensions should be 3000x3000
-	if imgOut.OriginalWidth != 3000 || imgOut.OriginalHeight != 3000 {
-		t.Errorf("Original dimensions = %dx%d, want 3000x3000", imgOut.OriginalWidth, imgOut.OriginalHeight)
+	// Original dimensions should be 2001x2001
+	if imgOut.OriginalWidth != 2001 || imgOut.OriginalHeight != 2001 {
+		t.Errorf("Original dimensions = %dx%d, want 2001x2001", imgOut.OriginalWidth, imgOut.OriginalHeight)
 	}
 	// Display dimensions should be <= 2000x2000 (resized)
 	if imgOut.DisplayWidth > 2000 || imgOut.DisplayHeight > 2000 {
@@ -604,9 +601,10 @@ func TestExecute_ImageNewMessagesIsEmpty(t *testing.T) {
 		t.Fatalf("NewMessages len = %d, want 0 (image moved to FormatWireBlocks)", len(result.NewMessages))
 	}
 
-	// Also verify the oversized/resized path drops NewMessages. 2500x2500 RGBA
-	// PNG exceeds the 2000x2000 resize threshold while keeping test memory small.
-	big := image.NewRGBA(image.Rect(0, 0, 2500, 2500))
+	// Also verify the oversized/resized path drops NewMessages. 2001x2001 RGBA
+	// PNG minimally exceeds the 2000x2000 resize threshold — 2500x2500 made
+	// this test the slowest in the suite under the race detector.
+	big := image.NewRGBA(image.Rect(0, 0, 2001, 2001))
 	var bigBuf bytes.Buffer
 	if err := png.Encode(&bigBuf, big); err != nil {
 		t.Fatal(err)

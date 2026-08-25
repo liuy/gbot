@@ -52,7 +52,7 @@ func TestIntegration_ExecuteLargeOutput_SpillsToDisk(t *testing.T) {
 	t.Parallel()
 
 	// awk generates 200K padded lines (~10MB) — exceeds 8MB spillThreshold
-	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=200000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
+	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=165000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
 	result, err := Execute(context.Background(), raw, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
@@ -130,7 +130,7 @@ func TestIntegration_ExecuteProgressDuringSpill(t *testing.T) {
 		},
 	}
 
-	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=200000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
+	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=165000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
 	result, err := Execute(context.Background(), raw, tctx)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
@@ -149,8 +149,8 @@ func TestIntegration_ExecuteProgressDuringSpill(t *testing.T) {
 	if lastProgress.TotalBytes < spillThreshold {
 		t.Errorf("TotalBytes = %d, should be >= %d (spillThreshold)", lastProgress.TotalBytes, spillThreshold)
 	}
-	if lastProgress.TotalLines < 100000 {
-		t.Errorf("TotalLines = %d, should be > 100K", lastProgress.TotalLines)
+	if lastProgress.TotalLines < 165000 {
+		t.Errorf("TotalLines = %d, should be >= 165000 (all generated lines)", lastProgress.TotalLines)
 	}
 	// Last lines should contain recent output
 	if len(lastProgress.Lines) == 0 {
@@ -180,7 +180,7 @@ func TestIntegration_NoTempFilesLeaked(t *testing.T) {
 	}
 
 	// Run a large command that spills
-	raw = json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=200000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
+	raw = json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=165000;i++) printf \"%050d\\n\",i}'", "timeout": 60000}`)
 	_, err = Execute(context.Background(), raw, nil)
 	if err != nil {
 		t.Fatalf("Execute() large error: %v", err)
@@ -201,7 +201,7 @@ func TestIntegration_ExitCodePreservedAfterSpill(t *testing.T) {
 	t.Parallel()
 
 	// Command that generates large output AND exits non-zero
-	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=200000;i++) printf \"%050d\\n\",i}'; exit 42", "timeout": 60000}`)
+	raw := json.RawMessage(`{"command": "awk 'BEGIN{for(i=1;i<=165000;i++) printf \"%050d\\n\",i}'; exit 42", "timeout": 60000}`)
 	result, err := Execute(context.Background(), raw, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)

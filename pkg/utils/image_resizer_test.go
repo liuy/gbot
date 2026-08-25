@@ -46,10 +46,12 @@ func encodeGIF(t *testing.T, img image.Image) []byte {
 
 func solidRGBA(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	// Fill one row of raw pixel bytes and copy it down each stride — the
+	// per-pixel SetRGBA loop made big fixtures cost seconds under the race
+	// detector; this is the same bytes, written linearly.
+	row := bytes.Repeat([]byte{c.R, c.G, c.B, c.A}, w)
 	for y := range h {
-		for x := range w {
-			img.SetRGBA(x, y, c)
-		}
+		copy(img.Pix[y*img.Stride:y*img.Stride+len(row)], row)
 	}
 	return img
 }
@@ -72,10 +74,9 @@ func noiseRGBA(w, h int, seed int64) *image.RGBA {
 			}
 			yEnd := min(by+block, h)
 			xEnd := min(bx+block, w)
+			row := bytes.Repeat([]byte{c.R, c.G, c.B, c.A}, xEnd-bx)
 			for y := by; y < yEnd; y++ {
-				for x := bx; x < xEnd; x++ {
-					img.SetRGBA(x, y, c)
-				}
+				copy(img.Pix[y*img.Stride+bx*4:y*img.Stride+xEnd*4], row)
 			}
 		}
 	}
@@ -291,13 +292,13 @@ func TestMaybeResize_DimensionOKSizeOverJpegFallback(t *testing.T) {
 
 // --- 9. DimensionOverNoCompressionNeeded ---
 //
-// Dimensions over cap (2500x2500) but bytes under cap (solid-color PNG is
+// Dimensions over cap (2001x2001) but bytes under cap (solid-color PNG is
 // tiny): resize path produces a 2000x2000 PNG that fits without further
 // compression.
 
 func TestMaybeResize_DimensionOverNoCompressionNeeded(t *testing.T) {
 	t.Parallel()
-	img := solidRGBA(2500, 2500, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+	img := solidRGBA(2001, 2001, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 	buf := encodePNG(t, img)
 	res, err := MaybeResizeAndDownsampleImageBuffer(buf, len(buf), "png")
 	if err != nil {
@@ -310,8 +311,8 @@ func TestMaybeResize_DimensionOverNoCompressionNeeded(t *testing.T) {
 	if w != 2000 || h != 2000 {
 		t.Errorf("decoded dims = %dx%d, want 2000x2000", w, h)
 	}
-	if res.Dimensions.OriginalWidth != 2500 || res.Dimensions.OriginalHeight != 2500 {
-		t.Errorf("Original = %dx%d, want 2500x2500",
+	if res.Dimensions.OriginalWidth != 2001 || res.Dimensions.OriginalHeight != 2001 {
+		t.Errorf("Original = %dx%d, want 2001x2001",
 			res.Dimensions.OriginalWidth, res.Dimensions.OriginalHeight)
 	}
 	if res.Dimensions.DisplayWidth != 2000 || res.Dimensions.DisplayHeight != 2000 {
@@ -327,7 +328,7 @@ func TestMaybeResize_DimensionOverNoCompressionNeeded(t *testing.T) {
 
 func TestMaybeResize_DimensionOverPngPostResize(t *testing.T) {
 	t.Parallel()
-	img := noiseRGBA(2500, 2500, 7)
+	img := noiseRGBA(2001, 2001, 7)
 	buf := encodePNG(t, img)
 	res, err := MaybeResizeAndDownsampleImageBuffer(buf, len(buf), "png")
 	if err != nil {
@@ -342,8 +343,8 @@ func TestMaybeResize_DimensionOverPngPostResize(t *testing.T) {
 	if w > ImageMaxWidth || h > ImageMaxHeight {
 		t.Errorf("decoded dims = %dx%d, must be <= %dx%d", w, h, ImageMaxWidth, ImageMaxHeight)
 	}
-	if res.Dimensions.OriginalWidth != 2500 {
-		t.Errorf("Original width = %d, want 2500", res.Dimensions.OriginalWidth)
+	if res.Dimensions.OriginalWidth != 2001 {
+		t.Errorf("Original width = %d, want 2001", res.Dimensions.OriginalWidth)
 	}
 }
 
@@ -532,7 +533,7 @@ func TestMaybeResize_SizeExactlyAtCap(t *testing.T) {
 func TestMaybeResize_Concurrent(t *testing.T) {
 	t.Parallel()
 	img1 := solidRGBA(800, 800, color.RGBA{R: 10, G: 20, B: 30, A: 255})
-	img2 := noiseRGBA(2500, 2500, 99)
+	img2 := noiseRGBA(2001, 2001, 99)
 	buf1 := encodePNG(t, img1)
 	buf2 := encodePNG(t, img2)
 	var wg sync.WaitGroup

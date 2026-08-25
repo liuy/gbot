@@ -811,13 +811,10 @@ func TestRenderResult_ImageOutputValue(t *testing.T) {
 func TestExecute_ImageResizedJpeg(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// Create a 3000x3000 JPEG image (exceeds 2000x2000 max) to test jpeg resize path
-	img := image.NewRGBA(image.Rect(0, 0, 3000, 3000))
-	for y := range 3000 {
-		for x := range 3000 {
-			img.SetRGBA(x, y, color.RGBA{255, 128, 0, 255})
-		}
-	}
+	// Create a 2001x2001 JPEG image (minimally exceeds the 2000x2000 cap;
+	// smaller fixtures keep this suite fast under the race detector).
+	// NewRGBA's zero value is a uniform image — no pixel fill loop needed.
+	img := image.NewRGBA(image.Rect(0, 0, 2001, 2001))
 	// Encode as JPEG
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
@@ -837,9 +834,9 @@ func TestExecute_ImageResizedJpeg(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want ImageOutput", result.Data)
 	}
-	// Original should be 3000x3000
-	if imgOut.OriginalWidth != 3000 || imgOut.OriginalHeight != 3000 {
-		t.Errorf("Original = %dx%d, want 3000x3000", imgOut.OriginalWidth, imgOut.OriginalHeight)
+	// Original should be 2001x2001
+	if imgOut.OriginalWidth != 2001 || imgOut.OriginalHeight != 2001 {
+		t.Errorf("Original = %dx%d, want 2001x2001", imgOut.OriginalWidth, imgOut.OriginalHeight)
 	}
 	// Display should be resized to <= 2000x2000
 	if imgOut.DisplayWidth > 2000 || imgOut.DisplayHeight > 2000 {

@@ -60,11 +60,11 @@ debug: build-debug
 
 test:
 ifeq ($(shell go env GOARCH),arm64)
-	go test $(PKG) ./cmd/... -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./cmd/... -count=1 -timeout 180s -coverprofile=coverage.out
 else
-	go test $(PKG) ./cmd/... -race -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./cmd/... -race -count=1 -timeout 180s -coverprofile=coverage.out
 endif
-	go test ./test/ -count=1 -timeout 120s
+	go test ./test/ -count=1 -timeout 180s
 	cd web/ui && npm test
 	@echo ""
 	@echo "Coverage:"
