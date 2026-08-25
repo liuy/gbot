@@ -10,12 +10,26 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/liuy/gbot/pkg/app"
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/connector/wechat"
 	"github.com/liuy/gbot/pkg/project"
 )
+
+// Android's time.initLocal() is a stub that hardcodes time.Local to UTC and
+// ignores $TZ (golang/go#20455). When the host passes an explicit TZ (the
+// Android app does, from TimeZone.getDefault()), set time.Local from it. On
+// other platforms the standard initLocal already handles this and TZ is
+// typically unset, so this is a no-op there.
+func init() {
+	if tz := os.Getenv("TZ"); tz != "" && tz != "UTC" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			time.Local = loc
+		}
+	}
+}
 
 func main() {
 	opts := app.ParseFlags(os.Args[1:])

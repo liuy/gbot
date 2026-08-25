@@ -69,6 +69,9 @@ object GbotProcess {
                 put("TMPDIR", "$prefixDir/tmp")
                 put("PREFIX", "$prefixDir")
                 put("GODEBUG", "netdns=cgo")
+                // Go's time.initLocal() is a UTC stub on Android (golang/go#20455);
+                // pass the system timezone so gbot can set time.Local from it.
+                put("TZ", java.util.TimeZone.getDefault().id)
             }
 
             process = pb.start()
