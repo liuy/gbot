@@ -3905,11 +3905,10 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
 		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
 		slowCh <- llm.StreamEvent{Type: "message_stop"}
-		// Cancel after streaming completes but before tools execute.
-		// Need a short delay because the buffered channel allows instant sends --
-		// the engine needs wall-clock time to drain the channel and process message_stop.
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
-
+		// Cancel after streaming completes but before tools execute. EventUsage
+		// fires while processing message_delta — the last observable signal
+		// before the stream loop ends; a fixed sleep raced the consumer.
+		tc.WaitForEventCount(types.EventUsage, 1, 5*time.Second) // REAL-TIME
 		cancel()
 	}()
 
@@ -4048,7 +4047,9 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
 		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// No message_stop follows — cancel lands mid-stream. EventUsage proves
+		// the engine consumed message_delta; a fixed sleep raced the consumer.
+		tc.WaitForEventCount(types.EventUsage, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4105,7 +4106,9 @@ func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
 
 	go func() {
 		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// No content events follow — wait for the turn to visibly start before
+		// cancelling; a fixed sleep raced the consumer.
+		tc.WaitForEventCount(types.EventTurnStart, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4149,7 +4152,9 @@ func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// Both deltas must reach the accumulator before cancel — the partial
+		// assistant message assertion below needs "Hello"/"wor" present.
+		tc.WaitForEventCount(types.EventTextDelta, 2, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4222,7 +4227,9 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// ToolRun fires when content_block_stop is processed (tool registered,
+		// execution still far away) — cancel lands mid-stream as intended.
+		tc.WaitForEventCount(types.EventToolRun, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4300,7 +4307,9 @@ func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// First response is an API error — no text/tool events ever fire. Wait
+		// for the query to visibly start before cancelling.
+		tc.WaitForEventCount(types.EventQueryStart, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4466,7 +4475,9 @@ func TestInlineInterrupt_PostStreamingAbort_Text(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "world"}}
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// Interrupt message is appended to a partial assistant message that
+		// must contain both deltas.
+		tc.WaitForEventCount(types.EventTextDelta, 2, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4506,8 +4517,9 @@ func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 1}
 		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
 		slowCh <- llm.StreamEvent{Type: "message_stop"}
-		// Cancel after streaming completes but before tools execute
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// Cancel after streaming completes but before tools execute. EventUsage
+		// is the last observable pre-loop-exit signal.
+		tc.WaitForEventCount(types.EventUsage, 1, 5*time.Second) // REAL-TIME
 		cancel()
 	}()
 
@@ -4579,7 +4591,9 @@ func TestInlineInterrupt_ReactiveCompactAbort_NoInterruptMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// First response is an API error — no text/tool events ever fire. Wait
+		// for the query to visibly start before cancelling.
+		tc.WaitForEventCount(types.EventQueryStart, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -4830,7 +4844,9 @@ func TestAppendInlineInterrupt_ReactiveCompactAbort_NoEmit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+		// First response is an API error — no text/tool events ever fire. Wait
+		// for the query to visibly start before cancelling.
+		tc.WaitForEventCount(types.EventQueryStart, 1, 5*time.Second) // REAL-TIME
 		cancel()
 		close(ch)
 	}()
@@ -7393,12 +7409,17 @@ func TestCallLLM_CtxCancel_ClosesOpenBlocks(t *testing.T) {
 				for _, evt := range tt.events {
 					ch <- evt
 				}
-				// Wait until the engine has consumed all buffered events from
-				// the channel, then cancel. On cancel, emitCloseEventsForOpenBlocks
-				// fires the close events for any open blocks.
-				for len(ch) > 0 {
-					runtime.Gosched()
+				// The start event proves the engine consumed content_block_start
+				// and the open block exists, so emitCloseEventsForOpenBlocks has
+				// something to close. Spinning on len(ch) raced the consumer.
+				startEvt := types.EventTextStart
+				switch tt.name {
+				case "thinking":
+					startEvt = types.EventThinkingStart
+				case "tool_use":
+					startEvt = types.EventToolStart
 				}
+				tc.WaitForEventCount(startEvt, 1, 5*time.Second) // REAL-TIME
 				cancel()
 			}()
 

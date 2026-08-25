@@ -3127,6 +3127,23 @@ func TestNormalizeOAuthErrorBody_NonStandardWithEmptyDescription(t *testing.T) {
 
 // --- PerformMCPOAuthFlow: callback with OAuth error (line 488-494) ---
 
+// tryGetUntil retries a GET against a just-started local callback server
+// until it responds or the timeout fires — OnAuthURL can be emitted before
+// the listener is accepting, so a single GET races connection-refused.
+func tryGetUntil(url string, timeout time.Duration) (*http.Response, error) {
+	deadline := time.Now().Add(timeout) // REAL-TIME
+	var resp *http.Response
+	var err error
+	for time.Now().Before(deadline) { // REAL-TIME
+		resp, err = http.Get(url)
+		if err == nil {
+			return resp, nil
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME
+	}
+	return resp, err
+}
+
 func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -3161,7 +3178,9 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 
 	<-serverReady
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?error=access_denied&error_description=User+denied+access", port))
+	// OnAuthURL can fire before the callback server's listener is accepting —
+	// retry briefly instead of failing on connection-refused.
+	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?error=access_denied&error_description=User+denied+access", port), 2*time.Second) // REAL-TIME
 	if err != nil {
 		t.Fatalf("callback GET failed: %v", err)
 	}
@@ -3215,7 +3234,7 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 
 	<-serverReady
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?code=some-code&state=wrong-state", port))
+	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?code=some-code&state=wrong-state", port), 2*time.Second) // REAL-TIME
 	if err != nil {
 		t.Fatalf("callback GET failed: %v", err)
 	}
@@ -4458,7 +4477,7 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 	// We don't know the generated state, so we can't send a valid code.
 	// Instead, test by sending a callback that triggers the code path.
 	// We'll get a state mismatch, which exercises most of the flow.
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?code=auth-code-123&state=wrong", port))
+	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?code=auth-code-123&state=wrong", port), 2*time.Second) // REAL-TIME
 	if err != nil {
 		t.Fatalf("callback GET failed: %v", err)
 	}

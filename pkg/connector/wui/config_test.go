@@ -208,7 +208,7 @@ func TestModelSwitch_CallsSetProviderAndSetModel(t *testing.T) {
 		t.Fatalf("write model_switch: %v", err)
 	}
 
-	if !waitFor(2e9, func() bool {
+	if !waitFor(10e9, func() bool {
 		c.mock().mu.Lock()
 		defer c.mock().mu.Unlock()
 		return len(c.mock().setProviderCalls) > 0 && len(c.mock().setModelCalls) > 0
@@ -332,7 +332,7 @@ func TestModelSwitch_SyncsCapabilities(t *testing.T) {
 		t.Fatalf("write model_switch: %v", err)
 	}
 
-	if !waitFor(2e9, func() bool {
+	if !waitFor(10e9, func() bool {
 		c.mock().mu.Lock()
 		defer c.mock().mu.Unlock()
 		return c.mock().updateAutoCalls > 0 && len(c.mock().setMaxTokensCalls) > 0

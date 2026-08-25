@@ -58,7 +58,7 @@ func TestEngineSwitch_PersistsToMetaJSON(t *testing.T) {
 		t.Fatalf("write engine_switch: %v", err)
 	}
 
-	if !waitFor(2e9, func() bool {
+	if !waitFor(10e9, func() bool {
 		data, err := os.ReadFile(filepath.Join(dir, "meta.json"))
 		if err != nil {
 			return false

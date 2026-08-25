@@ -218,8 +218,12 @@ func TestTimeoutReader_DisabledDeadline(t *testing.T) {
 	srv, cleanup := newStallSSEServer(t)
 	defer cleanup()
 
-	// Context with 100ms deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Cancel-based instead of a timed deadline: the original 100ms window
+	// raced parallel CI runs (the Do/drain phase could exhaust it, flipping
+	// the failure mode). Cancelling AFTER the connection is established and
+	// drained is deterministic — the assertion (cancelled ctx surfaces as an
+	// error from Read) is unchanged.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL, nil)
@@ -233,14 +237,18 @@ func TestTimeoutReader_DisabledDeadline(t *testing.T) {
 	}
 
 	drainOne(t, resp)
+	cancel()
 
 	tr := &timeoutReader{reader: resp.Body, timeout: time.Minute, ctx: ctx}
 	tr.SetTimeoutDisabled(true)
 
 	buf := make([]byte, 512)
 	_, err = tr.Read(buf)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Read returned %v, want context.DeadlineExceeded — timeoutReader ignored ctx.Done() when disabled", err)
+	// Cancel-based: ctx.Err() is context.Canceled (the deadline variant
+	// would be DeadlineExceeded) — both prove the disabled reader honors
+	// ctx.Done().
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("Read returned %v, want context.Canceled — timeoutReader ignored ctx.Done() when disabled", err)
 	}
 }
 

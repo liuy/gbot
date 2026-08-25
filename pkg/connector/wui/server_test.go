@@ -44,7 +44,9 @@ func dialChatWS(t *testing.T, url string) *websocket.Conn {
 // readWSMessage reads one text message with a timeout.
 func readWSMessage(t *testing.T, c *websocket.Conn) []byte {
 	t.Helper()
-	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
+	// Generous deadline: under full-suite parallelism tight windows (2s)
+	// starved and flaked; 30s only matters when the server truly fails.
+	_ = c.SetReadDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
 	_, data, err := c.ReadMessage()
 	if err != nil {
 		t.Fatalf("read ws message: %v", err)

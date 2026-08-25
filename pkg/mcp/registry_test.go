@@ -1662,19 +1662,43 @@ func TestRegistry_ConnectAll_NeedsAuthResult(t *testing.T) {
 // Source: client.ts:2388-2402 — processBatched with local/remote concurrency
 // ---------------------------------------------------------------------------
 
-// slowProvider wraps inMemoryProvider and sleeps before each transport creation.
+// slowProvider wraps inMemoryProvider and sleeps before each transport
+// creation, tracking how many calls are in flight simultaneously.
 type slowProvider struct {
 	*inMemoryProvider
 	delay time.Duration
+	mu    sync.Mutex
+	cur   int
+	max   int
 }
 
 func (p *slowProvider) NewTransport(name string, cfg McpServerConfig, scope ConfigScope, trusted bool) (mcp.Transport, error) {
-	time.Sleep(p.delay) // REAL-TIME: simulating network latency in mock provider
+	p.mu.Lock()
+	p.cur++
+	if p.cur > p.max {
+		p.max = p.cur
+	}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.cur--
+		p.mu.Unlock()
+	}()
+	time.Sleep(p.delay) // REAL-TIME: rendezvous window letting all 5 calls overlap
 	return p.inMemoryProvider.NewTransport(name, cfg, scope, trusted)
 }
 
+func (p *slowProvider) getMaxConcurrent() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.max
+}
+
 func TestConnectAll_ConcurrentExecution(t *testing.T) {
-	// 5 servers with 50ms each — sequential would be 250ms, concurrent should be <150ms
+	// Deterministic concurrency assertion: count overlapping NewTransport
+	// calls instead of racing wall-clock thresholds (<150ms) that flaked on
+	// loaded CI runs. With batch=20 all 5 servers connect in parallel, so the
+	// in-flight counter must reach 5; sequential execution would leave it at 1.
 	p := newInMemoryProvider()
 
 	// Pre-register server transports so ConnectToServer succeeds
@@ -1700,20 +1724,17 @@ func TestConnectAll_ConcurrentExecution(t *testing.T) {
 		}
 	}
 
-	start := time.Now() // REAL-TIME: unique persist ID
 	results := r.ConnectAll(context.Background(), configs)
-	elapsed := time.Since(start)
 
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
 
-	// With remote batch=20, all 5 should run concurrently: ~50ms total
-	// Sequential would be ~250ms. Use 150ms as threshold.
-	if elapsed > 150*time.Millisecond {
-		t.Errorf("expected concurrent execution (<150ms), took %v", elapsed)
+	// With remote batch=20, all 5 connect in parallel — the in-flight counter
+	// must have reached 5; serialization would leave it at 1.
+	if got := slowP.getMaxConcurrent(); got != 5 {
+		t.Errorf("max concurrent connections = %d, want 5 (ConnectAll serialized the batches)", got)
 	}
-	t.Logf("5 servers connected in %v (concurrent)", elapsed)
 }
 
 // concurrentCountProvider tracks max concurrent NewTransport calls.

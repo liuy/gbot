@@ -251,29 +251,38 @@ func TestConcurrentToolLoop_ToolErrorContentIsArray(t *testing.T) {
 
 func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 	t.Parallel()
-	// Two safe tools that each sleep 50ms should complete in ~50ms (parallel),
-	// not ~100ms (serial). Source: StreamingToolExecutor.ts — safe tools execute concurrently.
-	var mu sync.Mutex
-	var startTimes []time.Time
+	// Deterministic rendezvous: each safe tool waits for the other to enter
+	// callFn (with timeout). Under true parallelism both pass the rendezvous
+	// quickly; under serialization the second tool cannot start before the
+	// first finishes, so the first times out waiting for it. Wall-clock
+	// timing assertions ("started within 20ms of each other") flaked on
+	// loaded CI runs — goroutine scheduling latency regularly exceeded the
+	// window.
+	rendezvous := make(chan struct{}, 2)
+	const waitPeer = 5 * time.Second
 
 	tools := map[string]tool.Tool{
 		"safe_a": &concurrentTool{
 			name: "safe_a", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				mu.Lock()
-				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
-				mu.Unlock()
-				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify parallel execution timing
+				rendezvous <- struct{}{}
+				select {
+				case <-rendezvous:
+				case <-time.After(waitPeer): // REAL-TIME: serialized peer would exceed this
+					return nil, errors.New("safe_a: peer did not start — tools ran serially")
+				}
 				return &tool.ToolResult{Data: "a"}, nil
 			},
 		},
 		"safe_b": &concurrentTool{
 			name: "safe_b", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				mu.Lock()
-				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
-				mu.Unlock()
-				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify parallel execution timing
+				rendezvous <- struct{}{}
+				select {
+				case <-rendezvous:
+				case <-time.After(waitPeer): // REAL-TIME: serialized peer would exceed this
+					return nil, errors.New("safe_b: peer did not start — tools ran serially")
+				}
 				return &tool.ToolResult{Data: "b"}, nil
 			},
 		},
@@ -282,26 +291,25 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_a", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_b", Input: json.RawMessage(`{}`)},
 	}
-	start := time.Now() // REAL-TIME: needed to measure elapsed time for timing assertions
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
-	elapsed := time.Since(start)
 
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
 	}
-	// Both tools should start within 20ms of each other (parallel execution).
-	mu.Lock()
-	defer mu.Unlock()
-	if len(startTimes) != 2 {
-		t.Fatalf("expected 2 start times, got %d", len(startTimes))
-	}
-	startDiff := startTimes[1].Sub(startTimes[0])
-	if startDiff > 20*time.Millisecond {
-		t.Errorf("safe tools should start near-simultaneously, started %v apart", startDiff)
-	}
-	// Total time should be < 100ms (serial would be ~100ms)
-	if elapsed > 120*time.Millisecond {
-		t.Errorf("parallel execution should complete in ~50ms, took %v", elapsed)
+	// A serialized (buggy) run fails the rendezvous inside callFn and the
+	// tool returns an error result — success payloads encode as JSON strings.
+	for _, cb := range result.ToolResultBlocks {
+		msg := extractErrMsg(cb.Content)
+		switch cb.ToolUseID {
+		case "tu_1":
+			if msg != `"a"` {
+				t.Errorf("safe_a result = %s, want \"a\" (rendezvous failed: %s)", msg, msg)
+			}
+		case "tu_2":
+			if msg != `"b"` {
+				t.Errorf("safe_b result = %s, want \"b\" (rendezvous failed: %s)", msg, msg)
+			}
+		}
 	}
 }
 
@@ -2232,15 +2240,15 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 
 	var mu sync.Mutex
 	var order []string
-	var editCounter int
+	var activeShared int
+	var maxActiveShared int
 
-	editStarted := make([]chan struct{}, 3)
-	for i := range editStarted {
-		editStarted[i] = make(chan struct{})
-	}
-	editReleases := make(chan struct{}, 3)
 	bashStarted := make(chan struct{})
 	bashRelease := make(chan struct{})
+	editFinish := make(chan struct{})
+	// Buffer 3: under correct serialization e3 signals after editFinish is
+	// already closed (send must not block).
+	editsStarted := make(chan struct{}, 3)
 
 	tools := map[string]tool.Tool{
 		"Bash": &concurrentTool{
@@ -2264,12 +2272,22 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 				}
 				_ = json.Unmarshal(input, &in)
 				mu.Lock()
-				editIdx := editCounter
-				editCounter++
 				order = append(order, "Edit:"+in.FilePath)
+				isShared := in.FilePath == "shared.go"
+				if isShared {
+					activeShared++
+					if activeShared > maxActiveShared {
+						maxActiveShared = activeShared
+					}
+				}
 				mu.Unlock()
-				close(editStarted[editIdx])
-				<-editReleases
+				editsStarted <- struct{}{}
+				<-editFinish
+				mu.Lock()
+				if isShared {
+					activeShared--
+				}
+				mu.Unlock()
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		}},
@@ -2284,13 +2302,17 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 
 	go func() {
 		<-bashStarted
+		// Unsafe Bash completes first; edits may enter in any legal order.
 		close(bashRelease)
-		<-editStarted[0] // e1 (shared)
-		editReleases <- struct{}{}
-		<-editStarted[1] // e2 (other)
-		editReleases <- struct{}{}
-		<-editStarted[2] // e3 (shared, after e1)
-		editReleases <- struct{}{}
+		// Under correct same-file serialization only e1(shared) + e2(other)
+		// can be running simultaneously — e3(shared) starts after e1
+		// completes. So exactly TWO starts can arrive before any release;
+		// waiting for a third would deadlock the test (e3 waits for e1's
+		// completion which waits for editFinish).
+		for range 2 {
+			<-editsStarted
+		}
+		close(editFinish)
 	}()
 
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
@@ -2305,9 +2327,6 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 	if order[0] != "Bash" {
 		t.Errorf("first = %q, want Bash", order[0])
 	}
-	if order[3] != "Edit:shared.go" {
-		t.Errorf("last = %q, want Edit:shared.go", order[3])
-	}
 	sharedCount := 0
 	for _, o := range order {
 		if o == "Edit:shared.go" {
@@ -2316,6 +2335,10 @@ func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testi
 	}
 	if sharedCount != 2 {
 		t.Errorf("shared.go count = %d, want 2", sharedCount)
+	}
+	// Core invariant: the two shared.go edits never ran concurrently.
+	if maxActiveShared > 1 {
+		t.Errorf("same-file edits overlapped: max concurrent shared.go edits = %d, want 1", maxActiveShared)
 	}
 }
 

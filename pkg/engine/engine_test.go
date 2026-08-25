@@ -76,6 +76,29 @@ func (ec *eventCollector) WaitForResult() QueryResult {
 	return ec.result
 }
 
+// WaitForEventCount blocks until at least n events of the given type have
+// been dispatched, or the timeout fires. Deterministic replacement for
+// sleep-then-cancel tests: the caller cancels a stream only after the engine
+// has visibly consumed the events that set up the assertion state.
+func (ec *eventCollector) WaitForEventCount(typ types.QueryEventType, n int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout) // REAL-TIME
+	for time.Now().Before(deadline) {   // REAL-TIME
+		ec.mu.Lock()
+		count := 0
+		for _, e := range ec.events {
+			if e.Type == typ {
+				count++
+			}
+		}
+		ec.mu.Unlock()
+		if count >= n {
+			return true
+		}
+		runtime.Gosched()
+	}
+	return false
+}
+
 func (ec *eventCollector) Events() []types.QueryEvent {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
@@ -1647,10 +1670,16 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
+	ec := newEventCollector()
+	eng.SetDispatcher(ec)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after the first turn completes — queryLoop catches it at top of next iteration
+	// Cancel only after the query has fully completed (QueryEnd observed).
+	// The test asserts the normal-completion path returns no error; a fixed
+	// 10ms sleep raced the first turn — a mid-stream cancel legitimately
+	// produces an error and failed the success assertion.
 	go func() {
-		time.Sleep(10 * time.Millisecond) // REAL-TIME: wait for first turn to complete before canceling
+		ec.WaitForResult()
 		cancel()
 	}()
 

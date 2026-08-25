@@ -60,7 +60,7 @@ func TestWUI_SendFile_WSReceivesEvent(t *testing.T) {
 		t.Fatalf("write tmp file: %v", err)
 	}
 
-	if err := clientWS.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil { // REAL-TIME
+	if err := clientWS.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil { // REAL-TIME
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 

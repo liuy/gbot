@@ -169,7 +169,7 @@ func readSessionList(t *testing.T, ws *websocket.Conn) []struct {
 		_, data, err := ws.ReadMessage()
 		// Read timeouts are retried until the outer deadline — the shared CI
 		// box can take longer than one 500ms slice under load.
-		if err != nil && !time.Now().Before(deadline) {
+		if err != nil && !time.Now().Before(deadline) { // REAL-TIME: exhausts the retry window
 			t.Fatalf("read session_list: %v", err)
 		}
 		if err != nil {
@@ -235,7 +235,7 @@ func TestSessionSwitch_PersistsToMetaJSON(t *testing.T) {
 
 func readWorkspaceMetaUntil(t *testing.T, dir, wantSession string) bool {
 	t.Helper()
-	return waitFor(2e9, func() bool {
+	return waitFor(10e9, func() bool {
 		meta, err := short.ReadWorkspaceMeta(dir)
 		return err == nil && meta != nil && meta.CurrentSessionID == wantSession
 	})

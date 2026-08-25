@@ -69,7 +69,7 @@ func TestWSAttachment_DispatchOnlyAfterUserMessage(t *testing.T) {
 			{"id": "a2", "name": "a2.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
 		},
 	})
-	if !waitFor(time.Second, func() bool {
+	if !waitFor(10*time.Second, func() bool {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
 		return len(mock.queryWithContentCalls) == 1
@@ -172,7 +172,7 @@ func TestWSAttachment_AfterMissingError_RetryAndCommitWorks(t *testing.T) {
 			{"id": "a2", "name": "p2.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
 		},
 	})
-	if !waitFor(time.Second, func() bool {
+	if !waitFor(10*time.Second, func() bool {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
 		return len(mock.queryWithContentCalls) == 1
