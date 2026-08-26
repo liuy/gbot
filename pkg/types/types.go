@@ -38,6 +38,17 @@ type Message struct {
 	Flags       MessageFlag    `json:"flags,omitempty"`
 	MessageType MessageType    `json:"message_type,omitempty"`
 	Attachment  *Attachment    `json:"attachment,omitempty"`
+	// ToolResultData carries each tool's rich output (the tool's *Output
+	// struct) keyed by tool_use_id, for UI rendering on replay. TS parity:
+	// UserMessage.toolUseResult (toolExecution.ts:1456-1466) — the transcript
+	// stores the LLM-facing wire text (Content) and the rich data side by
+	// side, both persisted. gbot batches several tool_results into one user
+	// message, so the slot is keyed by tool_use_id where TS keeps a bare
+	// per-message field. Persistence rides the metadata channel, and the
+	// struct tag is "-" so json.Marshal of a whole Message (e.g. the
+	// autocompact request path serializes req verbatim) can never leak the
+	// rich payloads to a provider.
+	ToolResultData map[string]any `json:"-"`
 }
 
 // MessageFlag is a bitmask for message metadata flags.
@@ -127,6 +138,10 @@ func (m *Message) SetMetadataFromJSON(metadata string) {
 		Flags       MessageFlag `json:"flags,omitempty"`
 		MessageType MessageType `json:"message_type,omitempty"`
 		Attachment  *Attachment `json:"attachment,omitempty"`
+		// Decoded as map[string]interface{} — replay re-marshals each value
+		// back to JSON before DecodeResult, so the concrete type is recovered
+		// by the tool, not by the storage layer.
+		ToolResultData map[string]any `json:"toolUseResult,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(metadata), &meta); err == nil {
 		m.Usage = meta.Usage
@@ -135,29 +150,32 @@ func (m *Message) SetMetadataFromJSON(metadata string) {
 		m.Flags = meta.Flags
 		m.MessageType = meta.MessageType
 		m.Attachment = meta.Attachment
+		m.ToolResultData = meta.ToolResultData
 	}
 }
 
 // MetadataToJSON serializes Usage/Model/StopReason/Flags/MessageType/Attachment to a JSON metadata string.
 // Returns empty string if no metadata fields are set.
 func (m *Message) MetadataToJSON() string {
-	if m.Usage == nil && m.Model == "" && m.StopReason == "" && m.Flags == 0 && m.MessageType == "" && m.Attachment == nil {
+	if m.Usage == nil && m.Model == "" && m.StopReason == "" && m.Flags == 0 && m.MessageType == "" && m.Attachment == nil && m.ToolResultData == nil {
 		return ""
 	}
 	meta := struct {
-		Usage       *Usage      `json:"usage,omitempty"`
-		Model       string      `json:"model,omitempty"`
-		StopReason  string      `json:"stop_reason,omitempty"`
-		Flags       MessageFlag `json:"flags,omitempty"`
-		MessageType MessageType `json:"message_type,omitempty"`
-		Attachment  *Attachment `json:"attachment,omitempty"`
+		Usage          *Usage         `json:"usage,omitempty"`
+		Model          string         `json:"model,omitempty"`
+		StopReason     string         `json:"stop_reason,omitempty"`
+		Flags          MessageFlag    `json:"flags,omitempty"`
+		MessageType    MessageType    `json:"message_type,omitempty"`
+		Attachment     *Attachment    `json:"attachment,omitempty"`
+		ToolResultData map[string]any `json:"toolUseResult,omitempty"`
 	}{
-		Usage:       m.Usage,
-		Model:       m.Model,
-		StopReason:  m.StopReason,
-		Flags:       m.Flags,
-		MessageType: m.MessageType,
-		Attachment:  m.Attachment,
+		Usage:          m.Usage,
+		Model:          m.Model,
+		StopReason:     m.StopReason,
+		Flags:          m.Flags,
+		MessageType:    m.MessageType,
+		Attachment:     m.Attachment,
+		ToolResultData: m.ToolResultData,
 	}
 	if b, err := json.Marshal(meta); err == nil {
 		return string(b)

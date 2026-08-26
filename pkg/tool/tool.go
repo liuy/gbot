@@ -314,6 +314,18 @@ func WrapSingleBlock(text string) json.RawMessage {
 	return json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
 }
 
+// WrapRichToolResult re-marshals a rich result (Message.ToolResultData entry)
+// into the array form DecodeResult expects, so replay can feed it through
+// the tool's normal decode+render path. Returns nil when the data cannot be
+// marshalled — callers fall back to the persisted wire content.
+func WrapRichToolResult(data any) json.RawMessage {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return nil
+	}
+	return WrapSingleBlock(string(b))
+}
+
 // ---------------------------------------------------------------------------
 // ToolDef — source: Tool.ts:707-792
 // ---------------------------------------------------------------------------

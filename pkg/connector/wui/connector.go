@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1267,7 +1268,7 @@ func hasFilteredFlag(m *short.TranscriptMessage) bool {
 //
 // Defined as a method on *WUIConnector so it can access c.thumbs for
 // memoizing resized image thumbnails.
-func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResults map[string]types.ContentBlock) historyChatMsg {
+func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]tool.Tool, toolResults map[string]types.ContentBlock, richResults map[string]any) historyChatMsg {
 	hm := historyChatMsg{
 		ID:        m.ID,
 		Role:      string(m.Role),
@@ -1327,7 +1328,23 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 			}
 			if result, ok := toolResults[cb.ID]; ok {
 				entry.IsError = result.IsError
-				entry.DisplayOutput = renderToolOutput(cb.Name, result.Content, tools)
+				// Rich-data slot first: wire-plaintext tools (Edit/Write/MCP)
+				// persist an LLM-facing summary as content; the rich view for
+				// replay comes from ToolResultData. The tool must still be
+				// resolvable — an MCP server that has disconnected would leave
+				// the rich JSON undecodable, and raw-JSON beats the readable
+				// wire text. Legacy sessions without the slot fall back to
+				// decoding the wire content.
+				_, hasTool := tools[cb.Name]
+				if data, hasRich := richResults[cb.ID]; hasRich && hasTool {
+					if raw := tool.WrapRichToolResult(data); raw != nil {
+						entry.DisplayOutput = renderToolOutput(cb.Name, raw, tools)
+					} else {
+						entry.DisplayOutput = renderToolOutput(cb.Name, result.Content, tools)
+					}
+				} else {
+					entry.DisplayOutput = renderToolOutput(cb.Name, result.Content, tools)
+				}
 				entry.DurationNs = result.ToolDurationNs
 			} else {
 				entry.IsRunning = true
@@ -1448,12 +1465,14 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 
 	// First pass: collect all tool_results keyed by tool_use_id (same as TUI).
 	toolResults := make(map[string]types.ContentBlock)
+	richResults := make(map[string]any)
 	for _, m := range msgs {
 		for _, cb := range m.Content {
 			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
 				toolResults[cb.ToolUseID] = cb
 			}
 		}
+		maps.Copy(richResults, m.ToolResultData)
 	}
 
 	var out []historyChatMsg
@@ -1479,7 +1498,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 			}
 			continue
 		}
-		out = append(out, c.buildHistoryChatMsg(m, tools, toolResults))
+		out = append(out, c.buildHistoryChatMsg(m, tools, toolResults, richResults))
 	}
 	if len(out) == 0 {
 		return nil
@@ -1571,12 +1590,14 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 	// immutable, persisted with their results). Re-scan blocks to populate the
 	// toolResults map so renderToolOutput can resolve them by tool_use_id.
 	toolResults := make(map[string]types.ContentBlock)
+	richResults := make(map[string]any)
 	for _, m := range page {
 		for _, cb := range short.ParseContentBlocks(m.Content) {
 			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
 				toolResults[cb.ToolUseID] = cb
 			}
 		}
+		maps.Copy(richResults, short.StoreMessageToEngine(m).ToolResultData)
 	}
 
 	out := make([]historyChatMsg, 0, len(page))
@@ -1592,7 +1613,7 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 			continue
 		}
 		em := short.StoreMessageToEngine(tm)
-		out = append(out, c.buildHistoryChatMsg(em, tools, toolResults))
+		out = append(out, c.buildHistoryChatMsg(em, tools, toolResults, richResults))
 	}
 
 	end := delivered + len(out)

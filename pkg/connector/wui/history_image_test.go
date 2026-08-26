@@ -59,7 +59,7 @@ func TestBuildHistoryChatMsg_FileSourceImage_InlinedAsDataURL(t *testing.T) {
 			types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "file", MediaType: "image/jpeg", Path: path}},
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	if len(hm.Blocks) != 1 {
 		t.Fatalf("Blocks len = %d, want 1", len(hm.Blocks))
 	}
@@ -120,7 +120,7 @@ func TestBuildHistoryChatMsg_Base64Source_Resized(t *testing.T) {
 			}),
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	if len(hm.Blocks) != 1 {
 		t.Fatalf("Blocks len = %d, want 1", len(hm.Blocks))
 	}
@@ -155,7 +155,7 @@ func TestBuildHistoryChatMsg_MissingFile_DegradesToPlaceholder(t *testing.T) {
 			types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "file", MediaType: "image/png", Path: missingPath}},
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	var textBlocks []historyBlock
 	for _, b := range hm.Blocks {
 		if b.Kind == "text" {
@@ -188,7 +188,7 @@ func TestBuildHistoryChatMsg_CorruptFile_DegradesToPlaceholder(t *testing.T) {
 			types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "file", MediaType: "image/jpeg", Path: path}},
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	var textBlocks []historyBlock
 	for _, b := range hm.Blocks {
 		if b.Kind == "text" {
@@ -297,7 +297,7 @@ func TestBuildHistoryChatMsg_ImageAndTextInterleaved(t *testing.T) {
 			types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "file", MediaType: "image/jpeg", Path: path}},
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	if len(hm.Blocks) != 2 {
 		t.Fatalf("Blocks = %d, want 2 (text + image)", len(hm.Blocks))
 	}
@@ -364,7 +364,7 @@ func TestBuildHistoryChatMsg_AgentToolAppendsAgentType(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
 		},
 	}
-	hm := c.buildHistoryChatMsg(m, nil, nil)
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
 	if len(hm.Tools) != 1 {
 		t.Fatalf("Tools = %d, want 1", len(hm.Tools))
 	}
@@ -382,7 +382,7 @@ func TestBuildHistoryChatMsg_AgentToolAppendsAgentType(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_2", Content: json.RawMessage(`[{"type":"text","text":"file"}]`)},
 		},
 	}
-	hm2 := c.buildHistoryChatMsg(m2, nil, nil)
+	hm2 := c.buildHistoryChatMsg(m2, nil, nil, nil)
 	if len(hm2.Tools) != 1 {
 		t.Fatalf("Tools2 = %d, want 1", len(hm2.Tools))
 	}
@@ -400,7 +400,7 @@ func TestBuildHistoryChatMsg_AgentToolAppendsAgentType(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_3", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
 		},
 	}
-	hm3 := c.buildHistoryChatMsg(m3, nil, nil)
+	hm3 := c.buildHistoryChatMsg(m3, nil, nil, nil)
 	if hm3.Tools[0].Name != "Agent" {
 		t.Errorf("fork Tool name = %q, want 'Agent'", hm3.Tools[0].Name)
 	}
@@ -415,7 +415,7 @@ func TestBuildHistoryChatMsg_AgentToolAppendsAgentType(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_4", Content: json.RawMessage(`[{"type":"text","text":"done"}]`)},
 		},
 	}
-	hm4 := c.buildHistoryChatMsg(m4, nil, nil)
+	hm4 := c.buildHistoryChatMsg(m4, nil, nil, nil)
 	if hm4.Tools[0].Name != "Agent" {
 		t.Errorf("malformed Tool name = %q, want 'Agent'", hm4.Tools[0].Name)
 	}

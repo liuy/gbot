@@ -555,12 +555,14 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 	// tool_result blocks live in user messages (the API response), while tool_use
 	// blocks live in assistant messages — they're never in the same message.
 	toolResults := make(map[string]types.ContentBlock)
+	richResults := make(map[string]any)
 	for _, msg := range msgs {
 		for _, block := range msg.Content {
 			if block.Type == types.ContentTypeToolResult && block.ToolUseID != "" {
 				toolResults[block.ToolUseID] = block
 			}
 		}
+		maps.Copy(richResults, msg.ToolResultData)
 	}
 
 	views := make([]MessageView, 0, len(msgs))
@@ -603,7 +605,24 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 					isErr := false
 					elapsed := time.Duration(0)
 					if hasResult {
-						output = renderToolOutput(block.Name, result.Content, tools)
+						// Rich-data slot first: wire-plaintext tools (Edit/
+						// Write/MCP) persist an LLM-facing summary as content;
+						// the diff for replay comes from ToolResultData. The
+						// tool must still be resolvable — an MCP server that has
+						// disconnected would leave the rich JSON undecodable,
+						// and raw-JSON beats the readable wire text. Legacy
+						// sessions without the slot decode the wire content
+						// instead.
+						_, hasTool := tools[block.Name]
+						if data, hasRich := richResults[block.ID]; hasRich && hasTool {
+							if raw := tool.WrapRichToolResult(data); raw != nil {
+								output = renderToolOutput(block.Name, raw, tools)
+							} else {
+								output = renderToolOutput(block.Name, result.Content, tools)
+							}
+						} else {
+							output = renderToolOutput(block.Name, result.Content, tools)
+						}
 						isErr = result.IsError
 						elapsed = time.Duration(result.ToolDurationNs)
 					}

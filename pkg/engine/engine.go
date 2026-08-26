@@ -1723,7 +1723,16 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// TS reference: toolExecution.ts — addToolResult() line 1456 first,
 		// then newMessages line 1566 after.
 		if len(execResult.ToolResultBlocks) > 0 {
-			e.appendMessage(types.NewUserMessage(execResult.ToolResultBlocks))
+			toolResultMsg := types.NewUserMessage(execResult.ToolResultBlocks)
+			// Rich-data slot for replay: content carries the LLM wire view,
+			// ToolResultData carries the tool's rich output. TS parity:
+			// toolExecution.ts:1456-1466 sets both on the same user message.
+			// Divergence: TS leaves toolUseResult undefined for sub-agents
+			// (agentId && !preserveToolUseResults); gbot attaches
+			// unconditionally — sub-agent replay also benefits from the rich
+			// view and nothing consumes it on the wire (json:"-").
+			toolResultMsg.ToolResultData = execResult.ToolResultData
+			e.appendMessage(toolResultMsg)
 		}
 
 		// Post-tool abort check — must come before attachment drain.

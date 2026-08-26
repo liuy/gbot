@@ -414,6 +414,12 @@ func (e *StreamingToolExecutor) doEmit(evt types.QueryEvent) {
 type ExecuteAllResult struct {
 	ToolResultBlocks []types.ContentBlock
 	NewMessages      []types.Message // all newMessages from all tools, in order
+	// ToolResultData holds each tool's rich result (tt.Result.Data) keyed by
+	// tool_use_id, collected for tools whose wire view diverges from the rich
+	// data (ToolWithWireBlocks). The engine attaches it to the tool_result
+	// user message so replay renders the rich view instead of the wire text.
+	// TS parity: toolExecution.ts:1460 — createUserMessage({toolUseResult}).
+	ToolResultData map[string]any
 }
 
 // ExecuteAll adds all tool blocks, runs them with concurrency, and returns
@@ -469,6 +475,7 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 
 	var results []types.ContentBlock
 	var allNewMessages []types.Message
+	var rich map[string]any
 	for _, tt := range e.tools {
 		if len(tt.resultBlocks) > 0 {
 			results = append(results, tt.resultBlocks...)
@@ -476,11 +483,54 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 		if len(tt.newMessages) > 0 {
 			allNewMessages = append(allNewMessages, tt.newMessages...)
 		}
+		if data, ok := e.richResultData(tt); ok {
+			if rich == nil {
+				rich = make(map[string]any)
+			}
+			rich[tt.ID] = data
+		}
 	}
 	return &ExecuteAllResult{
 		ToolResultBlocks: results,
 		NewMessages:      allNewMessages,
+		ToolResultData:   rich,
 	}
+}
+
+// richResultData reports whether the tool's result should be persisted in the
+// rich-data slot. Only tools whose wire view is a lossy LLM-facing summary
+// need it — the wire list below is exactly that set: Edit/Write confirmations
+// and MCP plain text cannot be decoded back into the rich view on replay.
+// Other wire-plaintext tools (Bash/Read/Grep/…) keep their complete output
+// as wire content that DecodeResult already recovers; slotting them would
+// double-store large outputs (a full Bash stdout, a whole file). Error and
+// async-background results are excluded: they have no rich view to
+// preserve. Must be called with e.mu held.
+func richReplayTools(name string) bool {
+	if strings.HasPrefix(name, "mcp__") {
+		return true
+	}
+	switch name {
+	case "Edit", "Write":
+		return true
+	}
+	return false
+}
+
+func (e *StreamingToolExecutor) richResultData(tt *TrackedTool) (any, bool) {
+	if tt.Err != nil || tt.Result == nil || tt.Result.Data == nil {
+		return nil, false
+	}
+	if isBackgroundResult(tt.Result.Data) {
+		return nil, false
+	}
+	if _, ok := e.toolMap[tt.Name]; !ok {
+		return nil, false
+	}
+	if !richReplayTools(tt.Name) {
+		return nil, false
+	}
+	return tt.Result.Data, true
 }
 
 // ---------------------------------------------------------------------------
