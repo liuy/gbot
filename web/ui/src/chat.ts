@@ -490,6 +490,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     streaming = s
     header.setStreaming(s)
     inputBar.setStreaming(s)
+    sidebar.setStreaming(s)
   }
 
   root.appendChild(mainContent)

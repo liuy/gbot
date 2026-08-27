@@ -2218,11 +2218,20 @@ func (c *WUIConnector) buildEngineList() []byte {
 }
 
 // handleSessionSwitch loads the target session into the active engine, then
-// pushes connect_status + history + config + stats. Streaming protection is
-// handled by the frontend (pointer-events-none on picker items during streaming).
+// pushes connect_status + history + config + stats. Rejected while the
+// engine is busy.
+// errBusySessionOp rejects session operations that would swap the context
+// out from under a running query — remaining responses would land in the
+// wrong session.
+var errBusySessionOp = errors.New("engine is busy — wait for the current query to finish")
+
 func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	eng := c.activeEngine()
 	if eng == nil {
+		return
+	}
+	if eng.IsBusy() {
+		c.sendWS(buildError(errBusySessionOp))
 		return
 	}
 	if err := eng.SwitchSession(sessionID); err != nil {
@@ -2250,10 +2259,15 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 }
 
 // handleSessionNew creates a fresh session on the active engine, then pushes
-// connect_status + config + stats. Streaming protection is frontend-side.
+// connect_status + config + stats. Rejected while the engine is busy
+// (the sidebar grays its controls as an affordance).
 func (c *WUIConnector) handleSessionNew() {
 	eng := c.activeEngine()
 	if eng == nil {
+		return
+	}
+	if eng.IsBusy() {
+		c.sendWS(buildError(errBusySessionOp))
 		return
 	}
 	if _, err := eng.NewSession(); err != nil {

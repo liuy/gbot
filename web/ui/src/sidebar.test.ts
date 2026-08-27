@@ -67,6 +67,45 @@ describe('createSidebar', () => {
     expect(rows[1].className).not.toContain('bg-blue/15')
   })
 
+  it('setStreaming(true) grays session rows and survives setSessions rebuild', () => {
+    const { sidebar } = setup()
+    const sessions: SessionListItem[] = [
+      { id: 's1', title: 'First', updatedAt: Date.now() },
+    ]
+    sidebar.setStreaming(true)
+    sidebar.setSessions(sessions, '')
+    const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+    expect(row.className).toContain('pointer-events-none')
+    expect(row.className).toContain('opacity-40')
+  })
+  it('setStreaming(false) restores session rows', () => {
+    const { sidebar } = setup()
+    const sessions: SessionListItem[] = [
+      { id: 's1', title: 'First', updatedAt: Date.now() },
+    ]
+    sidebar.setStreaming(true)
+    sidebar.setStreaming(false)
+    sidebar.setSessions(sessions, '')
+    const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+    expect(row.className).not.toContain('pointer-events-none')
+  })
+  it('FAB click during streaming does not call onNewSession', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onNewSession(handler)
+    sidebar.setStreaming(true)
+    const fab = sidebar.root.querySelector('button.absolute') as HTMLElement
+    fab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(handler).not.toHaveBeenCalled()
+  })
+  it('FAB click when idle calls onNewSession', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onNewSession(handler)
+    const fab = sidebar.root.querySelector('button.absolute') as HTMLElement
+    fab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
   it('clicking a session row calls onSessionClick and closes', () => {
     const { mainContent, sidebar } = setup()
     const handler = vi.fn()

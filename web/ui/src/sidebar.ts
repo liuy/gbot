@@ -12,6 +12,7 @@ export interface SidebarHandles {
   close: () => void
   closeImmediate: () => void
   toggle: () => void
+  setStreaming: (s: boolean) => void
   setSessions: (sessions: SessionListItem[], currentID: string) => void
   onSessionClick: (handler: (id: string) => void) => void
   onNewSession: (handler: () => void) => void
@@ -240,7 +241,22 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   overlay.addEventListener('click', closeFn)
 
+  // Busy state disables session switching: the backend rejects it anyway
+  // (swapping sessions mid-query loses the running query's output), so
+  // graying the controls keeps the UI honest about that.
+  let busy = false
+  const setStreaming = (s: boolean) => {
+    busy = s
+    fab.classList.toggle('opacity-40', s)
+    fab.classList.toggle('pointer-events-none', s)
+    for (const row of sessionsList.querySelectorAll('[data-session-row]')) {
+      row.classList.toggle('opacity-40', s)
+      row.classList.toggle('pointer-events-none', s)
+    }
+  }
+
   fab.addEventListener('click', () => {
+    if (busy) return
     handlers.newSession()
     closeImmediate()
   })
@@ -256,6 +272,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
             ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
             : 'hover:bg-ink3/30 text-t2'),
       )
+      row.setAttribute('data-session-row', '')
 
       const titleSpan = createElement('span', 'text-[13px] truncate flex-1')
       titleSpan.textContent = s.title || s.id.slice(0, 8)
@@ -276,6 +293,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
       sessionsList.appendChild(row)
     }
+    // Row rebuild drops the busy classes — reapply so a rename-triggered
+    // list refresh mid-query can't re-enable clickable-looking rows.
+    if (busy) setStreaming(true)
   }
 
   const setArtifacts = (items: ArtifactListItem[]) => {
@@ -349,6 +369,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     close: closeFn,
     closeImmediate,
     toggle: toggleFn,
+    setStreaming,
     setSessions,
     setArtifacts,
     onSessionClick: (handler) => {
