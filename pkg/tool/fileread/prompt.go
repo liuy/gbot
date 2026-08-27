@@ -30,9 +30,8 @@ This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MU
 # Binary documents (via markitdown)
 Converts these formats to markdown:
 - Office: .doc, .docx, .ppt, .pptx, .xls, .xlsx
-- Web: .html, .htm, .xml, .rss
-- Data: .csv, .ipynb
 - Document: .epub
+- Data: .csv, .ipynb
 - Archive: .zip (extracts and converts internal files)
 
 Conversion output supports line offset and limit just like text files.
