@@ -664,8 +664,12 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 // ---------------------------------------------------------------------------
 
 func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, error) {
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
 	oReq := openaiChatRequest{
-		Model:       p.model,
+		Model:       model,
 		Stream:      stream,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,

@@ -154,7 +154,7 @@ func logEngineEvent(event Event) {
 	case types.EventQueryStart:
 		if event.Message != nil {
 			blockCount := len(event.Message.Content)
-			slog.Info("engine:query_start", "role", string(event.Message.Role), "blocks", blockCount)
+			slog.Info("engine:query_start", "role", string(event.Message.Role), "blocks", blockCount, "model", event.Model)
 		}
 
 	case types.EventThinkingStart:

@@ -825,7 +825,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
-			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 
 			// Virtual tool card for sub-agent events (like Compact).
 			forkToolID := "skill-fork-" + uuid.New().String()[:8]
@@ -882,7 +882,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 			e.snapshotQueryStart()
 			e.currentTurnMsgID = userMsg.ID
 			e.appendMessage(userMsg)
-			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 			e.runTurns(ctx, systemPrompt)
 		}
 	}()
@@ -1253,7 +1253,7 @@ func (e *Engine) queryLoopWithContent(ctx context.Context, content []types.Conte
 	e.snapshotQueryStart()
 	e.currentTurnMsgID = userMsg.ID
 	e.appendMessage(userMsg)
-	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 
 	return e.runTurns(ctx, systemPrompt)
 }
@@ -2753,7 +2753,7 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 		return nil, fmt.Errorf("compaction not configured")
 	}
 
-	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 
 	compactID := "compact-manual-" + uuid.New().String()[:8]
 	summary := "Compacting conversation..."
