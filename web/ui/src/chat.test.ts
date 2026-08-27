@@ -2403,3 +2403,207 @@ describe('file event rendering', () => {
     expect(names[1].textContent).toBe('b.txt')
   })
 })
+
+describe('artifact integration', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function stubFetchLength(len: string) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(null, { status: 200, headers: { 'content-length': len } }),
+    )
+  }
+
+  function lastAssistantContent(): HTMLElement {
+    return assistantContentDivs().slice(-1)[0]
+  }
+
+  function artifactCards(): HTMLElement[] {
+    return Array.from(document.querySelectorAll('.artifact-card'))
+  }
+
+  function sheetFrame(): HTMLIFrameElement {
+    return document.querySelector('.artifact-sheet iframe') as HTMLIFrameElement
+  }
+
+  function spySheetSrcSetter(): { calls: unknown[]; restore: () => void } {
+    const frame = sheetFrame()
+    const desc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')!
+    const calls: unknown[] = []
+    Object.defineProperty(frame, 'src', {
+      configurable: true,
+      get: desc.get,
+      set: (v: unknown) => {
+        calls.push(v)
+        desc.set!.call(frame, v)
+      },
+    })
+    return {
+      calls,
+      restore: () => {
+        delete (frame as Partial<HTMLIFrameElement> & { src?: unknown }).src
+      },
+    }
+  }
+
+  function runWriteQuery(
+    toolName: 'Write' | 'Edit',
+    id: string,
+    opts: { isError?: boolean; aborted?: boolean } = {},
+  ) {
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id, name: toolName, summary: '/home/u/.gbot/projects/abc/artifacts/game.html' } },
+    ])
+    dispatchEvents([
+      {
+        type: 'tool_end',
+        tool_result: {
+          tool_use_id: id,
+          display_output: 'wrote file',
+          is_error: opts.isError ?? false,
+        },
+      },
+      { type: 'query_end', aborted: opts.aborted ?? false },
+    ])
+  }
+
+  it('query_end appends an artifact card for a successful Write', async () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1')
+
+    const content = lastAssistantContent()
+    const card = content.querySelector('.artifact-card') as HTMLElement | null
+    expect(card).toBeTruthy()
+    const iframe = card!.querySelector('iframe') as HTMLIFrameElement
+    expect(iframe.getAttribute('src')).toBe('/artifacts/game.html')
+    await vi.waitFor(() => {
+      expect(card!.querySelector('.card-meta-inline')?.textContent).toContain('14.2 KB')
+    })
+  })
+
+  it('a later Edit query adds an Updated card; the first card stays plain', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1')
+    setTextarea('tweak it')
+    pressEnter()
+    runWriteQuery('Edit', 'e-1')
+
+    const cards = artifactCards()
+    expect(cards.length).toBe(2)
+    expect(cards[0].classList.contains('stale')).toBe(false)
+    expect(cards[0].querySelector('.card-updated')).toBeNull()
+    expect(cards[0].querySelector('.card-fresh-dot')).toBeNull()
+    expect(cards[1].classList.contains('stale')).toBe(true)
+    expect(cards[1].querySelector('.card-updated')?.textContent).toBe('Updated')
+    expect(cards[1].querySelector('.card-fresh-dot')).toBeTruthy()
+  })
+
+  it('a failed Write produces no card', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1', { isError: true })
+
+    expect(artifactCards().length).toBe(0)
+  })
+
+  it('query_end reloads the open sheet and skips a closed one', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1')
+
+    const card = artifactCards()[0]
+    ;(card as HTMLElement).click()
+    const sheetRoot = document.querySelector('.artifact-sheet') as HTMLElement
+    expect(sheetRoot.style.height).toBe('70%')
+
+    const spy = spySheetSrcSetter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'query_end' }])
+    expect(spy.calls.length).toBe(1)
+
+    // Close via handle tap (pointerdown+up without movement), then a new
+    // query_end must NOT reassign src.
+    const handle = sheetRoot.querySelector('.sheet-handle') as HTMLElement
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientY: 100, bubbles: true, cancelable: true }))
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientY: 100, bubbles: true, cancelable: true }))
+    expect(sheetRoot.style.height).toBe('0px')
+    dispatchEvents([{ type: 'query_start' }, { type: 'query_end' }])
+    expect(spy.calls.length).toBe(1)
+    spy.restore()
+  })
+
+  it('aborted query with a successful Write still commits the card; empty abort rewinds to none', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1', { aborted: true })
+    expect(artifactCards().length).toBe(1)
+
+    setTextarea('make another')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'query_end', aborted: true }])
+    expect(artifactCards().length).toBe(1)
+  })
+
+  it('history replay renders cards without any live event', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true, model: 'test' },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: {
+        messages: [
+          {
+            id: 'u1', role: 'user', startedAt: 1000, text: 'make a page',
+            thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0 },
+          },
+          {
+            // One assistant message per query on the wire; Write+Edit of the
+            // same file inside it dedupes to a single Updated card.
+            id: 'a1', role: 'assistant', startedAt: 1000, text: '',
+            thinking: [], tools: [],
+            blocks: [
+              { kind: 'tool', tool: { id: 'w1', name: 'Write', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
+              { kind: 'tool', tool: { id: 'e1', name: 'Edit', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
+              { kind: 'tool', tool: { id: 'w2', name: 'Write', summary: '/pd/artifacts/other.html', durationNs: 1000 } },
+            ],
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+        nextCursor: '', hasMore: false,
+      },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+
+    const cards = artifactCards()
+    expect(cards.length).toBe(2)
+    expect(cards[0].querySelector('.card-title')?.textContent).toBe('game.html')
+    expect((cards[0].querySelector('iframe') as HTMLIFrameElement).getAttribute('src')).toBe(
+      '/artifacts/game.html',
+    )
+    expect(cards[0].classList.contains('stale')).toBe(true)
+    expect(cards[0].querySelector('.card-updated')?.textContent).toBe('Updated')
+    expect(cards[1].querySelector('.card-title')?.textContent).toBe('other.html')
+    expect(cards[1].classList.contains('stale')).toBe(false)
+  })
+})

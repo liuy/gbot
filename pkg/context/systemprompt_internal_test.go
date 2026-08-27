@@ -234,3 +234,22 @@ func TestDetectRepoRoot(t *testing.T) {
 		t.Errorf("detectRepoRoot outside a git repo = %q, want empty", got)
 	}
 }
+
+// wantArtifactsBullet pins the finalized artifacts Environment entry
+// verbatim — any rewording of the shipped prompt fails this test. The
+// projectspace path is baked in concretely so the model never has to
+// assemble it from the projectspace= line.
+const wantArtifactsBullet = "- artifacts: interactive HTML pages shown to the user in wui (card + full view). Write them to the projectspace artifacts directory (/p/artifacts/, absolute paths) via Write/Edit; they are served in the chat as cards. Good artifacts are self-contained single-file pages (inline CSS/JS, no external scripts — the CSP blocks all cross-origin resources; localStorage works). When iterating, Edit the same file. Prefer in-line content in chat when the page adds nothing — err on the side of not creating one."
+
+func TestRuntimeInfo_ArtifactsBullet(t *testing.T) {
+	b := &Builder{WorkingDir: "/w", ProjectDir: "/p"}
+	info := b.RuntimeInfo()
+	if !strings.Contains(info, wantArtifactsBullet) {
+		t.Errorf("RuntimeInfo missing the finalized artifacts bullet; got:\n%s", info)
+	}
+
+	noProject := &Builder{WorkingDir: "/w"}
+	if got := noProject.RuntimeInfo(); strings.Contains(got, "- artifacts:") {
+		t.Errorf("RuntimeInfo without ProjectDir must not mention artifacts; got:\n%s", got)
+	}
+}

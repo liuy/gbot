@@ -149,7 +149,11 @@ func (b *Builder) RuntimeInfo() string {
 	runtime := "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
 	if b.WorkingDir != "" && b.ProjectDir != "" {
 		runtime += "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n"
-		runtime += "- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (message transcripts); also session_notes/, file-history/, history/, plans/"
+		runtime += "- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (message transcripts); also session_notes/, file-history/, history/, plans/\n"
+		// The concrete path is embedded because models naturally write
+		// absolute paths — the mechanism adapts to that habit instead of
+		// teaching a prefix convention (the redirect design was dropped).
+		runtime += fmt.Sprintf("- artifacts: interactive HTML pages shown to the user in wui (card + full view). Write them to the projectspace artifacts directory (%s/artifacts/, absolute paths) via Write/Edit; they are served in the chat as cards. Good artifacts are self-contained single-file pages (inline CSS/JS, no external scripts — the CSP blocks all cross-origin resources; localStorage works). When iterating, Edit the same file. Prefer in-line content in chat when the page adds nothing — err on the side of not creating one.", b.ProjectDir)
 	}
 	return runtime
 }

@@ -914,3 +914,32 @@ func TestFileWrite_DecodeResult_RejectsBareStruct(t *testing.T) {
 		t.Error("DecodeResult must reject bare struct form")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Execute — artifacts paths
+// ---------------------------------------------------------------------------
+
+// TestExecute_ArtifactsRelativePrefixLandsInWorkingDir pins the no-redirect
+// contract: a relative artifacts/ path is an ordinary relative path resolved
+// against WorkingDir like any other.
+func TestExecute_ArtifactsRelativePrefixLandsInWorkingDir(t *testing.T) {
+	t.Parallel()
+
+	wd := t.TempDir()
+	tctx := &tool.ToolUseContext{WorkingDir: wd}
+
+	input := json.RawMessage(`{"file_path":"artifacts/game.html","content":"<html>1</html>"}`)
+	_, err := filewrite.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	landed := filepath.Join(wd, "artifacts", "game.html")
+	data, err := os.ReadFile(landed)
+	if err != nil {
+		t.Fatalf("read %s: %v", landed, err)
+	}
+	if string(data) != "<html>1</html>" {
+		t.Errorf("content = %q, want %q", string(data), "<html>1</html>")
+	}
+}

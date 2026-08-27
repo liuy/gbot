@@ -286,3 +286,122 @@ body {
 [data-theme="light"] .avatar-g-bg {
   background: linear-gradient(to bottom right, #4A8CCE, #8A4ADB) !important;
 }
+
+/* ── Artifact card + top sheet (ported from prototype/artifact-card.html;
+   colors go through the theme vars above so both themes just work) ── */
+.artifact-card {
+  align-self: flex-start;
+  width: min(340px, 86%);
+  background: var(--color-ink3);
+  border: 1px solid var(--color-hairline);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .15s, transform .1s;
+  position: relative;
+}
+.artifact-card:active { transform: scale(.985); }
+.artifact-card:hover { border-color: color-mix(in srgb, var(--color-blue) 40%, transparent); }
+.artifact-card.stale { border-color: color-mix(in srgb, var(--color-blue) 50%, transparent); }
+
+/* Live thumbnail: the real page rendered in a phone-viewport iframe, scaled
+   down via CSS — shows the actual content, not a screenshot. */
+.card-preview {
+  height: 130px;
+  background: var(--color-ink2);
+  position: relative;
+  overflow: hidden;
+  pointer-events: none;
+}
+.card-preview iframe {
+  width: 360px;
+  height: 640px;
+  border: 0;
+  transform: scale(0.4);
+  transform-origin: 0 0;
+  position: absolute;
+  left: 50%;
+  margin-left: -72px;   /* (360*0.4)/2 centers the scaled iframe */
+  top: -90px;           /* crop to the upper region where content starts */
+}
+
+.card-body { padding: 10px 14px 12px; }
+.card-title-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 55%;
+}
+.card-meta-inline {
+  font-size: 11px;
+  color: var(--color-t3);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.card-updated { color: var(--color-blue); display: none; }
+.artifact-card.stale .card-updated { display: inline; }
+.card-fresh-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--color-blue);
+  display: none;
+}
+.artifact-card.stale .card-fresh-dot { display: block; animation: card-blink 1.2s ease-in-out infinite; }
+@keyframes card-blink { 50% { opacity: .3; } }
+
+/* Top sheet: persistent, no mask — chat stays usable underneath. */
+.artifact-sheet {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 0;
+  /* Transparent: the sheet is only a coordinate frame for the iframe.
+     The floating illusion comes from the framehost's own shadow — no
+     container box, just a page hovering over the chat. */
+  background: transparent;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  transition: height .28s ease;
+  overflow: hidden;
+}
+.artifact-sheet.dragging { transition: none; }  /* follow the finger while dragging */
+.artifact-sheet iframe {
+  /* The iframe is the only child surface: no wrapper div, no host
+     background, no shadow — the chat background is the background and
+     the artifact page paints itself. Replaced elements have an intrinsic
+     width: width:100% + margins overflows the flex column and pushes the
+     right margin out of view — stretch sizing subtracts margins instead. */
+  flex: 1;
+  align-self: stretch;
+  margin: calc(10px + env(safe-area-inset-top, 0px)) 10px 10px;
+  border-radius: 14px;
+  border: 0;
+}
+/* Handle sits on the sheet's bottom edge: pull down = taller, push up = shorter,
+   below 15% on release = collapsed. Full-width hit area, 44×5 visual pill. */
+.sheet-handle {
+  position: absolute;
+  bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  left: 50%; transform: translateX(-50%);
+  width: 100%; height: 22px;
+  cursor: grab;
+  touch-action: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.sheet-handle::after {
+  content: '';
+  width: 44px; height: 5px;
+  border-radius: 3px;
+  background: var(--color-t3);
+  transition: background .15s;
+}
+.sheet-handle:hover::after { background: var(--color-t2); }
+.sheet-handle:active { cursor: grabbing; }

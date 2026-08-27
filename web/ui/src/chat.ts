@@ -55,6 +55,7 @@ import { createInputBar, type InputBarHandles, type AttachmentRef } from './inpu
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
+import { collectArtifactWrites, createArtifactCard, createArtifactSheet } from './artifact'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
@@ -281,8 +282,11 @@ function buildShell(
 // Build committed message DOM by replaying blocks through streamDom appenders.
 // Produces the same visual structure streaming builds, so loadHistory output
 // is indistinguishable from a message that just finished streaming.
+// appendArtifactCards lets history replay derive artifact cards through the
+// exact same helper the live query_end path uses.
 function renderCommittedMessageDOM(
   m: ChatMessage,
+  appendArtifactCards: (blocks: Block[], content: HTMLElement) => void,
 ): { outer: HTMLElement; content: HTMLDivElement; runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] } {
   const runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] = []
   if (m.role === 'user') {
@@ -358,6 +362,7 @@ function renderCommittedMessageDOM(
   if (m.error) {
     content.appendChild(createNode('div', { className: errorBox(), text: m.error }))
   }
+  appendArtifactCards(m.blocks, content)
   return { outer, content, runningTools }
 }
 
@@ -491,6 +496,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   root.appendChild(sidebar.root)
   root.appendChild(sidebar.overlay)
+
+  // Persistent top sheet: survives resetAllState by design (closing it is a
+  // purely manual action via its handle).
+  const artifactSheet = createArtifactSheet()
+  root.appendChild(artifactSheet.root)
+
+  // Live path and history replay share this derivation — replay has no
+  // separate artifact logic.
+  const appendArtifactCards = (blocks: Block[], content: HTMLElement) => {
+    for (const w of collectArtifactWrites(blocks)) {
+      content.appendChild(createArtifactCard(w, (name) => artifactSheet.open(name)))
+    }
+  }
 
   const conn = getConnection()
 
@@ -907,7 +925,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (batch.length === 0) return
       const chats = mapHistoryToChatMessages(batch)
       for (const chat of chats) {
-        const { outer, content, runningTools } = renderCommittedMessageDOM(chat)
+        const { outer, content, runningTools } = renderCommittedMessageDOM(chat, appendArtifactCards)
         for (const rt of runningTools) {
           toolEntries.set(rt.id, {
             handles: rt.handles,
@@ -1117,6 +1135,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               last.blocks = pendingBlocks.slice()
               last.status = 'done'
               last.lastActivityAt = Date.now()
+              appendArtifactCards(last.blocks, last.contentDiv)
             }
           } else {
             // REWIND path: no content. Remove the empty assistant shell +
@@ -1144,8 +1163,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             last.blocks = pendingBlocks.slice()
             last.status = 'done'
             last.lastActivityAt = Date.now()
+            appendArtifactCards(last.blocks, last.contentDiv)
           }
         }
+
+        // Open sheet reloads on every query end — no per-file tracking, the
+        // serve route is no-store so the re-fetch always yields fresh bytes.
+        if (artifactSheet.isOpen()) artifactSheet.reload()
 
         setStreaming(false)
         queuedMsgs = []
