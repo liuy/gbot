@@ -1,4 +1,5 @@
 import type { Block } from './model'
+import type { ArtifactListItem } from './types'
 import { createElement } from './dom'
 
 // Tool summaries carry the raw Write/Edit file_path. The current convention
@@ -58,6 +59,14 @@ export function artifactURL(name: string): string {
   // Encode per segment so the directory slash survives as a separator.
   const encoded = name.split('/').map(encodeURIComponent).join('/')
   return `/artifacts/${encoded}`
+}
+
+// The artifacts directory is the source of truth, so the list is fetched on
+// demand (sidebar open) rather than tracked as state pushed over the WS.
+export async function fetchArtifactList(): Promise<ArtifactListItem[]> {
+  const res = await fetch('/api/artifacts')
+  if (!res.ok) throw new Error(`artifact list fetch failed: ${res.status}`)
+  return res.json()
 }
 
 export function formatArtifactSize(bytes: number): string {

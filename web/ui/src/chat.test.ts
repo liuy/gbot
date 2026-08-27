@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createChat, mapHistoryToChatMessages } from './chat'
 import { TokenRate } from './token_rate'
 
@@ -2605,5 +2605,53 @@ describe('artifact integration', () => {
     expect(cards[0].querySelector('.card-updated')?.textContent).toBe('Updated')
     expect(cards[1].querySelector('.card-title')?.textContent).toBe('other.html')
     expect(cards[1].classList.contains('stale')).toBe(false)
+  })
+})
+
+describe('sidebar artifacts', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+  it('opening the sidebar fetches the list; clicking a row opens the sheet', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => [{ name: 'game.html', size: 29, mtime: Date.now() }],
+      })),
+    )
+    mount()
+
+    const hamburger = document.querySelector('button[aria-label="Menu"]') as HTMLElement
+    expect(hamburger).not.toBeNull()
+    hamburger.click()
+
+    await vi.waitFor(() => {
+      const row = document.querySelector('.sidebar-artifacts .artifact-row') as HTMLElement | null
+      expect(row?.textContent).toContain('game.html')
+    })
+
+    const row = document.querySelector('.sidebar-artifacts .artifact-row') as HTMLElement
+    row.click()
+    const frame = document.querySelector('.artifact-sheet iframe') as HTMLIFrameElement
+    expect(frame.getAttribute('src')).toBe('/artifacts/game.html')
+  })
+  it('empty list shows the empty state after opening', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => [],
+      })),
+    )
+    mount()
+
+    const hamburger = document.querySelector('button[aria-label="Menu"]') as HTMLElement
+    hamburger.click()
+
+    await vi.waitFor(() => {
+      const section = document.querySelector('.sidebar-artifacts') as HTMLElement | null
+      expect(section?.textContent).toContain('No artifacts yet')
+    })
   })
 })

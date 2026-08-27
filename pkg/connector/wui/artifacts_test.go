@@ -1,6 +1,7 @@
 package wui
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newArtifactTestServer mounts artifact routes plus the SPA catch-all —
@@ -269,6 +271,122 @@ func TestRegisterArtifactRoutes_NestedPath(t *testing.T) {
 	}
 	if string(body) != artifactGameHTML {
 		t.Errorf("body = %q, want %q", string(body), artifactGameHTML)
+	}
+}
+
+// setArtifactMtime pins a file's mtime so the descending sort order is
+// observable regardless of filesystem write timing.
+func setArtifactMtime(t *testing.T, full string, modTime time.Time) {
+	t.Helper()
+	if err := os.Chtimes(full, modTime, modTime); err != nil {
+		t.Fatalf("chtimes %s: %v", full, err)
+	}
+}
+
+func getArtifactList(t *testing.T, url string) (int, http.Header, []byte) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, resp.Header, body
+}
+
+func TestRegisterArtifactRoutes_ListReturnsEntriesNewestFirst(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "old.html", "old")
+	writeArtifactFile(t, dir, "new.html", "newer-content")
+	writeArtifactFile(t, dir, "nested/game.html", artifactGameHTML)
+	setArtifactMtime(t, filepath.Join(dir, "old.html"), time.UnixMilli(1700000000000))
+	setArtifactMtime(t, filepath.Join(dir, "new.html"), time.UnixMilli(1700000100000))
+	setArtifactMtime(t, filepath.Join(dir, "nested", "game.html"), time.UnixMilli(1700000050000))
+	srv := newArtifactTestServer(t, dir)
+
+	status, header, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — SPA catch-all must not swallow the list route", status)
+	}
+	if got := header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	var items []struct {
+		Name  string `json:"name"`
+		Size  int64  `json:"size"`
+		Mtime int64  `json:"mtime"`
+	}
+	if err := json.Unmarshal(body, &items); err != nil {
+		t.Fatalf("unmarshal %q: %v", string(body), err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("len(items) = %d, want 3 (body %q)", len(items), string(body))
+	}
+	// Newest first, so freshly written artifacts surface at the top.
+	wantOrder := []struct {
+		name  string
+		mtime int64
+	}{
+		{"new.html", 1700000100000},
+		{"nested/game.html", 1700000050000},
+		{"old.html", 1700000000000},
+	}
+	for i, w := range wantOrder {
+		if items[i].Name != w.name || items[i].Mtime != w.mtime {
+			t.Errorf("items[%d] = {%s %d}, want {%s %d}", i, items[i].Name, items[i].Mtime, w.name, w.mtime)
+		}
+	}
+	if items[0].Size != int64(len("newer-content")) {
+		t.Errorf("new.html size = %d, want %d", items[0].Size, len("newer-content"))
+	}
+	if items[1].Size != int64(len(artifactGameHTML)) {
+		t.Errorf("nested/game.html size = %d, want %d", items[1].Size, len(artifactGameHTML))
+	}
+}
+
+func TestRegisterArtifactRoutes_ListEmptyDirReturnsEmptyArray(t *testing.T) {
+	srv := newArtifactTestServer(t, t.TempDir())
+
+	status, _, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if string(body) != "[]" {
+		t.Errorf("body = %q, want [] — the client renders its empty state from [] not null", string(body))
+	}
+}
+
+func TestRegisterArtifactRoutes_ListMissingDirReturnsEmptyArray(t *testing.T) {
+	// Fresh project before the first artifact write: the directory does not
+	// exist yet, which must present as an empty list, not an error.
+	srv := newArtifactTestServer(t, filepath.Join(t.TempDir(), "artifacts"))
+
+	status, _, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if string(body) != "[]" {
+		t.Errorf("body = %q, want []", string(body))
+	}
+}
+
+func TestRegisterArtifactRoutes_ListUnreadableSubdirReturns500(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "sub/game.html", artifactGameHTML)
+	sub := filepath.Join(dir, "sub")
+	if err := os.Chmod(sub, 0o000); err != nil {
+		t.Fatalf("chmod %s: %v", sub, err)
+	}
+	// Restore readability so t.TempDir's RemoveAll succeeds after the test.
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	srv := newArtifactTestServer(t, dir)
+
+	status, _, _ := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — walk errors other than a missing dir must surface", status)
 	}
 }
 

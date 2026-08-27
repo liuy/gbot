@@ -12,6 +12,12 @@ export type SessionListItem = {
   updatedAt: number
 }
 
+export type ArtifactListItem = {
+  name: string
+  size: number
+  mtime: number // unix ms — same clock as SessionListItem.updatedAt
+}
+
 export type ServerMessage =
   | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
   | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }

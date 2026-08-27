@@ -1,16 +1,24 @@
 package wui
 
 import (
+	"encoding/json"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
-// RegisterArtifactRoutes mounts GET /artifacts/{name...} serving files from
-// dir (the projectspace artifacts directory). Registered patterns are more
-// specific than the SPA catch-all "/", so they win during mux matching.
+// RegisterArtifactRoutes mounts the artifact HTTP surface for dir (the
+// projectspace artifacts directory):
+//
+//   - GET /artifacts/{name...} serves a single artifact file
+//   - GET /api/artifacts lists the directory (name, size, mtime; newest first)
+//
+// Registered patterns are more specific than the SPA catch-all "/", so they
+// win during mux matching.
 func RegisterArtifactRoutes(mux *http.ServeMux, dir string) {
 	mux.HandleFunc("GET /artifacts/{name...}", func(w http.ResponseWriter, r *http.Request) {
 		full, status := artifactFilePath(dir, r.PathValue("name"))
@@ -43,6 +51,66 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string) {
 		// iframe reload always fetches fresh content.
 		http.ServeContent(w, r, st.Name(), time.Time{}, f)
 	})
+
+	mux.HandleFunc("GET /api/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		items, status := listArtifacts(dir)
+		if status != 0 {
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		payload, _ := json.Marshal(items)
+		_, _ = w.Write(payload)
+	})
+}
+
+// artifactListItem is one entry of the /api/artifacts listing. Mtime is unix
+// milliseconds to match session_list's updatedAt (both feed the frontend's
+// relative-time formatter).
+type artifactListItem struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	Mtime int64  `json:"mtime"`
+}
+
+// listArtifacts walks dir collecting regular files as slash-separated
+// relative names, newest first. The walk is recursive because artifact names
+// may contain directories (the serve route's {name...} matches them). A
+// missing dir is the normal pre-first-write state and lists as empty; any
+// other walk failure surfaces as 500.
+func listArtifacts(dir string) ([]artifactListItem, int) {
+	items := []artifactListItem{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		items = append(items, artifactListItem{
+			Name:  filepath.ToSlash(rel),
+			Size:  info.Size(),
+			Mtime: info.ModTime().UnixMilli(),
+		})
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []artifactListItem{}, 0
+		}
+		return nil, http.StatusInternalServerError
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Mtime > items[j].Mtime })
+	return items, 0
 }
 
 // artifactFilePath resolves an artifact name under dir. PathValue is

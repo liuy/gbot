@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createSidebar } from './sidebar'
-import type { SessionListItem } from './types'
+import type { ArtifactListItem, SessionListItem } from './types'
 
 function setup() {
   const mainContent = document.createElement('div')
@@ -165,6 +165,71 @@ describe('createSidebar', () => {
 
     // Theme must NOT have cycled.
     expect(document.documentElement.dataset.theme).toBe('dark')
+  })
+
+  describe('artifacts section', () => {
+    const artifacts: ArtifactListItem[] = [
+      { name: 'game.html', size: 100, mtime: Date.now() - 60_000 },
+      { name: 'demos/report.pdf', size: 2048, mtime: Date.now() - 3_600_000 },
+    ]
+
+    it('setArtifacts renders rows with name and relative time', () => {
+      const { sidebar } = setup()
+      sidebar.setArtifacts(artifacts)
+      const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
+      expect(section).not.toBeNull()
+      const rows = section.querySelectorAll('.artifact-row')
+      expect(rows.length).toBe(2)
+      expect(rows[0].textContent).toContain('game.html')
+      expect(rows[0].textContent).toContain('1m')
+      expect(rows[1].textContent).toContain('demos/report.pdf')
+      expect(rows[1].textContent).toContain('1h')
+    })
+
+    it('clicking an artifact row calls onArtifactClick with the full name and closes', () => {
+      const { mainContent, sidebar } = setup()
+      const handler = vi.fn()
+      sidebar.onArtifactClick(handler)
+      sidebar.open()
+      sidebar.setArtifacts(artifacts)
+
+      const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rows.length).toBe(2)
+      ;(rows[1] as HTMLElement).click()
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith('demos/report.pdf')
+      expect(sidebar.root.style.transform).toBe('translateX(-100%)')
+      expect(mainContent.style.transform).toBe('translateX(0px)')
+    })
+
+    it('setArtifacts with empty list shows the empty state', () => {
+      const { sidebar } = setup()
+      sidebar.setArtifacts([])
+      const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
+      expect(section?.querySelectorAll('.artifact-row').length).toBe(0)
+      expect(section?.textContent).toContain('No artifacts yet')
+    })
+
+    it('setSessions does not clear the artifacts section', () => {
+      const { sidebar } = setup()
+      sidebar.setArtifacts(artifacts)
+      const sessions: SessionListItem[] = [
+        { id: 's1', title: 'First', updatedAt: Date.now() },
+      ]
+      sidebar.setSessions(sessions, 's1')
+      const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
+      expect(section?.querySelectorAll('.artifact-row').length).toBe(2)
+      // Session rows still render alongside.
+      expect(sidebar.root.querySelectorAll('[class*="cursor-pointer"]').length).toBe(3)
+    })
+
+    it('open fires the onOpen handler', () => {
+      const { sidebar } = setup()
+      const handler = vi.fn()
+      sidebar.onOpen(handler)
+      sidebar.open()
+      expect(handler).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('__gbotApplySystemTheme (Android WebView bridge)', () => {

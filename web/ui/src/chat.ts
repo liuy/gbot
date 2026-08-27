@@ -55,7 +55,7 @@ import { createInputBar, type InputBarHandles, type AttachmentRef } from './inpu
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
-import { collectArtifactWrites, createArtifactCard, createArtifactSheet } from './artifact'
+import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
@@ -1716,6 +1716,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   })
   sidebar.onRename((id, title) => {
     conn.send({ type: 'session_rename', sessionID: id, title })
+  })
+  sidebar.onArtifactClick((name) => {
+    artifactSheet.open(name)
+  })
+  // The artifacts directory is the source of truth — refresh the list each
+  // time the sidebar opens instead of tracking writes as state.
+  sidebar.onOpen(() => {
+    fetchArtifactList()
+      .then((items) => sidebar.setArtifacts(items))
+      .catch(() => {})
   })
 
   let askEls: HTMLElement[] = []

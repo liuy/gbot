@@ -1,4 +1,4 @@
-import type { SessionListItem } from './types'
+import type { ArtifactListItem, SessionListItem } from './types'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 import { createOutsideClick, bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
@@ -16,6 +16,9 @@ export interface SidebarHandles {
   onSessionClick: (handler: (id: string) => void) => void
   onNewSession: (handler: () => void) => void
   onRename: (handler: (id: string, title: string) => void) => void
+  setArtifacts: (items: ArtifactListItem[]) => void
+  onArtifactClick: (handler: (name: string) => void) => void
+  onOpen: (handler: () => void) => void
 }
 
 function formatRelativeTime(unixMs: number): string {
@@ -48,6 +51,16 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     style: { maxHeight: 'calc(100dvh - 80px)' },
   })
   root.appendChild(listContainer)
+  const sessionsList = createElement('div', '')
+  listContainer.appendChild(sessionsList)
+  // Artifacts is a read-only view of the projectspace artifacts directory —
+  // lifecycle (create/delete) stays with the conversation, so rows only open.
+  const artifactsSection = createElement('div', 'sidebar-artifacts')
+  const artifactsHeader = createElement('div', 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
+  artifactsHeader.textContent = 'Artifacts'
+  const artifactsList = createElement('div', '')
+  artifactsSection.append(artifactsHeader, artifactsList)
+  listContainer.appendChild(artifactsSection)
 
   // FAB: variant=default (text-blue hover:text-white) layers a transition on
   // top of the previous static look — slight UX upgrade accepted in D5.
@@ -194,6 +207,8 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     sessionClick: (_id: string) => {},
     newSession: () => {},
     rename: (_id: string, _title: string) => {},
+    artifactClick: (_name: string) => {},
+    open: () => {},
   }
 
   const isOpen = () => root.style.transform === 'translateX(0px)'
@@ -202,6 +217,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     root.style.transform = 'translateX(0px)'
     mainContent.style.transform = 'translateX(288px)'
     overlay.style.display = ''
+    handlers.open()
   }
   const closeFn = () => {
     root.style.transform = 'translateX(-100%)'
@@ -230,7 +246,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   })
 
   const setSessions = (sessions: SessionListItem[], currentID: string) => {
-    listContainer.innerHTML = ''
+    sessionsList.innerHTML = ''
     for (const s of sessions) {
       const isCurrent = s.id === currentID
       const row = createElement(
@@ -258,7 +274,33 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
         closeImmediate()
       })
 
-      listContainer.appendChild(row)
+      sessionsList.appendChild(row)
+    }
+  }
+
+  const setArtifacts = (items: ArtifactListItem[]) => {
+    artifactsList.innerHTML = ''
+    if (items.length === 0) {
+      const empty = createElement('div', 'px-3 py-2 text-[12px] text-t3')
+      empty.textContent = 'No artifacts yet'
+      artifactsList.appendChild(empty)
+      return
+    }
+    for (const a of items) {
+      const row = createElement(
+        'div',
+        'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+      )
+      const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
+      nameSpan.textContent = a.name
+      const timeSpan = createElement('span', 'text-[10px] text-t3 shrink-0')
+      timeSpan.textContent = formatRelativeTime(a.mtime)
+      row.append(nameSpan, timeSpan)
+      row.addEventListener('click', () => {
+        handlers.artifactClick(a.name)
+        closeImmediate()
+      })
+      artifactsList.appendChild(row)
     }
   }
 
@@ -308,6 +350,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     closeImmediate,
     toggle: toggleFn,
     setSessions,
+    setArtifacts,
     onSessionClick: (handler) => {
       handlers.sessionClick = handler
     },
@@ -316,6 +359,12 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     },
     onRename: (handler) => {
       handlers.rename = handler
+    },
+    onArtifactClick: (handler) => {
+      handlers.artifactClick = handler
+    },
+    onOpen: (handler) => {
+      handlers.open = handler
     },
   }
 }

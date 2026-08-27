@@ -5,6 +5,7 @@ import {
   formatArtifactSize,
   createArtifactCard,
   createArtifactSheet,
+  fetchArtifactList,
 } from './artifact'
 import type { Block } from './model'
 
@@ -387,5 +388,32 @@ describe('createArtifactSheet', () => {
     pointer(handle, 'pointermove', 50)
     pointer(handle, 'pointercancel', 50)
     expect(sheet.root.style.height).toBe('0px')
+  })
+})
+
+describe('fetchArtifactList', () => {
+  it('GETs /api/artifacts and returns the parsed items', async () => {
+    const items = [
+      { name: 'game.html', size: 29, mtime: 1700000100000 },
+      { name: 'old.html', size: 3, mtime: 1700000000000 },
+    ]
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => items,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const got = await fetchArtifactList()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith('/api/artifacts')
+    expect(got).toEqual(items)
+  })
+  it('rejects on a non-ok response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    )
+    await expect(fetchArtifactList()).rejects.toThrow('500')
   })
 })
