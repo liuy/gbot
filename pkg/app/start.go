@@ -217,6 +217,12 @@ func Start(opts Options) (*Instance, error) {
 			store = s
 		}
 	}
+	if store != nil {
+		// Runs on the shared Start path so wui/daemon users get it too.
+		// Start runs once per process, and TUI and wui can share that
+		// process, so exactly one loop exists.
+		startSessionCleanup(store, 5*time.Second, 24*time.Hour)
+	}
 
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
@@ -699,4 +705,26 @@ func resumeDreamSession(eng *engine.Engine, store *short.Store, projectDir strin
 	if err := eng.NewSession(projectDir, "Dream"); err != nil {
 		slog.Warn("dream: create session failed", "error", err)
 	}
+}
+
+// startSessionCleanup periodically deletes sessions older than 30 days and
+// prunes empty orphan sessions for projectDir. The goroutine is cheap; no
+// activity check needed (unlike TS single-thread). firstDelay separates the
+// first pass from startup I/O; the loop then repeats every interval.
+func startSessionCleanup(store *short.Store, firstDelay, interval time.Duration) {
+	go func() {
+		time.Sleep(firstDelay)
+		for {
+			// No PruneEmptySessions here: a freshly created session has no
+			// title/messages yet and would be deleted before the user's
+			// first message lands. Empty-session pruning stays on-demand
+			// (TUI picker), where the session is not the active one.
+			if cleaned, err := store.CleanupOldSessions(30 * 24 * time.Hour); err != nil {
+				slog.Warn("cleanup:old_sessions_failed", "err", err)
+			} else if cleaned > 0 {
+				slog.Info("cleanup:old_sessions", "count", cleaned)
+			}
+			time.Sleep(interval)
+		}
+	}()
 }

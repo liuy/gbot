@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -262,6 +263,101 @@ func TestRestoreEngines_CompactorUsesCorrectModel(t *testing.T) {
 	}
 }
 
+// TestStartSessionCleanup verifies the shared-startup cleanup loop deletes
+// expired sessions while preserving fresh active ones.
+func TestStartSessionCleanup(t *testing.T) {
+	projectDir := t.TempDir()
+
+	store, err := short.NewStore(filepath.Join(projectDir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Old session: updated 31 days ago (past the 30d cutoff), carries a message
+	// so only CleanupOldSessions — not PruneEmptySessions — may remove it.
+	oldSes, err := store.CreateSessionWithEngine(projectDir, "test-model", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine(old): %v", err)
+	}
+	oldMsg := &short.TranscriptMessage{
+		UUID:      "old-uuid-1",
+		Type:      "user",
+		Content:   `{"type":"text","text":"old"}`,
+		CreatedAt: time.Now(), // REAL-TIME: message timestamps share the wall clock CleanupOldSessions cuts against
+	}
+	if err := store.AppendMessage(oldSes.SessionID, oldMsg); err != nil {
+		t.Fatalf("AppendMessage(old): %v", err)
+	}
+	// Backdate AFTER AppendMessage, which resets updated_at via the FTS update.
+	if _, err := store.DB().Exec(
+		"UPDATE sessions SET updated_at = datetime('now', '-31 days') WHERE session_id = ?",
+		oldSes.SessionID,
+	); err != nil {
+		t.Fatalf("backdate old session: %v", err)
+	}
+
+	// Recent session with a message: must survive the cleanup pass untouched.
+	recentSes, err := store.CreateSessionWithEngine(projectDir, "test-model", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine(recent): %v", err)
+	}
+	recentMsg := &short.TranscriptMessage{
+		UUID:      "recent-uuid-1",
+		Type:      "user",
+		Content:   `{"type":"text","text":"recent"}`,
+		CreatedAt: time.Now(), // REAL-TIME: keeps updated_at fresh against the real cutoff
+	}
+	if err := store.AppendMessage(recentSes.SessionID, recentMsg); err != nil {
+		t.Fatalf("AppendMessage(recent): %v", err)
+	}
+
+	// Empty session: /clear orphan with no messages and no title → pruned.
+	// Fresh empty session: created just now with no messages and no title —
+	// the exact shape of a startup-created active session. The loop must NOT
+	// prune it (empty-session pruning stays on-demand in the TUI picker); if
+	// it did, the user's first message would fail the sessions FK.
+	emptySes, err := store.CreateSessionWithEngine(projectDir, "test-model", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine(empty): %v", err)
+	}
+
+	startSessionCleanup(store, 10*time.Millisecond, 24*time.Hour)
+
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: bounded wait for the goroutine's real firstDelay
+	for {
+		_, oldErr := store.GetSession(oldSes.SessionID)
+		if oldErr != nil {
+			break
+		}
+		if time.Now().After(deadline) { // REAL-TIME: timeout makes the poll a hard assertion, not a flake
+			t.Fatalf("cleanup loop did not delete targets within 2s: oldErr=%v", oldErr)
+		}
+		time.Sleep(20 * time.Millisecond) // REAL-TIME: re-check loop for the goroutine's wall-clock sleep
+	}
+
+	if _, err := store.GetSession(oldSes.SessionID); err == nil {
+		t.Errorf("old session %s (updated_at 31d ago) survived CleanupOldSessions", oldSes.SessionID)
+	}
+	if _, err := store.GetSession(emptySes.SessionID); err != nil {
+		t.Errorf("fresh empty session %s was pruned, want kept (active sessions must survive until first message)", emptySes.SessionID)
+	}
+	recent, err := store.GetSession(recentSes.SessionID)
+	if err != nil {
+		t.Fatalf("recent session %s was deleted, want kept: %v", recentSes.SessionID, err)
+	}
+	if recent.SessionID != recentSes.SessionID {
+		t.Errorf("GetSession returned session %s, want %s", recent.SessionID, recentSes.SessionID)
+	}
+	exists, err := store.MessageExists(recentSes.SessionID, "recent-uuid-1")
+	if err != nil {
+		t.Fatalf("MessageExists(recent-uuid-1): %v", err)
+	}
+	if !exists {
+		t.Errorf("recent session's message recent-uuid-1 missing after cleanup")
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -477,5 +573,19 @@ func TestRestoreEngines_VSModelMatchesMetaJson(t *testing.T) {
 	if vs.Model != "openrouter/openrouter/owl-alpha" {
 		t.Errorf("vs.Model = %q, want openrouter/openrouter/owl-alpha (full provider/model from meta.json, not bare %q)",
 			vs.Model, vs.Engine.Model())
+	}
+}
+
+// TestStartCleanupWired pins the wiring: the cleanup loop must be invoked
+// from Start() — the shared startup path. It previously lived under the TUI
+// only, so wui-only memory.db never got pruned; a plain text scan is enough
+// to catch the call being dropped or moved back.
+func TestStartCleanupWired(t *testing.T) {
+	src, err := os.ReadFile("start.go")
+	if err != nil {
+		t.Fatalf("read start.go: %v", err)
+	}
+	if !strings.Contains(string(src), "startSessionCleanup(store,") {
+		t.Error("Start() no longer wires startSessionCleanup — wui/daemon users lose 30-day session cleanup")
 	}
 }

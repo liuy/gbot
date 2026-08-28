@@ -502,20 +502,6 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 		} else if cleaned > 0 {
 			slog.Info("tui:file_history:cleaned", "sessions", cleaned)
 		}
-
-		// Background session cleanup: delete sessions older than 30 days.
-		// Goroutine is cheap; no activity check needed (unlike TS single-thread).
-		go func() {
-			time.Sleep(5 * time.Second)
-			for {
-				if cleaned, err := store.CleanupOldSessions(30 * 24 * time.Hour); err != nil {
-					slog.Warn("cleanup:old_sessions_failed", "err", err)
-				} else if cleaned > 0 {
-					slog.Info("cleanup:old_sessions", "count", cleaned)
-				}
-				time.Sleep(24 * time.Hour)
-			}
-		}()
 	}
 
 	// Create file history tracker for rewind/restore.
