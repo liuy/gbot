@@ -82,6 +82,9 @@ type openaiChatRequest struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	Stop        []string        `json:"stop,omitempty"`
 	User        string          `json:"user,omitempty"`
+	// GLM/DeepSeek reasoning toggle: {"type":"enabled"|"disabled"} (verified
+	// against both endpoints; budget_tokens is silently ignored there).
+	Thinking *ThinkingConfig `json:"thinking,omitempty"`
 }
 
 type openaiMessage struct {
@@ -674,6 +677,7 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stop:        req.StopSequences,
+		Thinking:    req.Thinking,
 	}
 
 	if req.Metadata != nil && req.Metadata.UserID != "" {

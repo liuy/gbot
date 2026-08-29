@@ -1,7 +1,9 @@
 package wui
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
@@ -14,14 +16,18 @@ import (
 // RegisterArtifactRoutes mounts the artifact HTTP surface for dir (the
 // projectspace artifacts directory):
 //
-//   - GET /artifacts/{name...} serves a single artifact file
+//   - GET /artifacts/{name...} serves a single artifact file, falling back to
+//     the embedded builtin game page for registry names when nothing is on disk
+//   - POST /artifacts/{name...} runs the game observer (observation → LLM move)
+//     for registry names only
 //   - GET /api/artifacts lists the directory (name, size, mtime; newest first)
 //
 // Registered patterns are more specific than the SPA catch-all "/", so they
 // win during mux matching.
-func RegisterArtifactRoutes(mux *http.ServeMux, dir string) {
+func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProviderFn) {
 	mux.HandleFunc("GET /artifacts/{name...}", func(w http.ResponseWriter, r *http.Request) {
-		full, status := artifactFilePath(dir, r.PathValue("name"))
+		name := r.PathValue("name")
+		full, status := artifactFilePath(dir, name)
 		if status != 0 {
 			http.Error(w, http.StatusText(status), status)
 			return
@@ -36,21 +42,37 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string) {
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 
 		f, err := os.Open(full)
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil || st.IsDir() {
-			http.Error(w, "not found", http.StatusNotFound)
+		if err == nil {
+			defer f.Close()
+			st, stErr := f.Stat()
+			if stErr != nil {
+				// Only "missing" or a directory falls through to the bundled
+				// fallback; an unexplainable stat failure is a plain 404.
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			if !st.IsDir() {
+				// Zero modtime: ServeContent emits no Last-Modified and never
+				// negotiates a 304 — combined with no-store this guarantees an
+				// iframe reload always fetches fresh content.
+				http.ServeContent(w, r, st.Name(), time.Time{}, f)
+				return
+			}
+		}
+		// Missing on disk (or a bare directory): serve the embedded builtin
+		// game page for registry names. Same headers as the file path, so the
+		// sheet iframe behaves identically either way.
+		if serveBundledGame(w, r, name) {
 			return
 		}
-		// Zero modtime: ServeContent emits no Last-Modified and never
-		// negotiates a 304 — combined with no-store this guarantees an
-		// iframe reload always fetches fresh content.
-		http.ServeContent(w, r, st.Name(), time.Time{}, f)
+		http.Error(w, "not found", http.StatusNotFound)
 	})
+
+	mux.HandleFunc("POST /artifacts/{name...}", observerHandler(observe))
 
 	mux.HandleFunc("GET /api/artifacts", func(w http.ResponseWriter, r *http.Request) {
 		items, status := listArtifacts(dir)
@@ -63,6 +85,16 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string) {
 		payload, _ := json.Marshal(items)
 		_, _ = w.Write(payload)
 	})
+}
+
+// serveBundledGame serves the embedded page for a builtin registry name and
+// reports whether the name is registered.
+func serveBundledGame(w http.ResponseWriter, r *http.Request, name string) bool {
+	if _, known := builtinGames[name]; !known {
+		return false
+	}
+	http.ServeContent(w, r, "chess.html", time.Time{}, bytes.NewReader(chessTemplate))
+	return true
 }
 
 // artifactListItem is one entry of the /api/artifacts listing. Mtime is unix

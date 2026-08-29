@@ -61,7 +61,8 @@ describe('createSidebar', () => {
       { id: 's2', title: 'Second', updatedAt: Date.now() },
     ]
     sidebar.setSessions(sessions, 's1')
-    const rows = sidebar.root.querySelectorAll('[class*="cursor-pointer"]')
+    // Games group rows (Step 5) are always present; session tests exclude them.
+    const rows = sidebar.root.querySelectorAll('[class*="cursor-pointer"]:not([data-game-row])')
     expect(rows.length).toBe(2)
     expect(rows[0].className).toContain('bg-blue/15')
     expect(rows[1].className).not.toContain('bg-blue/15')
@@ -141,7 +142,7 @@ describe('createSidebar', () => {
   it('setSessions with empty list renders no rows', () => {
     const { sidebar } = setup()
     sidebar.setSessions([], '')
-    const rows = sidebar.root.querySelectorAll('[class*="cursor-pointer"]')
+    const rows = sidebar.root.querySelectorAll('[class*="cursor-pointer"]:not([data-game-row])')
     expect(rows.length).toBe(0)
   })
 
@@ -259,7 +260,7 @@ describe('createSidebar', () => {
       const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
       expect(section?.querySelectorAll('.artifact-row').length).toBe(2)
       // Session rows still render alongside.
-      expect(sidebar.root.querySelectorAll('[class*="cursor-pointer"]').length).toBe(3)
+      expect(sidebar.root.querySelectorAll('[class*="cursor-pointer"]:not([data-game-row])').length).toBe(3)
     })
 
     it('open fires the onOpen handler', () => {

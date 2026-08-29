@@ -526,7 +526,7 @@ func Start(opts Options) (*Instance, error) {
 		}
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
-		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName))
+		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
 	}
 

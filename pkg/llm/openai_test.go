@@ -1683,3 +1683,41 @@ func TestOpenAITranslateRequest_ToolResultImageURL(t *testing.T) {
 		t.Errorf("image_url.url prefix = %q, want %q", arr[0].ImageURL.URL[:40], "data:image/png;base64,")
 	}
 }
+
+func TestOpenAIProvider_ThinkingWireMapping(t *testing.T) {
+	p := &OpenAIProvider{}
+	base := Request{
+		Model: "glm-5.3",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		},
+	}
+
+	// Set → carried on the wire verbatim (GLM/DeepSeek reasoning toggle).
+	req := base
+	req.Thinking = &ThinkingConfig{Type: "disabled"}
+	body, err := p.translateRequest(&req, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if string(parsed["thinking"]) != `{"type":"disabled"}` {
+		t.Errorf("thinking = %s, want {\"type\":\"disabled\"}", parsed["thinking"])
+	}
+
+	// Unset → omitted entirely (provider default applies).
+	body2, err := p.translateRequest(&base, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	var parsed2 map[string]json.RawMessage
+	if err := json.Unmarshal(body2, &parsed2); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if _, present := parsed2["thinking"]; present {
+		t.Errorf("thinking present = %s, want omitted", parsed2["thinking"])
+	}
+}

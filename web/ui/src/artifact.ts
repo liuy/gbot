@@ -136,6 +136,7 @@ export interface ArtifactSheetHandles {
   open: (name: string) => void
   close: () => void
   isOpen: () => boolean
+  current: () => string
   reload: () => void
 }
 
@@ -159,6 +160,7 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   // always 0, and the drag math needs the pre-drag pct as a number anyway.
   let heightPct = 0
   let opened = false
+  let currentName = ''
   const setHeight = (pct: number) => {
     heightPct = pct
     root.style.height = pct > 0 ? `${Math.round(pct)}%` : '0px'
@@ -167,10 +169,15 @@ export function createArtifactSheet(): ArtifactSheetHandles {
 
   const open = (name: string) => {
     frame.src = artifactURL(name)
+    currentName = name
     opened = true
     root.classList.remove('dragging')
     setHeight(SHEET_DEFAULT_H)
   }
+  // Games are stateful apps living in the frame — the chat layer needs the
+  // name to exempt them from the query-end reload (it would abort an
+  // in-flight turn POST).
+  const current = () => currentName
 
   const close = () => {
     opened = false
@@ -230,5 +237,5 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     frame.src = frame.src
   }
 
-  return { root, open, close, isOpen: () => opened, reload }
+  return { root, open, close, isOpen: () => opened, current, reload }
 }

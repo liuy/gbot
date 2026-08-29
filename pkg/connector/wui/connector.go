@@ -487,6 +487,22 @@ func (c *WUIConnector) activeEngine() engineClient {
 	return nil
 }
 
+// ObserveLLM resolves the active engine's provider/model for the game observe
+// handler. Any missing piece (no active engine, nil provider, empty model)
+// reports not-ok — the handler answers 503 instead of attempting a call it
+// cannot make.
+func (c *WUIConnector) ObserveLLM() (llm.Provider, string, bool) {
+	eng := c.activeEngine()
+	if eng == nil {
+		return nil, "", false
+	}
+	p, m := eng.Provider(), eng.Model()
+	if p == nil || m == "" {
+		return nil, "", false
+	}
+	return p, m, true
+}
+
 // engineHubShim is a per-engine hub.EventHandler that tags each event with
 // the engine ID so onEngineEvent knows which slot to route to. One shim
 // is created per registered engine and subscribed to that engine's hub.

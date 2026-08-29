@@ -50,7 +50,7 @@ import {
   markToolCollapsible,
 } from './components/stream_dom'
 import { createHeader } from './header'
-import { createSidebar } from './sidebar'
+import { createSidebar, BUILTIN_GAMES } from './sidebar'
 import { createInputBar, type InputBarHandles, type AttachmentRef } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
@@ -1170,7 +1170,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
         // Open sheet reloads on every query end — no per-file tracking, the
         // serve route is no-store so the re-fetch always yields fresh bytes.
-        if (artifactSheet.isOpen()) artifactSheet.reload()
+        // Games are exempt: their page is stateful and a reload would abort
+        // an in-flight turn POST mid-think.
+        if (artifactSheet.isOpen() && !BUILTIN_GAMES.some((g) => g.id === artifactSheet.current())) {
+          artifactSheet.reload()
+        }
 
         setStreaming(false)
         queuedMsgs = []

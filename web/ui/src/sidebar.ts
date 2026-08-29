@@ -38,6 +38,16 @@ function formatRelativeTime(unixMs: number): string {
   return Math.floor(mon / 12) + 'y'
 }
 
+// Builtin games render as a persistent group above Artifacts: they launch the
+// embedded game pages, so their availability has nothing to do with the
+// artifacts directory listing.
+// Sidebar icon is the board's red general piece scaled 0.5 (24 viewBox vs
+// the 48 cell): same radii, stroke widths and text baseline ratios as the
+// piece drawn in games/chess.html renderBoard.
+const XHQ_PIECE = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="#D54F4F" stroke="#A03030" stroke-width="0.75"/><circle cx="12" cy="12" r="8.75" fill="none" stroke="#FFFFFF" stroke-width="0.5" opacity="0.3"/><text x="12" y="15.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#FFF5F2" font-family='"Kaiti SC","STKaiti","KaiTi",serif'>帅</text></svg>`
+
+export const BUILTIN_GAMES = [{ id: 'chess', label: 'Chinese Chess', icon: XHQ_PIECE }] as const
+
 export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandles {
   const { mainContent } = opts
 
@@ -54,6 +64,31 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   root.appendChild(listContainer)
   const sessionsList = createElement('div', '')
   listContainer.appendChild(sessionsList)
+  const gamesSection = createElement('div', 'sidebar-games')
+  const gamesHeader = createElement('div', 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
+  gamesHeader.setAttribute('data-games-header', '')
+  gamesHeader.textContent = 'Games'
+  const gamesList = createElement('div', '')
+  for (const g of BUILTIN_GAMES) {
+    const row = createElement(
+      'div',
+      'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+    )
+    row.setAttribute('data-game-row', g.id)
+    const iconSpan = createElement('span', 'text-[16px] shrink-0 leading-none flex items-center')
+    if (g.icon.startsWith('<svg')) iconSpan.innerHTML = g.icon
+    else iconSpan.textContent = g.icon
+    const nameSpan = createElement('span', 'text-[13px] block truncate')
+    nameSpan.textContent = g.label
+    row.append(iconSpan, nameSpan)
+    row.addEventListener('click', () => {
+      handlers.artifactClick(g.id)
+      closeImmediate()
+    })
+    gamesList.appendChild(row)
+  }
+  gamesSection.append(gamesHeader, gamesList)
+  listContainer.appendChild(gamesSection)
   // Artifacts is a read-only view of the projectspace artifacts directory —
   // lifecycle (create/delete) stays with the conversation, so rows only open.
   const artifactsSection = createElement('div', 'sidebar-artifacts')
