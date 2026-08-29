@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
@@ -80,7 +81,8 @@ func observerHandler(observe ObserveProviderFn) http.HandlerFunc {
 			writeObserveError(w, http.StatusServiceUnavailable, "no LLM provider available")
 			return
 		}
-		slog.Info("wui:observer_request", "name", name, "model", model, "legal", len(legal), "state_bytes", len(body.State))
+		slog.Info("wui:observer_request", "name", name, "model", model, "legal", len(legal), "state_bytes", len(body.State),
+			"eval", observeEvalDigest(body.State))
 
 		// From here the reply streams: NDJSON lines with per-event flush, so
 		// the board can render thinking and the note as they are produced.
@@ -103,7 +105,7 @@ func observerHandler(observe ObserveProviderFn) http.HandlerFunc {
 			emit(map[string]any{"type": "error", "message": "LLM call failed: " + err.Error()})
 			return
 		}
-		candidate, note := splitCandidateNote(resp)
+		candidate, note := splitCandidateNote(resp, legal)
 		// Resignation is not a board move — it never appears in the legal
 		// list, so it must be accepted before list validation.
 		if candidate == "认输" {
@@ -132,7 +134,7 @@ func observerHandler(observe ObserveProviderFn) http.HandlerFunc {
 			emit(map[string]any{"type": "error", "message": "LLM call failed: " + err.Error()})
 			return
 		}
-		candidate, note = splitCandidateNote(resp)
+		candidate, note = splitCandidateNote(resp, legal)
 		if containsMove(legal, candidate) {
 			slog.Info("wui:observer", "name", name, "model", model, "attempt", 2, "move", candidate, "legal", len(legal))
 			emit(map[string]any{"type": "final", "move": candidate, "note": note})
@@ -222,7 +224,38 @@ func observeUserMsg(text string) types.Message {
 // splitCandidateNote takes the first non-empty text block; the first non-empty
 // line is the move candidate (models often emit leading blank lines), the
 // remaining lines joined by \n are the player's note.
-func splitCandidateNote(resp *llm.Response) (candidate, note string) {
+// observeEvalDigest extracts the engine-analysis slice of the observation
+// (threats, per-move eval, positional metrics) so a blundered move can be
+// checked against what the model was actually told — the board itself is
+// too large to log per turn.
+func observeEvalDigest(state string) string {
+	var out []string
+	for _, line := range strings.Split(state, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "受威胁") || strings.HasPrefix(t, "- ") ||
+			strings.HasPrefix(t, "步法评估") || strings.HasPrefix(t, "局面要素") ||
+			strings.HasPrefix(t, "要点情报") || strings.HasPrefix(t, "你当前的计划") {
+			out = append(out, t)
+		}
+	}
+	d := strings.Join(out, " | ")
+	// Truncate on a rune boundary — slicing mid-rune garbles the log.
+	if len(d) > 1200 {
+		cut := 1200
+		for cut > 0 && !utf8.RuneStart(d[cut]) {
+			cut--
+		}
+		d = d[:cut] + "…"
+	}
+	return d
+}
+
+// splitCandidateNote picks the move by scanning the WHOLE reply: the model
+// writes its position analysis first and the chosen move last, so the move
+// is the last line that exactly matches a legal token (or the resign word).
+// Analysis lines never match exactly — an embedded "当跳马" is not a token —
+// and they become the note shown to the user.
+func splitCandidateNote(resp *llm.Response, legal []string) (candidate, note string) {
 	var text string
 	for _, block := range resp.Content {
 		if block.Type == types.ContentTypeText && block.Text != "" {
@@ -231,19 +264,55 @@ func splitCandidateNote(resp *llm.Response) (candidate, note string) {
 		}
 	}
 	lines := strings.Split(text, "\n")
-	idx := -1
+	chosen := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			idx = i
-			break
+		t := strings.Trim(strings.TrimSpace(line), "。，！？、；：\"'")
+		if t == "" {
+			continue
+		}
+		// Exact whole-line match first; then a trailing-token rescue for the
+		// model's habit of ending its prose with the move ("……再图后计。仕4进5").
+		if containsMove(legal, t) || t == "认输" {
+			candidate = t
+			chosen = i
+			continue
+		}
+		for _, mv := range legal {
+			if strings.HasSuffix(t, mv) {
+				candidate = mv
+				chosen = i
+			}
 		}
 	}
-	if idx < 0 {
+	if chosen < 0 {
+		// No line matched: keep the first non-empty line as the candidate so
+		// the corrective retry and the logs still show what the model said.
+		for _, line := range lines {
+			if t := strings.TrimSpace(line); t != "" {
+				return t, ""
+			}
+		}
 		return "", ""
 	}
-	candidate = strings.TrimSpace(lines[idx])
-	note = strings.TrimSpace(strings.Join(lines[idx+1:], "\n"))
-	return candidate, note
+	var noteLines []string
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if i == chosen {
+			// Suffix rescue: the prose before the trailing token is the
+			// model's commentary — keep it, minus the token itself.
+			if t != candidate {
+				if idx := strings.LastIndex(t, candidate); idx > 0 {
+					noteLines = append(noteLines, strings.Trim(t[:idx], "。，！？、；：\"' "))
+				}
+			}
+			continue
+		}
+		if t == "" {
+			continue
+		}
+		noteLines = append(noteLines, t)
+	}
+	return candidate, strings.Join(noteLines, "\n")
 }
 
 func containsMove(legal []string, candidate string) bool {

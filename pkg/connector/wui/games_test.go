@@ -369,6 +369,42 @@ func TestObserveHandler(t *testing.T) {
 			},
 		},
 		{
+			name:       "reasoning-then-move: analysis lines precede the move token",
+			observe:    observeStubFn(&stubProvider{}, "glm-5.2", true),
+			script:     []stubScript{{think: "红方当头炮直攻中路", text: "红方当头炮急攻中路,我当屏风马固守。\n计划:跳马护中卒,兼通车路。\n马8进7"}},
+			body:       observeBody(t, observeTestPrompt, observeTestState),
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, sp *stubProvider, resp observeResp) {
+				if resp.Move != "马8进7" {
+					t.Fatalf("Move = %q, want 马8进7 (last legal-matching line)", resp.Move)
+				}
+				if !strings.Contains(resp.Note, "屏风马") || !strings.Contains(resp.Note, "跳马护中卒") {
+					t.Errorf("Note = %q, want the analysis lines preserved", resp.Note)
+				}
+				if strings.Contains(resp.Note, "马8进7") {
+					t.Errorf("Note must not repeat the bare move line: %q", resp.Note)
+				}
+			},
+		},
+		{
+			name:       "prose-embedded move: trailing-token rescue",
+			observe:    observeStubFn(&stubProvider{}, "glm-5.2", true),
+			script:     []stubScript{{text: "红车炮叠在中路强攻,只能支士垫将,先解燃眉之急,再图后计。马8进7"}},
+			body:       observeBody(t, observeTestPrompt, observeTestState),
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, sp *stubProvider, resp observeResp) {
+				if resp.Move != "马8进7" {
+					t.Fatalf("Move = %q, want 马8进7 rescued from the trailing prose", resp.Move)
+				}
+				if resp.Error != "" {
+					t.Errorf("Error = %q, want none", resp.Error)
+				}
+				if !strings.Contains(resp.Note, "红车炮叠") {
+					t.Errorf("Note = %q, want the prose kept as the note", resp.Note)
+				}
+			},
+		},
+		{
 			name:       "resignation streams final with done",
 			observe:    observeStubFn(&stubProvider{}, "glm-5.2", true),
 			script:     []stubScript{{text: "认输\n这局你赢了，学到了。"}},

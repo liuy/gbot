@@ -316,15 +316,48 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
 (function () {
   'use strict';
 
-  const OBSERVE_PROMPT = `You are the black-side player in a Chinese chess game, playing against the user (red).
+  const OBSERVE_PROMPT = `你是一位征战多年的中国象棋老棋手，棋风稳健老辣，现执黑与用户（红）对弈。
 用户消息为当前局面观察，包含：
-1. 文字棋盘：列标题为 x 坐标（0-8，从左到右），行首数字为 y 坐标（9 为红方底线，0 为黑方底线）。
-2. 「上一步」：红方刚走的着法（标准中文记谱）。
-3. 「legal-moves:」之后的行：黑方当前所有合法走法（标准中文记谱，每行一条）。
-你的回复必须满足：
-- 若你认为败局已定，第一行只输出：认输
-- 否则第一行：从 legal-moves 清单中逐字符原样选择一条输出（不得改写、增删空格或翻译数字）。
-- 其余行：用一到两句口语化中文点评局面（会作为你的棋手笔记展示给用户）。
+1. ASCII 棋盘：每格一个字母。小写 r n b a c k p = 你的黑子（車馬象仕将砲卒），大写 R N B A C K P = 对方的红子（车马相士帅炮兵），. 为空格。顶行 y0 是你的底线，底行 y9 是红方底线。
+2. 「你的棋子」「对方棋子」：双方每个子的名称与坐标 (x,y)。
+3. 「上一步」：红方刚走的着法（标准中文记谱）。
+4. 对局记录中你的笔记 = 计划存档;「要点情报」:对方将门守备与你占中路/肋线的大子。
+5. 「legal-moves:」之后的行：你当前所有合法走法（标准中文记谱，每行一条）。
+6. 「受威胁的你的棋子」：对方下一手就能吃掉的你的子及其「可救着法」（记谱 token，直接选用即可,优先救价值最大的子）。
+7. 「步法评估」：引擎对每个合法步的一步前瞻 — 安全（落子后不会被吃）、会被X吃（勿走，除非换子划算）、可吃Y（能吃对方Y）。
+8. 「局面要素」：双方子力总值、已出动大子数、过河子数、活动度（合法步数）— 战略决策的依据。
+子力价值: 車=9 馬=4.5 砲=4.5 卒=1(过河后2) 象/仕=2
+选子程序（严格按序执行）:
+1. 净亏检查: 若「受威胁」中被捉子的价值,大于你本步能安全吃到的子,且无法吃回攻击者——先从该子的「可救着法」中选一步。
+2. 否则,在「安全·有吃子」行的步法里(标注(吃X)),选吃的子价值最大的一步。
+3. 否则,按阶段走战略(参照「局面要素」与历史手数):
+   - 开局(前12手): 出动车马炮大子,抢占卒林线与要道,马跳河口,炮占中路;忌反复动同一子、忌拥塞。
+   - 中局: 提高活动度劣势项,大子过河协同作战,控制中路;有攻势时敢于弃子攻杀。
+   - 残局: 兵贵神速,将帅助攻,占位争先。
+4. 绝不选「有代价」行中标(会致杀:…)的步法;标注(绝杀!)的步法必走。
+5. 禁选标(会被X吃)的步法,除非可吃子价值明显大于将被吃的子。
+杀法与防守常识(识别对方杀形是活命关键):
+- 常见杀形: 马后炮(马控将门+炮后将军)、重炮/叠炮(双炮同线前将后架)、双车错、卧槽马、钓鱼马、天地炮(一中炮一底线炮)、铁门栓、闷宫、空头炮。
+- 防守要诀: 士象勿拆(将门屏障)、炮架勿轻让(对方重炮常借你自己的子作架)、将门前的自家子是双刃剑、车路保持通畅、被将军时优先垫子或吃回而非盲逃。
+- 进攻要诀: 控住对方将门与中路,先困将后绝杀;弃子引士象常是入杀前奏。
+对局记录中"—"后是你的历史笔记,即你的作战计划存档(scratchpad):不可改写,只能在新笔记中声明【延续】【修订】或【废除】。
+每手笔记必须用计划语法(口语化中文,展示给用户):
+【形势】第一词必须是形势判断:我优/均势/我劣,随后一条证据(参照「局面要素」),再述对方布局与意图
+【计划】类型·目标(手数) — 从计划菜单选择,含【延续/修订/废除】声明
+【进度】n/m,计划到期未达必须修订
+计划菜单与选择判据: 攻杀类—沉底炮+马后炮/双车错占肋/铁门栓控中路(选于:你攻势或子力占优、或被迫搏斗时); 破局类—兑子消势/弃子抢先/封锁要道(选于:对方攻势猛时); 简化类—兑子入残局(选于:对方将门稳而你子力领先时); 固守类—补士象固防待变(选于:你将门欠固或受威胁清单非空时)。
+硬约束: 连续两手不得移动同一棋子(解将、吃子、执行计划必需除外);开局严禁连走仕象。
+你的回复必须满足（先想后走，最后一行必须是单独一行的着法 token——缺了这行回复无效）：
+- 先写计划语法笔记(【形势】【计划】【进度】各占一行)。
+- 最后一行是着法：从 legal-moves 清单中逐字符原样复制一条（不得改写、增删空格或翻译数字）。
+【格式示例】
+【形势】我劣 红中炮过河车急攻我左翼,对方将门仕1相2欠固是唯一机会
+【计划】破局·兑子消势(3手):車8进3兑中路车,消其炮势【新立】
+【进度】0/3
+車8进3
+- 开局阶段（前12手）从正统布局行棋：对当头炮应以屏风马、反宫马、顺炮或列炮，按谱走，不即兴创新。
+- 「受威胁」中出现你的将被捉且可救着法为「无」时 = 败局已定，最后一行只写：认输
+- 只有被将死不可避免、或子力差距超过一车且毫无攻势时才认输（少一两个子必须继续顽抗，象棋残局常有翻盘）；认输时最后一行只写：认输
 - 除以上内容外不要输出任何其他文字、JSON 或 markdown 代码块。`;
 
   const COLS = 9, ROWS = 10;
@@ -363,6 +396,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   let pending = false;      // black is thinking (clicks locked)
   let gameOver = false;
   let moves = [];           // completed half-moves in notation, always even (red/black)
+  let notes = [];           // black's note per black half-move — the scratchpad
   let pendingRedToken = ''; // 红步刚落的记谱，等黑步应答成功后与黑 token 一起入档
   let lastNote = '';        // 黑方上一手附言（仅本页会话内有效，刷新即失）
   let lastCaptured = '';    // 最近一手被吃的子名（空串 = 无吃子）
@@ -375,19 +409,22 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       const raw = localStorage.getItem(saveKey());
       if (!raw) return null;
       const obj = JSON.parse(raw);
-      if (!obj || obj.v !== 1 || !Array.isArray(obj.moves)) return null;
+      if (!obj || (obj.v !== 1 && obj.v !== 2) || !Array.isArray(obj.moves)) return null;
       // Odd length = red moved but black never answered; restoring would drop
       // black's reply, so treat as corrupt.
       if (obj.moves.length % 2 !== 0) return null;
       if (!obj.moves.every(m => typeof m === 'string')) return null;
-      return obj.moves;
+      const savedNotes = obj.v === 2 && Array.isArray(obj.notes)
+        ? obj.notes.filter(n => typeof n === 'string') : [];
+      while (savedNotes.length < obj.moves.length / 2) savedNotes.push('');
+      return { moves: obj.moves, notes: savedNotes.slice(0, obj.moves.length / 2) };
     } catch (e) {
       return null;
     }
   }
 
   function saveMoves() {
-    localStorage.setItem(saveKey(), JSON.stringify({ v: 1, moves }));
+    localStorage.setItem(saveKey(), JSON.stringify({ v: 2, moves, notes }));
   }
 
   function discardSave() {
@@ -464,13 +501,6 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   // Captured trays follow the trophy convention (lichess-style): each side
   // shows the pieces IT captured — the user's black trophies at the bottom,
   // the opponent's red trophies on top.
-  // Display-only glyph fix: the lib's black set is traditional except the
-  // general (simplified 将). Tradition prints 車馬象士將砲卒, so the board and
-  // trays map it for looks — tokens/notation/observation stay lib-native so
-  // applyToken matching is untouched.
-  const DISPLAY_NAME = { '将': '將' };
-  const displayName = (n) => DISPLAY_NAME[n] || n;
-
   // Tray pieces are mini versions of the board piece (same palette vars and
   // Kaiti glyph), so a captured horse looks exactly like the horse on board.
   function miniPieceSVG(name, side) {
@@ -478,7 +508,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     return `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">` +
       `<circle cx="12" cy="12" r="10.5" fill="${red ? 'var(--piece-red-bg)' : 'var(--piece-black-bg)'}" stroke="${red ? 'var(--piece-red-edge)' : 'var(--piece-black-edge)'}" stroke-width="1.2"/>` +
       `<circle cx="12" cy="12" r="8.75" fill="none" stroke="${red ? 'rgba(255,255,255,.3)' : 'var(--piece-black-edge)'}" stroke-width="0.6" opacity="0.5"/>` +
-      `<text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="700" fill="${red ? 'var(--piece-red-text)' : 'var(--piece-black-text)'}" font-family='"Kaiti SC","STKaiti","KaiTi",serif'>${displayName(name)}</text></svg>`;
+      `<text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="700" fill="${red ? 'var(--piece-red-text)' : 'var(--piece-black-text)'}" font-family='"Kaiti SC","STKaiti","KaiTi",serif'>${name}</text></svg>`;
   }
 
   function renderCaptured() {
@@ -584,7 +614,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
         'stroke-width': 1, opacity: .5 }));
       const t = mk('text', { 'text-anchor': 'middle', y: 7, 'font-size': 21,
         fill: side==='red' ? 'var(--piece-red-text)' : 'var(--piece-black-text)' });
-      t.textContent = displayName(p.name);
+      t.textContent = p.name;
       g.appendChild(t);
       g.addEventListener('click', e => { e.stopPropagation(); onCellClick({currentTarget: g}); });
       boardSvg.appendChild(g);
@@ -610,10 +640,12 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
         selected = null;
         renderBoard();
         // A mate/stalemate against black sets OVER inside update — end locally,
-        // no observer round-trip.
-        if (game.gameState === 'OVER') {
+        // no observer round-trip. A captured general bypasses the lib's check
+        // logic entirely (nothing left to be "in check"), so test absence too.
+        const blackKingGone = !game.currentLivePieceList.some(p => p.name === '将');
+        if (game.gameState === 'OVER' || blackKingGone) {
           gameOver = true;
-          bubble('gbot', '你赢了！我被将死，无路可走。');
+          bubble('gbot', blackKingGone ? '老将被擒，这局你赢了。' : '你赢了！我被将死，无路可走。');
           showResult('你赢了');
           return;
         }
@@ -632,18 +664,204 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   // chosen token can be applied via applyToken(…,'BLACK'). moves pairs up only
   // after black answers; at render time red's hand sits in pendingRedToken, so
   // black is about to play move number moves.length+2 (red took +1).
+  // Xiangqi-FEN letters — same convention as the engine world and our PEN
+  // string (lowercase = black, uppercase = red). Case-as-side is the cue
+  // LLMs know cold from international-chess corpora; the traditional/simplified
+  // glyph split (車 vs 车) proved unreadable to models.
+  // Lib glyph reality (verified twice by runtime enumeration): BLACK is
+  // 車馬象仕将砲卒, RED is 车马相士帅炮兵 — do not "correct" to tradition.
+  const FEN_LETTER = {
+    BLACK: { '車': 'r', '馬': 'n', '象': 'b', '仕': 'a', '将': 'k', '砲': 'c', '卒': 'p' },
+    RED: { '车': 'R', '马': 'N', '相': 'B', '士': 'A', '帅': 'K', '炮': 'C', '兵': 'P' },
+  };
+
+  function asciiBoardLines() {
+    const grid = Array.from({ length: ROWS }, () => Array(COLS).fill('.'));
+    for (const p of game.currentLivePieceList)
+      grid[p.y][p.x] = FEN_LETTER[p.side][p.name];
+    const lines = ['     x0 x1 x2 x3 x4 x5 x6 x7 x8'];
+    for (let y = 0; y < ROWS; y++)
+      lines.push(`y${y}  ` + grid[y].join('  '));
+    return lines;
+  }
+
+  function sideInventory(side) {
+    const inv = [];
+    for (const p of game.currentLivePieceList)
+      if (p.side === side) inv.push(`${p.name}(${p.x},${p.y})`);
+    return inv.join(' ');
+  }
+
+  // One-step lookahead per legal move — the "external planning" lever:
+  // engine-computed safety beats any prompt plea. Apply each move, list
+  // red's captures that target the moved piece, restore from the PEN
+  // snapshot (which also restores the side to move).
+  // Two-ply mate sweep: mate-in-1 both ways. [绝杀] marks our immediate
+  // mating moves; [会致杀] marks moves that hand red a mate-in-1 (the
+  // double-cannon screen-lift blunder class). Prefilter red replies to
+  // captures and palace/file-4 landings — where virtually all frontal mates
+  // come from — to keep the sweep fast.
+  function mateSweep(m) {
+    // setPenCodeList restores pieces and side but NOT gameState — an OVER
+    // set by a simulated mate must be reverted or the real game freezes
+    // ("棋盘结束 等待重开" rejects every later update).
+    const st = game.gameState;
+    game.update({ x: m.from.x, y: m.from.y }, { x: m.to.x, y: m.to.y }, 'BLACK', true);
+    const afterUs = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'RED');
+    let ourMate = game.generateLegalMoves('RED').length === 0;
+    let deadly = false;
+    let killer = '';
+    game.gameState = st;
+    if (!ourMate) {
+      const redPieces = game.getPiecesOfSide('RED');
+      for (const r of game.generateLegalMoves('RED')) {
+        const frontal = (r.to.x >= 3 && r.to.x <= 5) || r.captured;
+        if (!frontal) continue;
+        game.update({ x: r.from.x, y: r.from.y }, { x: r.to.x, y: r.to.y }, 'RED', true);
+        if (game.gameState === 'OVER') {
+          deadly = true;
+          // Serialize the killer line (MATE: readable variations beat opaque
+          // tags — models skip bare labels but read concrete sequences).
+          killer = '红' + moveToNotation(r, 'RED', redPieces) + '绝杀';
+        }
+        game.setPenCodeList(afterUs);
+        game.gameState = st;
+        if (deadly) break;
+      }
+    }
+    return { ourMate, deadly, killer };
+  }
+
+  function moveEvalLine() {
+    const st = game.gameState;
+    const pen = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK');
+    const pieces = game.getPiecesOfSide('BLACK');
+    const moves = game.generateLegalMoves('BLACK');
+    const caps = [], safe = [], risky = [];
+    for (const m of moves) {
+      const token = moveToNotation(m, 'BLACK', pieces);
+      let hunterTag = '';
+      game.update({ x: m.from.x, y: m.from.y }, { x: m.to.x, y: m.to.y }, 'BLACK', true);
+      const hunters = game.generateLegalMoves('RED')
+        .filter(r => r.captured && r.captured.x === m.to.x && r.captured.y === m.to.y);
+      if (hunters.length > 0) {
+        const hunterName = game.getPiecesOfSide('RED')
+          .find(p => p.x === hunters[0].from.x && p.y === hunters[0].from.y);
+        hunterTag = '会被' + (hunterName ? hunterName.name : '?') + '吃';
+      }
+      game.setPenCodeList(pen);
+      game.gameState = st;
+      const { ourMate, deadly, killer } = mateSweep(m);
+      game.setPenCodeList(pen);
+      game.gameState = st;
+      if (ourMate) { caps.push(`${token}(绝杀!)`); continue; }
+      if (deadly) { risky.push(`${token}(会致杀:则${killer})`); continue; }
+      if (m.captured && !hunterTag) caps.push(`${token}(吃${m.captured.name})`);
+      else if (m.captured) risky.push(`${token}(吃${m.captured.name}·${hunterTag})`);
+      else if (hunterTag) risky.push(`${token}(${hunterTag})`);
+      else safe.push(token);
+    }
+    // Categorized so each decision step scans exactly one line; captures
+    // lead because a safe capture is the default best move. A flat list
+    // buried the captures and the model played meaningless moves instead.
+    return '步法评估:\n- 安全·有吃子: ' + (caps.join(' ') || '无') +
+      '\n- 安全: ' + (safe.join(' ') || '无') +
+      '\n- 有代价: ' + (risky.join(' ') || '无');
+  }
+
+  // Positional metrics the engine computes for free — the strategy layer
+  // material/tactics alone cannot express: development, river presence,
+  // mobility. "Amateurs optimize the next move, masters the position."
+  const PIECE_VALUE = { '車': 9, '馬': 4.5, '砲': 4.5, '卒': 1, '象': 2, '仕': 2, '将': 0,
+                        '车': 9, '马': 4.5, '炮': 4.5, '兵': 1, '相': 2, '士': 2, '帅': 0 };
+  function situationLine() {
+    const stats = { RED: { mat: 0, dev: 0, river: 0 }, BLACK: { mat: 0, dev: 0, river: 0 } };
+    for (const p of game.currentLivePieceList) {
+      const s = stats[p.side];
+      s.mat += PIECE_VALUE[p.name] || 0;
+      // Proxy metric: big pieces off their STARTING squares count as
+      // developed — a piece returning home reads as undeveloped. Cheap and
+      // directionally right; not an exact activity measure.
+      const bigStart = (p.name === '車' && p.y === 0) || (p.name === '馬' && p.y === 0) || (p.name === '砲' && p.y === 2) ||
+                       (p.name === '车' && p.y === 9) || (p.name === '马' && p.y === 9) || (p.name === '炮' && p.y === 7);
+      if (['車','馬','砲','车','马','炮'].includes(p.name) && !bigStart) s.dev++;
+      // River: black presence y>=5, red presence y<=4.
+      if ((p.side === 'BLACK' && p.y >= 5) || (p.side === 'RED' && p.y <= 4)) s.river++;
+    }
+    const mobR = game.generateLegalMoves('RED').length;
+    const mobB = game.generateLegalMoves('BLACK').length;
+    return `局面要素: 子力 红${stats.RED.mat}:黑${stats.BLACK.mat} | 出动大子 红${stats.RED.dev}:黑${stats.BLACK.dev} | 过河 红${stats.RED.river}:黑${stats.BLACK.river} | 活动度 红${mobR}:黑${mobB}`;
+  }
+
+  // Key-point intel for planning: enemy palace defence density and which
+  // key files (3/4/5 — the general's file and both ribs) our big pieces sit
+  // on or can slide to. Raw materials for attack plans, facts only.
+  function intelLine() {
+    const defenders = game.currentLivePieceList
+      .filter(p => p.side === 'RED' && (p.name === '仕' || p.name === '相'))
+      .map(p => p.name).sort().join('') || '无';
+    const own = [];
+    for (const p of game.currentLivePieceList) {
+      if (p.side !== 'BLACK' || (p.name !== '車' && p.name !== '砲')) continue;
+      if (p.x === 4) own.push(`${p.name}(${p.x},${p.y})占中路`);
+      if (p.x === 3 || p.x === 5) own.push(`${p.name}(${p.x},${p.y})占肋`);
+    }
+    return `要点情报: 对方将门守备 ${defenders}${defenders.length < 4 ? '(欠固)' : '(完固)'}` +
+      (own.length ? ' | ' + own.join(' ') : '');
+  }
+
   function renderObservation() {
     const lines = [];
     lines.push('对局记录:');
-    for (const m of moves) lines.push(m);
+    for (let i = 0; i < moves.length; i++) {
+      // Black half-moves carry the scratchpad note — written once, immutable.
+      const note = i % 2 === 1 && notes[(i - 1) / 2] ? ' — ' + notes[(i - 1) / 2].replace(/\n/g, ' ') : '';
+      lines.push(moves[i] + note);
+    }
     lines.push('──────────');
     lines.push(`轮到黑方·第 ${moves.length + 2} 手`);
-    lines.push('PEN: ' + ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK'));
-    lines.push(game.exportTextBoard());
+    lines.push(...asciiBoardLines());
+    lines.push('你的棋子: ' + sideInventory('BLACK'));
+    lines.push('对方棋子: ' + sideInventory('RED'));
+    lines.push('FEN: ' + ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK'));
+    // Red's immediate capture targets: the anti-hanging signal. Computing
+    // this here beats any prompt plea to "watch your pieces". Each entry
+    // carries engine-computed RESCUE MOVES as ready-to-copy notation tokens —
+    // the model proved unable to translate coordinates into file numbers
+    // itself and moved the wrong elephant.
+    const blackPieces = game.getPiecesOfSide('BLACK');
+    const blackMoves = game.generateLegalMoves('BLACK');
+    const threats = [];
+    for (const r of game.generateLegalMoves('RED')) {
+      if (!r.captured) continue;
+      const victim = `${r.captured.name}(${r.captured.x},${r.captured.y})`;
+      const hunterName = game.getPiecesOfSide('RED')
+        .find(p => p.x === r.from.x && p.y === r.from.y)?.name || '?';
+      const savers = blackMoves
+        .filter(m => (m.from.x === r.captured.x && m.from.y === r.captured.y) ||
+                     (m.to.x === r.from.x && m.to.y === r.from.y))
+        .map(m => moveToNotation(m, 'BLACK', blackPieces));
+      threats.push(`${victim}被${hunterName}捉,可救着法: ${savers.length ? savers.join(' / ') : '无'}`);
+    }
+    if (threats.length > 0) {
+      lines.push('受威胁的你的棋子:');
+      for (const t of threats) lines.push('- ' + t);
+    }
     const last = pendingRedToken || moves[moves.length - 1] || '';
     if (last) lines.push('上一步：' + last);
     if (lastCaptured) lines.push('被吃：' + lastCaptured);
-    if (lastNote) lines.push('附言: ' + lastNote);
+    lines.push(intelLine());
+    // The active plan sits LATE in the observation: evidence far from the
+    // generation end is recalled worse (memory-survey recency bias), and a
+    // plan buried under sixty history notes stops steering moves.
+    if (lastNote) {
+      const planLine = lastNote.split('\n').filter(l => l.includes('【计划】') || l.includes('【进度】')).join(' ');
+      if (planLine) lines.push('你当前的计划(自上一手): ' + planLine);
+    }
+    // Eval BEFORE the list: parseLegalMoves swallows everything after the
+    // marker, so annotations must not live inside the list itself.
+    lines.push(moveEvalLine());
+    lines.push(situationLine());
     lines.push('legal-moves:');
     for (const t of legalNotations('BLACK')) lines.push(t);
     return lines.join('\n');
@@ -742,8 +960,19 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       }
       const move = applyToken(data.move, 'BLACK');
       if (!move) throw new Error('黑方着法非法：' + data.move);
+      if (!game.currentLivePieceList.some(p => p.name === '帅')) {
+        moves.push(pendingRedToken, data.move);
+        notes.push(typeof data.note === 'string' ? data.note : '');
+        saveMoves();
+        b.classList.remove('pending');
+        gameOver = true;
+        bubble('user', '你的帅被吃了。');
+        showResult('你输了');
+        return;
+      }
       lastCaptured = move.captured ? move.captured.name : '';
       moves.push(pendingRedToken, data.move);
+      notes.push(typeof data.note === 'string' ? data.note : '');
       saveMoves();
       lastNote = typeof data.note === 'string' ? data.note : '';
     } catch (err) {
@@ -775,18 +1004,20 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       if (localStorage.getItem(saveKey()) !== null) discardSave();
       return false;
     }
-    for (let i = 0; i < saved.length; i++) {
+    for (let i = 0; i < saved.moves.length; i++) {
       const side = i % 2 === 0 ? 'RED' : 'BLACK';
-      if (!applyToken(saved[i], side)) {
+      if (!applyToken(saved.moves[i], side)) {
         // Replay failing midway means the save disagrees with the rules engine;
         // discard and start fresh.
         discardSave();
         game.gameStart('RED');
         moves = [];
+        notes = [];
         return false;
       }
     }
-    moves = saved;
+    moves = saved.moves;
+    notes = saved.notes;
     return true;
   }
 
@@ -870,6 +1101,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     if (resignArmed) { clearTimeout(resignArmed); resignArmed = null;
       const b = document.getElementById('resignBtn'); b.classList.remove('confirm'); b.textContent = '🏳'; }
     moves = [];
+    notes = [];
     pendingRedToken = '';
     lastNote = '';
     lastCaptured = '';
@@ -903,6 +1135,8 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   syncThemeFromHost();
 
   window.ChessGame = {
+    _testSetPen: (pen) => { game.setPenCodeList(pen); renderBoard(); },
+    _testGameState: () => game.gameState,
     init, restore, renderBoard, renderObservation,
     moveToNotation, legalNotations, applyToken, onCellClick, postTurn,
     showResult, resign, newGame,

@@ -227,7 +227,42 @@ describe('chess renderObservation', () => {
     expect(lines[0]).toBe('对局记录:')
     expect(lines[1]).toBe('──────────')
     expect(lines[2]).toBe('轮到黑方·第 2 手')
-    expect(lines[3].startsWith('PEN: rnbakabnr')).toBe(true)
+    // ASCII board: header row, y0 black back rank lowercase, y9 red uppercase.
+    expect(lines[3]).toBe('     x0 x1 x2 x3 x4 x5 x6 x7 x8')
+    expect(lines[4]).toBe('y0  r  n  b  a  k  a  b  n  r')
+    expect(lines[13]).toBe('y9  R  N  B  A  K  A  B  N  R')
+    expect(lines[14].startsWith('你的棋子: ')).toBe(true)
+    expect(lines[14]).toContain('車(0,0)')
+    expect(lines[14]).toContain('将(4,0)')
+    expect(lines[15].startsWith('对方棋子: ')).toBe(true)
+    expect(lines[15]).toContain('车(0,9)')
+    expect(lines[15]).toContain('帅(4,9)')
+    const penIdx = lines.findIndex((l) => l.startsWith('FEN: rnbakabnr'))
+    if (penIdx < 0) throw new Error('PEN line missing')
+    // Lookahead eval locks the full chain: the vertical cannon capture is
+    // engine-legal, it eats the horse, and the rook recaptures — the risky
+    // line must carry both facts. Categorization puts captures first.
+    const evalIdx = lines.findIndex((l) => l === '步法评估:')
+    if (evalIdx < 0) throw new Error('步法评估 header missing')
+    if (!lines[evalIdx + 1].startsWith('- 安全·有吃子: ')) throw new Error('captures line missing: ' + lines[evalIdx + 1])
+    if (!lines[evalIdx + 2].startsWith('- 安全: ')) throw new Error('safe line missing')
+    if (!lines[evalIdx + 3].startsWith('- 有代价: ')) throw new Error('risky line missing')
+    const riskyLine = lines[evalIdx + 3]
+    if (!riskyLine.includes('砲8进7(吃马·会被车吃)')) throw new Error('cannon exchange not evaluated: ' + riskyLine)
+    if (!lines[evalIdx + 2].includes('馬8进7')) throw new Error('safe move not listed')
+    // Positional metrics: symmetric opening — equal material, nothing
+    // developed, nothing across the river, equal mobility.
+    // Mate sweep sanity on the opening: no 绝杀/会致杀 tags anywhere.
+    for (let i = evalIdx; i < evalIdx + 4; i++) {
+      if (lines[i].includes('绝杀') || lines[i].includes('会致杀'))
+        throw new Error('phantom mate tag in opening: ' + lines[i])
+    }
+    const sit = lines[evalIdx + 4]
+    if (!sit.startsWith('局面要素: ')) throw new Error('situation line missing: ' + lines[evalIdx + 4])
+    if (!sit.includes('子力 红49:黑49')) throw new Error('material sum wrong: ' + sit)
+    if (!sit.includes('出动大子 红0:黑0')) throw new Error('opening development must be zero: ' + sit)
+    if (!sit.includes('过河 红0:黑0')) throw new Error('opening river must be zero: ' + sit)
+    if (!/活动度 红(4[0-9]):黑\1/.test(sit)) throw new Error('opening mobility should match: ' + sit)
     if (obs.includes('上一步：')) {
       throw new Error('cold start must not carry an 上一步 line')
     }
@@ -413,7 +448,7 @@ describe('chess page integration', () => {
     await flushAsync()
     expect(pieceAt(1, 0)).toBe(null)
     expect(pieceAt(2, 2)?.textContent).toBe('馬')
-    expect(localStorage.getItem(saveKey())).toBe('{"v":1,"moves":["炮二平五","馬8进7"]}')
+    expect(localStorage.getItem(saveKey())).toBe('{"v":2,"moves":["炮二平五","馬8进7"],"notes":["稳一手"]}')
     expect(boardWrap().classList.contains('no-click')).toBe(false)
     expect(document.querySelector('.bubble.pending')).toBe(null)
     const bubbles = [...document.querySelectorAll('.bubble')]
@@ -435,6 +470,25 @@ describe('chess page integration', () => {
     clickCell(2, 2)
     expect(dotCount()).toBe(0)
   })
+  it('mate sweep: tags a real mate-in-1, restores gameState, other moves still evaluated', async () => {
+    // Black chariot pair mates the bare red king: the tag must appear, the
+    // sweep must leave gameState playable, and non-mating moves must not be
+    // broken by the OVER state leaking from the simulation.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    // Build directly: black 車(4,3)+車(0,0) vs red 帅(4,9) — 車4进6 mates.
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen?.('4r4/9/9/9/9/9/9/9/r3r4/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const lines = obs.split('\n')
+    const risky = lines.find((l) => l.startsWith('- 有代价'))
+    const caps = lines.find((l) => l.startsWith('- 安全·有吃子'))
+    if (!risky || !caps) throw new Error('eval lines missing after mate sweep')
+    if (!risky.includes('绝杀!') && !caps.includes('绝杀!')) throw new Error('mate-in-1 not tagged: ' + risky)
+    // gameState must be restored: the page object still evaluates other
+    // moves and the game code must not believe the game is over.
+    const st = (game as unknown as { _testGameState: () => string })._testGameState?.()
+    if (st && st !== 'START') throw new Error('gameState leaked OVER: ' + st)
+  })
   it('new game: wipes the save and resets to the initial board', () => {
     localStorage.setItem(saveKey(), '{"v":1,"moves":["炮二平五","馬8进7"]}')
     const game = evalGamePage()
@@ -452,7 +506,7 @@ describe('chess page integration', () => {
 
   const CORRUPTED_SAVES: { name: string; raw: string }[] = [
     { name: 'invalid JSON', raw: 'zzz{' },
-    { name: 'v=2', raw: '{"v":2,"moves":["炮二平五","馬8进7"]}' },
+    { name: 'v=3', raw: '{"v":3,"moves":["炮二平五","馬8进7"]}' },
     { name: 'odd move count', raw: '{"v":1,"moves":["炮二平五"]}' },
     // 帅五平六：红帅旁移被自家仕占据，重建清单里不存在 → 重放中途失败
     { name: 'move not in rebuilt legal list', raw: '{"v":1,"moves":["帅五平六","馬8进7"]}' },
@@ -490,7 +544,7 @@ describe('chess page integration', () => {
     f.next(streamReply({ type: 'final', move: '馬8进7', note: '' }))
     await flushAsync()
     expect(pieceAt(2, 2)?.textContent).toBe('馬')
-    expect(localStorage.getItem(saveKey())).toBe('{"v":1,"moves":["炮二平五","馬8进7"]}')
+    expect(localStorage.getItem(saveKey())).toBe('{"v":2,"moves":["炮二平五","馬8进7"],"notes":[""]}')
     expect(boardWrap().classList.contains('no-click')).toBe(false)
     expect(document.querySelectorAll('.bubble').length).toBe(0)
   })
