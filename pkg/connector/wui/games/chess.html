@@ -228,6 +228,20 @@
     padding: 8px 16px calc(10px + env(safe-area-inset-bottom, 0px));
     flex-shrink: 0;
   }
+  /* End-of-game primary CTA (lichess convention: solid filled for the main
+     action, outlined only for secondary). Uses the red-general disc color —
+     on-theme on both light and dark. */
+  .btn-primary {
+    padding: 9px 22px;
+    border: none; border-radius: 10px;
+    background: #D54F4F; color: #FFF5F2;
+    font-size: 13px; font-weight: 600; letter-spacing: .5px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(213, 79, 79, .35);
+    transition: filter .15s ease, transform .1s ease;
+  }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:active { transform: scale(.97); }
   .icon-btn {
     width: 32px; height: 32px; padding: 0;
     display: flex; align-items: center; justify-content: center;
@@ -255,23 +269,22 @@
   }
   .btn:active { background: var(--color-ink3); }
   .btn.warn { border-color: color-mix(in srgb, var(--color-red) 40%, transparent); color: var(--color-red); }
+  /* Lichess-style result bar: never covers the board — players want to
+     review the final position; a blocking modal is the most-complained-about
+     end-of-game pattern on chess.com. Slim bar below the board. */
   #resultBanner {
-    position: absolute; inset: 0; display: none;
-    align-items: center; justify-content: center;
-    background: color-mix(in srgb, var(--color-bg) 55%, transparent);
-    backdrop-filter: blur(2px);
-    border-radius: 14px; z-index: 5;
-  }
-  .result-card {
-    display: flex; flex-direction: column; align-items: center; gap: 14px;
-    padding: 26px 40px; border-radius: 14px;
-    background: var(--color-bg);
+    display: none; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 16px; border-radius: 12px;
+    background: color-mix(in srgb, var(--color-bg) 92%, var(--grid-line));
     border: 1px solid var(--grid-line);
-    box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    border-left: 4px solid var(--result-accent, var(--grid-line));
+    animation: result-in .3s ease;
   }
-  .result-card > div {
-    font-size: 20px; font-weight: 700; color: var(--color-t1);
-    letter-spacing: 1px;
+  @keyframes result-in {
+    from { opacity: 0; transform: translateY(8px); }
+  }
+  #resultText {
+    font-size: 15px; font-weight: 700; color: var(--color-t1); letter-spacing: .5px;
   }
 </style>
 </head>
@@ -290,15 +303,14 @@
   <div id="capTop" class="cap-tray"></div>
   <div class="board-wrap" id="boardWrap">
     <svg class="board" viewBox="0 0 460 512" id="board"></svg>
-    <div id="resultBanner">
-      <div class="result-card">
-        <div id="resultText"></div>
-        <button class="btn" onclick="ChessGame.newGame()">新开一局</button>
-      </div>
-    </div>
   </div>
 
   <div id="capBottom" class="cap-tray"></div>
+
+  <div id="resultBanner">
+    <div id="resultText"></div>
+    <button class="btn-primary" onclick="ChessGame.newGame()">再来一局</button>
+  </div>
 
   <div class="controls">
     <button id="resignBtn" class="icon-btn" title="认输" onclick="ChessGame.resign()">🏳</button>
@@ -1066,11 +1078,12 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   function showResult(text) {
     gameOver = true;
     pending = false;
-    // No no-click here: the overlay itself blocks board clicks, and no-click
-    // would kill the button too.
-    boardWrap.classList.remove('no-click');
+    boardWrap.classList.add('no-click');
     const banner = document.getElementById('resultBanner');
     document.getElementById('resultText').textContent = text;
+    // Win = warm accent, loss = muted — a fact tint, not decoration.
+    banner.style.setProperty('--result-accent',
+      text.includes('赢') ? 'var(--piece-red-bg)' : 'var(--grid-line)');
     banner.style.display = 'flex';
   }
   // Two-step resign (chess-UI convention: flag icon + confirm, so a stray
