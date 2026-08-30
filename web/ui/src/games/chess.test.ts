@@ -127,7 +127,7 @@ describe('chess notation generator', () => {
 
   const cases: { name: string; pen: string; side: string; from: [number, number]; to: [number, number]; want: string }[] = [
     { name: 'red cannon central', pen: START_PEN, side: 'RED', from: [1, 7], to: [4, 7], want: '炮二平五' },
-    // 红方记谱从红方视角数列（colFrom=x+1）：x=7 是第 8 线，马八进七/马八进九
+    // Red notation counts files from red's view (colFrom=x+1): x=7 is file 8.
     { name: 'red horse to 7', pen: START_PEN, side: 'RED', from: [7, 9], to: [6, 7], want: '马八进七' },
     { name: 'red horse to 9', pen: START_PEN, side: 'RED', from: [7, 9], to: [8, 7], want: '马八进九' },
     { name: 'red advisor advance', pen: START_PEN, side: 'RED', from: [3, 9], to: [4, 8], want: '士四进五' },
@@ -135,8 +135,8 @@ describe('chess notation generator', () => {
     { name: 'black cannon to 5', pen: START_PEN, side: 'BLACK', from: [1, 2], to: [4, 2], want: '砲8平5' },
     { name: 'black chariot advance 2', pen: START_PEN, side: 'BLACK', from: [8, 0], to: [8, 2], want: '車1进2' },
     { name: 'black advisor advance', pen: START_PEN, side: 'BLACK', from: [3, 0], to: [4, 1], want: '仕6进5' },
-    // 标准记谱：叠子前缀（前/中/后）取代列号——「前兵进一」而非「前兵五进一」。
-    // 两王分属不同列（3k 与 5K），避免照面规则把兵的着法全部过滤掉。
+    // Stacked pieces replace the file number with a rank prefix.
+    // Kings on different files so the facing rule does not filter the pawns.
     // two pawns on one file: positional prefixes (red: smaller y is front)
     { name: 'front of two pawns', pen: '3k5/9/9/9/4P4/9/9/9/4P4/5K3 w', side: 'RED', from: [4, 4], to: [4, 3], want: '前兵进一' },
     { name: 'rear of two pawns', pen: '3k5/9/9/9/4P4/9/9/9/4P4/5K3 w', side: 'RED', from: [4, 8], to: [4, 7], want: '后兵进一' },
@@ -247,8 +247,11 @@ describe('chess renderObservation', () => {
     if (!lines[evalIdx + 1].startsWith('- 安全·有吃子: ')) throw new Error('captures line missing: ' + lines[evalIdx + 1])
     if (!lines[evalIdx + 2].startsWith('- 安全: ')) throw new Error('safe line missing')
     if (!lines[evalIdx + 3].startsWith('- 有代价: ')) throw new Error('risky line missing')
-    const riskyLine = lines[evalIdx + 3]
-    if (!riskyLine.includes('砲8进7(吃马·会被车吃)')) throw new Error('cannon exchange not evaluated: ' + riskyLine)
+    const capsLine = lines[evalIdx + 1]
+    // Even trade (砲 4.5 for 馬 4.5) is materially safe — the exchange note
+    // replaces the old 会被吃 warning.
+    if (!capsLine.includes('砲8进7(吃马·车反吃,净得0)')) throw new Error('cannon exchange not evaluated: ' + capsLine)
+    if (!lines[evalIdx + 3].startsWith('- 有代价: 无')) throw new Error('even trade must leave 有代价 empty: ' + lines[evalIdx + 3])
     if (!lines[evalIdx + 2].includes('馬8进7')) throw new Error('safe move not listed')
     // Positional metrics: symmetric opening — equal material, nothing
     // developed, nothing across the river, equal mobility.
@@ -404,12 +407,12 @@ describe('chess page integration', () => {
     expect(document.querySelectorAll('#board g.piece').length).toBe(32)
     expect(boardWrap().classList.contains('no-click')).toBe(false)
     expect(localStorage.getItem(saveKey())).toBe(null)
-    // 红方行棋：左炮（x=1,y=7）全谱 12 个落点、左车（x=0,y=9）被自家兵封仅 2 个
+    // Red to move: cannon (x=1,y=7) has 12 targets; chariot (x=0,y=9) is blocked by its own pawn (2).
     clickCell(1, 7)
     expect(dotCount()).toBe(12)
     clickCell(0, 9)
     expect(dotCount()).toBe(2)
-    // 点黑子不产生落点（未轮到黑方手动行棋）
+    // Clicking a black piece shows no targets (black never moves by hand).
     clickCell(4, 0)
     expect(dotCount()).toBe(0)
   })
@@ -419,10 +422,10 @@ describe('chess page integration', () => {
     const f = stubFetch()
     clickCell(1, 7)
     clickCell(4, 7)
-    // 红步同步生效：炮已从 (1,7) 移到 (4,7)
+    // The red move landed: cannon moved from (1,7) to (4,7).
     expect(pieceAt(1, 7)).toBe(null)
     expect(pieceAt(4, 7)?.textContent).toBe('炮')
-    // POST 载荷：prompt 原样、state 含上一步与黑方 legal 清单（馬8进7 必在其列）
+    // POST payload: prompt verbatim, state carries the last move and the black legal list (馬8进7 included).
     expect(f.posts.length).toBe(1)
     expect(f.posts[0].url).toBe(location.pathname)
     const body = JSON.parse(f.posts[0].body) as { prompt: string; state: string }
@@ -433,17 +436,17 @@ describe('chess page integration', () => {
     expect(stateLines).toContain('上一步：炮二平五')
     const markerIdx = stateLines.indexOf('legal-moves:')
     if (markerIdx < 0) throw new Error('legal-moves marker missing in POST state')
-    // 清单与页面在同一局面下生成的黑方记谱逐一相等（馬8进7 必在其列）
+    // The list equals the page-generated notations for the same position (馬8进7 included).
     const list = stateLines.slice(markerIdx + 1).filter((l) => l !== '')
     expect(list).toEqual(ChessGame.legalNotations('BLACK'))
     expect(list).toContain('馬8进7')
-    // 挂起态：禁点 + pending 气泡 + 点击无效
+    // Pending state: clicks locked, pending bubble, clicks inert.
     expect(boardWrap().classList.contains('no-click')).toBe(true)
     expect(document.querySelector('.bubble.pending')?.textContent).toContain('思考中')
     clickCell(0, 9)
     expect(f.posts.length).toBe(1)
     expect(dotCount()).toBe(0)
-    // 应答 {move,note}（Go handler 真实形状）：黑马 (1,0)→(2,2)，存档精确写入
+    // Reply {move,note} (real Go handler shape): black horse (1,0)->(2,2), exact save written.
     f.next(streamReply({ type: 'note', text: '稳一手' }, { type: 'final', move: '馬8进7', note: '稳一手' }))
     await flushAsync()
     expect(pieceAt(1, 0)).toBe(null)
@@ -464,11 +467,235 @@ describe('chess page integration', () => {
     expect(pieceAt(4, 7)?.textContent).toBe('炮')
     expect(pieceAt(1, 7)).toBe(null)
     expect(boardWrap().classList.contains('no-click')).toBe(false)
-    // 当前轮红：红马 (7,9) 两个落点；点黑马无落点
+    // Red's turn: red horse (7,9) has two targets; clicking the black horse shows none.
     clickCell(7, 9)
     expect(dotCount()).toBe(2)
     clickCell(2, 2)
     expect(dotCount()).toBe(0)
+  })
+  it('see: defended cannon reads 有根 with net, rescue list kept, gameState restored', async () => {
+    // Red chariot attacks the black cannon on file x=1, black chariot sits
+    // behind it: recapture costs red 9 for 4.5 — the engine must report the
+    // exchange account, not an urgency verdict, and keep the rescue list.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '1r1k5/9/1c7/9/9/9/9/1R7/9/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    if (!obs.includes('砲(1,2)被车捉(有根:車反吃,红若吃则净亏4.5)')) {
+      throw new Error('root=' + obs.split('\n').filter(l => l.includes('捉') || l.includes('受威胁') || l.includes('安全') || l.includes('代价')).join(' || '))
+    }
+    if (!obs.includes('可救着法:')) throw new Error('rescue list must stay (fleeing is the LLM call)')
+    const st = (game as unknown as { _testGameState: () => string })._testGameState?.()
+    if (st && st !== 'START') throw new Error('gameState leaked: ' + st)
+  })
+
+  it('victory by mate: the click-through shows the banner, not a crash', async () => {
+    // Regression: a stale `who` reference inside bubble() only fired on the
+    // mate path (the sole click-reachable bubble call), freezing the board
+    // instead of declaring victory.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    // Bare black king; three red rooks pre-cover every palace square on
+    // files 3 and 5. The mating rook slides onto the king's file — full
+    // coverage, no capture, block or escape.
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '4k4/9/9/2R6/3R1R3/9/9/9/9/3K5 w')
+    clickCell(2, 3)
+    clickCell(4, 3)
+    const banner = document.getElementById('resultBanner')
+    if (!banner || banner.style.display !== 'flex') {
+      throw new Error('victory banner must show after mate: ' + String(banner && banner.style.display))
+    }
+    if (!document.getElementById('resultText')?.textContent?.includes('赢')) {
+      throw new Error('victory text missing')
+    }
+    if (document.querySelector('.bubble.error')) throw new Error('no error bubble allowed on the mate path')
+  })
+
+  it('fuzz: every red checking move from a midgame-ish board survives the build', async () => {
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '1r1kab3/9/1cn4c1/p1p3p2/9/9/9/4R4/9/2BAKAB2 w')
+    const g = (game as unknown as { _game: () => { update: Function; generateLegalMoves: Function; gameState: string; setPenCodeList: Function } })
+    const base = g._game ? g._game() : null
+    if (!base) throw new Error('need _game hook')
+    const pen0 = (window as unknown as { ZhChess: { gen_PEN_Str: Function } }).ZhChess
+      .gen_PEN_Str(base.currentLivePieceList, 'RED')
+    let checked = 0
+    for (const r of base.generateLegalMoves('RED')) {
+      base.update(r.from, r.to, 'RED', true)
+      // black king attacked after this red move = a check for us to render
+      const blackKing = base.currentLivePieceList.find((p: { name: string }) => p.name === '将')
+      const attacked = blackKing && base.generateLegalMoves('RED')
+        .some((m: { captured?: { x: number; y: number } }) => m.captured && m.captured.x === blackKing.x && m.captured.y === blackKing.y)
+      if (attacked) {
+        checked++
+        try {
+          ;(game as unknown as { renderObservation: () => string }).renderObservation()
+        } catch (e) {
+          // restore for the next iteration before failing
+          base.setPenCodeList(pen0)
+          throw new Error('crash under check after red move: ' + String(e))
+        }
+      }
+      base.setPenCodeList(pen0)
+    }
+    if (checked === 0) throw new Error('fuzz found no checking positions — test is vacuous')
+  })
+
+  it('see: a checked general does not crash the observation build', async () => {
+    // Red chariot checks the bare black general. The threat scan used to
+    // simulate the king capture and then generate moves for a kingless
+    // side, throwing before the POST ever left the page.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '4k4/9/9/9/9/9/9/4R4/9/3K5 b')
+    let obs = ''
+    try {
+      obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    } catch (e) {
+      throw new Error('renderObservation threw under check: ' + String(e))
+    }
+    if (!obs.includes('将(4,0)被车捉')) throw new Error('threat on the general must still be listed')
+    const st = (game as unknown as { _testGameState: () => string })._testGameState?.()
+    if (st && st !== 'START') throw new Error('gameState leaked: ' + st)
+  })
+
+  it('mate sweep: horse mate landing on file 2 is tagged 会致杀', async () => {
+    // The old 3-5 palace filter skipped mating replies that LAND on x2/x6 —
+    // horse checks on a central king land there, so real blunders passed
+    // untagged. Red threatens 马(3,3)->(2,1)# after any quiet black move.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '4k4/7R1/9/3N5/5R3/9/p2R5/9/9/3K5 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const risky = obs.split('\n').find(l => l.startsWith('- 有代价'))
+    if (!risky) throw new Error('eval lines missing')
+    if (!risky.includes('卒9进1(会致杀')) {
+      throw new Error('non-palace mating reply must be tagged: ' + risky)
+    }
+  })
+
+  it('mate net: an existing one-move mate triggers the warning', async () => {
+    // The horse-mate position: red already has 马(3,3)->(2,1)# available if
+    // given the move — the null-move threat fires the alarm.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '4k4/7R1/9/3N5/5R3/9/p2R5/9/9/3K5 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    if (!obs.includes('杀网警报: 红现有一步绝杀手段')) {
+      throw new Error('standing mate must trigger the alarm: ' +
+        obs.split('\n').filter(l => l.startsWith('- ')).join(' | '))
+    }
+  })
+
+  it('mate net: a forced two-move ladder (双车错) is reported', async () => {
+    // 双车错: the y1 rook guards the sacrifice square; after the x4 capture-
+    // check both king retreats get mated. No standing mate (the king has real
+    // escapes now), so only the forced-net branch can fire.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '4k4/R3a4/9/9/9/9/p8/4R4/9/8K1 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const line = obs.split('\n').find(l => l.startsWith('杀网警报'))
+    if (!line || !line.includes('后两步内强制绝杀') || !line.includes('车')) {
+      throw new Error('forced ladder must be reported: ' + String(line) + ' | eval=' +
+        obs.split('\n').filter(l => l.startsWith('- ')).join(' | '))
+    }
+    if (line && line.includes('现有一步绝杀')) {
+      throw new Error('king escapes survive — standing-mate branch must stay off')
+    }
+  })
+
+  it('mate net: quiet opening position raises no alarm', async () => {
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    const t0 = performance.now()
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const ms = Math.round(performance.now() - t0)
+    if (obs.includes('杀网警报')) throw new Error('false positive on the opening board')
+    // The full (ii) scan runs here (40 preparations, each refuted early) —
+    // keep the observation build comfortably interactive.
+    if (ms > 2000) throw new Error('observation build too slow: ' + ms + 'ms')
+  })
+
+  it('dynamics: five quiet setup moves report zero accumulation', async () => {
+    localStorage.setItem(saveKey(), JSON.stringify({ v: 2,
+      moves: ['炮二平五', '馬8进7', '马二进三', '車9平8', '车一平二', '砲8进4',
+              '兵三进一', '卒7进1', '兵七进一', '象3进5'],
+      notes: ['', '', '', '', ''] }))
+    const game = evalGamePage()
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    if (!obs.includes('近期动态:')) throw new Error('dynamics line missing after 5 black moves')
+    // One cannon crossed (砲8进4 -> y6); no captures, threat count may rise
+    // with development — assert the exact accumulated facts we control.
+    if (!obs.includes('吃子0')) throw new Error('no captures in the window')
+    if (!obs.includes('过河+1')) throw new Error('exactly one river crossing expected')
+  })
+
+  it('exposure: vacating the shield line tags the hanging chariot behind', async () => {
+    // The exact production incident: 砲(1,2) shields 車(1,0) from red 車(1,7).
+    // Sliding the cannon OFF the file is a discovered attack on our own
+    // chariot with no recapture — must land in 有代价, not 安全.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '1r1k5/9/1c7/9/9/9/9/1R7/9/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const risky = obs.split('\n').find(l => l.startsWith('- 有代价'))
+    const safe = obs.split('\n').find(l => l.startsWith('- 安全:'))
+    if (!risky || !safe) throw new Error('eval lines missing')
+    if (!risky.includes('砲8平9(暴露:車(1,0)被车捉,净亏9)')) {
+      throw new Error('vacating move must carry the exposure tag: ' + risky)
+    }
+    if (!safe.includes('砲8进1(')) throw new Error('staying on the file must remain safe: ' + safe)
+  })
+
+  it('exposure: defended piece behind the vacated line stays untagged', async () => {
+    // Same geometry plus a horse covering (1,0): the exposure nets to an
+    // even trade, so no tag — silence is the contract for neutral facts.
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '1r1k5/9/1cn6/9/9/9/9/1R7/9/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    if (obs.includes('暴露:')) throw new Error('defended exposure must stay silent')
+    const risky = obs.split('\n').find(l => l.startsWith('- 有代价'))
+    if (risky && risky.includes('砲8平9')) throw new Error('no material loss — must not be 有代价')
+  })
+
+  it('see: hanging cannon reads 净得 without 有根', async () => {
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '3k5/9/1c7/9/9/9/9/1R7/9/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    if (!obs.includes('被车捉(红吃则净得4.5)')) {
+      throw new Error('hanging piece must show the real loss')
+    }
+    if (obs.includes('有根')) throw new Error('no defender here — must not claim 有根')
+  })
+
+  it('see: landing on an attacked-but-defended square lands in the safe line', async () => {
+    localStorage.setItem(saveKey(), '{"v":2,"moves":[],"notes":[]}')
+    const game = evalGamePage()
+    ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
+      '1r1k5/9/1c7/9/9/9/9/1R7/9/4K4 b')
+    const obs = (game as unknown as { renderObservation: () => string }).renderObservation()
+    const safe = obs.split('\n').find(l => l.startsWith('- 安全:'))
+    const risky = obs.split('\n').find(l => l.startsWith('- 有代价'))
+    if (!safe || !risky) throw new Error('eval lines missing')
+    // 砲8进2 steps along the attacked file, still covered by our 車 —
+    // materially safe, exchange note attached.
+    if (!safe.includes('砲8进2(') || !safe.includes('净得4.5')) {
+      throw new Error('defended advance should sit in safe with net note: ' + safe)
+    }
   })
   it('mate sweep: tags a real mate-in-1, restores gameState, other moves still evaluated', async () => {
     // Black chariot pair mates the bare red king: the tag must appear, the
@@ -508,7 +735,7 @@ describe('chess page integration', () => {
     { name: 'invalid JSON', raw: 'zzz{' },
     { name: 'v=3', raw: '{"v":3,"moves":["炮二平五","馬8进7"]}' },
     { name: 'odd move count', raw: '{"v":1,"moves":["炮二平五"]}' },
-    // 帅五平六：红帅旁移被自家仕占据，重建清单里不存在 → 重放中途失败
+    // 帅五平六: the red king sidestep is occupied by its own advisor, absent from the rebuilt list -> replay fails midway.
     { name: 'move not in rebuilt legal list', raw: '{"v":1,"moves":["帅五平六","馬8进7"]}' },
   ]
   for (const c of CORRUPTED_SAVES) {
@@ -535,12 +762,12 @@ describe('chess page integration', () => {
     expect(err.textContent).toContain('HTTP 500')
     if (!err.querySelector('.retry-btn')) throw new Error('retry button missing in error bubble')
     expect(boardWrap().classList.contains('no-click')).toBe(true)
-    // 重试：错误气泡移除、再次 POST 且载荷逐字符一致（观察是位置的纯函数）
+    // Retry: error bubble removed, re-POST with a byte-identical payload (the observation is a pure function of the position).
     ;(err.querySelector('.retry-btn') as HTMLElement).click()
     expect(f.posts.length).toBe(2)
     expect(f.posts[1].body).toBe(f.posts[0].body)
     expect(document.querySelector('.bubble.error')).toBe(null)
-    // 200 后恢复：落子、写档、解锁；note 为空串 → 不出气泡
+    // Recovery on 200: move applied, save written, unlocked; empty note -> no bubble.
     f.next(streamReply({ type: 'final', move: '馬8进7', note: '' }))
     await flushAsync()
     expect(pieceAt(2, 2)?.textContent).toBe('馬')

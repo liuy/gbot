@@ -18,7 +18,7 @@
     --color-blue: #00B4FF;
     --color-amber: #FFB547;
     --color-hairline: rgba(120, 180, 255, 0.08);
-    /* 棋盘专属：基于主题色派生 */
+    /* Chess-specific: derived from theme colours. */
     --board-bg: #121826;
     --board-edge: #2A3648;
     --grid-line: #3A4A60;
@@ -126,7 +126,8 @@
     pointer-events: none;
   }
 
-  /* 等待黑方应手/对局结束：整块禁点，防止用户在 gbot 思考时抢先落子 */
+  /* While awaiting black's reply or game end: lock the whole board so
+     the user cannot move ahead of gbot's thinking. */
   .board-wrap.no-click { pointer-events: none; opacity: .75; }
 
   /* ===== 对话气泡浮层 ===== */
@@ -333,11 +334,12 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
 1. ASCII 棋盘：每格一个字母。小写 r n b a c k p = 你的黑子（車馬象仕将砲卒），大写 R N B A C K P = 对方的红子（车马相士帅炮兵），. 为空格。顶行 y0 是你的底线，底行 y9 是红方底线。
 2. 「你的棋子」「对方棋子」：双方每个子的名称与坐标 (x,y)。
 3. 「上一步」：红方刚走的着法（标准中文记谱）。
-4. 对局记录中你的笔记 = 计划存档;「要点情报」:对方将门守备与你占中路/肋线的大子。
-5. 「legal-moves:」之后的行：你当前所有合法走法（标准中文记谱，每行一条）。
-6. 「受威胁的你的棋子」：对方下一手就能吃掉的你的子及其「可救着法」（记谱 token，直接选用即可,优先救价值最大的子）。
+4. 对局记录中你的笔记 = 计划存档;「要点情报」:对方将门守备与你占中路/肋线的大子;「近期动态」:最近5手的吃子/过河/威胁变化 — 计划进展的客观参照。
+5. 交换净值:(有根:X反吃,红若吃则净亏N)=红吃会被反吃、净亏N分,子力上砲马=4.5车=9象仕=2卒=1;(红吃则净得N)=真失子;(暴露:…)=此步撤开遮挡令身后子失根。逃/兑/进由你按局面与计划权衡,净值只是子力账。
+6. 「legal-moves:」之后的行：你当前所有合法走法（标准中文记谱，每行一条）。
+7. 「受威胁的你的棋子」：对方下一手就能吃掉的你的子及其「可救着法」（记谱 token）— 可救着法是引擎算好的选项清单,救援与否按交换净值与计划权衡。「杀网警报」=红已有一手杀或某着到位即成杀 — 须立即以垫/挡/先手对攻应对。
 7. 「步法评估」：引擎对每个合法步的一步前瞻 — 安全（落子后不会被吃）、会被X吃（勿走，除非换子划算）、可吃Y（能吃对方Y）。
-8. 「局面要素」：双方子力总值、已出动大子数、过河子数、活动度（合法步数）— 战略决策的依据。
+9. 「局面要素」：双方子力总值、已出动大子数、过河子数、活动度（合法步数）— 战略决策的依据。
 子力价值: 車=9 馬=4.5 砲=4.5 卒=1(过河后2) 象/仕=2
 选子程序（严格按序执行）:
 1. 净亏检查: 若「受威胁」中被捉子的价值,大于你本步能安全吃到的子,且无法吃回攻击者——先从该子的「可救着法」中选一步。
@@ -409,6 +411,94 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   let gameOver = false;
   let moves = [];           // completed half-moves in notation, always even (red/black)
   let notes = [];           // black's note per black half-move — the scratchpad
+  // Per black half-move accumulation counters — captures made, pieces across
+  // the river, red pieces under attack. Deltas over a 5-move window make
+  // aimless shuffling visible as a fact ("nothing accumulated").
+  let dynHistory = [];
+  function recordDynamics(captured) {
+    let crossed = 0;
+    for (const p of game.currentLivePieceList)
+      if (p.side === 'BLACK' && p.y >= 5) crossed++;
+    const thrTargets = new Set();
+    for (const m of game.generateLegalMoves('BLACK'))
+      if (m.captured) thrTargets.add(m.captured.x + ',' + m.captured.y);
+    dynHistory.push({ cap: captured ? 1 : 0, cross: crossed, thr: thrTargets.size });
+  }
+  // Mate-delivery candidate: land in the palace zone (files 2-6 — horse
+  // checks land on x2/x6 — or the back two ranks where edge rooks mate),
+  // or capture. Purely a perf filter; false negatives only.
+  function isMateCandidate(r) {
+    return (r.to.x >= 2 && r.to.x <= 6) || r.to.y <= 2 || r.captured;
+  }
+
+  // Probes red's frontal replies for an immediate mate. Must run with red
+  // on turn NATURALLY (update() rejects moves by the side not on turn), so
+  // callers apply a black move first. The saved PEN carries RED as the side
+  // to move — restoring a BLACK-side PEN here would strand the probe after
+  // one candidate.
+  function redMatesNow() {
+    const st = game.gameState;
+    const pen = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'RED');
+    let mate = false;
+    for (const r of game.generateLegalMoves('RED')) {
+      if (!isMateCandidate(r)) continue;
+      game.update({ x: r.from.x, y: r.from.y }, { x: r.to.x, y: r.to.y }, 'RED', true);
+      if (game.gameState === 'OVER') mate = true;
+      game.setPenCodeList(pen);
+      game.gameState = st;
+      if (mate) break;
+    }
+    return mate;
+  }
+
+  // Mate-net warning (shogi's hisshi). Two facts, both via natural move
+  // alternation only:
+  //  (i)  standing threat — every black candidate is 会致杀 (set as a flag
+  //       by moveEvalLine, which already sweeps each candidate)
+  //  (ii) forced net — red has a quiet move after which EVERY black reply
+  //       still gets mated. Pure fact; how to answer stays the model's call.
+  function mateNetScan(allDeadly) {
+    const st = game.gameState;
+    const pen = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK');
+    const nets = [];
+    if (allDeadly) nets.push('红现有一步绝杀手段');
+    if (nets.length === 0) {
+      const redPieces = game.getPiecesOfSide('RED');
+      outer:
+      for (const mr of game.generateLegalMoves('RED')) {
+        game.setPenCodeList(ZhChess.gen_PEN_Str(game.currentLivePieceList, 'RED'));
+        game.update({ x: mr.from.x, y: mr.from.y }, { x: mr.to.x, y: mr.to.y }, 'RED', true);
+        // After mr the natural side is BLACK — the restore PEN must carry
+        // it, or every reply after the first gets silently rejected.
+        const afterMr = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK');
+        const replies = game.generateLegalMoves('BLACK');
+        for (const b of replies) {
+          game.update({ x: b.from.x, y: b.from.y }, { x: b.to.x, y: b.to.y }, 'BLACK', true);
+          const mated = redMatesNow();
+          game.setPenCodeList(afterMr);
+          game.gameState = st;
+          if (!mated) { game.setPenCodeList(pen); game.gameState = st; continue outer; }
+        }
+        nets.push('红' + moveToNotation(mr, 'RED', redPieces) +
+          (replies.length === 0 ? '一步绝杀' : '后两步内强制绝杀'));
+        game.setPenCodeList(pen);
+        game.gameState = st;
+        if (nets.length >= 2) break;
+      }
+    }
+    return nets;
+  }
+
+  function dynamicsLine() {
+    if (dynHistory.length < 5) return '';
+    const win = dynHistory.slice(-5);
+    const base = dynHistory.length > 5 ? dynHistory[dynHistory.length - 6] : { cross: 0, thr: 0 };
+    const caps = win.reduce((s, d) => s + d.cap, 0);
+    const dCross = win[4].cross - base.cross;
+    const dThr = win[4].thr - base.thr;
+    const sign = (n) => (n > 0 ? '+' + n : String(n));
+    return `近期动态: 最近5手 吃子${caps}·过河${sign(dCross)}·威胁${sign(dThr)}`;
+  }
   let pendingRedToken = ''; // 红步刚落的记谱，等黑步应答成功后与黑 token 一起入档
   let lastNote = '';        // 黑方上一手附言（仅本页会话内有效，刷新即失）
   let lastCaptured = '';    // 最近一手被吃的子名（空串 = 无吃子）
@@ -645,23 +735,30 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
         m.from.x === selected.c && m.from.y === selected.r &&
         m.to.x === c && m.to.y === r);
       if (move) {
-        pendingRedToken = moveToNotation(move, 'RED', pieces);
-        lastCaptured = move.captured ? move.captured.name : '';
-        game.update({ x: move.from.x, y: move.from.y },
-          { x: move.to.x, y: move.to.y }, 'RED', true);
-        selected = null;
-        renderBoard();
-        // A mate/stalemate against black sets OVER inside update — end locally,
-        // no observer round-trip. A captured general bypasses the lib's check
-        // logic entirely (nothing left to be "in check"), so test absence too.
-        const blackKingGone = !game.currentLivePieceList.some(p => p.name === '将');
-        if (game.gameState === 'OVER' || blackKingGone) {
-          gameOver = true;
-          bubble('gbot', blackKingGone ? '老将被擒，这局你赢了。' : '你赢了！我被将死，无路可走。');
-          showResult('你赢了');
-          return;
+        // Everything after the state mutation runs bare — an exception here
+        // leaves a locked board with no bubble (the "silent freeze"). Route
+        // it to the visible error path instead.
+        try {
+          pendingRedToken = moveToNotation(move, 'RED', pieces);
+          lastCaptured = move.captured ? move.captured.name : '';
+          game.update({ x: move.from.x, y: move.from.y },
+            { x: move.to.x, y: move.to.y }, 'RED', true);
+          selected = null;
+          renderBoard();
+          // A mate/stalemate against black sets OVER inside update — end locally,
+          // no observer round-trip. A captured general bypasses the lib's check
+          // logic entirely (nothing left to be "in check"), so test absence too.
+          const blackKingGone = !game.currentLivePieceList.some(p => p.name === '将');
+          if (game.gameState === 'OVER' || blackKingGone) {
+            gameOver = true;
+            bubble('gbot', blackKingGone ? '老将被擒，这局你赢了。' : '你赢了！我被将死，无路可走。');
+            showResult('你赢了');
+            return;
+          }
+          postTurn();
+        } catch (err) {
+          errorBubble(String((err && err.message) || err));
         }
-        postTurn();
         return;
       }
     }
@@ -727,8 +824,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     if (!ourMate) {
       const redPieces = game.getPiecesOfSide('RED');
       for (const r of game.generateLegalMoves('RED')) {
-        const frontal = (r.to.x >= 3 && r.to.x <= 5) || r.captured;
-        if (!frontal) continue;
+        if (!isMateCandidate(r)) continue;
         game.update({ x: r.from.x, y: r.from.y }, { x: r.to.x, y: r.to.y }, 'RED', true);
         if (game.gameState === 'OVER') {
           deadly = true;
@@ -744,38 +840,123 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     return { ourMate, deadly, killer };
   }
 
+  // Static exchange evaluation by simulation: each side alternately captures
+  // on (tx,ty) with its least-valuable attacker, then the chain is
+  // tail-pruned to what both sides would accept. Returns the RAW net for the
+  // initiating side (negative = initiator loses by starting it). Simulating
+  // through the rules engine gets cannon screens and horse legs right for
+  // free — no hand-rolled x-ray logic.
+  const SEE_VALUE = { '車': 9, '馬': 4.5, '砲': 4.5, '卒': 1, '象': 2, '仕': 2, '将': 60,
+                      '车': 9, '马': 4.5, '炮': 4.5, '兵': 1, '相': 2, '士': 2, '帅': 60 };
+  function seeNet(tx, ty, initiator) {
+    const st = game.gameState;
+    // Save with the side actually on turn at entry so the restore is exact.
+    const pen = ZhChess.gen_PEN_Str(game.currentLivePieceList, game.currentSide);
+    // update() only accepts moves from the side on turn — the chain's first
+    // capturer may not be it. Re-seat the same position with the initiator
+    // to move (a no-op when the turn is already right).
+    game.setPenCodeList(ZhChess.gen_PEN_Str(game.currentLivePieceList, initiator));
+    const gains = [];
+    const names = [];
+    let side = initiator;
+    for (let depth = 0; depth < 6; depth++) {
+      let best = null, bestVal = Infinity, bestName = '';
+      for (const m of game.generateLegalMoves(side)) {
+        if (!m.captured || m.captured.x !== tx || m.captured.y !== ty) continue;
+        const atk = game.currentLivePieceList.find(p => p.x === m.from.x && p.y === m.from.y);
+        const v = SEE_VALUE[atk ? atk.name : '?'] ?? 99;
+        if (v < bestVal) { best = m; bestVal = v; bestName = atk ? atk.name : '?'; }
+      }
+      if (!best) break;
+      const victim = game.currentLivePieceList.find(p => p.x === tx && p.y === ty);
+      gains.push(SEE_VALUE[victim ? victim.name : '?'] ?? 0);
+      names.push(bestName);
+      game.update({ x: best.from.x, y: best.from.y }, { x: tx, y: ty }, side, true);
+      side = side === 'RED' ? 'BLACK' : 'RED';
+    }
+    game.setPenCodeList(pen);
+    game.gameState = st;
+    // Signed raw chain (deliberately not clamped at zero): net < 0 means
+    // the initiator would LOSE by starting the exchange — the display needs
+    // that magnitude, not just the decline bit.
+    let net = 0;
+    for (let i = gains.length - 1; i >= 0; i--) net = gains[i] - net;
+    return { net, names };
+  }
+
+  function fmtV(v) {
+    return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  }
+
+  let allCandidatesDeadly = false;
   function moveEvalLine() {
     const st = game.gameState;
     const pen = ZhChess.gen_PEN_Str(game.currentLivePieceList, 'BLACK');
     const pieces = game.getPiecesOfSide('BLACK');
     const moves = game.generateLegalMoves('BLACK');
+    // Pre-move snapshot of red's capture targets: vacating a line can expose
+    // the piece behind it (a discovered attack against ourselves), which the
+    // landing-square check alone never sees.
+    const preTargets = new Set(game.generateLegalMoves('RED')
+      .filter(r => r.captured).map(r => r.captured.x + ',' + r.captured.y));
     const caps = [], safe = [], risky = [];
+    let deadlyCount = 0;
     for (const m of moves) {
       const token = moveToNotation(m, 'BLACK', pieces);
-      let hunterTag = '';
+      let exTag = '';
       game.update({ x: m.from.x, y: m.from.y }, { x: m.to.x, y: m.to.y }, 'BLACK', true);
-      const hunters = game.generateLegalMoves('RED')
-        .filter(r => r.captured && r.captured.x === m.to.x && r.captured.y === m.to.y);
-      if (hunters.length > 0) {
-        const hunterName = game.getPiecesOfSide('RED')
-          .find(p => p.x === hunters[0].from.x && p.y === hunters[0].from.y);
-        hunterTag = '会被' + (hunterName ? hunterName.name : '?') + '吃';
+      const redCaps = game.generateLegalMoves('RED').filter(r => r.captured);
+      const hunters = redCaps
+        .filter(r => r.captured.x === m.to.x && r.captured.y === m.to.y);
+      // Exchange net on the landing square, from RED initiating. raw<=0 means
+      // red declines the capture — the landing is materially safe. raw>0 is
+      // a real loss. For our captures the victim's value is already banked,
+      // so our net = victim - raw.
+      if (hunters.length > 0 || m.captured) {
+        const { net: raw, names } = seeNet(m.to.x, m.to.y, 'RED');
+        if (m.captured) {
+          const ours = SEE_VALUE[m.captured.name] - raw;
+          exTag = ours >= 0
+            ? (raw > 0 ? `(吃${m.captured.name}·${names[0] || ''}反吃,净得${fmtV(ours)})` : `(吃${m.captured.name})`)
+            : `(吃${m.captured.name}·反吃链净亏${fmtV(-ours)})`;
+        } else if (raw > 0) {
+          exTag = `(会被${names[0] || '?'}吃,净亏${fmtV(raw)})`;
+        } else {
+          exTag = `(${names[1] ? names[1] + '反吃,' : ''}净得${fmtV(-raw)})`;
+        }
+      }
+      // Discovered exposure: black pieces newly capturable that are not the
+      // mover. Only net-negative exposures are tagged — a defended exposure
+      // is materially neutral and stays silent.
+      const seen = new Set();
+      for (const r of redCaps) {
+        const key = r.captured.x + ',' + r.captured.y;
+        if (key === m.to.x + ',' + m.to.y || preTargets.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        const { net, names } = seeNet(r.captured.x, r.captured.y, 'RED');
+        if (net > 0) {
+          const label = `(暴露:${r.captured.name}(${r.captured.x},${r.captured.y})被${names[0] || '?'}捉,净亏${fmtV(net)})`;
+          exTag = exTag + label;
+        }
       }
       game.setPenCodeList(pen);
       game.gameState = st;
       const { ourMate, deadly, killer } = mateSweep(m);
       game.setPenCodeList(pen);
       game.gameState = st;
-      if (ourMate) { caps.push(`${token}(绝杀!)`); continue; }
-      if (deadly) { risky.push(`${token}(会致杀:则${killer})`); continue; }
-      if (m.captured && !hunterTag) caps.push(`${token}(吃${m.captured.name})`);
-      else if (m.captured) risky.push(`${token}(吃${m.captured.name}·${hunterTag})`);
-      else if (hunterTag) risky.push(`${token}(${hunterTag})`);
-      else safe.push(token);
+      if (ourMate) { caps.push(`${token}(绝杀!)`); deadlyCount++; continue; }
+      if (deadly) { risky.push(`${token}(会致杀:则${killer})`); deadlyCount++; continue; }
+      // Bucketing by exchange net is arithmetic, not advice: any tag without
+      // a net loss is materially safe, taken or not.
+      if (!exTag || !exTag.includes('净亏')) (m.captured ? caps : safe).push(token + exTag);
+      else risky.push(token + exTag);
     }
     // Categorized so each decision step scans exactly one line; captures
     // lead because a safe capture is the default best move. A flat list
     // buried the captures and the model played meaningless moves instead.
+    // Standing mate-threat signal for mateNetScan: every candidate loses
+    // to an immediate red mate — material-loss tags must NOT count.
+    allCandidatesDeadly = moves.length > 0 && deadlyCount === moves.length;
     return '步法评估:\n- 安全·有吃子: ' + (caps.join(' ') || '无') +
       '\n- 安全: ' + (safe.join(' ') || '无') +
       '\n- 有代价: ' + (risky.join(' ') || '无');
@@ -849,20 +1030,30 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       const victim = `${r.captured.name}(${r.captured.x},${r.captured.y})`;
       const hunterName = game.getPiecesOfSide('RED')
         .find(p => p.x === r.from.x && p.y === r.from.y)?.name || '?';
+      // Root annotation is the exchange account, not a verdict: fleeing a
+      // defended piece can still be right for positional or plan reasons,
+      // so the rescue list stays for every threatened piece.
+      const { net, names } = seeNet(r.captured.x, r.captured.y, 'RED');
+      const root = net < 0
+        ? `(有根:${names[1] || '反吃'}反吃,红若吃则净亏${fmtV(-net)})`
+        : net === 0 ? `(有根:${names[1] || '反吃'}反吃,对兑)` : `(红吃则净得${fmtV(net)})`;
       const savers = blackMoves
         .filter(m => (m.from.x === r.captured.x && m.from.y === r.captured.y) ||
                      (m.to.x === r.from.x && m.to.y === r.from.y))
         .map(m => moveToNotation(m, 'BLACK', blackPieces));
-      threats.push(`${victim}被${hunterName}捉,可救着法: ${savers.length ? savers.join(' / ') : '无'}`);
+      threats.push(`${victim}被${hunterName}捉${root},可救着法: ${savers.length ? savers.join(' / ') : '无'}`);
     }
     if (threats.length > 0) {
       lines.push('受威胁的你的棋子:');
       for (const t of threats) lines.push('- ' + t);
     }
+
     const last = pendingRedToken || moves[moves.length - 1] || '';
     if (last) lines.push('上一步：' + last);
     if (lastCaptured) lines.push('被吃：' + lastCaptured);
     lines.push(intelLine());
+    const dyn = dynamicsLine();
+    if (dyn) lines.push(dyn);
     // The active plan sits LATE in the observation: evidence far from the
     // generation end is recalled worse (memory-survey recency bias), and a
     // plan buried under sixty history notes stops steering moves.
@@ -873,6 +1064,8 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     // Eval BEFORE the list: parseLegalMoves swallows everything after the
     // marker, so annotations must not live inside the list itself.
     lines.push(moveEvalLine());
+    const nets = mateNetScan(allCandidatesDeadly);
+    if (nets.length > 0) lines.push('杀网警报: ' + nets.join('；') + ' — 立即处理(垫/挡/先手对攻)');
     lines.push(situationLine());
     lines.push('legal-moves:');
     for (const t of legalNotations('BLACK')) lines.push(t);
@@ -883,7 +1076,10 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   async function postTurn() {
     // A new turn invalidates the previous exchange's bubbles.
     document.getElementById('bubbles').innerHTML = '';
-    if (legalNotations('BLACK').length === 0) {
+    let blackLegalCount = 0;
+    try { blackLegalCount = legalNotations('BLACK').length; }
+    catch (err) { errorBubble(String((err && err.message) || err)); return; }
+    if (blackLegalCount === 0) {
       gameOver = true;
       bubble('gbot', '你赢了，我无路可走了');
       showResult('你赢了');
@@ -984,6 +1180,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       lastCaptured = move.captured ? move.captured.name : '';
       moves.push(pendingRedToken, data.move);
       notes.push(typeof data.note === 'string' ? data.note : '');
+      recordDynamics(!!move.captured);
       saveMoves();
       lastNote = typeof data.note === 'string' ? data.note : '';
     } catch (err) {
@@ -1015,9 +1212,12 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       if (localStorage.getItem(saveKey()) !== null) discardSave();
       return false;
     }
+    dynHistory = [];
     for (let i = 0; i < saved.moves.length; i++) {
       const side = i % 2 === 0 ? 'RED' : 'BLACK';
-      if (!applyToken(saved.moves[i], side)) {
+      const mv = applyToken(saved.moves[i], side);
+      if (side === 'BLACK' && mv) recordDynamics(!!mv.captured);
+      if (!mv) {
         // Replay failing midway means the save disagrees with the rules engine;
         // discard and start fresh.
         discardSave();
@@ -1041,7 +1241,9 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   function bubble(_who, text, sticky) {
     const wrap = document.getElementById('bubbles');
     const b = document.createElement('div');
-    b.className = 'bubble ' + who + (sticky ? ' pending' : '');
+    // Only the opponent speaks through bubbles (the user's move IS their
+    // speech), so the class is fixed.
+    b.className = 'bubble gbot' + (sticky ? ' pending' : '');
     const bodyDiv = document.createElement('div');
     bodyDiv.textContent = text;
     b.appendChild(bodyDiv);
@@ -1108,6 +1310,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
       const b = document.getElementById('resignBtn'); b.classList.remove('confirm'); b.textContent = '🏳'; }
     moves = [];
     notes = [];
+    dynHistory = [];
     pendingRedToken = '';
     lastNote = '';
     lastCaptured = '';
@@ -1143,6 +1346,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   window.ChessGame = {
     _testSetPen: (pen) => { game.setPenCodeList(pen); renderBoard(); },
     _testGameState: () => game.gameState,
+    _game: () => game,
     init, restore, renderBoard, renderObservation,
     moveToNotation, legalNotations, applyToken, onCellClick, postTurn,
     showResult, resign, newGame,
