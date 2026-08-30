@@ -978,8 +978,7 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
         saveMoves();
         b.classList.remove('pending');
         gameOver = true;
-        bubble('user', '你的帅被吃了。');
-        showResult('你输了');
+        showResult('你输了 · 帅被擒');
         return;
       }
       lastCaptured = move.captured ? move.captured.name : '';
@@ -1039,16 +1038,10 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
   }
 
   // ---- bubbles ----
-  function bubble(who, text, sticky) {
+  function bubble(_who, text, sticky) {
     const wrap = document.getElementById('bubbles');
     const b = document.createElement('div');
     b.className = 'bubble ' + who + (sticky ? ' pending' : '');
-    if (who !== 'gbot') {
-      const whoDiv = document.createElement('div');
-      whoDiv.className = 'who';
-      whoDiv.textContent = '你';
-      b.appendChild(whoDiv);
-    }
     const bodyDiv = document.createElement('div');
     bodyDiv.textContent = text;
     b.appendChild(bodyDiv);
@@ -1122,12 +1115,12 @@ var ZhChess=function(e){"use strict";var t=function(e,r){return t=Object.setProt
     gameOver = false;
     pending = false;
     localStorage.removeItem(saveKey());
+    document.getElementById('bubbles').innerHTML = '';
     game.gameStart('RED');
     document.getElementById('resultBanner').style.display = 'none';
     boardWrap.classList.remove('no-click');
     renderBoard();
-    document.getElementById('bubbles').innerHTML = '';
-    bubble('user', '新局开始，你执红先行。');
+
   }
 
   // Theme follows the host wui page: the iframe is same-origin sandboxed, so
