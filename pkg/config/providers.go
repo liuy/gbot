@@ -74,6 +74,14 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 		}
 
 		switch p.ProviderType() {
+		case ProviderTypeResponses:
+			m[p.Name] = llm.NewResponsesProvider(&llm.ResponsesConfig{
+				Name:        p.Name,
+				APIKey:      apiKey,
+				BaseURL:     p.URL,
+				Model:       model,
+				ExtraParams: p.ExtraParams,
+			})
 		case ProviderTypeOpenAI:
 			m[p.Name] = llm.NewOpenAIProvider(&llm.OpenAIConfig{
 				Name:        p.Name,

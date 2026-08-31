@@ -124,12 +124,13 @@ const (
 	ProviderTypeAuto      = "auto"
 	ProviderTypeOpenAI    = "openai"
 	ProviderTypeAnthropic = "anthropic"
+	ProviderTypeResponses = "responses"
 )
 
 // ProviderType returns the resolved provider type.
 func (p *Provider) ProviderType() string {
 	switch p.Type {
-	case ProviderTypeOpenAI, ProviderTypeAnthropic:
+	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeResponses:
 		return p.Type
 	default:
 		if u, err := url.Parse(p.URL); err == nil {

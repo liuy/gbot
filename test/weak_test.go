@@ -227,7 +227,8 @@ var checkPatterns = []checkPattern{
 			// .Message is exempted because API error messages are free-form
 			// strings where substring matching is the correct classification
 			// approach (see anthropic.go ParseAPIError), not a weak assertion.
-			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr", ".SystemPrompt", ".Message"} {
+			// .Note joins it: wui game observer notes are free-text too.
+			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr", ".SystemPrompt", ".Message", ".Note"} {
 				if strings.Contains(match, field) {
 					return true
 				}

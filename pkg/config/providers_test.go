@@ -150,3 +150,37 @@ func TestCreateAllProviders_SpecificModel(t *testing.T) {
 		t.Fatal("missing provider \"myprovider\"")
 	}
 }
+
+func TestCreateAllProviders_Responses(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Providers: []Provider{
+			{
+				Name: "glm-resp",
+				URL:  "https://open.bigmodel.cn/api/v1",
+				Keys: []string{"sk-glm-key"},
+				Models: NewModelsFromMap(map[string]ModelConfig{
+					"glm-4.6": {Context: IntOrHuman(200000)},
+				}),
+				Type: ProviderTypeResponses,
+			},
+		},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p, ok := m["glm-resp"]
+	if !ok {
+		t.Fatal("missing provider \"glm-resp\"")
+	}
+	resp, ok := p.(*llm.ResponsesProvider)
+	if !ok {
+		t.Fatalf("expected *llm.ResponsesProvider, got %T", p)
+	}
+	if resp.Name() != "glm-resp" {
+		t.Errorf("Name() = %q, want glm-resp", resp.Name())
+	}
+}

@@ -529,6 +529,7 @@ func TestProvider_ProviderType(t *testing.T) {
 	}{
 		{"explicit openai", config.Provider{Type: "openai", URL: "https://anything.com"}, "openai"},
 		{"explicit anthropic", config.Provider{Type: "anthropic", URL: "https://anything.com"}, "anthropic"},
+		{"explicit responses", config.Provider{Type: "responses", URL: "https://open.bigmodel.cn/api/v1"}, "responses"},
 		{"auto with anthropic url", config.Provider{URL: "https://api.anthropic.com"}, "anthropic"},
 		{"auto with openai url", config.Provider{URL: "https://api.openai.com"}, "openai"},
 		{"auto with custom url", config.Provider{URL: "https://open.bigmodel.cn/api/paas"}, "openai"},

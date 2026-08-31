@@ -518,10 +518,17 @@ describe('chess page integration', () => {
     const game = evalGamePage()
     ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
       '1r1kab3/9/1cn4c1/p1p3p2/9/9/9/4R4/9/2BAKAB2 w')
-    const g = (game as unknown as { _game: () => { update: Function; generateLegalMoves: Function; gameState: string; setPenCodeList: Function } })
+    const g = (game as unknown as {
+      _game: () => {
+        update: (...args: unknown[]) => void
+        generateLegalMoves: (side: string) => { from: unknown; to: unknown; captured?: { x: number; y: number } }[]
+        gameState: string
+        setPenCodeList: (pen: string) => void
+      }
+    })
     const base = g._game ? g._game() : null
     if (!base) throw new Error('need _game hook')
-    const pen0 = (window as unknown as { ZhChess: { gen_PEN_Str: Function } }).ZhChess
+    const pen0 = (window as unknown as { ZhChess: { gen_PEN_Str: (...args: unknown[]) => string } }).ZhChess
       .gen_PEN_Str(base.currentLivePieceList, 'RED')
     let checked = 0
     for (const r of base.generateLegalMoves('RED')) {
@@ -537,7 +544,7 @@ describe('chess page integration', () => {
         } catch (e) {
           // restore for the next iteration before failing
           base.setPenCodeList(pen0)
-          throw new Error('crash under check after red move: ' + String(e))
+          throw new Error('crash under check after red move: ' + String(e), { cause: e })
         }
       }
       base.setPenCodeList(pen0)
@@ -553,11 +560,11 @@ describe('chess page integration', () => {
     const game = evalGamePage()
     ;(game as unknown as { _testSetPen: (pen: string) => void })._testSetPen(
       '4k4/9/9/9/9/9/9/4R4/9/3K5 b')
-    let obs = ''
+    let obs: string
     try {
       obs = (game as unknown as { renderObservation: () => string }).renderObservation()
     } catch (e) {
-      throw new Error('renderObservation threw under check: ' + String(e))
+      throw new Error('renderObservation threw under check: ' + String(e), { cause: e })
     }
     if (!obs.includes('将(4,0)被车捉')) throw new Error('threat on the general must still be listed')
     const st = (game as unknown as { _testGameState: () => string })._testGameState?.()
