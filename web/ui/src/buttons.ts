@@ -271,66 +271,55 @@ export function createToggleGroup(opts: {
 
 export interface ComboButtonHandle {
   wrap: HTMLElement
-  // className, when given, replaces the trigger's class list wholesale (via
-  // the link+sm recipe) so callers can restyle per state — e.g. the thinking
-  // pill swapping text-t3 (default) for text-t2 (explicit). Omitting it keeps
-  // the legacy text-only swap.
-  setLabel: (text: string, className?: string) => void
+  setLabel: (text: string) => void
   open: () => void
   close: () => void
   toggle: () => void
 }
 
 export function createComboButton(opts: {
-  label: string
-  className?: string
-  // bottom positions the panel above the trigger (bottom-20) instead of
-  // below (top-12) — needed for triggers that sit at the screen's bottom
-  // edge, like the input-bar pill.
-  bottom?: boolean
-  onOpen: (panel: HTMLElement) => void
-  onClose?: () => void
-  onClick?: (e: MouseEvent) => void
-  onDblClick?: (e: MouseEvent) => void
-  onLongPress?: () => void
+	label: string
+	className?: string
+	onOpen: (panel: HTMLElement) => void
+	onClose?: () => void
+	onClick?: (e: MouseEvent) => void
+	onDblClick?: (e: MouseEvent) => void
+	onLongPress?: () => void
 }): ComboButtonHandle {
-  const wrap = createNode('div', { className: 'relative' })
-  const panel = createPopupPanel({ bottom: opts.bottom })
-  const host = createPopupHost({
-    trigger: wrap,
-    panel,
-    onOpen: () => opts.onOpen(panel),
-    onClose: opts.onClose,
-  })
-  // Built after host so the click closure can reference host.toggle without
-  // a forward-declaration dance. onClick (when provided) fully replaces the
-  // default toggle behavior — callers that want to drive open/close through
-  // their own state machine (none today, but the spec requires the option)
-  // pass onClick and manage host.open / host.close themselves via the handle.
-  const trigger = createTextButton({
-    text: opts.label,
-    variant: 'link',
-    className: opts.className,
-    onClick: (e) => {
-      if (opts.onClick) opts.onClick(e)
-      else host.toggle()
-    },
-    onDblClick: opts.onDblClick,
-    onLongPress: opts.onLongPress,
-  })
-  wrap.appendChild(trigger)
-  return {
-    wrap,
-    setLabel: (text, className) => {
-      if (className !== undefined) {
-        trigger.className = textButtonRecipe({ variant: 'link', size: 'sm', class: className })
-      }
-      trigger.textContent = text
-    },
-    open: host.open,
-    close: host.close,
-    toggle: host.toggle,
-  }
+	const wrap = createNode('div', { className: 'relative' })
+	const panel = createPopupPanel({})
+	const host = createPopupHost({
+		trigger: wrap,
+		panel,
+		onOpen: () => opts.onOpen(panel),
+		onClose: opts.onClose,
+	})
+	// Built after host so the click closure can reference host.toggle without
+	// a forward-declaration dance. onClick (when provided) fully replaces the
+	// default toggle behavior — callers that want to drive open/close through
+	// their own state machine (none today, but the spec requires the option)
+	// pass onClick and manage host.open / host.close themselves via the handle.
+	const trigger = createTextButton({
+		text: opts.label,
+		variant: 'link',
+		className: opts.className,
+		onClick: (e) => {
+			if (opts.onClick) opts.onClick(e)
+			else host.toggle()
+		},
+		onDblClick: opts.onDblClick,
+		onLongPress: opts.onLongPress,
+	})
+	wrap.appendChild(trigger)
+	return {
+		wrap,
+		setLabel: (text) => {
+			trigger.textContent = text
+		},
+		open: host.open,
+		close: host.close,
+		toggle: host.toggle,
+	}
 }
 
 // ── createFloatButton ────────────────────────────────────────

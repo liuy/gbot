@@ -698,6 +698,25 @@ describe('createInputBar — thinking effort control', () => {
     vi.useRealTimers()
   })
 
+  it('long-press drag-away leak: the next normal tap still sends', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    let sent = 0
+    sendBtn(ib).addEventListener('click', () => sent++)
+    const btn = sendBtn(ib)
+    // Long-press fires, then the finger slides off before release — the
+    // swallow flag leaks unconsumed.
+    btn.dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    btn.dispatchEvent(new MouseEvent('pointerleave'))
+    // A fresh full tap must go through despite the leaked flag.
+    btn.dispatchEvent(new MouseEvent('pointerdown'))
+    btn.dispatchEvent(new MouseEvent('pointerup'))
+    btn.dispatchEvent(new MouseEvent('click'))
+    expect(sent).toBe(1)
+    vi.useRealTimers()
+  })
+
   it('focus leaving the strip collapses it without choosing', () => {
     vi.useFakeTimers()
     const ib = mount()

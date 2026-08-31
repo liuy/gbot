@@ -267,6 +267,9 @@ export function createInputBar(initial: {
   let pressTimer: ReturnType<typeof setTimeout> | null = null
   let swallowClick = false
   sendBtn.addEventListener('pointerdown', () => {
+    // A stale swallow from a leaked long-press (finger slid off before the
+    // release could consume it) must not eat the next tap.
+    swallowClick = false
     pressTimer = setTimeout(() => {
       swallowClick = true
       openStrip()

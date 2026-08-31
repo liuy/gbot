@@ -584,19 +584,6 @@ describe('createComboButton', () => {
     expect(trigger.textContent).toBe('New')
   })
 
-  it('className lands on trigger, NOT wrap (header.test selector requirement)', () => {
-    const h = createComboButton({
-      label: '',
-      className: 'mono text-[14px]',
-      onOpen: () => {},
-    })
-    const trigger = h.wrap.querySelector('button')!
-    expect(trigger.className).toContain('mono')
-    expect(trigger.className).toContain('text-[14px]')
-    expect(h.wrap.className).not.toContain('mono')
-    expect(h.wrap.className).not.toContain('text-[14px]')
-  })
-
   it('click trigger opens panel and calls onOpen with the panel element', () => {
     document.body.innerHTML = ''
     const spy = vi.fn()
@@ -694,15 +681,6 @@ describe('createComboButton', () => {
     document.body.innerHTML = ''
   })
 
-  it('setLabel with className swaps both text and trigger classes (pill restyle)', () => {
-    const h = createComboButton({ label: 'auto', onOpen: () => {} })
-    h.setLabel('high', 'text-[13px] flex-shrink-0 text-t2')
-    const trigger = h.wrap.querySelector('button')!
-    expect(trigger.textContent).toBe('high')
-    expect(trigger.classList.contains('text-t2')).toBe(true)
-    expect(trigger.classList.contains('text-[13px]')).toBe(true)
-  })
-
   it('setLabel without className leaves the class list untouched (legacy callers)', () => {
     const h = createComboButton({ label: 'auto', className: 'mono text-[14px]', onOpen: () => {} })
     const trigger = h.wrap.querySelector('button')!
@@ -710,17 +688,6 @@ describe('createComboButton', () => {
     h.setLabel('New')
     expect(trigger.textContent).toBe('New')
     expect(trigger.className).toBe(before)
-  })
-
-  it('bottom:true positions the panel above the trigger (bottom-20)', () => {
-    document.body.innerHTML = ''
-    const h = createComboButton({ label: 'auto', bottom: true, onOpen: () => {} })
-    document.body.appendChild(h.wrap)
-    h.open()
-    const panel = document.body.querySelector('.modal-enter') as HTMLElement
-    expect(panel.classList.contains('bottom-20')).toBe(true)
-    expect(panel.classList.contains('top-12')).toBe(false)
-    document.body.innerHTML = ''
   })
 
   it('bottom omitted keeps the default top-12 position', () => {
