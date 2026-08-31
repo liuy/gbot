@@ -103,8 +103,8 @@ type responsesTool struct { // no strict field — not part of the GLM contract
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// responsesItem covers the four core input/output item kinds. ID/Status only
-// appear on output (done) items; they are parse-only and never sent.
+// responsesItem covers the four core input/output item kinds. ID/Status/Summary
+// only appear on output (done) items; they are parse-only and never sent.
 type responsesItem struct {
 	Type    string                 `json:"type"` // message|reasoning|function_call|function_call_output
 	ID      string                 `json:"id,omitempty"`
@@ -118,6 +118,13 @@ type responsesItem struct {
 	// "output":"" (the field is required on that item kind) while other item
 	// kinds omit it entirely.
 	Output *string `json:"output,omitempty"`
+	// OpenAI reasoning items carry summaries here instead of content.
+	Summary []responsesSummaryPart `json:"summary,omitempty"`
+}
+
+type responsesSummaryPart struct {
+	Type string `json:"type"` // summary_text
+	Text string `json:"text,omitempty"`
 }
 
 type responsesContentPart struct {
@@ -447,6 +454,11 @@ func (p *ResponsesProvider) translateResponse(body []byte) (*Response, error) {
 			// continuous reasoning stream (same convention as openai.go's
 			// multi-thinking-block merge).
 			var texts []string
+			for _, s := range item.Summary {
+				if s.Type == "summary_text" && s.Text != "" {
+					texts = append(texts, s.Text)
+				}
+			}
 			for _, part := range item.Content {
 				if (part.Type == "reasoning_text" || part.Type == "text") && part.Text != "" {
 					texts = append(texts, part.Text)
@@ -824,6 +836,8 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			"response.content_part.added",
 			"response.content_part.done",
 			"response.reasoning_text.done",
+			"response.reasoning_summary_part.added",
+			"response.reasoning_summary_text.done",
 			"response.output_text.done",
 			"response.function_call_arguments.done":
 			// no-op
@@ -856,7 +870,11 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				})
 			}
 
-		case "response.reasoning_text.delta":
+		case "response.reasoning_text.delta",
+			"response.reasoning_summary_text.delta":
+			// OpenAI's o-series never exposes raw thought — it streams a
+			// summary instead. Which flavor arrives is server policy; the
+			// client treats both as thinking text.
 			if evt.Delta == "" {
 				continue
 			}

@@ -120,6 +120,54 @@ func TestResponsesSSE_CreatedAndText(t *testing.T) {
 // 2. ReasoningThenText
 // ---------------------------------------------------------------------------
 
+func TestResponsesSSE_SummaryInsteadOfRawThought(t *testing.T) {
+	// OpenAI's o-series streams reasoning summaries, never raw thought. The
+	// dispatch must land them on the same thinking path — server policy
+	// decides which flavor arrives, not us.
+	fixture := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"o9"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","summary_index":0}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"Comparing decimals carefully."}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","summary_index":0,"text":"Comparing decimals carefully."}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"Comparing decimals carefully."}]}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"9.8"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"9.8"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":10,"output_tokens":5}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	)
+	events, err := collectResponsesEvents(context.Background(),
+		NewResponsesProvider(&ResponsesConfig{Model: "o9"}), fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEventTypes(t, events,
+		"message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "content_block_start", "content_block_delta", "content_block_stop",
+		"message_delta", "message_stop")
+	var think strings.Builder
+	for _, ev := range events {
+		if ev.Delta != nil && ev.Delta.Type == "thinking_delta" {
+			think.WriteString(ev.Delta.Thinking)
+		}
+	}
+	if think.String() != "Comparing decimals carefully." {
+		t.Errorf("thinking = %q, want the summary text", think.String())
+	}
+}
+
 func TestResponsesSSE_ReasoningThenText(t *testing.T) {
 	t.Parallel()
 

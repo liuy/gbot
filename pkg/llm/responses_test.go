@@ -81,6 +81,24 @@ func TestResponsesParseHTTPErrorStatusBranches(t *testing.T) {
 	}
 }
 
+func TestResponsesCompleteSummaryOnlyReasoning(t *testing.T) {
+	// OpenAI reasoning items carry summary[], not content[] — Complete must
+	// surface it as a thinking block either way.
+	body := []byte(`{"id":"resp_1","status":"completed","output":[` +
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"Compared the numbers."}], "content":[]},` +
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"9.8"}]}],` +
+		`"usage":{"input_tokens":10,"output_tokens":5}}`)
+	resp, err := (&ResponsesProvider{}).translateResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) < 2 ||
+		resp.Content[0].Type != types.ContentTypeThinking ||
+		resp.Content[0].Thinking != "Compared the numbers." {
+		t.Fatalf("content = %+v, want thinking block from summary", resp.Content)
+	}
+}
+
 func TestResponsesTranslateResponseStatusFailedNoError(t *testing.T) {
 	// failed without an error object must degrade to the raw body, not panic.
 	_, err := (&ResponsesProvider{}).translateResponse([]byte(`{"id":"resp_1","status":"failed"}`))
