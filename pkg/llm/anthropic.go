@@ -16,6 +16,31 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// outputConfig is the Anthropic 2026 effort parameter's wire object
+// (top-level output_config). "adaptive" must not be sent as an effort value —
+// auto is expressed via the thinking field instead.
+// Doc: https://docs.anthropic.com/en/docs/build-with-claude/effort
+type outputConfig struct {
+	Effort string `json:"effort"`
+}
+
+// anthropicRequestBody adds the effort-axis wire fields on top of Request.
+// Request.Thinking carries json:"-" (the axis is dialect-agnostic), so the
+// envelope owns the two anthropic-specific slots: the depth-0 Thinking field
+// shadows nothing (the axis field never serializes) and output_config carries
+// the low/medium/high/max effort object.
+type anthropicRequestBody struct {
+	*Request
+	Thinking     *ThinkingConfig `json:"thinking,omitempty"`
+	OutputConfig *outputConfig   `json:"output_config,omitempty"`
+}
+
+// marshalAnthropicBody translates the effort axis and serializes the wire body.
+func marshalAnthropicBody(req *Request) ([]byte, error) {
+	th, oc := translateAnthropicThinking(req.Thinking)
+	return json.Marshal(anthropicRequestBody{Request: req, Thinking: th, OutputConfig: oc})
+}
+
 // AnthropicProvider implements Provider for the Anthropic Messages API.
 // Source: services/api/client.ts — 1:1 port of the SDK client.
 type AnthropicProvider struct {
@@ -68,7 +93,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	}
 
 	req.Stream = false
-	body, err := json.Marshal(req)
+	body, err := marshalAnthropicBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -134,7 +159,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 	}
 
 	req.Stream = true
-	body, err := json.Marshal(req)
+	body, err := marshalAnthropicBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}

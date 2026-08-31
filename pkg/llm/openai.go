@@ -677,7 +677,7 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stop:        req.StopSequences,
-		Thinking:    req.Thinking,
+		Thinking:    translateChatThinking(req.Thinking),
 	}
 
 	if req.Metadata != nil && req.Metadata.UserID != "" {

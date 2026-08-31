@@ -44,6 +44,29 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// buildModelThinking builds the per-model effort baseline from config:
+// legacy values are migrated by NormalizeThinkingMode, unknown values are
+// warned about and skipped (that model falls back to auto).
+func buildModelThinking(cfg *config.Config) map[string]llm.Effort {
+	modelThinking := map[string]llm.Effort{}
+	for i := range cfg.Providers {
+		for _, name := range cfg.Providers[i].Models.Ordered() {
+			mc, _ := cfg.Providers[i].Models.Get(name)
+			if mc.Thinking == "" {
+				continue
+			}
+			effort, ok := llm.NormalizeThinkingMode(mc.Thinking)
+			if !ok {
+				slog.Warn("config: unknown thinking value, ignoring", "model", name,
+					"thinking", mc.Thinking, "valid", "none|auto|low|medium|high|max")
+				continue
+			}
+			modelThinking[name] = effort
+		}
+	}
+	return modelThinking
+}
+
 // Start performs full initialization: config loading, provider setup,
 // engine restore, WeChat connectors, and WUI wiring. It returns an
 // Instance holding everything RunTUI() or the Wails GUI needs.
@@ -239,15 +262,7 @@ func Start(opts Options) (*Instance, error) {
 	mainTaskList := task.NewList("")
 	mainRefs := engine.CreateTools(deps, mainTaskList)
 
-	modelThinking := map[string]llm.ThinkingMode{}
-	for i := range cfg.Providers {
-		for _, name := range cfg.Providers[i].Models.Ordered() {
-			mc, _ := cfg.Providers[i].Models.Get(name)
-			if mc.Thinking != "" {
-				modelThinking[name] = mc.Thinking
-			}
-		}
-	}
+	modelThinking := buildModelThinking(cfg)
 
 	skillListing := skilltool.BuildSkillListing(skillReg.GetSkillToolSkills(), contextWindow)
 	var toolPrompts []string

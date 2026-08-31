@@ -31,10 +31,10 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 		t.Fatal("expected completions visible after typing '/'")
 	}
 	items := c.Items()
-	if len(items) != 7 {
-		t.Fatalf("expected 7 items, got %d", len(items))
+	if len(items) != 8 {
+		t.Fatalf("expected 8 items, got %d", len(items))
 	}
-	// Must be alphabetical: agent, clear, compact, context, model, rewind, session
+	// Must be alphabetical: agent, clear, compact, context, model, rewind, session, think
 	if items[0].Name != "agent" {
 		t.Errorf("first item = %q, want %q", items[0].Name, "agent")
 	}
@@ -55,6 +55,9 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 	}
 	if items[6].Name != "session" {
 		t.Errorf("seventh item = %q, want %q", items[6].Name, "session")
+	}
+	if items[7].Name != "think" {
+		t.Errorf("eighth item = %q, want %q", items[7].Name, "think")
 	}
 }
 

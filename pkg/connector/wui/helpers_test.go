@@ -72,6 +72,8 @@ type mockEngine struct {
 	setMaxTokensFn     func(int)
 	setInputModFn      func([]string)
 	updateAutoFn       func(engine.AutoCompactConfig)
+	setThinkingFn      func(llm.Effort) error
+	thinkingFn         func() llm.Effort
 	preCompactFn       func(delivered, limit int) ([]*short.TranscriptMessage, int, bool)
 	manualCompactFn    func(ctx context.Context, userMsg types.Message, instructions string) (*short.CompactResult, error)
 
@@ -94,6 +96,7 @@ type mockEngine struct {
 	setMaxTokensCalls     []int
 	setInputModCalls      [][]string
 	updateAutoCalls       int
+	setThinkingCalls      []llm.Effort
 }
 
 type queryCall struct {
@@ -351,6 +354,26 @@ func (m *mockEngine) SetInputModalities(modalities []string) {
 	if m.setInputModFn != nil {
 		m.setInputModFn(modalities)
 	}
+}
+
+func (m *mockEngine) SetThinking(effort llm.Effort) error {
+	m.mu.Lock()
+	m.setThinkingCalls = append(m.setThinkingCalls, effort)
+	fn := m.setThinkingFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(effort)
+	}
+	return nil
+}
+
+func (m *mockEngine) Thinking() llm.Effort {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.thinkingFn != nil {
+		return m.thinkingFn()
+	}
+	return llm.EffortAuto
 }
 
 func (m *mockEngine) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {

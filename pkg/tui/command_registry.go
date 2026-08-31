@@ -24,6 +24,7 @@ var builtinCommandDefs = map[string]CommandDef{
 	"session": {Description: "Switch or manage sessions", HasArgs: true},
 	"clear":   {Description: "Clear conversation", HasArgs: false},
 	"model":   {Description: "Switch model", HasArgs: true},
+	"think":   {Description: "Show or set thinking effort (none|auto|low|medium|high|max)", HasArgs: true},
 	"rewind":  {Description: "Restore conversation to a previous point", HasArgs: false},
 	"context": {Description: "Visualize context window usage (args: dump)", HasArgs: true},
 	"agent":   {Description: "Switch or create agents", HasArgs: true},

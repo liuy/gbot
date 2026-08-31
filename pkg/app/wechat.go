@@ -35,7 +35,7 @@ type startWeChatDeps struct {
 	logger             *slog.Logger
 	mcpRegistry        *mcp.Registry
 	hookSystem         *hooks.Hooks
-	modelThinking      map[string]llm.ThinkingMode
+	modelThinking      map[string]llm.Effort
 	workingDir         string
 	projectDir         string
 	store              *short.Store

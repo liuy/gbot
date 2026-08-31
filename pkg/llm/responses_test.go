@@ -190,30 +190,37 @@ func TestResponsesTranslateRequest_ThinkingStates(t *testing.T) {
 
 	p := newResponsesTestProvider()
 
-	enabled := translateToMap(t, p, &Request{
-		Thinking: &ThinkingConfig{Type: "enabled"},
-		Messages: []types.Message{userTextMessage("hi")},
-	}, false)
-	// Effort is deliberately unset — gbot has no numeric thinking tier, and
-	// GLM keeps thinking on regardless of the field. extra_params is the
-	// manual override channel.
-	if _, present := enabled["reasoning"]; present {
-		t.Errorf("reasoning must stay unset, got %v", enabled["reasoning"])
-	}
-	adaptive := translateToMap(t, p, &Request{
-		Thinking: &ThinkingConfig{Type: "adaptive"},
-		Messages: []types.Message{userTextMessage("hi")},
-	}, false)
-	if _, present := adaptive["reasoning"]; present {
-		t.Errorf("adaptive must stay unset too, got %v", adaptive["reasoning"])
+	translate := func(e Effort) map[string]any {
+		t.Helper()
+		return translateToMap(t, p, &Request{
+			Thinking: e,
+			Messages: []types.Message{userTextMessage("hi")},
+		}, false)
 	}
 
-	disabled := translateToMap(t, p, &Request{
-		Thinking: &ThinkingConfig{Type: "disabled"},
-		Messages: []types.Message{userTextMessage("hi")},
-	}, false)
-	if _, present := disabled["reasoning"]; present {
-		t.Error("disabled thinking must omit the reasoning key")
+	// none → effort "none" is the GLM-verified hard off (reasoning_tokens=0);
+	// the word "disabled" is not recognized by the endpoint.
+	for _, tt := range []struct {
+		effort Effort
+		want   string
+	}{
+		{EffortNone, "none"},
+		{EffortHigh, "high"},
+	} {
+		v := translate(tt.effort)["reasoning"]
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Fatalf("%q: reasoning = %#v, want object with effort", tt.effort, v)
+		}
+		if len(m) != 1 || m["effort"] != tt.want {
+			t.Errorf("%q: reasoning = %#v, want {effort:%s} only", tt.effort, m, tt.want)
+		}
+	}
+	// auto and unset → key absent so the endpoint applies its own default.
+	for _, e := range []Effort{EffortAuto, ""} {
+		if _, present := translate(e)["reasoning"]; present {
+			t.Errorf("%q: reasoning key must stay absent (field omitted)", e)
+		}
 	}
 }
 

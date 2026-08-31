@@ -85,6 +85,8 @@ type engineClient interface {
 	SetProvider(provider llm.Provider)
 	SetModel(model string)
 	Provider() llm.Provider
+	SetThinking(effort llm.Effort) error
+	Thinking() llm.Effort
 	SetMaxTokens(n int)
 	SetInputModalities(modalities []string)
 	UpdateAutoCompactConfig(cfg engine.AutoCompactConfig)
@@ -157,11 +159,13 @@ func (a *engineAdapter) ContextBreakdown() *engine.ContextBreakdown {
 	return a.eng.ContextBreakdown()
 }
 
-func (a *engineAdapter) SetProvider(p llm.Provider)    { a.eng.SetProvider(p) }
-func (a *engineAdapter) SetModel(m string)             { a.eng.SetModel(m) }
-func (a *engineAdapter) Provider() llm.Provider        { return a.eng.Provider() }
-func (a *engineAdapter) SetMaxTokens(n int)            { a.eng.SetMaxTokens(n) }
-func (a *engineAdapter) SetInputModalities(m []string) { a.eng.SetInputModalities(m) }
+func (a *engineAdapter) SetProvider(p llm.Provider)     { a.eng.SetProvider(p) }
+func (a *engineAdapter) SetModel(m string)              { a.eng.SetModel(m) }
+func (a *engineAdapter) Provider() llm.Provider         { return a.eng.Provider() }
+func (a *engineAdapter) SetThinking(e llm.Effort) error { return a.eng.SetThinking(e) }
+func (a *engineAdapter) Thinking() llm.Effort           { return a.eng.Thinking() }
+func (a *engineAdapter) SetMaxTokens(n int)             { a.eng.SetMaxTokens(n) }
+func (a *engineAdapter) SetInputModalities(m []string)  { a.eng.SetInputModalities(m) }
 func (a *engineAdapter) UpdateAutoCompactConfig(cfg engine.AutoCompactConfig) {
 	a.eng.UpdateAutoCompactConfig(cfg)
 }
@@ -2025,13 +2029,15 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 	items := config.BuildModelItems(c.providerConfigs, present, currentProvider, currentModel)
 
 	out := struct {
-		Type    string            `json:"type"`
-		Models  []configModelItem `json:"models"`
-		Current configCurrent     `json:"current"`
+		Type     string            `json:"type"`
+		Models   []configModelItem `json:"models"`
+		Current  configCurrent     `json:"current"`
+		Thinking string            `json:"thinking"`
 	}{
-		Type:    "config",
-		Models:  []configModelItem{},
-		Current: configCurrent{Provider: currentProvider, Model: currentModel},
+		Type:     "config",
+		Models:   []configModelItem{},
+		Current:  configCurrent{Provider: currentProvider, Model: currentModel},
+		Thinking: string(slot.engine.Thinking()),
 	}
 	for _, it := range items {
 		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
@@ -2357,20 +2363,52 @@ func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 	if ctxUsed == 0 {
 		ctxUsed = engine.TokenCountWithEstimation(eng.Messages())
 	}
-	c.sendWS(buildModelSwitched(ctxUsed, eng.ContextWindow()))
+	c.sendWS(buildModelSwitched(ctxUsed, eng.ContextWindow(), eng.Thinking()))
 }
 
-func buildModelSwitched(contextUsed, contextTotal int) []byte {
+// buildModelSwitched carries the post-switch context numbers plus the
+// re-resolved effort — without an override the new model's baseline applies,
+// so the client pill must be re-synced on every model switch.
+func buildModelSwitched(contextUsed, contextTotal int, effort llm.Effort) []byte {
 	payload, _ := json.Marshal(struct {
 		Type         string `json:"type"`
 		ContextUsed  int    `json:"contextUsed"`
 		ContextTotal int    `json:"contextTotal"`
+		Thinking     string `json:"thinking"`
 	}{
 		Type:         "model_switched",
 		ContextUsed:  contextUsed,
 		ContextTotal: contextTotal,
+		Thinking:     string(effort),
 	})
 	return payload
+}
+
+// handleThinkingSwitch sets the active engine's effort and pushes a fresh
+// config frame so the pill renders only server-resolved state (the engine is
+// the single source of truth).
+func (c *WUIConnector) handleThinkingSwitch(effort string) {
+	eng := c.activeEngine()
+	if eng == nil {
+		return
+	}
+	e, err := llm.ParseEffort(effort)
+	if err != nil {
+		c.sendWS(buildError(err))
+		return
+	}
+	if err := eng.SetThinking(e); err != nil {
+		c.sendWS(buildError(err))
+		return
+	}
+	slog.Info("wui:thinking switched", "effort", e)
+	slot := c.activeSlot()
+	if slot == nil {
+		return
+	}
+	if c.activeWS.Load() != nil {
+		c.sendWS(c.buildConfig(slot))
+	}
 }
 
 // SetCreateEngineFn injects the engine creation closure used by engine_new.

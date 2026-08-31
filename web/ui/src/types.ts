@@ -46,11 +46,12 @@ export type ServerMessage =
       type: 'config'
       models: { provider: string; model: string }[]
       current: { provider: string; model: string }
+      thinking: string
     }
   | {
       type: 'metadata'
       connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
-      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string } }
+      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string }
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
@@ -60,7 +61,7 @@ export type ServerMessage =
     }
   | { type: 'streamState'; blocks: Block[] }
   | { type: 'context_breakdown' } & ContextBreakdownData
-  | { type: 'model_switched'; contextUsed: number; contextTotal: number }
+  | { type: 'model_switched'; contextUsed: number; contextTotal: number; thinking: string }
   | { type: 'quota_result'; entries: { provider: string; quota: string }[] }
   | { type: 'file_start'; name: string; mime: string; size: number }
   | { type: 'file_end'; name: string }

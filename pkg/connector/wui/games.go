@@ -162,7 +162,7 @@ func observeComplete(ctx context.Context, provider llm.Provider, name, model, pr
 		// Reasoning models default thinking ON and a game move does not need
 		// it — glm-5.3 burned 26K tokens per turn thinking. Budget params are
 		// silently ignored by these providers; only the on/off toggle works.
-		Thinking: &llm.ThinkingConfig{Type: "disabled"},
+		Thinking: llm.EffortNone,
 		// Thinking tokens count toward max_tokens, and omitting the field
 		// makes the provider apply its own small default — either way deep
 		// thinking starves into an empty reply (observed with glm-5.3).

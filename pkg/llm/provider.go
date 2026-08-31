@@ -44,8 +44,10 @@ type Request struct {
 	Tools     []ToolDef       `json:"tools,omitempty"`
 	Stream    bool            `json:"stream,omitempty"`
 
-	// Thinking configuration (extended thinking)
-	Thinking *ThinkingConfig `json:"thinking,omitempty"`
+	// Thinking effort axis: none|auto|low|medium|high|max, empty = auto.
+	// Each provider translates it to its own wire shape at request assembly
+	// (see thinking.go for the frozen mapping); never serialized directly.
+	Thinking Effort `json:"-"`
 
 	// Temperature (0.0 to 1.0)
 	Temperature *float64 `json:"temperature,omitempty"`
@@ -80,8 +82,7 @@ type RequestMetadata struct {
 // ThinkingConfig configures extended thinking.
 // Source: utils/thinking.ts
 type ThinkingConfig struct {
-	Type         string `json:"type"` // "enabled" or "disabled"
-	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Type string `json:"type"` // "enabled" | "disabled" (chat), plus "adaptive" (anthropic)
 }
 
 // ToolDef represents a tool definition sent to the LLM.

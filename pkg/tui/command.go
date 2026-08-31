@@ -20,6 +20,8 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 		resultCmd = a.handleClear(commitCmd)
 	case "model":
 		resultCmd = a.handleModel(cmd.Args, commitCmd)
+	case "think":
+		resultCmd = a.handleThink(cmd.Args, commitCmd)
 	case "rewind":
 		resultCmd = a.handleRewind(commitCmd)
 	case "context":

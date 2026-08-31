@@ -85,15 +85,36 @@ func NewResponsesProvider(cfg *ResponsesConfig) *ResponsesProvider {
 // harness-only fields (tool_choice, include, text, service_tier, …) are
 // omitted.
 type responsesRequest struct {
-	Model           string          `json:"model"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Input           []responsesItem `json:"input"`
-	Tools           []responsesTool `json:"tools,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens"`
-	Store           bool            `json:"store"` // always false: we replay full input every turn
-	Stream          bool            `json:"stream"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	PromptCacheKey  string          `json:"prompt_cache_key,omitempty"`
+	Model           string           `json:"model"`
+	Instructions    string           `json:"instructions,omitempty"`
+	Input           []responsesItem  `json:"input"`
+	Tools           []responsesTool  `json:"tools,omitempty"`
+	MaxOutputTokens int              `json:"max_output_tokens"`
+	Store           bool             `json:"store"` // always false: we replay full input every turn
+	Stream          bool             `json:"stream"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	PromptCacheKey  string           `json:"prompt_cache_key,omitempty"`
+	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
+}
+
+// reasoningConfig is the Responses API reasoning object. effort "none" is the
+// GLM-verified hard off (reasoning_tokens=0); the word "disabled" is not
+// recognized by the endpoint.
+type reasoningConfig struct {
+	Effort string `json:"effort"`
+}
+
+// translateResponsesReasoning maps the effort axis onto the Responses
+// reasoning field. "" and auto omit it entirely so the endpoint applies its
+// own default behavior.
+func translateResponsesReasoning(e Effort) *reasoningConfig {
+	switch e {
+	case EffortNone:
+		return &reasoningConfig{Effort: "none"}
+	case EffortLow, EffortMedium, EffortHigh, EffortMax:
+		return &reasoningConfig{Effort: string(e)}
+	}
+	return nil
 }
 
 type responsesTool struct { // no strict field — not part of the GLM contract
@@ -326,11 +347,6 @@ func (p *ResponsesProvider) translateRequest(req *Request, stream bool) ([]byte,
 		maxOutput = 32768
 	}
 
-	// Effort is deliberately unset: gbot's ThinkingConfig has no numeric
-	// tier to map, and GLM keeps thinking on regardless (only depth changes).
-	// The extra_params merge is the manual override channel until effort
-	// becomes a first-class config.
-
 	if len(req.StopSequences) > 0 {
 		slog.Debug("responses: dropping stop_sequences — Responses API has no stop parameter",
 			"count", len(req.StopSequences))
@@ -344,6 +360,7 @@ func (p *ResponsesProvider) translateRequest(req *Request, stream bool) ([]byte,
 		Store:           false,
 		Stream:          stream,
 		Temperature:     req.Temperature,
+		Reasoning:       translateResponsesReasoning(req.Thinking),
 	}
 	if len(req.Tools) > 0 {
 		rReq.Tools = translateResponsesTools(req.Tools)

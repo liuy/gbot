@@ -350,8 +350,8 @@ func TestObserveHandler(t *testing.T) {
 				if req.MaxTokens != 32768 {
 					t.Errorf("MaxTokens = %d, want 32768 (thinking headroom)", req.MaxTokens)
 				}
-				if req.Thinking == nil || req.Thinking.Type != "disabled" {
-					t.Errorf("Thinking = %v, want disabled (game moves need no reasoning)", req.Thinking)
+				if req.Thinking != llm.EffortNone {
+					t.Errorf("Thinking = %q, want none (game moves need no reasoning)", req.Thinking)
 				}
 				if !req.Stream {
 					t.Error("Stream = false, want true (observe runs over the streaming API)")

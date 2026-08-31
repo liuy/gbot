@@ -358,6 +358,41 @@ func TestStartSessionCleanup(t *testing.T) {
 	}
 }
 
+// TestBuildModelThinking pins the config-side migration: legacy values map
+// onto the effort axis, empty is skipped, unknown values are dropped (the
+// model falls back to auto).
+func TestBuildModelThinking(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{
+				Name: "p1",
+				Models: config.NewModelsFromMap(map[string]config.ModelConfig{
+					"model-a": {Thinking: "adaptive"},
+					"model-b": {Thinking: "disabled"},
+					"model-c": {Thinking: "high"},
+					"model-d": {},
+					"model-e": {Thinking: "bogus"},
+				}),
+			},
+		},
+	}
+
+	got := buildModelThinking(cfg)
+	if len(got) != 3 {
+		t.Fatalf("len(buildModelThinking) = %d, want 3 (d skipped empty, e skipped unknown): %v", len(got), got)
+	}
+	want := map[string]llm.Effort{
+		"model-a": llm.EffortAuto,
+		"model-b": llm.EffortNone,
+		"model-c": llm.EffortHigh,
+	}
+	for name, effort := range want {
+		if got[name] != effort {
+			t.Errorf("buildModelThinking[%q] = %q, want %q", name, got[name], effort)
+		}
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

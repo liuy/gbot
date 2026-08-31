@@ -73,12 +73,16 @@ func TestBuildConfigMessage_Ordering(t *testing.T) {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
 		} `json:"current"`
+		Thinking string `json:"thinking"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if msg.Type != "config" {
 		t.Fatalf("type = %q, want config", msg.Type)
+	}
+	if msg.Thinking != "auto" {
+		t.Errorf("thinking = %q, want auto (mockEngine default)", msg.Thinking)
 	}
 	if len(msg.Models) != 6 {
 		t.Fatalf("models length = %d, want 6", len(msg.Models))
@@ -234,6 +238,7 @@ func TestModelSwitch_CallsSetProviderAndSetModel(t *testing.T) {
 		Type         string `json:"type"`
 		ContextUsed  int    `json:"contextUsed"`
 		ContextTotal int    `json:"contextTotal"`
+		Thinking     string `json:"thinking"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -243,6 +248,9 @@ func TestModelSwitch_CallsSetProviderAndSetModel(t *testing.T) {
 	}
 	if resp.ContextTotal != 200000 {
 		t.Errorf("contextTotal = %d, want 200000 (mockEngine default)", resp.ContextTotal)
+	}
+	if resp.Thinking != "auto" {
+		t.Errorf("thinking = %q, want auto (effort re-resolved after the model switch)", resp.Thinking)
 	}
 }
 

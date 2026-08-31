@@ -232,6 +232,13 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleModelSwitch(msg.Provider, msg.Model)
 			}
+		case "thinking_switch":
+			var msg struct {
+				Effort string `json:"effort"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.handleThinkingSwitch(msg.Effort)
+			}
 		case "engine_switch":
 			var msg struct {
 				EngineID string `json:"engineID"`

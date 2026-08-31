@@ -145,12 +145,16 @@ type Engine struct {
 	// 0 means no limit — aligns with TS built-in agents (undefined maxTurns).
 	maxTurns int
 
-	// modelThinking maps model name → Anthropic `thinking` request field value.
-	// Unset models omit the field entirely. The user is responsible for picking
-	// a value their model accepts (e.g. "adaptive" for newer models, "enabled"
-	// for older ones, "disabled" for explicit no-thinking). gbot does not
-	// translate between modes.
-	modelThinking map[string]llm.ThinkingMode
+	// modelThinking maps model name → migrated six-value effort baseline
+	// (from settings.json). Resolution order for the next request's effort:
+	// thinkingOverride (explicit runtime choice) → modelThinking[model] →
+	// "" (=auto). Unset models resolve to auto.
+	modelThinking map[string]llm.Effort
+
+	// thinkingOverride is the sticky runtime effort set via SetThinking
+	// (/think, wui pill). Empty means "no override" — the per-model config
+	// baseline applies and switches follow each model's configured value.
+	thinkingOverride llm.Effort
 
 	// inputModalities lists the input types the current model accepts
 	// (e.g. ["text"], ["text", "image", "video"]). Initialized by New() from
@@ -306,10 +310,10 @@ type Params struct {
 	WorkingDir        string     // working directory for file history snapshots
 	TaskList          *task.List // file-backed task storage for context injection
 
-	// ModelThinking holds per-model Anthropic `thinking` request field values
-	// keyed by model name. Models not in the map omit the field entirely.
-	// gbot does not translate between modes — values are passed through to the API.
-	ModelThinking map[string]llm.ThinkingMode
+	// ModelThinking holds per-model thinking-effort baselines keyed by model
+	// name, migrated from config onto the six-value axis. Models not in the
+	// map resolve to auto.
+	ModelThinking map[string]llm.Effort
 
 	// InputModalities lists the input types the model accepts (e.g. ["text"],
 	// ["text","image","video"]). Empty defaults to ["text"] in New() — the
@@ -1974,17 +1978,49 @@ func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*ty
 	return nil, nil, fmt.Errorf("callLLMWithRetry: unreachable")
 }
 
-// resolveThinking returns the Anthropic `thinking` config for the current model.
-// Returns nil when the model is not in modelThinking (field omitted).
-func (e *Engine) resolveThinking(model string) *llm.ThinkingConfig {
-	if e.modelThinking == nil {
-		return nil
+// resolveThinking returns the next request's effort: an explicit runtime
+// override (SetThinking) wins, then the model's config baseline, then ""
+// (=auto).
+func (e *Engine) resolveThinking(model string) llm.Effort {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.thinkingOverride != "" {
+		return e.thinkingOverride
 	}
-	level, ok := e.modelThinking[model]
-	if !ok || level == "" {
-		return nil
+	if e.modelThinking != nil {
+		if v, ok := e.modelThinking[model]; ok && v != "" {
+			return v
+		}
 	}
-	return llm.TranslateThinking(level)
+	return ""
+}
+
+// SetThinking sets the runtime override, applied to all subsequent requests
+// and sticky across model switches. Illegal values and the empty string error.
+func (e *Engine) SetThinking(effort llm.Effort) error {
+	// Valid("")==true, but the empty string means "no override" in
+	// resolveThinking and would silently clear the override; an explicit
+	// auto choice must go through EffortAuto.
+	if effort == "" {
+		return fmt.Errorf("thinking effort must not be empty (use \"auto\")")
+	}
+	if !effort.Valid() {
+		return fmt.Errorf("invalid thinking effort %q (none|auto|low|medium|high|max)", effort)
+	}
+	e.mu.Lock()
+	e.thinkingOverride = effort
+	e.mu.Unlock()
+	return nil
+}
+
+// Thinking returns the current model's resolved effort, normalizing empty to
+// auto so the UI never sees the sentinel.
+func (e *Engine) Thinking() llm.Effort {
+	v := e.resolveThinking(e.model)
+	if v == "" {
+		return llm.EffortAuto
+	}
+	return v
 }
 
 // emitCloseEventsForOpenBlocks emits thinking_end/text_end/tool_end events
@@ -2151,6 +2187,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		PromptStateKey: promptStateKey,
 		Thinking:       e.resolveThinking(e.model),
 	}
+	e.logger.Info("callLLM:effort", "resolved", string(req.Thinking), "override", string(e.thinkingOverride))
 
 	streamCh, err := e.provider.Stream(ctx, req)
 	if err != nil {

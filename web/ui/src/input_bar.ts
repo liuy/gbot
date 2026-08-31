@@ -1,5 +1,5 @@
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
-import { createElement, createNode } from './dom'
+import { createElement, createNode, cx } from './dom'
 import { renderIcon } from './icons'
 import { createIconButton } from './buttons'
 
@@ -69,6 +69,11 @@ export interface InputBarHandles {
   onSend: (cb: (text: string) => void) => void
   onStop: (cb: () => void) => void
   onCancelQueued: (cb: () => void) => void
+  // setThinking syncs the pill to a server-resolved effort (config /
+  // model_switched / metadata frames). The server is the single source of
+  // truth — local clicks only emit onThinkingSelect and wait for the echo.
+  setThinking: (effort: string) => void
+  onThinkingSelect: (cb: (effort: string) => void) => void
   onHistoryUp: (cb: (current: string) => string | null) => void
   onHistoryDown: (cb: () => string | null) => void
   onHistoryReset: (cb: () => void) => void
@@ -259,12 +264,100 @@ export function createInputBar(initial: {
     className: 'flex-shrink-0 disabled:opacity-30',
   })
   const renderSendIcon = (): SVGElement => renderIcon('send', { className: 'h-6 w-6' })
+  let pressTimer: ReturnType<typeof setTimeout> | null = null
+  let swallowClick = false
+  sendBtn.addEventListener('pointerdown', () => {
+    pressTimer = setTimeout(() => {
+      swallowClick = true
+      openStrip()
+    }, 500)
+  })
+  const cancelPress = () => {
+    if (pressTimer) clearTimeout(pressTimer)
+    pressTimer = null
+  }
+  sendBtn.addEventListener('pointerup', cancelPress)
+  sendBtn.addEventListener('pointerleave', cancelPress)
+  sendBtn.addEventListener('pointercancel', cancelPress)
+  sendBtn.addEventListener('click', (ev) => {
+    if (swallowClick) {
+      swallowClick = false
+      ev.stopPropagation()
+      ev.preventDefault()
+    }
+  }, true)
   const stopIcon =
     '<span class="text-[8px] mono font-bold tracking-wide">STOP</span>'
 
+  // Thinking-effort pill. Local state exists only for immediate visual
+  // feedback on click; authority lives server-side and arrives via
+  // setThinking, which is also the only path that should restyle to the
+  // non-default color.
+  const EFFORTS = ['none', 'auto', 'low', 'medium', 'high', 'max'] as const
+  let thinking = 'auto'
+  let thinkingCb: ((effort: string) => void) | null = null
+  // Effort selector: the send arrow doubles as the control (long-press to
+  // summon) and its state caption lives right under it — control and state
+  // stay paired, and the input row itself is never touched.
+  const effortCaption = createElement('button',
+    'text-[10px] leading-none text-t3/60 hover:text-t3 cursor-pointer select-none')
+  effortCaption.textContent = thinking
+  // Absolute badge in the row's py-2.5 dead band under the arrow: layout
+  // never changes; all six effort words are descender-free so 10px fits the
+  // band without clipping. invisible (not hidden) keeps the click target.
+  const syncCaption = () => {
+    if (thinking === 'auto') {
+      effortCaption.classList.add('invisible')
+    } else {
+      effortCaption.classList.remove('invisible')
+      effortCaption.textContent = thinking
+    }
+  }
+  effortCaption.classList.add('invisible')
+  effortCaption.addEventListener('click', () => openStrip())
+  const sendAnchor = createElement('div', 'relative flex-shrink-0')
+  sendAnchor.appendChild(sendBtn)
+  sendAnchor.appendChild(effortCaption)
+  effortCaption.classList.add('absolute', 'left-1/2', '-translate-x-1/2', 'top-full', '-mt-0.5')
+
+  const effortRow = createElement('div', 'hidden flex items-center justify-end gap-1 px-4 pt-2')
+  effortRow.dataset.effortStrip = ''
+  const renderStrip = () => {
+    effortRow.innerHTML = ''
+    for (const e of EFFORTS) {
+      const b = createElement('button', cx(
+        'text-[13px] px-1 rounded cursor-pointer transition-colors hover:bg-ink3/40',
+        e === thinking ? 'text-t2 underline underline-offset-4 decoration-t2/60' : 'text-t3',
+      ))
+      b.textContent = e
+      b.addEventListener('click', () => {
+        thinking = e
+        syncCaption()
+        closeStrip()
+        thinkingCb?.(e)
+      })
+      effortRow.appendChild(b)
+    }
+  }
+  const openStrip = () => {
+    renderStrip()
+    effortRow.classList.remove('hidden')
+    effortRow.querySelector('button')?.focus()
+  }
+  const closeStrip = () => effortRow.classList.add('hidden')
+  // Focus leaving the strip (no re-focus within it) collapses without
+  // choosing — a plain blur would eat the first textarea click.
+  effortRow.addEventListener('focusout', (ev) => {
+    if (!effortRow.contains(ev.relatedTarget as Node)) closeStrip()
+  })
+
+  // Match the 2px the effort badge lifts the send column, so both row
+  // ends read level.
+  plusBtn.classList.add('mb-0.5')
   row.appendChild(plusBtn)
   row.appendChild(taWrap)
-  row.appendChild(sendBtn)
+  row.appendChild(sendAnchor)
+  card.appendChild(effortRow)
   card.appendChild(chipRow)
   card.appendChild(row)
   form.appendChild(card)
@@ -857,6 +950,14 @@ export function createInputBar(initial: {
     },
     onStop: (cb) => {
       stopCb = cb
+    },
+    setThinking: (effort) => {
+      thinking = effort
+      syncCaption()
+      closeStrip()
+    },
+    onThinkingSelect: (cb) => {
+      thinkingCb = cb
     },
     onCancelQueued: (cb) => {
       cancelCb = cb

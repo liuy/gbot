@@ -624,3 +624,91 @@ describe('attach panel popover', () => {
     expect(count).toBe(1)
   })
 })
+
+describe('createInputBar — thinking effort control', () => {
+  const strip = (ib: ReturnType<typeof createInputBar>) =>
+    ib.root.querySelector('[data-effort-strip]') as HTMLElement
+  const caption = (ib: ReturnType<typeof createInputBar>) =>
+    ib.root.querySelector('button.text-\\[10px\\]') as HTMLElement
+  const sendBtn = (ib: ReturnType<typeof createInputBar>) =>
+    ib.root.querySelector('button[aria-label="Send"]') as HTMLElement
+
+  it('default auto: no caption text visible, input row untouched', () => {
+    const ib = mount()
+    expect(strip(ib).classList.contains('hidden')).toBe(true)
+    expect(caption(ib).classList.contains('invisible')).toBe(true)
+    // Row is exactly plus → textarea → send.
+    const plus = ib.root.querySelector('button[aria-label="Attach file"]')!
+    expect((plus.nextSibling as HTMLElement).contains(ib.textarea as unknown as Node)).toBe(true)
+    // The send anchor directly follows the textarea wrapper — no pill
+    // between them; the button itself sits inside its anchor.
+    expect(sendBtn(ib).closest('div')!.previousSibling).toBe(plus.nextSibling)
+  })
+
+  it('setThinking(high) shows the caption under the arrow, not in the row', () => {
+    const ib = mount()
+    ib.setThinking('high')
+    const cap = caption(ib)
+    expect(cap.textContent).toBe('high')
+    expect(cap.classList.contains('invisible')).toBe(false)
+    // The caption shares the send button's anchor wrapper — badge directly
+    // under the arrow, no layout slot of its own.
+    const anchor = sendBtn(ib).parentElement!
+    expect(anchor.contains(cap)).toBe(true)
+    expect(cap.classList.contains('absolute')).toBe(true)
+    // auto hides again
+    ib.setThinking('auto')
+    expect(caption(ib).classList.contains('invisible')).toBe(true)
+  })
+
+  it('long-pressing the send arrow opens the strip and swallows the click', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    let sent = 0
+    sendBtn(ib).addEventListener('click', () => sent++)
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    expect(strip(ib).classList.contains('hidden')).toBe(false)
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerup'))
+    // The click that follows a long-press must not send.
+    sendBtn(ib).dispatchEvent(new MouseEvent('click'))
+    expect(sent).toBe(0)
+    // A normal click (no long-press) still goes through.
+    sendBtn(ib).dispatchEvent(new MouseEvent('click'))
+    expect(sent).toBe(1)
+    vi.useRealTimers()
+  })
+
+  it('selecting from the strip fires onThinkingSelect, updates the caption, collapses', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const spy = vi.fn()
+    ib.onThinkingSelect(spy)
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    const labels = Array.from(strip(ib).querySelectorAll('button')).map((b) => b.textContent)
+    for (const e of ['none', 'auto', 'low', 'medium', 'high', 'max']) {
+      expect(labels).toContain(e)
+    }
+    const maxSeg = Array.from(strip(ib).querySelectorAll('button')).find((b) => b.textContent === 'max')!
+    maxSeg.click()
+    expect(spy).toHaveBeenCalledWith('max')
+    expect(caption(ib).textContent).toBe('max')
+    expect(strip(ib).classList.contains('hidden')).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('focus leaving the strip collapses it without choosing', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const spy = vi.fn()
+    ib.onThinkingSelect(spy)
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    strip(ib).dispatchEvent(new FocusEvent('focusout', { relatedTarget: ib.textarea as unknown as Node }))
+    expect(strip(ib).classList.contains('hidden')).toBe(true)
+    expect(caption(ib).classList.contains('invisible')).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+})

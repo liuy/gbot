@@ -111,6 +111,126 @@ func TestNewAnthropicProvider_CustomBaseURL(t *testing.T) {
 	}
 }
 
+// completeAndCapture runs Complete against a capture server and returns the
+// request body parsed as a JSON object map.
+func completeAndCapture(t *testing.T, effort llm.Effort) map[string]json.RawMessage {
+	t.Helper()
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		captured, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"id":"x","type":"message","role":"assistant","model":"test-model","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0},"content":[]}`)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 3 * time.Second,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 10,
+		Thinking:  effort,
+		Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}},
+	}); err != nil {
+		t.Fatalf("Complete(%q) error: %v", effort, err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("unmarshal captured body: %v\nbody: %s", err, captured)
+	}
+	return body
+}
+
+// TestAnthropicComplete_EffortWire pins the effort axis's anthropic wire
+// position through the real Complete entry point: concrete levels ride the
+// nested output_config object (never a top-level effort string), and
+// "adaptive" must not appear as an effort value.
+func TestAnthropicComplete_EffortWire(t *testing.T) {
+	t.Parallel()
+
+	body := completeAndCapture(t, llm.EffortNone)
+	if string(body["thinking"]) != `{"type":"disabled"}` {
+		t.Errorf("none: thinking = %s, want {\"type\":\"disabled\"}", body["thinking"])
+	}
+	if raw, present := body["output_config"]; present {
+		t.Errorf("none: output_config = %s, want absent", raw)
+	}
+
+	body = completeAndCapture(t, llm.EffortHigh)
+	if string(body["output_config"]) != `{"effort":"high"}` {
+		t.Errorf("high: output_config = %s, want {\"effort\":\"high\"}", body["output_config"])
+	}
+	if raw, present := body["thinking"]; present {
+		t.Errorf("high: thinking = %s, want absent (effort replaces the thinking field)", raw)
+	}
+
+	body = completeAndCapture(t, llm.EffortAuto)
+	if string(body["thinking"]) != `{"type":"adaptive"}` {
+		t.Errorf("auto: thinking = %s, want {\"type\":\"adaptive\"}", body["thinking"])
+	}
+	if raw, present := body["output_config"]; present {
+		t.Errorf("auto: output_config = %s, want absent", raw)
+	}
+}
+
+// TestAnthropicStream_EffortWire covers the second marshal point: Stream must
+// translate the axis identically to Complete.
+func TestAnthropicStream_EffortWire(t *testing.T) {
+	t.Parallel()
+
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		captured, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 3 * time.Second,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	eventCh, err := p.Stream(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 10,
+		Thinking:  llm.EffortHigh,
+		Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range eventCh {
+	}
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("unmarshal captured body: %v\nbody: %s", err, captured)
+	}
+	if string(body["output_config"]) != `{"effort":"high"}` {
+		t.Errorf("output_config = %s, want {\"effort\":\"high\"}", body["output_config"])
+	}
+	if raw, present := body["thinking"]; present {
+		t.Errorf("thinking = %s, want absent (effort replaces the thinking field)", raw)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // parseEvent tests
 // ---------------------------------------------------------------------------

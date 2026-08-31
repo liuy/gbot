@@ -106,7 +106,7 @@ type ModelConfig struct {
 	Context   IntOrHuman       `json:"context,omitempty"`    // context window in tokens, e.g. "200k", "1M". Default: 200k.
 	Input     []string         `json:"input,omitempty"`      // accepted input types, e.g. ["text", "image"]. Default: ["text"].
 	MaxTokens IntOrHuman       `json:"max_tokens,omitempty"` // max output tokens. Default: 32k.
-	Thinking  llm.ThinkingMode `json:"thinking,omitempty"`   // Anthropic thinking field. Allowed: "enabled", "disabled", "adaptive". Empty = omit.
+	Thinking  llm.ThinkingMode `json:"thinking,omitempty"`   // Thinking effort axis: none|auto|low|medium|high|max (default auto). Legacy: disabled→none, enabled/adaptive→auto.
 }
 
 // Provider holds configuration for a single LLM provider.

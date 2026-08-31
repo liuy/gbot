@@ -477,6 +477,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const inputBar = createInputBar({ connected: initial.connected })
   inputBar.root.className = 'px-5 pb-3 pt-1'
+  inputBar.onThinkingSelect((effort) => conn.send({ type: 'thinking_switch', effort }))
 
   const taskPanel = createTaskPanel()
 
@@ -1763,6 +1764,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
         header.setModels(msg.config.models, msg.config.current.provider, msg.config.current.model)
         header.setEngines(msg.engines.engines, msg.engines.activeID)
+        inputBar.setThinking(msg.config.thinking ?? 'auto')
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
         loadHistory({ type: 'history', ...msg.history })
 
@@ -1837,10 +1839,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       case 'config':
         header.setModels(msg.models, msg.current.provider, msg.current.model)
+        inputBar.setThinking(msg.thinking ?? 'auto')
         return
       case 'model_switched':
         contextTotal = msg.contextTotal
         header.setContext(msg.contextUsed, msg.contextTotal)
+        inputBar.setThinking(msg.thinking ?? 'auto')
         return
       case 'queued': {
         const uuid = msg.uuid

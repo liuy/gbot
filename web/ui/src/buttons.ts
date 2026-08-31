@@ -271,7 +271,11 @@ export function createToggleGroup(opts: {
 
 export interface ComboButtonHandle {
   wrap: HTMLElement
-  setLabel: (text: string) => void
+  // className, when given, replaces the trigger's class list wholesale (via
+  // the link+sm recipe) so callers can restyle per state — e.g. the thinking
+  // pill swapping text-t3 (default) for text-t2 (explicit). Omitting it keeps
+  // the legacy text-only swap.
+  setLabel: (text: string, className?: string) => void
   open: () => void
   close: () => void
   toggle: () => void
@@ -280,6 +284,10 @@ export interface ComboButtonHandle {
 export function createComboButton(opts: {
   label: string
   className?: string
+  // bottom positions the panel above the trigger (bottom-20) instead of
+  // below (top-12) — needed for triggers that sit at the screen's bottom
+  // edge, like the input-bar pill.
+  bottom?: boolean
   onOpen: (panel: HTMLElement) => void
   onClose?: () => void
   onClick?: (e: MouseEvent) => void
@@ -287,7 +295,7 @@ export function createComboButton(opts: {
   onLongPress?: () => void
 }): ComboButtonHandle {
   const wrap = createNode('div', { className: 'relative' })
-  const panel = createPopupPanel()
+  const panel = createPopupPanel({ bottom: opts.bottom })
   const host = createPopupHost({
     trigger: wrap,
     panel,
@@ -313,7 +321,12 @@ export function createComboButton(opts: {
   wrap.appendChild(trigger)
   return {
     wrap,
-    setLabel: (text) => { trigger.textContent = text },
+    setLabel: (text, className) => {
+      if (className !== undefined) {
+        trigger.className = textButtonRecipe({ variant: 'link', size: 'sm', class: className })
+      }
+      trigger.textContent = text
+    },
     open: host.open,
     close: host.close,
     toggle: host.toggle,

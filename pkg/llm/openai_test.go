@@ -1693,31 +1693,35 @@ func TestOpenAIProvider_ThinkingWireMapping(t *testing.T) {
 		},
 	}
 
-	// Set → carried on the wire verbatim (GLM/DeepSeek reasoning toggle).
-	req := base
-	req.Thinking = &ThinkingConfig{Type: "disabled"}
-	body, err := p.translateRequest(&req, false)
-	if err != nil {
-		t.Fatalf("translateRequest() error: %v", err)
-	}
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
-	}
-	if string(parsed["thinking"]) != `{"type":"disabled"}` {
-		t.Errorf("thinking = %s, want {\"type\":\"disabled\"}", parsed["thinking"])
+	translate := func(e Effort) map[string]json.RawMessage {
+		t.Helper()
+		req := base
+		req.Thinking = e
+		body, err := p.translateRequest(&req, false)
+		if err != nil {
+			t.Fatalf("translateRequest(%q) error: %v", e, err)
+		}
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		return parsed
 	}
 
-	// Unset → omitted entirely (provider default applies).
-	body2, err := p.translateRequest(&base, false)
-	if err != nil {
-		t.Fatalf("translateRequest() error: %v", err)
+	// none → explicit disabled toggle (GLM/DeepSeek reasoning off).
+	if got := translate(EffortNone)["thinking"]; string(got) != `{"type":"disabled"}` {
+		t.Errorf("none: thinking = %s, want {\"type\":\"disabled\"}", got)
 	}
-	var parsed2 map[string]json.RawMessage
-	if err := json.Unmarshal(body2, &parsed2); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	// Any concrete level collapses onto enabled — the chat protocol is a
+	// two-state switch with no finer granularity.
+	if got := translate(EffortHigh)["thinking"]; string(got) != `{"type":"enabled"}` {
+		t.Errorf("high: thinking = %s, want {\"type\":\"enabled\"}", got)
 	}
-	if _, present := parsed2["thinking"]; present {
-		t.Errorf("thinking present = %s, want omitted", parsed2["thinking"])
+	// auto and unset → omitted entirely (provider default applies).
+	for _, e := range []Effort{EffortAuto, ""} {
+		parsed := translate(e)
+		if raw, present := parsed["thinking"]; present {
+			t.Errorf("%q: thinking = %s, want omitted", e, raw)
+		}
 	}
 }
