@@ -24,6 +24,22 @@ describe('createSidebar', () => {
     expect(sidebar.root.style.transform).toBe('translateX(-100%)')
   })
 
+  it('root pads below the status-bar safe area (mobile edge-to-edge)', () => {
+    const { sidebar } = setup()
+    // .sidebar-safe-top carries padding-top: env(safe-area-inset-top) in
+    // index.css — class asserted instead of the style property because jsdom
+    // drops env() values it cannot parse. Same pattern as the main header.
+    expect(sidebar.root.classList.contains('sidebar-safe-top')).toBe(true)
+  })
+
+  it('list maxHeight subtracts the safe-area inset', () => {
+    const { sidebar } = setup()
+    const list = sidebar.root.querySelector('.overflow-y-auto') as HTMLElement
+    // .sidebar-list-height carries the calc() cap; without it the last
+    // sessions/games rows scroll under the status bar on mobile.
+    expect(list.classList.contains('sidebar-list-height')).toBe(true)
+  })
+
   it('overlay starts hidden (display none)', () => {
     const { sidebar } = setup()
     expect(sidebar.overlay.style.display).toBe('none')

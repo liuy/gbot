@@ -53,13 +53,12 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   const root = createNode('div', {
     className:
-      'fixed top-0 left-0 h-full w-72 z-50 glass-solid border-r border-hairline transition-transform duration-300 ease-out',
+      'sidebar-safe-top fixed top-0 left-0 h-full w-72 z-50 glass-solid border-r border-hairline transition-transform duration-300 ease-out',
     style: { transform: 'translateX(-100%)' },
   })
 
   const listContainer = createNode('div', {
-    className: 'px-2 pt-4 overflow-y-auto',
-    style: { maxHeight: 'calc(100dvh - 80px)' },
+    className: 'sidebar-list-height px-2 pt-4 overflow-y-auto',
   })
   root.appendChild(listContainer)
   const sessionsList = createElement('div', '')

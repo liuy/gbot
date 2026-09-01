@@ -60,6 +60,12 @@ body {
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
+/* Sidebar under mobile edge-to-edge: keep content below the status-bar
+   safe area and cap the list so its last rows do not scroll under it.
+   env() resolves to 0 on platforms without an inset (desktop). */
+.sidebar-safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.sidebar-list-height { max-height: calc(100dvh - 80px - env(safe-area-inset-top, 0px)); }
+
 .card-bg {
   background: var(--color-card);
   backdrop-filter: blur(4px);

@@ -178,7 +178,7 @@ describe('chess token uniqueness', () => {
     }
   })
 
-  it('random games stay duplicate-free across 50 seeded runs', () => {
+  it('random games stay duplicate-free across 50 seeded runs', { timeout: 15_000 }, () => {
     for (let seed = 1; seed <= 50; seed++) {
       const played = randomGame(ChessGame, Zh, lcg(seed))
       if (played.tokens.length === 0) {

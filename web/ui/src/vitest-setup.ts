@@ -1,6 +1,24 @@
 // jsdom-only setup. @testing-library/jest-dom is removed with React.
 // Tests assert via standard DOM (textContent, classList, querySelector).
 
+// Some environments (Termux jsdom build) initialize the window without a
+// Web Storage — stub an in-memory Storage so theme-pref code under test
+// (sidebar.ts reads/writes localStorage) does not crash.
+if (typeof window !== 'undefined' && !window.localStorage) {
+  const mem = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return mem.size
+    },
+    clear: () => mem.clear(),
+    getItem: (k: string) => (mem.has(k) ? mem.get(k)! : null),
+    key: (i: number) => Array.from(mem.keys())[i] ?? null,
+    removeItem: (k: string) => void mem.delete(k),
+    setItem: (k: string, v: string) => void mem.set(k, String(v)),
+  }
+  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true })
+}
+
 // jsdom lacks matchMedia — stub it (sidebar.ts uses it for system theme).
 if (typeof window !== 'undefined' && !window.matchMedia) {
   window.matchMedia = (() => {
