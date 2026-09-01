@@ -325,4 +325,66 @@ describe('createSidebar', () => {
       expect(document.documentElement.dataset.theme).toBe('dark')
     })
   })
+
+  describe('GBotNative.onThemeChanged (status-bar icon bridge)', () => {
+    // The Android host registers a GBotNative JS interface; the WUI must
+    // report every effective-theme change so the status-bar icon color can
+    // match the header background (dark theme → light icons, and vice versa).
+    let calls: boolean[]
+
+    beforeEach(() => {
+      calls = []
+      ;(window as Record<string, unknown>).GBotNative = {
+        onThemeChanged: (isDark: boolean) => calls.push(isDark),
+      }
+    })
+
+    afterEach(() => {
+      delete (window as Record<string, unknown>).GBotNative
+    })
+
+    it('NotifiesNative_OnInitialResolve', () => {
+      localStorage.setItem('gbot-theme', 'light')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      expect(calls).toEqual([false])
+    })
+
+    it('NotifiesNative_WhenThemeCycles', () => {
+      localStorage.setItem('gbot-theme', 'dark')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      const toggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // dark → light
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+      expect(calls[calls.length - 1]).toBe(false)
+    })
+
+    it('NotifiesNative_WhenSystemFlipsAndPrefIsSystem', () => {
+      localStorage.setItem('gbot-theme', 'system')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      const hook = (window as Record<string, unknown>).__gbotApplySystemTheme as
+        (isLight: boolean) => void
+      // jsdom matchMedia stub always reports dark, so hook(true) proves the
+      // notification carries the hook's value, not a stale matchMedia read.
+      hook(true) // system went light
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+      expect(calls[calls.length - 1]).toBe(false)
+    })
+
+    it('ExplicitPref_SystemFlipDoesNotNotify', () => {
+      // Companion invariant of ExplicitPref_NotOverridden: with an explicit
+      // user pref the apply() hook must not touch the theme or notify native
+      // (the last web-set value already matches the pref).
+      localStorage.setItem('gbot-theme', 'dark')
+      const { sidebar } = setup()
+      document.body.appendChild(sidebar.root)
+      expect(calls).toEqual([true]) // initial resolve only
+      const hook = (window as Record<string, unknown>).__gbotApplySystemTheme as
+        (isLight: boolean) => void
+      hook(true)
+      expect(calls).toEqual([true]) // no additional notify
+    })
+  })
 })

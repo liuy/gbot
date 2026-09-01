@@ -10,6 +10,7 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -96,6 +97,13 @@ class ChatFragment : Fragment() {
             domStorageEnabled = true
             allowFileAccess = false
         }
+        // Web→native theme bridge: the WUI reports its effective theme so the
+        // status-bar icon color matches the header background (WUI is the
+        // source of truth — it may differ from the system theme). Must be
+        // registered before the first loadUrl. Exposes exactly one primitive
+        // method on trusted localhost-only content (minSdk 28, so the
+        // pre-API-17 reflection hole does not apply).
+        webView?.addJavascriptInterface(NativeThemeBridge(), "GBotNative")
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
@@ -176,8 +184,11 @@ class ChatFragment : Fragment() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Notify the web of the system flip; the WUI's GBotNative bridge
+        // reports back the resolved theme and NativeThemeBridge updates the
+        // status-bar icons. Do NOT set icons from the system theme here:
+        // with an explicit user pref (dark/light) the system value is wrong.
         applySystemTheme(webView)
-        updateStatusBarIcons()
     }
 
     private fun applySystemTheme(view: WebView?) {
@@ -194,6 +205,22 @@ class ChatFragment : Fragment() {
             Configuration.UI_MODE_NIGHT_NO
         activity?.window?.let { window ->
             WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = isLight
+        }
+    }
+
+    /**
+     * Exposed to the WUI as window.GBotNative. Called on WebView's
+     * JavaBridge background thread — hop to main before touching the window.
+     */
+    private inner class NativeThemeBridge {
+        @JavascriptInterface
+        fun onThemeChanged(isDark: Boolean) {
+            activity?.runOnUiThread {
+                activity?.window?.let { window ->
+                    WindowInsetsControllerCompat(window, window.decorView)
+                        .isAppearanceLightStatusBars = !isDark
+                }
+            }
         }
     }
 

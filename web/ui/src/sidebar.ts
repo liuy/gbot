@@ -119,9 +119,20 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     return pref
   }
 
+  // Report the effective theme to the Android host (GBotNative JS interface
+  // registered by ChatFragment) so the status-bar icon color matches the
+  // header background. Optional-chained: no-op on desktop / server WUI.
+  const notifyNativeTheme = (resolved: 'dark' | 'light') => {
+    const native = (window as unknown as {
+      GBotNative?: { onThemeChanged?: (isDark: boolean) => void }
+    }).GBotNative
+    native?.onThemeChanged?.(resolved === 'dark')
+  }
+
   const savedPref = (localStorage.getItem('gbot-theme') || 'dark') as Theme
   const effectiveTheme = resolveTheme(savedPref)
   document.documentElement.dataset.theme = effectiveTheme
+  notifyNativeTheme(effectiveTheme)
 
   const renderThemeIcon = (pref: Theme): SVGElement =>
     renderIcon(pref === 'dark' ? 'moon' : pref === 'light' ? 'sun' : 'tai-chi', { size: 18 })
@@ -143,6 +154,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     document.documentElement.dataset.theme = resolved
     themeToggle.replaceChildren(renderThemeIcon(next))
     applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
+    notifyNativeTheme(resolved)
   }
   const themeToggle = createIconButton({
     icon: savedPref === 'dark' ? 'moon' : savedPref === 'light' ? 'sun' : 'tai-chi',
@@ -162,6 +174,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
       const resolved = resolveTheme('system')
       document.documentElement.dataset.theme = resolved
       applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
+      notifyNativeTheme(resolved)
     }
   }
   mediaQuery.addEventListener('change', onSystemChange)
@@ -172,8 +185,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const apply = (isLight: boolean) => {
     const pref = (localStorage.getItem('gbot-theme') as Theme) || 'dark'
     if (pref !== 'system') return
-    document.documentElement.dataset.theme = isLight ? 'light' : 'dark'
+    const resolved = isLight ? 'light' : 'dark'
+    document.documentElement.dataset.theme = resolved
     applyHljsTheme(getSavedHljsTheme(), !isLight)
+    notifyNativeTheme(resolved)
   }
   Object.assign(window, { __gbotApplySystemTheme: apply })
 
