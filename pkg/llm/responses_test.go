@@ -128,6 +128,29 @@ func TestResponsesTranslateResponseStatusFailed(t *testing.T) {
 	}
 }
 
+// TestResponsesComplete_IncompleteOtherReasonIsError mirrors the stream path:
+// incomplete with a reason other than max_output_tokens is a terminal error,
+// not a normal end_turn reply.
+func TestResponsesComplete_IncompleteOtherReasonIsError(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}`)
+	_, err := (&ResponsesProvider{}).translateResponse(body)
+	if err == nil {
+		t.Fatal("incomplete with reason content_filter must return an error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("error type = %T, want *APIError", err)
+	}
+	if apiErr.Message != "Incomplete response returned, reason: content_filter" {
+		t.Errorf("message = %q, want Incomplete response returned, reason: content_filter", apiErr.Message)
+	}
+	if apiErr.Retryable {
+		t.Error("Retryable = true, want false")
+	}
+}
+
 func TestResponsesTranslateRequest_Defaults(t *testing.T) {
 	t.Parallel()
 
@@ -154,6 +177,11 @@ func TestResponsesTranslateRequest_Defaults(t *testing.T) {
 	}
 	if _, present := m["tools"]; present {
 		t.Error("tools key must be absent when req.Tools is empty")
+	}
+	// tool_choice must accompany tools (provider contract); without tools the
+	// key stays absent.
+	if _, present := m["tool_choice"]; present {
+		t.Error("tool_choice must be absent when req.Tools is empty")
 	}
 }
 
@@ -293,6 +321,10 @@ func TestResponsesTranslateRequest_Tools(t *testing.T) {
 	}
 	if _, present := tool["strict"]; present {
 		t.Error("tools[0] must not carry a strict key")
+	}
+	// Tools present → tool_choice is sent explicitly as "auto" (codex parity).
+	if m["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v, want auto", m["tool_choice"])
 	}
 }
 
@@ -533,6 +565,77 @@ func TestResponsesTranslateRequest_ExtraParamsMerge(t *testing.T) {
 	}
 	if reasoning["effort"] != "high" {
 		t.Errorf("reasoning.effort = %v, want high (extra_params override)", reasoning["effort"])
+	}
+}
+
+// TestResponsesRequestOmitsNewFieldsByDefault guards the default request
+// shape: without tools none of the codex-parity request fields may appear.
+func TestResponsesRequestOmitsNewFieldsByDefault(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+	m := translateToMap(t, p, &Request{Messages: []types.Message{userTextMessage("hi")}}, false)
+
+	for _, key := range []string{"tool_choice", "parallel_tool_calls", "include", "stream_options", "text"} {
+		if _, present := m[key]; present {
+			t.Errorf("%q must be absent from a default request, got %v", key, m[key])
+		}
+	}
+}
+
+// TestResponsesRequestNewFieldsSerialize pins the wire shape of the five
+// codex-parity request fields: filled values serialize exactly as codex
+// ResponsesApiRequest does, zero values stay absent.
+func TestResponsesRequestNewFieldsSerialize(t *testing.T) {
+	t.Parallel()
+
+	parallel := false
+	filled := responsesRequest{
+		Model:             "m",
+		ToolChoice:        "auto",
+		ParallelToolCalls: &parallel,
+		Include:           []string{"reasoning.encrypted_content"},
+		StreamOptions:     &responsesStreamOpts{ReasoningSummaryDelivery: "sequential_cutoff"},
+		Text:              &responsesTextControls{Verbosity: "medium"},
+	}
+	body, err := json.Marshal(filled)
+	if err != nil {
+		t.Fatalf("marshal filled: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	if m["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v, want auto", m["tool_choice"])
+	}
+	if v, ok := m["parallel_tool_calls"].(bool); !ok || v {
+		t.Errorf("parallel_tool_calls = %v, want false", m["parallel_tool_calls"])
+	}
+	if inc, ok := m["include"].([]any); !ok || len(inc) != 1 || inc[0] != "reasoning.encrypted_content" {
+		t.Errorf("include = %v, want [reasoning.encrypted_content]", m["include"])
+	}
+	so, ok := m["stream_options"].(map[string]any)
+	if !ok || so["reasoning_summary_delivery"] != "sequential_cutoff" {
+		t.Errorf("stream_options = %v, want {reasoning_summary_delivery:sequential_cutoff}", m["stream_options"])
+	}
+	txt, ok := m["text"].(map[string]any)
+	if !ok || txt["verbosity"] != "medium" {
+		t.Errorf("text = %v, want {verbosity:medium}", m["text"])
+	}
+
+	empty, err := json.Marshal(responsesRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	var em map[string]any
+	if err := json.Unmarshal(empty, &em); err != nil {
+		t.Fatalf("unmarshal %s: %v", empty, err)
+	}
+	for _, key := range []string{"tool_choice", "parallel_tool_calls", "include", "stream_options", "text"} {
+		if _, present := em[key]; present {
+			t.Errorf("%q must be absent from a zero-value request, got %v", key, em[key])
+		}
 	}
 }
 

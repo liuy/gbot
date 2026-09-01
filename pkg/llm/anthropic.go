@@ -24,6 +24,13 @@ type outputConfig struct {
 	Effort string `json:"effort"`
 }
 
+// anthropicToolChoice is Anthropic's object form of tool_choice — the
+// equivalent of the OpenAI family's string "auto": the model may pick a tool
+// or answer directly.
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+}
+
 // anthropicRequestBody adds the effort-axis wire fields on top of Request.
 // Request.Thinking carries json:"-" (the axis is dialect-agnostic), so the
 // envelope owns the two anthropic-specific slots: the depth-0 Thinking field
@@ -31,14 +38,21 @@ type outputConfig struct {
 // the low/medium/high/max effort object.
 type anthropicRequestBody struct {
 	*Request
-	Thinking     *ThinkingConfig `json:"thinking,omitempty"`
-	OutputConfig *outputConfig   `json:"output_config,omitempty"`
+	Thinking     *ThinkingConfig      `json:"thinking,omitempty"`
+	OutputConfig *outputConfig        `json:"output_config,omitempty"`
+	ToolChoice   *anthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
 // marshalAnthropicBody translates the effort axis and serializes the wire body.
 func marshalAnthropicBody(req *Request) ([]byte, error) {
 	th, oc := translateAnthropicThinking(req.Thinking)
-	return json.Marshal(anthropicRequestBody{Request: req, Thinking: th, OutputConfig: oc})
+	// tool_choice only accompanies tools — a bare field is rejected by the
+	// contract.
+	var tc *anthropicToolChoice
+	if len(req.Tools) > 0 {
+		tc = &anthropicToolChoice{Type: "auto"}
+	}
+	return json.Marshal(anthropicRequestBody{Request: req, Thinking: th, OutputConfig: oc, ToolChoice: tc})
 }
 
 // AnthropicProvider implements Provider for the Anthropic Messages API.

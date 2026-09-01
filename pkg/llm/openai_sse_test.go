@@ -1423,3 +1423,34 @@ func TestOpenAISSE_TimeoutDisablerToggle_NoToolCall(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenAISSE_LongLineProcessed verifies a single SSE line above 100KB is
+// still parsed — chat endpoints can stream large code blocks as one chunk.
+func TestOpenAISSE_LongLineProcessed(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	big := strings.Repeat("x", 150000)
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":"`+big+`"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	var text strings.Builder
+	for _, e := range events {
+		if e.Delta != nil && e.Delta.Type == "text_delta" {
+			text.WriteString(e.Delta.Text)
+		}
+	}
+	if text.Len() != 150000 {
+		t.Errorf("accumulated text length = %d, want 150000", text.Len())
+	}
+}

@@ -181,6 +181,11 @@ type APIError struct {
 
 	// Whether this error is retryable
 	Retryable bool `json:"-"`
+
+	// RetryAfter carries a server-advised retry delay parsed from the error
+	// payload (rate_limit_exceeded "…try again in 11.054s…"). Advisory only —
+	// engine retry scheduling does not consume it yet; ported for codex parity.
+	RetryAfter time.Duration `json:"-"`
 }
 
 func (e *APIError) Error() string {

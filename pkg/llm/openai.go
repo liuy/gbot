@@ -74,14 +74,18 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 // ---------------------------------------------------------------------------
 
 type openaiChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openaiMessage `json:"messages"`
-	Tools       []openaiTool    `json:"tools,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
-	User        string          `json:"user,omitempty"`
+	Model    string          `json:"model"`
+	Messages []openaiMessage `json:"messages"`
+	Tools    []openaiTool    `json:"tools,omitempty"`
+	// ToolChoice is the OpenAI chat string form, sent only when tools are
+	// present — the contract requires tool_choice to accompany tools, and a
+	// bare field is rejected.
+	ToolChoice  string   `json:"tool_choice,omitempty"`
+	Stream      bool     `json:"stream,omitempty"`
+	MaxTokens   int      `json:"max_tokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
+	User        string   `json:"user,omitempty"`
 	// GLM/DeepSeek reasoning toggle: {"type":"enabled"|"disabled"} (verified
 	// against both endpoints; budget_tokens is silently ignored there).
 	Thinking *ThinkingConfig `json:"thinking,omitempty"`
@@ -444,12 +448,6 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 			continue
 		}
 
-		// Line length guard
-		if len(line) > 100_000 {
-			slog.Warn("openai sse: line too long, skipping", "length", len(line))
-			continue
-		}
-
 		// Must be a data line
 		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
@@ -695,6 +693,7 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 	// Tools
 	if len(req.Tools) > 0 {
 		oReq.Tools = translateTools(req.Tools)
+		oReq.ToolChoice = "auto"
 	}
 
 	body, err := json.Marshal(oReq)

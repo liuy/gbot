@@ -18,9 +18,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -82,8 +85,9 @@ func NewResponsesProvider(cfg *ResponsesConfig) *ResponsesProvider {
 
 // responsesRequest is the Responses API request body. Field superset is
 // trimmed from codex ResponsesApiRequest to what GLM/OpenAI commonly accept;
-// harness-only fields (tool_choice, include, text, service_tier, …) are
-// omitted.
+// harness-only fields (service_tier, session headers, custom tool inputs) are
+// omitted. The five trailing fields are serialized when set but never filled
+// by translateRequest today (tool_choice is the Phase 6A exception).
 type responsesRequest struct {
 	Model           string           `json:"model"`
 	Instructions    string           `json:"instructions,omitempty"`
@@ -95,6 +99,32 @@ type responsesRequest struct {
 	Temperature     *float64         `json:"temperature,omitempty"`
 	PromptCacheKey  string           `json:"prompt_cache_key,omitempty"`
 	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
+
+	ToolChoice        string                 `json:"tool_choice,omitempty"`         // Phase 6A: "auto" when tools are present; omitted otherwise
+	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"` // nil = omitted; codex always sends it
+	Include           []string               `json:"include,omitempty"`             // codex sends ["reasoning.encrypted_content"]; we never fill it
+	StreamOptions     *responsesStreamOpts   `json:"stream_options,omitempty"`
+	Text              *responsesTextControls `json:"text,omitempty"`
+}
+
+// responsesStreamOpts carries the codex reasoning summary delivery mode
+// ("sequential_cutoff"); present in the struct for parity, never filled.
+type responsesStreamOpts struct {
+	ReasoningSummaryDelivery string `json:"reasoning_summary_delivery"`
+}
+
+// responsesTextControls mirrors codex Text: verbosity plus optional
+// json_schema formatting; present for parity, never filled.
+type responsesTextControls struct {
+	Verbosity string               `json:"verbosity,omitempty"` // low|medium|high
+	Format    *responsesTextFormat `json:"format,omitempty"`
+}
+
+type responsesTextFormat struct {
+	Type   string          `json:"type"` // "json_schema"
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
+	Name   string          `json:"name"`
 }
 
 // reasoningConfig is the Responses API reasoning object. effort "none" is the
@@ -164,7 +194,9 @@ type responsesSSEEvent struct {
 	CallID       string          `json:"call_id,omitempty"`
 	OutputIndex  int             `json:"output_index,omitempty"`
 	ContentIndex int             `json:"content_index,omitempty"`
+	SummaryIndex int             `json:"summary_index,omitempty"`
 	Delta        string          `json:"delta,omitempty"`
+	Text         string          `json:"text,omitempty"`
 	Response     json.RawMessage `json:"response,omitempty"`
 }
 
@@ -364,6 +396,7 @@ func (p *ResponsesProvider) translateRequest(req *Request, stream bool) ([]byte,
 	}
 	if len(req.Tools) > 0 {
 		rReq.Tools = translateResponsesTools(req.Tools)
+		rReq.ToolChoice = "auto"
 	}
 	if req.PromptStateKey != nil {
 		rReq.PromptCacheKey = req.PromptStateKey.String()
@@ -460,6 +493,18 @@ func (p *ResponsesProvider) translateResponse(body []byte) (*Response, error) {
 			apiErr.Message = truncateForLog(string(body), 200)
 		}
 		return nil, apiErr
+	}
+
+	// Same incomplete semantics as the stream path: only max_output_tokens
+	// keeps the continuation-recovery stop_reason.
+	if r.Status == "incomplete" {
+		var reason string
+		if r.IncompleteDetails != nil {
+			reason = r.IncompleteDetails.Reason
+		}
+		if reason != "max_output_tokens" {
+			return nil, incompleteResponseError(reason)
+		}
 	}
 
 	var content []types.ContentBlock
@@ -678,11 +723,20 @@ type responsesItemState struct {
 	open         bool
 	argsEmitted  bool
 	argsLen      int
+	// emitted counts thinking/text bytes already delivered (deltas plus done
+	// backfills); the item-level done text is deduplicated against it.
+	emitted int
+	// summaryEmitted counts delivered bytes per summary_index. Raw
+	// reasoning_text deltas carry no summary_index and must NOT be recorded
+	// here — they are a separate text stream within the same item and would
+	// pollute the dedup baseline for summary_index 0.
+	summaryEmitted map[int]int
 }
 
 // responsesStreamAPIError classifies an error from response.failed or a
 // top-level error event into an APIError. Classification mirrors codex
-// sse/responses.rs: context/quota errors are fatal, overload errors retry.
+// sse/responses.rs:387-417 priority chain — context > quota > usage >
+// cyber_policy > invalid_prompt|bio_policy > overload > retryable else.
 func responsesStreamAPIError(we *responsesWireError, raw []byte) *APIError {
 	apiErr := &APIError{
 		Type:      we.Type,
@@ -699,13 +753,122 @@ func responsesStreamAPIError(we *responsesWireError, raw []byte) *APIError {
 		apiErr.ErrorCode = "prompt_too_long"
 	case "insufficient_quota", "usage_not_included":
 		// fatal, no retry
-	case "rate_limit_exceeded", "server_is_overloaded", "slow_down":
+	case "cyber_policy":
+		apiErr.Type = "cyber_policy"
+		// codex cyber_policy_message: absent or whitespace-only messages get
+		// the fixed fallback wording.
+		if strings.TrimSpace(apiErr.Message) == "" {
+			apiErr.Message = "This request has been flagged for possible cybersecurity risk."
+		}
+	case "invalid_prompt", "bio_policy":
+		apiErr.Type = "invalid_request_error"
+		if apiErr.Message == "" {
+			apiErr.Message = "Invalid request."
+		}
+	case "server_is_overloaded", "slow_down":
+		apiErr.Type = "server_overloaded"
 		apiErr.Retryable = true
+	default:
+		// codex responses.rs:410-414: every unmatched code — including
+		// rate_limit_exceeded and unknown codes — is retryable.
+		apiErr.Retryable = true
+		if d, ok := tryParseRetryAfter(we.Code, we.Message); ok {
+			apiErr.RetryAfter = d
+		}
 	}
 	if apiErr.Message == "" {
 		apiErr.Message = truncateForLog(string(raw), 200)
 	}
 	return apiErr
+}
+
+var rateLimitRegex = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)`)
+})
+
+// tryParseRetryAfter extracts the server-advised delay embedded in a
+// rate_limit_exceeded message. Port of codex try_parse_retry_after
+// (sse/responses.rs:599-623): non-match or f64 parse failure → no delay;
+// "ms" truncates (Rust `as u64`), "s"/"second*" uses fractional seconds.
+func tryParseRetryAfter(code, message string) (time.Duration, bool) {
+	if code != "rate_limit_exceeded" {
+		return 0, false
+	}
+	captures := rateLimitRegex().FindStringSubmatch(message)
+	if captures == nil {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(captures[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	unit := strings.ToLower(captures[2])
+	if unit == "s" || strings.HasPrefix(unit, "second") {
+		ns := value * float64(time.Second)
+		// Rust Duration::from_secs_f64 panics past Duration::MAX; a value
+		// that cannot round-trip into time.Duration is treated as no delay.
+		if ns >= float64(math.MaxInt64) {
+			return 0, false
+		}
+		return time.Duration(ns), true
+	}
+	// Only "ms" remains — the regex's unit group matches s|ms|seconds? and
+	// every non-ms variant returned above.
+	return time.Duration(uint64(value)) * time.Millisecond, true
+}
+
+// responsesItemDoneText returns the full text an output_item.done item
+// authoritatively carries: reasoning = summary_text parts followed by
+// reasoning_text/text parts; message = output_text parts. Mirrors
+// translateResponse's concatenation convention (no separator).
+func responsesItemDoneText(item *responsesItem) string {
+	var texts []string
+	switch item.Type {
+	case "reasoning":
+		for _, s := range item.Summary {
+			if s.Type == "summary_text" && s.Text != "" {
+				texts = append(texts, s.Text)
+			}
+		}
+		for _, part := range item.Content {
+			if (part.Type == "reasoning_text" || part.Type == "text") && part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+	case "message":
+		for _, part := range item.Content {
+			if part.Type == "output_text" && part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+	}
+	return strings.Join(texts, "")
+}
+
+// responsesItemKind maps an output item type to its content block kind:
+// reasoning→"thinking", message→"text", others→"".
+func responsesItemKind(itemType string) string {
+	switch itemType {
+	case "reasoning":
+		return "thinking"
+	case "message":
+		return "text"
+	}
+	return ""
+}
+
+// incompleteResponseError mirrors codex's handling of response.incomplete:
+// every reason except max_output_tokens (which keeps the engine's
+// continuation-recovery path) is a terminal, non-retryable error.
+func incompleteResponseError(reason string) *APIError {
+	if reason == "" {
+		reason = "unknown"
+	}
+	return &APIError{
+		Type:      "api_error",
+		Message:   fmt.Sprintf("Incomplete response returned, reason: %s", reason),
+		Retryable: false,
+	}
 }
 
 // parseResponsesSSE parses the Responses SSE stream and emits Anthropic-shaped
@@ -794,6 +957,26 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 		}
 	}
 
+	// emitTerminalState closes dangling blocks and terminates the turn with
+	// stop_reason + usage — the shared tail of the completed/incomplete cases.
+	emitTerminalState := func(comp responsesCompleted) {
+		// A missing output_item.done would leave a block dangling — the
+		// engine only registers tool_use on content_block_stop, so close
+		// everything before terminating.
+		closeOpenBlocks()
+		var incompleteReason string
+		if comp.IncompleteDetails != nil {
+			incompleteReason = comp.IncompleteDetails.Reason
+		}
+		usage := responsesUsageToUsage(comp.Usage)
+		emit(StreamEvent{
+			Type:     "message_delta",
+			DeltaMsg: &MessageDelta{StopReason: mapResponsesStopReason(comp.Status, incompleteReason, sawFunctionCall)},
+			Usage:    &usage,
+		})
+		emit(StreamEvent{Type: "message_stop"})
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -801,10 +984,6 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		if len(line) > 100_000 {
-			slog.Warn("responses sse: line too long, skipping", "length", len(line))
 			continue
 		}
 		data, ok := strings.CutPrefix(line, "data: ")
@@ -854,7 +1033,6 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			"response.content_part.done",
 			"response.reasoning_text.done",
 			"response.reasoning_summary_part.added",
-			"response.reasoning_summary_text.done",
 			"response.output_text.done",
 			"response.function_call_arguments.done":
 			// no-op
@@ -909,6 +1087,43 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				Index: st.contentIndex,
 				Delta: &StreamDelta{Type: "thinking_delta", Thinking: evt.Delta},
 			})
+			st.emitted += len(evt.Delta)
+			if evt.Type == "response.reasoning_summary_text.delta" {
+				if st.summaryEmitted == nil {
+					st.summaryEmitted = map[int]int{}
+				}
+				st.summaryEmitted[evt.SummaryIndex] += len(evt.Delta)
+			}
+
+		case "response.reasoning_summary_text.done":
+			// The done text is the authoritative full summary for its
+			// summary_index; when deltas were lost, backfill the un-delivered
+			// suffix (codex ReasoningSummaryDone carries the whole text).
+			if evt.Text == "" {
+				continue
+			}
+			st := stateFor(itemEventKey(evt), "thinking")
+			if !st.open {
+				st.open = true
+				emit(StreamEvent{
+					Type:         "content_block_start",
+					Index:        st.contentIndex,
+					ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking},
+				})
+			}
+			if sent := st.summaryEmitted[evt.SummaryIndex]; len(evt.Text) > sent {
+				suffix := evt.Text[sent:]
+				if st.summaryEmitted == nil {
+					st.summaryEmitted = map[int]int{}
+				}
+				st.summaryEmitted[evt.SummaryIndex] = len(evt.Text)
+				st.emitted += len(suffix)
+				emit(StreamEvent{
+					Type:  "content_block_delta",
+					Index: st.contentIndex,
+					Delta: &StreamDelta{Type: "thinking_delta", Thinking: suffix},
+				})
+			}
 
 		case "response.output_text.delta":
 			if evt.Delta == "" {
@@ -928,6 +1143,7 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				Index: st.contentIndex,
 				Delta: &StreamDelta{Type: "text_delta", Text: evt.Delta},
 			})
+			st.emitted += len(evt.Delta)
 
 		case "response.function_call_arguments.delta":
 			st := stateFor(itemEventKey(evt), "tool_use")
@@ -963,7 +1179,44 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			}
 			switch evt.Item.Type {
 			case "reasoning", "message":
-				if st := states[itemEventKey(evt)]; st != nil && st.open {
+				key := itemEventKey(evt)
+				doneText := responsesItemDoneText(evt.Item)
+				st := states[key]
+				if st == nil && doneText == "" {
+					// No deltas and the done item carries no text: creating a
+					// block here would only emit an empty content block.
+					continue
+				}
+				if st == nil {
+					st = stateFor(key, responsesItemKind(evt.Item.Type))
+				}
+				if len(doneText) > st.emitted {
+					// The done text is the authoritative full text; only the
+					// un-delivered suffix is emitted so complete delta streams
+					// stay byte-identical.
+					suffix := doneText[st.emitted:]
+					st.emitted = len(doneText)
+					delta := &StreamDelta{Type: "text_delta", Text: suffix}
+					blockType := types.ContentTypeText
+					if st.kind == "thinking" {
+						delta = &StreamDelta{Type: "thinking_delta", Thinking: suffix}
+						blockType = types.ContentTypeThinking
+					}
+					if !st.open {
+						st.open = true
+						emit(StreamEvent{
+							Type:         "content_block_start",
+							Index:        st.contentIndex,
+							ContentBlock: &types.ContentBlock{Type: blockType},
+						})
+					}
+					emit(StreamEvent{
+						Type:  "content_block_delta",
+						Index: st.contentIndex,
+						Delta: delta,
+					})
+				}
+				if st.open {
 					st.open = false
 					emit(StreamEvent{Type: "content_block_stop", Index: st.contentIndex})
 				}
@@ -1001,28 +1254,49 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				// at function entry.
 			}
 
-		case "response.completed", "response.incomplete":
+		case "response.completed":
+			if len(evt.Response) == 0 {
+				// codex maps a missing response field to Ok(None): no event,
+				// keep scanning. A following clean EOF reaches the engine as
+				// an interrupted stream (retryable), matching codex's
+				// "stream closed before response.completed".
+				continue
+			}
+			var comp responsesCompleted
+			// id is a required field in codex's ResponseCompleted — both an
+			// unparseable payload and a missing id are hard errors.
+			if err := json.Unmarshal(evt.Response, &comp); err != nil || comp.ID == "" {
+				reason := "missing id"
+				if err != nil {
+					reason = err.Error()
+				}
+				emit(StreamEvent{Type: "error", Error: &APIError{
+					Type:    "api_error",
+					Message: "failed to parse ResponseCompleted: " + reason,
+				}})
+				return nil
+			}
+			emitTerminalState(comp)
+			return nil
+
+		case "response.incomplete":
 			var comp responsesCompleted
 			if len(evt.Response) > 0 {
 				if err := json.Unmarshal(evt.Response, &comp); err != nil {
 					slog.Warn("responses sse: failed to parse terminal payload", "error", err)
 				}
 			}
-			// A missing output_item.done would leave a block dangling — the
-			// engine only registers tool_use on content_block_stop, so close
-			// everything before terminating.
-			closeOpenBlocks()
-			var incompleteReason string
+			var reason string
 			if comp.IncompleteDetails != nil {
-				incompleteReason = comp.IncompleteDetails.Reason
+				reason = comp.IncompleteDetails.Reason
 			}
-			usage := responsesUsageToUsage(comp.Usage)
-			emit(StreamEvent{
-				Type:     "message_delta",
-				DeltaMsg: &MessageDelta{StopReason: mapResponsesStopReason(comp.Status, incompleteReason, sawFunctionCall)},
-				Usage:    &usage,
-			})
-			emit(StreamEvent{Type: "message_stop"})
+			if reason != "max_output_tokens" {
+				// No closeOpenBlocks here — the engine's error path finalizes
+				// open blocks itself, same as the failed path.
+				emit(StreamEvent{Type: "error", Error: incompleteResponseError(reason)})
+				return nil
+			}
+			emitTerminalState(comp)
 			return nil
 
 		case "response.failed":

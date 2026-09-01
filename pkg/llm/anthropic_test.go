@@ -3236,3 +3236,114 @@ func TestRequestMarshal_DurationNotOnWire(t *testing.T) {
 		t.Errorf("negative control failed: wire body must contain thinking block, got: %s", got)
 	}
 }
+
+// TestAnthropicRequest_ToolChoiceWithTools verifies the explicit tool_choice
+// object form is sent whenever the request carries tools — the Anthropic
+// equivalent of the OpenAI family's string "auto".
+func TestAnthropicRequest_ToolChoiceWithTools(t *testing.T) {
+	t.Parallel()
+
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		resp := llm.Response{
+			ID:         "msg_tc",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := p.Complete(context.Background(), &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+		Tools: []llm.ToolDef{{
+			Name:        "bash",
+			Description: "run a command",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(receivedBody, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	tc, ok := req["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_choice = %v, want object", req["tool_choice"])
+	}
+	if tc["type"] != "auto" {
+		t.Errorf("tool_choice.type = %v, want auto", tc["type"])
+	}
+	if len(tc) != 1 {
+		t.Errorf("tool_choice = %v, want exactly {type:auto}", tc)
+	}
+}
+
+// TestAnthropicRequest_ToolChoiceOmittedWithoutTools guards the no-tools
+// path: the Anthropic contract requires tool_choice to accompany tools.
+func TestAnthropicRequest_ToolChoiceOmittedWithoutTools(t *testing.T) {
+	t.Parallel()
+
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		resp := llm.Response{
+			ID:         "msg_tc2",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := p.Complete(context.Background(), &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(receivedBody, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if _, present := req["tool_choice"]; present {
+		t.Errorf("tool_choice = %v, want absent without tools", req["tool_choice"])
+	}
+}

@@ -18,14 +18,15 @@ import (
 // (engine.go streaming loop): text/thinking deltas append to the running
 // strings, input_json_delta appends to a per-index builder.
 type streamAccumulator struct {
-	thinking strings.Builder
-	text     strings.Builder
-	toolArgs map[int]*strings.Builder
-	toolMeta map[int]types.ContentBlock
-	stop     string
-	usage    *types.Usage
-	model    string
-	gotError bool
+	thinking  strings.Builder
+	text      strings.Builder
+	toolArgs  map[int]*strings.Builder
+	toolMeta  map[int]types.ContentBlock
+	stop      string
+	usage     *types.Usage
+	model     string
+	gotError  bool
+	lastError *llm.APIError
 }
 
 func newStreamAccumulator() *streamAccumulator {
@@ -71,6 +72,7 @@ func (a *streamAccumulator) consume(ch <-chan llm.StreamEvent) {
 			a.usage = e.Usage
 		case "error":
 			a.gotError = true
+			a.lastError = e.Error
 		}
 	}
 }
@@ -256,5 +258,163 @@ func TestResponsesStream_RetryOn500(t *testing.T) {
 	}
 	if acc.stop != "tool_use" {
 		t.Errorf("stop_reason = %q, want tool_use", acc.stop)
+	}
+}
+
+// TestResponsesStream_LongLineEndToEnd drives a 120KB single-line delta
+// through the real HTTP/SSE stack — the integration-level guard for the
+// removed 100KB line cap.
+func TestResponsesStream_LongLineEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("y", 120000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		writeSSE(w, `{"type":"response.created","response":{"id":"resp_long","model":"glm-4.6"}}`)
+		writeSSE(w, `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`)
+		writeSSE(w, `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"`+big+`"}`)
+		writeSSE(w, `{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"`+big+`"}]}}`)
+		writeSSE(w, `{"type":"response.completed","response":{"id":"resp_long"}}`)
+		writeSSE(w, `[DONE]`)
+	}))
+	defer server.Close()
+
+	provider := llm.NewResponsesProvider(&llm.ResponsesConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "glm-4.6",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := &llm.Request{
+		Model:     "glm-4.6",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		},
+	}
+
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	acc := newStreamAccumulator()
+	acc.consume(ch)
+
+	if acc.gotError {
+		t.Fatal("stream produced an error event")
+	}
+	if acc.text.Len() != 120000 {
+		t.Errorf("text length = %d, want 120000", acc.text.Len())
+	}
+	if acc.stop != "end_turn" {
+		t.Errorf("stop_reason = %q, want end_turn", acc.stop)
+	}
+}
+
+// TestResponsesStream_ItemDoneBackfillEndToEnd verifies the done-item
+// backfill across real HTTP chunk/flush boundaries: half the text arrives via
+// delta, the rest is recovered from output_item.done.
+func TestResponsesStream_ItemDoneBackfillEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		writeSSE(w, `{"type":"response.created","response":{"id":"resp_bf","model":"glm-4.6"}}`)
+		writeSSE(w, `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`)
+		writeSSE(w, `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"The first "}`)
+		writeSSE(w, `{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"The first half plus the recovered half"}]}}`)
+		writeSSE(w, `{"type":"response.completed","response":{"id":"resp_bf"}}`)
+		writeSSE(w, `[DONE]`)
+	}))
+	defer server.Close()
+
+	provider := llm.NewResponsesProvider(&llm.ResponsesConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "glm-4.6",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := &llm.Request{
+		Model:     "glm-4.6",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		},
+	}
+
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	acc := newStreamAccumulator()
+	acc.consume(ch)
+
+	if acc.gotError {
+		t.Fatal("stream produced an error event")
+	}
+	if acc.text.String() != "The first half plus the recovered half" {
+		t.Errorf("text = %q, want delta prefix plus done backfill", acc.text.String())
+	}
+}
+
+// TestResponsesStream_FailedCyberPolicyEndToEnd verifies the cyber_policy
+// fallback message survives the full Stream→HTTP→SSE chain.
+func TestResponsesStream_FailedCyberPolicyEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		writeSSE(w, `{"type":"response.created","response":{"id":"resp_cyber"}}`)
+		writeSSE(w, `{"type":"response.failed","response":{"id":"resp_cyber","status":"failed","error":{"code":"cyber_policy","message":"   "}}}`)
+	}))
+	defer server.Close()
+
+	provider := llm.NewResponsesProvider(&llm.ResponsesConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "glm-4.6",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req := &llm.Request{
+		Model:     "glm-4.6",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		},
+	}
+
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	acc := newStreamAccumulator()
+	acc.consume(ch)
+
+	if !acc.gotError {
+		t.Fatal("expected an error event")
+	}
+	if acc.lastError == nil {
+		t.Fatal("error event carried nil APIError")
+	}
+	if acc.lastError.Message != "This request has been flagged for possible cybersecurity risk." {
+		t.Errorf("Message = %q, want the cyber_policy fallback", acc.lastError.Message)
 	}
 }

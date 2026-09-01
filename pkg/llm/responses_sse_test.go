@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -478,22 +479,105 @@ func TestResponsesSSE_FailedClassification(t *testing.T) {
 		payload       string
 		wantOverflow  bool
 		wantRetryable bool
+		wantType      string
+		wantMessage   string
 	}{
 		{
 			name:          "context_length_exceeded is overflow",
 			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"context_length_exceeded","message":"too long"}}}`,
 			wantOverflow:  true,
 			wantRetryable: false,
+			wantType:      "prompt_too_long",
+			wantMessage:   "too long",
 		},
 		{
 			name:          "rate_limit_exceeded retries",
 			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"rate_limit_exceeded","message":"slow down"}}}`,
 			wantRetryable: true,
+			wantType:      "api_error",
+			wantMessage:   "slow down",
 		},
 		{
-			name:          "unknown code is fatal with message",
+			// codex responses.rs:410-414: the else branch maps every unmatched
+			// code to ApiError::Retryable — unknown codes are retryable.
+			name:          "unknown code is retryable",
 			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"weird_code","message":"something odd"}}}`,
+			wantRetryable: true,
+			wantType:      "api_error",
+			wantMessage:   "something odd",
+		},
+		{
+			// Error object without a message degrades to the raw response
+			// body (GLM adaptation layer — codex would surface an empty
+			// message, which is strictly worse for the user).
+			name:          "missing message falls back to raw body",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"weird_code"}}}`,
+			wantRetryable: true,
+			wantType:      "api_error",
+			wantMessage:   `{"id":"resp_f","error":{"code":"weird_code"}}`,
+		},
+		{
+			name:          "cyber_policy is fatal with message",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"cyber_policy","message":"This request was flagged for cyber policy."}}}`,
 			wantRetryable: false,
+			wantType:      "cyber_policy",
+			wantMessage:   "This request was flagged for cyber policy.",
+		},
+		{
+			name:          "cyber_policy blank message uses fallback",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"cyber_policy","message":"   "}}}`,
+			wantRetryable: false,
+			wantType:      "cyber_policy",
+			wantMessage:   "This request has been flagged for possible cybersecurity risk.",
+		},
+		{
+			name:          "invalid_prompt is invalid_request_error",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"invalid_prompt","message":"Invalid prompt: we've limited access to this content for safety reasons."}}}`,
+			wantRetryable: false,
+			wantType:      "invalid_request_error",
+			wantMessage:   "Invalid prompt: we've limited access to this content for safety reasons.",
+		},
+		{
+			name:          "invalid_prompt empty message falls back",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"invalid_prompt"}}}`,
+			wantRetryable: false,
+			wantType:      "invalid_request_error",
+			wantMessage:   "Invalid request.",
+		},
+		{
+			name:          "bio_policy is invalid_request_error",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"bio_policy","message":"This content was flagged for possible biological risk."}}}`,
+			wantRetryable: false,
+			wantType:      "invalid_request_error",
+			wantMessage:   "This content was flagged for possible biological risk.",
+		},
+		{
+			name:          "insufficient_quota is fatal",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"insufficient_quota","message":"You exceeded your current quota."}}}`,
+			wantRetryable: false,
+			wantType:      "api_error",
+			wantMessage:   "You exceeded your current quota.",
+		},
+		{
+			name:          "usage_not_included is fatal",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"usage_not_included","message":"not included"}}}`,
+			wantRetryable: false,
+			wantType:      "api_error",
+			wantMessage:   "not included",
+		},
+		{
+			name:          "server_is_overloaded retries",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"server_is_overloaded","message":"overloaded"}}}`,
+			wantRetryable: true,
+			wantType:      "server_overloaded",
+			wantMessage:   "overloaded",
+		},
+		{
+			name:          "slow_down retries",
+			payload:       `{"type":"response.failed","response":{"id":"resp_f","error":{"code":"slow_down","message":"slow"}}}`,
+			wantRetryable: true,
+			wantType:      "server_overloaded",
+			wantMessage:   "slow",
 		},
 	}
 
@@ -519,10 +603,139 @@ func TestResponsesSSE_FailedClassification(t *testing.T) {
 			if apiErr.Retryable != tc.wantRetryable {
 				t.Errorf("Retryable = %v, want %v", apiErr.Retryable, tc.wantRetryable)
 			}
-			if apiErr.Message == "" {
-				t.Error("Message must carry wire message, got empty")
+			if apiErr.Type != tc.wantType {
+				t.Errorf("Type = %q, want %q", apiErr.Type, tc.wantType)
+			}
+			if apiErr.Message != tc.wantMessage {
+				t.Errorf("Message = %q, want %q", apiErr.Message, tc.wantMessage)
 			}
 		})
+	}
+}
+
+// TestResponsesSSE_RateLimitDelayParsed feeds the real OpenAI rate-limit wire
+// fixture through the failed-event path: the retry delay must be extracted
+// into APIError.RetryAfter.
+func TestResponsesSSE_RateLimitDelayParsed(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	payload := `{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."}, "usage":null,"user":null,"metadata":{}}}`
+
+	events, err := collectResponsesEvents(context.Background(), p, sseBody("data: "+payload, ``))
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "error")
+	apiErr := events[1].Error
+	if apiErr == nil {
+		t.Fatal("error event has nil Error")
+	}
+	if !apiErr.Retryable {
+		t.Error("Retryable = false, want true")
+	}
+	diff := apiErr.RetryAfter - 11054*time.Millisecond
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > time.Microsecond {
+		t.Errorf("RetryAfter = %v, want ~11.054s (±1µs)", apiErr.RetryAfter)
+	}
+}
+
+func TestTryParseRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		code      string
+		message   string
+		want      time.Duration
+		wantOK    bool
+		tolerance time.Duration
+	}{
+		{
+			name:    "milliseconds parse exactly",
+			code:    "rate_limit_exceeded",
+			message: "Rate limit reached for gpt-5.1 in organization org- on tokens per min (TPM): Limit 1, Used 1, Requested 19304. Please try again in 28ms. Visit https://platform.openai.com/account/rate-limits to learn more.",
+			want:    28 * time.Millisecond,
+			wantOK:  true,
+		},
+		{
+			name:      "fractional seconds",
+			code:      "rate_limit_exceeded",
+			message:   "Rate limit reached for gpt-5.1 in organization <ORG> on tokens per min (TPM): Limit 30000, Used 6899, Requested 24050. Please try again in 1.898s. Visit https://platform.openai.com/account/rate-limits to learn more.",
+			want:      1898 * time.Millisecond,
+			wantOK:    true,
+			tolerance: time.Microsecond,
+		},
+		{
+			name:    "azure capital Try and seconds word",
+			code:    "rate_limit_exceeded",
+			message: "Rate limit exceeded. Try again in 35 seconds.",
+			want:    35 * time.Second,
+			wantOK:  true,
+		},
+		{
+			// Rust Duration::from_secs_f64 panics past Duration::MAX; the Go
+			// port treats unrepresentable values as no delay.
+			name:    "overflowing seconds yields no delay",
+			code:    "rate_limit_exceeded",
+			message: "Please try again in 99999999999999999999s.",
+			wantOK:  false,
+		},
+		{
+			// 400 nines exceed f64 range — ParseFloat fails.
+			name:    "unparseable magnitude yields no delay",
+			code:    "rate_limit_exceeded",
+			message: "Please try again in " + strings.Repeat("9", 400) + "s.",
+			wantOK:  false,
+		},
+		{
+			name:    "other code yields no delay even with matching message",
+			code:    "server_is_overloaded",
+			message: "Please try again in 28ms.",
+			wantOK:  false,
+		},
+		{
+			name:    "message without delay pattern",
+			code:    "rate_limit_exceeded",
+			message: "Rate limit reached with no delay hint.",
+			wantOK:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tryParseRetryAfter(tc.code, tc.message)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			diff := got - tc.want
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > tc.tolerance {
+				t.Errorf("delay = %v, want %v (±%v)", got, tc.want, tc.tolerance)
+			}
+		})
+	}
+}
+
+func TestRateLimitRegexLazilyCompiled(t *testing.T) {
+	t.Parallel()
+
+	first := rateLimitRegex()
+	second := rateLimitRegex()
+	if first != second {
+		t.Error("rateLimitRegex must return the same compiled instance on every call (OnceValue)")
 	}
 }
 
@@ -931,4 +1144,662 @@ func TestResponsesSSE_CompletedClosesOpenBlocks_Message(t *testing.T) {
 		"message_delta",
 		"message_stop",
 	)
+}
+
+// ---------------------------------------------------------------------------
+// 17. LongLineProcessed — a single SSE line above 100KB must still be parsed
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_LongLineProcessed(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// A single output_text.delta carrying 150000 bytes in one SSE line.
+	// Responses servers routinely put the whole output_item.done or
+	// response.completed payload on one line; a >100KB payload must not be
+	// silently dropped.
+	big := strings.Repeat("x", 150000)
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_17"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"`+big+`"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"`+big+`"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_17"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+
+	if events[2].Delta == nil || len(events[2].Delta.Text) != 150000 {
+		t.Errorf("delta text length = %d, want 150000", len(events[2].Delta.Text))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 18. SummaryDone backfill — done text is the authoritative full summary
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_SummaryDoneBackfillsLostDeltas(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// No reasoning_summary_text.delta at all — the done event is the only
+	// carrier of the summary text.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_18"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":0}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":"Full summary text"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"Full summary text"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_18"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta", // thinking_delta with the full text
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+
+	if cb := events[1].ContentBlock; cb == nil || cb.Type != types.ContentTypeThinking {
+		t.Errorf("content_block_start block = %+v, want thinking", events[1].ContentBlock)
+	}
+	if events[2].Delta == nil || events[2].Delta.Type != "thinking_delta" || events[2].Delta.Thinking != "Full summary text" {
+		t.Errorf("thinking delta = %+v, want full summary text", events[2].Delta)
+	}
+}
+
+func TestResponsesSSE_SummaryDoneMultiIndexBackfill(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// summary_index 0 arrives complete (delta + done); summary_index 1 loses
+	// its deltas and only the done text survives.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_18b"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":0}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"A"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":"A"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":1}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":1,"text":"B"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"A"},{"type":"summary_text","text":"B"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_18b"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	var think strings.Builder
+	for _, ev := range events {
+		if ev.Delta != nil && ev.Delta.Type == "thinking_delta" {
+			think.WriteString(ev.Delta.Thinking)
+		}
+	}
+	if think.String() != "AB" {
+		t.Errorf("thinking = %q, want AB", think.String())
+	}
+	if got := strings.Count(think.String(), "A"); got != 1 {
+		t.Errorf("thinking contains %d 'A', want exactly 1 (index 0 must not be duplicated)", got)
+	}
+}
+
+// TestResponsesSSE_RawReasoningDeltaDoesNotPolluteSummaryIndex: raw
+// reasoning_text and the summary are separate text streams within one item.
+// The raw delta must stay out of summaryEmitted — otherwise the done(0)
+// dedup baseline counts "R" as delivered summary bytes and silently drops
+// the real summary text.
+func TestResponsesSSE_RawReasoningDeltaDoesNotPolluteSummaryIndex(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_18c"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"R"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":"S"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_18c"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking, opened by the raw delta
+		"content_block_delta", // thinking_delta "R"
+		"content_block_delta", // thinking_delta "S" backfilled from done(0)
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+
+	var think strings.Builder
+	for _, ev := range events {
+		if ev.Delta != nil && ev.Delta.Type == "thinking_delta" {
+			think.WriteString(ev.Delta.Thinking)
+		}
+	}
+	if think.String() != "RS" {
+		t.Errorf("thinking = %q, want RS (raw delta plus full summary backfill)", think.String())
+	}
+	if events[3].Delta == nil || events[3].Delta.Thinking != "S" {
+		t.Errorf("backfill delta = %+v, want full S (baseline must be 0, not polluted by R)", events[3].Delta)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 19. ItemDone backfill — done items are the authoritative text carrier
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_ItemDoneBackfillsTextNoDeltas(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // text
+		"content_block_delta", // text_delta with the full done text
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+
+	if cb := events[1].ContentBlock; cb == nil || cb.Type != types.ContentTypeText {
+		t.Errorf("content_block_start block = %+v, want text", events[1].ContentBlock)
+	}
+	if events[2].Delta == nil || events[2].Delta.Type != "text_delta" || events[2].Delta.Text != "Hello world" {
+		t.Errorf("text delta = %+v, want Hello world", events[2].Delta)
+	}
+}
+
+func TestResponsesSSE_ItemDoneBackfillsReasoningNoDeltas(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19b"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"Thought through"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19b"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	var think strings.Builder
+	for _, ev := range events {
+		if ev.Delta != nil && ev.Delta.Type == "thinking_delta" {
+			think.WriteString(ev.Delta.Thinking)
+		}
+	}
+	if think.String() != "Thought through" {
+		t.Errorf("thinking = %q, want Thought through (done summary backfill)", think.String())
+	}
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+}
+
+func TestResponsesSSE_ItemDoneSuffixWhenDeltaPartiallyLost(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// Delta delivered only "Hel"; the done item carries the full "Hello" —
+	// exactly the un-delivered suffix must be backfilled.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19c"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hel"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19c"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta", // "Hel" from the delta
+		"content_block_delta", // "lo" backfilled from done
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+
+	if events[3].Delta == nil || events[3].Delta.Text != "lo" {
+		t.Errorf("backfill delta = %+v, want exactly lo", events[3].Delta)
+	}
+}
+
+func TestResponsesSSE_ItemDoneEmptyItemNoBlock(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// A done item with no text and no prior deltas must not synthesize an
+	// empty content block.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19d"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19d"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "message_delta", "message_stop")
+}
+
+// TestResponsesSSE_ItemDoneWithoutAddedBackfills covers the recovery path
+// where output_item.added went missing but the done item still carries the
+// authoritative text — the block is created from the done item alone.
+func TestResponsesSSE_ItemDoneWithoutAddedBackfills(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		doneItem   string
+		wantKind   types.ContentType
+		wantDelta  string
+		wantEvents []string
+	}{
+		{
+			name:       "message done without added",
+			doneItem:   `{"id":"item_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Rescued text"}]}`,
+			wantKind:   types.ContentTypeText,
+			wantDelta:  "Rescued text",
+			wantEvents: []string{"content_block_start", "content_block_delta", "content_block_stop"},
+		},
+		{
+			name:       "reasoning summary done without added",
+			doneItem:   `{"id":"item_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"Recovered thought"}]}`,
+			wantKind:   types.ContentTypeThinking,
+			wantDelta:  "Recovered thought",
+			wantEvents: []string{"content_block_start", "content_block_delta", "content_block_stop"},
+		},
+		{
+			name:       "empty done item without added",
+			doneItem:   `{"id":"item_1","type":"message","role":"assistant","content":[]}`,
+			wantEvents: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := newResponsesTestProvider()
+			body := sseBody(
+				`data: {"type":"response.created","response":{"id":"resp_19e"}}`,
+				``,
+				`data: {"type":"response.output_item.done","output_index":0,"item":`+tc.doneItem+`}`,
+				``,
+				`data: {"type":"response.completed","response":{"id":"resp_19e"}}`,
+				``,
+			)
+
+			events, err := collectResponsesEvents(context.Background(), p, body)
+			if err != nil {
+				t.Fatalf("parseResponsesSSE error: %v", err)
+			}
+
+			want := append([]string{"message_start"}, tc.wantEvents...)
+			want = append(want, "message_delta", "message_stop")
+			assertEventTypes(t, events, want...)
+
+			if tc.wantDelta == "" {
+				return
+			}
+			if cb := events[1].ContentBlock; cb == nil || cb.Type != tc.wantKind {
+				t.Errorf("content_block_start block = %+v, want %s", events[1].ContentBlock, tc.wantKind)
+			}
+			if events[2].Delta == nil || (events[2].Delta.Text != tc.wantDelta && events[2].Delta.Thinking != tc.wantDelta) {
+				t.Errorf("delta = %+v, want %q", events[2].Delta, tc.wantDelta)
+			}
+		})
+	}
+}
+
+// TestResponsesSSE_SummaryDoneEmptyTextNoBlock: a done event with empty text
+// must not open a block or emit a delta.
+func TestResponsesSSE_SummaryDoneEmptyTextNoBlock(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19f"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":0}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","output_index":0,"summary_index":0,"text":""}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[],"summary":[]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19f"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "message_delta", "message_stop")
+}
+
+func TestResponsesItemKind(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		itemType string
+		want     string
+	}{
+		{"reasoning", "thinking"},
+		{"message", "text"},
+		{"function_call", ""},
+	} {
+		if got := responsesItemKind(tc.itemType); got != tc.want {
+			t.Errorf("responsesItemKind(%q) = %q, want %q", tc.itemType, got, tc.want)
+		}
+	}
+}
+
+// TestResponsesSSE_EmptyDeltasSkipped: zero-length deltas must be skipped
+// without perturbing the event sequence or opening blocks.
+func TestResponsesSSE_EmptyDeltasSkipped(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_19g"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":""}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"real thought"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":""}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"real text"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_19g"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	// No output_item.done events in this stream, so both blocks stay open
+	// until response.completed closes them (creation order).
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta", // thinking_delta
+		"content_block_start", // text
+		"content_block_delta", // text_delta
+		"content_block_stop",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+	if events[2].Delta == nil || events[2].Delta.Thinking != "real thought" {
+		t.Errorf("thinking delta = %+v, want real thought only", events[2].Delta)
+	}
+	if events[4].Delta == nil || events[4].Delta.Text != "real text" {
+		t.Errorf("text delta = %+v, want real text only", events[4].Delta)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 21. Incomplete non-max_output_tokens is an error
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_IncompleteOtherReasonIsError(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// codex reports every incomplete reason other than max_output_tokens as
+	// a terminal error; only max_output_tokens keeps the continuation path.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_21"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"resp_21","status":"incomplete","incomplete_details":{"reason":"content_filter"}}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"error",
+	)
+	apiErr := events[3].Error
+	if apiErr == nil {
+		t.Fatal("error event has nil Error")
+	}
+	if apiErr.Message != "Incomplete response returned, reason: content_filter" {
+		t.Errorf("Message = %q, want Incomplete response returned, reason: content_filter", apiErr.Message)
+	}
+	if apiErr.Retryable {
+		t.Error("Retryable = true, want false")
+	}
+}
+
+func TestResponsesSSE_IncompleteMissingReasonIsError(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_21b"}}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"resp_21b","status":"incomplete"}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "error")
+	apiErr := events[1].Error
+	if apiErr == nil {
+		t.Fatal("error event has nil Error")
+	}
+	if apiErr.Message != "Incomplete response returned, reason: unknown" {
+		t.Errorf("Message = %q, want Incomplete response returned, reason: unknown", apiErr.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 20. Completed payload parse failures
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_CompletedUnparseableIsError(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// id has the wrong JSON type — codex serde rejects the payload.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_20"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":123}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "error")
+	if e := events[1].Error; e == nil || !strings.Contains(e.Message, "failed to parse ResponseCompleted") {
+		t.Errorf("error event = %+v, want failed to parse ResponseCompleted", events[1].Error)
+	}
+}
+
+func TestResponsesSSE_CompletedMissingIDIsError(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// codex ResponseCompleted.id is a required field — an empty object fails.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_20b"}}`,
+		``,
+		`data: {"type":"response.completed","response":{}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start", "error")
+	if e := events[1].Error; e == nil || !strings.Contains(e.Message, "failed to parse ResponseCompleted") {
+		t.Errorf("error event = %+v, want failed to parse ResponseCompleted", events[1].Error)
+	}
+}
+
+func TestResponsesSSE_CompletedWithoutResponsePayloadIgnored(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// No response field at all — codex maps this to Ok(None): keep scanning,
+	// no terminal events. The clean EOF afterwards surfaces to the engine as
+	// StreamInterruptedError (equivalent to codex's "stream closed before
+	// response.completed").
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_20c"}}`,
+		``,
+		`data: {"type":"response.completed"}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events, "message_start")
 }

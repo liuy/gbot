@@ -920,6 +920,12 @@ func TestOpenAITranslateRequest_NoTools(t *testing.T) {
 		t.Error("\"tools\" field should be omitted when no tools are provided, but it was present")
 	}
 
+	// tool_choice must accompany tools (provider contract); without tools the
+	// key stays absent.
+	if _, exists := parsed["tool_choice"]; exists {
+		t.Error("\"tool_choice\" field should be omitted when no tools are provided, but it was present")
+	}
+
 	// Verify model
 	if string(parsed["model"]) != `"gpt-4"` {
 		t.Errorf("model = %s, want %q", string(parsed["model"]), `"gpt-4"`)
@@ -980,10 +986,11 @@ func TestOpenAITranslateRequest_WithTools(t *testing.T) {
 	}
 
 	var parsed struct {
-		Model   string          `json:"model"`
-		Stream  bool            `json:"stream"`
-		Tools   []openaiTool    `json:"tools"`
-		Message []openaiMessage `json:"messages"`
+		Model      string          `json:"model"`
+		Stream     bool            `json:"stream"`
+		Tools      []openaiTool    `json:"tools"`
+		Message    []openaiMessage `json:"messages"`
+		ToolChoice string          `json:"tool_choice"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
@@ -1003,6 +1010,10 @@ func TestOpenAITranslateRequest_WithTools(t *testing.T) {
 	}
 	if parsed.Tools[0].Function.Description != "Get weather" {
 		t.Errorf("tool Description = %q, want %q", parsed.Tools[0].Function.Description, "Get weather")
+	}
+	// Tools present → tool_choice is sent explicitly as "auto" (codex parity).
+	if parsed.ToolChoice != "auto" {
+		t.Errorf("tool_choice = %q, want auto", parsed.ToolChoice)
 	}
 }
 
