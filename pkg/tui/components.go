@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -521,6 +522,7 @@ type StatusBar struct {
 	contextUsed  int // current context input tokens
 	contextTotal int // model context window size
 	toolCount    int
+	effort       llm.Effort  // "" (auto) renders no segment
 	quota        *quota.Info // nil = hidden (no provider with quota endpoint)
 }
 
@@ -575,6 +577,11 @@ func (s *StatusBar) SetContextWindow(total int) {
 	s.contextTotal = total
 }
 
+// SetThinking sets the displayed effort; "" (auto) hides the segment.
+func (s *StatusBar) SetThinking(e llm.Effort) {
+	s.effort = e
+}
+
 // SetToolCount sets the number of registered tools.
 func (s *StatusBar) SetToolCount(n int) {
 	s.toolCount = n
@@ -606,6 +613,11 @@ func (s StatusBar) View() string {
 	mid := ctxStyle(s.contextUsed, s.contextTotal).Render(ctxStr)
 	parts = append(parts, mid)
 
+	if s.effort != "" && s.effort != llm.EffortAuto {
+		// Resource dial next to the resource meter — hidden at auto so the
+		// default state stays exactly as it was before the segment existed.
+		parts = append(parts, "think:"+string(s.effort))
+	}
 	if s.toolCount > 0 {
 		parts = append(parts, fmt.Sprintf("%d tools", s.toolCount))
 	}

@@ -178,6 +178,34 @@ func (s *spyProvider) Complete(_ context.Context, req *llm.Request) (*llm.Respon
 // to the LLM provider — not the config default. This is the red light for
 // the bug where compactor was nil after restart (factory didn't set it
 // because SessionID was empty), so compaction never triggered.
+func TestNewAppWithManager_SyncsEffortToStatusBar(t *testing.T) {
+	// Startup pushes the engine's resolved effort into the status bar — a
+	// migrated per-model baseline must be visible without a /think round-trip.
+	mgr := engine.NewEngineManager()
+	hub, _ := tui.NewEngineHubWithHandler("main", nil)
+	eng := engine.New(&engine.Params{
+		Provider:    &spyProvider{},
+		Logger:      slog.Default(),
+		Model:       "zhipu/glm-5.3",
+		EngineID:    "main",
+		Dispatcher:  hub,
+		TokenBudget: 5000,
+	})
+	if err := eng.SetThinking(llm.EffortNone); err != nil {
+		t.Fatalf("SetThinking: %v", err)
+	}
+	mgr.Add(&engine.EngineViewState{
+		Engine: eng,
+		ID:     "main",
+		Name:   "main",
+		Model:  "zhipu/glm-5.3",
+	})
+	a := tui.NewAppWithManager(mgr, "", hub)
+	if got := a.StatusEffort(); got != llm.EffortNone {
+		t.Errorf("status effort = %q, want none (startup sync)", got)
+	}
+}
+
 func TestRestoreEngines_CompactorUsesCorrectModel(t *testing.T) {
 	projectDir := t.TempDir()
 

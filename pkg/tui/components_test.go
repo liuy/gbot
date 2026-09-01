@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
@@ -231,6 +232,34 @@ func TestNewStatusBar(t *testing.T) {
 	s := NewStatusBar()
 	if s.model != "" {
 		t.Errorf("NewStatusBar().model = %q, want empty", s.model)
+	}
+}
+
+func TestStatusBarEffortSegment(t *testing.T) {
+	s := NewStatusBar()
+	s.SetModel("glm-5.3")
+	s.SetContext(128000, 200000)
+	s.SetToolCount(16)
+	// auto (""): the bar is byte-identical to the pre-effort layout.
+	before := s.View()
+	s.SetThinking(llm.EffortAuto)
+	if strings.Contains(s.View(), "think:") {
+		t.Fatalf("auto must render no segment: %q", s.View())
+	}
+	if s.View() != before {
+		t.Errorf("auto view drifted from the pre-effort layout")
+	}
+	// Non-auto: the dial sits between the context meter and the tool count.
+	s.SetThinking(llm.EffortHigh)
+	out := s.View()
+	if !strings.Contains(out, "think:high") {
+		t.Errorf("high must render think:high: %q", out)
+	}
+	ci := strings.Index(out, "200K")
+	ti := strings.Index(out, "16 tools")
+	hi := strings.Index(out, "think:high")
+	if ci >= hi || hi >= ti {
+		t.Errorf("segment order wrong (context %d, think %d, tools %d): %q", ci, hi, ti, out)
 	}
 }
 

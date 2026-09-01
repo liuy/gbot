@@ -29,6 +29,7 @@ func (a *App) handleThink(args string, commitCmd tea.Cmd) tea.Cmd {
 	if err := a.engine.SetThinking(effort); err != nil {
 		return a.showInfo(err.Error())
 	}
+	a.status.SetThinking(effort)
 	slog.Info("think: switched", "effort", effort)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Thinking effort: %s", effort)))
 }

@@ -245,6 +245,9 @@ func historyPathFor(projectDir, engineID string) string {
 // NewAppWithManager creates an App bound to an EngineManager that already
 // holds one or more engines. The active engine (mgr.Active()) becomes the
 // initial a.engine / a.repl / a.sessionID cache.
+// StatusEffort exposes the status bar's current effort readback (tests).
+func (a *App) StatusEffort() llm.Effort { return a.status.effort }
+
 func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hub) *App {
 	a := &App{
 		input:            NewInput(),
@@ -320,6 +323,7 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 	if a.engine != nil {
 		a.status.SetToolCount(len(a.engine.AllTools()))
 		a.status.SetContext(0, a.engine.ContextWindow())
+		a.status.SetThinking(a.engine.Thinking())
 		a.status.SetModel(a.engine.Model())
 	}
 

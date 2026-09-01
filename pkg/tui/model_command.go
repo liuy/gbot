@@ -144,6 +144,7 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 	a.engine.SetModel(selected.Model)
 	a.updateEngineCapabilities(selected.Provider, selected.Model)
 	a.status.SetModel(a.engine.Model())
+	a.status.SetThinking(a.engine.Thinking())
 	a.persistModelSelection()
 	a.refreshQuotaFromProvider()
 
@@ -186,6 +187,7 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 	a.engine.SetModel(matched)
 	a.updateEngineCapabilities(providerName, matched)
 	a.status.SetModel(a.engine.Model())
+	a.status.SetThinking(a.engine.Thinking())
 	a.persistModelSelection()
 	a.refreshQuotaFromProvider()
 
@@ -212,6 +214,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 		a.engine.SetModel(matched)
 		a.updateEngineCapabilities(currentProvider, matched)
 		a.status.SetModel(a.engine.Model())
+		a.status.SetThinking(a.engine.Thinking())
 		a.persistModelSelection()
 		a.refreshQuotaFromProvider()
 
@@ -250,6 +253,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 	a.engine.SetModel(bestModel)
 	a.updateEngineCapabilities(bestProvider, bestModel)
 	a.status.SetModel(a.engine.Model())
+	a.status.SetThinking(a.engine.Thinking())
 	a.persistModelSelection()
 	a.refreshQuotaFromProvider()
 
@@ -278,6 +282,7 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	a.engine.SetModel(model)
 	a.updateEngineCapabilities(providerName, model)
 	a.status.SetModel(a.engine.Model())
+	a.status.SetThinking(a.engine.Thinking())
 	a.persistModelSelection()
 	a.refreshQuotaFromProvider()
 

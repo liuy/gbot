@@ -293,6 +293,9 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 			ct = engine.EstimateMessagesTokens(target.Engine.Messages())
 		}
 		a.status.SetContext(ct, target.Engine.ContextWindow())
+		// Effort is model-dependent when no override exists — re-ask the
+		// engine or the bar shows the previous model's baseline.
+		a.status.SetThinking(target.Engine.Thinking())
 		slog.Info("ui:switchEngine_setContext",
 			"engine", id,
 			"contextTokens", target.Engine.GetContextTokens(),
