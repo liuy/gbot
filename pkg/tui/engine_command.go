@@ -390,6 +390,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		Handler:         handler,
 		Repl:            newReplAdapter(NewReplState()),
 		History:         NewHistory(historyPathFor(a.projectDir, id)),
+		Thinking:        "", // fresh engine: no sticky override
 		ID:              id,
 		Name:            name,
 		ActiveSessionID: eng.SessionID(),

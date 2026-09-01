@@ -433,6 +433,7 @@ func Start(opts Options) (*Instance, error) {
 			Handler:         dreamHandler,
 			Repl:            tui.NewReplSnapshot(),
 			History:         nil,
+			Thinking:        "", // System engine: skipped by PersistMeta anyway
 			ID:              "dream",
 			Name:            "Dream",
 			ActiveSessionID: dreamEng.SessionID(),

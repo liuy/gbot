@@ -2401,6 +2401,12 @@ func (c *WUIConnector) handleThinkingSwitch(effort string) {
 		c.sendWS(buildError(err))
 		return
 	}
+	if c.mgr != nil {
+		c.mgr.SetActiveThinking(e)
+		if err := c.mgr.PersistMeta(eng.ProjectDir()); err != nil {
+			slog.Warn("wui:thinking persist failed", "error", err)
+		}
+	}
 	slog.Info("wui:thinking switched", "effort", e)
 	slot := c.activeSlot()
 	if slot == nil {

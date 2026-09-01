@@ -60,6 +60,7 @@ func createEngineForWUI(
 	vs := &engine.EngineViewState{
 		Engine:          eng,
 		Handler:         handler,
+		Thinking:        "", // fresh engine: no sticky override
 		ID:              id,
 		Name:            name,
 		ActiveSessionID: eng.SessionID(),

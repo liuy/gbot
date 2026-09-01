@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // TestHandleThink_ShowCurrent verifies the no-arg path displays the current
@@ -26,6 +29,38 @@ func TestHandleThink_ShowCurrent(t *testing.T) {
 	}
 	if got := a.engine.Thinking(); got != llm.EffortAuto {
 		t.Errorf("after no-arg /think engine.Thinking() = %q, want auto (display must be side-effect free)", got)
+	}
+}
+
+// TestHandleThink_PersistsStickyOverride verifies /think mirrors the effort
+// into the manager view-state and meta.json — restart must not drop it.
+func TestHandleThink_PersistsStickyOverride(t *testing.T) {
+	dir := t.TempDir()
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{name: "openai"},
+		Model:    "glm-5",
+		Logger:   slog.Default(),
+	})
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{Engine: eng, ID: "main", Name: "main", Model: "openai/glm-5"})
+	a := &App{
+		engine:     eng,
+		repl:       NewReplState(),
+		engineMgr:  mgr,
+		projectDir: dir,
+	}
+	if cmd := a.handleThink("none", nil); cmd == nil {
+		t.Fatal("handleThink(\"none\") returned nil cmd")
+	}
+	if got := mgr.Active().Thinking; got != llm.EffortNone {
+		t.Errorf("view-state effort = %q, want none", got)
+	}
+	meta, err := short.ReadWorkspaceMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	if len(meta.Engines) != 1 || meta.Engines[0].Thinking != "none" {
+		t.Fatalf("meta.json engines = %+v, want one engine with thinking none", meta.Engines)
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 func writeWSMessage(t *testing.T, ws *websocket.Conn, payload any) {
@@ -18,6 +20,34 @@ func writeWSMessage(t *testing.T, ws *websocket.Conn, payload any) {
 	}
 	if err := ws.WriteMessage(websocket.TextMessage, data); err != nil {
 		t.Fatalf("write: %v", err)
+	}
+}
+
+// TestThinkingSwitch_PersistsToMetaJSON covers the durability half of the
+// switch: the sticky override must land in the manager view-state and
+// meta.json, mirroring the model-selection contract.
+func TestThinkingSwitch_PersistsToMetaJSON(t *testing.T) {
+	dir := t.TempDir()
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{ID: "main", Name: "Main"})
+	if err := mgr.SetActive("main"); err != nil {
+		t.Fatalf("mgr.SetActive: %v", err)
+	}
+	c := newTestConnectorWithConfig(t, hub.NewHub(), buildTestProviders(), buildTestProviderConfigs())
+	c.mgr = mgr
+	c.mock().projectDirFn = func() string { return dir }
+	c.mock().thinkingFn = func() llm.Effort { return llm.EffortHigh }
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+	writeWSMessage(t, ws, map[string]string{"type": "thinking_switch", "effort": "high"})
+	if !waitFor(10e9, func() bool {
+		meta, err := short.ReadWorkspaceMeta(dir)
+		return err == nil && len(meta.Engines) == 1 && meta.Engines[0].Thinking == "high"
+	}) {
+		t.Fatal("timeout waiting for meta.json persistence")
+	}
+	if got := mgr.Get("main").Thinking; got != llm.EffortHigh {
+		t.Fatalf("view-state thinking = %q, want high", got)
 	}
 }
 

@@ -219,6 +219,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 			Repl:            newReplAdapter(NewReplState()),
 			Handler:         nil, // set by NewAppWithManager from hub
 			History:         nil, // set by NewAppWithManager loop below
+			Thinking:        "",  // fresh engine: no sticky override
 			ID:              eng.EngineID(),
 			Name:            "main",
 			ActiveSessionID: eng.SessionID(),

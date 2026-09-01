@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
@@ -32,6 +33,7 @@ type EngineViewState struct {
 	Name            string
 	ActiveSessionID string
 	Model           string
+	Thinking        llm.Effort
 	CreatedAt       time.Time
 	LastActiveAt    time.Time
 
@@ -161,6 +163,16 @@ func (m *EngineManager) SetActiveModel(model string) {
 	defer m.mu.Unlock()
 	if vs, ok := m.engines[m.activeID]; ok {
 		vs.Model = model
+	}
+}
+
+// SetActiveThinking updates the active engine's sticky effort override (the
+// view-state copy is what PersistMeta writes to meta.json).
+func (m *EngineManager) SetActiveThinking(e llm.Effort) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if vs, ok := m.engines[m.activeID]; ok {
+		vs.Thinking = e
 	}
 }
 
@@ -298,6 +310,7 @@ func (m *EngineManager) PersistMeta(projectDir string) error {
 			Name:            vs.Name,
 			ActiveSessionID: vs.ActiveSessionID,
 			Model:           vs.Model,
+			Thinking:        string(vs.Thinking),
 		}
 		meta.Engines = append(meta.Engines, em)
 		if id == m.activeID {

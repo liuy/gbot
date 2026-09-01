@@ -206,6 +206,89 @@ func TestNewAppWithManager_SyncsEffortToStatusBar(t *testing.T) {
 	}
 }
 
+func TestRestoreEngines_ThinkingOverrideRoundTrip(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sess, err := store.CreateSessionWithEngine(projectDir, "glm-5", "main")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// A persisted sticky effort must come back as the engine's override —
+	// restart must not silently drop the user's manual choice.
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "zhipu/glm-5", ActiveSessionID: sess.SessionID, Thinking: "none"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+	spy := &spyProvider{}
+	mgr := engine.NewEngineManager()
+	deps := restoreEnginesDeps{
+		mgr:        mgr,
+		projectDir: projectDir,
+		store:      store,
+		model:      "zhipu/glm-5",
+		factory: func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Provider:    spy,
+				Logger:      slog.Default(),
+				Model:       model,
+				EngineID:    id,
+				Dispatcher:  hub,
+				TokenBudget: 5000,
+				AutoCompact: engine.AutoCompactConfig{ContextWindow: 5000},
+			})
+			return eng, handler, nil
+		},
+	}
+	restoreEngines(deps)
+	vs := mgr.Get("main")
+	if vs == nil || vs.Engine == nil {
+		t.Fatal("main engine not restored")
+	}
+	if got := vs.Engine.Thinking(); got != llm.EffortNone {
+		t.Errorf("restored effort = %q, want none", got)
+	}
+	// A garbage value from a hand-edited meta.json must neither reach the
+	// engine nor ride the view-state back into the next PersistMeta.
+	seed.Engines = append(seed.Engines, short.EngineMeta{
+		ID: "ghost", Name: "ghost", Model: "zhipu/glm-5", Thinking: "bogus",
+	})
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("re-WriteWorkspaceMeta: %v", err)
+	}
+	mgr2 := engine.NewEngineManager()
+	deps.mgr = mgr2
+	deps.factory = func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+		h2, handler := tui.NewEngineHubWithHandler(id, nil)
+		e2 := engine.New(&engine.Params{
+			Provider: spy, Logger: slog.Default(), Model: model, EngineID: id,
+			Dispatcher: h2, TokenBudget: 5000,
+			AutoCompact: engine.AutoCompactConfig{ContextWindow: 5000},
+		})
+		return e2, handler, nil
+	}
+	restoreEngines(deps)
+	ghost := mgr2.Get("ghost")
+	if ghost == nil || ghost.Engine == nil {
+		t.Fatal("ghost engine not restored")
+	}
+	if got := ghost.Engine.Thinking(); got != llm.EffortAuto {
+		t.Errorf("bogus value leaked to engine: Thinking() = %q, want auto", got)
+	}
+	if got := ghost.Thinking; got != "" {
+		t.Errorf("bogus value rides view-state: %q, want empty (no round-trip)", got)
+	}
+}
+
 func TestRestoreEngines_CompactorUsesCorrectModel(t *testing.T) {
 	projectDir := t.TempDir()
 

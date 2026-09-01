@@ -105,6 +105,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 			Handler:         wcHandler,
 			ReadOnly:        true,
 			History:         nil,
+			Thinking:        "", // connector-driven engine: no sticky override
 			ID:              engineID,
 			Name:            engineName,
 			ActiveSessionID: wcEng.SessionID(),

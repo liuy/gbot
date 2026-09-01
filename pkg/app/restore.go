@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tui"
 )
@@ -74,6 +75,18 @@ func restoreEngines(d restoreEnginesDeps) string {
 			}
 		}
 
+		// Restore the persisted effort as a sticky override so a restart
+		// doesn't silently drop the user's manual choice. Carry it into the
+		// view-state only when it actually took — a garbage value from a
+		// hand-edited meta.json must not round-trip forever.
+		sticky := llm.Effort("")
+		if em.Thinking != "" {
+			if err := eng.SetThinking(llm.Effort(em.Thinking)); err != nil {
+				slog.Warn("restore: invalid thinking effort", "id", em.ID, "value", em.Thinking, "error", err)
+			} else {
+				sticky = llm.Effort(em.Thinking)
+			}
+		}
 		d.mgr.Add(&engine.EngineViewState{
 			Engine:          eng,
 			Repl:            nil, // set by tui on first switch
@@ -83,6 +96,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			Name:            em.Name,
 			ActiveSessionID: resumeID,
 			Model:           em.Model,
+			Thinking:        sticky,
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
 			ReadOnly:        false,

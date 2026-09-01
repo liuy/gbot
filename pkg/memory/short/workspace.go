@@ -17,6 +17,7 @@ type EngineMeta struct {
 	Name            string `json:"name"`
 	ActiveSessionID string `json:"active_session_id"`
 	Model           string `json:"model"`
+	Thinking        string `json:"thinking,omitempty"` // sticky runtime effort override
 }
 
 // WorkspaceMeta stores workspace-level session metadata in .gbot/meta.json.

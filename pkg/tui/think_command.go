@@ -30,6 +30,14 @@ func (a *App) handleThink(args string, commitCmd tea.Cmd) tea.Cmd {
 		return a.showInfo(err.Error())
 	}
 	a.status.SetThinking(effort)
+	// Mirror the sticky override into the manager view-state and meta.json —
+	// same durability contract as the model selection.
+	if a.engineMgr != nil {
+		a.engineMgr.SetActiveThinking(effort)
+		if err := a.engineMgr.PersistMeta(a.projectDir); err != nil {
+			slog.Warn("think: failed to persist effort", "error", err)
+		}
+	}
 	slog.Info("think: switched", "effort", effort)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Thinking effort: %s", effort)))
 }
