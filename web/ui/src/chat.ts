@@ -451,7 +451,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
-  header.attachScroller(scroll)
   scroll.appendChild(header.root)
 
   // ── Disconnect banner: slides in below header when WS is down.
