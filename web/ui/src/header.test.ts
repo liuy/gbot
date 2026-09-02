@@ -689,3 +689,168 @@ describe('Header picker streaming state', () => {
     }
   })
 })
+
+describe('Header auto-hide (scroll + IME)', () => {
+  let header: ReturnType<typeof createHeader>
+  let scroller: HTMLElement
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    scroller = document.createElement('div')
+    header.attachScroller(scroller)
+  })
+
+  const isHidden = () => header.root.classList.contains('header-bar--hidden')
+  const scrollBy = (to: number) => {
+    scroller.scrollTop = to
+    scroller.dispatchEvent(new Event('scroll'))
+  }
+
+  it('ScrollDown_HidesHeader', () => {
+    expect(isHidden()).toBe(false)
+    scrollBy(200)
+    expect(isHidden()).toBe(true)
+  })
+
+  it('ScrollUp_ShowsHeader', () => {
+    scrollBy(200)
+    scroller.scrollTop = 150
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(false)
+  })
+
+  it('SmallDownSwipe_ShowsHeader', () => {
+    // Sensitivity: a light 5px finger-down swipe must reveal the header —
+    // users expect the menu/controls back with any downward flick.
+    scrollBy(200)
+    scroller.scrollTop = 195
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(false)
+  })
+
+  it('SlowScroll_Accumulates_HidesHeader', () => {
+    // A slow drag emits many small same-direction deltas; each is under the
+    // hide threshold, but the accumulated distance must still hide it.
+    scrollBy(0)
+    for (const y of [10, 20, 30]) {
+      scroller.scrollTop = y
+      scroller.dispatchEvent(new Event('scroll'))
+    }
+    expect(isHidden()).toBe(true)
+  })
+
+  it('SlowUpDrag_Accumulates_ShowsHeader', () => {
+    // Symmetric: a slow upward drag emits tiny deltas (-1 each), never
+    // crossing the per-event show threshold — accumulation must reveal.
+    scrollBy(200)
+    for (const y of [199, 198, 197, 196]) {
+      scroller.scrollTop = y
+      scroller.dispatchEvent(new Event('scroll'))
+    }
+    expect(isHidden()).toBe(false)
+  })
+
+  it('SlowScroll_UpFlick_ResetsAccumulator', () => {
+    scrollBy(0)
+    for (const y of [10, 15]) {
+      scroller.scrollTop = y
+      scroller.dispatchEvent(new Event('scroll'))
+    }
+    expect(isHidden()).toBe(false) // acc=15, not yet hidden
+    scroller.scrollTop = 10 // -5: shows + resets the accumulator
+    scroller.dispatchEvent(new Event('scroll'))
+    scroller.scrollTop = 18 // +8 fresh accumulation, under threshold
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(false)
+  })
+
+  it('NearTop_AlwaysShows', () => {
+    scrollBy(200)
+    scrollBy(4)
+    expect(isHidden()).toBe(false)
+  })
+
+  it('TinyDelta_NoToggle', () => {
+    scrollBy(200)
+    scroller.scrollTop = 208
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(true)
+  })
+
+  it('TinyDelta_NoToggle_WhileVisible', () => {
+    scrollBy(200)
+    scroller.scrollTop = 150
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(false)
+    scroller.scrollTop = 158 // +8, under the hide threshold
+    scroller.dispatchEvent(new Event('scroll'))
+    expect(isHidden()).toBe(false)
+  })
+
+  it('ImeOpen_Hides_ImeClose_Shows', () => {
+    const listeners: Array<() => void> = []
+    const vv = {
+      height: 800,
+      width: 400,
+      addEventListener: (_t: string, cb: () => void) => listeners.push(cb),
+      removeEventListener: () => {},
+    }
+    ;(window as Record<string, unknown>).visualViewport = vv
+    try {
+      const fresh = createHeader({
+        onModelSelect: () => {},
+        onEngineSwitch: () => {},
+        onEngineNew: () => {},
+      })
+      const other = document.createElement('div')
+      fresh.attachScroller(other)
+      expect(fresh.root.classList.contains('header-bar--hidden')).toBe(false)
+      vv.height = 500 // keyboard opens
+      for (const cb of listeners) cb()
+      expect(fresh.root.classList.contains('header-bar--hidden')).toBe(true)
+      vv.height = 800 // keyboard closes
+      for (const cb of listeners) cb()
+      expect(fresh.root.classList.contains('header-bar--hidden')).toBe(false)
+    } finally {
+      delete (window as Record<string, unknown>).visualViewport
+    }
+  })
+
+  it('Rotation_ResetsBaseline_DoesNotStickHidden', () => {
+    // Portrait 915x410 → landscape 410x915: height drops below baseline-150,
+    // but the width change proves it is a rotation, not an IME — the
+    // baseline must re-anchoring, leaving the header visible.
+    const listeners: Array<() => void> = []
+    const vv = {
+      height: 915,
+      width: 410,
+      addEventListener: (_t: string, cb: () => void) => listeners.push(cb),
+      removeEventListener: () => {},
+    }
+    ;(window as Record<string, unknown>).visualViewport = vv
+    try {
+      const fresh = createHeader({
+        onModelSelect: () => {},
+        onEngineSwitch: () => {},
+        onEngineNew: () => {},
+      })
+      fresh.attachScroller(document.createElement('div'))
+      vv.width = 915
+      vv.height = 410 // rotate to landscape
+      for (const cb of listeners) cb()
+      expect(fresh.root.classList.contains('header-bar--hidden')).toBe(false)
+      // IME on top of landscape: width unchanged, height shrinks → hides
+      vv.height = 200
+      for (const cb of listeners) cb()
+      expect(fresh.root.classList.contains('header-bar--hidden')).toBe(true)
+    } finally {
+      delete (window as Record<string, unknown>).visualViewport
+    }
+  })
+})

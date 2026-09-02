@@ -20,6 +20,10 @@ export interface HeaderHandles {
   setContextBreakdown: (data: ContextBreakdownData | null) => void
   hideContextBreakdown: () => void
   setStreaming: (streaming: boolean) => void
+  /** Enable auto-hide: finger-up scroll (reading on) collapses the header
+   *  (including its safe-area padding); finger-down or back-at-top restores.
+   *  A soft keyboard (visualViewport shrink) also collapses it. */
+  attachScroller: (el: HTMLElement) => void
 }
 
 interface ModelEntry {
@@ -541,8 +545,69 @@ export function createHeader(opts: {
   onContextCompact?: () => void
   onRequestQuota?: () => void
 }): HeaderHandles {
-  const root = createElement('header', 'sticky top-0 z-30 card-bg')
-  root.style.paddingTop = 'env(safe-area-inset-top)'
+  const root = createElement('header', 'header-bar sticky top-0 z-30 card-bg')
+
+  // Auto-hide state. The header lives INSIDE the chat scroller and overlays
+  // messages while sticky, so translateY(-100%) reclaims its space (and the
+  // status-bar inset) with no layout gap. Two independent hide sources —
+  // scroll direction and IME (visualViewport shrink) — OR together.
+  const hiddenBy = { scroll: false, ime: false }
+  const applyHidden = () =>
+    root.classList.toggle('header-bar--hidden', hiddenBy.scroll || hiddenBy.ime)
+  const attachScroller = (el: HTMLElement) => {
+    let lastY = el.scrollTop
+    // Touch scrolling emits many tiny same-direction deltas; per-event
+    // thresholds miss slow drags entirely, so accumulate BOTH directions:
+    // 16px of down-scroll hides, 3px of up-scroll shows. A direction flip
+    // resets the opposite accumulator; reaching top resets both.
+    let downAcc = 0
+    let upAcc = 0
+    el.addEventListener(
+      'scroll',
+      () => {
+        const y = el.scrollTop
+        const dy = y - lastY
+        lastY = y
+        if (y < 8) {
+          hiddenBy.scroll = false
+          downAcc = 0
+          upAcc = 0
+        } else if (dy > 0) {
+          upAcc = 0
+          downAcc += dy
+          if (downAcc > 16) hiddenBy.scroll = true
+        } else if (dy < 0) {
+          downAcc = 0
+          upAcc += -dy
+          if (upAcc > 3) hiddenBy.scroll = false
+        }
+        applyHidden()
+      },
+      { passive: true },
+    )
+    const vv = (window as unknown as {
+      visualViewport?: {
+        height: number
+        width: number
+        addEventListener: (t: string, cb: () => void) => void
+      }
+    }).visualViewport
+    if (vv) {
+      let baseline = vv.height
+      let lastW = vv.width
+      vv.addEventListener('resize', () => {
+        // A width change means rotation/split-screen, not an IME: re-anchor
+        // the baseline so the smaller viewport isn't read as a stuck keyboard.
+        if (vv.width !== lastW) {
+          lastW = vv.width
+          baseline = vv.height
+        }
+        if (vv.height > baseline) baseline = vv.height
+        hiddenBy.ime = vv.height < baseline - 150
+        applyHidden()
+      })
+    }
+  }
 
   const inner = createElement('div', 'flex items-center gap-2 px-4 h-11 max-w-2xl mx-auto')
 
@@ -692,5 +757,5 @@ export function createHeader(opts: {
     modelPicker.setStreaming(s)
   }
 
-  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming }
+  return { root, setStatus, setModel, onHamburgerClick, setModels, setQuota: modelPicker.setQuota, setEngines, setContext, setContextBreakdown: ctxPopover.setBreakdown, hideContextBreakdown: ctxPopover.hide, setStreaming, attachScroller }
 }

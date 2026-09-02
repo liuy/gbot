@@ -66,6 +66,21 @@ body {
 .sidebar-safe-top { padding-top: env(safe-area-inset-top, 0px); }
 .sidebar-list-height { max-height: calc(100dvh - 80px - env(safe-area-inset-top, 0px)); }
 
+/* Chat header auto-hide: the sticky header overlays messages when scrolled,
+   so translating it up reclaims its overlay space. At scrollTop=0 (header
+   still in flow) an IME-triggered hide leaves a blank strip above the first
+   message — accepted, attention is at the keyboard. Toggled by scroll
+   direction and IME visibility (see header.ts attachScroller). */
+.header-bar {
+  padding-top: env(safe-area-inset-top, 0px);
+  transition: transform 0.25s ease, opacity 0.2s ease;
+}
+.header-bar--hidden {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
 .card-bg {
   background: var(--color-card);
   backdrop-filter: blur(4px);
