@@ -47,6 +47,8 @@ object GbotProcess {
             return false
         }
 
+        ensureTermuxServices(prefixDir, log)
+
         // gbot/rg injection is handled by BootstrapInstaller.ensureInstalled()
         // based on BOOTSTRAP_VERSION. No unconditional overwrite here — this
         // allows on-device builds (make build-android + cp) to survive restarts.
@@ -105,6 +107,49 @@ object GbotProcess {
                 it.destroy()
             }
             process = null
+        }
+    }
+
+    /**
+     * Termux-services (runit) supervisor lifecycle. Normally a Termux login
+     * shell starts runsvdir via profile.d; this app spawns gbot directly, so
+     * nothing revives the supervisor after the app's process group is reaped
+     * on restart. Start runsvdir here (idempotent via pgrep) — it then
+     * brings up and crash-restarts everything under usr/var/service/ (e.g.
+     * v2ray), the systemd-like layer for the embedded Termux environment.
+     */
+    private fun ensureTermuxServices(prefixDir: File, log: (String) -> Unit) {
+        val runsvdir = File(prefixDir, "bin/runsvdir")
+        val serviceDir = File(prefixDir, "var/service")
+        if (!runsvdir.exists() || !serviceDir.isDirectory) return
+        try {
+            val check = ProcessBuilder(
+                File(prefixDir, "bin/pgrep").absolutePath, "-f", "runsvdir"
+            ).redirectErrorStream(true).start()
+            val alreadyRunning = check.inputStream.readBytes().isNotEmpty()
+            check.waitFor()
+            if (alreadyRunning) return
+        } catch (_: Exception) {
+            // pgrep missing/unusable — fall through and start anyway; a
+            // duplicate runsvdir only logs per-service errors, harmless.
+        }
+        try {
+            val logFile = File(prefixDir, "tmp/runsvdir.log")
+            ProcessBuilder(runsvdir.absolutePath, serviceDir.absolutePath).apply {
+                // runsvdir execs "runsv" via PATH — without Termux's bin on
+                // PATH it silently never starts any service.
+                environment()["PATH"] = File(prefixDir, "bin").absolutePath + ":/system/bin"
+                // The app process cwd is "/" (SELinux-denied); runsvdir stats
+                // its cwd at startup and dies with "access denied" there.
+                directory(prefixDir)
+                // Merge stderr into a log file so per-service output can
+                // never fill an unread pipe and block the supervisor.
+                redirectErrorStream(true)
+                redirectOutput(logFile)
+            }.start()
+            log("runsvdir started (termux services supervised)")
+        } catch (e: Exception) {
+            log("runsvdir start failed: ${e.message}")
         }
     }
 }
