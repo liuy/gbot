@@ -46,8 +46,7 @@ object GbotProcess {
             return false
         }
 
-        val usrBinDir = File(prefixDir, "bin")
-        val gbotBin = File(usrBinDir, "gbot")
+        val gbotBin = File(usrBin, "gbot")
         log("gbot: ${gbotBin.absolutePath} exists=${gbotBin.exists()} size=${gbotBin.length()}")
 
         if (!gbotBin.exists()) {
@@ -118,7 +117,7 @@ object GbotProcess {
         }
     }
 
-    /** Context-based entry for callers outside the start path (onResume). */
+    /** Context-based entry for callers outside the GbotProcess lifecycle. */
     fun ensureTermuxServices(context: Context, log: (String) -> Unit) {
         val prefixDir = File(context.filesDir, "usr")
         if (prefixDir.isDirectory) ensureTermuxServices(prefixDir, log)
@@ -159,7 +158,7 @@ object GbotProcess {
                 // Merge stderr into a log file so per-service output can
                 // never fill an unread pipe and block the supervisor.
                 redirectErrorStream(true)
-                redirectOutput(logFile)
+                redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
             }.start()
             log("runsvdir started (termux services supervised)")
         } catch (e: Exception) {

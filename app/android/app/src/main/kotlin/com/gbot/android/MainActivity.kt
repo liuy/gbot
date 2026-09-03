@@ -27,15 +27,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Re-arm the runit supervisor on every App open (idempotent): the
-        // daemon can outlive a silently-killed supervisor, and the user only
-        // notices when v2ray dies without self-healing.
-        Thread {
-            GbotProcess.ensureTermuxServices(this) { msg ->
-                android.util.Log.i("MainActivity", msg)
-            }
-        }.start()
-
         // Apply bottom system-bar inset as padding so the BottomNavigationView
         // is not obscured by the gesture pill / 3-button nav under edge-to-edge.
         // Do NOT use fitsSystemWindows on the root — it would consume the top
