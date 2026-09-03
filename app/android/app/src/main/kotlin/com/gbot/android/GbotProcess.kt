@@ -23,6 +23,14 @@ object GbotProcess {
             onLog(msg)
         }
 
+        // Ensure the runit supervisor BEFORE the already-running early return:
+        // a daemon can outlive its supervisor (Android's phantom process
+        // killer reaps orphaned runsvdir; a stop()/start() cycle kills it
+        // too), and skipping the check here left v2ray unsupervised while
+        // the daemon looked perfectly healthy.
+        val prefixDir = File(context.filesDir, "usr")
+        if (prefixDir.isDirectory) ensureTermuxServices(prefixDir, log)
+
         if (process?.isAlive == true) {
             log("gbot already running")
             return true
@@ -38,8 +46,8 @@ object GbotProcess {
             return false
         }
 
-        val prefixDir = File(context.filesDir, "usr")
-        val gbotBin = File(usrBin, "gbot")
+        val usrBinDir = File(prefixDir, "bin")
+        val gbotBin = File(usrBinDir, "gbot")
         log("gbot: ${gbotBin.absolutePath} exists=${gbotBin.exists()} size=${gbotBin.length()}")
 
         if (!gbotBin.exists()) {
@@ -108,6 +116,12 @@ object GbotProcess {
             }
             process = null
         }
+    }
+
+    /** Context-based entry for callers outside the start path (onResume). */
+    fun ensureTermuxServices(context: Context, log: (String) -> Unit) {
+        val prefixDir = File(context.filesDir, "usr")
+        if (prefixDir.isDirectory) ensureTermuxServices(prefixDir, log)
     }
 
     /**
