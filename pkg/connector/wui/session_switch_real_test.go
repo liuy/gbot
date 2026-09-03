@@ -241,9 +241,9 @@ func readWorkspaceMetaUntil(t *testing.T, dir, wantSession string) bool {
 	})
 }
 
-// TestSessionNew_PersistsToMetaJSON mirrors the switch variant for the FAB
-// path: creating a session via session_new must write the new session id to
-// meta.json so a restart resumes into it.
+// TestSessionNew_PersistsToMetaJSON mirrors the switch variant for the
+// sidebar's new-session action: creating a session via session_new must
+// write the new session id to meta.json so a restart resumes into it.
 func TestSessionNew_PersistsToMetaJSON(t *testing.T) {
 	store, _, _ := seedRealSessions(t, "main")
 	dir := t.TempDir()

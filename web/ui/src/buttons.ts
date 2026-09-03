@@ -30,7 +30,7 @@ export const iconButtonRecipe = tv({
       auto: '',
       xs: 'w-4 h-4 rounded-full',
       sm: 'w-7 h-7 rounded-full',
-      // md stays square (no rounded): sidebar fab/themeToggle are square in
+      // md stays square (no rounded): the sidebar themeToggle is square in
       // the current visual, and adding rounded-full here would be a
       // visible regression.
       md: 'w-10 h-10',
@@ -78,7 +78,7 @@ export interface IconButtonOptions {
   size?: 'auto' | 'xs' | 'sm' | 'md' | 'lg'
   variant?: 'default' | 'ghost' | 'solid' | 'subtle' | 'floating'
   // iconSize overrides the size-derived default; needed because real callers
-  // span 9..24px (retry=9, plusBtn=24, fab=22) and binding icon size to button
+  // span 9..24px (retry=9, plusBtn=24) and binding icon size to button
   // size would force multiple visible regressions.
   iconSize?: number
   strokeWidth?: number

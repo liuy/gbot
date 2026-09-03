@@ -61,6 +61,25 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     className: 'sidebar-list-height px-2 pt-4 overflow-y-auto',
   })
   root.appendChild(listContainer)
+  // "Sessions" header row: the section title Games/Artifacts already have,
+  // with the new-session action at its right end — the floating FAB used to
+  // sit here and covered list rows on long session lists.
+  const sessionsHeader = createNode('div', {
+    className: 'flex items-center justify-between pl-3 pr-2 pt-4 pb-1',
+  })
+  sessionsHeader.setAttribute('data-sessions-header', '')
+  const sessionsTitle = createElement('span', 'text-[11px] text-t3 font-medium')
+  sessionsTitle.textContent = 'Sessions'
+  const newSessionBtn = createIconButton({
+    icon: 'plus',
+    label: 'New session',
+    variant: 'ghost',
+    size: 'sm',
+    iconSize: 16,
+  })
+  newSessionBtn.setAttribute('data-new-session', '')
+  sessionsHeader.append(sessionsTitle, newSessionBtn)
+  listContainer.appendChild(sessionsHeader)
   const sessionsList = createElement('div', '')
   listContainer.appendChild(sessionsList)
   const gamesSection = createElement('div', 'sidebar-games')
@@ -96,20 +115,6 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const artifactsList = createElement('div', '')
   artifactsSection.append(artifactsHeader, artifactsList)
   listContainer.appendChild(artifactsSection)
-
-  // FAB: variant=default (text-blue hover:text-white) layers a transition on
-  // top of the previous static look — slight UX upgrade accepted in D5.
-  // absolute positioning classes go through className so sidebar.test.ts
-  // `button.absolute` selector still finds the FAB.
-  const fab = createIconButton({
-    icon: 'plus',
-    label: 'New session',
-    variant: 'default',
-    size: 'md',
-    iconSize: 22,
-    className: 'absolute bottom-5 right-5',
-  })
-  root.appendChild(fab)
 
   const THEME_CYCLE = ['dark', 'light', 'system'] as const
   type Theme = typeof THEME_CYCLE[number]
@@ -309,15 +314,15 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   let busy = false
   const setStreaming = (s: boolean) => {
     busy = s
-    fab.classList.toggle('opacity-40', s)
-    fab.classList.toggle('pointer-events-none', s)
+    newSessionBtn.classList.toggle('opacity-40', s)
+    newSessionBtn.classList.toggle('pointer-events-none', s)
     for (const row of sessionsList.querySelectorAll('[data-session-row]')) {
       row.classList.toggle('opacity-40', s)
       row.classList.toggle('pointer-events-none', s)
     }
   }
 
-  fab.addEventListener('click', () => {
+  newSessionBtn.addEventListener('click', () => {
     if (busy) return
     handlers.newSession()
     closeImmediate()

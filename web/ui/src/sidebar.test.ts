@@ -106,21 +106,31 @@ describe('createSidebar', () => {
     const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
     expect(row.className).not.toContain('pointer-events-none')
   })
-  it('FAB click during streaming does not call onNewSession', () => {
+  it('sessions header row shows title with a new-session button and no FAB', () => {
+    const { sidebar } = setup()
+    const header = sidebar.root.querySelector('[data-sessions-header]') as HTMLElement
+    expect(header).not.toBeNull()
+    expect(header.textContent).toContain('Sessions')
+    const btn = header.querySelector('[data-new-session]') as HTMLElement
+    expect(btn).not.toBeNull()
+    // The floating FAB is gone — no absolute button may cover list rows.
+    expect(sidebar.root.querySelector('button.absolute.bottom-5.right-5')).toBeNull()
+  })
+  it('new-session button click during streaming does not call onNewSession', () => {
     const { sidebar } = setup()
     const handler = vi.fn()
     sidebar.onNewSession(handler)
     sidebar.setStreaming(true)
-    const fab = sidebar.root.querySelector('button.absolute') as HTMLElement
-    fab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const btn = sidebar.root.querySelector('[data-new-session]') as HTMLElement
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(handler).not.toHaveBeenCalled()
   })
-  it('FAB click when idle calls onNewSession', () => {
+  it('new-session button click when idle calls onNewSession', () => {
     const { sidebar } = setup()
     const handler = vi.fn()
     sidebar.onNewSession(handler)
-    const fab = sidebar.root.querySelector('button.absolute') as HTMLElement
-    fab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const btn = sidebar.root.querySelector('[data-new-session]') as HTMLElement
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(handler).toHaveBeenCalledTimes(1)
   })
   it('clicking a session row calls onSessionClick and closes', () => {
@@ -141,15 +151,15 @@ describe('createSidebar', () => {
     expect(mainContent.style.transform).toBe('translateX(0px)')
   })
 
-  it('clicking FAB calls onNewSession and closes', () => {
+  it('clicking new-session calls onNewSession and closes', () => {
     const { mainContent, sidebar } = setup()
     const handler = vi.fn()
     sidebar.onNewSession(handler)
     sidebar.open()
 
-    const fab = sidebar.root.querySelector('button.absolute') as HTMLElement
-    expect(fab).not.toBeNull()
-    fab.click()
+    const btn = sidebar.root.querySelector('[data-new-session]') as HTMLElement
+    expect(btn).not.toBeNull()
+    btn.click()
     expect(handler).toHaveBeenCalledTimes(1)
     expect(sidebar.root.style.transform).toBe('translateX(-100%)')
     expect(mainContent.style.transform).toBe('translateX(0px)')
@@ -277,6 +287,15 @@ describe('createSidebar', () => {
       expect(section?.querySelectorAll('.artifact-row').length).toBe(2)
       // Session rows still render alongside.
       expect(sidebar.root.querySelectorAll('[class*="cursor-pointer"]:not([data-game-row])').length).toBe(3)
+    })
+    it('setSessions rebuild does not remove the sessions header row', () => {
+      // The header is a sibling of sessionsList, not a child — the rebuild
+      // wipes only sessionsList.innerHTML.
+      const { sidebar } = setup()
+      sidebar.setSessions([{ id: 's1', title: 'First', updatedAt: Date.now() }], 's1')
+      sidebar.setSessions([{ id: 's2', title: 'Second', updatedAt: Date.now() }], 's2')
+      expect(sidebar.root.querySelector('[data-sessions-header]')).not.toBeNull()
+      expect(sidebar.root.querySelector('[data-new-session]')).not.toBeNull()
     })
 
     it('open fires the onOpen handler', () => {
