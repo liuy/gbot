@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -219,15 +220,24 @@ func Start(opts Options) (*Instance, error) {
 	var wsMux *http.ServeMux
 	if needWS {
 		wsRegistry = computer.NewConnectionRegistry()
+		// The listener intentionally starts LAST — after the wui routes
+		// mount below — so "port accepts connections" == "server fully
+		// initialized". Clients (the Android WebView page load retry)
+		// then never race a half-booted daemon.
+		wsMux = http.NewServeMux()
+		// Preflight the bind so a port conflict fails fast, BEFORE engines,
+		// hooks, and connectors run user-visible side effects; the real
+		// listener still opens late (TOCTOU gap is harmless — the late
+		// listen also errors fatally).
 		wsAddr := ":" + opts.WSPort
 		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
 			wsAddr = env
 		}
-		wsMux = http.NewServeMux()
-		if _, err := computer.StartWSServer(wsRegistry, wsAddr, wsMux); err != nil {
+		if ln, err := net.Listen("tcp", wsAddr); err != nil {
 			return nil, fmt.Errorf("ws server: %w", err)
+		} else {
+			_ = ln.Close()
 		}
-		slog.Info("ws:listen", "addr", wsAddr)
 	}
 
 	var store *short.Store
@@ -544,6 +554,17 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterChatWS(wsMux, wc)
 		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
+
+		// All routes mounted — NOW open the port (see comment at wsMux
+		// creation): accepting a connection means every endpoint is live.
+		wsAddr := ":" + opts.WSPort
+		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
+			wsAddr = env
+		}
+		if _, err := computer.StartWSServer(wsRegistry, wsAddr, wsMux); err != nil {
+			return nil, fmt.Errorf("ws server: %w", err)
+		}
+		slog.Info("ws:listen", "addr", wsAddr)
 	}
 
 	return &Instance{
