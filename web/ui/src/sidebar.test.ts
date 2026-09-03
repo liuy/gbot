@@ -324,6 +324,30 @@ describe('createSidebar', () => {
       // User chose dark explicitly — system switch must not override.
       expect(document.documentElement.dataset.theme).toBe('dark')
     })
+
+    it('SystemFollowsLastNativePush_NotLyingMatchMedia', () => {
+      // Android WebView's matchMedia snapshot is unreliable (ours reports
+      // light while the system is dark). The native push is the truth: a
+      // later cycle to 'system' must resolve from the pushed value, not
+      // from matchMedia.
+      const origMatchMedia = window.matchMedia
+      try {
+        window.matchMedia = (q: string) =>
+          ({ matches: true, media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false }) as MediaQueryList
+        localStorage.setItem('gbot-theme', 'dark')
+        const { sidebar } = setup()
+        document.body.appendChild(sidebar.root)
+        getHook()!(false) // native pushes: real system is dark
+        // User cycles dark → light → system: landing on 'system' must resolve
+        // from the pushed value (dark), not from the lying matchMedia (light).
+        const toggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // dark → light
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // light → system
+        expect(document.documentElement.dataset.theme).toBe('dark')
+      } finally {
+        window.matchMedia = origMatchMedia // restore — later tests need the setup stub
+      }
+    })
   })
 
   describe('GBotNative.onThemeChanged (status-bar icon bridge)', () => {

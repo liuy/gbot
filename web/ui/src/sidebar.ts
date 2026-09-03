@@ -114,8 +114,18 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const THEME_CYCLE = ['dark', 'light', 'system'] as const
   type Theme = typeof THEME_CYCLE[number]
 
+  // The Android WebView's prefers-color-scheme query is unreliable — it
+  // reports light while the system is dark, and never updates on system
+  // theme switches. The Kotlin host pushes the REAL system theme through
+  // __gbotApplySystemTheme; remember it and resolve 'system' from that,
+  // falling back to matchMedia only where no push ever arrived (desktop).
+  let lastNativeIsLight: boolean | null = null
+
   const resolveTheme = (pref: Theme): 'dark' | 'light' => {
-    if (pref === 'system') return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    if (pref === 'system') {
+      if (lastNativeIsLight !== null) return lastNativeIsLight ? 'light' : 'dark'
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    }
     return pref
   }
 
@@ -181,8 +191,11 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   // Android WebView does not fire matchMedia change events when the system
   // theme switches. Expose a hook so the Kotlin side can call it from
-  // onConfigurationChanged via evaluateJavascript.
+  // onConfigurationChanged via evaluateJavascript. The pushed value is
+  // ALWAYS remembered (even when the current pref is explicit dark/light)
+  // so a later cycle to 'system' resolves from the native truth.
   const apply = (isLight: boolean) => {
+    lastNativeIsLight = isLight
     const pref = (localStorage.getItem('gbot-theme') as Theme) || 'dark'
     if (pref !== 'system') return
     const resolved = isLight ? 'light' : 'dark'
