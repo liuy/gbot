@@ -52,41 +52,45 @@ func startInTempProject(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(oldCwd) })
 }
 
-// The WS listener starts only after all routes mount, so a client that can
-// connect can immediately fetch the SPA — the invariant the Android WebView
-// page-load retry loop depends on. Regression pin: re-introducing an early
-// listen (before RegisterStaticRoutes) serves 404 from the empty mux here.
+// The WS listener must open only after all routes mount, so the FIRST
+// successful HTTP exchange a client observes must serve the SPA. The test
+// runs Start in a goroutine and races it: under an early-listen regression
+// the listen-before-mount window (~0.3-1s of engine/LSP init) yields 404s
+// from the empty mux, which fail the poll immediately.
 func TestStart_PortOpenImpliesRoutesReady(t *testing.T) {
 	t.Setenv("HOME", minimalHome(t))
 	port := freeTCPPort(t)
 	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+port)
 	startInTempProject(t)
 
-	inst, err := Start(Options{DaemonMode: true})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() {
-		if inst.PIDCleanup != nil {
-			inst.PIDCleanup()
-		}
-	})
+	startErr := make(chan error, 1)
+	go func() {
+		_, err := Start(Options{DaemonMode: true})
+		startErr <- err
+	}()
 
 	base := "http://127.0.0.1:" + port
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		resp, err := http.Get(base + "/")
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("first response after port open: status %d, want 200 (listener opened before routes mounted?)", resp.StatusCode)
 			}
-			t.Fatalf("GET / right after port open: status %d, want 200 (routes mounted after listen?)", resp.StatusCode)
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("port never accepted connections: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-startErr:
+		if err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+	default:
 	}
 }
 

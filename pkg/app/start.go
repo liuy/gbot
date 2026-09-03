@@ -218,6 +218,12 @@ func Start(opts Options) (*Instance, error) {
 	needWS := opts.DaemonMode || opts.WSPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
 	var wsRegistry *computer.ConnectionRegistry
 	var wsMux *http.ServeMux
+	wsListenAddr := func() string {
+		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
+			return env
+		}
+		return ":" + opts.WSPort
+	}
 	if needWS {
 		wsRegistry = computer.NewConnectionRegistry()
 		// The listener intentionally starts LAST — after the wui routes
@@ -229,11 +235,7 @@ func Start(opts Options) (*Instance, error) {
 		// hooks, and connectors run user-visible side effects; the real
 		// listener still opens late (TOCTOU gap is harmless — the late
 		// listen also errors fatally).
-		wsAddr := ":" + opts.WSPort
-		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
-			wsAddr = env
-		}
-		if ln, err := net.Listen("tcp", wsAddr); err != nil {
+		if ln, err := net.Listen("tcp", wsListenAddr()); err != nil {
 			return nil, fmt.Errorf("ws server: %w", err)
 		} else {
 			_ = ln.Close()
@@ -557,10 +559,7 @@ func Start(opts Options) (*Instance, error) {
 
 		// All routes mounted — NOW open the port (see comment at wsMux
 		// creation): accepting a connection means every endpoint is live.
-		wsAddr := ":" + opts.WSPort
-		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
-			wsAddr = env
-		}
+		wsAddr := wsListenAddr()
 		if _, err := computer.StartWSServer(wsRegistry, wsAddr, wsMux); err != nil {
 			return nil, fmt.Errorf("ws server: %w", err)
 		}
