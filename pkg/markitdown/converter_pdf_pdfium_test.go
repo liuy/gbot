@@ -13,6 +13,7 @@ package markitdown
 
 import (
 	"math"
+	"os"
 	"strings"
 	"testing"
 )
@@ -482,5 +483,27 @@ func TestDominantFontWithRounding(t *testing.T) {
 	}
 	if name != "A" {
 		t.Errorf("name = %q, want A", name)
+	}
+}
+
+// TestPdfConverterConvertE2E runs a real conversion through the PDFium WASM
+// pool. Regression guard for Android, where webassembly.Init's default
+// FSConfig preopens the host root ("/") and app UIDs get EACCES opening it,
+// so every Convert failed at GetInstance. Bytes-only conversion needs no
+// filesystem; initPdfiumPool must overwrite FSConfig with zero preopens.
+func TestPdfConverterConvertE2E(t *testing.T) {
+	f, err := os.Open("testdata/test.pdf")
+	if err != nil {
+		t.Fatalf("open testdata/test.pdf: %v", err)
+	}
+	defer f.Close()
+
+	c := NewPdfConverter()
+	res, err := c.Convert(f, StreamInfo{Extension: ".pdf", MIMEType: "application/pdf"})
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if strings.TrimSpace(res.Markdown) == "" {
+		t.Fatal("Convert returned empty markdown")
 	}
 }

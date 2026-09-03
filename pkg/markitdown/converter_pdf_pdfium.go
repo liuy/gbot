@@ -24,6 +24,7 @@ import (
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
+	"github.com/tetratelabs/wazero"
 )
 
 var (
@@ -33,10 +34,16 @@ var (
 )
 
 func initPdfiumPool() {
+	// Overwrite the library default FSConfig, which preopens the host root ("/").
+	// That is EACCES for Android app UIDs (every Convert then fails at
+	// GetInstance) and needlessly exposes the whole filesystem to the WASM
+	// sandbox. Documents are passed as bytes, so no preopens are needed.
+	fsConfig := wazero.NewFSConfig()
 	pdfiumPool, pdfiumPoolErr = webassembly.Init(webassembly.Config{
 		MinIdle:  1,
 		MaxIdle:  1,
 		MaxTotal: 1,
+		FSConfig: fsConfig,
 	})
 }
 

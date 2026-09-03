@@ -30,6 +30,7 @@ require (
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha2.117
 	github.com/xuri/excelize/v2 v2.10.1
 	go.uber.org/goleak v1.3.0
@@ -106,7 +107,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
-	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect

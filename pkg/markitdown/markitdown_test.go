@@ -13,7 +13,6 @@ package markitdown
 
 import (
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -132,9 +131,6 @@ var generalTestVectors = []testVector{
 }
 
 func TestConvertFile(t *testing.T) {
-	if runtime.GOOS == "android" {
-		t.Skip("wasm execution blocked by Android W^X policy in Termux")
-	}
 	m := New()
 
 	for _, tv := range generalTestVectors {
@@ -295,9 +291,6 @@ var goldenTestFiles = []string{
 }
 
 func TestGoldenFiles(t *testing.T) {
-	if runtime.GOOS == "android" {
-		t.Skip("wasm execution blocked by Android W^X policy in Termux")
-	}
 	m := New()
 
 	for _, filename := range goldenTestFiles {
