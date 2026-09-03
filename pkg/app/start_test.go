@@ -735,3 +735,72 @@ func TestStartCleanupWired(t *testing.T) {
 		t.Error("Start() no longer wires startSessionCleanup — wui/daemon users lose 30-day session cleanup")
 	}
 }
+
+// A meta.json entry pointing at a session with no DB row (ghost id — the
+// agent-3 incident) must not brick the engine's persistence: restore falls
+// back to a fresh session and rewrites meta.json in the same startup.
+func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const ghost = "7469e5fe-0000-0000-0000-000000000000"
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "e3", Name: "agent-3", Model: "zhipu/glm-5", ActiveSessionID: ghost},
+		},
+		ActiveEngineID: "e3",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	spy := &spyProvider{}
+	mgr := engine.NewEngineManager()
+	deps := restoreEnginesDeps{
+		mgr:        mgr,
+		projectDir: projectDir,
+		store:      store,
+		model:      "zhipu/glm-5",
+		factory: func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Provider:    spy,
+				Logger:      slog.Default(),
+				Model:       model,
+				EngineID:    id,
+				Dispatcher:  hub,
+				TokenBudget: 5000,
+				AutoCompact: engine.AutoCompactConfig{ContextWindow: 5000},
+			})
+			return eng, handler, nil
+		},
+	}
+	restoreEngines(deps)
+
+	vs := mgr.Get("e3")
+	if vs == nil || vs.Engine == nil {
+		t.Fatal("e3 engine not restored")
+	}
+	sid := vs.Engine.SessionID()
+	if sid == "" || sid == ghost {
+		t.Fatalf("active session = %q, want a fresh id (ghost %q rejected)", sid, ghost)
+	}
+	// The fresh session row must exist — persistence depends on it.
+	if _, err := store.GetSession(sid); err != nil {
+		t.Fatalf("fresh session row missing: %v", err)
+	}
+	// meta.json rewritten in the same startup — no second restart needed.
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	for _, em := range meta.Engines {
+		if em.ID == "e3" && em.ActiveSessionID != sid {
+			t.Fatalf("meta.json still points at %q, want %q", em.ActiveSessionID, sid)
+		}
+	}
+}

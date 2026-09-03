@@ -3574,17 +3574,24 @@ func (e *Engine) ForkSession(title string) ([]types.Message, error) {
 // SwitchSession switches to an existing session by loading its messages.
 // Returns the loaded messages for TUI to render.
 func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
+	// Reject sessions with no DB row: LoadChainMessages cannot distinguish
+	// an empty session from a nonexistent one, and silently switching into
+	// a ghost session bricks persistence for the engine (every append fails
+	// the messages→sessions FK). restoreEngines relies on this error to
+	// fall back to a fresh session.
+	ses, err := e.store.GetSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("switch session: %w", err)
+	}
 	engineMsgs, err := e.LoadMessages(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	// Restore persisted usage before taking the lock (DB call): the context
-	// meter and auto-compact thresholds must reflect the target session, not
-	// the one being left. ResumeOrInitSession does the same on startup.
-	var ctxTokens int
-	if ses, err := e.store.GetSession(sessionID); err == nil && ses.ContextTokens > 0 {
-		ctxTokens = ses.ContextTokens
-	}
+	// Restore persisted usage before taking the lock (DB already read): the
+	// context meter and auto-compact thresholds must reflect the target
+	// session, not the one being left. ResumeOrInitSession does the same on
+	// startup.
+	ctxTokens := ses.ContextTokens
 	e.mu.Lock()
 	e.messages = engineMsgs
 	e.sessionID = sessionID

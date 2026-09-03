@@ -643,13 +643,52 @@ func TestSwitchSession(t *testing.T) {
 		t.Errorf("sessionID = %q, want %q", sid, session1.SessionID)
 	}
 
-	// Non-existent session: store returns nil, SwitchSession succeeds with empty messages
-	emptyMsgs, err := eng.SwitchSession("nonexistent")
-	if err != nil {
-		t.Errorf("SwitchSession nonexistent: unexpected error: %v", err)
+	// Non-existent session: must ERROR and leave the engine on the current
+	// session. A silent switch into a ghost session bricked persistence for
+	// that engine forever (every append hit the messages→sessions FK), so
+	// restoreEngines' "switch failed → create new" fallback never fired.
+	if _, err := eng.SwitchSession("nonexistent"); err == nil {
+		t.Error("SwitchSession nonexistent: expected error, got nil")
 	}
-	if emptyMsgs != nil {
-		t.Errorf("expected nil messages for nonexistent session, got %d", len(emptyMsgs))
+	eng.mu.RLock()
+	sid2 := eng.sessionID
+	eng.mu.RUnlock()
+	if sid2 != session1.SessionID {
+		t.Errorf("after failed switch sessionID = %q, want unchanged %q", sid2, session1.SessionID)
+	}
+}
+
+// An existing session with zero messages (fresh session_new row) must
+// switch cleanly — the existence check may not over-tighten into
+// rejecting legitimately empty sessions.
+func TestSwitchSession_EmptyExistingSession(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+
+	from, err := store.CreateSession("/tmp/p1", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession from: %v", err)
+	}
+	eng.SetSessionID(from.SessionID)
+	to, err := store.CreateSession("/tmp/p2", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession to: %v", err)
+	}
+
+	msgs, err := eng.SwitchSession(to.SessionID)
+	if err != nil {
+		t.Fatalf("SwitchSession to empty session: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("messages = %d, want 0", len(msgs))
+	}
+	eng.mu.RLock()
+	sid := eng.sessionID
+	eng.mu.RUnlock()
+	if sid != to.SessionID {
+		t.Errorf("sessionID = %q, want %q", sid, to.SessionID)
 	}
 }
 
