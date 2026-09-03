@@ -130,7 +130,9 @@ function createModelPicker(
       open = true
       searchInput.value = ''
       renderList()
-      setTimeout(() => searchInput.focus(), 50)
+      // No autofocus: focusing the search box pops the soft keyboard over
+      // the popup on Android, hiding half the model list. Users tap the
+      // box when they want to filter.
       onRequestQuota?.()
     },
     onClose: () => {

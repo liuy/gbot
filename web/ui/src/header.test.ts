@@ -401,6 +401,17 @@ describe('Header model picker popover', () => {
     expect(panel!.querySelector('textarea[placeholder="Search..."]')).not.toBeNull()
   })
 
+  it('opening the panel does not steal focus for the search input', async () => {
+    // Auto-focusing pops the soft keyboard over the popup on Android.
+    // Focus stays where the user left it; typing requires tapping the box.
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(visibleModelPanel()).not.toBeNull()
+    // The old autofocus ran in a 50ms setTimeout — wait past it.
+    await new Promise((r) => setTimeout(r, 80))
+    const search = visibleModelPanel()!.querySelector('textarea[placeholder="Search..."]') as HTMLElement
+    expect(document.activeElement).not.toBe(search)
+  })
+
   it('outside click closes panel', () => {
     modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
     const panel = visibleModelPanel()
