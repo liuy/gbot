@@ -21,6 +21,11 @@
     <!-- Accent -->
     <color name="accent_blue">#448AFF</color>
     <color name="accent_purple">#7C4DFF</color>
+    <!-- Splash colors must byte-match the WUI palette or the splash-to-page
+         transition flashes a visible seam. Keep in sync with index.css. -->
+    <color name="splash_bg">#04060C</color>
+    <color name="splash_accent">#00B4FF</color>
+    <color name="splash_danger">#FF5C5C</color>
 
     <!-- Backward-compatible aliases for MainActivity references -->
     <color name="text_value">@color/text_white</color>

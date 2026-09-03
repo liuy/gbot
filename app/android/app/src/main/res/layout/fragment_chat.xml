@@ -2,7 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1a1a2e">
+    android:background="#06080F">
 
     <WebView
         android:id="@+id/webView"
@@ -11,27 +11,25 @@
 
     <!-- Boot splash: covers the WebView while the daemon cold-starts so the
          system ERR_CONNECTION_REFUSED error page (page-load retry window)
-         never flashes. Hidden in onPageFinished. -->
-    <LinearLayout
+         never flashes. A single breathing wordmark — the WUI header's own
+         connected-state visual, so the splash and the loaded page read as
+         one continuous surface. -->
+    <FrameLayout
         android:id="@+id/loadingOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#1a1a2e"
-        android:gravity="center"
-        android:orientation="vertical">
-
-        <ProgressBar
-            android:layout_width="48dp"
-            android:layout_height="48dp" />
+        android:background="@color/splash_bg">
 
         <TextView
-            android:id="@+id/loadingText"
+            android:id="@+id/splashMark"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="GBot 正在启动…"
-            android:textColor="#8A93A6"
-            android:textSize="14sp" />
-    </LinearLayout>
+            android:layout_gravity="center"
+            android:text="GBot"
+            android:textColor="@color/splash_accent"
+            android:textSize="32sp"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.02" />
+    </FrameLayout>
 
 </FrameLayout>

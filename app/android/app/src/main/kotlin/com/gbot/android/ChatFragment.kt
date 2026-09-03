@@ -10,6 +10,8 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AlphaAnimation
+import android.view.animation.Animation
 import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -19,6 +21,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.Fragment
@@ -39,7 +42,7 @@ class ChatFragment : Fragment() {
 
     private var webView: WebView? = null
     private var loadingOverlay: View? = null
-    private var loadingText: android.widget.TextView? = null
+    private var splashMark: android.widget.TextView? = null
     private var lastLoadFailed = false
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
@@ -90,7 +93,8 @@ class ChatFragment : Fragment() {
         val view = inflater.inflate(R.layout.fragment_chat, container, false)
         webView = view.findViewById(R.id.webView)
         loadingOverlay = view.findViewById(R.id.loadingOverlay)
-        loadingText = view.findViewById(R.id.loadingText)
+        splashMark = view.findViewById(R.id.splashMark)
+        startBreathing()
         return view
     }
 
@@ -158,6 +162,7 @@ class ChatFragment : Fragment() {
                 // onPageFinished ALSO fires for the system error page after
                 // a failed load — only lift the splash on a real page.
                 if (!lastLoadFailed) {
+                    splashMark?.clearAnimation()
                     loadingOverlay?.visibility = View.GONE
                 } else {
                     lastLoadFailed = false // consumed; next attempt starts clean
@@ -186,8 +191,40 @@ class ChatFragment : Fragment() {
             loadAttempts++
             handler.postDelayed({ tryLoad() }, 1000)
         } else {
-            // Daemon never came up: keep the splash but say so.
-            loadingText?.text = "无法连接守护进程，请重启 App"
+            // Daemon never came up: wordless failure state — the wordmark
+            // stops breathing, dims and flickers in the danger red; the
+            // whole overlay becomes tap-to-retry.
+            setFailureStyle()
+            splashMark?.announceForAccessibility("守护进程启动失败，点按重试")
+            loadingOverlay?.setOnClickListener {
+                loadAttempts = 0
+                startBreathing()
+                tryLoad()
+            }
+        }
+    }
+
+    private fun startBreathing() {
+        splashMark?.let { mark ->
+            mark.clearAnimation()
+            mark.setTextColor(ContextCompat.getColor(requireContext(), R.color.splash_accent))
+            mark.startAnimation(AlphaAnimation(0.35f, 1f).apply {
+                duration = 1600
+                repeatMode = Animation.REVERSE
+                repeatCount = Animation.INFINITE
+            })
+        }
+    }
+
+    private fun setFailureStyle() {
+        splashMark?.let { mark ->
+            mark.clearAnimation()
+            mark.setTextColor(ContextCompat.getColor(requireContext(), R.color.splash_danger))
+            mark.startAnimation(AlphaAnimation(0.3f, 0.6f).apply {
+                duration = 800
+                repeatMode = Animation.REVERSE
+                repeatCount = Animation.INFINITE
+            })
         }
     }
 
@@ -250,7 +287,7 @@ class ChatFragment : Fragment() {
         webView?.destroy()
         webView = null
         loadingOverlay = null
-        loadingText = null
+        splashMark = null
         super.onDestroyView()
     }
 }
