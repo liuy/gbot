@@ -203,38 +203,32 @@ func TestForkSession_UpdatesTaskDir(t *testing.T) {
 	}
 }
 
-func TestResumeOrInitSession_SetsTaskDir(t *testing.T) {
+func TestNewSession_SetsTaskDir(t *testing.T) {
 	t.Parallel()
-
 	tl := task.NewList("")
 	eng := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
 	t.Cleanup(func() { eng.Close() })
-
 	store := newTestStore(t)
 	projectDir := t.TempDir()
 	eng.SetStore(store, projectDir)
-
-	// ResumeOrInitSession with no existing meta creates a new session.
-	sessionID, err := eng.ResumeOrInitSession(projectDir, "test-model")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession: %v", err)
+	if err := eng.NewSession(projectDir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
 	}
+	sessionID := eng.SessionID()
 	if sessionID == "" {
-		t.Fatal("ResumeOrInitSession should return a non-empty session ID")
+		t.Fatal("NewSession should leave a non-empty session ID")
 	}
-
 	expectedDir, err := task.TasksDir(sessionID)
 	if err != nil {
 		t.Fatalf("TasksDir: %v", err)
 	}
 	if eng.TaskList().Dir() != expectedDir {
-		t.Errorf("after ResumeOrInitSession: dir = %q, want %q", eng.TaskList().Dir(), expectedDir)
+		t.Errorf("after NewSession: dir = %q, want %q", eng.TaskList().Dir(), expectedDir)
 	}
 }
-
 func TestSetSessionID_SetsTaskDir(t *testing.T) {
 	t.Parallel()
 

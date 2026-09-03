@@ -736,9 +736,10 @@ func TestStartCleanupWired(t *testing.T) {
 	}
 }
 
-// A meta.json entry pointing at a session with no DB row (ghost id — the
-// agent-3 incident) must not brick the engine's persistence: restore falls
-// back to a fresh session and rewrites meta.json in the same startup.
+// Restore must recover ENGINE-scoped from bad recorded sessions and rewrite
+// meta.json in the same startup. Seeds both real incidents: a VALID row
+// owned by another engine (agent-3 adopted main's chat after a buggy
+// fallback persisted it) and a pure ghost id with no DB row.
 func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 	projectDir := t.TempDir()
 	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
@@ -748,11 +749,37 @@ func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	const ghost = "7469e5fe-0000-0000-0000-000000000000"
+	// Mirror the real incident: main is the active engine with its own live
+	// session (meta.CurrentSessionID dual-writes it), e3 carries a ghost id.
+	mainSess, err := store.CreateSessionWithEngine(projectDir, "glm-5", "main")
+	if err != nil {
+		t.Fatalf("CreateSession main: %v", err)
+	}
+	// main's session has real history — that's what makes it "resumable"
+	// for the global ResumeOrInitSession fallback.
+	mainMsgs, err := short.EngineMessagesToStore([]types.Message{{
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock("hello from main")},
+		Timestamp: time.Now(),
+	}})
+	if err != nil {
+		t.Fatalf("convert main message: %v", err)
+	}
+	if err := store.AppendMessages(mainSess.SessionID, mainMsgs); err != nil {
+		t.Fatalf("seed main messages: %v", err)
+	}
 	seed := &short.WorkspaceMeta{
 		Engines: []short.EngineMeta{
-			{ID: "e3", Name: "agent-3", Model: "zhipu/glm-5", ActiveSessionID: ghost},
+			{ID: "main", Name: "main", Model: "zhipu/glm-5", ActiveSessionID: mainSess.SessionID},
+			// The state after one buggy restart: e3's entry now holds MAIN's
+			// session id — a VALID row owned by a DIFFERENT engine. This is
+			// stuck: the ghost check alone can't catch it.
+			{ID: "e3", Name: "agent-3", Model: "zhipu/glm-5", ActiveSessionID: mainSess.SessionID},
+			// Incident #1: a pure ghost id — no DB row at all.
+			{ID: "e5", Name: "agent-5", Model: "zhipu/glm-5", ActiveSessionID: ghost},
 		},
-		ActiveEngineID: "e3",
+		CurrentSessionID: mainSess.SessionID,
+		ActiveEngineID:   "main",
 	}
 	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
 		t.Fatalf("WriteWorkspaceMeta: %v", err)
@@ -786,12 +813,24 @@ func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 		t.Fatal("e3 engine not restored")
 	}
 	sid := vs.Engine.SessionID()
-	if sid == "" || sid == ghost {
-		t.Fatalf("active session = %q, want a fresh id (ghost %q rejected)", sid, ghost)
+	// The fallback must be ENGINE-scoped: ResumeOrInitSession resumes
+	// meta.CurrentSessionID — main's session — so e3 silently adopted
+	// main's chat. Both the wrong-owner id and the pure ghost id must
+	// resolve to fresh sessions.
+	if sid == "" || sid == ghost || sid == mainSess.SessionID {
+		t.Fatalf("active session = %q, want a fresh id (ghost %q or main %q rejected)", sid, ghost, mainSess.SessionID)
 	}
 	// The fresh session row must exist — persistence depends on it.
 	if _, err := store.GetSession(sid); err != nil {
 		t.Fatalf("fresh session row missing: %v", err)
+	}
+	// The pure-ghost engine recovers the same way.
+	vs5 := mgr.Get("e5")
+	if vs5 == nil || vs5.Engine == nil {
+		t.Fatal("e5 engine not restored")
+	}
+	if sid5 := vs5.Engine.SessionID(); sid5 == "" || sid5 == ghost {
+		t.Fatalf("e5 active session = %q, want a fresh id (ghost %q rejected)", sid5, ghost)
 	}
 	// meta.json rewritten in the same startup — no second restart needed.
 	meta, err := short.ReadWorkspaceMeta(projectDir)

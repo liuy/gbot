@@ -122,13 +122,3 @@ func TruncateInterruptedTurn(messages []*TranscriptMessage) []*TranscriptMessage
 	// Keep messages up to and including the last non-assistant message
 	return messages[:i+1]
 }
-
-// IsSessionResumable checks if a session has enough content to resume.
-// Returns false if session has no messages or only system messages.
-func (s *Store) IsSessionResumable(sessionID string) (bool, error) {
-	count, err := s.CountVisibleMessages(sessionID)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}

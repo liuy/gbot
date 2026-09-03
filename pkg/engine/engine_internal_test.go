@@ -8986,10 +8986,10 @@ func TestContextTokens_PersistedAfterAPICall(t *testing.T) {
 	eng.SetStore(store, dir)
 
 	// Simulate: engine creates a new session.
-	sid, err := eng.ResumeOrInitSession(dir, "test")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession: %v", err)
+	if err := eng.NewSession(dir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
 	}
+	sid := eng.SessionID()
 
 	// Simulate: API response sets ContextTokens.
 	eng.mu.Lock()
@@ -9009,7 +9009,7 @@ func TestContextTokens_PersistedAfterAPICall(t *testing.T) {
 }
 
 // TestContextTokens_RestoredOnResume verifies the restore path in
-// ResumeOrInitSession that reads ContextTokens from the session store.
+// SwitchSession that reads ContextTokens from the session store.
 // The full integration test requires messages in the session; here we
 // directly test that GetSession returns the persisted value.
 func TestContextTokens_RestoredOnResume(t *testing.T) {
@@ -9024,10 +9024,10 @@ func TestContextTokens_RestoredOnResume(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, dir)
 
-	sid, err := eng.ResumeOrInitSession(dir, "test")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession: %v", err)
+	if err := eng.NewSession(dir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
 	}
+	sid := eng.SessionID()
 
 	eng.mu.Lock()
 	eng.ContextTokens = 75000
@@ -9035,7 +9035,7 @@ func TestContextTokens_RestoredOnResume(t *testing.T) {
 	eng.persistContextTokens()
 
 	// Verify GetSession returns the persisted value — this is the
-	// same path ResumeOrInitSession uses to restore ContextTokens.
+	// same path SwitchSession uses to restore ContextTokens.
 	ses, err := store.GetSession(sid)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)

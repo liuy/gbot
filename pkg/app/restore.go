@@ -26,8 +26,10 @@ type restoreEnginesDeps struct {
 // rebuilds every engine listed there via the factory. Returns the active
 // engine's session ID (empty when no store was configured).
 //
-// First run (no meta) synthesizes a single main engine. Missing sessions
-// fall back to a fresh session via ResumeOrInitSession. Every engine —
+// First run (no meta) synthesizes a single main engine. A stale/ghost
+// recorded session falls back to ENGINE-scoped recovery: the engine's own
+// latest session, else a fresh one — never the global CurrentSessionID
+// (that belongs to whichever engine was last active). Every engine —
 // including main — goes through the factory, so wiring stays uniform.
 func restoreEngines(d restoreEnginesDeps) string {
 	meta, err := short.ReadWorkspaceMeta(d.projectDir)
@@ -56,22 +58,53 @@ func restoreEngines(d restoreEnginesDeps) string {
 		}
 		eng.SetStore(d.store, d.projectDir)
 
-		// Resume the engine's last session; fall back to a new session if
-		// the recorded one is missing or unresumable (user deleted DB row,
-		// partial write, schema drift, etc.).
+		// Resume the engine's last session; on failure recover ENGINE-scoped:
+		// 1) the engine's own latest session (its older sessions may still
+		//    exist even when the recorded id is stale),
+		// 2) else a brand-new session bound to this engine's ID.
+		// ResumeOrInitSession is NOT usable here: it resumes the GLOBAL
+		// meta.CurrentSessionID — the last-active engine's session — so any
+		// other engine would silently adopt it (incident #2: agent-3 showed
+		// main's chat after a restart).
 		resumeID := em.ActiveSessionID
 		if resumeID != "" {
-			if _, err := eng.SwitchSession(resumeID); err != nil {
-				slog.Warn("restore: switch session failed, creating new", "id", em.ID, "error", err)
+			// The recorded id must be (a) an existing row AND (b) owned by
+			// THIS engine (sessions.engine_id). A buggy window could persist
+			// another engine's session here — valid id, wrong owner — which
+			// made the engine silently adopt a sibling's chat.
+			adoptable := true
+			if d.store != nil {
+				ses, err := d.store.GetSession(resumeID)
+				switch {
+				case err != nil:
+					slog.Warn("restore: recorded session missing, recovering engine-scoped", "id", em.ID, "error", err)
+					adoptable = false
+				case ses.EngineID != "" && ses.EngineID != em.ID:
+					slog.Warn("restore: recorded session belongs to another engine, recovering engine-scoped",
+						"id", em.ID, "session", resumeID[:8], "owner", ses.EngineID)
+					adoptable = false
+				}
+			}
+			if !adoptable {
+				resumeID = ""
+			} else if _, err := eng.SwitchSession(resumeID); err != nil {
+				slog.Warn("restore: switch session failed, recovering engine-scoped", "id", em.ID, "error", err)
 				resumeID = ""
 			}
 		}
+		if resumeID == "" && d.store != nil {
+			if recent, err := d.store.ListSessionsByEngine(d.projectDir, em.ID, 1); err == nil && len(recent) > 0 {
+				if _, err := eng.SwitchSession(recent[0].SessionID); err == nil {
+					resumeID = recent[0].SessionID
+					slog.Info("restore: resumed engine's own latest session", "id", em.ID, "session", resumeID[:8])
+				}
+			}
+		}
 		if resumeID == "" {
-			id, err := eng.ResumeOrInitSession(d.projectDir, engineModel)
-			if err != nil {
+			if err := eng.NewSession(d.projectDir, ""); err != nil {
 				slog.Warn("restore: session init failed", "id", em.ID, "error", err)
 			} else {
-				resumeID = id
+				resumeID = eng.SessionID()
 			}
 		}
 

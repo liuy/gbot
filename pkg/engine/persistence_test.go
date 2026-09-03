@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -856,86 +855,13 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	}
 }
 
-func TestResumeOrInitSession_NoStore(t *testing.T) {
+// A nil store must yield a clean error from SwitchSession — the restore
+// fallback and the WUI switch handler branch on this error.
+func TestSwitchSession_NoStore(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
 	t.Cleanup(func() { eng.Close() })
-	sid, err := eng.ResumeOrInitSession("/tmp/project", "model1")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession no store: %v", err)
-	}
-	if sid != "" {
-		t.Errorf("expected empty session ID with no store, got %q", sid)
-	}
-}
-
-func TestResumeOrInitSession_NewSession(t *testing.T) {
-	store := newTestStore(t)
-	eng := New(&Params{Logger: slog.Default()})
-	t.Cleanup(func() { eng.Close() })
-	eng.SetStore(store, "")
-
-	dir := t.TempDir()
-	sid, err := eng.ResumeOrInitSession(dir, "model1")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession: %v", err)
-	}
-	if sid == "" {
-		t.Fatal("expected non-empty session ID")
-	}
-
-	eng.mu.RLock()
-	pd := eng.projectDir
-	eng.mu.RUnlock()
-	if pd != dir {
-		t.Errorf("projectDir = %q, want %q", pd, dir)
-	}
-}
-
-func TestResumeOrInitSession_ResumesExisting(t *testing.T) {
-	store := newTestStore(t)
-	dir := t.TempDir()
-
-	// Create a session and persist a message
-	session, err := store.CreateSession(dir, "model1")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	eng := New(&Params{Logger: slog.Default()})
-	t.Cleanup(func() { eng.Close() })
-	eng.SetStore(store, dir)
-	eng.SetSessionID(session.SessionID)
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-	})
-	eng.mu.Lock()
-	eng.lastPersistedIdx = 0
-	eng.mu.Unlock()
-	eng.PersistNewMessages()
-
-	// Write workspace meta pointing to this session
-	metaData, _ := json.Marshal(short.WorkspaceMeta{CurrentSessionID: session.SessionID})
-	if err := os.WriteFile(filepath.Join(dir, "meta.json"), metaData, 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	// New engine should resume the session
-	eng2 := New(&Params{Logger: slog.Default()})
-	eng2.SetStore(store, "")
-
-	sid, err := eng2.ResumeOrInitSession(dir, "model1")
-	if err != nil {
-		t.Fatalf("ResumeOrInitSession: %v", err)
-	}
-	if sid != session.SessionID {
-		t.Errorf("resumed sessionID = %q, want %q", sid, session.SessionID)
-	}
-
-	eng2.mu.RLock()
-	msgCount := len(eng2.messages)
-	eng2.mu.RUnlock()
-	if msgCount != 1 {
-		t.Errorf("resumed messages count = %d, want 1", msgCount)
+	if _, err := eng.SwitchSession("some-session"); err == nil {
+		t.Error("SwitchSession with no store: expected error, got nil")
 	}
 }
 

@@ -3579,6 +3579,9 @@ func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
 	// a ghost session bricks persistence for the engine (every append fails
 	// the messages→sessions FK). restoreEngines relies on this error to
 	// fall back to a fresh session.
+	if e.store == nil {
+		return nil, fmt.Errorf("switch session: no store")
+	}
 	ses, err := e.store.GetSession(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("switch session: %w", err)
@@ -3589,8 +3592,7 @@ func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
 	}
 	// Restore persisted usage before taking the lock (DB already read): the
 	// context meter and auto-compact thresholds must reflect the target
-	// session, not the one being left. ResumeOrInitSession does the same on
-	// startup.
+	// session, not the one being left.
 	ctxTokens := ses.ContextTokens
 	e.mu.Lock()
 	e.messages = engineMsgs
@@ -3601,59 +3603,6 @@ func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
 	e.setTaskDirForSession(sessionID)
 	e.mu.Unlock()
 	return engineMsgs, nil
-}
-
-// ResumeOrInitSession attempts to resume an existing session from workspace metadata,
-// or creates a new session if none is resumable. Returns the session ID.
-func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
-	if e.store == nil {
-		return "", nil
-	}
-
-	meta, _ := short.ReadWorkspaceMeta(workingDir)
-	if meta != nil && meta.CurrentSessionID != "" {
-		resumable, err := e.store.IsSessionResumable(meta.CurrentSessionID)
-		if err == nil && resumable {
-			_, msgs, err := e.store.ResumeSession(meta.CurrentSessionID)
-			if err == nil && len(msgs) > 0 {
-				engineMsgs, err := short.StoreMessagesToEngine(msgs)
-				if err == nil {
-					// Single lock section — avoid lock gaps between SetMessages/SetSessionID
-					e.mu.Lock()
-					e.messages = engineMsgs
-					e.sessionID = meta.CurrentSessionID
-					e.projectDir = workingDir
-					e.markAllPersisted()
-					e.setTaskDirForSession(meta.CurrentSessionID)
-					e.mu.Unlock()
-					slog.Info("ResumeOrInitSession: resumed session", "sessionID", meta.CurrentSessionID, "messages", len(engineMsgs))
-					if ses, err := e.store.GetSession(meta.CurrentSessionID); err == nil && ses.ContextTokens > 0 {
-						e.mu.Lock()
-						e.ContextTokens = ses.ContextTokens
-						e.mu.Unlock()
-						slog.Info("ResumeOrInitSession: restored ContextTokens", "tokens", ses.ContextTokens)
-					}
-					return meta.CurrentSessionID, nil
-				}
-				slog.Warn("ResumeOrInitSession: failed to convert messages", "error", err)
-			}
-		}
-	}
-
-	// No resumable session — create new
-	session, err := e.store.CreateSessionWithEngine(workingDir, model, e.engineID)
-	if err != nil {
-		return "", fmt.Errorf("create session: %w", err)
-	}
-	e.mu.Lock()
-	e.sessionID = session.SessionID
-	e.projectDir = workingDir
-	e.lastPersistedIdx = 0
-	e.forkParentUUID = ""
-	e.setTaskDirForSession(session.SessionID)
-	e.mu.Unlock()
-	slog.Info("ResumeOrInitSession: created new session", "sessionID", session.SessionID)
-	return session.SessionID, nil
 }
 
 // appendMessage adds a message to the history under Lock.
@@ -3807,7 +3756,7 @@ func (e *Engine) SetFileHistoryWriter(fn func(filehistory.FileHistoryState)) {
 
 // markAllPersisted resets lastPersistedIdx to len(e.messages).
 // Called after operations that replace e.messages and already persisted them:
-// compact (RecordCompact), SetStore, ResumeOrInitSession, NewSession, ForkSession, SwitchSession.
+// compact (RecordCompact), SetStore, NewSession, ForkSession, SwitchSession.
 // MUST be called under e.mu.Lock().
 func (e *Engine) markAllPersisted() {
 	e.lastPersistedIdx = len(e.messages)
@@ -3815,7 +3764,7 @@ func (e *Engine) markAllPersisted() {
 
 // SetStore wires the short-term store for persistence.
 // lastPersistedIdx is initialized via markAllPersisted() — an initial value that
-// will be overwritten by lifecycle methods (ResumeOrInitSession, NewSession).
+// will be overwritten by lifecycle methods (NewSession, SwitchSession).
 // AutoCompactor receives the same *short.Store pointer at creation time (main.go:446).
 func (e *Engine) SetStore(store *short.Store, projectDir string) {
 	e.mu.Lock()

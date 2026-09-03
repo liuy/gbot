@@ -555,10 +555,10 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 	})
 	eng1.SetSystemPrompt("You are a test assistant.")
 	eng1.SetStore(store, tmpDir)
-	sid, err := eng1.ResumeOrInitSession(tmpDir, "claude-test")
-	if err != nil {
-		t.Fatalf("eng1 ResumeOrInitSession: %v", err)
+	if err := eng1.NewSession(tmpDir, ""); err != nil {
+		t.Fatalf("eng1 NewSession: %v", err)
 	}
+	sid := eng1.SessionID()
 
 	eng1.SetContextTokens(60_000)
 	eng1.PersistContextTokens()
