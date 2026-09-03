@@ -68,6 +68,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-arm the runit supervisor on EVERY foreground return, not just
+        // onCreate: swiping the recents card usually keeps the App PROCESS
+        // alive, so a reopen resumes without ever calling onCreate — and a
+        // supervisor killed meanwhile (phantom reaper, daemon restarts)
+        // would stay dead until the next cold start.
+        Thread {
+            GbotProcess.ensureTermuxServices(applicationContext) { msg ->
+                android.util.Log.i("MainActivity", msg)
+            }
+        }.start()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         GbotProcess.stop()

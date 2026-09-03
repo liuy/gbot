@@ -117,7 +117,8 @@ object GbotProcess {
         }
     }
 
-    /** Context-based entry for callers outside the GbotProcess lifecycle. */
+    /** Context-based entry — called from MainActivity.onResume (every
+ * foreground return) and from start() (before its early return). */
     fun ensureTermuxServices(context: Context, log: (String) -> Unit) {
         val prefixDir = File(context.filesDir, "usr")
         if (prefixDir.isDirectory) ensureTermuxServices(prefixDir, log)
