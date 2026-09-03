@@ -38,6 +38,9 @@ class ChatFragment : Fragment() {
     }
 
     private var webView: WebView? = null
+    private var loadingOverlay: View? = null
+    private var loadingText: android.widget.TextView? = null
+    private var lastLoadFailed = false
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
 
@@ -86,6 +89,8 @@ class ChatFragment : Fragment() {
     ): View {
         val view = inflater.inflate(R.layout.fragment_chat, container, false)
         webView = view.findViewById(R.id.webView)
+        loadingOverlay = view.findViewById(R.id.loadingOverlay)
+        loadingText = view.findViewById(R.id.loadingText)
         return view
     }
 
@@ -150,6 +155,13 @@ class ChatFragment : Fragment() {
 
         webView?.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
+                // onPageFinished ALSO fires for the system error page after
+                // a failed load — only lift the splash on a real page.
+                if (!lastLoadFailed) {
+                    loadingOverlay?.visibility = View.GONE
+                } else {
+                    lastLoadFailed = false // consumed; next attempt starts clean
+                }
                 // Android WebView's matchMedia('(prefers-color-scheme: light)')
                 // initial value is unreliable — inject the real system theme
                 // once the page is ready so resolveTheme('system') gets
@@ -159,6 +171,7 @@ class ChatFragment : Fragment() {
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 if (request?.isForMainFrame() == true) {
+                    lastLoadFailed = true // the following onPageFinished is the error page's
                     retryLoad()
                 }
             }
@@ -173,11 +186,17 @@ class ChatFragment : Fragment() {
             loadAttempts++
             handler.postDelayed({ tryLoad() }, 1000)
         } else {
-            webView?.visibility = View.GONE
+            // Daemon never came up: keep the splash but say so.
+            loadingText?.text = "无法连接守护进程，请重启 App"
         }
     }
 
     private fun tryLoad() {
+        // Every attempt starts from a known state: without this reset, a
+        // skipped/duplicated error-page onPageFinished could desync the
+        // flag — worst case the splash sticks over a working page.
+        lastLoadFailed = false
+        loadingOverlay?.visibility = View.VISIBLE
         webView?.visibility = View.VISIBLE
         webView?.loadUrl("http://localhost:8765/")
     }
@@ -226,7 +245,12 @@ class ChatFragment : Fragment() {
 
     override fun onDestroyView() {
         handler.removeCallbacksAndMessages(null)
+        // A detached-but-alive WebView keeps its page (and WebSockets)
+        // running — the source of phantom chat-slot clients. Destroy it.
+        webView?.destroy()
         webView = null
+        loadingOverlay = null
+        loadingText = null
         super.onDestroyView()
     }
 }

@@ -52,7 +52,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) {
-            binding.bottomNav.selectedItemId = R.id.nav_chat
+            // Idempotent initial selection: commit the fragment directly and
+            // sync the nav state via the menu item (setChecked does NOT
+            // dispatch the selection listener). Setting selectedItemId would
+            // fire the listener a SECOND time (it already fired on listener
+            // registration for the auto-selected first item), creating two
+            // ChatFragments — the detached one's never-destroyed WebView
+            // lived on as a zombie page that raced this one for the chat
+            // slot (intermittent "taken_over" kicks on every app start).
+            supportFragmentManager
+                .beginTransaction()
+                .replace(R.id.fragmentContainer, ChatFragment())
+                .commit()
+            binding.bottomNav.menu.findItem(R.id.nav_chat)?.isChecked = true
         }
     }
 
