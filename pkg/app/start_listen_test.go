@@ -70,20 +70,23 @@ func TestStart_PortOpenImpliesRoutesReady(t *testing.T) {
 	}()
 
 	base := "http://127.0.0.1:" + port
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := time.After(5 * time.Second)
 	for {
 		resp, err := http.Get(base + "/")
 		if err == nil {
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				t.Logf("close probe body: %v", cerr)
+			}
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("first response after port open: status %d, want 200 (listener opened before routes mounted?)", resp.StatusCode)
 			}
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-timeout:
 			t.Fatalf("port never accepted connections: %v", err)
+		case <-time.After(20 * time.Millisecond):
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	select {
 	case err := <-startErr:

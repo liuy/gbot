@@ -760,7 +760,7 @@ func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 	mainMsgs, err := short.EngineMessagesToStore([]types.Message{{
 		Role:      types.RoleUser,
 		Content:   []types.ContentBlock{types.NewTextBlock("hello from main")},
-		Timestamp: time.Now(),
+		Timestamp: time.Now(), // REAL-TIME: fresh fixture timestamp, recency not under test
 	}})
 	if err != nil {
 		t.Fatalf("convert main message: %v", err)
