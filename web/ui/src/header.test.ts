@@ -401,15 +401,22 @@ describe('Header model picker popover', () => {
     expect(panel!.querySelector('textarea[placeholder="Search..."]')).not.toBeNull()
   })
 
-  it('opening the panel does not steal focus for the search input', async () => {
+  it('opening the panel does not steal focus for the search input', () => {
     // Auto-focusing pops the soft keyboard over the popup on Android.
-    // Focus stays where the user left it; typing requires tapping the box.
-    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(visibleModelPanel()).not.toBeNull()
-    // The old autofocus ran in a 50ms setTimeout — wait past it.
-    await new Promise((r) => setTimeout(r, 80))
-    const search = visibleModelPanel()!.querySelector('textarea[placeholder="Search..."]') as HTMLElement
-    expect(document.activeElement).not.toBe(search)
+    // The removed autofocus ran in a 50ms setTimeout — fake the timers and
+    // advance past it, asserting focus never lands on the search box.
+    vi.useFakeTimers()
+    try {
+      modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(visibleModelPanel()).not.toBeNull()
+      const search = visibleModelPanel()!.querySelector('textarea[placeholder="Search..."]') as HTMLElement
+      const focusSpy = vi.spyOn(search, 'focus')
+      vi.advanceTimersByTime(60)
+      expect(focusSpy).not.toHaveBeenCalled()
+      expect(document.activeElement).not.toBe(search)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('outside click closes panel', () => {
