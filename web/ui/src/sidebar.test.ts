@@ -206,32 +206,6 @@ describe('createSidebar', () => {
     expect(restoredSpan.textContent).toBe('Renamed')
   })
 
-  it('long-press theme toggle opens hljs popover and does not cycle theme', () => {
-    // consumeTrigger lets the click handler bail out when a long-press
-    // just fired, so the synthesized post-touch click doesn't cycle theme.
-    const { sidebar } = setup()
-    const themeToggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
-    expect(themeToggle).not.toBeNull()
-
-    const themeBefore = document.documentElement.dataset.theme
-    expect(themeBefore).toBe('dark')
-
-    vi.useFakeTimers()
-    themeToggle.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
-    vi.advanceTimersByTime(600)
-    vi.useRealTimers()
-
-    // Popover opened.
-    const popover = document.getElementById('hljs-popover')
-    expect(popover).not.toBeNull()
-    expect(popover?.textContent).toContain('Highlight Theme')
-
-    // Now dispatch the click that the browser would synthesize after touch.
-    themeToggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-
-    // Theme must NOT have cycled.
-    expect(document.documentElement.dataset.theme).toBe('dark')
-  })
 
   describe('artifacts section', () => {
     const artifacts: ArtifactListItem[] = [
@@ -307,127 +281,25 @@ describe('createSidebar', () => {
     })
   })
 
-  describe('__gbotApplySystemTheme (Android WebView bridge)', () => {
-    const getHook = (): ((isLight: boolean) => void) | undefined =>
-      (window as Record<string, unknown>).__gbotApplySystemTheme as
-        ((isLight: boolean) => void) | undefined
-
-    it('HookDefined_AfterCreate', () => {
+  describe('settings entry', () => {
+    it('renders a settings icon button in the bottom row beside the theme toggle', () => {
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
-      // Kotlin onConfigurationChanged calls this by name — must exist.
-      expect(typeof getHook()).toBe('function')
+      const btn = sidebar.root.querySelector('[data-settings-btn]') as HTMLElement
+      expect(btn).toBeTruthy()
+      // Bottom-row placement: same bottom offset as the theme toggle
+      // (absolute bottom-5 left-5); the gear sits 12px further right.
+      expect(btn.className).toContain('bottom-5')
+      // createIconButton surfaces its label as the button's aria-label.
+      expect(sidebar.root.querySelector('button[aria-label="Settings"]')).toBe(btn)
     })
-
-    it('SystemLight_SetsLightTheme', () => {
-      localStorage.setItem('gbot-theme', 'system')
+    it('clicking the settings button fires the onOpenSettings handler', () => {
       const { sidebar } = setup()
       document.body.appendChild(sidebar.root)
-      getHook()!(true)
-      expect(document.documentElement.dataset.theme).toBe('light')
-    })
-
-    it('SystemDark_SetsDarkTheme', () => {
-      localStorage.setItem('gbot-theme', 'system')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      getHook()!(false)
-      expect(document.documentElement.dataset.theme).toBe('dark')
-    })
-
-    it('ExplicitPref_NotOverridden', () => {
-      localStorage.setItem('gbot-theme', 'dark')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      getHook()!(true)
-      // User chose dark explicitly — system switch must not override.
-      expect(document.documentElement.dataset.theme).toBe('dark')
-    })
-
-    it('SystemFollowsLastNativePush_NotLyingMatchMedia', () => {
-      // Android WebView's matchMedia snapshot is unreliable (ours reports
-      // light while the system is dark). The native push is the truth: a
-      // later cycle to 'system' must resolve from the pushed value, not
-      // from matchMedia.
-      const origMatchMedia = window.matchMedia
-      try {
-        window.matchMedia = (q: string) =>
-          ({ matches: true, media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false }) as MediaQueryList
-        localStorage.setItem('gbot-theme', 'dark')
-        const { sidebar } = setup()
-        document.body.appendChild(sidebar.root)
-        getHook()!(false) // native pushes: real system is dark
-        // User cycles dark → light → system: landing on 'system' must resolve
-        // from the pushed value (dark), not from the lying matchMedia (light).
-        const toggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
-        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // dark → light
-        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // light → system
-        expect(document.documentElement.dataset.theme).toBe('dark')
-      } finally {
-        window.matchMedia = origMatchMedia // restore — later tests need the setup stub
-      }
-    })
-  })
-
-  describe('GBotNative.onThemeChanged (status-bar icon bridge)', () => {
-    // The Android host registers a GBotNative JS interface; the WUI must
-    // report every effective-theme change so the status-bar icon color can
-    // match the header background (dark theme → light icons, and vice versa).
-    let calls: boolean[]
-
-    beforeEach(() => {
-      calls = []
-      ;(window as Record<string, unknown>).GBotNative = {
-        onThemeChanged: (isDark: boolean) => calls.push(isDark),
-      }
-    })
-
-    afterEach(() => {
-      delete (window as Record<string, unknown>).GBotNative
-    })
-
-    it('NotifiesNative_OnInitialResolve', () => {
-      localStorage.setItem('gbot-theme', 'light')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      expect(calls).toEqual([false])
-    })
-
-    it('NotifiesNative_WhenThemeCycles', () => {
-      localStorage.setItem('gbot-theme', 'dark')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      const toggle = sidebar.root.querySelector('button.absolute.bottom-5.left-5') as HTMLElement
-      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) // dark → light
-      expect(calls.length).toBeGreaterThanOrEqual(2)
-      expect(calls[calls.length - 1]).toBe(false)
-    })
-
-    it('NotifiesNative_WhenSystemFlipsAndPrefIsSystem', () => {
-      localStorage.setItem('gbot-theme', 'system')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      const hook = (window as Record<string, unknown>).__gbotApplySystemTheme as
-        (isLight: boolean) => void
-      // jsdom matchMedia stub always reports dark, so hook(true) proves the
-      // notification carries the hook's value, not a stale matchMedia read.
-      hook(true) // system went light
-      expect(calls.length).toBeGreaterThanOrEqual(2)
-      expect(calls[calls.length - 1]).toBe(false)
-    })
-
-    it('ExplicitPref_SystemFlipDoesNotNotify', () => {
-      // Companion invariant of ExplicitPref_NotOverridden: with an explicit
-      // user pref the apply() hook must not touch the theme or notify native
-      // (the last web-set value already matches the pref).
-      localStorage.setItem('gbot-theme', 'dark')
-      const { sidebar } = setup()
-      document.body.appendChild(sidebar.root)
-      expect(calls).toEqual([true]) // initial resolve only
-      const hook = (window as Record<string, unknown>).__gbotApplySystemTheme as
-        (isLight: boolean) => void
-      hook(true)
-      expect(calls).toEqual([true]) // no additional notify
+      const handler = vi.fn()
+      sidebar.onOpenSettings(handler)
+      ;(sidebar.root.querySelector('[data-settings-btn]') as HTMLElement).click()
+      expect(handler).toHaveBeenCalledTimes(1)
     })
   })
 })

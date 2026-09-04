@@ -18,9 +18,19 @@ func (h IntOrHuman) Int() int { return int(h) }
 // IsSet returns true if the value was explicitly set (non-zero).
 func (h IntOrHuman) IsSet() bool { return h != 0 }
 
-// MarshalJSON serializes the value as a plain JSON number.
+// MarshalJSON serializes exact k/M multiples back in the human-friendly
+// form so a hand-written "1M" survives a save round-trip instead of being
+// rewritten to 1048576; other values stay plain JSON numbers.
 func (h IntOrHuman) MarshalJSON() ([]byte, error) {
-	return json.Marshal(int(h))
+	v := int(h)
+	switch {
+	case v != 0 && v%(1024*1024) == 0:
+		return json.Marshal(fmt.Sprintf("%dM", v/(1024*1024)))
+	case v != 0 && v%1024 == 0:
+		return json.Marshal(fmt.Sprintf("%dk", v/1024))
+	default:
+		return json.Marshal(v)
+	}
 }
 
 // UnmarshalJSON accepts a JSON number or a human-friendly string like "32k", "1M".

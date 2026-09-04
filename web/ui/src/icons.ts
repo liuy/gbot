@@ -10,6 +10,7 @@ export type IconName =
   | 'refresh'
   | 'upload'
   | 'chevron-right'
+  | 'chevron-left'
   | 'menu'
   | 'moon'
   | 'sun'
@@ -78,6 +79,11 @@ const ICONS: Record<IconName, IconDef> = {
   },
   'chevron-right': {
     path: '<path d="M9 6L15 12L9 18"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 1.5,
+  },
+  'chevron-left': {
+    path: '<path d="M15 6L9 12L15 18"/>',
     variant: 'outline',
     defaultStrokeWidth: 1.5,
   },

@@ -2312,8 +2312,9 @@ describe('chat integration', () => {
     expect(last.text).toBe('')
     expect(last.timeout).toBe(true)
     // No live dialog left in the DOM (chat.ts removes it from askEls and
-    // close() detaches the node).
-    expect(document.querySelector('[class*="border-blue"]')).toBeNull()
+    // close() detaches the node). Scoped to the ask dialog's border-blue/50 —
+    // the hidden settings page also carries border-blue/30 styling.
+    expect(document.querySelector('[class*="border-blue/50"]')).toBeNull()
     vi.useRealTimers()
   })
 })

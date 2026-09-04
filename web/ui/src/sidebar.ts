@@ -1,8 +1,6 @@
 import type { ArtifactListItem, SessionListItem } from './types'
-import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
-import { createOutsideClick, bindLongPress } from './utils'
+import { bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
-import { renderIcon } from './icons'
 import { createIconButton } from './buttons'
 
 export interface SidebarHandles {
@@ -19,6 +17,7 @@ export interface SidebarHandles {
   onRename: (handler: (id: string, title: string) => void) => void
   setArtifacts: (items: ArtifactListItem[]) => void
   onArtifactClick: (handler: (name: string) => void) => void
+  onOpenSettings: (handler: () => void) => void
   onOpen: (handler: () => void) => void
 }
 
@@ -116,155 +115,22 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   artifactsSection.append(artifactsHeader, artifactsList)
   listContainer.appendChild(artifactsSection)
 
-  const THEME_CYCLE = ['dark', 'light', 'system'] as const
-  type Theme = typeof THEME_CYCLE[number]
 
-  // The Android WebView's prefers-color-scheme query is unreliable — it
-  // reports light while the system is dark, and never updates on system
-  // theme switches. The Kotlin host pushes the REAL system theme through
-  // __gbotApplySystemTheme; remember it and resolve 'system' from that,
-  // falling back to matchMedia only where no push ever arrived (desktop).
-  let lastNativeIsLight: boolean | null = null
-
-  const resolveTheme = (pref: Theme): 'dark' | 'light' => {
-    if (pref === 'system') {
-      if (lastNativeIsLight !== null) return lastNativeIsLight ? 'light' : 'dark'
-      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-    }
-    return pref
-  }
-
-  // Report the effective theme to the Android host (GBotNative JS interface
-  // registered by ChatFragment) so the status-bar icon color matches the
-  // header background. Optional-chained: no-op on desktop / server WUI.
-  const notifyNativeTheme = (resolved: 'dark' | 'light') => {
-    const native = (window as unknown as {
-      GBotNative?: { onThemeChanged?: (isDark: boolean) => void }
-    }).GBotNative
-    native?.onThemeChanged?.(resolved === 'dark')
-  }
-
-  const savedPref = (localStorage.getItem('gbot-theme') || 'dark') as Theme
-  const effectiveTheme = resolveTheme(savedPref)
-  document.documentElement.dataset.theme = effectiveTheme
-  notifyNativeTheme(effectiveTheme)
-
-  const renderThemeIcon = (pref: Theme): SVGElement =>
-    renderIcon(pref === 'dark' ? 'moon' : pref === 'light' ? 'sun' : 'tai-chi', { size: 18 })
-
-  // themeToggle: variant=ghost (text-t2 hover:text-t1) layers hover + transition
-  // on top of the previous static look — slight UX upgrade accepted in D5.
-  // Long-press → openHljsPopover, single click → cycleTheme: the factory's
-  // internal consumeTrigger swallows the synthesized post-long-press click,
-  // so we no longer need a sidebar-side themeLP binding.
-  // cycleTheme must be declared before themeToggle's createIconButton call,
-  // but it references themeToggle via closure — fine because cycleTheme only
-  // runs after createIconButton returns.
-  const cycleTheme = () => {
-    const current = (localStorage.getItem('gbot-theme') || 'dark') as Theme
-    const idx = THEME_CYCLE.indexOf(current)
-    const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]
-    localStorage.setItem('gbot-theme', next)
-    const resolved = resolveTheme(next)
-    document.documentElement.dataset.theme = resolved
-    themeToggle.replaceChildren(renderThemeIcon(next))
-    applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
-    notifyNativeTheme(resolved)
-  }
-  const themeToggle = createIconButton({
-    icon: savedPref === 'dark' ? 'moon' : savedPref === 'light' ? 'sun' : 'tai-chi',
-    label: 'Theme',
+  // Settings gear occupies the sidebar's bottom-left slot (the old theme
+  // toggle's home — theming moved into the Settings page).
+  const settingsBtn = createIconButton({
+    icon: 'settings',
+    label: 'Settings',
     variant: 'ghost',
-    size: 'md',
+    size: 'auto',
     iconSize: 18,
     className: 'absolute bottom-5 left-5',
-    onClick: cycleTheme,
-    onLongPress: openHljsPopover,
   })
-
-  const mediaQuery = window.matchMedia('(prefers-color-scheme: light)')
-  const onSystemChange = () => {
-    const pref = localStorage.getItem('gbot-theme') as Theme || 'dark'
-    if (pref === 'system') {
-      const resolved = resolveTheme('system')
-      document.documentElement.dataset.theme = resolved
-      applyHljsTheme(getSavedHljsTheme(), resolved === 'dark')
-      notifyNativeTheme(resolved)
-    }
-  }
-  mediaQuery.addEventListener('change', onSystemChange)
-
-  // Android WebView does not fire matchMedia change events when the system
-  // theme switches. Expose a hook so the Kotlin side can call it from
-  // onConfigurationChanged via evaluateJavascript. The pushed value is
-  // ALWAYS remembered (even when the current pref is explicit dark/light)
-  // so a later cycle to 'system' resolves from the native truth.
-  const apply = (isLight: boolean) => {
-    lastNativeIsLight = isLight
-    const pref = (localStorage.getItem('gbot-theme') as Theme) || 'dark'
-    if (pref !== 'system') return
-    const resolved = isLight ? 'light' : 'dark'
-    document.documentElement.dataset.theme = resolved
-    applyHljsTheme(getSavedHljsTheme(), !isLight)
-    notifyNativeTheme(resolved)
-  }
-  Object.assign(window, { __gbotApplySystemTheme: apply })
-
-  // Apply saved hljs theme on load
-  applyHljsTheme(getSavedHljsTheme(), effectiveTheme === 'dark')
-
-  function openHljsPopover() {
-    // Remove existing popover if open
-    const existing = document.getElementById('hljs-popover')
-    if (existing) { existing.remove(); return }
-
-    const currentHljs = getSavedHljsTheme()
-    const currentTheme = (localStorage.getItem('gbot-theme') || 'dark') as Theme
-    const isDark = resolveTheme(currentTheme) === 'dark'
-
-    const popover = createNode('div', {
-      className: 'fixed z-50 glass-solid border border-hairline rounded-xl p-2 shadow-2xl modal-enter',
-      props: { id: 'hljs-popover' },
-      style: { bottom: '60px', left: '20px', minWidth: '180px' },
-    })
-
-    const title = createElement('div', 'text-[11px] text-t3 px-2 py-1 font-medium')
-    title.textContent = 'Highlight Theme'
-    popover.appendChild(title)
-
-    for (const theme of HLJS_THEMES) {
-      const isSelected = theme.key === currentHljs
-      const row = createElement(
-        'div',
-        'flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-[13px] ' +
-          (isSelected
-            ? 'bg-blue/15 border border-blue/20 text-blue font-medium'
-            : 'hover:bg-ink3/50 text-t2'),
-      )
-      const label = createElement('span', 'flex-1')
-      label.textContent = theme.label
-      row.appendChild(label)
-      if (isSelected) {
-        const check = createElement('span', 'text-blue text-[13px]')
-        check.textContent = '✓'
-        row.appendChild(check)
-      }
-      row.addEventListener('click', () => {
-        saveHljsTheme(theme.key)
-        applyHljsTheme(theme.key, isDark)
-        popover.remove()
-      })
-      popover.appendChild(row)
-    }
-
-    document.body.appendChild(popover)
-    const oc = createOutsideClick(themeToggle, popover, () => {
-      popover.remove()
-      oc.remove()
-    })
-    oc.add()
-  }
-  root.appendChild(themeToggle)
+  settingsBtn.setAttribute('data-settings-btn', '')
+  root.appendChild(settingsBtn)
+  settingsBtn.addEventListener('click', () => {
+    handlers.openSettings()
+  })
 
   const overlay = createNode('div', {
     className: 'fixed inset-0 z-40 bg-black/30 transition-opacity duration-300',
@@ -276,6 +142,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     newSession: () => {},
     rename: (_id: string, _title: string) => {},
     artifactClick: (_name: string) => {},
+    openSettings: () => {},
     open: () => {},
   }
 
@@ -450,6 +317,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     },
     onArtifactClick: (handler) => {
       handlers.artifactClick = handler
+    },
+    onOpenSettings: (handler) => {
+      handlers.openSettings = handler
     },
     onOpen: (handler) => {
       handlers.open = handler

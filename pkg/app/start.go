@@ -555,6 +555,7 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
 		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
+		wui.RegisterSettingsRoutes(wsMux)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
 
 		// All routes mounted — NOW open the port (see comment at wsMux

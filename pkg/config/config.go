@@ -5,6 +5,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
@@ -449,8 +451,14 @@ func FindClosestMatchRank(input string, candidates []string) (model string, dist
 	return entries[ranks[0].OriginalIndex].original, ranks[0].Distance
 }
 
+// settingsFileMu serializes read-modify-write cycles on settings.json across
+// Save and SaveProviders (prevents lost updates between concurrent savers).
+var settingsFileMu sync.Mutex
+
 // Save writes the configuration back to the user settings file.
 func (c *Config) Save() error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
 	configDir, err := ConfigDir()
 	if err != nil {
 		return err
@@ -476,6 +484,148 @@ func (c *Config) Save() error {
 	}
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveProviders replaces the "providers" key of ~/.gbot/settings.json with
+// providers, preserving every other top-level key verbatim. When the file
+// exists it is first copied byte-for-byte to settings.json.bak (overwriting a
+// previous backup); the new content is then written to settings.json.tmp and
+// renamed into place (atomic). File mode: preserved from the existing file,
+// else 0600 (the file carries API keys).
+func SaveProviders(providers []Provider) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage)
+		}
+	}
+
+	providersJSON, err := json.Marshal(providers)
+	if err != nil {
+		return err
+	}
+	raw["providers"] = providersJSON
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		// The backup must land before any write touches settings.json —
+		// if it fails, abort rather than destroy the only good copy.
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveDefaultModel sets the "default" tier of the model spec in the user
+// settings file, preserving every other tier. Same safety contract as
+// SaveProviders: backup first, then atomic tmp+rename, other keys verbatim.
+// Sentinel errors from SaveDefaultModel — the caller maps them to 400s.
+var (
+	ErrUnknownProvider = errors.New("unknown provider")
+	ErrUnknownModel    = errors.New("unknown model for provider")
+)
+
+func SaveDefaultModel(provider, model string) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage)
+		}
+	}
+	// Validate INSIDE the lock: checking against a pre-lock Load() (the old
+	// handler-side validation) raced with a concurrent SaveProviders that
+	// could remove the provider between check and write.
+	var providers []Provider
+	if pj, ok := raw["providers"]; ok {
+		if err := json.Unmarshal(pj, &providers); err != nil {
+			providers = nil
+		}
+	}
+	known := false
+	for _, p := range providers {
+		if p.Name == provider {
+			if !p.Models.Has(model) {
+				return ErrUnknownModel
+			}
+			known = true
+			break
+		}
+	}
+	if !known {
+		return ErrUnknownProvider
+	}
+	spec := make(ModelSpec)
+	if old, ok := raw["model"]; ok {
+		_ = json.Unmarshal(old, &spec)
+	}
+	spec["default"] = provider + "/" + model
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	raw["model"] = specJSON
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, path)

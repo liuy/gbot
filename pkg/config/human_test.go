@@ -82,13 +82,30 @@ func TestIntOrHuman_UnmarshalJSON(t *testing.T) {
 }
 
 func TestIntOrHuman_MarshalJSON(t *testing.T) {
-	h := IntOrHuman(32768)
-	got, err := json.Marshal(h)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Exact k/M multiples marshal back in the human form — a hand-written
+	// "1M" in settings.json must survive a save round-trip instead of
+	// being rewritten to 1048576 (user-facing: the settings UI re-reads
+	// the file after save). Non-multiples stay plain numbers.
+	tests := []struct {
+		in   IntOrHuman
+		want string
+	}{
+		{0, "0"},
+		{1536, "1536"}, // 1.5k — not an exact multiple
+		{100000, "100000"},
+		{32768, `"32k"`},
+		{200 * 1024, `"200k"`},
+		{1024 * 1024, `"1M"`},
+		{3 * 1024 * 1024, `"3M"`},
 	}
-	if string(got) != "32768" {
-		t.Errorf("MarshalJSON = %s, want 32768", got)
+	for _, tt := range tests {
+		got, err := json.Marshal(tt.in)
+		if err != nil {
+			t.Fatalf("marshal %d: %v", int(tt.in), err)
+		}
+		if string(got) != tt.want {
+			t.Errorf("marshal %d = %s, want %s", int(tt.in), got, tt.want)
+		}
 	}
 }
 
@@ -162,13 +179,13 @@ func TestIntOrHuman_OmitEmpty(t *testing.T) {
 		t.Errorf("empty struct = %s, want {}", data)
 	}
 
-	// Non-zero values should appear as numbers.
+	// Non-zero exact multiples appear in human form (save round-trip).
 	c = cfg{Context: IntOrHuman(32 * 1024), MaxTokens: IntOrHuman(16 * 1024)}
 	data, err = json.Marshal(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := `{"context":32768,"max_tokens":16384}`
+	want := `{"context":"32k","max_tokens":"16k"}`
 	if string(data) != want {
 		t.Errorf("got %s, want %s", data, want)
 	}

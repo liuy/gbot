@@ -56,9 +56,11 @@ import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
 import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
+import { createSettingsPage } from './settings'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
 import { History } from './history'
+import { initTheme } from './theme'
 import { sendAttachmentViaWS, attachmentMeta, newAttachmentID } from './upload'
 import {
   errorBox,
@@ -436,6 +438,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     'flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-20 h-full',
   )
 
+  // Theme engine FIRST: page-load side effects (data-theme, hljs, the
+  // __gbotApplySystemTheme hook the Android host calls immediately) must
+  // be live before anything renders.
+  initTheme()
   const sidebar = createSidebar({ mainContent })
 
   const header = createHeader({
@@ -503,6 +509,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // purely manual action via its handle).
   const artifactSheet = createArtifactSheet()
   root.appendChild(artifactSheet.root)
+
+  // Settings page: full-screen overlay above everything (z-60). Closing the
+  // sidebar first keeps the gear's tap from leaving both layers open.
+  const settingsPage = createSettingsPage()
+  root.appendChild(settingsPage.root)
+  sidebar.onOpenSettings(() => {
+    sidebar.closeImmediate()
+    settingsPage.open()
+  })
 
   // Live path and history replay share this derivation — replay has no
   // separate artifact logic.
