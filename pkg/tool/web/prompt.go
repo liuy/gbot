@@ -8,6 +8,7 @@ func webPrompt() string {
 - Current events, recent releases, version-specific documentation
 - Verifying facts with primary sources
 - Fetching specific web pages for detailed content
+- Errors or stuck problems that resist repeated fix attempts
 
 ### Search mode (non-URL query)
 Returns numbered results with title, URL, and snippet.
