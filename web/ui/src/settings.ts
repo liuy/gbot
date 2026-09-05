@@ -377,7 +377,15 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsRow.chev.classList.toggle('rotate-90', !open)
   })
 
-  generalCard.append(languageRow.row, themeRow.row, themePanel, divider(), hljsRow.row, hljsPanel)
+  generalCard.append(
+    languageRow.row,
+    divider(),
+    themeRow.row,
+    themePanel,
+    divider(),
+    hljsRow.row,
+    hljsPanel,
+  )
 
   homeScreen.append(
     sectionLabel('PROVIDERS'),
