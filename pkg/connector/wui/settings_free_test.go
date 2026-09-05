@@ -15,7 +15,7 @@ func TestFetchModels_FreeTop10(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.String()
-		w.Write([]byte(`{"data":[{"id":"deepseek/deepseek-r1:free","context_length":64000,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek/deepseek-r1:free","context_length":64000,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`))
 	}))
 	defer upstream.Close()
 
@@ -46,7 +46,7 @@ func TestFetchModels_FreeTop10(t *testing.T) {
 // literal "0" would defeat the frontend's placeholder fallback.
 func TestFetchModels_FreeZeroContext(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":[{"id":"m:free","context_length":0,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"m:free","context_length":0,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`))
 	}))
 	defer upstream.Close()
 

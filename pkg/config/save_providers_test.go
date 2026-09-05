@@ -1,11 +1,11 @@
 package config_test
 
 import (
-	"strings"
 	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -61,9 +61,9 @@ func TestSaveProviders_CreatesFileWhenMissing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	if err := config.SaveProviders([]config.Provider{{
-		Name: "zhipu",
-		URL:  "https://open.bigmodel.cn/api/coding/paas/v4",
-		Keys: []string{"sk-test"},
+		Name:   "zhipu",
+		URL:    "https://open.bigmodel.cn/api/coding/paas/v4",
+		Keys:   []string{"sk-test"},
 		Models: mustModels(t, `{"glm-5.3":{"context":"500k","input":["text"]}}`),
 	}}); err != nil {
 		t.Fatalf("SaveProviders: %v", err)
@@ -284,11 +284,11 @@ func TestSaveProviders_ConcurrentSavesValidJson(t *testing.T) {
 	seedSettingsFile(t, `{"providers":[{"name":"seed","url":"https://a","keys":[],"models":{"m":{}}}]}`, 0600)
 
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
+	for g := range 8 {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				p := config.Provider{
 					Name: "g" + string(rune('A'+g)) + "-" + string(rune('0'+i)),
 					URL:  "https://x",

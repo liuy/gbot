@@ -9,7 +9,7 @@ import (
 
 func TestFetchModels_CodexShape(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"models":[{"slug":"glm-5.3","context_window":1048576,"input_modalities":["text","image"]},{"slug":"glm-5.3-flash","context_window":1048576,"input_modalities":["text"]}]}`))
+		_, _ = w.Write([]byte(`{"models":[{"slug":"glm-5.3","context_window":1048576,"input_modalities":["text","image"]},{"slug":"glm-5.3-flash","context_window":1048576,"input_modalities":["text"]}]}`))
 	}))
 	defer upstream.Close()
 

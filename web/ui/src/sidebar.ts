@@ -126,7 +126,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     className: 'p-1.5 -m-1.5',
   })
   clearArtifactsBtn.setAttribute('data-clear-artifacts', '')
-  // Two-tap confirm, no dialog: first tap arms (red) and a 2s timer disarms;
+  // Two-tap confirm, no dialog: first tap arms (red) and a 5s timer disarms;
   // a second tap inside the window executes the clear-all.
   let clearArmed = false
   let clearArmTimer: ReturnType<typeof setTimeout> | undefined

@@ -292,8 +292,11 @@ describe('createSidebar', () => {
       expect(btn).not.toBeNull()
 
       // First tap only arms: red highlight, no request, no refresh.
+      // Arming uses an inline color (a text-color utility would lose to
+      // the button's text-t2 by stylesheet order).
       btn.click()
-      expect(btn.className).toContain('text-red-500')
+      expect(btn.style.color).toBe('rgb(248, 81, 73)')
+      expect(btn.getAttribute('aria-pressed')).toBe('true')
       expect(fetchMock).not.toHaveBeenCalled()
       expect(refresh).not.toHaveBeenCalled()
 
@@ -304,7 +307,7 @@ describe('createSidebar', () => {
       await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
     })
 
-    it('trash button disarms after 2s so a late tap does not clear', () => {
+    it('trash button disarms after 5s so a late tap does not clear', () => {
       vi.useFakeTimers()
       try {
         const fetchMock = vi.fn(async () => ({ ok: true }))
@@ -312,11 +315,12 @@ describe('createSidebar', () => {
         const { sidebar } = setup()
         const btn = sidebar.root.querySelector('[data-clear-artifacts]') as HTMLElement
         btn.click()
-        vi.advanceTimersByTime(2000)
-        expect(btn.className).not.toContain('text-red-500')
+        vi.advanceTimersByTime(5000)
+        expect(btn.style.color).toBe('')
+        expect(btn.getAttribute('aria-pressed')).toBe('false')
         // Disarmed: the next tap is a fresh arm, not a confirm.
         btn.click()
-        expect(btn.className).toContain('text-red-500')
+        expect(btn.style.color).toBe('rgb(248, 81, 73)')
         expect(fetchMock).not.toHaveBeenCalled()
       } finally {
         vi.useRealTimers()
@@ -324,14 +328,12 @@ describe('createSidebar', () => {
       }
     })
 
-    })
-
     it('artifact rows have no per-row delete control (clear-all only)', async () => {
       const { sidebar } = setup()
       sidebar.open()
       sidebar.setArtifacts(artifacts)
       const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
-      expect(rows.length).toBeGreaterThan(0)
+      expect(rows.length).toBe(2)
       for (const row of rows) {
         expect(row.textContent).not.toContain('✕')
       }

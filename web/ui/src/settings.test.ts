@@ -364,8 +364,6 @@ describe('createSettingsPage', () => {
     const btn = page.root.querySelector('[data-fetch-models]') as HTMLElement
     expect(btn.textContent).toBe('· fetch free top 10')
     // typing a non-openrouter URL reverts the label
-    const urlInput = page.root.querySelector('input[placeholder="https://api.anthropic.com"]') as HTMLInputElement
-      ?? (page.root.querySelector('[data-model-name]')?.parentElement?.querySelector('input') as HTMLInputElement)
     const real = Array.from(page.root.querySelectorAll('input')).find((i) => i.value.startsWith('https://openrouter')) as HTMLInputElement
     real.value = 'https://api.zhipu.cn'
     real.dispatchEvent(new Event('input'))

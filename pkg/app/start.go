@@ -1,11 +1,11 @@
 package app
 
 import (
-	"net"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"

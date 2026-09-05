@@ -280,7 +280,9 @@ func TestSettingsPut_Validation(t *testing.T) {
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400 (body %s)", resp.StatusCode, body)
 			}
-			var e struct{ Error string `json:"error"` }
+			var e struct {
+				Error string `json:"error"`
+			}
 			if err := json.Unmarshal(body, &e); err != nil || e.Error == "" {
 				t.Errorf("body %s must carry a non-empty error", body)
 			}
@@ -457,8 +459,9 @@ func TestSettingsTest_OpenAI_BadKey(t *testing.T) {
 		t.Errorf("error = %q, want it to name the status", got.Error)
 	}
 	// Leak guard: the key must never surface in the error envelope.
-	if strings.Contains(got.Error, "sk-test") {
-		t.Errorf("error %q leaks the API key", got.Error)
+	errText := got.Error
+	if strings.Contains(errText, "sk-test") {
+		t.Errorf("error %q leaks the API key", errText)
 	}
 }
 
@@ -522,7 +525,7 @@ func TestSettingsTest_AutoResolvesFromURL(t *testing.T) {
 		"keys": ["k"], "models": {"m": {}}
 	}`, &got)
 	if !got.OK {
-		t.Fatal("ok=false — empty type must infer anthropic from the URL path")
+		t.Fatal("ok=false: empty type must infer anthropic from the URL path")
 	}
 	// URL path contains /anthropic → anthropic protocol → POST <url>/v1/messages
 	// (the same shape as the real xiaomi endpoint base).
@@ -558,7 +561,7 @@ func TestSettingsTest_NoKeyShortCircuits(t *testing.T) {
 func TestSettingsTest_NoModelsAnthropicShortCircuits(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("anthropic probe needs a model name for the ping body — nothing to call without one")
+		t.Error("anthropic probe needs a model name for the ping body; no call is expected without one")
 	})
 
 	var got struct {
@@ -602,8 +605,11 @@ func TestSettingsTest_ConnectionRefused(t *testing.T) {
 
 func TestSettingsTest_Timeout(t *testing.T) {
 	srv := newSettingsServer(t)
+	// Hold the response until the client's own timeout aborts the request —
+	// the request context is the release, so there is no cleanup-order
+	// coupling with the upstream server's Close.
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
+		<-r.Context().Done()
 	})
 
 	old := settingsHTTPTimeout
@@ -614,6 +620,7 @@ func TestSettingsTest_Timeout(t *testing.T) {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
+	// REAL-TIME: bounding a real socket timeout, so wall-clock is the point.
 	start := time.Now()
 	postSettingsJSON(t, srv.URL+"/api/settings/test", `{
 		"name": "p", "url": "`+up.URL+`", "keys": ["k"], "models": {"m": {}}
@@ -664,7 +671,7 @@ func TestSettingsModels_OpenAI(t *testing.T) {
 func TestSettingsModels_Anthropic(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("anthropic has no model list endpoint — nothing may be fetched")
+		t.Error("anthropic has no model list endpoint; no fetch is expected")
 	})
 
 	var got struct {
@@ -724,9 +731,13 @@ func TestSettingsModels_MissingURL(t *testing.T) {
 func TestSettingsDefaultPut(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	os.MkdirAll(filepath.Join(home, ".gbot"), 0755)
+	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	seed := `{"model":{"default":"xiaomi/mimo-v2.5","pro":"zhipu/glm-5.3"},"providers":[{"name":"zhipu","url":"https://z","type":"openai","keys":["k"],"models":{"glm-5.3":{"context":"1M"}}}]}`
-	os.WriteFile(filepath.Join(home, ".gbot", "settings.json"), []byte(seed), 0600)
+	if err := os.WriteFile(filepath.Join(home, ".gbot", "settings.json"), []byte(seed), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	RegisterSettingsRoutes(mux)
@@ -756,7 +767,9 @@ func TestSettingsDefaultPut(t *testing.T) {
 	var got struct {
 		Model map[string]string `json:"model"`
 	}
-	json.Unmarshal(raw, &got)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("round-trip settings: %v", err)
+	}
 	if got.Model["default"] != "zhipu/glm-5.3" {
 		t.Errorf("default = %q", got.Model["default"])
 	}

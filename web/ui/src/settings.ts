@@ -1,6 +1,5 @@
 import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
-import { createIconButton } from './buttons'
 import { getThemePref, setThemePref, getResolvedTheme, type ThemePref } from './theme'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 
