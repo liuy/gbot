@@ -17,6 +17,7 @@ export interface SidebarHandles {
   onRename: (handler: (id: string, title: string) => void) => void
   setArtifacts: (items: ArtifactListItem[]) => void
   onArtifactClick: (handler: (name: string) => void) => void
+  onClearArtifacts: (handler: () => void) => void
   onOpenSettings: (handler: () => void) => void
   onOpen: (handler: () => void) => void
 }
@@ -106,11 +107,52 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   }
   gamesSection.append(gamesHeader, gamesList)
   listContainer.appendChild(gamesSection)
-  // Artifacts is a read-only view of the projectspace artifacts directory —
-  // lifecycle (create/delete) stays with the conversation, so rows only open.
+  // Artifacts lists the projectspace artifacts directory. Rows open the
+  // artifact; the header trash button clears everything (two-tap confirm —
+  // artifacts are regenerable by the agent, so bulk delete is recoverable).
   const artifactsSection = createElement('div', 'sidebar-artifacts')
-  const artifactsHeader = createElement('div', 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
-  artifactsHeader.textContent = 'Artifacts'
+  // Header row mirrors the Sessions header: title left, action button right.
+  const artifactsHeader = createNode('div', {
+    className: 'flex items-center justify-between pl-3 pr-2 pt-4 pb-1',
+  })
+  const artifactsTitle = createElement('span', 'text-[11px] text-t3 font-medium')
+  artifactsTitle.textContent = 'Artifacts'
+  const clearArtifactsBtn = createIconButton({
+    icon: 'trash',
+    label: 'Clear all artifacts',
+    variant: 'ghost',
+    size: 'auto',
+    iconSize: 12,
+    className: 'p-1.5 -m-1.5',
+  })
+  clearArtifactsBtn.setAttribute('data-clear-artifacts', '')
+  // Two-tap confirm, no dialog: first tap arms (red) and a 2s timer disarms;
+  // a second tap inside the window executes the clear-all.
+  let clearArmed = false
+  let clearArmTimer: ReturnType<typeof setTimeout> | undefined
+  clearArtifactsBtn.addEventListener('click', () => {
+    if (!clearArmed) {
+      clearArmed = true
+      clearArtifactsBtn.setAttribute('aria-pressed', 'true')
+      // Inline style, not a utility class: conflicting text-color utilities
+      // resolve by stylesheet order (text-t2 would win), inline always wins.
+      clearArtifactsBtn.style.color = '#f85149'
+      clearArmTimer = setTimeout(() => {
+        clearArmed = false
+        clearArtifactsBtn.style.color = ''
+        clearArtifactsBtn.setAttribute('aria-pressed', 'false')
+      }, 5000)
+      return
+    }
+    clearTimeout(clearArmTimer)
+    clearArmed = false
+    clearArtifactsBtn.style.color = ''
+    clearArtifactsBtn.setAttribute('aria-pressed', 'false')
+    fetch('/api/artifacts', { method: 'DELETE' })
+      .catch(() => {})
+      .finally(() => handlers.clearArtifacts())
+  })
+  artifactsHeader.append(artifactsTitle, clearArtifactsBtn)
   const artifactsList = createElement('div', '')
   artifactsSection.append(artifactsHeader, artifactsList)
   listContainer.appendChild(artifactsSection)
@@ -142,6 +184,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     newSession: () => {},
     rename: (_id: string, _title: string) => {},
     artifactClick: (_name: string) => {},
+    clearArtifacts: () => {},
     openSettings: () => {},
     open: () => {},
   }
@@ -317,6 +360,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     },
     onArtifactClick: (handler) => {
       handlers.artifactClick = handler
+    },
+    onClearArtifacts: (handler) => {
+      handlers.clearArtifacts = handler
     },
     onOpenSettings: (handler) => {
       handlers.openSettings = handler

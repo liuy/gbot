@@ -21,6 +21,7 @@ import (
 //   - POST /artifacts/{name...} runs the game observer (observation → LLM move)
 //     for registry names only
 //   - GET /api/artifacts lists the directory (name, size, mtime; newest first)
+//   - DELETE /api/artifacts removes every artifact file, keeping the directory
 //
 // Registered patterns are more specific than the SPA catch-all "/", so they
 // win during mux matching.
@@ -85,6 +86,14 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 		payload, _ := json.Marshal(items)
 		_, _ = w.Write(payload)
 	})
+
+	mux.HandleFunc("DELETE /api/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		if status := clearArtifacts(dir); status != 0 {
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 // serveBundledGame serves the embedded page for a builtin registry name and
@@ -143,6 +152,42 @@ func listArtifacts(dir string) ([]artifactListItem, int) {
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Mtime > items[j].Mtime })
 	return items, 0
+}
+
+// clearArtifacts removes every regular file under dir, keeping the directory
+// itself (and any nested directories, even once empty — listArtifacts only
+// ever reports files, so the leftover dirs stay invisible). A missing dir is
+// the nothing-to-clear case and reports 0; any other walk failure surfaces as
+// 500. Per-file remove errors abort the walk so a failing delete is visible
+// instead of silently half-done.
+func clearArtifacts(dir string) int {
+	// Stat first: a missing dir is the nothing-to-clear case. Without this,
+	// ENOENT from the walk gets conflated with ENOENT from a file that
+	// vanished mid-walk, silently leaving later files undeleted.
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		return http.StatusInternalServerError
+	}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// A file that vanished mid-walk is already deleted — keep going so
+		// one race doesn't strand the rest of the directory.
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return http.StatusInternalServerError
+	}
+	return 0
 }
 
 // artifactFilePath resolves an artifact name under dir. PathValue is

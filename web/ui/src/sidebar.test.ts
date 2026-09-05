@@ -259,8 +259,10 @@ describe('createSidebar', () => {
       sidebar.setSessions(sessions, 's1')
       const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
       expect(section?.querySelectorAll('.artifact-row').length).toBe(2)
-      // Session rows still render alongside.
-      expect(sidebar.root.querySelectorAll('[class*="cursor-pointer"]:not([data-game-row])').length).toBe(3)
+      // Session rows still render alongside. (Counted by row markers, not
+      // the cursor-pointer class — artifact rows carry a ✕ delete span that
+      // is cursor-pointer too.)
+      expect(sidebar.root.querySelectorAll('[data-session-row]').length).toBe(1)
     })
     it('setSessions rebuild does not remove the sessions header row', () => {
       // The header is a sibling of sessionsList, not a child — the rebuild
@@ -278,6 +280,61 @@ describe('createSidebar', () => {
       sidebar.onOpen(handler)
       sidebar.open()
       expect(handler).toHaveBeenCalledTimes(1)
+    })
+
+    it('trash button two-tap fires DELETE /api/artifacts and refreshes', async () => {
+      const fetchMock = vi.fn(async () => ({ ok: true }))
+      vi.stubGlobal('fetch', fetchMock)
+      const { sidebar } = setup()
+      const refresh = vi.fn()
+      sidebar.onClearArtifacts(refresh)
+      const btn = sidebar.root.querySelector('[data-clear-artifacts]') as HTMLElement
+      expect(btn).not.toBeNull()
+
+      // First tap only arms: red highlight, no request, no refresh.
+      btn.click()
+      expect(btn.className).toContain('text-red-500')
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(refresh).not.toHaveBeenCalled()
+
+      // Second tap inside the window executes the clear-all.
+      btn.click()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock).toHaveBeenCalledWith('/api/artifacts', { method: 'DELETE' })
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    })
+
+    it('trash button disarms after 2s so a late tap does not clear', () => {
+      vi.useFakeTimers()
+      try {
+        const fetchMock = vi.fn(async () => ({ ok: true }))
+        vi.stubGlobal('fetch', fetchMock)
+        const { sidebar } = setup()
+        const btn = sidebar.root.querySelector('[data-clear-artifacts]') as HTMLElement
+        btn.click()
+        vi.advanceTimersByTime(2000)
+        expect(btn.className).not.toContain('text-red-500')
+        // Disarmed: the next tap is a fresh arm, not a confirm.
+        btn.click()
+        expect(btn.className).toContain('text-red-500')
+        expect(fetchMock).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    })
+
+    it('artifact rows have no per-row delete control (clear-all only)', async () => {
+      const { sidebar } = setup()
+      sidebar.open()
+      sidebar.setArtifacts(artifacts)
+      const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rows.length).toBeGreaterThan(0)
+      for (const row of rows) {
+        expect(row.textContent).not.toContain('✕')
+      }
     })
   })
 

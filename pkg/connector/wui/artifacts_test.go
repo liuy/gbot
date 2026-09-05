@@ -3,6 +3,7 @@ package wui
 import (
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -535,6 +536,71 @@ func TestObserveRouteWiredViaRegisterArtifactRoutes(t *testing.T) {
 	defer noResp.Body.Close()
 	if noResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST nope status = %d, want 404", noResp.StatusCode)
+	}
+}
+
+// deleteArtifact issues a DELETE against url and returns the status code.
+// The body is drained and closed so the test client's keep-alives stay sane.
+func deleteArtifact(t *testing.T, url string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("drain body: %v", err)
+	}
+	return resp.StatusCode
+}
+
+func TestRegisterArtifactRoutes_DeleteAllClearsEveryFile(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "a.html", "a")
+	writeArtifactFile(t, dir, "nested/b.html", "b")
+	writeArtifactFile(t, dir, "nested/deep/c.html", "c")
+	srv := newArtifactTestServer(t, dir)
+
+	if status := deleteArtifact(t, srv.URL+"/api/artifacts"); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("the artifacts dir itself must survive clear-all (stat err = %v)", err)
+	}
+	var remaining []string
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			remaining = append(remaining, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk after clear-all: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("files remain after clear-all: %v", remaining)
+	}
+	// The listing must reflect the cleared state, not a stale cache.
+	status, _, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK || string(body) != "[]" {
+		t.Fatalf("list after clear-all = (%d, %q), want (200, [])", status, string(body))
+	}
+}
+
+func TestRegisterArtifactRoutes_ClearAllMissingDirIsNoContent(t *testing.T) {
+	// Fresh project before the first artifact write: nothing to clear is a
+	// success, not an error.
+	srv := newArtifactTestServer(t, filepath.Join(t.TempDir(), "artifacts"))
+
+	if status := deleteArtifact(t, srv.URL+"/api/artifacts"); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
 	}
 }
 

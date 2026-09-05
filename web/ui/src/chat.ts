@@ -1741,6 +1741,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   sidebar.onArtifactClick((name) => {
     artifactSheet.open(name)
   })
+  // Deletions (per-row ✕ / clear-all) refresh through the same fetch the
+  // sidebar-open flow uses, so setArtifacts re-renders from disk truth.
+  sidebar.onClearArtifacts(() => {
+    fetchArtifactList()
+      .then((items) => sidebar.setArtifacts(items))
+      .catch(() => {})
+  })
   // The artifacts directory is the source of truth — refresh the list each
   // time the sidebar opens instead of tracking writes as state.
   sidebar.onOpen(() => {

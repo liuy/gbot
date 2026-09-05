@@ -22,6 +22,7 @@ export type IconName =
   | 'check'
   | 'search'
   | 'settings'
+  | 'trash'
 
 export type IconVariant = 'outline' | 'solid' | 'mixed'
 
@@ -137,6 +138,11 @@ const ICONS: Record<IconName, IconDef> = {
   },
   search: {
     path: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  trash: {
+    path: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
