@@ -219,11 +219,24 @@ func probeProvider(ctx context.Context, p *config.Provider) (int, error) {
 // handleFetchModels lists model ids from an OpenAI-compatible /models
 // endpoint. Anthropic has no such endpoint — the client gets mode "manual"
 // and adds models by hand.
+// humanContext renders a raw token count in the human form the settings UI
+// expects ("32k", "1M"); sub-threshold values pass through as plain digits.
+// Shared by every fetch branch so the formatting can never diverge.
+func humanContext(n int) string {
+	h, _ := json.Marshal(config.IntOrHuman(n))
+	return strings.Trim(string(h), `"`)
+}
+
 func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL  string `json:"url"`
 		Key  string `json:"key"`
 		Type string `json:"type"`
+		// Free: OpenRouter-style free-models query — max_price=0,
+		// popularity-sorted, capped at 10 with context metadata. The UI
+		// sets it when the provider URL points at OpenRouter, where the
+		// full /models list is too large to be useful.
+		Free bool `json:"free"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorJSON(w, http.StatusBadRequest, err.Error())
@@ -231,6 +244,33 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.URL) == "" {
 		errorJSON(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	type fetchedModel struct {
+		ID      string   `json:"id"`
+		Context string   `json:"context,omitempty"`
+		Input   []string `json:"input,omitempty"`
+	}
+	if req.Free {
+		// Reuses the startup path verbatim (same filter, sort, cap) so the
+		// manual fetch shows exactly what a free:true provider gets at boot.
+		models, err := config.FetchFreeModels(r.Context(), req.URL)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"mode": "error", "error": err.Error()})
+			return
+		}
+		out := make([]fetchedModel, 0, len(models))
+		for _, m := range models {
+			fm := fetchedModel{ID: m.ID}
+			if m.ContextLength > 0 {
+				fm.Context = humanContext(m.ContextLength)
+			}
+			out = append(out, fm)
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Mode   string         `json:"mode"`
+			Models []fetchedModel `json:"models"`
+		}{Mode: "fetched", Models: out})
 		return
 	}
 
@@ -278,11 +318,6 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "error", "error": err.Error()})
 		return
 	}
-	type fetchedModel struct {
-		ID      string   `json:"id"`
-		Context string   `json:"context,omitempty"`
-		Input   []string `json:"input,omitempty"`
-	}
 	// Both shapes may appear in one body (and either may be absent) —
 	// merge with dedupe instead of letting one shape shadow the other.
 	seen := make(map[string]bool)
@@ -300,8 +335,7 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 			fm.ID = m.DisplayName
 		}
 		if m.ContextWindow > 0 {
-			human, _ := json.Marshal(config.IntOrHuman(m.ContextWindow))
-			fm.Context = strings.Trim(string(human), `"`)
+			fm.Context = humanContext(m.ContextWindow)
 		}
 		fm.Input = m.InputModalities
 		add(fm)

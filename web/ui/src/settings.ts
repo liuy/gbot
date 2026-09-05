@@ -103,11 +103,16 @@ export async function fetchProviderModels(
   url: string,
   key: string,
   type: string,
+  free = false,
 ): Promise<ModelsResult> {
+  // free stays out of the body unless requested — the wire shape matches
+  // the old callers and the backend's omitempty semantics.
+  const body: Record<string, unknown> = { url, key, type }
+  if (free) body.free = true
   const res = await fetch('/api/settings/models', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ url, key, type }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) return { mode: 'error', error: `HTTP ${res.status}` }
   return res.json()
@@ -460,6 +465,16 @@ export function createSettingsPage(): SettingsPageHandles {
     text: '· fetch from API',
     attrs: { 'data-fetch-models': '' },
   })
+  // OpenRouter's full /models list is hundreds of entries — noise in the
+  // picker. When the URL points at OpenRouter, fetch the free top 10
+  // instead (same filtered query as the free:true startup path). Hoisted
+  // above loadForm: the programmatic URL fill calls updateFetchLabel.
+  const isFreeFetch = () => urlInput.value.toLowerCase().includes('openrouter')
+  const updateFetchLabel = () => {
+    fetchModelsBtn.textContent = isFreeFetch() ? '· fetch free top 10' : '· fetch from API'
+  }
+  urlInput.addEventListener('input', updateFetchLabel)
+  updateFetchLabel()
   const modelList = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
   const addModelBtn = createNode('div', {
     className: 'flex items-center gap-1.5 px-3.5 py-2.5 mb-2 text-[13px] text-blue cursor-pointer select-none',
@@ -641,6 +656,7 @@ export function createSettingsPage(): SettingsPageHandles {
 
     nameInput.value = source.name
     urlInput.value = source.url
+    updateFetchLabel() // programmatic fill fires no input event — refresh the fetch label here
 
     const explicit = TYPE_LABELS[form.type] !== undefined
     for (const t of protos) t.el.classList.toggle('border-blue/50', explicit && t.p === form.type)
@@ -703,7 +719,7 @@ export function createSettingsPage(): SettingsPageHandles {
   const renderKeys = () => {
     keyList.replaceChildren()
     form.keys.forEach((k, i) => {
-      const row = createElement('div', 'flex gap-1.5 mb-1.5')
+      const row = createElement('div', 'flex items-center gap-1.5 mb-1.5')
       const inp = createNode('input', {
         className:
           'flex-1 px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
@@ -713,7 +729,7 @@ export function createSettingsPage(): SettingsPageHandles {
         form.keys[i] = inp.value
       })
       const eye = createNode('button', {
-        className: 'w-[30px] bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0',
+        className: 'w-[30px] h-9 bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0',
         attrs: { title: 'show/hide', type: 'button' },
       })
       eye.innerHTML = EYE
@@ -941,7 +957,7 @@ export function createSettingsPage(): SettingsPageHandles {
     fetchModelsBtn.textContent = '· fetching…'
     void (async () => {
       try {
-        const res = await fetchProviderModels(urlInput.value.trim(), form.keys.find(Boolean) ?? '', form.type)
+        const res = await fetchProviderModels(urlInput.value.trim(), form.keys.find(Boolean) ?? '', form.type, isFreeFetch())
         if (res.mode === 'fetched') {
           let added = 0
           for (const entry of res.models) {
@@ -969,7 +985,7 @@ export function createSettingsPage(): SettingsPageHandles {
           toast(res.error)
         }
       } finally {
-        fetchModelsBtn.textContent = '· fetch from API'
+        updateFetchLabel()
       }
     })()
   })

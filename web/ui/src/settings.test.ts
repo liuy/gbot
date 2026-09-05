@@ -178,6 +178,19 @@ describe('fetchProviderModels', () => {
       vi.unstubAllGlobals()
     }
   })
+  it('passes free:true when the provider URL is OpenRouter', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return { ok: true, status: 200, json: async () => ({ mode: 'fetched', models: [] }) }
+    })
+    vi.stubGlobal('fetch', mock)
+    await fetchProviderModels('https://openrouter.ai/api/v1', 'k', 'openai', true)
+    await fetchProviderModels('https://openrouter.ai/api/v1', 'k', 'openai', false)
+    expect(bodies[0]).toEqual({ url: 'https://openrouter.ai/api/v1', key: 'k', type: 'openai', free: true })
+    expect(bodies[1]).toEqual({ url: 'https://openrouter.ai/api/v1', key: 'k', type: 'openai' })
+    vi.unstubAllGlobals()
+  })
 })
 
 describe('createSettingsPage', () => {
@@ -337,6 +350,26 @@ describe('createSettingsPage', () => {
     ;(page.root.querySelector('[data-save]') as HTMLElement).click()
     expect(puts).toBe(0)
     expect(page.root.querySelector('[data-toast]')?.textContent).toContain('named model')
+  })
+
+  it('relabeled to free top 10 when the loaded provider URL is OpenRouter', async () => {
+    const payload = {
+      providers: [
+        { ...PAYLOAD.providers[0], url: 'https://openrouter.ai/api/v1', keys: ['sk-x'] },
+      ],
+      default: PAYLOAD.default,
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
+    const btn = page.root.querySelector('[data-fetch-models]') as HTMLElement
+    expect(btn.textContent).toBe('· fetch free top 10')
+    // typing a non-openrouter URL reverts the label
+    const urlInput = page.root.querySelector('input[placeholder="https://api.anthropic.com"]') as HTMLInputElement
+      ?? (page.root.querySelector('[data-model-name]')?.parentElement?.querySelector('input') as HTMLInputElement)
+    const real = Array.from(page.root.querySelectorAll('input')).find((i) => i.value.startsWith('https://openrouter')) as HTMLInputElement
+    real.value = 'https://api.zhipu.cn'
+    real.dispatchEvent(new Event('input'))
+    expect(btn.textContent).toBe('· fetch from API')
   })
 
   it('adding two unnamed models keeps both rows', async () => {
