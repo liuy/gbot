@@ -117,6 +117,12 @@ func Start(opts Options) (*Instance, error) {
 	logPath := filepath.Join(projectDir, "gbot.log")
 	f := setupLogFile(logPath, logLevel)
 	_ = f
+	// The Android app passes the last cold-cycle exit reason here via
+	// ApplicationExitInfo (GBOT_PREV_EXIT): OOM/ANR/signal — answers
+	// "why did the previous instance die" right at the top of the log.
+	if v := os.Getenv("GBOT_PREV_EXIT"); v != "" {
+		slog.Info("app: previous instance exit", "info", v)
+	}
 
 	cfg, err := loadConfig()
 	if err != nil {

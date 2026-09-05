@@ -175,7 +175,7 @@ object BootstrapInstaller {
                 val pb2 = ProcessBuilder(bashBin.absolutePath, secondStage.absolutePath)
                     .redirectErrorStream(true)
                 pb2.environment().apply {
-                    put("HOME", context.filesDir.absolutePath)
+                    put("HOME", File(context.filesDir, "home").apply { mkdirs() }.absolutePath)
                     put("PATH", "${prefixDir.absolutePath}/bin:/system/bin")
                     put("LD_LIBRARY_PATH", "${prefixDir.absolutePath}/lib")
                     put("TMPDIR", "${prefixDir.absolutePath}/tmp")

@@ -18,6 +18,7 @@ class MainActivity : AppCompatActivity() {
 
         // Start gbot daemon locally (ProcessBuilder, not JNI). Runs in a
         // background thread to avoid blocking the UI during bootstrap extraction.
+        GbotProcess.lastExitInfo = GbotProcess.readLastExitReason(this)
         Thread {
             GbotProcess.start(this) { msg ->
                 android.util.Log.i("MainActivity", msg)

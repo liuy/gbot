@@ -24,13 +24,18 @@ object GbotProcess {
 
     /** Best-effort read of the most recent process-exit record. Answers
      *  "why did the last instance die" — OOM/LMK vs ANR vs signal vs user.
-     *  null on <API 30, no records, or any failure (never fatal). */
+     *  Returns a diagnostic string instead of null on no-records/query
+     *  failure (an invisible null here once silenced the whole feature);
+     *  null only on <API 30. */
     fun readLastExitReason(context: Context): String? {
         if (android.os.Build.VERSION.SDK_INT < 30) return null
         return try {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-            val e = am.getHistoricalProcessExitReasons(context.packageName, 0, 0)
-                .firstOrNull() ?: return null
+            // pid=0 → all processes of this package; maxNum=1 → only the
+            // most recent record (the list is sorted most-recent-first).
+            val records = am.getHistoricalProcessExitReasons(context.packageName, 0, 1)
+            val e = records.firstOrNull()
+                ?: return "no exit records (queried, system kept ${records.size})"
             val reason = when (e.reason) {
                 android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
                 android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
@@ -44,7 +49,7 @@ object GbotProcess {
                 android.app.ApplicationExitInfo.REASON_OTHER -> "OTHER"
                 else -> "REASON_${e.reason}"
             }
-            val ts = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
                 .format(java.util.Date(e.timestamp))
             buildString {
                 append("reason=").append(reason)
@@ -54,8 +59,10 @@ object GbotProcess {
                 e.description?.takeIf { it.isNotBlank() }?.let { append(" desc=").append(it) }
             }
         } catch (e: Exception) {
+            // Surface the failure through the same pipe — an invisible
+            // catch here cost us a whole debugging session.
             Log.w(TAG, "exit-info unavailable: ${e.message}")
-            null
+            return "exit-info query failed: ${e.javaClass.simpleName}: ${e.message}"
         }
     }
 
@@ -113,7 +120,7 @@ object GbotProcess {
 
         try {
             val pb = ProcessBuilder(gbotBin.absolutePath, "--daemon")
-                .directory(context.filesDir)
+                .directory(File(context.filesDir, "home"))
                 .redirectErrorStream(true)
 
             pb.environment().apply {
@@ -128,7 +135,10 @@ object GbotProcess {
                 // pass the system timezone so gbot can set time.Local from it.
                 put("TZ", java.util.TimeZone.getDefault().id)
                 // Death reason of the previous instance → gbot.log header.
-                lastExitInfo?.let { put("GBOT_PREV_EXIT", it) }
+                lastExitInfo?.let {
+                    put("GBOT_PREV_EXIT", it)
+                    lastExitInfo = null  // consumed by THIS daemon spawn
+                }
             }
 
             process = pb.start()

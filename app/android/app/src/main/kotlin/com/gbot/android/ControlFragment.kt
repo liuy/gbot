@@ -260,7 +260,9 @@ class ControlFragment : Fragment() {
 
     private fun showConfigEditor() {
         val ctx = requireContext()
-        val gbotDir = java.io.File(ctx.filesDir, ".gbot")
+        // HOME semantics: the daemon resolves settings under filesDir/home
+        // (passwd home) — the pre-migration filesDir/.gbot is a dead file.
+        val gbotDir = java.io.File(ctx.filesDir, "home/.gbot")
         gbotDir.mkdirs()
         val configFile = java.io.File(gbotDir, "settings.json")
         val currentContent = if (configFile.exists()) configFile.readText()
