@@ -558,6 +558,8 @@ export function createHeader(opts: {
     variant: 'ghost',
     size: 'auto',
     iconSize: 18,
+    // p-2 -m-2: touch target 18→34px, visual footprint unchanged.
+    className: 'p-2 -m-2',
     onClick: () => hamburgerHandler.fn(),
   })
 
@@ -585,7 +587,7 @@ export function createHeader(opts: {
   const gbotWrap = createTextButton({
     text: '',
     variant: 'link',
-    className: 'group flex items-center',
+    className: 'group flex items-center p-2 -m-2',
     onDblClick: (e) => {
       e.stopPropagation()
       debugOpen = !debugOpen
@@ -616,6 +618,11 @@ export function createHeader(opts: {
 
   const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
   const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
+  // Same touch-target trick for the picker combos (text is small).
+  for (const w of [enginePicker.wrap, modelPicker.wrap]) {
+    w.style.padding = '8px'
+    w.style.margin = '-8px'
+  }
 
   const sep = () => {
     const s = createNode('span', {
@@ -644,6 +651,10 @@ export function createHeader(opts: {
     () => opts.onContextRequest?.(),
     opts.onContextCompact,
   )
+  // Same touch-target trick via inline style: the recipe's px-0 py-0 would
+  // fight utility classes, but inline style always wins the cascade.
+  ctxPopover.trigger.style.padding = '8px'
+  ctxPopover.trigger.style.margin = '-8px'
   inner.appendChild(ctxPopover.trigger)
 
   root.appendChild(inner)
