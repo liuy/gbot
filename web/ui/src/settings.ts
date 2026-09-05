@@ -208,7 +208,7 @@ export function createSettingsPage(): SettingsPageHandles {
 
   const hdr = createElement(
     'div',
-    'sticky top-[env(safe-area-inset-top,0px)] z-10 flex items-center gap-2.5 px-4 py-3.5 bg-bg/60 backdrop-blur border-b border-hairline',
+    'sticky top-[env(safe-area-inset-top,0px)] z-10 flex items-center gap-2.5 px-4 py-2 bg-bg/60 backdrop-blur border-b border-hairline',
   )
   const backBtn = createNode('div', {
     className: 'w-8 h-8 -ml-1.5 rounded-lg flex items-center justify-center text-t2 cursor-pointer select-none',
