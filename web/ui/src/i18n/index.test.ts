@@ -1,6 +1,4 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { en } from './en'
-import { zh } from './zh'
 import {
   t,
   setLocale,
@@ -11,16 +9,43 @@ import {
   saveLocale,
   saveLocaleAuto,
   retranslate,
+  localeOptions,
 } from './index'
+
+// An independent glob of locales/ — the registry under test must derive
+// from these files, so the suite compares against the directory itself
+// rather than a hand-maintained list (a dropped-in locale file has to show
+// up with zero registration code).
+const files = import.meta.glob<{ dict: Record<string, unknown>; endonym: string }>(
+  './locales/*.ts',
+  { eager: true },
+)
+const stems = Object.keys(files).map((p) => p.slice('./locales/'.length, -'.ts'.length))
 
 afterEach(() => {
   vi.unstubAllGlobals()
   localStorage.removeItem('gbot-language')
 })
 
+describe('locale registry', () => {
+  it('localeOptions reflects every locales/ file in glob order', () => {
+    const fromFiles = stems.map((s) => ({ locale: s, endonym: files[`./locales/${s}.ts`].endonym }))
+    expect(localeOptions()).toEqual(fromFiles)
+  })
+
+  it('shipped endonyms are each locale self-named', () => {
+    const endonyms = new Map(localeOptions().map((o) => [o.locale, o.endonym]))
+    expect(endonyms.get('en')).toBe('English')
+    expect(endonyms.get('zh')).toBe('中文')
+  })
+})
+
 describe('i18n dictionary', () => {
-  it('en and zh expose the exact same key set', () => {
-    expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort())
+  it('every locale file exposes exactly the source dictionary key set', () => {
+    const enKeys = Object.keys(files['./locales/en.ts'].dict).sort()
+    for (const s of stems) {
+      expect(Object.keys(files[`./locales/${s}.ts`].dict).sort()).toEqual(enKeys)
+    }
   })
 
   it('t() resolves at call time against the active locale', () => {
@@ -47,7 +72,9 @@ describe('locale bootstrap', () => {
     vi.stubGlobal('navigator', { language: 'zh-CN' })
     initLocale()
     expect(currentLocale()).toBe('zh')
-    vi.stubGlobal('navigator', { language: 'fr' })
+    // 'xx' is not a real language, so it can never become a locale file —
+    // the fallback premise stays true no matter how many locales ship.
+    vi.stubGlobal('navigator', { language: 'xx' })
     initLocale()
     expect(currentLocale()).toBe('en')
   })
@@ -146,7 +173,17 @@ describe('detectLocale', () => {
   })
 })
 
-describe('retranslate', () => {
+it('t() falls back to English for an unregistered locale', () => {
+    setLocale('xx')
+    expect(t('settingsTitle')).toBe('Settings')
+    expect(currentLocale()).toBe('xx')
+  })
+
+  it('every registered locale declares a non-empty endonym', () => {
+    for (const o of localeOptions()) expect(o.endonym.length > 0).toBe(true)
+  })
+
+  describe('retranslate', () => {
   it('rewrites every [data-i18n] node to the active locale and leaves others alone', () => {
     const root = document.createElement('div')
     const anchored = document.createElement('span')

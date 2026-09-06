@@ -2,7 +2,7 @@ import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
 import { getThemePref, setThemePref, getResolvedTheme, type ThemePref } from './theme'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
-import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, type Locale, type StaticKey } from './i18n'
+import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, localeOptions, type Locale, type StaticKey } from './i18n'
 
 // Settings page — provider CRUD against /api/settings/*. The page is a
 // full-screen overlay (z above sidebar and artifact sheet) opened from the
@@ -336,7 +336,11 @@ export function createSettingsPage(): SettingsPageHandles {
   // never translated through the dictionary. "Auto" (follow the system)
   // likewise stays literal. Recomputed per call: a language switch must
   // re-read the translated "Auto" label in the NEW locale.
-  const langNames = (): Record<Locale | 'auto', string> => ({ auto: t('languageSystem'), en: 'English', zh: '中文' })
+  const langNames = (): Record<Locale | 'auto', string> => {
+    const names: Record<Locale | 'auto', string> = { auto: t('languageSystem') }
+    for (const { locale, endonym } of localeOptions()) names[locale] = endonym
+    return names
+  }
   // null (nothing stored) IS the auto state — the row and the segment both
   // show the persisted choice, not what navigator detection resolved to.
   const languagePref = (): Locale | 'auto' => persistedLocale() ?? 'auto'
@@ -353,7 +357,11 @@ export function createSettingsPage(): SettingsPageHandles {
   // Persisting is the source of truth: no optimistic restyle — on success
   // the page swaps its text in place (retranslate + manual refresh below);
   // a storage failure leaves the old selection untouched.
-  for (const loc of ['auto', 'en', 'zh'] as const) {
+  // System ("auto") leads; every registered locale follows in registry
+  // order — a new locales/<x>.ts grows the segment without touching this
+  // file.
+  const segLocales: Array<Locale | 'auto'> = ['auto', ...localeOptions().map((o) => o.locale)]
+  for (const loc of segLocales) {
     const b = createNode('button', { className: '', text: langNames()[loc], attrs: { type: 'button' } })
     b.setAttribute('data-lang-opt', loc)
     segBtnStyle(b, languagePref() === loc)
@@ -363,10 +371,13 @@ export function createSettingsPage(): SettingsPageHandles {
       try {
         saveLanguage(loc)
         // Pure text swap — every node stays mounted, so open panels and
-        // scroll position survive the switch. Endonyms and the row value
-        // are not dictionary copy, so the segment and value are rewritten
-        // by hand; the selection styling follows the persisted choice.
-        retranslate(root)
+        // scroll position survive the switch. The scan spans document.body
+        // (not this root) so anchored chrome outside the page — the sidebar
+        // — swaps in the same pass; the anchor is the subscription.
+        // Endonyms and the row value are not dictionary copy, so the
+        // segment and value are rewritten by hand; the selection styling
+        // follows the persisted choice.
+        retranslate(document.body)
         const names = langNames()
         for (const sib of languageSeg.children) {
           const el = sib as HTMLElement

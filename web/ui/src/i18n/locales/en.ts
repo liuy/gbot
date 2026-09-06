@@ -9,11 +9,14 @@
 //   - THINK_OPTS values (none/auto/low/… are stored config values)
 //   - HLJS theme names (Atom One … are product names)
 //   - glyphs and data strings (› ✕ … ✓ …ms ✗ …)
-//   - locale endonyms English/中文 (LANGUAGE_NAMES in settings.ts)
+//   - locale endonyms English/中文 (each locale file's endonym export)
+//   - the sidebar "Artifacts" heading and the builtin game name
+//   - sidebar formatRelativeTime's compact units (now/30s/5m/1h/3mo —
+//     data strings, like the …ms glyph above)
 //   - interpolation data fallbacks 'provider' and 'error' passed from
 //     settings.ts call sites (not UI copy)
 
-export const en = {
+export const dict = {
   settingsTitle: 'Settings',
   addProviderTitle: 'Add provider',
   editProviderTitle: 'Edit provider',
@@ -78,6 +81,13 @@ export const en = {
   phParamValue: 'value (JSON literal)',
   showHideTitle: 'show/hide',
   jsonSheetTitle: 'settings.json · providers',
+  sidebarSessions: 'Sessions',
+  sidebarNewSession: 'New session',
+  sidebarGames: 'Games',
+  sidebarGameChess: 'Chinese Chess',
+  sidebarClearArtifacts: 'Clear all artifacts',
+  sidebarSettings: 'Settings',
+  sidebarNoArtifacts: 'No artifacts yet',
 } as const
 
-export type Dict = typeof en
+export const endonym = 'English'

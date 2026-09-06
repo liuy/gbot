@@ -1,12 +1,6 @@
-import type { Dict } from './en'
+import type { Dict } from '../index'
 
-// as const makes Dict's string values literal types, which would forbid any
-// translation — keep function signatures aligned but widen strings to string.
-export type Translated = {
-  [K in keyof Dict]: Dict[K] extends (...args: never[]) => unknown ? Dict[K] : string
-}
-
-export const zh: Translated = {
+export const dict: Dict = {
   settingsTitle: '设置',
   addProviderTitle: '添加提供方',
   editProviderTitle: '编辑提供方',
@@ -68,4 +62,13 @@ export const zh: Translated = {
   phParamValue: '值（JSON 字面量）',
   showHideTitle: '显示/隐藏',
   jsonSheetTitle: 'settings.json · 提供方',
+  sidebarSessions: '会话',
+  sidebarNewSession: '新建会话',
+  sidebarGames: '游戏',
+  sidebarGameChess: '中国象棋',
+  sidebarClearArtifacts: '清空全部 Artifacts',
+  sidebarSettings: '设置',
+  sidebarNoArtifacts: '暂无 Artifacts',
 }
+
+export const endonym = '中文'

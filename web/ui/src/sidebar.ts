@@ -2,6 +2,7 @@ import type { ArtifactListItem, SessionListItem } from './types'
 import { bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
 import { createIconButton } from './buttons'
+import { t, type StaticKey } from './i18n'
 
 export interface SidebarHandles {
   root: HTMLElement
@@ -51,6 +52,13 @@ export const BUILTIN_GAMES = [{ id: 'chess', label: 'Chinese Chess', icon: XHQ_P
 export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandles {
   const { mainContent } = opts
 
+  // Same anchor helper as settings.ts: build with t() so the pinned locale
+  // is right on first paint, data-i18n so a later switch rewrites in place.
+  const L = <K extends StaticKey>(k: K, extra: Record<string, string> = {}) => ({
+    text: t(k),
+    attrs: { 'data-i18n': k, ...extra },
+  })
+
   const root = createNode('div', {
     className:
       'sidebar-safe-top fixed top-0 left-0 h-full w-72 z-50 glass-solid border-r border-hairline transition-transform duration-300 ease-out',
@@ -68,11 +76,13 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     className: 'flex items-center justify-between pl-3 pr-2 pt-4 pb-1',
   })
   sessionsHeader.setAttribute('data-sessions-header', '')
-  const sessionsTitle = createElement('span', 'text-[11px] text-t3 font-medium')
-  sessionsTitle.textContent = 'Sessions'
+  const sessionsTitle = createNode('span', {
+    className: 'text-[11px] text-t3 font-medium',
+    ...L('sidebarSessions'),
+  })
   const newSessionBtn = createIconButton({
     icon: 'plus',
-    label: 'New session',
+    label: t('sidebarNewSession'),
     variant: 'ghost',
     size: 'sm',
     iconSize: 16,
@@ -83,9 +93,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const sessionsList = createElement('div', '')
   listContainer.appendChild(sessionsList)
   const gamesSection = createElement('div', 'sidebar-games')
-  const gamesHeader = createElement('div', 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
-  gamesHeader.setAttribute('data-games-header', '')
-  gamesHeader.textContent = 'Games'
+  const gamesHeader = createNode('div', {
+    className: 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium',
+    ...L('sidebarGames', { 'data-games-header': '' }),
+  })
   const gamesList = createElement('div', '')
   for (const g of BUILTIN_GAMES) {
     const row = createElement(
@@ -97,7 +108,8 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     if (g.icon.startsWith('<svg')) iconSpan.innerHTML = g.icon
     else iconSpan.textContent = g.icon
     const nameSpan = createElement('span', 'text-[13px] block truncate')
-    nameSpan.textContent = g.label
+    nameSpan.textContent = t('sidebarGameChess')
+    nameSpan.setAttribute('data-i18n', 'sidebarGameChess')
     row.append(iconSpan, nameSpan)
     row.addEventListener('click', () => {
       handlers.artifactClick(g.id)
@@ -116,10 +128,13 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     className: 'flex items-center justify-between pl-3 pr-2 pt-4 pb-1',
   })
   const artifactsTitle = createElement('span', 'text-[11px] text-t3 font-medium')
+  // Product name — literal in every locale (exemption list in
+  // i18n/locales/en.ts), so no anchor either: retranslate must never
+  // rewrite it.
   artifactsTitle.textContent = 'Artifacts'
   const clearArtifactsBtn = createIconButton({
     icon: 'trash',
-    label: 'Clear all artifacts',
+    label: t('sidebarClearArtifacts'),
     variant: 'ghost',
     size: 'auto',
     iconSize: 12,
@@ -162,7 +177,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   // toggle's home — theming moved into the Settings page).
   const settingsBtn = createIconButton({
     icon: 'settings',
-    label: 'Settings',
+    label: t('sidebarSettings'),
     variant: 'ghost',
     size: 'auto',
     iconSize: 18,
@@ -278,8 +293,12 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const setArtifacts = (items: ArtifactListItem[]) => {
     artifactsList.innerHTML = ''
     if (items.length === 0) {
-      const empty = createElement('div', 'px-3 py-2 text-[12px] text-t3')
-      empty.textContent = 'No artifacts yet'
+      // Anchored although rebuilt per call: the settings switch scans
+      // document.body, so the live empty state swaps without a refetch.
+      const empty = createNode('div', {
+        className: 'px-3 py-2 text-[12px] text-t3',
+        ...L('sidebarNoArtifacts'),
+      })
       artifactsList.appendChild(empty)
       return
     }

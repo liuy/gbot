@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { setLocale, initLocale } from './i18n'
+import { setLocale, initLocale, localeOptions } from './i18n'
 import {
   fetchSettings,
   saveSettings,
@@ -819,6 +819,18 @@ describe('createSettingsPage', () => {
     expect(enBtn.className).not.toContain('text-blue')
     expect(zhBtn.className).not.toContain('text-blue')
     expect((langRow.querySelector('span.text-t2') as HTMLElement).textContent).toBe('System')
+  })
+
+  it('the language segment offers System plus every registered locale in registry order', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    const opts = [...page.root.querySelectorAll('[data-lang-opt]')] as HTMLElement[]
+    // Derived from localeOptions(), so a new locales/<x>.ts grows the
+    // segment without touching settings.ts.
+    expect(opts.map((b) => b.getAttribute('data-lang-opt'))).toEqual([
+      'auto',
+      ...localeOptions().map((o) => o.locale),
+    ])
   })
 
   it('persisted zh preselects 中文 in the panel and the row value', async () => {
