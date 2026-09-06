@@ -17,9 +17,9 @@ func TestContextRequest_FullBreakdown(t *testing.T) {
 		Percentage:    25.0,
 		IsAutoCompact: true,
 		Categories: []engine.ContextCategory{
-			{Name: "System prompt", Tokens: 5000, Percentage: 2.5, Color: "12", IsFree: false, IsReserved: false},
-			{Name: "Messages", Tokens: 30000, Percentage: 15.0, Color: "255", IsFree: false, IsReserved: false},
-			{Name: "Free space", Tokens: 150000, Percentage: 75.0, Color: "240", IsFree: true, IsReserved: false},
+			{Name: "System prompt", ID: "system_prompt", Tokens: 5000, Percentage: 2.5, Color: "12", IsFree: false, IsReserved: false},
+			{Name: "Messages", ID: "messages", Tokens: 30000, Percentage: 15.0, Color: "255", IsFree: false, IsReserved: false},
+			{Name: "Free space", ID: "free_space", Tokens: 150000, Percentage: 75.0, Color: "240", IsFree: true, IsReserved: false},
 		},
 		MCPToolsLoaded: []engine.MCPToolDetail{
 			{Name: "search", ServerName: "brave", Tokens: 800, IsLoaded: true},
@@ -64,6 +64,9 @@ func TestContextRequest_FullBreakdown(t *testing.T) {
 	if cat0["name"] != "System prompt" {
 		t.Errorf("cat0 name = %v", cat0["name"])
 	}
+	if cat0["id"] != "system_prompt" {
+		t.Errorf("cat0 id = %v, want system_prompt", cat0["id"])
+	}
 	if cat0["tokens"] != float64(5000) {
 		t.Errorf("cat0 tokens = %v, want 5000", cat0["tokens"])
 	}
@@ -76,6 +79,9 @@ func TestContextRequest_FullBreakdown(t *testing.T) {
 	cat2 := cats[2].(map[string]any)
 	if cat2["isFree"] != true {
 		t.Errorf("cat2 isFree = %v, want true", cat2["isFree"])
+	}
+	if cat2["id"] != "free_space" {
+		t.Errorf("cat2 id = %v, want free_space", cat2["id"])
 	}
 
 	mcpLoaded, ok := msg["mcpToolsLoaded"].([]any)
@@ -175,7 +181,8 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 			{Name: "Bash", Tokens: 1000},
 		},
 		SystemPromptSections: []engine.SystemPromptSectionDetail{
-			{Name: "Base prompt", Tokens: 2000},
+			{Name: "Base prompt", ID: "base_prompt", Tokens: 2000},
+			{Name: "Tool prompts", ID: "tool_prompts", Tokens: 3000},
 		},
 		MemoryFiles: []engine.MemoryFileDetail{
 			{Path: "CLAUDE.md", Tokens: 1500},
@@ -221,12 +228,19 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 
 	// Verify every section is present
 	sps, ok := msg["systemPromptSections"].([]any)
-	if !ok || len(sps) != 1 {
+	if !ok || len(sps) != 2 {
 		t.Fatalf("systemPromptSections: ok=%v len=%d", ok, len(sps))
 	}
 	sps0 := sps[0].(map[string]any)
 	if sps0["name"] != "Base prompt" {
 		t.Errorf("sps0 name = %v", sps0["name"])
+	}
+	if sps0["id"] != "base_prompt" {
+		t.Errorf("sps0 id = %v, want base_prompt", sps0["id"])
+	}
+	sps1 := sps[1].(map[string]any)
+	if sps1["id"] != "tool_prompts" {
+		t.Errorf("sps1 id = %v, want tool_prompts", sps1["id"])
 	}
 
 	mfs, ok := msg["memoryFiles"].([]any)

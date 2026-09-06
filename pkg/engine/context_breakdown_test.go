@@ -292,6 +292,127 @@ func TestContextBreakdown_PercentagesSumTo100(t *testing.T) {
 	}
 }
 
+// TestContextBreakdown_CategoryIDs verifies every emitted category carries a
+// stable semantic ID for wui-side i18n. "Git status" never emits today
+// (GitStatusSection returns "") and is therefore absent from the fixture's
+// expected set.
+func TestContextBreakdown_CategoryIDs(t *testing.T) {
+	memDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(memDir, "notes.md"), []byte("some durable memory notes"), 0o644); err != nil {
+		t.Fatalf("create memory file: %v", err)
+	}
+	e := newTestEngineForBreakdown(t)
+	e.SetMemoryDir(memDir)
+	e.SetSystemPrompt("You are a test assistant.")
+	e.SetSkillListing("test-skill: a test")
+	e.SetAgentDefs([]*types.AgentDefinition{
+		{AgentType: "TestAgent", WhenToUse: "test use"},
+	})
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	reg.SetToolsForTest([]mcp.DiscoveredTool{
+		{
+			Name: "mcp__srv__always", OriginalName: "always",
+			ServerName: "srv", Description: "always load",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			AlwaysLoad:  true,
+		},
+	})
+	e.mcpRegistry = reg
+	// stubTool feeds "Tool prompts" (non-empty Prompt); testTool feeds
+	// "System tools" (stubTool's empty Description estimates to 0 tokens).
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
+	e.tools["Read"] = &testTool{name: "Read"}
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hello world"},
+		}},
+	}
+	e.ContextTokens = 50_000
+
+	want := map[string]string{
+		"System prompt":      "system_prompt",
+		"Platform info":      "platform_info",
+		"Git status":         "git_status",
+		"Tool prompts":       "tool_prompts",
+		"Skill listing":      "skill_listing",
+		"Memory files":       "memory_files",
+		"System tools":       "system_tools",
+		"MCP tools":          "mcp_tools",
+		"Custom agents":      "custom_agents",
+		"Messages":           "messages",
+		"Free space":         "free_space",
+		"Autocompact buffer": "autocompact_buffer",
+	}
+
+	bd := e.ContextBreakdown()
+	emitted := map[string]bool{}
+	for _, c := range bd.Categories {
+		id, ok := want[c.Name]
+		if !ok {
+			t.Fatalf("unexpected category name %q", c.Name)
+		}
+		if c.ID != id {
+			t.Errorf("category %q ID = %q, want %q", c.Name, c.ID, id)
+		}
+		emitted[c.Name] = true
+	}
+	for name := range want {
+		if name == "Git status" {
+			continue
+		}
+		if !emitted[name] {
+			t.Errorf("category %q not emitted; its ID mapping is untested", name)
+		}
+	}
+}
+
+// TestContextBreakdown_SystemPromptSectionIDs verifies every emitted system
+// prompt section carries a stable semantic ID for wui-side i18n. Sections
+// with zero tokens are dropped, so "Git status" (LoadGitStatus returns nil
+// in a non-repo temp dir) is not emitted.
+func TestContextBreakdown_SystemPromptSectionIDs(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("You are a test assistant.")
+	e.SetSkillListing("test-skill: a test")
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
+	e.ContextTokens = 50_000
+
+	want := map[string]string{
+		"Base prompt":   "base_prompt",
+		"Platform info": "platform_info",
+		"Git status":    "git_status",
+		"Tool prompts":  "tool_prompts",
+		"Skill listing": "skill_listing",
+	}
+
+	bd := e.ContextBreakdown()
+	if len(bd.SystemPromptSections) == 0 {
+		t.Fatal("SystemPromptSections is empty")
+	}
+	emitted := map[string]bool{}
+	for _, s := range bd.SystemPromptSections {
+		id, ok := want[s.Name]
+		if !ok {
+			t.Fatalf("unexpected section name %q", s.Name)
+		}
+		if s.ID == "" {
+			t.Errorf("section %q has empty ID", s.Name)
+		}
+		if s.ID != id {
+			t.Errorf("section %q ID = %q, want %q", s.Name, s.ID, id)
+		}
+		emitted[s.Name] = true
+	}
+	for name := range want {
+		if name == "Git status" {
+			continue
+		}
+		if !emitted[name] {
+			t.Errorf("section %q not emitted; its ID mapping is untested", name)
+		}
+	}
+}
+
 // TestContextBreakdown_MessageBreakdown verifies message breakdown fields.
 func TestContextBreakdown_MessageBreakdown(t *testing.T) {
 	e := newTestEngineForBreakdown(t)

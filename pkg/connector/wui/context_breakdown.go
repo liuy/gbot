@@ -31,6 +31,7 @@ type contextBreakdownOutbound struct {
 
 type contextCategoryWire struct {
 	Name       string  `json:"name"`
+	ID         string  `json:"id"`
 	Tokens     int     `json:"tokens"`
 	Percentage float64 `json:"percentage"`
 	Color      string  `json:"color"`
@@ -52,6 +53,7 @@ type systemToolDetailWire struct {
 
 type systemPromptSectionWire struct {
 	Name   string `json:"name"`
+	ID     string `json:"id"`
 	Tokens int    `json:"tokens"`
 }
 
@@ -124,7 +126,7 @@ func convertSystemTools(in []engine.SystemToolDetail) []systemToolDetailWire {
 func convertPromptSections(in []engine.SystemPromptSectionDetail) []systemPromptSectionWire {
 	out := make([]systemPromptSectionWire, len(in))
 	for i, t := range in {
-		out[i] = systemPromptSectionWire{Name: t.Name, Tokens: t.Tokens}
+		out[i] = systemPromptSectionWire{Name: t.Name, ID: t.ID, Tokens: t.Tokens}
 	}
 	return out
 }
@@ -158,6 +160,7 @@ func convertCategories(in []engine.ContextCategory) []contextCategoryWire {
 	for i, c := range in {
 		out[i] = contextCategoryWire{
 			Name:       c.Name,
+			ID:         c.ID,
 			Tokens:     c.Tokens,
 			Percentage: c.Percentage,
 			Color:      c.Color,

@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHeader } from './header'
+import { setLocale } from './i18n'
 import type { ContextBreakdownData } from './types'
 
 describe('Header context display', () => {
@@ -361,6 +362,192 @@ describe('Header context popover', () => {
     expect(panel).not.toBeNull()
     header.hideContextBreakdown()
     expect(panel!.classList.contains('hidden')).toBe(true)
+  })
+})
+
+describe('Header context popover i18n', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    setLocale('zh')
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onContextCompact: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  afterEach(() => {
+    setLocale('en')
+  })
+
+  function getPanel(): HTMLDivElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLDivElement
+    }
+    return null
+  }
+
+  function clickTrigger() {
+    const el = header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  it('renders title and compact button in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    clickTrigger()
+    const panel = getPanel()
+    const text = panel!.textContent ?? ''
+    expect(text).toContain('上下文用量')
+    expect(text).not.toContain('Context Usage')
+    const btn = panel!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
+    expect(btn.textContent).toBe('压缩')
+  })
+
+  it('renders loading placeholder in zh', () => {
+    header.setContext(500, 200000)
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('加载中…')
+    expect(text).not.toContain('Loading')
+  })
+
+  it('renders empty-state hint in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(null)
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('先发一条消息即可查看上下文用量')
+    expect(text).not.toContain('Send a message first')
+  })
+
+  it('renders message breakdown rows and top tools in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      messageBreakdown: {
+        toolCallTokens: 5000,
+        toolResultTokens: 10000,
+        attachmentTokens: 0,
+        assistantTextTokens: 2000,
+        userTextTokens: 1000,
+        toolCallsByType: [{ name: 'Bash', callTokens: 3000, resultTokens: 6000 }],
+        attachmentsByType: [],
+      },
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('消息明细')
+    expect(text).toContain('工具调用')
+    expect(text).toContain('工具结果')
+    expect(text).toContain('附件')
+    expect(text).toContain('助手文本')
+    expect(text).toContain('用户文本')
+    expect(text).toContain('工具用量')
+    expect(text).toContain('Bash')
+  })
+
+  it('renders category rows translated from semantic ids in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'Platform info', id: 'platform_info', tokens: 3000, percentage: 1.5, color: '39', isFree: false, isReserved: false },
+        { name: 'Free space', id: 'free_space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+        { name: 'Autocompact buffer', id: 'autocompact_buffer', tokens: 14000, percentage: 7.0, color: '160', isFree: false, isReserved: true },
+      ],
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('平台信息')
+    expect(text).toContain('剩余空间')
+    expect(text).toContain('自动压缩缓冲区')
+    expect(text).not.toContain('Platform info')
+    expect(text).not.toContain('Free space')
+    expect(text).not.toContain('Autocompact buffer')
+  })
+
+  it('falls back to the raw name for unknown or absent ids', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'Future category', id: 'future_thing', tokens: 3000, percentage: 1.5, color: '39', isFree: false, isReserved: false },
+        { name: 'Legacy server', tokens: 3000, percentage: 1.5, color: '51', isFree: false, isReserved: false },
+      ],
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('Future category')
+    expect(text).toContain('Legacy server')
+  })
+
+  it('renders system prompt sub-rows translated from semantic ids in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      systemPromptSections: [
+        { name: 'Base prompt', id: 'base_prompt', tokens: 6000 },
+        { name: 'Platform info', id: 'platform_info', tokens: 300 },
+        { name: 'Tool prompts', id: 'tool_prompts', tokens: 1500 },
+      ],
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('基础提示词')
+    expect(text).toContain('平台信息')
+    expect(text).toContain('工具提示词')
+    expect(text).not.toContain('Base prompt')
+    expect(text).not.toContain('Platform info')
+    expect(text).not.toContain('Tool prompts')
+  })
+
+  it('falls back to the raw name for system prompt sub-rows with unknown or absent ids', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      systemPromptSections: [
+        { name: 'Future section', id: 'future_section', tokens: 100 },
+        { name: 'Legacy section', tokens: 200 },
+      ],
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('Future section')
+    expect(text).toContain('Legacy section')
+  })
+
+  it('renders section titles and API usage rows in zh', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      systemPromptSections: [{ name: 'Core', tokens: 1000 }],
+      memoryFiles: [{ path: '/m/user_name.md', tokens: 1500 }],
+      systemTools: [{ name: 'grep', tokens: 200 }],
+      mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
+      mcpToolsDeferred: [{ name: 'fetch', serverName: 'ddg', tokens: 0, isLoaded: false }],
+      agents: [{ agentType: 'general', source: 'builtin', tokens: 400 }],
+      skills: [{ name: 'pdf', source: 'builtin', tokens: 500 }],
+      apiUsage: {
+        inputTokens: 1000,
+        outputTokens: 2000,
+        cacheCreationInputTokens: 300,
+        cacheReadInputTokens: 400,
+      },
+    }))
+    clickTrigger()
+    const text = getPanel()!.textContent ?? ''
+    expect(text).toContain('系统提示词')
+    expect(text).toContain('记忆文件')
+    expect(text).toContain('系统工具')
+    expect(text).toContain('已加载 MCP 工具')
+    expect(text).toContain('延迟加载 MCP 工具')
+    expect(text).toContain('子代理')
+    expect(text).toContain('技能')
+    expect(text).toContain('API 用量')
+    expect(text).toContain('输入')
+    expect(text).toContain('输出')
+    expect(text).toContain('缓存创建')
+    expect(text).toContain('缓存读取')
   })
 })
 

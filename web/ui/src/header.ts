@@ -3,10 +3,12 @@ import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { getDebugLogs, onDebugLog } from './log'
-import type { ContextBreakdownData } from './types'
+import type { ContextBreakdownData, ContextCategoryData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
 import { renderIcon } from './icons'
+import { t } from './i18n'
+import type { StaticKey } from './i18n'
 
 export interface HeaderHandles {
   root: HTMLElement
@@ -279,6 +281,38 @@ function createDetailRow(name: string, tokens: number): HTMLDivElement {
   return row
 }
 
+// Server category ids are stable semantic keys; the English name is only a
+// fallback, so the rendering locale never depends on server-side wording.
+const CATEGORY_I18N: Record<string, StaticKey> = {
+  system_prompt: 'ctxCatSystemPrompt',
+  base_prompt: 'ctxCatBasePrompt',
+  platform_info: 'ctxCatPlatformInfo',
+  git_status: 'ctxCatGitStatus',
+  tool_prompts: 'ctxCatToolPrompts',
+  skill_listing: 'ctxCatSkillListing',
+  memory_files: 'ctxCatMemoryFiles',
+  system_tools: 'ctxCatSystemTools',
+  mcp_tools: 'ctxCatMcpTools',
+  custom_agents: 'ctxCatCustomAgents',
+  messages: 'ctxCatMessages',
+  free_space: 'ctxCatFreeSpace',
+  autocompact_buffer: 'ctxCatAutocompactBuffer',
+}
+
+// Shared by category rows and system-prompt sub-rows: the server id is the
+// stable semantic key, the English name only a fallback.
+function idLabel(id: string | undefined, name: string): string {
+  // A server older than this client sends no id, and a newer one may send an
+  // id this build predates — both render the raw name rather than a missing
+  // dictionary key.
+  const key = id !== undefined ? CATEGORY_I18N[id] : undefined
+  return key !== undefined ? t(key) : name
+}
+
+function categoryLabel(cat: ContextCategoryData): string {
+  return idLabel(cat.id, cat.name)
+}
+
 function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData, onCompact?: () => void, streaming?: boolean) {
   panel.innerHTML = ''
 
@@ -286,7 +320,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   const titleCol = createElement('div')
   const title = createNode('div', {
     className: 'text-[14px] font-semibold text-t1',
-    text: 'Context Usage',
+    text: t('ctxTitle'),
   })
   titleCol.appendChild(title)
   const total = createElement('div', 'mono text-[12px] text-t3 mt-0.5')
@@ -297,7 +331,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   titleBar.appendChild(titleCol)
   if (onCompact) {
     const compactBtn = createTextButton({
-      text: 'Compact',
+      text: t('ctxCompact'),
       variant: 'link',
       className: streaming
         ? 'text-[13px] text-t3 shrink-0 pointer-events-none'
@@ -331,7 +365,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     dot.style.backgroundColor = ansiToCss(cat.color)
     row.appendChild(dot)
     const name = createElement('span', 'text-[13px] text-t2 flex-1 truncate')
-    name.textContent = cat.name
+    name.textContent = categoryLabel(cat)
     row.appendChild(name)
     const tok = createElement('span', 'mono text-[12px] text-t3')
     tok.textContent = formatTokenCount(cat.tokens)
@@ -345,15 +379,15 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
 
   if (data.messageBreakdown) {
     const mb = data.messageBreakdown
-    const sec = createSection('Message breakdown')
+    const sec = createSection(t('ctxMsgBreakdown'))
     panel.appendChild(sec)
-    panel.appendChild(createDetailRow('Tool calls', mb.toolCallTokens))
-    panel.appendChild(createDetailRow('Tool results', mb.toolResultTokens))
-    panel.appendChild(createDetailRow('Attachments', mb.attachmentTokens))
-    panel.appendChild(createDetailRow('Assistant text', mb.assistantTextTokens))
-    panel.appendChild(createDetailRow('User text', mb.userTextTokens))
+    panel.appendChild(createDetailRow(t('ctxToolCalls'), mb.toolCallTokens))
+    panel.appendChild(createDetailRow(t('ctxToolResults'), mb.toolResultTokens))
+    panel.appendChild(createDetailRow(t('ctxAttachments'), mb.attachmentTokens))
+    panel.appendChild(createDetailRow(t('ctxAssistantText'), mb.assistantTextTokens))
+    panel.appendChild(createDetailRow(t('ctxUserText'), mb.userTextTokens))
     if (mb.toolCallsByType.length > 0) {
-      const subSec = createSection('Top tools')
+      const subSec = createSection(t('ctxTopTools'))
       panel.appendChild(subSec)
       for (const tc of mb.toolCallsByType) {
         panel.appendChild(createDetailRow(tc.name, tc.callTokens + tc.resultTokens))
@@ -362,15 +396,15 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.systemPromptSections.length > 0) {
-    const sec = createSection('System prompt')
+    const sec = createSection(t('ctxSystemPrompt'))
     panel.appendChild(sec)
     for (const s of data.systemPromptSections) {
-      panel.appendChild(createDetailRow(s.name, s.tokens))
+      panel.appendChild(createDetailRow(idLabel(s.id, s.name), s.tokens))
     }
   }
 
   if (data.memoryFiles.length > 0) {
-    const sec = createSection('Memory files')
+    const sec = createSection(t('ctxMemoryFiles'))
     panel.appendChild(sec)
     for (const f of data.memoryFiles) {
       const name = f.path.split('/').pop() ?? f.path
@@ -379,7 +413,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.systemTools.length > 0) {
-    const sec = createSection('System tools')
+    const sec = createSection(t('ctxSystemTools'))
     panel.appendChild(sec)
     for (const t of data.systemTools) {
       panel.appendChild(createDetailRow(t.name, t.tokens))
@@ -387,7 +421,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.mcpToolsLoaded.length > 0) {
-    const sec = createSection('MCP tools loaded')
+    const sec = createSection(t('ctxMcpLoaded'))
     panel.appendChild(sec)
     for (const t of data.mcpToolsLoaded) {
       panel.appendChild(createDetailRow(t.name + ' (' + t.serverName + ')', t.tokens))
@@ -395,7 +429,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.mcpToolsDeferred.length > 0) {
-    const sec = createSection('MCP tools deferred')
+    const sec = createSection(t('ctxMcpDeferred'))
     panel.appendChild(sec)
     for (const t of data.mcpToolsDeferred) {
       const row = createElement('div', 'flex items-center justify-between px-4 py-1')
@@ -407,7 +441,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.agents.length > 0) {
-    const sec = createSection('Agents')
+    const sec = createSection(t('ctxAgents'))
     panel.appendChild(sec)
     for (const a of data.agents) {
       panel.appendChild(createDetailRow(a.agentType + ' (' + a.source + ')', a.tokens))
@@ -415,7 +449,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.skills.length > 0) {
-    const sec = createSection('Skills')
+    const sec = createSection(t('ctxSkills'))
     panel.appendChild(sec)
     for (const s of data.skills) {
       panel.appendChild(createDetailRow(s.name + ' (' + s.source + ')', s.tokens))
@@ -423,12 +457,12 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   }
 
   if (data.apiUsage) {
-    const sec = createSection('API usage')
+    const sec = createSection(t('ctxApiUsage'))
     panel.appendChild(sec)
-    panel.appendChild(createDetailRow('Input', data.apiUsage.inputTokens))
-    panel.appendChild(createDetailRow('Output', data.apiUsage.outputTokens))
-    panel.appendChild(createDetailRow('Cache creation', data.apiUsage.cacheCreationInputTokens))
-    panel.appendChild(createDetailRow('Cache read', data.apiUsage.cacheReadInputTokens))
+    panel.appendChild(createDetailRow(t('ctxInput'), data.apiUsage.inputTokens))
+    panel.appendChild(createDetailRow(t('ctxOutput'), data.apiUsage.outputTokens))
+    panel.appendChild(createDetailRow(t('ctxCacheCreation'), data.apiUsage.cacheCreationInputTokens))
+    panel.appendChild(createDetailRow(t('ctxCacheRead'), data.apiUsage.cacheReadInputTokens))
   }
 }
 
@@ -473,7 +507,7 @@ function createContextPopover(onRequest: () => void, onCompact?: () => void): {
     } else {
       panel.appendChild(createNode('div', {
         className: 'px-4 py-6 text-center text-[13px] text-t3',
-        text: 'Send a message first to see context usage.',
+        text: t('ctxEmpty'),
       }))
     }
   }
@@ -485,7 +519,7 @@ function createContextPopover(onRequest: () => void, onCompact?: () => void): {
     panel.innerHTML = ''
     panel.appendChild(createNode('div', {
       className: 'px-4 py-6 text-center text-[13px] text-t3',
-      text: 'Loading...',
+      text: t('ctxLoading'),
     }))
   }
 
@@ -519,7 +553,7 @@ function createContextPopover(onRequest: () => void, onCompact?: () => void): {
         panel.innerHTML = ''
         panel.appendChild(createNode('div', {
           className: 'px-4 py-6 text-center text-[13px] text-t3',
-          text: 'Send a message first to see context usage.',
+          text: t('ctxEmpty'),
         }))
       }
     }

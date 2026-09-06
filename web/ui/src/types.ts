@@ -69,10 +69,13 @@ export type ServerMessage =
 export type ContextCategoryData = {
   name: string; tokens: number; percentage: number
   color: string; isFree: boolean; isReserved: boolean
+  // Absent when the server predates semantic ids — the label lookup then
+  // falls back to name.
+  id?: string
 }
 export type MCPToolDetailData = { name: string; serverName: string; tokens: number; isLoaded: boolean }
 export type SystemToolDetailData = { name: string; tokens: number }
-export type SystemPromptSectionData = { name: string; tokens: number }
+export type SystemPromptSectionData = { name: string; tokens: number; id?: string }
 export type MemoryFileDetailData = { path: string; tokens: number }
 export type AgentDetailData = { agentType: string; source: string; tokens: number }
 export type SkillDetailData = { name: string; source: string; tokens: number }

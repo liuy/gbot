@@ -57,6 +57,10 @@ type ContextCategory struct {
 	Color      string // lipgloss color name
 	IsFree     bool
 	IsReserved bool
+
+	// ID is the stable semantic identifier the web UI translates client-side;
+	// Name stays English for the TUI and as the wui fallback.
+	ID string
 }
 
 // GridSquare is one cell in the visualization grid.
@@ -91,6 +95,12 @@ type SystemToolDetail struct {
 type SystemPromptSectionDetail struct {
 	Name   string
 	Tokens int
+
+	// ID is the stable semantic identifier the web UI translates client-side;
+	// Name stays English for the TUI and as the wui fallback. It reuses the
+	// ContextCategory id strings where both exist so one dictionary covers
+	// the pie chart row and this sub-row.
+	ID string
 }
 
 // MemoryFileDetail describes one loaded memory file.
@@ -653,6 +663,24 @@ var categoryColors = map[string]string{
 	"Autocompact buffer": ColorReserved,
 }
 
+// categoryIDs maps every emittable category name to its wire-level semantic
+// id. "Deferred tools" is absent because buildCategories only emits names
+// present in the scaled map, which never contains it.
+var categoryIDs = map[string]string{
+	"System prompt":      "system_prompt",
+	"Platform info":      "platform_info",
+	"Git status":         "git_status",
+	"Tool prompts":       "tool_prompts",
+	"Skill listing":      "skill_listing",
+	"Memory files":       "memory_files",
+	"System tools":       "system_tools",
+	"MCP tools":          "mcp_tools",
+	"Custom agents":      "custom_agents",
+	"Messages":           "messages",
+	"Free space":         "free_space",
+	"Autocompact buffer": "autocompact_buffer",
+}
+
 func buildCategories(scaled scaledComponents, free, reserved, total int) []ContextCategory {
 	out := make([]ContextCategory, 0, len(categoryOrder))
 	for _, name := range categoryOrder {
@@ -679,6 +707,7 @@ func buildCategories(scaled scaledComponents, free, reserved, total int) []Conte
 			Color:      categoryColors[name],
 			IsFree:     isFree,
 			IsReserved: isReserved,
+			ID:         categoryIDs[name],
 		})
 	}
 	return out
@@ -875,16 +904,17 @@ func (e *Engine) buildDetails(
 
 	for _, s := range []struct {
 		name   string
+		id     string
 		tokens int
 	}{
-		{"Base prompt", sections.base},
-		{"Platform info", sections.platform},
-		{"Git status", sections.git},
-		{"Tool prompts", sections.toolPrompts},
-		{"Skill listing", sections.skill},
+		{"Base prompt", "base_prompt", sections.base},
+		{"Platform info", "platform_info", sections.platform},
+		{"Git status", "git_status", sections.git},
+		{"Tool prompts", "tool_prompts", sections.toolPrompts},
+		{"Skill listing", "skill_listing", sections.skill},
 	} {
 		if s.tokens > 0 {
-			ds.systemPromptSections = append(ds.systemPromptSections, SystemPromptSectionDetail{Name: s.name, Tokens: s.tokens})
+			ds.systemPromptSections = append(ds.systemPromptSections, SystemPromptSectionDetail{Name: s.name, ID: s.id, Tokens: s.tokens})
 		}
 	}
 
