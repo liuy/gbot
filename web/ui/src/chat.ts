@@ -511,7 +511,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   root.appendChild(artifactSheet.root)
 
   // Settings page: full-screen overlay above everything (z-60). Closing the
-  // sidebar first keeps the gear's tap from leaving both layers open.
+  // sidebar first keeps the gear's tap from leaving both layers open. A
+  // language switch swaps the page's text in place (see settings.ts) — no
+  // rebuild, so panel state and scroll survive.
   const settingsPage = createSettingsPage()
   root.appendChild(settingsPage.root)
   sidebar.onOpenSettings(() => {

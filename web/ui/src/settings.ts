@@ -2,6 +2,7 @@ import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
 import { getThemePref, setThemePref, getResolvedTheme, type ThemePref } from './theme'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
+import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, type Locale, type StaticKey } from './i18n'
 
 // Settings page — provider CRUD against /api/settings/*. The page is a
 // full-screen overlay (z above sidebar and artifact sheet) opened from the
@@ -82,6 +83,13 @@ export async function saveDefaultModel(provider: string, model: string): Promise
     }
     throw new Error(msg)
   }
+}
+
+// Language is per-browser state in localStorage (same as theme/hljs), not
+// settings.json: "auto" removes the key so the locale follows the system.
+function saveLanguage(language: Locale | 'auto'): void {
+  if (language === 'auto') saveLocaleAuto()
+  else saveLocale(language)
 }
 export async function testProvider(p: SettingsProvider): Promise<TestResult> {
   const res = await fetch('/api/settings/test', {
@@ -179,6 +187,14 @@ export function createSettingsPage(): SettingsPageHandles {
     kv: [] as KVRow[],
   }
 
+  // Anchors static copy for retranslate(): a language switch rewrites
+  // textContent in place instead of rebuilding the page. Static keys only —
+  // interpolation/dynamic copy stays off anchors and self-heals on re-render.
+  const L = <K extends StaticKey>(k: K, extra: Record<string, string> = {}) => ({
+    text: t(k),
+    attrs: { 'data-i18n': k, ...extra },
+  })
+
   // ------------------------------------------------------------------ toast
   const toastEl = createNode('div', {
     className:
@@ -215,7 +231,7 @@ export function createSettingsPage(): SettingsPageHandles {
     attrs: { 'data-back': '' },
   })
   backBtn.append(renderIcon('chevron-left'))
-  const titleEl = createNode('div', { className: 'text-base font-semibold flex-1', attrs: { 'data-title': '' }, text: 'Settings' })
+  const titleEl = createNode('div', { className: 'text-base font-semibold flex-1', ...L('settingsTitle', { 'data-title': '' }) })
   const jsonAction = createNode('div', {
     className: 'text-blue text-[13px] cursor-pointer select-none px-0.5',
     text: 'JSON',
@@ -227,9 +243,11 @@ export function createSettingsPage(): SettingsPageHandles {
   const homeScreen = createElement('div', '')
   homeScreen.setAttribute('data-screen', 'home')
 
-  const sectionLabel = (text: string, extra?: Node) => {
+  const sectionLabel = (k: StaticKey, extra?: Node) => {
     const wrap = createElement('div', 'text-[11px] text-t3 font-medium px-4 pt-4 pb-1.5')
-    wrap.append(document.createTextNode(text))
+    // Inner span carries the anchor: retranslate writes textContent, which
+    // would wipe the trailing extra node if the anchor sat on the wrap.
+    wrap.append(createNode('span', L(k)))
     if (extra) wrap.appendChild(extra)
     return wrap
   }
@@ -239,7 +257,7 @@ export function createSettingsPage(): SettingsPageHandles {
     className: 'flex items-center gap-1.5 px-3.5 py-2.5 text-[13px] text-blue cursor-pointer select-none mb-1',
     attrs: { 'data-add-provider': '' },
   })
-  addProviderBtn.append(renderIcon('plus', { size: 16 }), document.createTextNode('Add Provider'))
+  addProviderBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('addProviderBtn')))
 
   const defaultCard = createNode('div', {
     className: 'mx-3 mb-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden cursor-pointer select-none',
@@ -278,9 +296,9 @@ export function createSettingsPage(): SettingsPageHandles {
             payload.default = { provider: p.name, model: name }
             defaultTitle.textContent = `${p.name} / ${name}`
             renderDefaultPanel()
-            toast('Saved · restart daemon to apply')
+            toast(t('savedRestart'))
           } catch (err) {
-            toast(`Save failed: ${err instanceof Error ? err.message : 'error'}`)
+            toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
           }
         })
         defaultPanel.appendChild(row)
@@ -305,33 +323,87 @@ export function createSettingsPage(): SettingsPageHandles {
   // immediately; nothing to save).
   const generalCard = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
   const divider = () => createElement('div', 'border-t border-hairline')
-  const generalRow = (name: string, valueEl: HTMLElement) => {
+  const generalRow = (k: StaticKey, valueEl: HTMLElement) => {
     const row = createElement('div', 'flex items-center gap-2 px-3.5 py-3 cursor-pointer select-none')
     row.setAttribute('data-general-row', '')
-    const n = createNode('span', { className: 'text-[13px] font-medium flex-1', text: name })
+    const n = createNode('span', { className: 'text-[13px] font-medium flex-1', ...L(k) })
     const chev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
     row.append(n, valueEl, chev)
     return { row, chev }
   }
 
-  const languageValue = createNode('span', { className: 'text-[12px] text-t2', text: 'English' })
-  const languageRow = generalRow('Language', languageValue)
-  languageRow.row.addEventListener('click', () => toast('v1 ships English only — i18n comes later'))
-  languageRow.chev.classList.add('invisible')
+  // Locale endonyms are self-named in their own language by convention —
+  // never translated through the dictionary. "Auto" (follow the system)
+  // likewise stays literal. Recomputed per call: a language switch must
+  // re-read the translated "Auto" label in the NEW locale.
+  const langNames = (): Record<Locale | 'auto', string> => ({ auto: t('languageSystem'), en: 'English', zh: '中文' })
+  // null (nothing stored) IS the auto state — the row and the segment both
+  // show the persisted choice, not what navigator detection resolved to.
+  const languagePref = (): Locale | 'auto' => persistedLocale() ?? 'auto'
 
-  const prefLabel = (p: ThemePref) => (p === 'system' ? 'System' : p === 'light' ? 'Light' : 'Dark')
-  const themeValue = createNode('span', { className: 'text-[12px] text-t2', text: prefLabel(getThemePref()) })
-  const themeRow = generalRow('Theme', themeValue)
+  const languageValue = createNode('span', {
+    className: 'text-[12px] text-t2',
+    text: langNames()[languagePref()],
+    attrs: { 'data-language-value': '' },
+  })
+  const languageRow = generalRow('languageRow', languageValue)
+  const languagePanel = createElement('div', 'hidden px-3.5 pb-3')
+  languagePanel.setAttribute('data-language-panel', '')
+  const languageSeg = createElement('div', 'flex gap-1')
+  // Persisting is the source of truth: no optimistic restyle — on success
+  // the page swaps its text in place (retranslate + manual refresh below);
+  // a storage failure leaves the old selection untouched.
+  for (const loc of ['auto', 'en', 'zh'] as const) {
+    const b = createNode('button', { className: '', text: langNames()[loc], attrs: { type: 'button' } })
+    b.setAttribute('data-lang-opt', loc)
+    segBtnStyle(b, languagePref() === loc)
+    b.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (languagePref() === loc) return
+      try {
+        saveLanguage(loc)
+        // Pure text swap — every node stays mounted, so open panels and
+        // scroll position survive the switch. Endonyms and the row value
+        // are not dictionary copy, so the segment and value are rewritten
+        // by hand; the selection styling follows the persisted choice.
+        retranslate(root)
+        const names = langNames()
+        for (const sib of languageSeg.children) {
+          const el = sib as HTMLElement
+          const l = el.getAttribute('data-lang-opt') as Locale | 'auto'
+          el.textContent = names[l]
+          segBtnStyle(el, l === loc)
+        }
+        languageValue.textContent = names[languagePref()]
+      } catch (err) {
+        toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
+      }
+    })
+    languageSeg.appendChild(b)
+  }
+  languagePanel.appendChild(languageSeg)
+  languageRow.row.addEventListener('click', () => {
+    const open = languagePanel.classList.toggle('hidden')
+    languageRow.chev.classList.toggle('rotate-90', !open)
+  })
+
+  // The value's anchor tracks the current pref so a locale switch
+  // retranslates whichever theme name is showing.
+  const themeKey = (p: ThemePref): StaticKey => (p === 'system' ? 'systemTheme' : p === 'light' ? 'lightTheme' : 'darkTheme')
+  const prefLabel = (p: ThemePref) => t(themeKey(p))
+  const themeValue = createNode('span', { className: 'text-[12px] text-t2', ...L(themeKey(getThemePref())) })
+  const themeRow = generalRow('themeRow', themeValue)
   const themePanel = createElement('div', 'hidden px-3.5 pb-3')
   const themeSeg = createElement('div', 'flex gap-1')
   for (const opt of ['system', 'light', 'dark'] as const) {
-    const b = createNode('button', { className: '', text: prefLabel(opt), attrs: { type: 'button' } })
+    const b = createNode('button', { className: '', ...L(themeKey(opt), { type: 'button' }) })
     b.setAttribute('data-theme-opt', opt)
     segBtnStyle(b, getThemePref() === opt)
     b.addEventListener('click', (e) => {
       e.stopPropagation()
       setThemePref(opt)
       themeValue.textContent = prefLabel(opt)
+      themeValue.setAttribute('data-i18n', themeKey(opt))
       for (const sib of themeSeg.children) {
         const el = sib as HTMLElement
         segBtnStyle(el, el.getAttribute('data-theme-opt') === opt)
@@ -347,7 +419,7 @@ export function createSettingsPage(): SettingsPageHandles {
 
   const hljsLabel = () => HLJS_THEMES.find((t) => t.key === getSavedHljsTheme())?.label ?? getSavedHljsTheme()
   const hljsValue = createNode('span', { className: 'text-[12px] text-t2', text: hljsLabel() })
-  const hljsRow = generalRow('Highlights', hljsValue)
+  const hljsRow = generalRow('highlightsRow', hljsValue)
   const hljsPanel = createElement('div', 'hidden px-3 pb-3 grid grid-cols-2 gap-1.5')
   hljsPanel.setAttribute('data-hljs-panel', '')
   for (const t of HLJS_THEMES) {
@@ -383,6 +455,7 @@ export function createSettingsPage(): SettingsPageHandles {
 
   generalCard.append(
     languageRow.row,
+    languagePanel,
     divider(),
     themeRow.row,
     themePanel,
@@ -392,12 +465,12 @@ export function createSettingsPage(): SettingsPageHandles {
   )
 
   homeScreen.append(
-    sectionLabel('PROVIDERS'),
+    sectionLabel('providersSection'),
     provList,
     addProviderBtn,
-    sectionLabel('DEFAULT MODEL'),
+    sectionLabel('defaultModelSection'),
     defaultCard,
-    sectionLabel('GENERAL'),
+    sectionLabel('generalSection'),
     generalCard,
   )
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
@@ -429,7 +502,7 @@ export function createSettingsPage(): SettingsPageHandles {
   const nameInput = createNode('input', {
     className:
       'w-full px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
-    props: { type: 'text', spellcheck: false, placeholder: 'provider name' },
+    props: { type: 'text', spellcheck: false, placeholder: t('phProviderName') },
     attrs: { 'data-field': 'name' },
   }) as HTMLInputElement
   const urlInput = createNode('input', {
@@ -442,8 +515,7 @@ export function createSettingsPage(): SettingsPageHandles {
   // THIS url+key work", so its trigger and its result belong at the input.
   const testBtn = createNode('button', {
     className: 'text-blue text-[13px] font-medium px-1.5 shrink-0 cursor-pointer bg-transparent border-none',
-    text: 'Test',
-    attrs: { type: 'button', 'data-test-conn': '' },
+    ...L('testBtn', { type: 'button', 'data-test-conn': '' }),
   }) as HTMLButtonElement
   const testResult = createNode('span', {
     className: 'text-[11px] text-t3',
@@ -457,11 +529,11 @@ export function createSettingsPage(): SettingsPageHandles {
     className: 'flex items-center gap-1.5 px-3.5 py-2.5 text-[13px] text-blue cursor-pointer select-none mt-1 px-3',
     attrs: { 'data-add-key': '' },
   })
-  addKeyBtn.append(renderIcon('plus', { size: 16 }), document.createTextNode('Add Key'))
+  addKeyBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('addKey')))
 
   const fetchModelsBtn = createNode('span', {
     className: 'text-blue cursor-pointer',
-    text: '· fetch from API',
+    text: t('fetchFromApi'),
     attrs: { 'data-fetch-models': '' },
   })
   // OpenRouter's full /models list is hundreds of entries — noise in the
@@ -470,7 +542,11 @@ export function createSettingsPage(): SettingsPageHandles {
   // above loadForm: the programmatic URL fill calls updateFetchLabel.
   const isFreeFetch = () => urlInput.value.toLowerCase().includes('openrouter')
   const updateFetchLabel = () => {
-    fetchModelsBtn.textContent = isFreeFetch() ? '· fetch free top 10' : '· fetch from API'
+    const key: StaticKey = isFreeFetch() ? 'fetchFreeTop10' : 'fetchFromApi'
+    fetchModelsBtn.textContent = t(key)
+    // Re-anchor on every state swap so a language switch retranslates the
+    // CURRENT label, not the one the button was built with.
+    fetchModelsBtn.setAttribute('data-i18n', key)
   }
   urlInput.addEventListener('input', updateFetchLabel)
   updateFetchLabel()
@@ -479,18 +555,18 @@ export function createSettingsPage(): SettingsPageHandles {
     className: 'flex items-center gap-1.5 px-3.5 py-2.5 mb-2 text-[13px] text-blue cursor-pointer select-none',
     attrs: { 'data-add-model': '' },
   })
-  addModelBtn.append(renderIcon('plus', { size: 16 }), document.createTextNode('Add Model'))
+  addModelBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('addModel')))
 
   // Extra params mirror the models section: section label, one card with
   // divided rows, aligned add link — always expanded (two fields per row,
   // a fold buys nothing).
-  const kvLabel = sectionLabel('EXTRA PARAMS · appended to request body')
+  const kvLabel = sectionLabel('extraParamsLabel')
   const kvBody = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
   const kvAdd = createNode('div', {
     className: 'flex items-center gap-1.5 px-3.5 py-2.5 mb-2 text-[13px] text-blue cursor-pointer select-none',
     attrs: { 'data-add-param': '' },
   })
-  kvAdd.append(renderIcon('plus', { size: 16 }), document.createTextNode('Add Param'))
+  kvAdd.append(renderIcon('plus', { size: 16 }), createNode('span', L('addParam')))
   const kvFold = createElement('div', '')
   kvFold.append(kvLabel, kvBody, kvAdd)
 
@@ -498,13 +574,11 @@ export function createSettingsPage(): SettingsPageHandles {
 
   const cancelBtn = createNode('button', {
     className: 'flex-1 py-2.5 rounded-xl text-[13px] font-semibold bg-transparent text-t2 border border-hairline',
-    text: 'Cancel',
-    attrs: { 'data-cancel': '' },
+    ...L('cancelBtn', { 'data-cancel': '' }),
   }) as HTMLButtonElement
   const saveBtn = createNode('button', {
     className: 'flex-[2] py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35',
-    text: 'Save',
-    attrs: { 'data-save': '' },
+    ...L('saveBtn', { 'data-save': '' }),
   }) as HTMLButtonElement
 
   const btnRow = (a: HTMLElement, b: HTMLElement) => {
@@ -514,24 +588,24 @@ export function createSettingsPage(): SettingsPageHandles {
   }
 
   editScreen.append(
-    sectionLabel('PROTOCOL'),
+    sectionLabel('protocolSection'),
     protoSel,
-    createNode('div', { className: 'px-3 pb-2.5 pt-1.5' }, createNode('label', { className: 'block text-[11px] text-t2 mb-1.5', text: 'NAME' }), nameInput),
+    createNode('div', { className: 'px-3 pb-2.5 pt-1.5' }, createNode('label', { className: 'block text-[11px] text-t2 mb-1.5', ...L('nameLabel') }), nameInput),
     createNode(
       'div',
       { className: 'px-3 pb-2.5' },
       (() => {
         const labelRow = createElement('div', 'flex items-baseline mb-1.5')
-        const label = createNode('span', { className: 'flex-1 text-[11px] text-t2', text: 'BASE URL' })
+        const label = createNode('span', { className: 'flex-1 text-[11px] text-t2', ...L('baseUrlLabel') })
         labelRow.append(label, testResult)
         return labelRow
       })(),
       urlRow,
     ),
-    sectionLabel('API KEYS', createNode('span', { className: 'text-t3', text: ' · tried in order' })),
+    sectionLabel('apiKeySection', createNode('span', { className: 'text-t3', ...L('triedInOrder') })),
     keyList,
     addKeyBtn,
-    sectionLabel('MODELS', fetchModelsBtn),
+    sectionLabel('modelsSection', fetchModelsBtn),
     modelList,
     addModelBtn,
     kvFold,
@@ -550,7 +624,7 @@ export function createSettingsPage(): SettingsPageHandles {
   })
   const sheetTitle = createElement('div', 'flex justify-between text-[13px] font-semibold mb-2.5')
   sheetTitle.append(
-    createNode('span', { text: 'settings.json · providers' }),
+    createNode('span', L('jsonSheetTitle')),
     createNode('span', { className: 'text-t3 cursor-pointer', text: '✕', attrs: { 'data-sheet-close': '' } }),
   )
   const jsonBox = createElement('pre', 'bg-ink2 border border-hairline rounded-xl p-3 font-mono text-[10.5px] leading-relaxed text-t2 whitespace-pre overflow-auto max-h-[380px]')
@@ -588,7 +662,11 @@ export function createSettingsPage(): SettingsPageHandles {
   const showScreen = (home: boolean) => {
     homeScreen.classList.toggle('hidden', !home)
     editScreen.classList.toggle('hidden', home)
-    titleEl.textContent = home ? 'Settings' : form.isNew ? 'Add provider' : 'Edit provider'
+    // The anchor follows the visible screen so a locale switch retranslates
+    // whichever heading is showing.
+    const k = home ? 'settingsTitle' : form.isNew ? 'addProviderTitle' : 'editProviderTitle'
+    titleEl.textContent = t(k)
+    titleEl.setAttribute('data-i18n', k)
     // scrollTop (not scrollTo): jsdom lacks the scrolling API, and the
     // property write is a no-op there while still scrolling in the browser.
     root.scrollTop = 0
@@ -617,7 +695,14 @@ export function createSettingsPage(): SettingsPageHandles {
     const r2 = createElement('div', 'flex items-center gap-2 mt-2')
     r2.append(
       createNode('span', { className: 'text-[10px] font-semibold rounded-md px-1.5 py-0.5 ' + badgeClass, text: label, attrs: { 'data-type-badge': '' } }),
-      createNode('span', { className: 'text-[11px] text-t2 flex-1', text: `${Object.keys(p.models ?? {}).length} models` }),
+      createNode('span', {
+        className: 'text-[11px] text-t2 flex-1',
+        text: t('modelsCount')(Object.keys(p.models ?? {}).length),
+        attrs: {
+          'data-i18n': 'modelsCount',
+          'data-i18n-arg': String(Object.keys(p.models ?? {}).length),
+        },
+      }),
     )
     card.append(
       r1,
@@ -672,7 +757,7 @@ export function createSettingsPage(): SettingsPageHandles {
     if (!isNew) {
       const del = createNode('div', {
         className: 'text-[11px] text-red/85 text-center pt-2 cursor-pointer',
-        text: 'Delete this provider',
+        text: t('deleteProviderRow'),
         attrs: { 'data-delete-provider': '' },
       })
       del.addEventListener('click', askDelete)
@@ -722,14 +807,14 @@ export function createSettingsPage(): SettingsPageHandles {
       const inp = createNode('input', {
         className:
           'flex-1 px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
-        props: { type: 'password', spellcheck: false, placeholder: 'API key', value: k },
+        props: { type: 'password', spellcheck: false, placeholder: t('phApiKey'), value: k },
       }) as HTMLInputElement
       inp.addEventListener('input', () => {
         form.keys[i] = inp.value
       })
       const eye = createNode('button', {
         className: 'w-[30px] h-9 bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0',
-        attrs: { title: 'show/hide', type: 'button' },
+        attrs: { title: t('showHideTitle'), type: 'button' },
       })
       eye.innerHTML = EYE
       eye.addEventListener('click', () => {
@@ -784,7 +869,7 @@ export function createSettingsPage(): SettingsPageHandles {
       className: 'text-xs font-mono flex-1 min-w-0 truncate bg-transparent border border-transparent rounded px-1 -ml-1 py-0.5 text-t1 outline-none focus:border-blue/40',
       // Fresh rows carry a unique __new_N map key so unnamed rows don't
       // collide — but the user sees an empty field, not the key.
-      props: { type: 'text', spellcheck: false, placeholder: 'model id', value: name.startsWith('__new_') ? '' : name },
+      props: { type: 'text', spellcheck: false, placeholder: t('phModelId'), value: name.startsWith('__new_') ? '' : name },
       attrs: { 'data-model-name': '' },
     }) as HTMLInputElement
     let currentKey = name
@@ -848,15 +933,15 @@ export function createSettingsPage(): SettingsPageHandles {
       return inp
     }
     detail.append(
-      prow('CONTEXT', smallInput(m.context, (v) => (m.context = v))),
-      prow('MAX TOKENS', smallInput(m.max_tokens, (v) => (m.max_tokens = v))),
+      prow(t('contextLabel'), smallInput(m.context, (v) => (m.context = v))),
+      prow(t('maxTokensLabel'), smallInput(m.max_tokens, (v) => (m.max_tokens = v))),
     )
     const segRow = (label: string, seg: HTMLElement) => detail.appendChild(prow(label, seg))
     const seg = createElement('div', 'flex gap-1 flex-1')
     for (const kind of ['text', 'image', 'audio', 'video'] as const) {
       const b = createNode('button', {
         className: '',
-        text: kind === 'text' ? 'Text' : kind === 'image' ? 'Image' : kind === 'audio' ? 'Audio' : 'Video',
+        text: kind === 'text' ? t('textModality') : kind === 'image' ? t('imageModality') : kind === 'audio' ? t('audioModality') : t('videoModality'),
         attrs: { type: 'button' },
       })
       segBtnStyle(b, (m.input ?? []).includes(kind))
@@ -874,7 +959,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       seg.appendChild(b)
     }
-    segRow('INPUT', seg)
+    segRow(t('inputLabel'), seg)
     const tseg = createElement('div', 'flex gap-1 flex-1')
     const current = m.thinking ?? 'auto'
     for (const opt of THINK_OPTS) {
@@ -891,7 +976,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       tseg.appendChild(b)
     }
-    segRow('THINKING', tseg)
+    segRow(t('thinkingLabel'), tseg)
 
     mrow.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).isSameNode(mdel)) {
@@ -925,12 +1010,12 @@ export function createSettingsPage(): SettingsPageHandles {
       const row = createElement('div', 'flex gap-2 items-center border-b border-hairline last:border-b-0 pl-3 pr-1.5 py-1')
       const kInp = createNode('input', {
         className: 'flex-[2] min-w-0 px-2 py-1.5 bg-ink3 border border-hairline rounded-lg text-t1 text-[11px] font-mono text-center outline-none focus:border-blue/40',
-        props: { type: 'text', spellcheck: false, placeholder: 'param name, e.g. temperature', value: row0.k },
+        props: { type: 'text', spellcheck: false, placeholder: t('phParamName'), value: row0.k },
       }) as HTMLInputElement
       kInp.addEventListener('input', () => (form.kv[i].k = kInp.value))
       const vInp = createNode('input', {
         className: 'flex-[3] min-w-0 px-2 py-1.5 bg-ink3 border border-hairline rounded-lg text-t1 text-[11px] font-mono text-center outline-none focus:border-blue/40',
-        props: { type: 'text', spellcheck: false, placeholder: 'value (JSON literal)', value: row0.v },
+        props: { type: 'text', spellcheck: false, placeholder: t('phParamValue'), value: row0.v },
       }) as HTMLInputElement
       vInp.addEventListener('input', () => (form.kv[i].v = vInp.value))
       const del = createNode('span', {
@@ -953,7 +1038,7 @@ export function createSettingsPage(): SettingsPageHandles {
 
   // ------------------------------------------------------------ fetch models
   fetchModelsBtn.addEventListener('click', () => {
-    fetchModelsBtn.textContent = '· fetching…'
+    fetchModelsBtn.textContent = t('fetching')
     void (async () => {
       try {
         const res = await fetchProviderModels(urlInput.value.trim(), form.keys.find(Boolean) ?? '', form.type, isFreeFetch())
@@ -975,11 +1060,11 @@ export function createSettingsPage(): SettingsPageHandles {
           renderModels()
           toast(
             added > 0
-              ? `Fetched ${res.models.length} models, ${added} added (existing kept)`
-              : 'All models already configured',
+              ? t('fetchedModels')(res.models.length, added)
+              : t('allModelsConfigured'),
           )
         } else if (res.mode === 'manual') {
-          toast('Anthropic has no model list endpoint — add models manually')
+          toast(t('anthropicNoModelList'))
         } else {
           toast(res.error)
         }
@@ -994,7 +1079,7 @@ export function createSettingsPage(): SettingsPageHandles {
     const first = Object.keys(form.models)[0] ?? 'provider'
     testResult.replaceChildren()
     testBtn.textContent = '…'
-    testResult.textContent = `Pinging ${first}…`
+    testResult.textContent = t('pinging')(first)
     void (async () => {
       try {
         const res = await testProvider(collectFormProvider())
@@ -1010,7 +1095,7 @@ export function createSettingsPage(): SettingsPageHandles {
         testResult.className = 'text-[11px] text-red'
         testResult.textContent = `✗ ${err instanceof Error ? err.message : 'network error'}`
       } finally {
-        testBtn.textContent = 'Test'
+        testBtn.textContent = t('testBtn')
       }
     })()
   })
@@ -1025,7 +1110,7 @@ export function createSettingsPage(): SettingsPageHandles {
       toast(successMsg)
     } catch (e) {
       // Stay on the edit screen — the user's form state is untouched.
-      toast(`Save failed: ${(e as Error).message}`)
+      toast(t('saveFailed')((e as Error).message))
     }
   }
 
@@ -1033,7 +1118,7 @@ export function createSettingsPage(): SettingsPageHandles {
     const name = nameInput.value.trim()
     const url = urlInput.value.trim()
     if (!name || !url) {
-      toast('Name and URL are required')
+      toast(t('nameUrlRequired'))
       return
     }
     // Validate the COLLECTED form, not the raw key count: collect drops
@@ -1041,28 +1126,26 @@ export function createSettingsPage(): SettingsPageHandles {
     // would otherwise pass here and 400 on the server instead.
     const edited = collectFormProvider()
     if (Object.keys(edited.models).length === 0) {
-      toast('At least one named model is required')
+      toast(t('oneModelRequired'))
       return
     }
     const next = [...payload.providers]
     if (form.isNew) next.push(edited)
     else next[form.index] = edited
-    void persist(next, 'Saved · original backed up · restart daemon to apply')
+    void persist(next, t('savedBackedUp'))
   })
 
   const askDelete = () => {
     if (payload.providers.length <= 1) {
-      toast('At least one provider is required')
+      toast(t('oneProviderRequired'))
       return
     }
     const isDefault =
       payload.default.provider !== '' && nameInput.value.trim() === payload.default.provider
-    const msg = isDefault
-      ? '⚠ This provider owns the current default model — deleting it breaks the default.\n\nDelete anyway?'
-      : 'Delete this provider?\nThe original settings.json was backed up and can be restored.'
+    const msg = isDefault ? t('deleteDefaultConfirm') : t('deleteProviderConfirm')
     if (!window.confirm(msg)) return
     const next = payload.providers.filter((_, i) => i !== form.index)
-    void persist(next, 'Deleted · restorable from backup')
+    void persist(next, t('deletedRestorable'))
   }
 
   cancelBtn.addEventListener('click', () => showScreen(true))
@@ -1083,7 +1166,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       .catch((e: Error) => {
         payload = { providers: [], default: { provider: '', model: '' } }
-        toast(`Load failed: ${e.message}`)
+        toast(t('loadFailed')(e.message))
       })
       .finally(() => {
         renderHome()

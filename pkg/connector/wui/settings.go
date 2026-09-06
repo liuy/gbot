@@ -21,6 +21,7 @@ var settingsHTTPTimeout = 10 * time.Second
 //
 //   - GET  /api/settings/providers  — current providers + resolved default
 //   - PUT  /api/settings/providers  — replace the providers array (backup + atomic write)
+//   - PUT  /api/settings/default    — set the default model tier
 //   - POST /api/settings/test       — live connection probe against one provider
 //   - POST /api/settings/models     — fetch the model id list from an endpoint
 //

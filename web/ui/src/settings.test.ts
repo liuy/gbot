@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { setLocale, initLocale } from './i18n'
 import {
   fetchSettings,
   saveSettings,
@@ -40,8 +41,8 @@ interface MockOptions {
   putError?: string
 }
 
-// makeFetchHandler stubs the four settings endpoints, routing by URL+method
-// and capturing PUT bodies via opts.onPut.
+// makeFetchHandler stubs the settings endpoints, routing by URL+method and
+// capturing PUT bodies via opts.onPut.
 function makeFetchHandler(opts: MockOptions & { onPut?: (p: SettingsProvider[]) => void } = {}) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -86,6 +87,7 @@ async function openPage(
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
+  localStorage.removeItem('gbot-language')
   document.body.innerHTML = ''
 })
 
@@ -194,6 +196,12 @@ describe('fetchProviderModels', () => {
 })
 
 describe('createSettingsPage', () => {
+  // i18n is a module-level singleton — tests set locales (zh renders), so
+  // every case starts from the en baseline.
+  beforeEach(() => {
+    setLocale('en')
+  })
+
   it('hidden by default; open() shows, fetches, and renders provider cards', async () => {
     const page = createSettingsPage()
     document.body.appendChild(page.root)
@@ -674,9 +682,13 @@ describe('createSettingsPage', () => {
     page.open()
     await flushMicrotasks()
 
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    // The Language row no longer toasts — the toast timer is exercised via
+    // the synchronous name/url validation path (new-provider form has an
+    // empty name) instead.
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
     const toastEl = page.root.querySelector('[data-toast]') as HTMLElement
-    expect(toastEl.textContent).toBe('v1 ships English only — i18n comes later')
+    expect(toastEl.textContent).toBe('Name and URL are required')
     expect(toastEl.classList.contains('toast-show')).toBe(true)
 
     vi.advanceTimersByTime(2200)
@@ -767,5 +779,170 @@ describe('createSettingsPage', () => {
     // header renders behind the transparent system status bar.
     const frame = page.root.firstElementChild as HTMLElement
     expect(frame.className).toContain('sidebar-safe-top')
+  })
+
+  it('renders the page in Chinese when localStorage pins zh', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+
+    expect((page.root.querySelector('[data-title]') as HTMLElement).textContent).toBe('设置')
+    expect((page.root.querySelector('[data-add-provider]') as HTMLElement).textContent).toBe('添加提供方')
+    const home = page.root.querySelector('[data-screen="home"]') as HTMLElement
+    const labels = [...home.children]
+      .filter((c) => c.className.includes('text-t3'))
+      .map((c) => c.textContent)
+    expect(labels).toEqual(['提供方', '默认模型', '通用'])
+    // Protocol identifiers stay literal — only UI copy is translated.
+    const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
+    expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')
+    expect(cards[1].querySelector('[data-type-badge]')?.textContent).toBe('OPENAI')
+  })
+
+  it('Language row expands an Auto|English|中文 panel; no stored value preselects Auto', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
+    const chev = langRow.querySelector('span.text-t3') as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(true)
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    langRow.click()
+    expect(panel.classList.contains('hidden')).toBe(false)
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    const autoBtn = panel.querySelector('[data-lang-opt="auto"]') as HTMLElement
+    const enBtn = panel.querySelector('[data-lang-opt="en"]') as HTMLElement
+    const zhBtn = panel.querySelector('[data-lang-opt="zh"]') as HTMLElement
+    expect(autoBtn.textContent).toBe('System')
+    expect(enBtn.textContent).toBe('English')
+    expect(zhBtn.textContent).toBe('中文')
+    expect(autoBtn.className).toContain('text-blue')
+    expect(enBtn.className).not.toContain('text-blue')
+    expect(zhBtn.className).not.toContain('text-blue')
+    expect((langRow.querySelector('span.text-t2') as HTMLElement).textContent).toBe('System')
+  })
+
+  it('persisted zh preselects 中文 in the panel and the row value', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    langRow.click()
+    const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
+    const sel = (opt: string) =>
+      ((panel.querySelector(`[data-lang-opt="${opt}"]`) as HTMLElement).className.includes('text-blue'))
+    expect(sel('zh')).toBe(true)
+    expect(sel('auto')).toBe(false)
+    expect(sel('en')).toBe(false)
+    expect((langRow.querySelector('span.text-t2') as HTMLElement).textContent).toBe('中文')
+  })
+
+  it('interpolated copy (model count) swaps language in place via its anchor', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const count = page.root.querySelector('[data-provider-card] span[data-i18n-arg]') as HTMLElement
+    expect(count.textContent).toBe('1 models')
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
+    expect(count.textContent).toBe('1个模型')
+    // Same DOM node — interpolated copy swaps via its anchor, no rebuild.
+    expect(page.root.querySelector('[data-provider-card] span[data-i18n-arg]')).toBe(count)
+  })
+  it('switching to 中文 swaps text in place — same DOM nodes, no reload', async () => {
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const title = page.root.querySelector('[data-title]') as HTMLElement
+    const addBtn = page.root.querySelector('[data-add-provider]') as HTMLElement
+    expect(title.textContent).toBe('Settings')
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
+    expect(title.textContent).toBe('设置')
+    expect(addBtn.textContent).toBe('添加提供方')
+    expect(page.root.querySelector('[data-title]')).toBe(title)
+    expect(localStorage.getItem('gbot-language')).toBe('zh')
+    expect(reloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('switching from zh to English swaps text in place (live-state regression)', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const title = page.root.querySelector('[data-title]') as HTMLElement
+    expect(title.textContent).toBe('设置')
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="en"]') as HTMLElement).click()
+    expect(title.textContent).toBe('Settings')
+    expect(page.root.querySelector('[data-title]')).toBe(title)
+    expect(localStorage.getItem('gbot-language')).toBe('en')
+    expect(reloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('after a switch the Language panel stays open and its names refresh', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    langRow.click()
+    const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
+    const chev = langRow.querySelector('span.text-t3') as HTMLElement
+    const value = page.root.querySelector('[data-language-value]') as HTMLElement
+    ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
+    // No rebuild: the expanded panel and rotated chevron survive the switch.
+    expect(panel.classList.contains('hidden')).toBe(false)
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    expect(value.textContent).toBe('中文')
+    const autoBtn = panel.querySelector('[data-lang-opt="auto"]') as HTMLElement
+    const zhBtn = panel.querySelector('[data-lang-opt="zh"]') as HTMLElement
+    expect(autoBtn.textContent).toBe('系统')
+    expect(zhBtn.className).toContain('text-blue')
+    expect(autoBtn.className).not.toContain('text-blue')
+  })
+
+  it('selecting 系统 removes the stored value and re-resolves in place', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="auto"]') as HTMLElement).click()
+    expect(localStorage.getItem('gbot-language')).toBeNull()
+    // jsdom's navigator is en — auto resolves the copy back to English.
+    expect((page.root.querySelector('[data-title]') as HTMLElement).textContent).toBe('Settings')
+    expect((page.root.querySelector('[data-language-value]') as HTMLElement).textContent).toBe('System')
+    expect(reloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('failed localStorage write toasts and keeps the previous selection', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('quota exceeded')
+      },
+      removeItem: () => {},
+    })
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Save failed: quota exceeded')
+    })
+    expect(reloadSpy).not.toHaveBeenCalled()
+    const autoBtn = page.root.querySelector('[data-lang-opt="auto"]') as HTMLElement
+    const zhBtn = page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement
+    expect(autoBtn.className).toContain('text-blue')
+    expect(zhBtn.className).not.toContain('text-blue')
+  })
+
+  it('clicking the already-persisted language option does nothing', async () => {
+    localStorage.setItem('gbot-language', 'en')
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const page = await openPage(mock)
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-lang-opt="en"]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(reloadSpy).not.toHaveBeenCalled()
   })
 })
