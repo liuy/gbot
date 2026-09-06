@@ -60,7 +60,7 @@ export interface LocaleOption {
   endonym: string
 }
 
-// Option list for pickers — endonyms ('中文', not "Chinese") per locale
+// Option list for pickers — endonyms ('简体中文', not "Chinese") per locale
 // convention. Order follows the glob's sorted paths, so the segment renders
 // the same order every build.
 export function localeOptions(): LocaleOption[] {
@@ -79,11 +79,35 @@ export function t<K extends keyof Dict>(key: K): Dict[K] {
   return m.dict[key]
 }
 
-// The two-letter navigator prefix picks the locale it names when one is
-// registered; any other language reads the source dictionary (en).
+// Lowercased stem view of the registry: BCP 47 tags are case-insensitive, so
+// 'zh-tw' from the browser must resolve the 'zh-TW' file stem — but the
+// returned Locale must be the real stem, hence a map back rather than a Set.
+const lowerStems: Record<string, Locale> = {}
+for (const l of Object.keys(locales)) lowerStems[l.toLowerCase()] = l
+
+// Lookup can only truncate ('zh-Hant' walks down to 'zh', the Simplified
+// dictionary) because subtags name no locale files — the one-line alias maps
+// the script tag to the Traditional locale so script-only Accept-Language
+// values land on the right script variant.
+const ALIASES: Record<string, Locale> = { 'zh-hant': 'zh-TW' }
+
+// RFC 4647 §3.4 Lookup: each candidate from navigator.languages (falling back
+// to [navigator.language]) is progressively truncated from the right until a
+// registered locale matches; the first candidate producing a match wins, and
+// only a fully unmatched list falls back to en. Lookup — unlike filtering —
+// guarantees a single best match per candidate, which is what a picker needs.
 export const detectLocale = (): Locale => {
-  const lang = (navigator.language || '').slice(0, 2).toLowerCase()
-  return locales[lang] !== undefined ? lang : 'en'
+  const candidates = navigator.languages ?? (navigator.language ? [navigator.language] : [])
+  for (const cand of candidates) {
+    for (let tag = cand.toLowerCase(); tag; ) {
+      const hit = ALIASES[tag] ?? lowerStems[tag]
+      if (hit !== undefined) return hit
+      const cut = tag.lastIndexOf('-')
+      if (cut === -1) break
+      tag = tag.slice(0, cut)
+    }
+  }
+  return 'en'
 }
 
 // A pinned registered locale wins; a missing, empty, or unknown value means

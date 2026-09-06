@@ -9,7 +9,7 @@
 //   - THINK_OPTS values (none/auto/low/… are stored config values)
 //   - HLJS theme names (Atom One … are product names)
 //   - glyphs and data strings (› ✕ … ✓ …ms ✗ …)
-//   - locale endonyms English/中文 (each locale file's endonym export)
+//   - locale endonyms English/简体中文/繁體中文 (each locale file's endonym export)
 //   - the sidebar "Artifacts" heading and the builtin game name
 //   - sidebar formatRelativeTime's compact units (now/30s/5m/1h/3mo —
 //     data strings, like the …ms glyph above)

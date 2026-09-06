@@ -36,7 +36,8 @@ describe('locale registry', () => {
   it('shipped endonyms are each locale self-named', () => {
     const endonyms = new Map(localeOptions().map((o) => [o.locale, o.endonym]))
     expect(endonyms.get('en')).toBe('English')
-    expect(endonyms.get('zh')).toBe('中文')
+    expect(endonyms.get('zh')).toBe('简体中文')
+    expect(endonyms.get('zh-TW')).toBe('繁體中文')
   })
 })
 
@@ -55,11 +56,14 @@ describe('i18n dictionary', () => {
     setLocale('zh')
     expect(t('settingsTitle')).toBe('设置')
     expect(t('modelsCount')(2)).toBe('2个模型')
+    setLocale('zh-TW')
+    expect(t('settingsTitle')).toBe('設定')
+    expect(t('modelsCount')(2)).toBe('2個模型')
   })
 })
 
 describe('locale bootstrap', () => {
-  it('initLocale adopts a persisted en/zh value verbatim', () => {
+  it('initLocale adopts a persisted registered locale verbatim', () => {
     localStorage.setItem('gbot-language', 'zh')
     initLocale()
     expect(currentLocale()).toBe('zh')
@@ -88,7 +92,7 @@ describe('locale bootstrap', () => {
 })
 
 describe('persistedLocale', () => {
-  it('maps stored values to en/zh and everything else to null (auto)', () => {
+  it('maps stored registered values through and everything else to null (auto)', () => {
     expect(persistedLocale()).toBeNull()
     localStorage.setItem('gbot-language', 'zh')
     expect(persistedLocale()).toBe('zh')
@@ -160,11 +164,35 @@ describe('saveLocale / saveLocaleAuto', () => {
 })
 
 describe('detectLocale', () => {
-  it('classifies by the two-letter language prefix', () => {
-    vi.stubGlobal('navigator', { language: 'zh-TW' })
+  it('RFC 4647 Lookup: region, script, and script+region tags all land on zh-TW', () => {
+    vi.stubGlobal('navigator', { languages: ['zh-TW'] })
+    expect(detectLocale()).toBe('zh-TW')
+    vi.stubGlobal('navigator', { languages: ['zh-Hant-TW'] })
+    expect(detectLocale()).toBe('zh-TW')
+    vi.stubGlobal('navigator', { languages: ['zh-Hant'] })
+    expect(detectLocale()).toBe('zh-TW')
+  })
+
+  it('truncates unregistered regions down to the language stem', () => {
+    vi.stubGlobal('navigator', { languages: ['zh-CN'] })
     expect(detectLocale()).toBe('zh')
-    vi.stubGlobal('navigator', { language: 'en-GB' })
+    vi.stubGlobal('navigator', { languages: ['en-US'] })
     expect(detectLocale()).toBe('en')
+  })
+
+  it('walks the list in order — an unmatched head falls through to the next candidate', () => {
+    vi.stubGlobal('navigator', { languages: ['ko-KR', 'zh-TW'] })
+    expect(detectLocale()).toBe('zh-TW')
+  })
+
+  it('falls back to en when nothing matches', () => {
+    vi.stubGlobal('navigator', { languages: ['xx'] })
+    expect(detectLocale()).toBe('en')
+  })
+
+  it('uses [navigator.language] when the languages list is absent', () => {
+    vi.stubGlobal('navigator', { language: 'zh-TW' })
+    expect(detectLocale()).toBe('zh-TW')
   })
 
   it('survives an empty navigator.language', () => {

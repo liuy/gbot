@@ -71,4 +71,4 @@ export const dict: Dict = {
   sidebarNoArtifacts: '暂无 Artifacts',
 }
 
-export const endonym = '中文'
+export const endonym = '简体中文'

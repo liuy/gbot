@@ -799,7 +799,7 @@ describe('createSettingsPage', () => {
     expect(cards[1].querySelector('[data-type-badge]')?.textContent).toBe('OPENAI')
   })
 
-  it('Language row expands an Auto|English|中文 panel; no stored value preselects Auto', async () => {
+  it('Language row expands an Auto|English|简体中文 panel; no stored value preselects Auto', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
     const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
@@ -814,7 +814,7 @@ describe('createSettingsPage', () => {
     const zhBtn = panel.querySelector('[data-lang-opt="zh"]') as HTMLElement
     expect(autoBtn.textContent).toBe('System')
     expect(enBtn.textContent).toBe('English')
-    expect(zhBtn.textContent).toBe('中文')
+    expect(zhBtn.textContent).toBe('简体中文')
     expect(autoBtn.className).toContain('text-blue')
     expect(enBtn.className).not.toContain('text-blue')
     expect(zhBtn.className).not.toContain('text-blue')
@@ -833,7 +833,7 @@ describe('createSettingsPage', () => {
     ])
   })
 
-  it('persisted zh preselects 中文 in the panel and the row value', async () => {
+  it('persisted zh preselects 简体中文 in the panel and the row value', async () => {
     localStorage.setItem('gbot-language', 'zh')
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
@@ -844,7 +844,21 @@ describe('createSettingsPage', () => {
     expect(sel('zh')).toBe(true)
     expect(sel('auto')).toBe(false)
     expect(sel('en')).toBe(false)
-    expect((langRow.querySelector('span.text-t2') as HTMLElement).textContent).toBe('中文')
+    expect((langRow.querySelector('span.text-t2') as HTMLElement).textContent).toBe('简体中文')
+  })
+
+  it('persisted zh-TW renders Traditional Chinese copy in place', async () => {
+    localStorage.setItem('gbot-language', 'zh-TW')
+    initLocale()
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const title = page.root.querySelector('[data-title]') as HTMLElement
+    const addBtn = page.root.querySelector('[data-add-provider]') as HTMLElement
+    expect(title.textContent).toBe('設定')
+    expect(addBtn.textContent).toBe('新增提供者')
+    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    const twBtn = page.root.querySelector('[data-lang-opt="zh-TW"]') as HTMLElement
+    expect(twBtn.textContent).toBe('繁體中文')
+    expect(twBtn.className).toContain('text-blue')
   })
 
   it('interpolated copy (model count) swaps language in place via its anchor', async () => {
@@ -857,7 +871,7 @@ describe('createSettingsPage', () => {
     // Same DOM node — interpolated copy swaps via its anchor, no rebuild.
     expect(page.root.querySelector('[data-provider-card] span[data-i18n-arg]')).toBe(count)
   })
-  it('switching to 中文 swaps text in place — same DOM nodes, no reload', async () => {
+  it('switching to 简体中文 swaps text in place — same DOM nodes, no reload', async () => {
     const reloadSpy = vi.fn()
     vi.stubGlobal('location', { reload: reloadSpy })
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
@@ -900,7 +914,7 @@ describe('createSettingsPage', () => {
     // No rebuild: the expanded panel and rotated chevron survive the switch.
     expect(panel.classList.contains('hidden')).toBe(false)
     expect(chev.classList.contains('rotate-90')).toBe(true)
-    expect(value.textContent).toBe('中文')
+    expect(value.textContent).toBe('简体中文')
     const autoBtn = panel.querySelector('[data-lang-opt="auto"]') as HTMLElement
     const zhBtn = panel.querySelector('[data-lang-opt="zh"]') as HTMLElement
     expect(autoBtn.textContent).toBe('系统')
