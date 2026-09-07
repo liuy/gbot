@@ -32,7 +32,9 @@ class MainActivity : AppCompatActivity() {
         // phantom child process once the UI goes to the background.
         ContextCompat.startForegroundService(
             this,
-            Intent(this, ConnectionForegroundService::class.java),
+            Intent(this, ConnectionForegroundService::class.java)
+                .putExtra(ConnectionForegroundService.EXTRA_HOST, ConnectionForegroundService.DEFAULT_HOST)
+                .putExtra(ConnectionForegroundService.EXTRA_PORT, ConnectionForegroundService.DEFAULT_PORT),
         )
 
         binding = ActivityMainBinding.inflate(layoutInflater)

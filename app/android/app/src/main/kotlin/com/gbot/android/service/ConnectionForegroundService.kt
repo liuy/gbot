@@ -39,6 +39,15 @@ class ConnectionForegroundService : Service() {
         const val NOTIFICATION_ID = 1001
         const val EXTRA_HOST = "extra_host" // gbot server host (was: SSH server host)
         const val EXTRA_PORT = "extra_port" // gbot server port, default 8765
+        const val DEFAULT_HOST = "127.0.0.1"
+        const val DEFAULT_PORT = 8765
+
+        // Companion-level so the fallback logic stays unit-testable without
+        // Robolectric (its native binder does not load on arm64 Termux JVMs).
+        internal fun resolveTarget(intent: Intent?): Pair<String, Int> = Pair(
+            intent?.getStringExtra(EXTRA_HOST) ?: DEFAULT_HOST,
+            intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT,
+        )
     }
 
     private var wsClient: GbotWebSocketClient? = null
@@ -54,8 +63,7 @@ class ConnectionForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val host = intent?.getStringExtra(EXTRA_HOST) ?: ""
-        val port = intent?.getIntExtra(EXTRA_PORT, 8765) ?: 8765
+        val (host, port) = resolveTarget(intent)
 
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -110,7 +118,7 @@ class ConnectionForegroundService : Service() {
                 // TCP timeout and the loop eventually retries.
                 val opened = client.connectBlocking()
                 if (!opened) {
-                    GbotProcess.appendEvent("Connect refused at $host:$port; retry in ${backoff}s")
+                    GbotProcess.appendEvent("Connect failed at $host:$port; retry in ${backoff}s")
                 } else {
                     GbotProcess.appendEvent("Connected to gbot at $host:$port")
                     backoff = 1
