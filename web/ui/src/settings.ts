@@ -396,6 +396,8 @@ export function createSettingsPage(): SettingsPageHandles {
   languageRow.row.addEventListener('click', () => {
     const open = languagePanel.classList.toggle('hidden')
     languageRow.chev.classList.toggle('rotate-90', !open)
+    // toggle('hidden') resolves false when the panel just opened — reveal it.
+    if (!open) languagePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   })
 
   // The value's anchor tracks the current pref so a locale switch
@@ -426,6 +428,8 @@ export function createSettingsPage(): SettingsPageHandles {
   themeRow.row.addEventListener('click', () => {
     const open = themePanel.classList.toggle('hidden')
     themeRow.chev.classList.toggle('rotate-90', !open)
+    // toggle('hidden') resolves false when the panel just opened — reveal it.
+    if (!open) themePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   })
 
   const hljsLabel = () => HLJS_THEMES.find((t) => t.key === getSavedHljsTheme())?.label ?? getSavedHljsTheme()
@@ -462,6 +466,8 @@ export function createSettingsPage(): SettingsPageHandles {
   hljsRow.row.addEventListener('click', () => {
     const open = hljsPanel.classList.toggle('hidden')
     hljsRow.chev.classList.toggle('rotate-90', !open)
+    // toggle('hidden') resolves false when the panel just opened — reveal it.
+    if (!open) hljsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   })
 
   generalCard.append(

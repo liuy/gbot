@@ -921,6 +921,20 @@ describe('createSettingsPage', () => {
     expect(zhBtn.className).toContain('text-blue')
     expect(autoBtn.className).not.toContain('text-blue')
   })
+  it('expanding a General row scrolls its panel into view (jsdom spies scroll)', async () => {
+    // jsdom has no layout engine, so scrollIntoView is spied instead of felt.
+    const spy = vi.fn()
+    Element.prototype.scrollIntoView = spy
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const rows = page.root.querySelectorAll('[data-general-row]')
+    rows[2].click() // highlights row — the card's tail, the reported case
+    expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    spy.mockClear()
+    rows[2].click() // collapsing must not scroll
+    expect(spy).not.toHaveBeenCalled()
+  })
 
   it('selecting 系统 removes the stored value and re-resolves in place', async () => {
     localStorage.setItem('gbot-language', 'zh')
