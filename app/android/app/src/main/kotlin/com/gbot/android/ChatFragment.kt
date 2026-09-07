@@ -2,6 +2,7 @@ package com.gbot.android
 
 import android.app.Activity
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
@@ -21,6 +22,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.customtabs.CustomTabColorSchemeParams
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsControllerCompat
@@ -41,11 +44,20 @@ class ChatFragment : Fragment() {
     }
 
     private var webView: WebView? = null
+    // Last theme the WUI reported (GBotNative.onThemeChanged); dark is the
+    // app's primary look so it doubles as the pre-report default.
+    @Volatile private var isDarkTheme: Boolean = true
     private var loadingOverlay: View? = null
     private var splashMark: android.widget.TextView? = null
     private var lastLoadFailed = false
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
+
+    // Partial Custom Tabs REQUIRE launching via startActivityForResult (or a
+    // CustomTabsSession) — a plain startActivity makes Chrome ignore the
+    // height extra and open full-screen.
+    private val customTabLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
     // registerForActivityResult must be called during Fragment initialization
     // (as a field initializer), NOT inside a method. This ensures the callback
@@ -161,6 +173,33 @@ class ChatFragment : Fragment() {
         }
 
         webView?.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url ?: return false
+                val scheme = url.scheme?.lowercase()
+                if (scheme == "http" || scheme == "https") {
+                    val host = url.host?.lowercase()
+                    val port = if (url.port in 0..65535) url.port else if (scheme == "https") 443 else 80
+                    // Own origin only (the WebView hosts JS bridges) — a chat
+                    // link to any other localhost port must not stay in-app.
+                    if ((host == "localhost" || host == "127.0.0.1" || host == "::1") && port == 8765) {
+                        return false
+                    }
+                    // External http(s): partial bottom-sheet custom tab at
+                    // half screen height (adjustable). Chrome builds without
+                    // partial-tab support ignore the height extras and fall
+                    // back to a full-screen tab.
+                    openCustomTab(url)
+                    return true
+                }
+                // mailto:, tel:, intent:, ... → hand to the system.
+                return try {
+                    startActivity(Intent(Intent.ACTION_VIEW, url))
+                    true
+                } catch (e: ActivityNotFoundException) {
+                    true // nothing can open it — swallow so the WebView doesn't navigate
+                }
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 // onPageFinished ALSO fires for the system error page after
                 // a failed load — only lift the splash on a real page.
@@ -275,12 +314,41 @@ class ChatFragment : Fragment() {
         @JavascriptInterface
         fun onThemeChanged(isDark: Boolean) {
             activity?.runOnUiThread {
+                isDarkTheme = isDark
                 activity?.window?.let { window ->
                     WindowInsetsControllerCompat(window, window.decorView)
                         .isAppearanceLightStatusBars = !isDark
                 }
             }
         }
+    }
+
+    private fun openCustomTab(url: Uri) {
+        // Follow the WUI-resolved theme (web is the single source of truth);
+        // dark matches the splash/WUI palette byte-for-byte via splash_bg.
+        val scheme = if (isDarkTheme) CustomTabsIntent.COLOR_SCHEME_DARK else CustomTabsIntent.COLOR_SCHEME_LIGHT
+        val params = CustomTabColorSchemeParams.Builder()
+            .setToolbarColor(
+                ContextCompat.getColor(
+                    requireContext(),
+                    if (isDarkTheme) R.color.splash_bg else android.R.color.white,
+                ),
+            )
+            .build()
+        val intent = CustomTabsIntent.Builder()
+            .setInitialActivityHeightPx(
+                resources.displayMetrics.heightPixels / 2,
+                CustomTabsIntent.ACTIVITY_HEIGHT_ADJUSTABLE,
+            )
+            .setToolbarCornerRadiusDp(16)
+            .setDefaultColorSchemeParams(params)
+            .setColorScheme(scheme)
+            // setData + startActivityForResult-style launch: the partial-tab
+            // contract. launchUrl() (plain startActivity) makes Chrome ignore
+            // the height and open full-screen.
+            .build()
+        intent.intent.data = url
+        customTabLauncher.launch(intent.intent)
     }
 
     override fun onDestroyView() {
