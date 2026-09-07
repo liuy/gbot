@@ -106,7 +106,7 @@ package-windows: $(CMD)icon.ico
 
 # package-android builds the self-contained Android APK. Requires Android
 # SDK + NDK 26.3.x + JDK 21. Sideload only (targetSdk 28 for W^X exemption).
-package-android:
+package-android: build-android
 	bash scripts/package-android.sh $(VERSION)
 
 wails-build: web-build

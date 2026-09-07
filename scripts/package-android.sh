@@ -95,6 +95,7 @@ else
 fi
 chmod +x "${ASSETS}/gbot-arm64"
 echo "Staged assets/gbot-arm64 ($(du -h "${ASSETS}/gbot-arm64" | cut -f1))"
+cp "${ASSETS}/gbot-arm64" "${ROOT}/gbot-android"
 
 # 4.5. Auto-bump BOOTSTRAP_VERSION so existing installs pick up new binaries.
 # Derive from md5 of gbot+rg so it changes only when the binaries actually
