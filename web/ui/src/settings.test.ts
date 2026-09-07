@@ -773,12 +773,22 @@ describe('createSettingsPage', () => {
     const value = hljsRow.querySelector('span.text-t2') as HTMLElement
     expect(value.textContent).toBe('Atom One')
   })
-  it('frame pads below the phone status bar', async () => {
+  it('header frosts over the status bar strip itself', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    // The overlay is inset-0 — without the sidebar-safe-top padding the
-    // header renders behind the transparent system status bar.
+    // The root is the full-page scroller, so scrolled content passes through
+    // the strip under the transparent status bar. The header must cover that
+    // strip itself (top-0 + status-bar-height padding) so its backdrop blur
+    // frosts it; the frame must not rely on safe-top padding, which would
+    // leave the strip transparent.
     const frame = page.root.firstElementChild as HTMLElement
-    expect(frame.className).toContain('sidebar-safe-top')
+    expect(frame.className).not.toContain('sidebar-safe-top')
+    const hdr = frame.firstElementChild as HTMLElement
+    expect(hdr.className).toContain('top-0')
+    expect(hdr.className).toContain('pt-[calc(env(safe-area-inset-top,0px)+14px)]')
+    // Glass style parity with the chat top bar (header.ts): same card tint,
+    // same 4px backdrop blur — not the page-local bg-bg/60 + 8px variant.
+    expect(hdr.className).toContain('card-bg')
+    expect(hdr.className).not.toContain('backdrop-blur')
   })
 
   it('renders the page in Chinese when localStorage pins zh', async () => {
