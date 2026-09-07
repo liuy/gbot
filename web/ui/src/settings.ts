@@ -220,7 +220,7 @@ export function createSettingsPage(): SettingsPageHandles {
     className: 'fixed inset-0 z-[60] overflow-y-auto bg-bg',
     style: { display: 'none' },
   })
-  const frame = createElement('div', 'sidebar-safe-top max-w-[420px] mx-auto min-h-full flex flex-col relative')
+  const frame = createElement('div', 'sidebar-safe-top max-w-2xl mx-auto min-h-full flex flex-col relative')
 
   const hdr = createElement(
     'div',
