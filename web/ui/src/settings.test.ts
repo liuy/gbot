@@ -1021,7 +1021,7 @@ describe('app log card', () => {
   it('expands a panel pulling tail(500) from the Android bridge, one line per row, monospaced', async () => {
     const tail = vi.fn(() => LINES)
     const page = await openAppLog(tail)
-    expect(rowTitle(page).textContent).toBe('App Logs')
+    expect(rowTitle(page).textContent).toBe('Logs')
     expect(tail).toHaveBeenCalledTimes(1)
     expect(tail).toHaveBeenCalledWith(500)
     const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
@@ -1047,10 +1047,13 @@ describe('app log card', () => {
     localStorage.setItem('gbot-language', 'zh')
     initLocale()
     const page = await openAppLog(vi.fn(() => LINES))
-    expect(rowTitle(page).textContent).toBe('应用日志')
-    expect((page.root.querySelector('[data-applog-copy]') as HTMLElement).textContent).toBe('复制')
-    expect((page.root.querySelector('[data-applog-clear]') as HTMLElement).textContent).toBe('清空')
-    expect((page.root.querySelector('[data-applog-bottom]') as HTMLElement).textContent).toBe('滚动到底部')
+    expect(rowTitle(page).textContent).toBe('日志')
+    // Single copy ICON — no text buttons for clear/scroll-bottom.
+    const copyBtn = page.root.querySelector('[data-applog-copy]') as HTMLElement
+    expect(copyBtn.querySelector('svg')).not.toBeNull()
+    expect(copyBtn.textContent).not.toContain('复制')
+    expect(page.root.querySelector('[data-applog-clear]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-bottom]')).toBeNull()
   })
 
   it('degrades to the unavailable hint when the bridge global is absent (desktop)', async () => {
@@ -1085,31 +1088,5 @@ describe('app log card', () => {
     await vi.waitFor(() => {
       expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copy failed')
     })
-  })
-
-  it('clear confirms, invokes the bridge, and re-renders an empty log', async () => {
-    const clear = vi.fn()
-    const tail = vi.fn().mockReturnValueOnce(LINES).mockReturnValueOnce('')
-    vi.stubGlobal('GBotAppLogs', { tail, clear })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
-    ;(page.root.querySelector('[data-applog-clear]') as HTMLElement).click()
-    expect(confirmSpy).toHaveBeenCalledWith('Clear all app logs?')
-    expect(clear).toHaveBeenCalledTimes(1)
-    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
-    expect([...body.children]).toHaveLength(0)
-  })
-
-  it('clear is a no-op when the user cancels the confirmation', async () => {
-    const clear = vi.fn()
-    vi.stubGlobal('GBotAppLogs', { tail: vi.fn(() => LINES), clear })
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
-    ;(page.root.querySelector('[data-applog-clear]') as HTMLElement).click()
-    expect(clear).not.toHaveBeenCalled()
-    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
-    expect([...body.children]).toHaveLength(2)
   })
 })

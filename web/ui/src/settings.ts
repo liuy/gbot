@@ -524,17 +524,15 @@ export function createSettingsPage(): SettingsPageHandles {
     }
     appLogText = bridge.tail(500)
 
-    const actions = createElement('div', 'flex items-center gap-4 px-3.5 py-2 border-b border-hairline')
-    const actionBtn = (key: StaticKey, attr: string) =>
-      createNode('span', {
-        className: 'text-[11px] text-blue cursor-pointer select-none',
-        text: t(key),
-        attrs: { [attr]: '' },
-      })
-    const copyBtn = actionBtn('appLogCopy', 'data-applog-copy')
-    const clearBtn = actionBtn('appLogClear', 'data-applog-clear')
-    const bottomBtn = actionBtn('appLogScrollBottom', 'data-applog-bottom')
-    actions.append(copyBtn, clearBtn, bottomBtn)
+    // Single copy icon (icon-family style) — scrolling is native overflow
+    // scrolling; the body auto-scrolls to the newest line on open.
+    const actions = createElement('div', 'flex justify-end px-3.5 pt-2 pb-1.5')
+    const copyBtn = createNode('span', {
+      className: 'text-t3 hover:text-t1 cursor-pointer select-none p-1 -m-1',
+      attrs: { 'data-applog-copy': '', 'aria-label': t('appLogCopy') },
+    })
+    copyBtn.appendChild(renderIcon('copy', { size: 14 }))
+    actions.append(copyBtn)
 
     const body = createElement(
       'div',
@@ -561,16 +559,6 @@ export function createSettingsPage(): SettingsPageHandles {
         .writeText(appLogText)
         .then(() => toast(t('appLogCopied')))
         .catch(() => toast(t('appLogCopyFailed')))
-    })
-    clearBtn.addEventListener('click', () => {
-      const b = appLogsBridge()
-      if (!b) return
-      if (!window.confirm(t('appLogClearConfirm'))) return
-      b.clear()
-      renderAppLogPanel()
-    })
-    bottomBtn.addEventListener('click', () => {
-      body.scrollTop = body.scrollHeight
     })
 
     appLogPanel.append(actions, body)
