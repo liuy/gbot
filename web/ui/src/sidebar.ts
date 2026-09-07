@@ -180,7 +180,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     label: t('sidebarSettings'),
     variant: 'ghost',
     size: 'auto',
-    iconSize: 18,
+    iconSize: 22,
     className: 'absolute bottom-5 left-5',
   })
   settingsBtn.setAttribute('data-settings-btn', '')

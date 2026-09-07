@@ -132,11 +132,10 @@ const ICONS: Record<IconName, IconDef> = {
     defaultStrokeWidth: 2,
   },
   settings: {
-    // Lucide sliders-horizontal (3 tracks + handles) — the modern settings
-    // glyph; a cog's 20+ segments turn to mush at 12px.
-    path: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
-    variant: 'outline',
-    defaultStrokeWidth: 2,
+    // Full-short-full bars in the menu icon's filled language, echoing
+    // the 2-line menu's inset second bar — family consistency with rank.
+    path: '<rect x="2" y="4.5" width="20" height="3" rx="1.5" fill="currentColor" stroke="none"/><rect x="6" y="10.5" width="14" height="3" rx="1.5" fill="currentColor" stroke="none"/><rect x="2" y="16.5" width="20" height="3" rx="1.5" fill="currentColor" stroke="none"/>',
+    variant: 'mixed',
   },
   search: {
     path: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>',
