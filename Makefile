@@ -143,7 +143,7 @@ app-check:
 # Assets are checked into pkg/connector/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
 web-build:
-	cd web/ui && npm ci && npm run build
+	cd web/ui && export LD_PRELOAD="$${LD_PRELOAD:-$${PREFIX:+$$PREFIX/lib/libtermux-exec.so}}" && npm ci && npm run build
 	gzip -kf pkg/connector/wui/assets/index.html
 
 web-test:

@@ -27,6 +27,11 @@ RG_CACHE="${CACHE}/ripgrep-${RG_VERSION}-aarch64-musl.tar.gz"
 require() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: $1 not found. $2" >&2; exit 1; }; }
 require curl "Install curl"
 require unzip "Install unzip"
+# Daemon-spawned shells have no LD_PRELOAD — without the Termux exec shim,
+# every #!/usr/bin/env shebang (npm/tsc/vite) dies with "bad interpreter".
+if [ -n "${PREFIX:-}" ] && [ -z "${LD_PRELOAD:-}" ] && [ -f "${PREFIX}/lib/libtermux-exec.so" ]; then
+    export LD_PRELOAD="${PREFIX}/lib/libtermux-exec.so"
+fi
 
 mkdir -p "${CACHE}" "${DIST}" "${ASSETS}"
 

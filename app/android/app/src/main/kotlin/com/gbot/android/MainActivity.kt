@@ -1,11 +1,14 @@
 package com.gbot.android
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.gbot.android.databinding.ActivityMainBinding
+import com.gbot.android.service.ConnectionForegroundService
 
 class MainActivity : AppCompatActivity() {
 
@@ -23,6 +26,14 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.i("MainActivity", msg)
             }
         }.start()
+
+        // Foreground importance: the OS must neither freeze the app's cgroup
+        // (cached-apps freezer stops the daemon) nor reap the daemon as a
+        // phantom child process once the UI goes to the background.
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, ConnectionForegroundService::class.java),
+        )
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
