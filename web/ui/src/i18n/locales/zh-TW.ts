@@ -19,7 +19,6 @@ export const dict: Dict = {
   appLogCopy: '複製',
   appLogCopied: '已複製',
   appLogCopyFailed: '複製失敗',
-  appLogUnavailable: '僅在 Android 應用程式中可用',
   savedRestart: '已儲存 · 重新啟動常駐程式後生效',
   savedBackedUp: '已儲存 · 原檔已備份 · 重新啟動常駐程式後生效',
   deletedRestorable: '已刪除 · 可從備份還原',

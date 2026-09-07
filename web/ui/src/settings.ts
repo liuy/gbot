@@ -483,8 +483,8 @@ export function createSettingsPage(): SettingsPageHandles {
 
   // --------------------------------------------------------------- app logs
   // Read-only view into the Android host's app-side log buffer. The name
-  // mirrors AppLogsBridge.BRIDGE_NAME in the Android shell; a desktop
-  // browser has no such global and the panel degrades to a hint line.
+  // mirrors AppLogsBridge.BRIDGE_NAME in the Android shell; on a desktop
+  // browser the whole card stays out of the page instead of degrading.
   const APP_LOGS_BRIDGE = 'GBotAppLogs'
   interface AppLogsBridge {
     tail: (n: number) => string
@@ -512,17 +512,8 @@ export function createSettingsPage(): SettingsPageHandles {
   const renderAppLogPanel = () => {
     appLogPanel.replaceChildren()
     const bridge = appLogsBridge()
-    if (!bridge) {
-      appLogPanel.appendChild(
-        createNode('div', {
-          className: 'px-3.5 py-3 text-[11px] text-t3',
-          text: t('appLogUnavailable'),
-          attrs: { 'data-applog-unavailable': '' },
-        }),
-      )
-      return
-    }
-    appLogText = bridge.tail(500)
+    if (bridge) {
+      appLogText = bridge.tail(500)
 
     // Single copy icon (icon-family style) — scrolling is native overflow
     // scrolling; the body auto-scrolls to the newest line on open.
@@ -562,6 +553,7 @@ export function createSettingsPage(): SettingsPageHandles {
     })
 
     appLogPanel.append(actions, body)
+    }
   }
 
   appLogHead.addEventListener('click', () => {
@@ -584,8 +576,10 @@ export function createSettingsPage(): SettingsPageHandles {
     defaultCard,
     sectionLabel('generalSection'),
     generalCard,
-    appLogCard,
   )
+  // The card is Android-shell-only: absent bridge (desktop browser) means
+  // no card at all rather than a degraded hint.
+  if (appLogsBridge()) homeScreen.append(appLogCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
   // ------------------------------------------------------------------ edit

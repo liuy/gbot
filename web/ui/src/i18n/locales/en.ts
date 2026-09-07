@@ -41,7 +41,6 @@ export const dict = {
   appLogCopy: 'Copy',
   appLogCopied: 'Copied',
   appLogCopyFailed: 'Copy failed',
-  appLogUnavailable: 'Only available in the Android app',
   savedRestart: 'Saved · restart daemon to apply',
   savedBackedUp: 'Saved · original backed up · restart daemon to apply',
   deletedRestorable: 'Deleted · restorable from backup',

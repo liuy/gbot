@@ -1056,15 +1056,10 @@ describe('app log card', () => {
     expect(page.root.querySelector('[data-applog-bottom]')).toBeNull()
   })
 
-  it('degrades to the unavailable hint when the bridge global is absent (desktop)', async () => {
+  it('hides the app logs card entirely when the bridge global is absent (desktop)', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
-    const hint = page.root.querySelector('[data-applog-unavailable]') as HTMLElement
-    expect(hint.textContent).toBe('Only available in the Android app')
-    // No action row or log body — nothing to copy or clear.
-    expect(page.root.querySelector('[data-applog-copy]')).toBeNull()
-    expect(page.root.querySelector('[data-applog-clear]')).toBeNull()
-    expect(page.root.querySelector('[data-applog-lines]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-row]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-panel]')).toBeNull()
   })
 
   it('copy writes the fetched tail via the clipboard API and toasts success', async () => {
