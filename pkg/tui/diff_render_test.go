@@ -158,6 +158,26 @@ func TestApplyDiffBackground_NonDiffLine(t *testing.T) {
 	}
 }
 
+// Chroma-highlighted content carries \x1b[0m at each token span's end; a
+// plain line-level bg prefix would be wiped by the first one, leaving the
+// rest of the line on the terminal default. The bg must be re-asserted
+// after every inner reset (same technique delta/bat use).
+func TestApplyDiffBackground_ReassertsAfterInnerReset(t *testing.T) {
+	t.Parallel()
+	input := " 1 +" + "\x1b[38;5;10mname\x1b[0m: plain tail"
+	result := applyDiffBackground(input, 40)
+	// The re-assert must sit directly after the INNER reset, before the
+	// tail content — the line-end padding junction already contains a
+	// reset+bg pair, so anchor on the tail to hit the inner one.
+	want := "\x1b[0m" + diffAddBg + ": plain tail"
+	if !strings.Contains(result, want) {
+		t.Errorf("expected bg re-assert after inner reset (%q), got: %q", want, result)
+	}
+	if got := visibleWidth(result); got != 40 {
+		t.Errorf("visibleWidth after padding = %d, want 40", got)
+	}
+}
+
 func TestApplyDiffBackground_Multiline(t *testing.T) {
 	t.Parallel()
 	input := " 1 -old\n 1 +new\n 2  ctx"

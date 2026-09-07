@@ -130,6 +130,11 @@ func applyDiffBackground(output string, width int) string {
 				continue
 			}
 			changed = true
+			// Highlighted content (chroma) ends each token span with a full
+			// reset that would wipe the line bg; re-assert the bg after every
+			// inner reset so fg colors and the diff bg coexist (same technique
+			// as delta/bat for painting line bg under highlighted diff text).
+			line = strings.ReplaceAll(line, diffReset, diffReset+lastBg)
 			vw := visibleWidth(line)
 			pad := max(width-vw, 0)
 			rebuilt = append(rebuilt, lastBg+line+diffReset+lastBg+strings.Repeat(" ", pad)+diffReset)
@@ -137,6 +142,7 @@ func applyDiffBackground(output string, width int) string {
 			// Wrapped continuation of a diff line — keep inheriting lastBg
 			// until the next marker arrives.
 			changed = true
+			line = strings.ReplaceAll(line, diffReset, diffReset+lastBg)
 			vw := visibleWidth(line)
 			pad := max(width-vw, 0)
 			rebuilt = append(rebuilt, lastBg+line+strings.Repeat(" ", pad)+diffReset)
