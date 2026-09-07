@@ -143,7 +143,7 @@ app-check:
 # Assets are checked into pkg/connector/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
 web-build:
-	cd web/ui && npm install && npm run build
+	cd web/ui && npm ci && npm run build
 	gzip -kf pkg/connector/wui/assets/index.html
 
 web-test:
