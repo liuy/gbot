@@ -4,6 +4,13 @@ plugins {
 	id("com.android.application")
 	id("jacoco")
 }
+// The agent Gradle attaches to test JVMs must byte-match the jacocoAnt version
+// below: offline probes call an obfuscated RT package whose name is hashed per
+// release, so an 0.8.8-instrumented class under Gradle's default 0.8.14 agent
+// dies with NoClassDefFoundError on the first touch.
+jacoco {
+	toolVersion = "0.8.14"
+}
 
 android {
 	namespace = "com.gbot.android"
@@ -50,19 +57,21 @@ android {
 // Jacoco runtime agent's class-file transformer, so app code never gets probed. We
 // inject probes into the compiled .class files at build time; the loaded classes then
 // write execution data through the agent at JVM exit.
-val jacocoVersion = "0.8.8"
-// tmp/kotlin-classes/debug is what plain JVM unit tests (non-Robolectric) load app
-// classes from. Robolectric tests instead resolve app classes from the AGP-bundled
+val jacocoVersion = "0.8.14"
+// AGP 9 built-in Kotlin writes compileDebugKotlin output to
+// intermediates/built_in_kotlinc/... (the old tmp/kotlin-classes path died with the
+// kotlin.android plugin) and plain JVM unit tests (non-Robolectric) load app classes
+// from there. Robolectric tests instead resolve app classes from the AGP-bundled
 // runtime_app_classes_jar (see below), so BOTH must hold probed bytecode. The old
 // approach mutated the test task's classpath in doFirst to prepend a side dir, but that
 // is racy: AGP finalizes the classpath early and the loose dir vs. bundled-jar ordering
 // that Robolectric's sandbox sees is not guaranteed, so coverage was non-deterministic.
-val originalClassesDir = layout.buildDirectory.dir("tmp/kotlin-classes/debug")
+val originalClassesDir = layout.buildDirectory.dir("intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes")
 // Un-instrumented copy of the originals. Jacoco's InstrumentTask cannot read from and
 // write to the same directory (it truncates files mid-stream), and the report must run
 // against un-instrumented classes (probed bytecode inflates instruction/line counts).
 // So: snapshot originals here, report reads here, and instrumentation goes
-// staging -> tmp/kotlin-classes/debug.
+// staging -> the built_in_kotlinc classes dir.
 val originalClassesStagingDir = layout.buildDirectory.dir("tmp/jacoco-original-classes/debug")
 val execFile = layout.buildDirectory.file("jacoco/testDebugUnitTest.exec")
 
@@ -101,15 +110,15 @@ dependencies {
 }
 
 // Runs Jacoco's offline "instrument" ant task on the compiled main classes. The
-// instrumented output is written back into tmp/kotlin-classes/debug, and the AGP-bundled
-// runtime app-class jar is repackaged from those probed classes. Robolectric's sandbox
-// resolves app classes from that runtime jar (not the loose classes dir), so both must
-// hold probed bytecode for coverage to be recorded. Instrumentation reads from the
+// instrumented output is written back into the built_in_kotlinc classes dir, and the
+// AGP-bundled runtime app-class jar is repackaged from those probed classes. Robolectric's
+// sandbox resolves app classes from that runtime jar (not the loose classes dir), so both
+// must hold probed bytecode for coverage to be recorded. Instrumentation reads from the
 // staging copy (InstrumentTask truncates files when src==dst), and staging also feeds the
 // report, which must run against un-instrumented classes. The compile app-class jar is
 // left untouched: it feeds test COMPILATION and probed bytecode (with jacoco RT refs)
 // breaks the Kotlin compiler.
-val runtimeAppClassesJar = layout.buildDirectory.file("intermediates/runtime_app_classes_jar/debug/classes.jar")
+val runtimeAppClassesJar = layout.buildDirectory.file("intermediates/runtime_app_classes_jar/debug/bundleDebugClassesToRuntimeJar/classes.jar")
 
 tasks.register("jacocoOfflineInstrument") {
 	val dst = originalClassesDir
@@ -192,9 +201,10 @@ tasks.register<JacocoReport>("jacocoTestReport") {
 		xml.required.set(true)
 		html.required.set(true)
 	}
-	// Report against the un-instrumented staging copy. tmp/kotlin-classes/debug now
-	// holds probed bytecode (instrumented in place), so reading it here would make
-	// Jacoco count inserted probe fields/instructions and distort the numbers.
+	// Report against the un-instrumented staging copy. The built_in_kotlinc
+	// output holds probed bytecode (instrumented in place), so reading it here
+	// would make Jacoco count inserted probe fields/instructions and distort
+	// the numbers.
 	val debugTree = fileTree(originalClassesStagingDir) {
 		exclude(coverageFileFilter)
 	}
