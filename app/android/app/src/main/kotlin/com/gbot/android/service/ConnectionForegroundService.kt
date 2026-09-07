@@ -120,7 +120,6 @@ class ConnectionForegroundService : Service() {
                 if (!opened) {
                     GbotProcess.appendEvent("Connect failed at $host:$port; retry in ${backoff}s")
                 } else {
-                    GbotProcess.appendEvent("Connected to gbot at $host:$port")
                     backoff = 1
                     // Block until the client disconnects. WebSocketClient has no
                     // built-in "await peer close", so a latch counted down in
