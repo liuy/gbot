@@ -1,3 +1,4 @@
+import { t } from './i18n'
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
 import { createElement, createNode, cx } from './dom'
 import { renderIcon } from './icons'
@@ -375,14 +376,18 @@ export function createInputBar(initial: {
 
   const histSearchWrap = createElement('div', 'flex items-center gap-2 mx-3 my-2 px-3 py-2 rounded-lg bg-ink3/40 shrink-0')
   histSearchWrap.appendChild(renderIcon('search', { size: 14, className: 'text-t3 shrink-0' }))
+  // Built once inside createInputBar, so the placeholder needs the
+  // attribute anchor to follow language switches.
   const histSearch = createNode('textarea', {
     className:
       'flex-1 bg-transparent text-[13px] text-t1 placeholder-t3 outline-none resize-none',
-    props: { rows: 1, placeholder: 'Search...', spellcheck: false },
+    props: { rows: 1, spellcheck: false },
     attrs: { autocapitalize: 'off', autocorrect: 'off' },
     style: { fontFamily: 'inherit' },
   })
   histSearchWrap.appendChild(histSearch)
+  histSearch.placeholder = t('histSearch')
+  histSearch.setAttribute('data-i18n-placeholder', 'histSearch')
   histPanel.appendChild(histSearchWrap)
 
   const histList = createElement('div', 'flex-1 overflow-y-auto p-1 min-h-0')

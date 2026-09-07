@@ -45,8 +45,8 @@ function createModelPicker(
   const searchInput = createNode('textarea', {
     className:
       'flex-1 bg-transparent text-[13px] text-t1 placeholder-t3 outline-none resize-none',
-    props: { rows: 1, placeholder: 'Search...', spellcheck: false },
-    attrs: { autocapitalize: 'off', autocorrect: 'off' },
+    props: { rows: 1, placeholder: t('headerSearch'), spellcheck: false },
+    attrs: { autocapitalize: 'off', autocorrect: 'off', 'data-i18n-placeholder': 'headerSearch' },
     style: { fontFamily: 'inherit' },
   })
   ;(searchInput.style as unknown as Record<string, string>).webkitAppearance = 'none'
@@ -69,7 +69,7 @@ function createModelPicker(
 
     if (filtered.length === 0) {
       const empty = createElement('div', 'px-3 py-4 text-center text-[13px] text-t3')
-      empty.textContent = 'No models found'
+      empty.textContent = t('headerNoModels')
       listContainer.appendChild(empty)
       return
     }
@@ -203,7 +203,7 @@ function createEnginePicker(
     }
     const footer = createIconButton({
       icon: 'plus',
-      label: 'New engine',
+      label: t('headerNewEngine'),
       variant: 'default',
       size: 'md',
       iconSize: 18,
@@ -588,7 +588,7 @@ export function createHeader(opts: {
   // visible effect because the variant carries no background color.
   const hamburgerWrap = createIconButton({
     icon: 'menu',
-    label: 'Menu',
+    label: t('headerMenu'),
     variant: 'ghost',
     size: 'auto',
     iconSize: 18,

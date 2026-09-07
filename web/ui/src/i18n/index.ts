@@ -79,6 +79,23 @@ export function t<K extends keyof Dict>(key: K): Dict[K] {
   return m.dict[key]
 }
 
+// Plural category for interpolated counts. en only ever needs one/other, but
+// routing through Intl.PluralRules.select — instead of `n === 1` — is what
+// lets a future multi-class locale (ru/ar/pl…) join by dropping in a
+// dictionary, with zero call-site changes.
+const pluralRulesCache = new Map<Locale, Intl.PluralRules>()
+export function pluralCat(n: number): string {
+  // Mirror t()'s en fallback: a stray setLocale must pluralize by en rules
+  // rather than by whatever ICU's own fallback chain picks.
+  const locale = locales[cur] !== undefined ? cur : 'en'
+  let rules = pluralRulesCache.get(locale)
+  if (rules === undefined) {
+    rules = new Intl.PluralRules(locale)
+    pluralRulesCache.set(locale, rules)
+  }
+  return rules.select(n)
+}
+
 // Lowercased stem view of the registry: BCP 47 tags are case-insensitive, so
 // 'zh-tw' from the browser must resolve the 'zh-TW' file stem — but the
 // returned Locale must be the real stem, hence a map back rather than a Set.
@@ -159,6 +176,13 @@ export function retranslate(root: ParentNode): void {
     if (argAttr === null) continue
     const args = argAttr.split(',').map(Number)
     el.textContent = (val as (...nums: number[]) => string)(...args)
+  }
+
+  // Placeholders are attributes, not text content: boot-resident inputs
+  // (e.g. the header model search) carry data-i18n-placeholder so this same
+  // pass swaps their placeholder alongside any anchored text.
+  for (const el of root.querySelectorAll('[data-i18n-placeholder]')) {
+    el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder') as StaticKey))
   }
 }
 

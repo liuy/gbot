@@ -16,6 +16,12 @@
 //   - interpolation data fallbacks 'provider' and 'error' passed from
 //     settings.ts call sites (not UI copy)
 
+// pluralCat comes from the registry rather than a local `n === 1` so en's
+// plural rules live in one place; the import is cycle-safe because the
+// dictionary only calls it inside function bodies, long after both modules
+// finished evaluating.
+import { pluralCat } from '../index'
+
 export const dict = {
   settingsTitle: 'Settings',
   addProviderTitle: 'Add provider',
@@ -69,9 +75,9 @@ export const dict = {
   imageModality: 'Image',
   audioModality: 'Audio',
   videoModality: 'Video',
-  modelsCount: (n: number) => `${n} models`,
+  modelsCount: (n: number) => `${n} ${pluralCat(n) === 'one' ? 'model' : 'models'}`,
   fetchedModels: (total: number, added: number) =>
-    `Fetched ${total} models, ${added} added (existing kept)`,
+    `Fetched ${total} ${pluralCat(total) === 'one' ? 'model' : 'models'}, ${added} added (existing kept)`,
   allModelsConfigured: 'All models already configured',
   anthropicNoModelList: 'Anthropic has no model list endpoint — add models manually',
   phProviderName: 'provider name',
@@ -88,6 +94,11 @@ export const dict = {
   sidebarClearArtifacts: 'Clear all artifacts',
   sidebarSettings: 'Settings',
   sidebarNoArtifacts: 'No artifacts yet',
+  histSearch: 'Search...',
+  headerSearch: 'Search...',
+  headerNoModels: 'No models found',
+  headerNewEngine: 'New engine',
+  headerMenu: 'Menu',
   ctxTitle: 'Context Usage',
   ctxCompact: 'Compact',
   ctxEmpty: 'Send a message first to see context usage.',

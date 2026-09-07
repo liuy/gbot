@@ -10,6 +10,7 @@ import {
   saveLocaleAuto,
   retranslate,
   localeOptions,
+  pluralCat,
 } from './index'
 
 // An independent glob of locales/ — the registry under test must derive
@@ -59,6 +60,71 @@ describe('i18n dictionary', () => {
     setLocale('zh-TW')
     expect(t('settingsTitle')).toBe('設定')
     expect(t('modelsCount')(2)).toBe('2個模型')
+  })
+})
+
+describe('pluralized counts', () => {
+  it('en modelsCount: 1 model / 2 models', () => {
+    setLocale('en')
+    expect(t('modelsCount')(1)).toBe('1 model')
+    expect(t('modelsCount')(2)).toBe('2 models')
+    expect(t('modelsCount')(0)).toBe('0 models')
+  })
+
+  it('en fetchedModels pluralizes on the fetched total', () => {
+    setLocale('en')
+    expect(t('fetchedModels')(1, 0)).toBe('Fetched 1 model, 0 added (existing kept)')
+    expect(t('fetchedModels')(2, 1)).toBe('Fetched 2 models, 1 added (existing kept)')
+  })
+
+  it('zh and zh-TW are single-class: the digit hugs the noun even at n=1', () => {
+    setLocale('zh')
+    expect(t('modelsCount')(1)).toBe('1个模型')
+    setLocale('zh-TW')
+    expect(t('modelsCount')(1)).toBe('1個模型')
+  })
+
+  it('the data-i18n-arg re-run path re-pluralizes on locale switch', () => {
+    const root = document.createElement('div')
+    const count = document.createElement('span')
+    count.setAttribute('data-i18n', 'modelsCount')
+    count.setAttribute('data-i18n-arg', '1')
+    count.textContent = '1 model'
+    root.append(count)
+    setLocale('zh')
+    retranslate(root)
+    expect(count.textContent).toBe('1个模型')
+    setLocale('en')
+    retranslate(root)
+    expect(count.textContent).toBe('1 model')
+  })
+})
+
+describe('pluralCat', () => {
+  it('en selects one/other; zh selects other for every n', () => {
+    setLocale('en')
+    expect(pluralCat(1)).toBe('one')
+    expect(pluralCat(2)).toBe('other')
+    expect(pluralCat(0)).toBe('other')
+    setLocale('zh')
+    expect(pluralCat(1)).toBe('other')
+  })
+
+  it('an unregistered locale pluralizes by en rules, mirroring the t() fallback', () => {
+    setLocale('xx')
+    expect(pluralCat(1)).toBe('one')
+    expect(pluralCat(2)).toBe('other')
+  })
+
+  it('reuses the cached instance for repeated calls under one locale', () => {
+    const spy = vi.spyOn(Intl, 'PluralRules')
+    setLocale('en')
+    pluralCat(3)
+    const afterFirst = spy.mock.calls.length
+    pluralCat(4)
+    pluralCat(5)
+    expect(spy.mock.calls.length).toBe(afterFirst)
+    spy.mockRestore()
   })
 })
 
@@ -256,5 +322,19 @@ it('t() falls back to English for an unregistered locale', () => {
     retranslate(root)
     // No arg → template cannot run; the old text stays instead of "undefined个模型".
     expect(bare.textContent).toBe('3 models')
+  })
+
+  it('rewrites placeholder attributes from data-i18n-placeholder anchors', () => {
+    const root = document.createElement('div')
+    const input = document.createElement('textarea')
+    input.setAttribute('data-i18n-placeholder', 'headerSearch')
+    input.setAttribute('placeholder', 'Search...')
+    root.append(input)
+    setLocale('zh')
+    retranslate(root)
+    expect(input.getAttribute('placeholder')).toBe('搜索…')
+    setLocale('en')
+    retranslate(root)
+    expect(input.getAttribute('placeholder')).toBe('Search...')
   })
 })

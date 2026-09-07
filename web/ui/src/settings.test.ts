@@ -864,7 +864,7 @@ describe('createSettingsPage', () => {
   it('interpolated copy (model count) swaps language in place via its anchor', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const count = page.root.querySelector('[data-provider-card] span[data-i18n-arg]') as HTMLElement
-    expect(count.textContent).toBe('1 models')
+    expect(count.textContent).toBe('1 model')
     ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
     expect(count.textContent).toBe('1个模型')
