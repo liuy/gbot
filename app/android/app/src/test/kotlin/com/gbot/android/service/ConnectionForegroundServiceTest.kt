@@ -3,6 +3,7 @@ package com.gbot.android.service
 import android.app.NotificationManager
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
+import com.gbot.android.GbotProcess
 import com.google.common.truth.Truth.assertThat
 import org.junit.After
 import org.junit.Before
@@ -21,16 +22,12 @@ class ConnectionForegroundServiceTest {
 
 	@Before
 	fun setup() {
-		ConnectionForegroundService.logSink = null
-		ConnectionForegroundService.connSink = null
+		GbotProcess.logBuffer.setLength(0)
 		service = Robolectric.buildService(ConnectionForegroundService::class.java).create().get()
 	}
 
 	@After
 	fun teardown() {
-		// logSink/connSink are static vars; clear them so they don't leak into other test classes.
-		ConnectionForegroundService.logSink = null
-		ConnectionForegroundService.connSink = null
 		service.onDestroy()
 	}
 
@@ -79,24 +76,21 @@ class ConnectionForegroundServiceTest {
 	}
 
 	@Test
-	fun onStartCommand_emitsConnectAttemptToLogSink() {
-		val logs = mutableListOf<String>()
-		ConnectionForegroundService.logSink = { logs.add(it) }
-
-		// Dial a port nothing is listening on so the connect fails fast and logs.
+	fun onStartCommand_appendsConnectAttemptToAppLogBuffer() {
+		// Dial a port nothing is listening on so the connect fails fast and
+		// the event lands in the app log buffer (the WUI panel's feed).
 		val intent = Intent(ApplicationProvider.getApplicationContext(), ConnectionForegroundService::class.java)
 			.putExtra(ConnectionForegroundService.EXTRA_HOST, "127.0.0.1")
 			.putExtra(ConnectionForegroundService.EXTRA_PORT, freeUnusedPort())
 		service.onStartCommand(intent, 0, 0)
 
-		// Poll up to 3s for a connect-failed/refused log line.
 		val start = System.currentTimeMillis()
 		while (System.currentTimeMillis() - start < 3000 &&
-			logs.none { it.contains("Connect") }
+			!GbotProcess.logBuffer.toString().contains("Connect")
 		) {
 			Thread.sleep(20)
 		}
-		assertThat(logs.any { it.contains("Connect") }).isTrue()
+		assertThat(GbotProcess.logBuffer.toString()).contains("Connect")
 	}
 
 	@Test

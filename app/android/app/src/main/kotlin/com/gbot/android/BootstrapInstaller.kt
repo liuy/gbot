@@ -1,8 +1,8 @@
 package com.gbot.android
 
 import android.content.Context
-import android.util.Log
 import android.system.Os
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
@@ -32,6 +32,7 @@ object BootstrapInstaller {
         // Case 1: First install or usr/ wiped — full bootstrap extraction.
         if (!bashExists) {
             Log.i(TAG, "Full bootstrap extraction (bash not found)")
+            GbotProcess.appendEvent(TAG, "Full bootstrap extraction (bash not found)")
             return fullBootstrap(context, prefixDir, versionFile, onLog, onError)
         }
 
@@ -40,6 +41,7 @@ object BootstrapInstaller {
         if (currentVersion != BOOTSTRAP_VERSION) {
             // Version changed: only refresh gbot/rg, keep everything else.
             Log.i(TAG, "Version changed ($currentVersion → $BOOTSTRAP_VERSION), refreshing gbot/rg")
+            GbotProcess.appendEvent(TAG, "Version changed ($currentVersion → $BOOTSTRAP_VERSION), refreshing gbot/rg")
             try {
                 val gbotBin = File(binDir, "gbot")
                 val oldGbot = gbotBin.length()
@@ -57,6 +59,7 @@ object BootstrapInstaller {
             }
         } else {
             Log.i(TAG, "Bootstrap already installed (v$BOOTSTRAP_VERSION)")
+            GbotProcess.appendEvent(TAG, "Bootstrap already installed (v$BOOTSTRAP_VERSION)")
         }
         return binDir
     }
@@ -79,6 +82,7 @@ object BootstrapInstaller {
         val stagingPath = stagingDir.absolutePath
 
         Log.i(TAG, "Extracting bootstrap to $stagingPath...")
+        GbotProcess.appendEvent(TAG, "Extracting bootstrap to $stagingPath...")
         try {
             if (stagingDir.exists()) stagingDir.deleteRecursively()
             stagingDir.mkdirs()
@@ -139,6 +143,7 @@ object BootstrapInstaller {
                 } catch (e: Exception) {
                     if (failedSymlinks < 5) {
                         Log.w(TAG, "symlink failed: $linkPath → $target: ${e.message}")
+                        GbotProcess.appendEvent(TAG, "symlink failed: $linkPath → $target: ${e.message}")
                         failedSymlinks++
                     }
                 }

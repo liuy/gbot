@@ -481,6 +481,113 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsPanel,
   )
 
+  // --------------------------------------------------------------- app logs
+  // Read-only view into the Android host's app-side log buffer. The name
+  // mirrors AppLogsBridge.BRIDGE_NAME in the Android shell; a desktop
+  // browser has no such global and the panel degrades to a hint line.
+  const APP_LOGS_BRIDGE = 'GBotAppLogs'
+  interface AppLogsBridge {
+    tail: (n: number) => string
+    clear: () => void
+  }
+  const appLogsBridge = (): AppLogsBridge | undefined =>
+    (window as unknown as Record<string, AppLogsBridge | undefined>)[APP_LOGS_BRIDGE]
+
+  const appLogCard = createElement('div', 'mx-3 mt-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden')
+  const appLogHead = createElement('div', 'flex items-center gap-2 px-3.5 py-3 cursor-pointer select-none')
+  appLogHead.setAttribute('data-applog-row', '')
+  const appLogChev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
+  appLogHead.append(
+    createNode('span', { className: 'text-[13px] font-medium flex-1', ...L('appLogRow') }),
+    appLogChev,
+  )
+  // Panel content is rebuilt on EVERY open: no i18n anchors inside, so a
+  // live language switch is picked up by the next open (and stale DOM never
+  // lingers when the buffer changed while collapsed).
+  const appLogPanel = createElement('div', 'hidden border-t border-hairline')
+  appLogPanel.setAttribute('data-applog-panel', '')
+
+  let appLogText = ''
+
+  const renderAppLogPanel = () => {
+    appLogPanel.replaceChildren()
+    const bridge = appLogsBridge()
+    if (!bridge) {
+      appLogPanel.appendChild(
+        createNode('div', {
+          className: 'px-3.5 py-3 text-[11px] text-t3',
+          text: t('appLogUnavailable'),
+          attrs: { 'data-applog-unavailable': '' },
+        }),
+      )
+      return
+    }
+    appLogText = bridge.tail(500)
+
+    const actions = createElement('div', 'flex items-center gap-4 px-3.5 py-2 border-b border-hairline')
+    const actionBtn = (key: StaticKey, attr: string) =>
+      createNode('span', {
+        className: 'text-[11px] text-blue cursor-pointer select-none',
+        text: t(key),
+        attrs: { [attr]: '' },
+      })
+    const copyBtn = actionBtn('appLogCopy', 'data-applog-copy')
+    const clearBtn = actionBtn('appLogClear', 'data-applog-clear')
+    const bottomBtn = actionBtn('appLogScrollBottom', 'data-applog-bottom')
+    actions.append(copyBtn, clearBtn, bottomBtn)
+
+    const body = createElement(
+      'div',
+      'max-h-[280px] overflow-y-auto px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-t2',
+    )
+    body.setAttribute('data-applog-lines', '')
+    // An empty tail is an empty log — ''.split('\n') would render one
+    // blank row instead of none.
+    for (const line of appLogText ? appLogText.split('\n') : []) {
+      body.appendChild(createNode('div', { className: 'whitespace-pre', text: line }))
+    }
+    // Auto-scroll to the newest line — the tail is what the open is for.
+    body.scrollTop = body.scrollHeight
+
+    copyBtn.addEventListener('click', () => {
+      // jsdom and non-secure contexts have no clipboard API — degrade to the
+      // failure toast instead of throwing inside the click handler.
+      const clip = navigator.clipboard
+      if (!clip) {
+        toast(t('appLogCopyFailed'))
+        return
+      }
+      void clip
+        .writeText(appLogText)
+        .then(() => toast(t('appLogCopied')))
+        .catch(() => toast(t('appLogCopyFailed')))
+    })
+    clearBtn.addEventListener('click', () => {
+      const b = appLogsBridge()
+      if (!b) return
+      if (!window.confirm(t('appLogClearConfirm'))) return
+      b.clear()
+      renderAppLogPanel()
+    })
+    bottomBtn.addEventListener('click', () => {
+      body.scrollTop = body.scrollHeight
+    })
+
+    appLogPanel.append(actions, body)
+  }
+
+  appLogHead.addEventListener('click', () => {
+    const open = appLogPanel.classList.toggle('hidden')
+    appLogChev.classList.toggle('rotate-90', !open)
+    // toggle('hidden') resolves false when the panel just opened — rebuild
+    // and reveal it, same convention as the GENERAL rows.
+    if (!open) {
+      renderAppLogPanel()
+      appLogPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  })
+  appLogCard.append(appLogHead, appLogPanel)
+
   homeScreen.append(
     sectionLabel('providersSection'),
     provList,
@@ -489,6 +596,7 @@ export function createSettingsPage(): SettingsPageHandles {
     defaultCard,
     sectionLabel('generalSection'),
     generalCard,
+    appLogCard,
   )
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 

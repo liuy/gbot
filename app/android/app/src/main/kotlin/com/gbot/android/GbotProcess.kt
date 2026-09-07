@@ -17,6 +17,26 @@ object GbotProcess {
     @Volatile private var process: Process? = null
     val logBuffer = StringBuffer()
 
+    /** Appends one app-side event line ("[HH:mm:ss] message") to logBuffer —
+     *  the WUI app-log panel's feed. Truncation matches the old Control tab
+     *  log view: over 10000 chars, keep the last 5000. All appends share the
+     *  logBuffer monitor: the WS client, the daemon stdout pump and the
+     *  bridge reader run on different threads. */
+    fun appendEvent(message: String) {
+        synchronized(logBuffer) {
+            val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            logBuffer.append("[$ts] $message\n")
+            val len = logBuffer.length
+            if (len > 10000) logBuffer.delete(0, len - 5000)
+        }
+    }
+
+    /** Logcat dual-write for scattered Log.x sites: logcat keeps the original
+     *  line, the panel gets the same text prefixed with the tag so the source
+     *  is identifiable without logcat. */
+    fun appendEvent(tag: String, message: String) = appendEvent("$tag: $message")
+
     /** Why the previous app instance died (ApplicationExitInfo, Android 11+).
      *  Set by MainActivity at cold start, passed to the daemon as
      *  GBOT_PREV_EXIT so the death reason lands in gbot.log. */
@@ -68,7 +88,9 @@ object GbotProcess {
 
     fun start(context: Context, onLog: (String) -> Unit): Boolean = synchronized(lock) {
         val log: (String) -> Unit = { msg ->
-            logBuffer.append("$msg\n")
+            synchronized(logBuffer) {
+                logBuffer.append("$msg\n")
+            }
             onLog(msg)
         }
 
@@ -142,8 +164,8 @@ object GbotProcess {
             }
 
             process = pb.start()
-            // Pipe gbot stdout/stderr to Control tab logBuffer so crash
-            // messages and panic traces are visible there.
+            // Pipe gbot stdout/stderr into logBuffer (surfaced in the WUI
+            // app-log panel) so crash messages and panic traces are visible.
             val proc = process!!
             Thread {
                 try {
@@ -169,6 +191,7 @@ object GbotProcess {
         synchronized(lock) {
             process?.let {
                 Log.i(TAG, "Stopping gbot")
+                appendEvent(TAG, "Stopping gbot")
                 it.destroy()
             }
             process = null

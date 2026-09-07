@@ -12,6 +12,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.gbot.android.GbotProcess
 import com.gbot.android.model.CommandRequest
 import com.gbot.android.model.CommandResponse
 import com.gbot.android.model.UINode
@@ -38,6 +39,7 @@ class MobileAccessibilityService : AccessibilityService() {
         instance = this
         isRunning = true
         Log.i(TAG, "Accessibility service connected")
+        GbotProcess.appendEvent(TAG, "Accessibility service connected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -46,6 +48,7 @@ class MobileAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w(TAG, "Accessibility service interrupted")
+        GbotProcess.appendEvent(TAG, "Accessibility service interrupted")
     }
 
     override fun onDestroy() {
@@ -54,6 +57,7 @@ class MobileAccessibilityService : AccessibilityService() {
         isRunning = false
         serviceScope.cancel()
         Log.i(TAG, "Accessibility service destroyed")
+        GbotProcess.appendEvent(TAG, "Accessibility service destroyed")
     }
 
     fun handleCommand(request: CommandRequest): CommandResponse {
@@ -81,6 +85,7 @@ class MobileAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling command ${request.command}", e)
+            GbotProcess.appendEvent(TAG, "Error handling command ${request.command}: ${e.message}")
             CommandResponse.error(request.id, "Error: ${e.message}")
         }
     }
@@ -429,6 +434,7 @@ class MobileAccessibilityService : AccessibilityService() {
 
                 override fun onFailure(errorCode: Int) {
                     Log.e(TAG, "Screenshot failed with code: $errorCode")
+                    GbotProcess.appendEvent(TAG, "Screenshot failed with code: $errorCode")
                     latch.countDown()
                 }
             })

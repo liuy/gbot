@@ -10,6 +10,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonSyntaxException
+import com.gbot.android.GbotProcess
 import com.gbot.android.model.CommandRequest
 import com.gbot.android.model.CommandResponse
 import com.gbot.android.service.MobileAccessibilityService
@@ -154,6 +155,7 @@ class GbotWebSocketClient(
                 sendError(null, "Invalid JSON: ${e.message}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing message", e)
+                GbotProcess.appendEvent(TAG, "Error processing message: ${e.message}")
                 sendError(null, "Internal error: ${e.message}")
             }
         }
@@ -182,6 +184,7 @@ class GbotWebSocketClient(
                 session.bytesWritten += copy.size
             } catch (e: Exception) {
                 Log.e(TAG, "binary write failed", e)
+                GbotProcess.appendEvent(TAG, "binary write failed: ${e.message}")
             }
         }
     }
@@ -287,6 +290,7 @@ class GbotWebSocketClient(
             close()
         } catch (e: Exception) {
             Log.e(TAG, "Error shutting down", e)
+            GbotProcess.appendEvent(TAG, "Error shutting down: ${e.message}")
         }
     }
 }

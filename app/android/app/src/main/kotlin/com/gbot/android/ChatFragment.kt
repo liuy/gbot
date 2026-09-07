@@ -113,6 +113,9 @@ class ChatFragment : Fragment() {
         // method on trusted localhost-only content (minSdk 28, so the
         // pre-API-17 reflection hole does not apply).
         webView?.addJavascriptInterface(NativeThemeBridge(), "GBotNative")
+        // Read-only app-log bridge for the settings page's app-log panel
+        // (same localhost-only trust scope as the theme bridge above).
+        webView?.addJavascriptInterface(AppLogsBridge(), AppLogsBridge.BRIDGE_NAME)
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,

@@ -996,3 +996,120 @@ describe('createSettingsPage', () => {
     expect(reloadSpy).not.toHaveBeenCalled()
   })
 })
+
+describe('app log card', () => {
+  const LINES = '[17:01:01] gbot: ready\n[17:01:02] Connected to gbot at 127.0.0.1:8765'
+
+  beforeEach(() => {
+    // A zh test inside this block pins the locale; the file-level afterEach
+    // clears storage but not the module's resolved locale, so reset here to
+    // keep the en-expecting tests deterministic.
+    localStorage.removeItem('gbot-language')
+    initLocale()
+  })
+
+  async function openAppLog(tail: ReturnType<typeof vi.fn>) {
+    vi.stubGlobal('GBotAppLogs', { tail, clear: vi.fn() })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    return page
+  }
+
+  const rowTitle = (page: { root: HTMLElement }) =>
+    (page.root.querySelector('[data-applog-row]') as HTMLElement).firstElementChild as HTMLElement
+
+  it('expands a panel pulling tail(500) from the Android bridge, one line per row, monospaced', async () => {
+    const tail = vi.fn(() => LINES)
+    const page = await openAppLog(tail)
+    expect(rowTitle(page).textContent).toBe('App Logs')
+    expect(tail).toHaveBeenCalledTimes(1)
+    expect(tail).toHaveBeenCalledWith(500)
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.className).toContain('font-mono')
+    expect([...body.children].map((c) => (c as HTMLElement).textContent)).toEqual([
+      '[17:01:01] gbot: ready',
+      '[17:01:02] Connected to gbot at 127.0.0.1:8765',
+    ])
+  })
+
+  it('rebuilds the panel on every open — the second open shows the fresh tail', async () => {
+    const tail = vi.fn().mockReturnValueOnce('first open').mockReturnValueOnce('second open')
+    const page = await openAppLog(tail)
+    const row = page.root.querySelector('[data-applog-row]') as HTMLElement
+    row.click() // collapse
+    row.click() // reopen
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(tail).toHaveBeenCalledTimes(2)
+    expect([...body.children].map((c) => (c as HTMLElement).textContent)).toEqual(['second open'])
+  })
+
+  it('renders the card and panel copy in Chinese when zh is pinned', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    const page = await openAppLog(vi.fn(() => LINES))
+    expect(rowTitle(page).textContent).toBe('应用日志')
+    expect((page.root.querySelector('[data-applog-copy]') as HTMLElement).textContent).toBe('复制')
+    expect((page.root.querySelector('[data-applog-clear]') as HTMLElement).textContent).toBe('清空')
+    expect((page.root.querySelector('[data-applog-bottom]') as HTMLElement).textContent).toBe('滚动到底部')
+  })
+
+  it('degrades to the unavailable hint when the bridge global is absent (desktop)', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    const hint = page.root.querySelector('[data-applog-unavailable]') as HTMLElement
+    expect(hint.textContent).toBe('Only available in the Android app')
+    // No action row or log body — nothing to copy or clear.
+    expect(page.root.querySelector('[data-applog-copy]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-clear]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-lines]')).toBeNull()
+  })
+
+  it('copy writes the fetched tail via the clipboard API and toasts success', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      const page = await openAppLog(vi.fn(() => LINES))
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copied')
+      })
+      expect(writeText).toHaveBeenCalledWith(LINES)
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
+  it('copy degrades to a failure toast when the clipboard API is missing', async () => {
+    const page = await openAppLog(vi.fn(() => LINES))
+    ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copy failed')
+    })
+  })
+
+  it('clear confirms, invokes the bridge, and re-renders an empty log', async () => {
+    const clear = vi.fn()
+    const tail = vi.fn().mockReturnValueOnce(LINES).mockReturnValueOnce('')
+    vi.stubGlobal('GBotAppLogs', { tail, clear })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-clear]') as HTMLElement).click()
+    expect(confirmSpy).toHaveBeenCalledWith('Clear all app logs?')
+    expect(clear).toHaveBeenCalledTimes(1)
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect([...body.children]).toHaveLength(0)
+  })
+
+  it('clear is a no-op when the user cancels the confirmation', async () => {
+    const clear = vi.fn()
+    vi.stubGlobal('GBotAppLogs', { tail: vi.fn(() => LINES), clear })
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-clear]') as HTMLElement).click()
+    expect(clear).not.toHaveBeenCalled()
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect([...body.children]).toHaveLength(2)
+  })
+})

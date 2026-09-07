@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.gbot.android.GbotProcess
 import com.gbot.android.MainActivity
 import com.gbot.android.R
 import com.gbot.android.server.GbotWebSocketClient
@@ -38,11 +39,6 @@ class ConnectionForegroundService : Service() {
         const val NOTIFICATION_ID = 1001
         const val EXTRA_HOST = "extra_host" // gbot server host (was: SSH server host)
         const val EXTRA_PORT = "extra_port" // gbot server port, default 8765
-
-        var logSink: ((String) -> Unit)? = null
-        // connectionState: 0 = disconnected, 1 = connected. host:port are the
-        // dial target (passed back so the UI can show what it's wired to).
-        var connSink: ((connected: Int, hostPort: String) -> Unit)? = null
     }
 
     private var wsClient: GbotWebSocketClient? = null
@@ -91,16 +87,20 @@ class ConnectionForegroundService : Service() {
     // until the peer drops, on any failure back off and retry. backoff is
     // 1→2→4→…→60 (cap 60), reset to 1 on a successful connect.
     private suspend fun connectLoop(host: String, port: Int) {
-        val hostPort = "$host:$port"
         var backoff = 1
         while (active) {
             var client: GbotWebSocketClient? = null
             try {
                 val uri = URI("ws://$host:$port/ws")
-                client = GbotWebSocketClient(
+                val client = GbotWebSocketClient(
                     uri,
-                    onLog = { msg -> logSink?.invoke(msg) },
-                    onConnectionChange = { connected -> connSink?.invoke(connected, hostPort) }
+                    // Event lines go straight into the app log buffer — the
+                    // old Control tab sink is gone, the WUI panel reads the
+                    // buffer directly.
+                    onLog = { msg -> GbotProcess.appendEvent(msg) },
+                    // Connection changes were a Control-tab status indicator;
+                    // the drop is already logged via onLog in onClose.
+                    onConnectionChange = { }
                 )
                 client.setContext(applicationContext)
                 wsClient = client
@@ -110,20 +110,19 @@ class ConnectionForegroundService : Service() {
                 // TCP timeout and the loop eventually retries.
                 val opened = client.connectBlocking()
                 if (!opened) {
-                    logSink?.invoke("Connect refused at $host:$port; retry in ${backoff}s")
+                    GbotProcess.appendEvent("Connect refused at $host:$port; retry in ${backoff}s")
                 } else {
-                    logSink?.invoke("Connected to gbot at $host:$port")
+                    GbotProcess.appendEvent("Connected to gbot at $host:$port")
                     backoff = 1
                     // Block until the client disconnects. WebSocketClient has no
                     // built-in "await peer close", so a latch counted down in
                     // onClose drives it (GbotWebSocketClient.awaitClose).
                     client.awaitClose()
-                    connSink?.invoke(0, hostPort)
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                logSink?.invoke("Connect failed: ${e.message}; retry in ${backoff}s")
+                GbotProcess.appendEvent("Connect failed: ${e.message}; retry in ${backoff}s")
             } finally {
                 runCatching { client?.shutdown() }
             }
