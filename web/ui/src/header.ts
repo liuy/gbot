@@ -645,12 +645,12 @@ export function createHeader(opts: {
   }
 
   if (nativeHost) {
-    const targetPanel = createPopupPanel({ className: 'min-w-[160px]' })
+    const targetPanel = createPopupPanel({ className: 'min-w-[220px]' })
     targetPanel.dataset.testid = 'target-picker-panel'
 
     // Row recipe mirrors the model rows above: a dot marks the active
     // entry — no bold, no check glyph.
-    const targetRow = (testid: string, label: string, active: boolean, name?: string) => {
+    const targetRow = (testid: string, label: string, active: boolean, name?: string, addr?: string) => {
       const item = createElement(
         'button',
         cx(
@@ -661,9 +661,16 @@ export function createHeader(opts: {
       if (name !== undefined) item.dataset.targetName = name
       const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', active ? 'bg-blue' : 'bg-t3/30'))
       item.appendChild(dot)
-      const span = createElement('span', cx('text-[13px]', active ? 'text-blue' : 'text-t2'))
+      const span = createElement('span', cx('text-[13px] truncate', active ? 'text-blue' : 'text-t2'))
       span.textContent = label
       item.appendChild(span)
+      // Remote rows echo their address (same info the settings cards show);
+      // the local row is this device — nothing to echo.
+      if (addr) {
+        const addrSpan = createElement('span', 'ml-2 text-[10px] text-t3 font-mono shrink-0 whitespace-nowrap')
+        addrSpan.textContent = addr
+        item.appendChild(addrSpan)
+      }
       return item
     }
 
@@ -688,7 +695,13 @@ export function createHeader(opts: {
         })
         targetPanel.appendChild(localRow)
         for (const entry of remotes) {
-          const r = targetRow('target-entry', entry.name, entry.name === current, entry.name)
+          const r = targetRow(
+            'target-entry',
+            entry.name,
+            entry.name === current,
+            entry.name,
+            `${entry.host}:${entry.port}`,
+          )
           r.addEventListener('click', () => {
             nativeHost.switchTo?.(entry.name)
             targetMenu.close()

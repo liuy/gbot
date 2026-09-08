@@ -1040,6 +1040,10 @@ describe('Header target switch (multi-endpoint WUI)', () => {
     expect(row('target-entry', '桌面').querySelector('.bg-blue')).not.toBeNull()
     expect(row('target-entry', 'nas').querySelector('.bg-blue')).toBeNull()
     expect(row('target-local').querySelector('.bg-blue')).toBeNull()
+    // Remote rows echo their address; the local row is this device.
+    expect(row('target-entry', '桌面').textContent).toContain('192.168.1.5:8765')
+    expect(row('target-entry', 'nas').textContent).toContain('nas.box.local:9000')
+    expect(row('target-local').textContent).not.toContain('192.168.1.5')
   })
 
   it('local target marks the 本地 row instead', () => {
