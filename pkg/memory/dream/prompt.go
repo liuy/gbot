@@ -65,7 +65,10 @@ func TriggerMessage(memoryDir, dbPath, dreamSessionID string, lastDream time.Tim
 	lastDreamStr := "never"
 	cutoff := "1970-01-01 00:00:00"
 	if !lastDream.IsZero() {
-		lastDreamStr = lastDream.Local().Format("2006-01-02 15:04 MST")
+		// Format renders in the time's OWN zone — time.Local is a
+		// hardcoded UTC stub on Android (no initLocal TZ support), so
+		// .Local() would silently flatten every zone to UTC there.
+		lastDreamStr = lastDream.Format("2006-01-02 15:04 MST")
 		cutoff = lastDream.UTC().Format("2006-01-02 15:04:05")
 	}
 	exclude := " AND session_id != '" + dreamSessionID + "'"

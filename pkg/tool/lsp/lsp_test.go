@@ -384,6 +384,13 @@ func TestExecute_Status_NoServers(t *testing.T) {
 }
 
 func TestExecute_Status_WithServers(t *testing.T) {
+	// ScanServers gates specs on PATH lookup; stub a gopls so the test
+	// stays hermetic on hosts without golang.org/x/tools installed.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gopls"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	reg := lsp.NewRegistry(t.TempDir())
 	reg.Scan([]lsp.ServerSpec{{Name: "gopls", Language: "Go", FileExts: []string{".go"}, Command: "gopls"}})
 	result, err := New(reg).Call(context.Background(), mustInput(t, Input{Action: "status"}), basicCtx())
