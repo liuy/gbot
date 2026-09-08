@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createHeader } from './header'
 import { setLocale } from './i18n'
 import type { ContextBreakdownData } from './types'
@@ -892,5 +892,99 @@ describe('Header picker streaming state', () => {
         expect(item.className).not.toContain('pointer-events-none')
       }
     }
+  })
+})
+
+describe('Header target switch (local/remote WUI)', () => {
+  // The testid sits on the wrapping button (the click target); the text and
+  // the connected-state class live on the inner wordmark span.
+  const wordmark = (header: ReturnType<typeof createHeader>): HTMLElement =>
+    header.root.querySelector('[data-testid="gbot-wordmark"]') as HTMLElement
+  const markText = (header: ReturnType<typeof createHeader>): HTMLElement =>
+    wordmark(header).querySelector('span') as HTMLElement
+
+  const applyTarget = (target: string, name: string): void => {
+    ;(window as unknown as Record<string, unknown>).__gbotApplyTarget(target, name)
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    // zh pins the expected copy ('本地'/'远程') regardless of jsdom's en-US
+    // navigator — the same pinning convention the settings tests use.
+    setLocale('zh')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    delete (window as unknown as Record<string, unknown>).__gbotApplyTarget
+  })
+
+  it('browser degradation: no GBotNative → static "GBot" wordmark, no hook side effects', () => {
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    expect(wordmark(header).textContent).toBe('GBot')
+    // No bridge → clicking is inert (no switchTarget to reach).
+    expect(() => wordmark(header).click()).not.toThrow()
+    expect(wordmark(header).textContent).toBe('GBot')
+  })
+
+  it('registers __gbotApplyTarget and shows 本地 for the local target', () => {
+    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    expect(wordmark(header).textContent).toBe('GBot') // before Kotlin injects
+    applyTarget('local', '')
+    expect(wordmark(header).textContent).toBe('本地')
+  })
+
+  it('remote target shows the remote NAME, falling back to 远程 when blank', () => {
+    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget('remote', 'Nas Box')
+    expect(wordmark(header).textContent).toBe('Nas Box')
+    applyTarget('remote', '')
+    expect(wordmark(header).textContent).toBe('远程')
+  })
+
+  it('clicking the wordmark calls GBotNative.switchTarget (bridge only)', () => {
+    const switchTarget = vi.fn()
+    vi.stubGlobal('GBotNative', { switchTarget })
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    wordmark(header).click()
+    expect(switchTarget).toHaveBeenCalledTimes(1)
+  })
+
+  it('setStatus still swaps the connected-state class after a target apply', () => {
+    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget('remote', 'Nas Box')
+    header.setStatus(true)
+    expect(markText(header).textContent).toBe('Nas Box')
+    expect(markText(header).className).toContain('pulse')
+    header.setStatus(false)
+    expect(markText(header).className).not.toContain('pulse')
   })
 })

@@ -610,6 +610,27 @@ export function createHeader(opts: {
   )
   wordmark.textContent = 'GBot'
   gbotWrap.appendChild(wordmark)
+  gbotWrap.dataset.testid = 'gbot-wordmark'
+
+  // Local/remote target switch — Android-shell-only (window.GBotNative is
+  // the bridge ChatFragment registers). Kotlin owns the target pref and
+  // injects the current target + remote name after every page load through
+  // window.__gbotApplyTarget; a click fires GBotNative.switchTarget() and
+  // Kotlin flips the pref and reloads. In a plain browser no injection ever
+  // arrives and the wordmark stays the static "GBot" logo.
+  interface GBotNativeHost {
+    switchTarget?: () => void
+  }
+  const nativeHost = (window as unknown as { GBotNative?: GBotNativeHost }).GBotNative
+  if (nativeHost) {
+    gbotWrap.addEventListener('click', () => nativeHost.switchTarget?.())
+  }
+  Object.assign(window, {
+    __gbotApplyTarget: (target: string, remoteName: string) => {
+      wordmark.textContent =
+        target === 'remote' ? (remoteName || t('targetRemote')) : t('targetLocal')
+    },
+  })
 
   const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
   const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)

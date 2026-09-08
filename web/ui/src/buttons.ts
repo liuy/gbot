@@ -166,7 +166,7 @@ export function createTextButton(opts: TextButtonOptions): HTMLButtonElement {
   const btn = createNode('button', {
     className: textButtonRecipe({ variant: opts.variant, size, class: opts.className }),
     props: { type: 'button' },
-    attrs: { 'aria-label': opts.text },
+    attrs: opts.text ? { 'aria-label': opts.text } : {},
   })
   if (opts.icon) {
     const icon = renderIcon(opts.icon, { size: opts.iconSize ?? 14 })

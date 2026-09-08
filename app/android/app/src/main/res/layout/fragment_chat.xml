@@ -30,6 +30,23 @@
             android:textSize="32sp"
             android:fontFamily="sans-serif-medium"
             android:letterSpacing="0.02" />
+
+        <!-- Escape hatch for an unreachable REMOTE target (the WUI header
+             with its target switch is gone on an error page). Hidden until
+             the retry budget is exhausted while wui_target=remote; a click
+             flips the pref back to local and reloads. -->
+        <TextView
+            android:id="@+id/backToLocal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="120dp"
+            android:background="?android:attr/selectableItemBackground"
+            android:padding="12dp"
+            android:text="切回本地"
+            android:textColor="@color/splash_danger"
+            android:textSize="14sp"
+            android:visibility="gone" />
     </FrameLayout>
 
 </FrameLayout>

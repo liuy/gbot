@@ -1,6 +1,7 @@
 package com.gbot.android
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.content.res.Configuration
@@ -20,6 +21,8 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.customtabs.CustomTabColorSchemeParams
@@ -29,6 +32,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.Fragment
 import java.io.File
+import org.json.JSONObject
 
 class ChatFragment : Fragment() {
 
@@ -41,6 +45,27 @@ class ChatFragment : Fragment() {
         private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
         @Volatile
         private var cameraPhotoUri: Uri? = null
+
+        // WUI target switch prefs — the single source of truth for pointing
+        // the WebView at the LOCAL daemon or a user-configured REMOTE one.
+        // The WUI reads/writes them only through the GBotNative bridge.
+        private const val PREFS_FILE = "wui"
+        const val KEY_TARGET = "wui_target" // "local" | "remote", default local
+        const val KEY_REMOTE_NAME = "wui_remote_name" // display name, default ""
+        const val KEY_REMOTE_HOST = "wui_remote_host" // default ""
+        const val KEY_REMOTE_PORT = "wui_remote_port" // int, default 8765
+        const val TARGET_LOCAL = "local"
+        const val TARGET_REMOTE = "remote"
+        private const val LOCAL_URL = "http://127.0.0.1:8765/"
+        private const val DEFAULT_REMOTE_PORT = 8765
+
+        // Companion-level so the URL math stays unit-testable without
+        // Robolectric (its native binder does not load on arm64 Termux JVMs),
+        // like ConnectionForegroundService.resolveTarget. An unparsable
+        // remote config (blank host) degrades to the local daemon rather
+        // than a malformed URL.
+        internal fun buildTargetUrl(target: String, host: String, port: Int): String =
+            if (target == TARGET_REMOTE && host.isNotBlank()) "http://$host:$port/" else LOCAL_URL
     }
 
     private var webView: WebView? = null
@@ -49,6 +74,9 @@ class ChatFragment : Fragment() {
     @Volatile private var isDarkTheme: Boolean = true
     private var loadingOverlay: View? = null
     private var splashMark: android.widget.TextView? = null
+    // Escape hatch on the failure overlay: shown only when the REMOTE target
+    // is unreachable, flips the pref back to local and reloads.
+    private var backToLocal: TextView? = null
     private var lastLoadFailed = false
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
@@ -106,6 +134,7 @@ class ChatFragment : Fragment() {
         webView = view.findViewById(R.id.webView)
         loadingOverlay = view.findViewById(R.id.loadingOverlay)
         splashMark = view.findViewById(R.id.splashMark)
+        backToLocal = view.findViewById(R.id.backToLocal)
         startBreathing()
         return view
     }
@@ -214,6 +243,9 @@ class ChatFragment : Fragment() {
                 // once the page is ready so resolveTheme('system') gets
                 // corrected if it guessed wrong.
                 applySystemTheme(view)
+                // Same injection pattern: push the current target + remote
+                // name so the header wordmark renders the active target.
+                applyTarget(view)
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -240,8 +272,22 @@ class ChatFragment : Fragment() {
             splashMark?.announceForAccessibility("守护进程启动失败，点按重试")
             loadingOverlay?.setOnClickListener {
                 loadAttempts = 0
+                backToLocal?.visibility = View.GONE
                 startBreathing()
                 tryLoad()
+            }
+            // The WUI header (and its target switch) is gone on an error
+            // page — offer the escape hatch ONLY when the unreachable thing
+            // is the user-configured remote; a failed local daemon has no
+            // local to switch back to.
+            if (currentTarget() == TARGET_REMOTE) {
+                backToLocal?.visibility = View.VISIBLE
+                backToLocal?.setOnClickListener {
+                    targetPrefs().edit().putString(KEY_TARGET, TARGET_LOCAL).apply()
+                    reloadToTarget()
+                }
+            } else {
+                backToLocal?.visibility = View.GONE
             }
         }
     }
@@ -277,7 +323,35 @@ class ChatFragment : Fragment() {
         lastLoadFailed = false
         loadingOverlay?.visibility = View.VISIBLE
         webView?.visibility = View.VISIBLE
-        webView?.loadUrl("http://localhost:8765/")
+        webView?.loadUrl(buildTargetUrl(currentTarget(), remoteHost(), remotePort()))
+    }
+
+    private fun targetPrefs() =
+        requireContext().getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+
+    private fun currentTarget(): String =
+        targetPrefs().getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL
+
+    private fun remoteName(): String =
+        targetPrefs().getString(KEY_REMOTE_NAME, "") ?: ""
+
+    private fun remoteHost(): String =
+        targetPrefs().getString(KEY_REMOTE_HOST, "") ?: ""
+
+    private fun remotePort(): Int =
+        targetPrefs().getInt(KEY_REMOTE_PORT, DEFAULT_REMOTE_PORT)
+
+    /**
+     * Reload helper after a pref flip (bridge switchTarget, escape button):
+     * back to the boot state, then load the (new) target's URL. onPageFinished
+     * re-runs the theme + target injections on the fresh page.
+     */
+    private fun reloadToTarget() {
+        handler.removeCallbacksAndMessages(null)
+        loadAttempts = 0
+        backToLocal?.visibility = View.GONE
+        startBreathing()
+        tryLoad()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -294,6 +368,17 @@ class ChatFragment : Fragment() {
             Configuration.UI_MODE_NIGHT_NO
         view?.evaluateJavascript(
             "window.__gbotApplySystemTheme && window.__gbotApplySystemTheme($isLight);",
+            null,
+        )
+    }
+
+    // JSONObject.quote: the remote NAME is user input — it must arrive as a
+    // safely escaped JS string literal, never interpolated raw.
+    private fun applyTarget(view: WebView?) {
+        val target = JSONObject.quote(currentTarget())
+        val name = JSONObject.quote(remoteName())
+        view?.evaluateJavascript(
+            "window.__gbotApplyTarget && window.__gbotApplyTarget($target, $name);",
             null,
         )
     }
@@ -320,6 +405,64 @@ class ChatFragment : Fragment() {
                         .isAppearanceLightStatusBars = !isDark
                 }
             }
+        }
+
+        // Fire-and-forget toggle from the header wordmark: flip wui_target
+        // and reload the WebView to the new target's URL.
+        @JavascriptInterface
+        fun switchTarget() {
+            activity?.runOnUiThread {
+                val next = if (currentTarget() == TARGET_REMOTE) TARGET_LOCAL else TARGET_REMOTE
+                // A remote flip without a configured host would load a junk
+                // URL and strand the user on the retry overlay.
+                if (next == TARGET_REMOTE && remoteHost().isBlank()) {
+                    Toast.makeText(context, "远程未配置，请先在设置中填写", Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                targetPrefs().edit().putString(KEY_TARGET, next).apply()
+                reloadToTarget()
+            }
+        }
+
+        // Persist the remote daemon config (host+port+name). Returns false
+        // when validation failed (reason surfaced as a Kotlin toast) so the
+        // page can skip its own saved-toast.
+        @JavascriptInterface
+        fun setRemoteTarget(name: String, host: String, port: Int): Boolean {
+            val trimmedHost = host.trim()
+            val hostOk = trimmedHost.isNotEmpty() && trimmedHost.none { it.isWhitespace() } &&
+                '/' !in trimmedHost && ':' !in trimmedHost
+            val portOk = port in 1..65535
+            activity?.runOnUiThread {
+                val message = when {
+                    !hostOk -> "远程主机格式无效（仅主机名，端口单独填写）"
+                    !portOk -> "端口必须是 1-65535"
+                    else -> return@runOnUiThread
+                }
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+            if (hostOk && portOk) {
+                targetPrefs().edit()
+                    .putString(KEY_REMOTE_NAME, name.trim())
+                    .putString(KEY_REMOTE_HOST, trimmedHost)
+                    .putInt(KEY_REMOTE_PORT, port)
+                    .apply()
+            }
+            return hostOk && portOk
+        }
+
+        // JSON config for the settings REMOTE card's prefill. Reads prefs
+        // directly on the bridge thread — SharedPreferences is thread-safe
+        // and this must not depend on the fragment being attached.
+        @JavascriptInterface
+        fun getRemoteTarget(): String {
+            val prefs = context?.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+            val json = JSONObject()
+            json.put("target", prefs?.getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL)
+            json.put("name", prefs?.getString(KEY_REMOTE_NAME, "") ?: "")
+            json.put("host", prefs?.getString(KEY_REMOTE_HOST, "") ?: "")
+            json.put("port", prefs?.getInt(KEY_REMOTE_PORT, DEFAULT_REMOTE_PORT) ?: DEFAULT_REMOTE_PORT)
+            return json.toString()
         }
     }
 
@@ -359,6 +502,7 @@ class ChatFragment : Fragment() {
         webView = null
         loadingOverlay = null
         splashMark = null
+        backToLocal = null
         super.onDestroyView()
     }
 }

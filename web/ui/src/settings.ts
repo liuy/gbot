@@ -482,6 +482,88 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsPanel,
   )
 
+  // ------------------------------------------------------------ remote target
+  // Backing config for the header's LOCAL/REMOTE wordmark switch — Android
+  // shell only (window.GBotNative, registered by ChatFragment). Kotlin
+  // SharedPreferences is the single source of truth; the daemon API is not
+  // involved. Desktop browser: no card at all, same degradation rule as the
+  // app-log card below.
+  interface RemoteTargetBridge {
+    getRemoteTarget?: () => string
+    setRemoteTarget?: (name: string, host: string, port: number) => boolean
+  }
+  const remoteBridge = (): RemoteTargetBridge | undefined =>
+    (window as unknown as Record<string, RemoteTargetBridge | undefined>).GBotNative
+
+  const remoteCard = createElement(
+    'div',
+    'mx-3 mt-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden pb-1',
+  )
+  remoteCard.setAttribute('data-remote-card', '')
+  const remoteSectionLabel = sectionLabel('remoteSection')
+  const remoteInput = (labelKey: StaticKey, attrs: Record<string, string>, placeholder: string) => {
+    const wrap = createElement('div', 'px-3.5 py-2')
+    wrap.append(
+      createNode('div', { className: 'text-[11px] text-t2 mb-1.5', ...L(labelKey) }),
+      createNode('input', {
+        className:
+          'w-full px-3 py-2 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+        props: { type: 'text', spellcheck: false, placeholder },
+        attrs,
+      }) as HTMLInputElement,
+    )
+    return { wrap, input: wrap.querySelector('input') as HTMLInputElement }
+  }
+  const remoteNameField = remoteInput('remoteNameLabel', { 'data-remote-name': '' }, 'NAS')
+  const remoteHostField = remoteInput('remoteHostLabel', { 'data-remote-host': '' }, '192.168.1.20')
+  const remotePortField = remoteInput('remotePortLabel', { 'data-remote-port': '' }, '8765')
+  const remoteSaveBtn = createNode('button', {
+    className:
+      'block w-[calc(100%-28px)] mx-3.5 mt-1 mb-2.5 py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35 cursor-pointer',
+    ...L('saveBtn', { type: 'button', 'data-remote-save': '' }),
+  }) as HTMLButtonElement
+  remoteCard.append(
+    remoteNameField.wrap,
+    remoteHostField.wrap,
+    remotePortField.wrap,
+    remoteSaveBtn,
+  )
+
+  if (remoteBridge()) {
+    // Prefill from the bridge getter (sync, JSON string). Malformed payload
+    // leaves the defaults — the fields are still editable.
+    try {
+      const cfg = JSON.parse(remoteBridge()!.getRemoteTarget?.() ?? '{}') as {
+        name?: string
+        host?: string
+        port?: number
+      }
+      remoteNameField.input.value = cfg.name ?? ''
+      remoteHostField.input.value = cfg.host ?? ''
+      remotePortField.input.value = String(cfg.port ?? 8765)
+    } catch {
+      // bridge returned non-JSON — keep defaults
+    }
+      remoteSaveBtn.addEventListener('click', () => {
+        // Validate before the bridge call: bad input is stopped here with the
+        // page toast (Kotlin re-validates as a backstop and toasts there).
+        const host = remoteHostField.input.value.trim()
+        const port = Number.parseInt(remotePortField.input.value.trim(), 10)
+        if (!host) {
+          toast(t('remoteHostRequired'))
+          return
+        }
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          toast(t('remotePortInvalid'))
+          return
+        }
+        // Kotlin returns false when ITS validation rejects (e.g. host charset)
+        // — it toasts the reason; skip the saved-toast in that case.
+        const ok = remoteBridge()!.setRemoteTarget?.(remoteNameField.input.value.trim(), host, port)
+        if (ok !== false) toast(t('remoteSaved'))
+      })
+  }
+
   // --------------------------------------------------------------- app logs
   // Read-only view into the Android host's app-side log buffer. The name
   // mirrors AppLogsBridge.BRIDGE_NAME in the Android shell; on a desktop
@@ -657,6 +739,7 @@ export function createSettingsPage(): SettingsPageHandles {
   // The card is Android-shell-only: absent bridge (desktop browser) means
   // no card at all rather than a degraded hint.
   if (appLogsBridge()) homeScreen.append(appLogCard)
+  if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
   // ------------------------------------------------------------------ edit
