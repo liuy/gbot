@@ -1,8 +1,6 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
-import { createCopyButton } from './utils/copy_button'
-import { getDebugLogs, onDebugLog } from './log'
 import type { ContextBreakdownData, ContextCategoryData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
@@ -597,52 +595,15 @@ export function createHeader(opts: {
     onClick: () => hamburgerHandler.fn(),
   })
 
-  const debugPanel = createPopupPanel({ className: 'flex flex-col h-[60vh]' })
-  const copyBtn = createCopyButton(() => getDebugLogs().join('\n'))
-  copyBtn.classList.add('absolute', 'top-2', 'right-2', 'text-t3', 'z-10')
-  debugPanel.appendChild(copyBtn)
-
-  const debugList = createElement('div', 'flex-1 overflow-y-auto p-2 min-h-0 space-y-0.5')
-  debugPanel.appendChild(debugList)
-
-  let debugOpen = false
-  const renderDebugLogs = () => {
-    if (!debugOpen) return
-    const logs = getDebugLogs()
-    debugList.innerHTML = ''
-    for (const line of logs) {
-      const el = createElement('div', 'text-[11px] text-t3 font-mono break-all leading-tight')
-      el.textContent = line
-      debugList.appendChild(el)
-    }
-    debugList.scrollTop = debugList.scrollHeight
-  }
-
+  // GBot wordmark — brand only. The hidden debug log panel that used to
+  // open on double-tap moved into the settings page's logs card (wui tab),
+  // which reads the same ring buffer via log.ts.
   const gbotWrap = createTextButton({
     text: '',
     variant: 'link',
     className: 'group flex items-center p-2 -m-2',
-    onDblClick: (e) => {
-      e.stopPropagation()
-      debugOpen = !debugOpen
-      if (debugOpen) {
-        if (!debugPanel.parentElement) document.body.appendChild(debugPanel)
-        debugPanel.classList.remove('hidden')
-        renderDebugLogs()
-        debugOutside.add()
-      } else {
-        debugPanel.classList.add('hidden')
-        debugOutside.remove()
-      }
-    },
   })
 
-  const debugOutside = createOutsideClick(gbotWrap, debugPanel, () => {
-    debugOpen = false
-    debugPanel.classList.add('hidden')
-  })
-
-  onDebugLog(renderDebugLogs)
   const wordmark = createElement(
     'span',
     'text-[15px] font-semibold tracking-tight text-t3 transition-colors group-hover:text-blue',

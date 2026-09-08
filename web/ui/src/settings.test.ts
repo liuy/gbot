@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { setLocale, initLocale, localeOptions } from './i18n'
+import { pushDebugLog } from './log'
 import {
   fetchSettings,
   saveSettings,
@@ -39,6 +40,8 @@ interface MockOptions {
   models?: ModelsResult
   testResult?: { ok: boolean; latencyMs?: number; error?: string }
   putError?: string
+  logs?: string
+  logsError?: boolean
 }
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
@@ -59,6 +62,12 @@ function makeFetchHandler(opts: MockOptions & { onPut?: (p: SettingsProvider[]) 
         status: 200,
         json: async () => opts.payload ?? { providers: [], default: { provider: '', model: '' } },
       }
+    }
+    if (url === '/api/logs?tail=500') {
+      if (opts.logsError) {
+        return { ok: false, status: 500, text: async () => '' }
+      }
+      return { ok: true, status: 200, text: async () => opts.logs ?? '' }
     }
     if (url === '/api/settings/test') {
       return { ok: true, status: 200, json: async () => opts.testResult ?? { ok: true, latencyMs: 412 } }
@@ -1072,6 +1081,109 @@ describe('app log card', () => {
         expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copied')
       })
       expect(writeText).toHaveBeenCalledWith(LINES)
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
+  it('renders a 3-tab row app/wui/gbot with the app tab active by default', async () => {
+    const page = await openAppLog(vi.fn(() => LINES))
+    const tabs = [...page.root.querySelectorAll('[data-applog-tab]')] as HTMLElement[]
+    expect(tabs.map((b) => b.getAttribute('data-applog-tab'))).toEqual(['app', 'wui', 'gbot'])
+    expect(tabs.map((b) => b.textContent)).toEqual(['app', 'wui', 'gbot'])
+    const active = page.root.querySelector('[data-applog-tab="app"]') as HTMLElement
+    const inactive = page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement
+    expect(active.className).toContain('text-t1')
+    expect(active.className).not.toContain('text-t3')
+    expect(inactive.className).toContain('text-t3')
+    expect(inactive.className).not.toContain('text-t1')
+    // Default tab is app — body already shows the bridge tail.
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.textContent).toContain('[17:01:01] gbot: ready')
+  })
+
+  it('keeps the tab labels literal app/wui/gbot under zh (technical terms)', async () => {
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    const page = await openAppLog(vi.fn(() => LINES))
+    const labels = [...page.root.querySelectorAll('[data-applog-tab]')].map(
+      (b) => (b as HTMLElement).textContent,
+    )
+    expect(labels).toEqual(['app', 'wui', 'gbot'])
+  })
+
+  it('switching to the wui tab swaps the body to the WUI console ring buffer', async () => {
+    pushDebugLog('MARKER-WUI-A')
+    pushDebugLog('MARKER-WUI-B')
+    const page = await openAppLog(vi.fn(() => LINES))
+    ;(page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement).click()
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.textContent).toContain('MARKER-WUI-A')
+    expect(body.textContent).toContain('MARKER-WUI-B')
+  })
+
+  it('switching back to the app tab re-pulls the bridge tail', async () => {
+    const tail = vi.fn(() => LINES)
+    const page = await openAppLog(tail)
+    ;(page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-tab="app"]') as HTMLElement).click()
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.textContent).toContain('[17:01:02] Connected to gbot at 127.0.0.1:8765')
+    expect(tail).toHaveBeenCalledTimes(2)
+  })
+
+  it('gbot tab fetches /api/logs?tail=500 and renders the daemon log text', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, logs: 'daemon line 1\ndaemon line 2' })
+    vi.stubGlobal('GBotAppLogs', { tail: vi.fn(() => LINES), clear: vi.fn() })
+    const page = await openPage(mock)
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-tab="gbot"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+      expect(body.textContent).toContain('daemon line 2')
+    })
+    expect(mock).toHaveBeenCalledWith('/api/logs?tail=500')
+  })
+
+  it('reopening the panel resets to the app tab', async () => {
+    const page = await openAppLog(vi.fn(() => LINES))
+    ;(page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement).click()
+    expect(
+      (page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement).getAttribute('class'),
+    ).toContain('text-t1')
+    // Close (row click toggles) and reopen.
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    const active = page.root.querySelector('[data-applog-tab="app"]') as HTMLElement
+    expect(active.getAttribute('class')).toContain('text-t1')
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.textContent).toContain('[17:01:02] Connected to gbot at 127.0.0.1:8765')
+  })
+
+  it('gbot tab fetch failure leaves the body empty', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, logsError: true })
+    vi.stubGlobal('GBotAppLogs', { tail: vi.fn(() => LINES), clear: vi.fn() })
+    const page = await openPage(mock)
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-applog-tab="gbot"]') as HTMLElement).click()
+    await flushMicrotasks()
+    const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+    expect(body.children.length).toBe(0)
+  })
+
+  it('copy copies the ACTIVE tab content — wui buffer instead of the app tail', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      pushDebugLog('MARKER-WUI-COPY')
+      const page = await openAppLog(vi.fn(() => LINES))
+      ;(page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement).click()
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copied')
+      })
+      expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining('MARKER-WUI-COPY'))
+      expect(writeText).toHaveBeenLastCalledWith(expect.not.stringContaining('[17:01:01] gbot: ready'))
     } finally {
       Reflect.deleteProperty(navigator, 'clipboard')
     }

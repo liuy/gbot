@@ -2,6 +2,7 @@ import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
 import { getThemePref, setThemePref, getResolvedTheme, type ThemePref } from './theme'
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
+import { getDebugLogs } from './log'
 import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, localeOptions, type Locale, type StaticKey } from './i18n'
 
 // Settings page — provider CRUD against /api/settings/*. The page is a
@@ -507,36 +508,110 @@ export function createSettingsPage(): SettingsPageHandles {
   const appLogPanel = createElement('div', 'hidden border-t border-hairline')
   appLogPanel.setAttribute('data-applog-panel', '')
 
+  // Unified logs viewer, 3 tabs sharing one body + copy button:
+  //   app  — Android host log buffer via the GBotAppLogs bridge
+  //   wui  — this WebView's console ring buffer (log.ts)
+  //   gbot — daemon gbot.log tail via GET /api/logs (async)
+  // The card is Android-shell-only: absent bridge means no card at all.
+  type AppLogTab = 'app' | 'wui' | 'gbot'
+  let activeLogTab: AppLogTab = 'app'
+  let gbotFetchSeq = 0
+  // Content of the ACTIVE tab — the copy button always ships this.
   let appLogText = ''
 
   const renderAppLogPanel = () => {
     appLogPanel.replaceChildren()
     const bridge = appLogsBridge()
-    if (bridge) {
-      appLogText = bridge.tail(500)
+    if (!bridge) return
+    // Default back to the app tab on every open — matches the pre-tabs
+    // behavior where an open always showed the freshest bridge tail.
+    activeLogTab = 'app'
+    appLogText = ''
 
-    // Single copy icon (icon-family style) — scrolling is native overflow
-    // scrolling; the body auto-scrolls to the newest line on open.
-    const actions = createElement('div', 'flex justify-end px-3.5 pt-2 pb-1.5')
+    // Tab row (left) + copy icon (right) share one row; tabs are literal
+    // technical labels (app/wui/gbot), so they read the same in every locale.
+    const tabsRow = createElement('div', 'flex items-center gap-2.5')
+    tabsRow.setAttribute('data-applog-tabs', '')
+    const actions = createElement('div', 'flex items-center justify-between px-3.5 pt-2 pb-1.5')
     const copyBtn = createNode('span', {
       className: 'text-t3 hover:text-t1 cursor-pointer select-none p-1 -m-1',
       attrs: { 'data-applog-copy': '', 'aria-label': t('appLogCopy') },
     })
     copyBtn.appendChild(renderIcon('copy', { size: 14 }))
-    actions.append(copyBtn)
 
     const body = createElement(
       'div',
       'max-h-[280px] overflow-y-auto px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-t2',
     )
     body.setAttribute('data-applog-lines', '')
-    // An empty tail is an empty log — ''.split('\n') would render one
-    // blank row instead of none.
-    for (const line of appLogText ? appLogText.split('\n') : []) {
-      body.appendChild(createNode('div', { className: 'whitespace-pre', text: line }))
+
+    const tabKeys: Array<readonly [AppLogTab, StaticKey]> = [
+      ['app', 'appLogTabApp'],
+      ['wui', 'appLogTabWui'],
+      ['gbot', 'appLogTabGbot'],
+    ]
+    const setActiveTabStyles = () => {
+      for (const btn of tabsRow.querySelectorAll('[data-applog-tab]')) {
+        const el = btn as HTMLElement
+        const active = el.getAttribute('data-applog-tab') === activeLogTab
+        el.classList.toggle('text-t1', active)
+        el.classList.toggle('font-bold', active)
+        el.classList.toggle('text-t3', !active)
+      }
     }
-    // Auto-scroll to the newest line — the tail is what the open is for.
-    body.scrollTop = body.scrollHeight
+
+    // One line per row, monospaced, auto-scrolled to the newest entry —
+    // the tail is what the open/switch is for.
+    const fillBody = (text: string) => {
+      appLogText = text
+      body.replaceChildren()
+      // An empty tail is an empty log — ''.split('\n') would render one
+      // blank row instead of none.
+      for (const line of text ? text.split('\n') : []) {
+        body.appendChild(createNode('div', { className: 'whitespace-pre', text: line }))
+      }
+      body.scrollTop = body.scrollHeight
+    }
+
+    const loadActiveTab = () => {
+      if (activeLogTab === 'app') {
+        fillBody(bridge.tail(500))
+      } else if (activeLogTab === 'wui') {
+        fillBody(getDebugLogs().join('\n'))
+      } else {
+        // Daemon log is async: body may briefly be empty, fills on resolve.
+        // The seq token invalidates in-flight responses — gbot→app→gbot leaves
+        // two fetches racing, and the older must not overwrite the newer.
+        const seq = ++gbotFetchSeq
+        fillBody('')
+        void fetch('/api/logs?tail=500')
+          .then((res) => (res.ok ? res.text() : ''))
+          .then((text) => {
+            if (seq !== gbotFetchSeq) return
+            if (activeLogTab === 'gbot' && !appLogPanel.classList.contains('hidden')) {
+              fillBody(text)
+            }
+          })
+          .catch(() => {
+            // Daemon unreachable — show nothing rather than an error row.
+          })
+      }
+    }
+
+    for (const [id, key] of tabKeys) {
+      const btn = createNode('button', {
+        className: 'text-[11px] leading-none cursor-pointer select-none py-1',
+        attrs: { 'data-applog-tab': id, 'aria-label': t(key) },
+        text: t(key),
+      })
+      btn.addEventListener('click', () => {
+        if (activeLogTab === id) return
+        activeLogTab = id
+        setActiveTabStyles()
+        loadActiveTab()
+      })
+      tabsRow.appendChild(btn)
+    }
 
     copyBtn.addEventListener('click', () => {
       // jsdom and non-secure contexts have no clipboard API — degrade to the
@@ -552,8 +627,10 @@ export function createSettingsPage(): SettingsPageHandles {
         .catch(() => toast(t('appLogCopyFailed')))
     })
 
+    actions.append(tabsRow, copyBtn)
+    setActiveTabStyles()
+    loadActiveTab()
     appLogPanel.append(actions, body)
-    }
   }
 
   appLogHead.addEventListener('click', () => {

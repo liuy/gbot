@@ -268,7 +268,7 @@ export function bindLongPress(
 // handler — host exposes open/close/toggle/isOpen so non-standard
 // triggers (histPanel's sendBtn triple-duty, taskPopover's toggle)
 // stay at the call site. Special cases (contextPopover three-state,
-// debugPanel dblclick, hljsPopover long-press, editPopup mousedown)
+// hljsPopover long-press, editPopup mousedown)
 // stay on createOutsideClick directly.
 export interface PopupHostOptions {
   trigger: HTMLElement
