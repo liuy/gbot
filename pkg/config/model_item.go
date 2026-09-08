@@ -14,13 +14,14 @@ type ModelItem struct {
 // BuildModelItems constructs an ordered list of model items from provider
 // configs, filtered to only providers whose llm.Provider instance is present.
 //
-// Regular providers appear first (alphabetical). Providers marked `free: true`
-// appear last so they don't drown out the main configured providers.
+// Regular providers appear first (alphabetical). Providers with a fetch
+// ledger (free top-10 mirrors) appear last so they don't drown out the main
+// configured providers.
 // Within each provider, models are listed in config order (Models.Ordered()).
 func BuildModelItems(providerConfigs map[string]*Provider, providerPresent func(string) bool, currentProvider, currentModel string) []ModelItem {
 	var regular, free []string
 	for n, cfg := range providerConfigs {
-		if cfg.Free {
+		if len(cfg.FreeFetched) > 0 {
 			free = append(free, n)
 		} else {
 			regular = append(regular, n)

@@ -37,7 +37,7 @@ func buildTestProviderConfigs() map[string]*config.Provider {
 	openai.Models.Set("gpt-5", config.ModelConfig{})
 	openai.Models.Set("gpt-4.1", config.ModelConfig{})
 
-	free := &config.Provider{Name: "openrouter-free", Free: true}
+	free := &config.Provider{Name: "openrouter-free", FreeFetched: []string{"llama-free", "qwen-free"}}
 	free.Models.Set("llama-free", config.ModelConfig{})
 	free.Models.Set("qwen-free", config.ModelConfig{})
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -17,12 +18,15 @@ type ProviderMap map[string]llm.Provider
 func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 	m := make(ProviderMap)
 
-	// Fetch free models for providers marked with `free: true`.
+	// Fetch free models for providers with a fetch ledger (non-empty
+	// FreeFetched).
 	// Done once at startup; failures are logged and skipped (user can
 	// still use other providers).
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		if !p.Free {
+		// Non-empty FreeFetched = this provider mirrors the OpenRouter free
+		// top-10 (the fetch button manages it). Absent = hand-managed.
+		if len(p.FreeFetched) == 0 {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -36,14 +40,29 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 			slog.Warn("free models fetch returned 0 models", "provider", p.Name)
 			continue
 		}
+		// Replace semantics: the fetch result OWNS every id it reported last
+		// time (FreeFetched) — ids that dropped out of the current top list
+		// are removed. Hand-configured models (never in FreeFetched) survive.
+		newIDs := make([]string, 0, len(models))
 		for _, mm := range models {
-			if p.Models.Has(mm.ID) {
-				continue // static config takes precedence
+			newIDs = append(newIDs, mm.ID)
+		}
+		for _, old := range p.FreeFetched {
+			if !slices.Contains(newIDs, old) {
+				p.Models.Delete(old)
+			}
+		}
+		for _, mm := range models {
+			// Hand-configured entries (present but never fetched) take
+			// precedence; auto-fetched ones refresh in place.
+			if p.Models.Has(mm.ID) && !slices.Contains(p.FreeFetched, mm.ID) {
+				continue
 			}
 			p.Models.Set(mm.ID, ModelConfig{
 				Context: IntOrHuman(mm.ContextLength),
 			})
 		}
+		p.FreeFetched = newIDs
 		slog.Info("free models loaded", "provider", p.Name, "count", len(models))
 	}
 

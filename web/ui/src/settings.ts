@@ -27,7 +27,7 @@ export interface SettingsProvider {
   keys: string[]
   models: Record<string, SettingsModelMeta>
   type?: string // '' | 'auto' | 'openai' | 'anthropic' | 'responses'
-  free?: boolean
+  free_fetched?: string[] // ids the last free fetch managed — replaced (not merged) on refetch
   extra_params?: Record<string, unknown>
 }
 
@@ -1436,20 +1436,42 @@ export function createSettingsPage(): SettingsPageHandles {
       try {
         const res = await fetchProviderModels(urlInput.value.trim(), form.keys.find(Boolean) ?? '', form.type, isFreeFetch())
         if (res.mode === 'fetched') {
+          const newIDs = res.models
+            .map((entry) => (typeof entry === 'string' ? entry : entry.id))
+            .filter(Boolean)
+          // Zero results mirrors the Go startup guard: an empty fetch is
+          // treated as transient — never wipe the managed set with it.
+          if (isFreeFetch() && newIDs.length === 0) {
+            updateFetchLabel()
+            return
+          }
+          const managed = isFreeFetch() ? new Set(form.provider?.free_fetched ?? []) : null
+          if (managed) {
+            // The free fetch OWNS its previous set: ids that dropped out of
+            // the current top-10 are removed; hand-added models survive.
+            // An id hand-configured and ALSO returned by the fetch joins the
+            // managed set — the next refresh overwrites the hand metadata.
+            for (const old of managed) {
+              if (!newIDs.includes(old)) delete form.models[old]
+            }
+          }
           let added = 0
           for (const entry of res.models) {
             const id = typeof entry === 'string' ? entry : entry.id
-            if (!id || form.models[id]) continue
-            // Metadata from the endpoint (codex-shape) wins; placeholders
-            // only fill what the endpoint didn't provide.
+            if (!id) continue
+            // Hand-configured entries (present but never fetched) keep
+            // their metadata; auto-managed ones refresh in place.
+            const isNew = !form.models[id]
+            if (!isNew && !managed?.has(id)) continue
             form.models[id] = {
               context: typeof entry === 'object' && entry.context ? entry.context : '1M',
               max_tokens: '32k',
               input: typeof entry === 'object' && entry.input?.length ? entry.input : ['text'],
               thinking: 'auto',
             }
-            added++
+            if (isNew) added++
           }
+          if (managed) form.provider!.free_fetched = newIDs
           renderModels()
           toast(
             added > 0

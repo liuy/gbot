@@ -118,7 +118,7 @@ type Provider struct {
 	Keys        []string       `json:"keys"`                   // API keys or "$ENV_VAR" references
 	Models      Models         `json:"models"`                 // model name → metadata. Ordered (see Models type).
 	Type        string         `json:"type,omitempty"`         // "auto" (default) | "openai" | "anthropic"
-	Free        bool           `json:"free,omitempty"`         // if true, fetch free models from /api/v1/models at startup (OpenRouter)
+	FreeFetched []string       `json:"free_fetched,omitempty"` // ids the last free fetch managed — non-empty means startup auto-refreshes; absent means hand-managed
 	ExtraParams map[string]any `json:"extra_params,omitempty"` // Provider-specific params merged into request body
 }
 

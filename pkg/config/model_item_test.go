@@ -10,7 +10,7 @@ func TestBuildModelItems_RegularThenFree(t *testing.T) {
 	openai := &Provider{Name: "openai"}
 	openai.Models.Set("gpt-5", ModelConfig{})
 
-	free := &Provider{Name: "openrouter-free", Free: true}
+	free := &Provider{Name: "openrouter-free", FreeFetched: []string{"llama-free"}}
 	free.Models.Set("llama-free", ModelConfig{})
 
 	configs := map[string]*Provider{

@@ -122,6 +122,23 @@ func (m *Models) Set(name string, c ModelConfig) {
 	m.store[name] = c
 }
 
+// Delete removes a model entry; absent names are a no-op.
+func (m *Models) Delete(name string) {
+	if m.store == nil {
+		return
+	}
+	if _, exists := m.store[name]; !exists {
+		return
+	}
+	delete(m.store, name)
+	for i, k := range m.keys {
+		if k == name {
+			m.keys = append(m.keys[:i], m.keys[i+1:]...)
+			break
+		}
+	}
+}
+
 // NewModelsFromMap builds a Models from a Go map. Key order is unspecified
 // (Go map iteration), so this is intended only for tests where order doesn't
 // matter. Production callers should use Set() in order or rely on UnmarshalJSON.

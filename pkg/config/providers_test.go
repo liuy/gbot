@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -182,5 +185,99 @@ func TestCreateAllProviders_Responses(t *testing.T) {
 	}
 	if resp.Name() != "glm-resp" {
 		t.Errorf("Name() = %q, want glm-resp", resp.Name())
+	}
+}
+
+// Free providers re-fetch their top-10 at startup: the previously fetched
+// set must be REPLACED (stale ids dropped), while hand-configured models
+// survive untouched.
+func TestCreateAllProviders_FreeRefreshReplacesStale(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{
+					"id":                   "shared:free",
+					"name":                 "Shared (free)",
+					"context_length":       131072,
+					"pricing":              map[string]string{"prompt": "0", "completion": "0"},
+					"supported_parameters": []string{"tools"},
+				},
+				{
+					"id":                   "fresh:free",
+					"name":                 "Fresh (free)",
+					"context_length":       262144,
+					"pricing":              map[string]string{"prompt": "0", "completion": "0"},
+					"supported_parameters": []string{"tools"},
+				},
+				{
+					// Hand-configured id that the fetch also returns: hand
+					// metadata (context 8k) must survive the refresh.
+					"id":                   "hand:free",
+					"name":                 "Hand (free)",
+					"context_length":       999999,
+					"pricing":              map[string]string{"prompt": "0", "completion": "0"},
+					"supported_parameters": []string{"tools"},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Providers: []Provider{
+			{
+				Name:        "openrouter-free",
+				URL:         srv.URL,
+				Type:        ProviderTypeOpenAI,
+				Keys:        []string{"sk-free"},
+				FreeFetched: []string{"stale:free", "shared:free"}, // previous fetch managed these
+				Models: func() Models {
+					var m Models
+					_ = json.Unmarshal([]byte(`{
+						"stale:free": {},
+						"shared:free": {"context": "64k"},
+						"hand:free": {"context": "8k"},
+						"hand-added": {}
+					}`), &m)
+					return m
+				}(),
+			},
+		},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	prov := m["openrouter-free"]
+	if prov == nil {
+		t.Fatal("missing free provider")
+	}
+
+	// stale:free dropped out of the fetch — it must be gone from the models.
+	if _, ok := cfg.Providers[0].Models.Get("stale:free"); ok {
+		t.Errorf("stale:free must be removed from stored config, still present")
+	}
+	// hand-added survives untouched.
+	if _, ok := cfg.Providers[0].Models.Get("hand-added"); !ok {
+		t.Errorf("hand-added model must survive a free refresh")
+	}
+	// shared:free is managed — its metadata REFRESHES to the fetch value.
+	if shared, _ := cfg.Providers[0].Models.Get("shared:free"); shared.Context != IntOrHuman(131072) {
+		t.Errorf("shared:free context = %v, want refreshed %v", shared.Context, IntOrHuman(131072))
+	}
+	// hand:free was hand-configured (never fetched) — metadata PRESERVED
+	// even though the fetch also returns it, and it JOINS the snapshot.
+	if hand, _ := cfg.Providers[0].Models.Get("hand:free"); hand.Context != IntOrHuman(8192) {
+		t.Errorf("hand:free context = %v, want preserved %v", hand.Context, IntOrHuman(8192))
+	}
+	// fresh:free added.
+	if _, ok := cfg.Providers[0].Models.Get("fresh:free"); !ok {
+		t.Errorf("fresh:free must be added by the refresh")
+	}
+	// Snapshot tracks the new fetch exactly (hand:free joins).
+	got := cfg.Providers[0].FreeFetched
+	if len(got) != 3 || got[0] != "shared:free" || got[1] != "fresh:free" || got[2] != "hand:free" {
+		t.Errorf("FreeFetched = %v, want [shared:free fresh:free hand:free]", got)
 	}
 }

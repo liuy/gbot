@@ -617,6 +617,48 @@ describe('createSettingsPage', () => {
     const puts = mock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT')
     expect(puts).toHaveLength(0)
   })
+  it('free fetch REPLACES the previously fetched set (stale ids dropped, hand-added kept)', async () => {
+    const FREE_PAYLOAD: SettingsPayload = {
+      providers: [
+        {
+          name: 'openrouter-free',
+          url: 'https://openrouter.ai/api/v1',
+          type: 'openai',
+          keys: ['sk-free'],
+          free_fetched: ['old-free'],
+          models: {
+            'old-free': { context: '1M' },
+            'hand-made': { context: '500k' },
+          },
+        },
+      ],
+      default: { provider: '', model: '' },
+    }
+    let putBody: SettingsProvider[] | undefined
+    const mock = makeFetchHandler({
+      payload: FREE_PAYLOAD,
+      models: { mode: 'fetched', models: ['fresh-free'] },
+      onPut: (p) => {
+        putBody = p
+      },
+    })
+    const page = await openPage(mock, FREE_PAYLOAD)
+    ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(page.root.querySelector('[data-fetch-models]')).toBeTruthy()
+    })
+    ;(page.root.querySelector('[data-fetch-models]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(modelNames(page.root)).toContain('fresh-free')
+    })
+    expect(modelNames(page.root)).not.toContain('old-free')
+    expect(modelNames(page.root)).toContain('hand-made')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    const models = putBody![0].models
+    expect(Object.keys(models).sort()).toEqual(['fresh-free', 'hand-made'])
+    expect(putBody![0].free_fetched).toEqual(['fresh-free'])
+  })
 
   it('fetch models merges new ids and keeps existing metadata', async () => {
     let putBody: SettingsProvider[] | undefined
