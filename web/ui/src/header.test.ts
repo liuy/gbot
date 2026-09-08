@@ -895,7 +895,7 @@ describe('Header picker streaming state', () => {
   })
 })
 
-describe('Header target switch (local/remote WUI)', () => {
+describe('Header target switch (multi-endpoint WUI)', () => {
   // The testid sits on the wrapping button (the click target); the text and
   // the connected-state class live on the inner wordmark span.
   const wordmark = (header: ReturnType<typeof createHeader>): HTMLElement =>
@@ -903,14 +903,49 @@ describe('Header target switch (local/remote WUI)', () => {
   const markText = (header: ReturnType<typeof createHeader>): HTMLElement =>
     wordmark(header).querySelector('span') as HTMLElement
 
-  const applyTarget = (target: string, name: string): void => {
-    ;(window as unknown as Record<string, unknown>).__gbotApplyTarget(target, name)
+  interface TargetPayload {
+    target: string
+    current: string
+    remotes: { name: string; host: string; port: number }[]
+  }
+  const REMOTES: TargetPayload['remotes'] = [
+    { name: '桌面', host: '192.168.1.5', port: 8765 },
+    { name: 'nas', host: 'nas.box.local', port: 9000 },
+  ]
+
+  const applyTarget = (payload: TargetPayload | string): void => {
+    ;(window as unknown as Record<string, unknown>).__gbotApplyTarget(
+      typeof payload === 'string' ? payload : JSON.stringify(payload),
+    )
+  }
+
+  const stubNative = (remotes: TargetPayload['remotes'] = REMOTES) => {
+    const native = {
+      getRemoteTargets: vi.fn(() => JSON.stringify(remotes)),
+      switchTo: vi.fn(),
+    }
+    vi.stubGlobal('GBotNative', native)
+    return native
+  }
+
+  const popup = (): HTMLElement | null =>
+    document.body.querySelector('[data-testid="target-picker-panel"]') as HTMLElement | null
+
+  const clickWordmark = (header: ReturnType<typeof createHeader>) =>
+    wordmark(header).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+  const row = (testid: string, name?: string): HTMLElement => {
+    const rows = document.body.querySelectorAll(`[data-testid="${testid}"]`)
+    for (const r of rows) {
+      if (name === undefined || (r as HTMLElement).dataset.targetName === name) return r as HTMLElement
+    }
+    return rows[0] as HTMLElement
   }
 
   beforeEach(() => {
     document.body.innerHTML = ''
-    // zh pins the expected copy ('本地'/'远程') regardless of jsdom's en-US
-    // navigator — the same pinning convention the settings tests use.
+    // zh pins the popup copy ('本地') regardless of jsdom's en-US navigator —
+    // the same pinning convention the settings tests use.
     setLocale('zh')
   })
 
@@ -919,7 +954,7 @@ describe('Header target switch (local/remote WUI)', () => {
     delete (window as unknown as Record<string, unknown>).__gbotApplyTarget
   })
 
-  it('browser degradation: no GBotNative → static "GBot" wordmark, no hook side effects', () => {
+  it('browser degradation: no GBotNative → static "GBot" wordmark, no hook, inert click', () => {
     const header = createHeader({
       onModelSelect: () => {},
       onEngineSwitch: () => {},
@@ -927,13 +962,14 @@ describe('Header target switch (local/remote WUI)', () => {
     })
     document.body.appendChild(header.root)
     expect(wordmark(header).textContent).toBe('GBot')
-    // No bridge → clicking is inert (no switchTarget to reach).
-    expect(() => wordmark(header).click()).not.toThrow()
+    expect((window as unknown as Record<string, unknown>).__gbotApplyTarget).toBeUndefined()
+    expect(() => clickWordmark(header)).not.toThrow()
+    expect(popup()).toBeNull()
     expect(wordmark(header).textContent).toBe('GBot')
   })
 
-  it('registers __gbotApplyTarget and shows 本地 for the local target', () => {
-    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+  it('registers __gbotApplyTarget; the LOCAL target keeps the "GBot" brand wordmark', () => {
+    stubNative()
     const header = createHeader({
       onModelSelect: () => {},
       onEngineSwitch: () => {},
@@ -941,48 +977,148 @@ describe('Header target switch (local/remote WUI)', () => {
     })
     document.body.appendChild(header.root)
     expect(wordmark(header).textContent).toBe('GBot') // before Kotlin injects
-    applyTarget('local', '')
-    expect(wordmark(header).textContent).toBe('本地')
+    applyTarget({ target: 'local', current: '桌面', remotes: REMOTES })
+    expect(wordmark(header).textContent).toBe('GBot')
   })
 
-  it('remote target shows the remote NAME, falling back to 远程 when blank', () => {
-    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+  it('remote target shows the CURRENT remote name in the wordmark', () => {
+    stubNative()
     const header = createHeader({
       onModelSelect: () => {},
       onEngineSwitch: () => {},
       onEngineNew: () => {},
     })
     document.body.appendChild(header.root)
-    applyTarget('remote', 'Nas Box')
-    expect(wordmark(header).textContent).toBe('Nas Box')
-    applyTarget('remote', '')
-    expect(wordmark(header).textContent).toBe('远程')
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    expect(wordmark(header).textContent).toBe('桌面')
+    applyTarget({ target: 'remote', current: 'nas', remotes: REMOTES })
+    expect(wordmark(header).textContent).toBe('nas')
   })
-
-  it('clicking the wordmark calls GBotNative.switchTarget (bridge only)', () => {
-    const switchTarget = vi.fn()
-    vi.stubGlobal('GBotNative', { switchTarget })
+  it('remote target with EMPTY current degrades to the "GBot" brand wordmark', () => {
+    // E.g. the active endpoint was deleted in settings while a remote page
+    // stayed open — Kotlin reconciles target state, the label must not lie.
+    stubNative([])
     const header = createHeader({
       onModelSelect: () => {},
       onEngineSwitch: () => {},
       onEngineNew: () => {},
     })
     document.body.appendChild(header.root)
-    wordmark(header).click()
-    expect(switchTarget).toHaveBeenCalledTimes(1)
+    applyTarget({ target: 'remote', current: '', remotes: [] })
+    expect(wordmark(header).textContent).toBe('GBot')
+  })
+
+  it('malformed apply payload is ignored (wordmark untouched)', () => {
+    stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget('not json')
+    expect(wordmark(header).textContent).toBe('GBot')
+  })
+
+  it('wordmark click opens a popup listing 本地 + every remote; the current is marked', () => {
+    stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    clickWordmark(header)
+    const p = popup()
+    expect(p).not.toBeNull()
+    expect(row('target-local').textContent).toContain('本地')
+    expect(row('target-entry', '桌面').textContent).toContain('桌面')
+    expect(row('target-entry', 'nas').textContent).toContain('nas')
+    // The active entry carries the blue DOT (no check glyph — recipe matches
+    // the model rows); non-active entries do not.
+    expect(row('target-entry', '桌面').querySelector('.bg-blue')).not.toBeNull()
+    expect(row('target-entry', 'nas').querySelector('.bg-blue')).toBeNull()
+    expect(row('target-local').querySelector('.bg-blue')).toBeNull()
+  })
+
+  it('local target marks the 本地 row instead', () => {
+    stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'local', current: '', remotes: REMOTES })
+    clickWordmark(header)
+    expect(row('target-local').querySelector('.bg-blue')).not.toBeNull()
+    expect(row('target-entry', '桌面').querySelector('.bg-blue')).toBeNull()
+  })
+
+  it('clicking the 本地 entry calls GBotNative.switchTo("local") and closes the popup', () => {
+    const native = stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    clickWordmark(header)
+    row('target-local').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(native.switchTo).toHaveBeenCalledTimes(1)
+    expect(native.switchTo).toHaveBeenCalledWith('local')
+    expect(popup()!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('clicking a remote entry calls GBotNative.switchTo(name) and closes the popup', () => {
+    const native = stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'local', current: '', remotes: REMOTES })
+    clickWordmark(header)
+    row('target-entry', 'nas').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(native.switchTo).toHaveBeenCalledTimes(1)
+    expect(native.switchTo).toHaveBeenCalledWith('nas')
+    expect(popup()!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('re-reads getRemoteTargets at every open so saved endpoints appear without a reload', () => {
+    const native = stubNative([])
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'local', current: '', remotes: [] })
+    clickWordmark(header)
+    expect(row('target-entry', 'nas')).toBeUndefined()
+    // Popup closed by the outside-click path, then a NEW endpoint was saved
+    // in settings; the next open must show it.
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    native.getRemoteTargets.mockReturnValue(JSON.stringify(REMOTES))
+    clickWordmark(header)
+    expect(native.getRemoteTargets).toHaveBeenCalledTimes(2)
+    expect(row('target-entry', 'nas').textContent).toContain('nas')
   })
 
   it('setStatus still swaps the connected-state class after a target apply', () => {
-    vi.stubGlobal('GBotNative', { switchTarget: vi.fn() })
+    stubNative()
     const header = createHeader({
       onModelSelect: () => {},
       onEngineSwitch: () => {},
       onEngineNew: () => {},
     })
     document.body.appendChild(header.root)
-    applyTarget('remote', 'Nas Box')
+    applyTarget({ target: 'remote', current: 'nas', remotes: REMOTES })
     header.setStatus(true)
-    expect(markText(header).textContent).toBe('Nas Box')
+    expect(markText(header).textContent).toBe('nas')
     expect(markText(header).className).toContain('pulse')
     header.setStatus(false)
     expect(markText(header).className).not.toContain('pulse')

@@ -482,86 +482,212 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsPanel,
   )
 
-  // ------------------------------------------------------------ remote target
-  // Backing config for the header's LOCAL/REMOTE wordmark switch — Android
+  // ------------------------------------------------------------ remote endpoints
+  // Card list + detail form for the header's target-switch popup — Android
   // shell only (window.GBotNative, registered by ChatFragment). Kotlin
   // SharedPreferences is the single source of truth; the daemon API is not
-  // involved. Desktop browser: no card at all, same degradation rule as the
-  // app-log card below.
-  interface RemoteTargetBridge {
-    getRemoteTarget?: () => string
-    setRemoteTarget?: (name: string, host: string, port: number) => boolean
+  // involved. Same drill-in idiom as the provider cards: the master list
+  // shows one card per endpoint; a card (or +) opens a detail form whose
+  // save persists the WHOLE list through setRemoteTargets. Desktop browser:
+  // no card at all, same degradation rule as the app-log card below.
+  interface RemoteTargetsBridge {
+    getRemoteTargets?: () => string
+    setRemoteTargets?: (json: string) => boolean
   }
-  const remoteBridge = (): RemoteTargetBridge | undefined =>
-    (window as unknown as Record<string, RemoteTargetBridge | undefined>).GBotNative
+  const remoteBridge = (): RemoteTargetsBridge | undefined =>
+    (window as unknown as Record<string, RemoteTargetsBridge | undefined>).GBotNative
 
-  const remoteCard = createElement(
-    'div',
-    'mx-3 mt-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden pb-1',
-  )
+  const remoteCard = createElement('div', '')
   remoteCard.setAttribute('data-remote-card', '')
   const remoteSectionLabel = sectionLabel('remoteSection')
-  const remoteInput = (labelKey: StaticKey, attrs: Record<string, string>, placeholder: string) => {
-    const wrap = createElement('div', 'px-3.5 py-2')
+
+  // Page-side session state. Ports stay strings while being typed and only
+  // become numbers in the save payload. remoteEditIndex is the remotes[]
+  // index behind the open detail form, or -1 for the add flow.
+  let remotes: { name: string; host: string; port: string }[] = []
+  let remoteEditIndex = -1
+
+  // Master list — one clickable card per endpoint, same shape as the
+  // provider cards (name + ›, then the address in mono). The name renders
+  // VERBATIM: a blank or host-echoing stored name is never rewritten here —
+  // the host:port subtitle always disambiguates.
+  const remoteList = createElement('div', 'px-3')
+  remoteList.setAttribute('data-remote-list', '')
+  const renderRemoteList = () => {
+    remoteList.replaceChildren()
+    remotes.forEach((r, i) => {
+      const card = createNode('div', {
+        className: 'mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer',
+        attrs: { 'data-remote-entry': '' },
+      })
+      const r1 = createElement('div', 'flex items-center gap-2')
+      r1.append(createNode('div', { className: 'text-sm font-semibold flex-1', text: r.name }))
+      r1.appendChild(createNode('span', { className: 'text-t3 text-[13px]', text: '›' }))
+      card.append(
+        r1,
+        createNode('div', {
+          className: 'text-[11px] text-t3 font-mono mt-0.5 truncate',
+          text: `${r.host}:${r.port}`,
+        }),
+      )
+      card.addEventListener('click', () => openRemoteForm(i))
+      remoteList.appendChild(card)
+    })
+  }
+
+  const remoteAddBtn = createNode('div', {
+    className: 'flex items-center gap-1.5 px-3.5 py-2.5 text-[13px] text-blue cursor-pointer select-none mb-1',
+    attrs: { 'data-remote-add': '' },
+  })
+  remoteAddBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('remoteAdd')))
+
+  // Detail form — opens in place of the list, same drill-in idiom as the
+  // provider edit screen: a back affordance + title, then the fields.
+  const remoteForm = createElement('div', 'hidden')
+  remoteForm.setAttribute('data-remote-form', '')
+  const remoteBackBtn = createNode('div', {
+    className: 'w-8 h-8 -ml-1.5 rounded-lg flex items-center justify-center text-t2 cursor-pointer select-none',
+    attrs: { 'data-remote-back': '' },
+  })
+  remoteBackBtn.append(renderIcon('chevron-left'))
+  const remoteFormHead = createElement('div', 'flex items-center gap-1 px-2 pt-1.5')
+  remoteFormHead.append(remoteBackBtn, createNode('div', { className: 'text-[13px] font-semibold flex-1', ...L('remoteSection') }))
+
+  const remoteField = (labelKey: StaticKey, attrs: Record<string, string>) => {
+    const wrap = createElement('div', 'px-3 pt-2')
     wrap.append(
-      createNode('div', { className: 'text-[11px] text-t2 mb-1.5', ...L(labelKey) }),
+      createNode('label', { className: 'block text-[11px] text-t2 mb-1.5', ...L(labelKey) }),
       createNode('input', {
         className:
-          'w-full px-3 py-2 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
-        props: { type: 'text', spellcheck: false, placeholder },
+          'w-full px-3 py-2.5 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+        props: { type: 'text', spellcheck: false },
         attrs,
-      }) as HTMLInputElement,
+      }),
     )
     return { wrap, input: wrap.querySelector('input') as HTMLInputElement }
   }
-  const remoteNameField = remoteInput('remoteNameLabel', { 'data-remote-name': '' }, 'NAS')
-  const remoteHostField = remoteInput('remoteHostLabel', { 'data-remote-host': '' }, '192.168.1.20')
-  const remotePortField = remoteInput('remotePortLabel', { 'data-remote-port': '' }, '8765')
+  const remoteNameField = remoteField('remoteNameLabel', { 'data-remote-name': '' })
+  const remoteHostField = remoteField('remoteHostLabel', { 'data-remote-host': '' })
+  const remotePortField = remoteField('remotePortLabel', { 'data-remote-port': '' })
+
+  const remoteDeleteBtn = createNode('div', {
+    className: 'text-[11px] text-red/85 text-center pt-2.5 cursor-pointer select-none',
+    ...L('remoteDelete', { 'data-remote-delete': '' }),
+  })
+
   const remoteSaveBtn = createNode('button', {
     className:
       'block w-[calc(100%-28px)] mx-3.5 mt-1 mb-2.5 py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35 cursor-pointer',
     ...L('saveBtn', { type: 'button', 'data-remote-save': '' }),
   }) as HTMLButtonElement
-  remoteCard.append(
+
+  const showRemoteForm = (open: boolean) => {
+    remoteList.classList.toggle('hidden', open)
+    remoteAddBtn.classList.toggle('hidden', open)
+    remoteForm.classList.toggle('hidden', !open)
+    if (open) root.scrollTop = 0
+  }
+
+  const openRemoteForm = (index: number) => {
+    remoteEditIndex = index
+    const src = index >= 0 ? remotes[index] : { name: '', host: '', port: '' }
+    remoteNameField.input.value = src.name
+    remoteHostField.input.value = src.host
+    remotePortField.input.value = src.port
+    remoteDeleteBtn.classList.toggle('hidden', index < 0)
+    showRemoteForm(true)
+    remoteForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+  remoteBackBtn.addEventListener('click', () => showRemoteForm(false))
+  remoteAddBtn.addEventListener('click', () => openRemoteForm(-1))
+
+  // One save persists the WHOLE list (the bridge is whole-list). Returns
+  // false when Kotlin's own validation rejected — it toasts the reason; the
+  // caller must skip the saved-toast AND keep the form open.
+  const persistRemotes = (next: typeof remotes): boolean => {
+    const payload = next.map((r) => ({
+      name: r.name,
+      host: r.host,
+      port: Number.parseInt(r.port, 10),
+    }))
+    const ok = remoteBridge()?.setRemoteTargets?.(JSON.stringify(payload))
+    if (ok === false) return false
+    remotes = next
+    renderRemoteList()
+    showRemoteForm(false)
+    toast(t('remoteSaved'))
+    return true
+  }
+
+  remoteSaveBtn.addEventListener('click', () => {
+    // Per-entry rules first, then cross-entry name uniqueness — the first
+    // offender toasts and aborts (Kotlin re-validates as the backstop).
+    const name = remoteNameField.input.value.trim()
+    const host = remoteHostField.input.value.trim()
+    const port = Number.parseInt(remotePortField.input.value.trim(), 10)
+    if (!name) {
+      toast(t('remoteNameRequired'))
+      return
+    }
+    if (!host) {
+      toast(t('remoteHostRequired'))
+      return
+    }
+    // Mirror Kotlin's charset rule so the likeliest paste (a full URL) gets
+    // an i18n toast here instead of the hardcoded-Chinese backstop there.
+    if (/\s/.test(host) || host.includes('/') || host.includes(':')) {
+      toast(t('remoteHostInvalid'))
+      return
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      toast(t('remotePortInvalid'))
+      return
+    }
+    const next = [...remotes]
+    const entry = { name, host, port: String(port) }
+    if (remoteEditIndex >= 0) next[remoteEditIndex] = entry
+    else next.push(entry)
+    if (new Set(next.map((r) => r.name)).size !== next.length) {
+      toast(t('remoteNameUnique'))
+      return
+    }
+    persistRemotes(next)
+  })
+
+  remoteDeleteBtn.addEventListener('click', () => {
+    if (remoteEditIndex < 0) return
+    persistRemotes(remotes.filter((_, i) => i !== remoteEditIndex))
+  })
+
+  remoteForm.append(
+    remoteFormHead,
     remoteNameField.wrap,
     remoteHostField.wrap,
     remotePortField.wrap,
+    remoteDeleteBtn,
     remoteSaveBtn,
   )
+  remoteCard.append(remoteList, remoteAddBtn, remoteForm)
 
   if (remoteBridge()) {
-    // Prefill from the bridge getter (sync, JSON string). Malformed payload
-    // leaves the defaults — the fields are still editable.
+    // Prefill from the bridge getter (sync, JSON array string). Malformed
+    // payload leaves an empty list — the card is still usable via +.
     try {
-      const cfg = JSON.parse(remoteBridge()!.getRemoteTarget?.() ?? '{}') as {
+      const parsed = JSON.parse(remoteBridge()!.getRemoteTargets?.() ?? '[]') as {
         name?: string
         host?: string
         port?: number
-      }
-      remoteNameField.input.value = cfg.name ?? ''
-      remoteHostField.input.value = cfg.host ?? ''
-      remotePortField.input.value = String(cfg.port ?? 8765)
+      }[]
+      if (!Array.isArray(parsed)) throw new Error('malformed payload')
+      remotes = parsed.map((e) => ({
+        name: e.name ?? '',
+        host: e.host ?? '',
+        port: e.port === undefined ? '' : String(e.port),
+      }))
     } catch {
-      // bridge returned non-JSON — keep defaults
+      remotes = []
     }
-      remoteSaveBtn.addEventListener('click', () => {
-        // Validate before the bridge call: bad input is stopped here with the
-        // page toast (Kotlin re-validates as a backstop and toasts there).
-        const host = remoteHostField.input.value.trim()
-        const port = Number.parseInt(remotePortField.input.value.trim(), 10)
-        if (!host) {
-          toast(t('remoteHostRequired'))
-          return
-        }
-        if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          toast(t('remotePortInvalid'))
-          return
-        }
-        // Kotlin returns false when ITS validation rejects (e.g. host charset)
-        // — it toasts the reason; skip the saved-toast in that case.
-        const ok = remoteBridge()!.setRemoteTarget?.(remoteNameField.input.value.trim(), host, port)
-        if (ok !== false) toast(t('remoteSaved'))
-      })
+    renderRemoteList()
   }
 
   // --------------------------------------------------------------- app logs

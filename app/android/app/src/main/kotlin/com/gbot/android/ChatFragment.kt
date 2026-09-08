@@ -31,10 +31,17 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.Fragment
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import java.io.File
-import org.json.JSONObject
 
 class ChatFragment : Fragment() {
+
+    /** One user-configured remote daemon endpoint. NAME is the identity. */
+    data class RemoteTarget(val name: String, val host: String, val port: Int)
 
     companion object {
         // Persist across Fragment recreation — the system may destroy the
@@ -47,17 +54,127 @@ class ChatFragment : Fragment() {
         private var cameraPhotoUri: Uri? = null
 
         // WUI target switch prefs — the single source of truth for pointing
-        // the WebView at the LOCAL daemon or a user-configured REMOTE one.
-        // The WUI reads/writes them only through the GBotNative bridge.
+        // the WebView at the LOCAL daemon or one of several user-configured
+        // REMOTE ones. The WUI reads/writes them only through the GBotNative
+        // bridge. KEY_REMOTES holds a JSON array of named endpoints (name is
+        // the identity); KEY_CURRENT names the active endpoint when the
+        // target is remote.
         private const val PREFS_FILE = "wui"
         const val KEY_TARGET = "wui_target" // "local" | "remote", default local
-        const val KEY_REMOTE_NAME = "wui_remote_name" // display name, default ""
-        const val KEY_REMOTE_HOST = "wui_remote_host" // default ""
-        const val KEY_REMOTE_PORT = "wui_remote_port" // int, default 8765
+        const val KEY_REMOTES = "wui_remotes" // JSON array [{"name","host","port"}, ...]
+        const val KEY_CURRENT = "wui_current" // remote NAME when target == remote
+        // Legacy single-remote keys — consumed once by migrateLegacyRemote,
+        // then removed. No code writes them anymore.
+        private const val KEY_REMOTE_NAME = "wui_remote_name"
+        private const val KEY_REMOTE_HOST = "wui_remote_host"
+        private const val KEY_REMOTE_PORT = "wui_remote_port"
         const val TARGET_LOCAL = "local"
         const val TARGET_REMOTE = "remote"
         private const val LOCAL_URL = "http://127.0.0.1:8765/"
         private const val DEFAULT_REMOTE_PORT = 8765
+
+        // Rejection reasons surfaced as Kotlin toasts (the page pre-validates
+        // with its own i18n'd copies; these are the backstop).
+        internal const val MSG_NAME_REQUIRED = "名称不能为空"
+        internal const val MSG_NAME_DUPLICATE = "名称不能重复"
+        internal const val MSG_HOST_INVALID = "远程主机格式无效（仅主机名，端口单独填写）"
+        internal const val MSG_PORT_INVALID = "端口必须是 1-65535"
+
+        // Companion-level so the endpoint-list math stays unit-testable
+        // without Robolectric (its native binder does not load on arm64
+        // Termux JVMs), like buildTargetUrl above. Gson does the JSON work —
+        // org.json is stubbed (throws) in local unit tests.
+
+        /**
+         * Parse the stored/passed JSON array of {"name","host","port"}.
+         * ANY malformation (non-JSON, non-array, non-object element) degrades
+         * to an empty list — never throws. Missing fields parse to values
+         * that fail validation ("", 0).
+         */
+        internal fun parseRemoteTargets(json: String?): List<RemoteTarget> {
+            if (json.isNullOrBlank()) return emptyList()
+            return try {
+                val element = JsonParser.parseString(json)
+                if (!element.isJsonArray) return emptyList()
+                val targets = mutableListOf<RemoteTarget>()
+                for (el in element.asJsonArray) {
+                    if (!el.isJsonObject) return emptyList()
+                    val obj = el.asJsonObject
+                    val name = (obj.get("name") as? JsonPrimitive)?.asString ?: ""
+                    val host = (obj.get("host") as? JsonPrimitive)?.asString ?: ""
+                    val port = try {
+                        (obj.get("port") as? JsonPrimitive)?.asInt ?: 0
+                    } catch (e: NumberFormatException) {
+                        0
+                    }
+                    targets.add(RemoteTarget(name, host, port))
+                }
+                targets
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+
+        /** Serialize entries to the canonical stored JSON array shape. */
+        internal fun serializeRemoteTargets(targets: List<RemoteTarget>): String {
+            val array = JsonArray()
+            for (t in targets) {
+                val obj = JsonObject()
+                obj.addProperty("name", t.name)
+                obj.addProperty("host", t.host)
+                obj.addProperty("port", t.port)
+                array.add(obj)
+            }
+            return array.toString()
+        }
+
+        /**
+         * Validate EVERY entry (after edge-trimming): name non-empty and
+         * unique, host non-blank with no whitespace, '/' or ':', port
+         * 1-65535. Returns null when the whole list is valid, else the toast
+         * message for the first offending entry. An empty list is valid —
+         * clearing all remotes is a legitimate save.
+         */
+        internal fun validateRemoteTargets(targets: List<RemoteTarget>): String? {
+            val seen = HashSet<String>()
+            for (t in targets) {
+                val name = t.name.trim()
+                val host = t.host.trim()
+                if (name.isEmpty()) return MSG_NAME_REQUIRED
+                if (host.isEmpty() || host.any { it.isWhitespace() } ||
+                    '/' in host || ':' in host
+                ) return MSG_HOST_INVALID
+                if (t.port !in 1..65535) return MSG_PORT_INVALID
+                if (!seen.add(name)) return MSG_NAME_DUPLICATE
+            }
+            return null
+        }
+
+        /**
+         * Legacy single-entry migration: the old prefs held one optional
+         * name + host + port. A blank host means nothing was configured →
+         * null; a blank display name falls back to the host so the entry
+         * still satisfies the "name non-empty" identity rule.
+         */
+        internal fun legacyRemoteTarget(name: String, host: String, port: Int): RemoteTarget? {
+            val trimmedHost = host.trim()
+            if (trimmedHost.isEmpty()) return null
+            return RemoteTarget(name.trim().ifEmpty { trimmedHost }, trimmedHost, port)
+        }
+
+        /**
+         * Post-save reconciliation of the target pref: a save that removed
+         * or renamed the endpoint named by wui_current would strand the next
+         * launch on a name that matches nothing (currentRemote() → null →
+         * silently local URL). Returns TARGET_LOCAL when the active remote
+         * no longer exists, null when the prefs need no change.
+         */
+        internal fun reconcileTargetAfterSave(
+            target: String,
+            current: String,
+            saved: List<RemoteTarget>,
+        ): String? =
+            if (target == TARGET_REMOTE && saved.none { it.name == current }) TARGET_LOCAL else null
 
         // Companion-level so the URL math stays unit-testable without
         // Robolectric (its native binder does not load on arm64 Termux JVMs),
@@ -317,13 +434,17 @@ class ChatFragment : Fragment() {
     }
 
     private fun tryLoad() {
+        migrateLegacyRemote()
         // Every attempt starts from a known state: without this reset, a
         // skipped/duplicated error-page onPageFinished could desync the
         // flag — worst case the splash sticks over a working page.
         lastLoadFailed = false
         loadingOverlay?.visibility = View.VISIBLE
         webView?.visibility = View.VISIBLE
-        webView?.loadUrl(buildTargetUrl(currentTarget(), remoteHost(), remotePort()))
+        val remote = currentRemote()
+        webView?.loadUrl(
+            buildTargetUrl(currentTarget(), remote?.host ?: "", remote?.port ?: DEFAULT_REMOTE_PORT)
+        )
     }
 
     private fun targetPrefs() =
@@ -332,17 +453,56 @@ class ChatFragment : Fragment() {
     private fun currentTarget(): String =
         targetPrefs().getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL
 
-    private fun remoteName(): String =
-        targetPrefs().getString(KEY_REMOTE_NAME, "") ?: ""
+    private fun remoteTargetsList(): List<RemoteTarget> =
+        parseRemoteTargets(targetPrefs().getString(KEY_REMOTES, null))
 
-    private fun remoteHost(): String =
-        targetPrefs().getString(KEY_REMOTE_HOST, "") ?: ""
+    private fun currentRemoteName(): String =
+        targetPrefs().getString(KEY_CURRENT, "") ?: ""
 
-    private fun remotePort(): Int =
-        targetPrefs().getInt(KEY_REMOTE_PORT, DEFAULT_REMOTE_PORT)
+    /** The active endpoint when target == remote, matched by NAME. */
+    private fun currentRemote(): RemoteTarget? =
+        if (currentTarget() == TARGET_REMOTE) {
+            remoteTargetsList().firstOrNull { it.name == currentRemoteName() }
+        } else {
+            null
+        }
 
     /**
-     * Reload helper after a pref flip (bridge switchTarget, escape button):
+     * One-time upgrade from the single-endpoint prefs: a configured legacy
+     * host becomes the first array entry (unmigrated lists only); the old
+     * keys are always removed so the migration never re-runs. Runs from
+     * tryLoad, before any page or bridge can observe the prefs.
+     */
+    private fun migrateLegacyRemote() {
+        val prefs = targetPrefs()
+        if (!prefs.contains(KEY_REMOTE_NAME) && !prefs.contains(KEY_REMOTE_HOST) &&
+            !prefs.contains(KEY_REMOTE_PORT)
+        ) {
+            return
+        }
+        if (remoteTargetsList().isEmpty()) {
+            legacyRemoteTarget(
+                prefs.getString(KEY_REMOTE_NAME, "") ?: "",
+                prefs.getString(KEY_REMOTE_HOST, "") ?: "",
+                prefs.getInt(KEY_REMOTE_PORT, DEFAULT_REMOTE_PORT),
+            )?.let {
+                // Seed wui_current too: a legacy target=remote must keep
+                // pointing at the migrated entry, whose lookup is by NAME.
+                prefs.edit()
+                    .putString(KEY_REMOTES, serializeRemoteTargets(listOf(it)))
+                    .putString(KEY_CURRENT, it.name)
+                    .apply()
+            }
+        }
+        prefs.edit()
+            .remove(KEY_REMOTE_NAME)
+            .remove(KEY_REMOTE_HOST)
+            .remove(KEY_REMOTE_PORT)
+            .apply()
+    }
+
+    /**
+     * Reload helper after a pref flip (bridge switchTo, escape button):
      * back to the boot state, then load the (new) target's URL. onPageFinished
      * re-runs the theme + target injections on the fresh page.
      */
@@ -372,13 +532,26 @@ class ChatFragment : Fragment() {
         )
     }
 
-    // JSONObject.quote: the remote NAME is user input — it must arrive as a
-    // safely escaped JS string literal, never interpolated raw.
+    // The payload is ONE JSON object {target, current, remotes} delivered as
+    // a quoted JS string literal — Gson's string serialization is JSON-strict
+    // (JSON strings are valid JS string literals, and Gson escapes U+2028/
+    // 2029 too), so the user-controlled remote NAME can never break out of
+    // the literal.
     private fun applyTarget(view: WebView?) {
-        val target = JSONObject.quote(currentTarget())
-        val name = JSONObject.quote(remoteName())
+        val payload = JsonObject()
+        payload.addProperty("target", currentTarget())
+        payload.addProperty("current", currentRemoteName())
+        val remotes = JsonArray()
+        for (t in remoteTargetsList()) {
+            val obj = JsonObject()
+            obj.addProperty("name", t.name)
+            obj.addProperty("host", t.host)
+            obj.addProperty("port", t.port)
+            remotes.add(obj)
+        }
+        payload.add("remotes", remotes)
         view?.evaluateJavascript(
-            "window.__gbotApplyTarget && window.__gbotApplyTarget($target, $name);",
+            "window.__gbotApplyTarget && window.__gbotApplyTarget(${Gson().toJson(payload.toString())});",
             null,
         )
     }
@@ -407,62 +580,80 @@ class ChatFragment : Fragment() {
             }
         }
 
-        // Fire-and-forget toggle from the header wordmark: flip wui_target
-        // and reload the WebView to the new target's URL.
+        // JSON array of configured remote endpoints for the settings REMOTE
+        // card's prefill. Reads prefs directly on the bridge thread —
+        // SharedPreferences is thread-safe and this must not depend on the
+        // fragment being attached.
         @JavascriptInterface
-        fun switchTarget() {
-            activity?.runOnUiThread {
-                val next = if (currentTarget() == TARGET_REMOTE) TARGET_LOCAL else TARGET_REMOTE
-                // A remote flip without a configured host would load a junk
-                // URL and strand the user on the retry overlay.
-                if (next == TARGET_REMOTE && remoteHost().isBlank()) {
-                    Toast.makeText(context, "远程未配置，请先在设置中填写", Toast.LENGTH_SHORT).show()
-                    return@runOnUiThread
+        fun getRemoteTargets(): String =
+            context?.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+                ?.getString(KEY_REMOTES, null)?.takeIf { it.isNotBlank() } ?: "[]"
+
+        // Persist the WHOLE endpoint list (settings card saves all entries in
+        // one shot). Returns false when validation failed (reason surfaced as
+        // a Kotlin toast) so the page can skip its own saved-toast.
+        @JavascriptInterface
+        fun setRemoteTargets(json: String): Boolean {
+            if (json.isBlank()) {
+                activity?.runOnUiThread {
+                    Toast.makeText(context, MSG_HOST_INVALID, Toast.LENGTH_SHORT).show()
                 }
-                targetPrefs().edit().putString(KEY_TARGET, next).apply()
+                return false
+            }
+            val targets = parseRemoteTargets(json)
+            val error = validateRemoteTargets(targets)
+            if (error != null) {
+                activity?.runOnUiThread {
+                    Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                }
+                return false
+            }
+            // Store edge-trimmed values — validation judges trimmed input,
+            // so stored data and the switchTo lookup below stay consistent.
+            // context prefs, NOT targetPrefs(): the bridge thread must not
+            // depend on the fragment being attached (requireContext would
+            // throw once detached).
+            val prefs = context?.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+                ?: return false
+            val normalized = targets.map { RemoteTarget(it.name.trim(), it.host.trim(), it.port) }
+            val editor = prefs.edit()
+                .putString(KEY_REMOTES, serializeRemoteTargets(normalized))
+            reconcileTargetAfterSave(
+                prefs.getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL,
+                prefs.getString(KEY_CURRENT, "") ?: "",
+                normalized,
+            )?.let { editor.putString(KEY_TARGET, it) }
+            editor.apply()
+            // Re-inject so the wordmark label and popup context reflect a
+            // renamed/deleted active endpoint immediately — the page itself
+            // never re-fires onPageFinished after a settings save.
+            activity?.runOnUiThread { applyTarget(webView) }
+            return true
+        }
+
+        // Target switch from the header popup: "local" flips back to the
+        // local daemon; anything else is looked up BY NAME in the endpoint
+        // list. Unknown names toast no-op (stale popup). Either way the
+        // WebView reloads to the new target's URL.
+        @JavascriptInterface
+        fun switchTo(name: String) {
+            activity?.runOnUiThread {
+                val prefs = targetPrefs()
+                if (name == TARGET_LOCAL) {
+                    prefs.edit().putString(KEY_TARGET, TARGET_LOCAL).apply()
+                } else {
+                    val match = remoteTargetsList().firstOrNull { it.name == name }
+                    if (match == null) {
+                        Toast.makeText(context, "未找到端点「$name」", Toast.LENGTH_SHORT).show()
+                        return@runOnUiThread
+                    }
+                    prefs.edit()
+                        .putString(KEY_TARGET, TARGET_REMOTE)
+                        .putString(KEY_CURRENT, match.name)
+                        .apply()
+                }
                 reloadToTarget()
             }
-        }
-
-        // Persist the remote daemon config (host+port+name). Returns false
-        // when validation failed (reason surfaced as a Kotlin toast) so the
-        // page can skip its own saved-toast.
-        @JavascriptInterface
-        fun setRemoteTarget(name: String, host: String, port: Int): Boolean {
-            val trimmedHost = host.trim()
-            val hostOk = trimmedHost.isNotEmpty() && trimmedHost.none { it.isWhitespace() } &&
-                '/' !in trimmedHost && ':' !in trimmedHost
-            val portOk = port in 1..65535
-            activity?.runOnUiThread {
-                val message = when {
-                    !hostOk -> "远程主机格式无效（仅主机名，端口单独填写）"
-                    !portOk -> "端口必须是 1-65535"
-                    else -> return@runOnUiThread
-                }
-                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-            }
-            if (hostOk && portOk) {
-                targetPrefs().edit()
-                    .putString(KEY_REMOTE_NAME, name.trim())
-                    .putString(KEY_REMOTE_HOST, trimmedHost)
-                    .putInt(KEY_REMOTE_PORT, port)
-                    .apply()
-            }
-            return hostOk && portOk
-        }
-
-        // JSON config for the settings REMOTE card's prefill. Reads prefs
-        // directly on the bridge thread — SharedPreferences is thread-safe
-        // and this must not depend on the fragment being attached.
-        @JavascriptInterface
-        fun getRemoteTarget(): String {
-            val prefs = context?.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
-            val json = JSONObject()
-            json.put("target", prefs?.getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL)
-            json.put("name", prefs?.getString(KEY_REMOTE_NAME, "") ?: "")
-            json.put("host", prefs?.getString(KEY_REMOTE_HOST, "") ?: "")
-            json.put("port", prefs?.getInt(KEY_REMOTE_PORT, DEFAULT_REMOTE_PORT) ?: DEFAULT_REMOTE_PORT)
-            return json.toString()
         }
     }
 

@@ -1198,78 +1198,195 @@ describe('app log card', () => {
   })
 })
 
-describe('remote target card', () => {
+describe('remote endpoints card list + detail form', () => {
   beforeEach(() => {
     setLocale('en')
   })
 
-  interface NativeStub {
-    getRemoteTarget: () => string
-    setRemoteTarget: ReturnType<typeof vi.fn>
-    switchTarget: ReturnType<typeof vi.fn>
+  interface Endpoint {
+    name: string
+    host: string
+    port: number
   }
-  const stubNative = (remote = { target: 'local', name: '', host: '', port: 8765 }): NativeStub => {
+  interface NativeStub {
+    getRemoteTargets: () => string
+    setRemoteTargets: ReturnType<typeof vi.fn>
+    switchTo: ReturnType<typeof vi.fn>
+  }
+  const ENDPOINTS: Endpoint[] = [
+    { name: '桌面', host: '192.168.1.5', port: 8765 },
+    { name: 'nas', host: 'nas.box.local', port: 9000 },
+  ]
+  const stubNative = (remotes: Endpoint[] = []): NativeStub => {
     const stub: NativeStub = {
-      getRemoteTarget: () => JSON.stringify(remote),
-      setRemoteTarget: vi.fn(),
-      switchTarget: vi.fn(),
+      getRemoteTargets: () => JSON.stringify(remotes),
+      setRemoteTargets: vi.fn(),
+      switchTo: vi.fn(),
     }
     vi.stubGlobal('GBotNative', stub)
     return stub
   }
+
+  const card = (page: { root: HTMLElement }): HTMLElement =>
+    page.root.querySelector('[data-remote-card]') as HTMLElement
+  const entries = (page: { root: HTMLElement }): HTMLElement[] =>
+    Array.from(card(page).querySelectorAll('[data-remote-entry]')) as HTMLElement[]
+  // entry DOM: [0] = name row (name div + chevron), [1] = host:port subtitle.
+  const entryName = (e: HTMLElement): string => (e.children[0].children[0] as HTMLElement).textContent ?? ''
+  const entrySubtitle = (e: HTMLElement): string => (e.children[1] as HTMLElement).textContent ?? ''
+  const formInput = (page: { root: HTMLElement }, sel: string): HTMLInputElement =>
+    card(page).querySelector(sel) as HTMLInputElement
+  const formVisible = (page: { root: HTMLElement }): boolean =>
+    !(card(page).querySelector('[data-remote-form]') as HTMLElement).classList.contains('hidden')
+  const deleteHidden = (page: { root: HTMLElement }): boolean =>
+    (card(page).querySelector('[data-remote-delete]') as HTMLElement).classList.contains('hidden')
+  const clickSave = (page: { root: HTMLElement }) =>
+    (card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+  const clickDelete = (page: { root: HTMLElement }) =>
+    (card(page).querySelector('[data-remote-delete]') as HTMLElement).click()
+  const toastText = (page: { root: HTMLElement }): string =>
+    (page.root.querySelector('[data-toast]') as HTMLElement).textContent ?? ''
 
   it('does not render without the GBotNative bridge (desktop browser)', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     expect(page.root.querySelector('[data-remote-card]')).toBeNull()
   })
 
-  it('renders with the bridge and prefills fields from getRemoteTarget()', async () => {
-    stubNative({ target: 'local', name: 'Nas Box', host: '192.168.1.20', port: 9000 })
+  it('renders one card per stored endpoint — name + host:port subtitle', async () => {
+    stubNative(ENDPOINTS)
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    const card = page.root.querySelector('[data-remote-card]') as HTMLElement
-    expect(card).not.toBeNull()
-    expect((card.querySelector('[data-remote-name]') as HTMLInputElement).value).toBe('Nas Box')
-    expect((card.querySelector('[data-remote-host]') as HTMLInputElement).value).toBe('192.168.1.20')
-    expect((card.querySelector('[data-remote-port]') as HTMLInputElement).value).toBe('9000')
+    expect(entries(page)).toHaveLength(2)
+    expect(entries(page).map(entryName)).toEqual(['桌面', 'nas'])
+    expect(entries(page).map(entrySubtitle)).toEqual(['192.168.1.5:8765', 'nas.box.local:9000'])
   })
 
-  it('save with an empty host toasts and never calls the bridge', async () => {
-    const native = stubNative()
+  it('a blank stored name still shows verbatim (no host fallback) with the subtitle', async () => {
+    stubNative([{ name: '', host: 'nas.box.local', port: 9000 }])
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    input(page.root.querySelector('[data-remote-host]') as HTMLInputElement, '   ')
-    ;(page.root.querySelector('[data-remote-save]') as HTMLElement).click()
+    expect(entryName(entries(page)[0])).toBe('')
+    expect(entrySubtitle(entries(page)[0])).toBe('nas.box.local:9000')
+  })
+
+  it('card click opens the prefilled detail form; back returns to the list', async () => {
+    stubNative(ENDPOINTS)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    entries(page)[1].click()
+    expect(formVisible(page)).toBe(true)
+    expect(formInput(page, '[data-remote-name]').value).toBe('nas')
+    expect(formInput(page, '[data-remote-host]').value).toBe('nas.box.local')
+    expect(formInput(page, '[data-remote-port]').value).toBe('9000')
+    expect(deleteHidden(page)).toBe(false)
+    ;(card(page).querySelector('[data-remote-back]') as HTMLElement).click()
+    expect(formVisible(page)).toBe(false)
+    expect(entries(page)).toHaveLength(2)
+  })
+
+  it('+ opens an empty form; saving persists ALL entries in ONE setRemoteTargets call', async () => {
+    const native = stubNative(ENDPOINTS)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    expect(formVisible(page)).toBe(true)
+    expect(deleteHidden(page)).toBe(true)
+    input(formInput(page, '[data-remote-name]'), ' studio ')
+    input(formInput(page, '[data-remote-host]'), ' 192.168.2.7 ')
+    input(formInput(page, '[data-remote-port]'), '9001')
+    clickSave(page)
     await flushMicrotasks()
-    expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe(
-      'Host is required',
+    expect(native.setRemoteTargets).toHaveBeenCalledTimes(1)
+    expect(native.setRemoteTargets).toHaveBeenCalledWith(
+      JSON.stringify([
+        { name: '桌面', host: '192.168.1.5', port: 8765 },
+        { name: 'nas', host: 'nas.box.local', port: 9000 },
+        { name: 'studio', host: '192.168.2.7', port: 9001 },
+      ]),
     )
-    expect(native.setRemoteTarget).not.toHaveBeenCalled()
+    expect(toastText(page)).toBe('Saved')
+    expect(formVisible(page)).toBe(false)
+    expect(entries(page)).toHaveLength(3)
   })
 
-  it('save with an out-of-range port toasts and never calls the bridge', async () => {
-    const native = stubNative({ target: 'local', name: '', host: 'mybox', port: 8765 })
+  it('delete removes the entry, persists, and returns to the list', async () => {
+    const native = stubNative(ENDPOINTS)
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    input(page.root.querySelector('[data-remote-port]') as HTMLInputElement, '70000')
-    ;(page.root.querySelector('[data-remote-save]') as HTMLElement).click()
+    entries(page)[1].click()
+    clickDelete(page)
     await flushMicrotasks()
-    expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toContain(
-      'Port must be 1-65535',
+    expect(native.setRemoteTargets).toHaveBeenCalledTimes(1)
+    expect(native.setRemoteTargets).toHaveBeenCalledWith(
+      JSON.stringify([{ name: '桌面', host: '192.168.1.5', port: 8765 }]),
     )
-    expect(native.setRemoteTarget).not.toHaveBeenCalled()
-    input(page.root.querySelector('[data-remote-port]') as HTMLInputElement, 'abc')
-    ;(page.root.querySelector('[data-remote-save]') as HTMLElement).click()
-    await flushMicrotasks()
-    expect(native.setRemoteTarget).not.toHaveBeenCalled()
+    expect(toastText(page)).toBe('Saved')
+    expect(formVisible(page)).toBe(false)
+    expect(entries(page)).toHaveLength(1)
   })
 
-  it('save passes trimmed name/host/port to the bridge and toasts success', async () => {
-    const native = stubNative()
+  it('blank name toasts and never calls the bridge', async () => {
+    const native = stubNative([])
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    input(page.root.querySelector('[data-remote-name]') as HTMLInputElement, '  Nas  ')
-    input(page.root.querySelector('[data-remote-host]') as HTMLInputElement, ' mybox.local ')
-    input(page.root.querySelector('[data-remote-port]') as HTMLInputElement, '9001')
-    ;(page.root.querySelector('[data-remote-save]') as HTMLElement).click()
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-host]'), 'my.host')
+    input(formInput(page, '[data-remote-port]'), '8765')
+    clickSave(page)
     await flushMicrotasks()
-    expect(native.setRemoteTarget).toHaveBeenCalledWith('Nas', 'mybox.local', 9001)
-    expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Saved')
+    expect(toastText(page)).toBe('Name is required')
+    expect(native.setRemoteTargets).not.toHaveBeenCalled()
+    expect(formVisible(page)).toBe(true)
+  })
+
+  it('blank host toasts and never calls the bridge', async () => {
+    const native = stubNative([])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'nas')
+    input(formInput(page, '[data-remote-host]'), '   ')
+    input(formInput(page, '[data-remote-port]'), '8765')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe('Host is required')
+    expect(native.setRemoteTargets).not.toHaveBeenCalled()
+  })
+
+  it('out-of-range or non-numeric port toasts and never calls the bridge', async () => {
+    const native = stubNative([])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'nas')
+    input(formInput(page, '[data-remote-host]'), 'my.host')
+    input(formInput(page, '[data-remote-port]'), '70000')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe('Port must be 1-65535')
+    expect(native.setRemoteTargets).not.toHaveBeenCalled()
+    input(formInput(page, '[data-remote-port]'), 'abc')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(native.setRemoteTargets).not.toHaveBeenCalled()
+  })
+
+  it('duplicate names toast and never call the bridge (name is the identity)', async () => {
+    const native = stubNative([{ name: 'nas', host: 'nas.box.local', port: 9000 }])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), ' nas ')
+    input(formInput(page, '[data-remote-host]'), 'b.host')
+    input(formInput(page, '[data-remote-port]'), '9000')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe('Names must be unique')
+    expect(native.setRemoteTargets).not.toHaveBeenCalled()
+  })
+
+  it('a bridge rejection (false) skips the saved toast — Kotlin toasted the reason', async () => {
+    const native = stubNative([])
+    native.setRemoteTargets.mockReturnValue(false)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'nas')
+    input(formInput(page, '[data-remote-host]'), 'my.host')
+    input(formInput(page, '[data-remote-port]'), '8765')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(native.setRemoteTargets).toHaveBeenCalledTimes(1)
+    expect(toastText(page)).toBe('')
   })
 })

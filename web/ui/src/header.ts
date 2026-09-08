@@ -1,6 +1,6 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
-import { createPopupPanel, createOutsideClick, formatTokenCount } from './utils'
+import { createPopupPanel, createPopupHost, createOutsideClick, formatTokenCount } from './utils'
 import type { ContextBreakdownData, ContextCategoryData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
@@ -613,24 +613,103 @@ export function createHeader(opts: {
   gbotWrap.dataset.testid = 'gbot-wordmark'
 
   // Local/remote target switch — Android-shell-only (window.GBotNative is
-  // the bridge ChatFragment registers). Kotlin owns the target pref and
-  // injects the current target + remote name after every page load through
-  // window.__gbotApplyTarget; a click fires GBotNative.switchTarget() and
-  // Kotlin flips the pref and reloads. In a plain browser no injection ever
-  // arrives and the wordmark stays the static "GBot" logo.
+  // the bridge ChatFragment registers). Kotlin owns the endpoint prefs and
+  // injects the full context ({target, current, remotes} as a JSON string)
+  // after every page load through window.__gbotApplyTarget; the wordmark
+  // reads it for its label, and a click opens a popup listing 本地 + every
+  // saved endpoint. The popup re-reads GBotNative.getRemoteTargets() at
+  // open time so freshly saved endpoints appear without a reload; an entry
+  // click fires GBotNative.switchTo(name-or-"local") and Kotlin flips the
+  // prefs and reloads. In a plain browser no bridge exists: the wordmark
+  // stays the static "GBot" logo with no click behavior at all.
   interface GBotNativeHost {
-    switchTarget?: () => void
+    getRemoteTargets?: () => string
+    switchTo?: (name: string) => void
+  }
+  interface TargetState {
+    target: string
+    current: string
+    remotes: { name: string; host: string; port: number }[]
   }
   const nativeHost = (window as unknown as { GBotNative?: GBotNativeHost }).GBotNative
-  if (nativeHost) {
-    gbotWrap.addEventListener('click', () => nativeHost.switchTarget?.())
+
+  // The wordmark's label: "GBot" is the brand (local target — same static
+  // look as a plain browser); a remote target shows the CURRENT endpoint's
+  // name. No i18n here — the brand never translates.
+  let targetState: TargetState | null = null
+  const renderTargetWordmark = () => {
+    wordmark.textContent =
+      targetState && targetState.target === 'remote' && targetState.current
+        ? targetState.current
+        : 'GBot'
   }
-  Object.assign(window, {
-    __gbotApplyTarget: (target: string, remoteName: string) => {
-      wordmark.textContent =
-        target === 'remote' ? (remoteName || t('targetRemote')) : t('targetLocal')
-    },
-  })
+
+  if (nativeHost) {
+    const targetPanel = createPopupPanel({ className: 'min-w-[160px]' })
+    targetPanel.dataset.testid = 'target-picker-panel'
+
+    // Row recipe mirrors the model rows above: a dot marks the active
+    // entry — no bold, no check glyph.
+    const targetRow = (testid: string, label: string, active: boolean, name?: string) => {
+      const item = createElement(
+        'button',
+        cx(
+          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50',
+        ),
+      )
+      item.dataset.testid = testid
+      if (name !== undefined) item.dataset.targetName = name
+      const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', active ? 'bg-blue' : 'bg-t3/30'))
+      item.appendChild(dot)
+      const span = createElement('span', cx('text-[13px]', active ? 'text-blue' : 'text-t2'))
+      span.textContent = label
+      item.appendChild(span)
+      return item
+    }
+
+    const targetMenu = createPopupHost({
+      trigger: gbotWrap,
+      panel: targetPanel,
+      onOpen: () => {
+        targetPanel.innerHTML = ''
+        let remotes: TargetState['remotes'] = []
+        try {
+          const parsed = JSON.parse(nativeHost.getRemoteTargets?.() ?? '[]')
+          remotes = Array.isArray(parsed) ? parsed : []
+        } catch {
+          remotes = []
+        }
+        const remoteActive = !!targetState && targetState.target === 'remote'
+        const current = remoteActive ? (targetState?.current ?? '') : ''
+        const localRow = targetRow('target-local', t('targetLocal'), !remoteActive)
+        localRow.addEventListener('click', () => {
+          nativeHost.switchTo?.('local')
+          targetMenu.close()
+        })
+        targetPanel.appendChild(localRow)
+        for (const entry of remotes) {
+          const r = targetRow('target-entry', entry.name, entry.name === current, entry.name)
+          r.addEventListener('click', () => {
+            nativeHost.switchTo?.(entry.name)
+            targetMenu.close()
+          })
+          targetPanel.appendChild(r)
+        }
+      },
+    })
+    gbotWrap.addEventListener('click', () => targetMenu.toggle())
+
+    Object.assign(window, {
+      __gbotApplyTarget: (payloadJson: string) => {
+        try {
+          targetState = JSON.parse(payloadJson) as TargetState
+        } catch {
+          return // malformed injection — keep the last known state
+        }
+        renderTargetWordmark()
+      },
+    })
+  }
 
   const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
   const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
