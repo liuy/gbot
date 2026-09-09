@@ -679,7 +679,7 @@ export function createHeader(opts: {
       panel: targetPanel,
       onOpen: () => {
         targetPanel.innerHTML = ''
-        let remotes: TargetState['remotes'] = []
+        let remotes: TargetState['remotes']
         try {
           const parsed = JSON.parse(nativeHost.getRemoteTargets?.() ?? '[]')
           remotes = Array.isArray(parsed) ? parsed : []
