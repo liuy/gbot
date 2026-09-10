@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { renderMarkdown, ensureTableBlankLine } from './markdown'
+import { renderMarkdown, renderMarkdownNoHighlight, ensureTableBlankLine } from './markdown'
 
 const css = readFileSync(resolve(__dirname, 'index.css'), 'utf-8')
 
@@ -115,6 +115,76 @@ describe('renderMarkdown', () => {
     const long = 'word '.repeat(10000)
     const out = renderMarkdown(long)
     expect(out.length).toBeGreaterThan(1000)
+  })
+})
+
+describe('KaTeX math rendering', () => {
+  it('renders inline $...$ as a single katex span with native MathML glyphs', () => {
+    const el = container(renderMarkdown('$a \\cdot b = \\sum a_i b_i$'))
+    expect(el.querySelectorAll('.katex').length).toBe(1)
+    const math = el.querySelector('.katex > math')
+    expect(math?.textContent).toContain('∑')
+    expect(math?.textContent).toContain('⋅')
+    // output:'mathml' must stay font-free — katex-html would drag ~1MB of
+    // webfonts back into the single-file build.
+    expect(el.querySelector('.katex-html')).toBeNull()
+  })
+
+  it('renders $$...$$ as a block-level <math display="block">', () => {
+    const el = container(renderMarkdown('$$\nx = y\n$$'))
+    const math = el.querySelector('math')
+    expect(math?.getAttribute('display')).toBe('block')
+    expect(math?.textContent).toContain('x=y')
+  })
+
+  it('does not typeset currency amounts ($20,000 and $30,000)', () => {
+    const el = container(renderMarkdown('cost $20,000 and $30,000 total'))
+    expect(el.textContent).toContain('$20,000 and $30,000 total')
+    expect(el.querySelectorAll('.katex').length).toBe(0)
+  })
+
+  it('leaves unclosed $x + y as literal text (streaming safety)', () => {
+    const el = container(renderMarkdown('pending $x + y more'))
+    expect(el.textContent).toContain('$x + y')
+    expect(el.querySelectorAll('.katex').length).toBe(0)
+  })
+
+  it('sanitizer keeps the <math> accessibility subtree after render', () => {
+    const out = renderMarkdown('$a + b$')
+    expect(out).toContain('<math')
+    expect(out).toContain('<mi>a</mi>')
+    expect(out).toContain('<mo>+</mo>')
+    const el = container(out)
+    const math = el.querySelector('math')
+    expect(math?.namespaceURI).toBe('http://www.w3.org/1998/Math/MathML')
+  })
+
+  it('renderMarkdownNoHighlight typesets math through the plain instance', () => {
+    const el = container(renderMarkdownNoHighlight('$a \\cdot b$'))
+    expect(el.querySelectorAll('.katex').length).toBe(1)
+    expect(el.querySelector('.katex > math')?.textContent).toContain('⋅')
+  })
+
+  it('renders invalid TeX as katex-error instead of throwing', () => {
+    let out = ''
+    expect(() => { out = renderMarkdown('$\\frac{$') }).not.toThrow()
+    const err = container(out).querySelector('.katex-error')
+    expect(err).toBeTruthy()
+    expect(err?.getAttribute('title')).toContain('ParseError')
+  })
+
+  it('sanitizer drops annotation TeX source, keeping MathML element text', () => {
+    const out = renderMarkdown('$x+y$')
+    const math = container(out).querySelector('math')
+    expect(math).toBeTruthy()
+    // Hoisted annotation residue would be a bare text child of <math>;
+    // legit reading text lives inside <mi>/<mo>/<mn> elements.
+    const stray = Array.from(math!.childNodes).filter(
+      (n) => n.nodeType === 3 && (n.textContent ?? '').trim() !== ''
+    )
+    expect(stray).toHaveLength(0)
+    expect(math!.querySelector('mi')?.textContent).toBe('x')
+    expect(math!.querySelector('mo')?.textContent).toBe('+')
   })
 })
 
