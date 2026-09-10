@@ -26,5 +26,13 @@ Fetches the URL, converts HTML to markdown, and returns the content.
 - Large pages are truncated
 - Redirects are followed automatically
 - Some sites block automated requests; if fetch fails, try a search instead
-- If the page requires JavaScript or returns empty/blocked content, use js: true to fetch with headless Chrome (includes stealth anti-detection)`
+- If the page requires JavaScript, returns empty/blocked content, or is protected by anti-bot measures, use js: true to fetch with headless Chrome — JS rendering plus stealth anti-detection that gets past bot blocking
+
+### Directly readable documents
+
+PDF, Word (doc/docx), PowerPoint (ppt/pptx), Excel (xls/xlsx), EPUB, Jupyter (ipynb), and CSV URLs are detected automatically and converted to markdown — read them directly, no need to download or hand-parse first.
+
+### Do NOT fall back to hand-written scripts
+
+For reading web pages or documents, always use this tool — it already handles proxies, redirects, JS rendering, stealth anti-detection, and document conversion. If a fetch fails here, hand-written scripts (curl/wget/requests) will fail too: they have strictly less capability. Report the failure or try a search instead.`
 }

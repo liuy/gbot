@@ -215,6 +215,20 @@ func TestWebPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "js: true") {
 		t.Errorf("prompt missing js guidance: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Directly readable documents") {
+		t.Errorf("prompt missing readable document formats: %q", prompt)
+	}
+	for _, format := range []string{"PDF", "EPUB", "ipynb", "CSV"} {
+		if !strings.Contains(prompt, format) {
+			t.Errorf("prompt missing document format %q: %q", format, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "stealth anti-detection") {
+		t.Errorf("prompt missing stealth anti-detection capability: %q", prompt)
+	}
+	if !strings.Contains(prompt, "will fail too") {
+		t.Errorf("prompt missing no-scripts-fallback guidance: %q", prompt)
+	}
 }
 
 func TestWebPrompt_NoProviders(t *testing.T) {

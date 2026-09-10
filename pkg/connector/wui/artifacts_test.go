@@ -76,7 +76,7 @@ func TestRegisterArtifactRoutes_ServesFileWithHeaders(t *testing.T) {
 	if got := h.Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
-	const wantCSP = "default-src 'self' 'unsafe-inline' data:; sandbox allow-scripts allow-same-origin"
+	const wantCSP = "default-src 'self' 'unsafe-inline' data: blob:; sandbox allow-scripts allow-same-origin allow-popups allow-modals allow-downloads allow-forms"
 	if got := h.Get("Content-Security-Policy"); got != wantCSP {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 	}
@@ -455,7 +455,7 @@ func TestRegisterArtifactRoutes_BundledChessFallbackMatchesFileServe(t *testing.
 	if got := header.Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
-	const wantCSP = "default-src 'self' 'unsafe-inline' data:; sandbox allow-scripts allow-same-origin"
+	const wantCSP = "default-src 'self' 'unsafe-inline' data: blob:; sandbox allow-scripts allow-same-origin allow-popups allow-modals allow-downloads allow-forms"
 	if got := header.Get("Content-Security-Policy"); got != wantCSP {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 	}
