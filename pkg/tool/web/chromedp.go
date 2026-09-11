@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -27,23 +28,24 @@ type ChromePool struct {
 
 var defaultPool = &ChromePool{}
 
-var chromedpAvailable struct {
-	once    sync.Once
-	result  bool
-	binPath string
-}
-
-func isChromedpAvailable() (bool, string) {
-	chromedpAvailable.once.Do(func() {
-		for _, name := range []string{"chromium-browser", "chromium", "google-chrome", "chrome"} {
-			if p, err := exec.LookPath(name); err == nil {
-				chromedpAvailable.result = true
-				chromedpAvailable.binPath = p
-				return
-			}
+// findChromeBin probes for a usable browser binary on every call: a cached
+// miss would hide a browser installed after the daemon started (chromedp
+// itself re-runs LookPath per Allocate, so caching buys microseconds and
+// costs a restart). CHROME_PATH (the chrome-launcher/Puppeteer convention)
+// wins when it points at a regular executable; a stale value is ignored so
+// PATH still gets a say.
+func findChromeBin() (string, bool) {
+	if p := os.Getenv("CHROME_PATH"); p != "" {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+			return p, true
 		}
-	})
-	return chromedpAvailable.result, chromedpAvailable.binPath
+	}
+	for _, name := range []string{"chromium-browser", "chromium", "google-chrome", "chrome"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // getWithProxy returns a chromedp context, restarting Chrome if proxy changed.
@@ -65,7 +67,7 @@ func (p *ChromePool) getWithProxy(parentCtx context.Context, proxyURL string) (c
 		p.ready = false
 	}
 
-	available, binPath := isChromedpAvailable()
+	binPath, available := findChromeBin()
 	if !available {
 		return nil, nil, fmt.Errorf("no Chrome/Chromium binary found")
 	}

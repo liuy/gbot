@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,21 +24,66 @@ import (
 var chromeAvailable bool
 
 func init() {
-	chromeAvailable, _ = isChromedpAvailable()
+	_, chromeAvailable = findChromeBin()
 }
 
 // ---------------------------------------------------------------------------
-// isChromedpAvailable — caching behavior
+// findChromeBin — dynamic discovery (a cached miss would hide a browser
+// installed after the daemon started; chromedp itself re-runs LookPath per
+// Allocate, so caching the miss buys microseconds and costs a restart).
 // ---------------------------------------------------------------------------
 
-func TestIsChromedpAvailable_Cached(t *testing.T) {
-	a1, p1 := isChromedpAvailable()
-	a2, p2 := isChromedpAvailable()
-	if a1 != a2 {
-		t.Errorf("availability changed between calls: %v -> %v", a1, a2)
+func TestFindChromeBin_DiscoversAfterInstall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	t.Setenv("CHROME_PATH", "")
+	if _, ok := findChromeBin(); ok {
+		t.Fatal("expected no browser on an empty PATH")
 	}
-	if p1 != p2 {
-		t.Errorf("path changed between calls: %s -> %s", p1, p2)
+	bin := filepath.Join(dir, "chromium")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := findChromeBin()
+	if !ok || got != bin {
+		t.Fatalf("expected %q discovered on the next probe, got %q ok=%v", bin, got, ok)
+	}
+}
+
+func TestFindChromeBin_EnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	custom := filepath.Join(dir, "my-chrome")
+	if err := os.WriteFile(custom, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("CHROME_PATH", custom)
+	got, ok := findChromeBin()
+	if !ok || got != custom {
+		t.Fatalf("expected CHROME_PATH %q to win, got %q ok=%v", custom, got, ok)
+	}
+}
+
+func TestFindChromeBin_IgnoresUnusableEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "chromium")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	// A directory and a non-executable file both fail the probe's contract;
+	// PATH must still get a say rather than chromedp failing later.
+	for _, bad := range []string{dir, filepath.Join(dir, "not-exec")} {
+		if bad != dir {
+			if err := os.WriteFile(bad, []byte("nope"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("CHROME_PATH", bad)
+		got, ok := findChromeBin()
+		if !ok || got != bin {
+			t.Fatalf("CHROME_PATH=%q: expected fallback to %q, got %q ok=%v", bad, bin, got, ok)
+		}
 	}
 }
 
@@ -260,8 +307,7 @@ func TestRealChromedpFetch_AboutBlank(t *testing.T) {
 	}
 	// Reset pool and availability cache for a clean state.
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
-	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+	t.Cleanup(func() { defaultPool.reset() })
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -289,8 +335,7 @@ func TestRealChromedpFetch_EmptyContent(t *testing.T) {
 		t.Skip("Chrome/Chromium not installed")
 	}
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
-	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+	t.Cleanup(func() { defaultPool.reset() })
 
 	// Serve a page with an empty body so OuterHTML returns empty/whitespace.
 	// In practice this is hard to achieve — about:blank has <html></html>.
@@ -312,8 +357,7 @@ func TestChromePool_GetWithProxy_ReadyReuse(t *testing.T) {
 		t.Skip("Chrome/Chromium not installed")
 	}
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
-	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+	t.Cleanup(func() { defaultPool.reset() })
 
 	// First call creates Chrome and marks pool ready.
 	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
@@ -346,8 +390,7 @@ func TestChromePool_GetWithProxy_ProxyChangeResets(t *testing.T) {
 		t.Skip("Chrome/Chromium not installed")
 	}
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
-	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+	t.Cleanup(func() { defaultPool.reset() })
 
 	// Bootstrap with no proxy.
 	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
@@ -389,8 +432,7 @@ func TestRealChromedpFetch_UnstablePage(t *testing.T) {
 		t.Skip("Chrome/Chromium not installed")
 	}
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
-	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+	t.Cleanup(func() { defaultPool.reset() })
 
 	// Page adds a new child every 50ms forever.
 	page := `<html><body><script>

@@ -10,7 +10,6 @@ import (
 	"os"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool/web/providers"
@@ -436,7 +435,7 @@ func TestExecute_Fetch_BotBlockNoChrome(t *testing.T) {
 	if runtime.GOOS == "android" {
 		t.Skip("chromedp unsupported on android (Chrome APK not a CLI binary)")
 	}
-	if ok, _ := isChromedpAvailable(); ok {
+	if _, ok := findChromeBin(); ok {
 		t.Skip("Chrome available — use TestExecute_FetchJSFallback_BotBlock instead")
 	}
 
@@ -462,14 +461,13 @@ func TestExecute_FetchJSFallback_BotBlock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping Chrome integration test in short mode")
 	}
-	available, _ := isChromedpAvailable()
+	_, available := findChromeBin()
 	if !available {
 		t.Skip("Chrome/Chromium not installed, skipping JS fallback test")
 	}
 
 	// Reset Chrome pool for clean state
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
 
 	// Server that returns bot block via HTTP
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -495,13 +493,12 @@ func TestExecute_FetchJSFallback_ShortSPA(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping Chrome integration test in short mode")
 	}
-	available, _ := isChromedpAvailable()
+	_, available := findChromeBin()
 	if !available {
 		t.Skip("Chrome/Chromium not installed, skipping JS fallback test")
 	}
 
 	defaultPool.reset()
-	chromedpAvailable.once = sync.Once{}
 
 	// Server that returns short SPA shell via HTTP
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
