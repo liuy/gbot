@@ -56,9 +56,8 @@ type Output struct {
 // Source: BashTool.ts — DEFAULT_TIMEOUT
 const DefaultTimeout = 2 * time.Minute
 
-// MaxTimeout is the maximum allowed timeout (10 minutes).
-// Source: BashTool.ts — MAX_TIMEOUT
-const MaxTimeout = 10 * time.Minute
+// MaxTimeout is the maximum allowed timeout (1 hour).
+const MaxTimeout = 1 * time.Hour
 
 const MaxOutputSize = 30000
 
@@ -80,7 +79,7 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			},
 			"timeout": {
 				"type": "number",
-				"description": "Optional timeout in milliseconds (max 600000). Default 120000."
+				"description": "Optional timeout in milliseconds (max 3600000). Default 120000."
 			},
 			"cwd": {
 				"type": "string",

@@ -441,8 +441,8 @@ func TestConstants(t *testing.T) {
 	if bash.DefaultTimeout != 2*time.Minute {
 		t.Errorf("DefaultTimeout = %v, want 2m", bash.DefaultTimeout)
 	}
-	if bash.MaxTimeout != 10*time.Minute {
-		t.Errorf("MaxTimeout = %v, want 10m", bash.MaxTimeout)
+	if bash.MaxTimeout != 1*time.Hour {
+		t.Errorf("MaxTimeout = %v, want 1h", bash.MaxTimeout)
 	}
 }
 
