@@ -400,9 +400,18 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	proc.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
-		// rg returns exit code 1 when no matches — not an error
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return emptyResult(mode), nil
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			// rg returns exit code 1 when no matches — not an error
+			if exitErr.ExitCode() == 1 {
+				return emptyResult(mode), nil
+			}
+			// Output() captures rg's stderr into ExitError.Stderr — surface
+			// the actual reason (bad regex, missing path...) instead of a
+			// bare "exit status 2".
+			if len(exitErr.Stderr) > 0 {
+				return nil, fmt.Errorf("ripgrep error (exit %d): %s",
+					exitErr.ExitCode(), strings.TrimSpace(string(exitErr.Stderr)))
+			}
 		}
 		return nil, fmt.Errorf("ripgrep error: %w", err)
 	}

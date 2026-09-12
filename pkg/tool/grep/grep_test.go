@@ -101,6 +101,25 @@ func TestGrepToolCall_DirectorySearch(t *testing.T) {
 	}
 }
 
+// rg exits 2 on a bad regex and writes the reason to stderr — the error
+// surfaced to the agent must carry that stderr, not a bare "exit status 2".
+func TestGrepToolCall_ErrorIncludesRipgrepStderr(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"pattern":"[unclosed","path":"` + dir + `"}`)
+	_, err := grep.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected an error for an invalid regex")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "regex parse error") {
+		t.Fatalf("error should quote ripgrep's stderr, got: %q", msg)
+	}
+}
+
 func TestGrepToolCall_NoMatches_ExitCode1(t *testing.T) {
 	t.Parallel()
 
