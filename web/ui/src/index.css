@@ -385,11 +385,22 @@ body {
      the artifact page paints itself. Replaced elements have an intrinsic
      width: width:100% + margins overflows the flex column and pushes the
      right margin out of view — stretch sizing subtracts margins instead. */
+  /* Theme-scoped canvas + rendering scheme: raw text/plain artifacts paint
+     via the browser's generated document, whose colors follow the iframe's
+     color-scheme (spec: an iframe whose scheme differs from the embedder
+     gets an opaque canvas in that scheme). Painting artifacts (HTML apps)
+     cover both rules entirely. */
+  background: #ffffff;
+  color-scheme: light;
   flex: 1;
   align-self: stretch;
   margin: calc(10px + env(safe-area-inset-top, 0px)) 10px 10px;
   border-radius: 14px;
   border: 0;
+}
+[data-theme="dark"] .artifact-sheet iframe {
+  background: var(--color-ink2, #0c1018);
+  color-scheme: dark;
 }
 /* Handle sits on the sheet's bottom edge: pull down = taller, push up = shorter,
    below 15% on release = collapsed. Full-width hit area, 44×5 visual pill. */
