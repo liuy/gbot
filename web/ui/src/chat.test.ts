@@ -2520,7 +2520,7 @@ describe('artifact integration', () => {
     expect(artifactCards().length).toBe(0)
   })
 
-  it('query_end reloads the open sheet and skips a closed one', () => {
+  it('query_end does not reload the open sheet', () => {
     stubFetchLength('14541')
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -2535,16 +2535,9 @@ describe('artifact integration', () => {
 
     const spy = spySheetSrcSetter()
     dispatchEvents([{ type: 'query_start' }, { type: 'query_end' }])
-    expect(spy.calls.length).toBe(1)
-
-    // Close via handle tap (pointerdown+up without movement), then a new
-    // query_end must NOT reassign src.
-    const handle = sheetRoot.querySelector('.sheet-handle') as HTMLElement
-    handle.dispatchEvent(new PointerEvent('pointerdown', { clientY: 100, bubbles: true, cancelable: true }))
-    handle.dispatchEvent(new PointerEvent('pointerup', { clientY: 100, bubbles: true, cancelable: true }))
-    expect(sheetRoot.style.height).toBe('0px')
-    dispatchEvents([{ type: 'query_start' }, { type: 'query_end' }])
-    expect(spy.calls.length).toBe(1)
+    // No refresh at query end — the flash outweighed freshness; refresh =
+    // close and reopen.
+    expect(spy.calls.length).toBe(0)
     spy.restore()
   })
 

@@ -174,9 +174,6 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     root.classList.remove('dragging')
     setHeight(SHEET_DEFAULT_H)
   }
-  // Games are stateful apps living in the frame — the chat layer needs the
-  // name to exempt them from the query-end reload (it would abort an
-  // in-flight turn POST).
   const current = () => currentName
 
   const close = () => {
