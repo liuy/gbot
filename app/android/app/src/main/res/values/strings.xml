@@ -6,4 +6,10 @@
     <string name="notification_channel_description">Shows when GBot is connected to the gbot server</string>
     <string name="notification_title">GBot is running</string>
     <string name="notification_text">Connected to gbot on port %d</string>
+    <!-- Splash endpoint picker -->
+    <string name="splash_pill_local_name">Local</string>
+    <string name="splash_pill_local_addr">this device</string>
+    <string name="splash_tap_retry">Tap to retry</string>
+    <string name="splash_failure_announcement">Daemon failed to start. Tap to retry.</string>
+    <string name="toast_endpoint_not_found">Endpoint &quot;%1$s&quot; not found</string>
 </resources>

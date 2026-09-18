@@ -13,4 +13,15 @@
     <color name="splash_bg">#04060C</color>
     <color name="splash_accent">#00B4FF</color>
     <color name="splash_danger">#FF5C5C</color>
+    <!-- Splash pill chrome — splash-only, dies with the overlay; rgba() overlays
+         of the existing palette per the approved artifact. Alpha = round(a*255). -->
+    <color name="splash_pill_stroke">#17FFFFFF</color>
+    <color name="splash_pill_fill">#08FFFFFF</color>
+    <color name="splash_pill_sel_border">#8C00B4FF</color>
+    <color name="splash_pill_sel_fill">#1200B4FF</color>
+    <color name="splash_pill_fail_border">#8CFF5C5C</color>
+    <color name="splash_pill_dot_idle">#4A5158</color>
+    <color name="splash_pill_dot_local">#4DD882</color>
+    <color name="splash_pill_addr">#5A6470</color>
+    <color name="splash_ripple">#33FFFFFF</color>
 </resources>

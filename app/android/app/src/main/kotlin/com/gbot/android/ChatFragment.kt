@@ -4,7 +4,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.ShapeDrawable
+import android.graphics.drawable.shapes.RoundRectShape
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -21,6 +27,9 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
@@ -30,6 +39,7 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.doOnLayout
 import androidx.fragment.app.Fragment
 import com.google.gson.Gson
 import com.google.gson.JsonArray
@@ -42,6 +52,24 @@ class ChatFragment : Fragment() {
 
     /** One user-configured remote daemon endpoint. NAME is the identity. */
     data class RemoteTarget(val name: String, val host: String, val port: Int)
+
+    // Splash endpoint picker types — class-level like RemoteTarget (classifiers
+    // nested in a companion object are not reachable as Outer.Name), so the
+    // plain-JUnit tests can reference them JVM-only, no Robolectric.
+
+    /** Connection phase the splash is in; drives the active pill's state. */
+    enum class SplashPhase { CONNECTING, LIVE, FAILED }
+
+    /** Visual state of one pill. */
+    enum class SplashPillState { IDLE, CONNECTING, ACTIVE, FAILED }
+
+    /** Rendered descriptor of one splash pill. key: TARGET_LOCAL or the remote NAME. */
+    data class SplashPill(
+        val key: String,
+        val isLocal: Boolean,
+        val name: String,
+        val address: String,
+    )
 
     companion object {
         // Persist across Fragment recreation — the system may destroy the
@@ -176,6 +204,52 @@ class ChatFragment : Fragment() {
         ): String? =
             if (target == TARGET_REMOTE && saved.none { it.name == current }) TARGET_LOCAL else null
 
+        // Splash endpoint picker — pure decision logic, companion-level like
+        // the functions above so it stays unit-testable without Robolectric
+        // (its native binder does not load on arm64 Termux JVMs). Localized
+        // labels are passed IN as plain strings: no resource lookup here.
+
+        /**
+         * Local pill first, then remotes in stored order; an empty remote
+         * list yields an empty list — no group renders and the wordmark
+         * stays dead-center. Remote pill address is "host:port"; the local
+         * pill's address is localAddress verbatim (it is a localized label,
+         * not an endpoint).
+         */
+        internal fun splashPillSpecs(
+            remotes: List<RemoteTarget>,
+            localName: String,
+            localAddress: String,
+        ): List<SplashPill> =
+            if (remotes.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(SplashPill(TARGET_LOCAL, true, localName, localAddress)) +
+                    remotes.map { SplashPill(it.name, false, it.name, "${it.host}:${it.port}") }
+            }
+
+        /**
+         * Which visual state a pill is in, given the active target + phase:
+         * the active key is TARGET_LOCAL when target is local, else the
+         * stored current remote NAME. A stale currentName matching no pill
+         * selects nothing (every pill IDLE) — mirrors buildTargetUrl's
+         * degrade-to-local behavior.
+         */
+        internal fun splashPillState(
+            pillKey: String,
+            target: String,
+            currentName: String,
+            phase: SplashPhase,
+        ): SplashPillState {
+            val activeKey = if (target == TARGET_LOCAL) TARGET_LOCAL else currentName
+            if (pillKey != activeKey) return SplashPillState.IDLE
+            return when (phase) {
+                SplashPhase.CONNECTING -> SplashPillState.CONNECTING
+                SplashPhase.LIVE -> SplashPillState.ACTIVE
+                SplashPhase.FAILED -> SplashPillState.FAILED
+            }
+        }
+
         // Companion-level so the URL math stays unit-testable without
         // Robolectric (its native binder does not load on arm64 Termux JVMs),
         // like ConnectionForegroundService.resolveTarget. An unparsable
@@ -191,9 +265,13 @@ class ChatFragment : Fragment() {
     @Volatile private var isDarkTheme: Boolean = true
     private var loadingOverlay: View? = null
     private var splashMark: android.widget.TextView? = null
-    // Escape hatch on the failure overlay: shown only when the REMOTE target
-    // is unreachable, flips the pref back to local and reloads.
-    private var backToLocal: TextView? = null
+    // Splash endpoint pills — the escape hatch generalized: a Local pill plus
+    // one pill per configured remote, rendered only while the overlay shows.
+    // splashPhase tracks the connection so the active pill can show
+    // spinner → static dot (accent) / red border on failure.
+    private var splashPills: LinearLayout? = null
+    private var splashTapHint: TextView? = null
+    private var splashPhase = SplashPhase.CONNECTING
     private var lastLoadFailed = false
     private var loadAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
@@ -251,7 +329,8 @@ class ChatFragment : Fragment() {
         webView = view.findViewById(R.id.webView)
         loadingOverlay = view.findViewById(R.id.loadingOverlay)
         splashMark = view.findViewById(R.id.splashMark)
-        backToLocal = view.findViewById(R.id.backToLocal)
+        splashPills = view.findViewById(R.id.splashPills)
+        splashTapHint = view.findViewById(R.id.splashTapHint)
         startBreathing()
         return view
     }
@@ -350,6 +429,7 @@ class ChatFragment : Fragment() {
                 // onPageFinished ALSO fires for the system error page after
                 // a failed load — only lift the splash on a real page.
                 if (!lastLoadFailed) {
+                    splashPhase = SplashPhase.LIVE // no render — overlay is going GONE
                     splashMark?.clearAnimation()
                     loadingOverlay?.visibility = View.GONE
                 } else {
@@ -385,26 +465,16 @@ class ChatFragment : Fragment() {
             // Daemon never came up: wordless failure state — the wordmark
             // stops breathing, dims and flickers in the danger red; the
             // whole overlay becomes tap-to-retry.
+            splashPhase = SplashPhase.FAILED
+            renderSplashPills()
             setFailureStyle()
-            splashMark?.announceForAccessibility("守护进程启动失败，点按重试")
+            splashMark?.announceForAccessibility(getString(R.string.splash_failure_announcement))
+            splashTapHint?.visibility = View.VISIBLE
             loadingOverlay?.setOnClickListener {
                 loadAttempts = 0
-                backToLocal?.visibility = View.GONE
+                splashTapHint?.visibility = View.GONE
                 startBreathing()
                 tryLoad()
-            }
-            // The WUI header (and its target switch) is gone on an error
-            // page — offer the escape hatch ONLY when the unreachable thing
-            // is the user-configured remote; a failed local daemon has no
-            // local to switch back to.
-            if (currentTarget() == TARGET_REMOTE) {
-                backToLocal?.visibility = View.VISIBLE
-                backToLocal?.setOnClickListener {
-                    targetPrefs().edit().putString(KEY_TARGET, TARGET_LOCAL).apply()
-                    reloadToTarget()
-                }
-            } else {
-                backToLocal?.visibility = View.GONE
             }
         }
     }
@@ -433,6 +503,97 @@ class ChatFragment : Fragment() {
         }
     }
 
+    /** Rebuilds the pill group from current prefs + phase. No-op when the
+        splash overlay is not showing (pills must never appear over the page). */
+    private fun renderSplashPills() {
+        val overlay = loadingOverlay ?: return
+        if (overlay.visibility != View.VISIBLE) return
+        val container = splashPills ?: return
+        val specs = splashPillSpecs(
+            remoteTargetsList(),
+            getString(R.string.splash_pill_local_name),
+            getString(R.string.splash_pill_local_addr),
+        )
+        container.removeAllViews()
+        container.visibility = if (specs.isEmpty()) View.GONE else View.VISIBLE
+        for (spec in specs) {
+            container.addView(buildPill(spec))
+        }
+        applySplashGeometry(specs.isNotEmpty())
+    }
+
+    private fun buildPill(spec: SplashPill): View {
+        val pill = layoutInflater.inflate(R.layout.view_splash_pill, splashPills, false)
+        val state = splashPillState(spec.key, currentTarget(), currentRemoteName(), splashPhase)
+        pill.findViewById<TextView>(R.id.pillName).text = spec.name
+        pill.findViewById<TextView>(R.id.pillAddr).text = spec.address
+        val dot = pill.findViewById<View>(R.id.pillDot)
+        val spin = pill.findViewById<ProgressBar>(R.id.pillSpin)
+        if (state == SplashPillState.CONNECTING) { dot.visibility = View.GONE; spin.visibility = View.VISIBLE }
+        else { dot.visibility = View.VISIBLE; spin.visibility = View.GONE }
+        dot.background = dotDrawable(spec, state)
+        pill.background = pillBackground(state)
+        pill.isClickable = true
+        pill.isFocusable = true
+        pill.contentDescription = "${spec.name}, ${spec.address}"
+        pill.setOnClickListener { switchToEndpoint(spec.key) }
+        return pill
+    }
+
+    private fun dp(v: Int): Float = v * resources.displayMetrics.density
+    private fun color(c: Int): Int = ContextCompat.getColor(requireContext(), c)
+
+    private fun pillBackground(state: SplashPillState): Drawable {
+        val bg = GradientDrawable().apply {
+            cornerRadius = dp(26)
+            when (state) {
+                SplashPillState.CONNECTING, SplashPillState.ACTIVE -> {
+                    setStroke(dp(1).toInt(), color(R.color.splash_pill_sel_border))
+                    setColor(color(R.color.splash_pill_sel_fill))
+                }
+                SplashPillState.FAILED -> {
+                    setStroke(dp(1).toInt(), color(R.color.splash_pill_fail_border))
+                    setColor(color(R.color.splash_pill_fill))
+                }
+                SplashPillState.IDLE -> {
+                    setStroke(dp(1).toInt(), color(R.color.splash_pill_stroke))
+                    setColor(color(R.color.splash_pill_fill))
+                }
+            }
+        }
+        val r = dp(26)
+        val mask = ShapeDrawable(RoundRectShape(floatArrayOf(r, r, r, r, r, r, r, r), null, null))
+        return RippleDrawable(ColorStateList.valueOf(color(R.color.splash_ripple)), bg, mask)
+    }
+
+    private fun dotDrawable(spec: SplashPill, state: SplashPillState): Drawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(
+                when {
+                    spec.isLocal -> color(R.color.splash_pill_dot_local)
+                    state == SplashPillState.IDLE -> color(R.color.splash_pill_dot_idle)
+                    else -> color(R.color.splash_accent) // selected: accent (FAILED keeps accent, red border carries failure)
+                }
+            )
+        }
+
+    /** Wordmark center 50%→34% of overlay height when pills shown; pills top
+        = 34% + 78dp, width = min(280dp, overlay − 48dp). Runs in doOnLayout so
+        margins land inside the layout pass. */
+    private fun applySplashGeometry(showPills: Boolean) {
+        loadingOverlay?.doOnLayout { overlay ->
+            splashMark?.animate()?.translationY(if (showPills) -0.16f * overlay.height else 0f)
+                ?.setDuration(400)?.start()
+            splashPills?.let { pills ->
+                val lp = pills.layoutParams as FrameLayout.LayoutParams
+                lp.topMargin = (0.34f * overlay.height + dp(78)).toInt()
+                lp.width = minOf(dp(280).toInt(), overlay.width - dp(48).toInt())
+                pills.layoutParams = lp
+            }
+        }
+    }
+
     private fun tryLoad() {
         migrateLegacyRemote()
         // Every attempt starts from a known state: without this reset, a
@@ -440,6 +601,8 @@ class ChatFragment : Fragment() {
         // flag — worst case the splash sticks over a working page.
         lastLoadFailed = false
         loadingOverlay?.visibility = View.VISIBLE
+        splashPhase = SplashPhase.CONNECTING
+        renderSplashPills()
         webView?.visibility = View.VISIBLE
         val remote = currentRemote()
         webView?.loadUrl(
@@ -449,7 +612,6 @@ class ChatFragment : Fragment() {
 
     private fun targetPrefs() =
         requireContext().getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
-
     private fun currentTarget(): String =
         targetPrefs().getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL
 
@@ -502,14 +664,32 @@ class ChatFragment : Fragment() {
     }
 
     /**
-     * Reload helper after a pref flip (bridge switchTo, escape button):
+     * Pill tap: flip target prefs, then boot-state reload. Keys always come
+     * from the rendered spec list, so no unknown-name path exists here.
+     */
+    private fun switchToEndpoint(key: String) {
+        val prefs = targetPrefs()
+        if (key == TARGET_LOCAL) {
+            prefs.edit().putString(KEY_TARGET, TARGET_LOCAL).apply()
+        } else {
+            prefs.edit()
+                .putString(KEY_TARGET, TARGET_REMOTE)
+                .putString(KEY_CURRENT, key)
+                .apply()
+        }
+        reloadToTarget()
+    }
+
+    /**
+     * Reload helper after a pref flip (bridge switchTo, pill tap):
      * back to the boot state, then load the (new) target's URL. onPageFinished
      * re-runs the theme + target injections on the fresh page.
      */
     private fun reloadToTarget() {
         handler.removeCallbacksAndMessages(null)
         loadAttempts = 0
-        backToLocal?.visibility = View.GONE
+        splashTapHint?.visibility = View.GONE
+        loadingOverlay?.setOnClickListener(null) // stale tap-to-retry must not fire mid-connect
         startBreathing()
         tryLoad()
     }
@@ -521,6 +701,9 @@ class ChatFragment : Fragment() {
         // status-bar icons. Do NOT set icons from the system theme here:
         // with an explicit user pref (dark/light) the system value is wrong.
         applySystemTheme(webView)
+        // Re-derive splash pill geometry for the new overlay bounds while the
+        // splash is up (rotation mid-connect).
+        if (loadingOverlay?.visibility == View.VISIBLE) renderSplashPills()
     }
 
     private fun applySystemTheme(view: WebView?) {
@@ -644,7 +827,10 @@ class ChatFragment : Fragment() {
                 } else {
                     val match = remoteTargetsList().firstOrNull { it.name == name }
                     if (match == null) {
-                        Toast.makeText(context, "未找到端点「$name」", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context, context?.getString(R.string.toast_endpoint_not_found, name),
+                            Toast.LENGTH_SHORT,
+                        ).show()
                         return@runOnUiThread
                     }
                     prefs.edit()
@@ -693,7 +879,8 @@ class ChatFragment : Fragment() {
         webView = null
         loadingOverlay = null
         splashMark = null
-        backToLocal = null
+        splashPills = null
+        splashTapHint = null
         super.onDestroyView()
     }
 }
