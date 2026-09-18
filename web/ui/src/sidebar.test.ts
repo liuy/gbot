@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createSidebar } from './sidebar'
+import { renderIcon, type IconName } from './icons'
 import type { ArtifactListItem, SessionListItem } from './types'
 
 function setup() {
@@ -213,20 +214,28 @@ describe('createSidebar', () => {
       { name: 'demos/report.pdf', size: 2048, mtime: Date.now() - 3_600_000 },
     ]
 
-    it('setArtifacts renders rows with name and relative time', () => {
+    it('setArtifacts renders tree rows: file, dir with newest time, nested short name', () => {
       const { sidebar } = setup()
       sidebar.setArtifacts(artifacts)
       const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
       expect(section).not.toBeNull()
       const rows = section.querySelectorAll('.artifact-row')
-      expect(rows.length).toBe(2)
+      // game.html (file) + demos/ (dir) + report.pdf (nested file)
+      expect(rows.length).toBe(3)
       expect(rows[0].textContent).toContain('game.html')
       expect(rows[0].textContent).toContain('1m')
-      expect(rows[1].textContent).toContain('demos/report.pdf')
+      expect(rows[1].getAttribute('data-artifact-dir')).toBe('demos')
+      expect(rows[1].textContent).toContain('demos/')
+      // Dir time = newest child's mtime (report.pdf's 1h).
       expect(rows[1].textContent).toContain('1h')
+      expect(rows[2].textContent).toContain('report.pdf')
+      expect(rows[2].textContent).not.toContain('demos/report.pdf')
+      // Exact text catches a prefixLen off-by-one (a leading "/" would
+      // still satisfy the toContain pair above).
+      expect(rows[2].querySelector('.truncate')!.textContent).toBe('report.pdf')
     })
 
-    it('clicking an artifact row calls onArtifactClick with the full name and closes', () => {
+    it('clicking a nested file row calls onArtifactClick with the full path and closes', () => {
       const { mainContent, sidebar } = setup()
       const handler = vi.fn()
       sidebar.onArtifactClick(handler)
@@ -234,12 +243,122 @@ describe('createSidebar', () => {
       sidebar.setArtifacts(artifacts)
 
       const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
-      expect(rows.length).toBe(2)
+      expect(rows.length).toBe(3)
       ;(rows[1] as HTMLElement).click()
+      ;(rows[2] as HTMLElement).click()
       expect(handler).toHaveBeenCalledTimes(1)
       expect(handler).toHaveBeenCalledWith('demos/report.pdf')
       expect(sidebar.root.style.transform).toBe('translateX(-100%)')
       expect(mainContent.style.transform).toBe('translateX(0px)')
+    })
+
+    it('nested path video/refs/x.png renders dir video → dir refs → short-named file', () => {
+      const { sidebar } = setup()
+      sidebar.setArtifacts([
+        { name: 'video/refs/x.png', size: 10, mtime: Date.now() - 60_000 },
+      ])
+      const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rows.length).toBe(3)
+      expect(rows[0].getAttribute('data-artifact-dir')).toBe('video')
+      expect(rows[0].textContent).toContain('video/')
+      expect(rows[1].getAttribute('data-artifact-dir')).toBe('refs')
+      expect(rows[1].textContent).toContain('refs/')
+      expect(rows[2].hasAttribute('data-artifact-dir')).toBe(false)
+      expect(rows[2].textContent).toContain('x.png')
+      expect(rows[2].querySelector('.truncate')!.textContent).toBe('x.png')
+      expect(rows[2].textContent).not.toContain('video/refs/x.png')
+    })
+
+    it('dir row time is the newest child\'s, not the oldest\'s', () => {
+      const { sidebar } = setup()
+      const now = Date.now()
+      sidebar.setArtifacts([
+        { name: 'video/new.mp4', size: 1, mtime: now - 30_000 },
+        { name: 'video/old.png', size: 1, mtime: now - 3 * 24 * 3_600_000 },
+      ])
+      const dirRow = sidebar.root.querySelector(
+        '.sidebar-artifacts [data-artifact-dir="video"]',
+      ) as HTMLElement
+      expect(dirRow.textContent).toContain('30s')
+      expect(dirRow.textContent).not.toContain('3d')
+    })
+
+    it('dir rows interleave with top-level files at their newest child\'s position', () => {
+      const { sidebar } = setup()
+      const now = Date.now()
+      sidebar.setArtifacts([
+        { name: 'top.md', size: 1, mtime: now - 10_000 },
+        { name: 'video/a.mp4', size: 1, mtime: now - 60_000 },
+      ])
+      const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rows.length).toBe(3)
+      expect(rows[0].textContent).toContain('top.md')
+      expect(rows[0].hasAttribute('data-artifact-dir')).toBe(false)
+      expect(rows[1].getAttribute('data-artifact-dir')).toBe('video')
+
+      // Reversed mtimes: the dir row leads because its newest child is newer
+      // (its children then sit between the dir row and the next top-level
+      // file — expansion is in place).
+      sidebar.setArtifacts([
+        { name: 'video/a.mp4', size: 1, mtime: now - 10_000 },
+        { name: 'top.md', size: 1, mtime: now - 60_000 },
+      ])
+      const rerendered = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rerendered.length).toBe(3)
+      expect(rerendered[0].getAttribute('data-artifact-dir')).toBe('video')
+      expect(rerendered[1].textContent).toContain('a.mp4')
+      expect(rerendered[2].textContent).toContain('top.md')
+    })
+
+    it('file rows map extensions to type icons', () => {
+      const { sidebar } = setup()
+      const now = Date.now()
+      sidebar.setArtifacts([
+        { name: 'clip.mp4', size: 1, mtime: now },
+        { name: 'clip.mov', size: 1, mtime: now - 1000 },
+        { name: 'page.html', size: 1, mtime: now - 2000 },
+        { name: 'page.htm', size: 1, mtime: now - 3000 },
+        { name: 'app.apk', size: 1, mtime: now - 4000 },
+        { name: 'app.zip', size: 1, mtime: now - 5000 },
+        { name: 'pic.png', size: 1, mtime: now - 6000 },
+        { name: 'notes.txt', size: 1, mtime: now - 7000 },
+      ])
+      const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+      expect(rows.length).toBe(8)
+      const expected: IconName[] = ['film', 'film', 'globe', 'globe', 'box', 'box', 'image', 'file']
+      for (let i = 0; i < expected.length; i++) {
+        const svg = rows[i].querySelector('svg') as SVGSVGElement
+        expect(svg.innerHTML, `row ${i} (${(rows[i].textContent || '').trim()})`).toBe(
+          renderIcon(expected[i]).innerHTML,
+        )
+      }
+    })
+
+    it('clicking a dir row toggles expansion and chevron without firing open', () => {
+      const { sidebar } = setup()
+      const handler = vi.fn()
+      sidebar.onArtifactClick(handler)
+      sidebar.setArtifacts([
+        { name: 'video/a.mp4', size: 1, mtime: Date.now() },
+        { name: 'video/refs/b.png', size: 1, mtime: Date.now() - 60_000 },
+      ])
+      const dirRow = sidebar.root.querySelector(
+        '.sidebar-artifacts [data-artifact-dir="video"]',
+      ) as HTMLElement
+      const children = dirRow.nextElementSibling as HTMLElement
+      const chev = dirRow.querySelector('svg') as SVGElement
+      expect(children.classList.contains('hidden')).toBe(true)
+      expect(chev.classList.contains('rotate-90')).toBe(false)
+
+      dirRow.click()
+      expect(children.classList.contains('hidden')).toBe(false)
+      expect(chev.classList.contains('rotate-90')).toBe(true)
+      expect(handler).not.toHaveBeenCalled()
+
+      dirRow.click()
+      expect(children.classList.contains('hidden')).toBe(true)
+      expect(chev.classList.contains('rotate-90')).toBe(false)
+      expect(handler).not.toHaveBeenCalled()
     })
 
     it('setArtifacts with empty list shows the empty state', () => {
@@ -258,7 +377,8 @@ describe('createSidebar', () => {
       ]
       sidebar.setSessions(sessions, 's1')
       const section = sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement
-      expect(section?.querySelectorAll('.artifact-row').length).toBe(2)
+      // game.html + demos/ dir row + nested report.pdf
+      expect(section?.querySelectorAll('.artifact-row').length).toBe(3)
       // Session rows still render alongside. (Counted by row markers, not
       // the cursor-pointer class — artifact rows carry a ✕ delete span that
       // is cursor-pointer too.)
@@ -333,7 +453,7 @@ describe('createSidebar', () => {
       sidebar.open()
       sidebar.setArtifacts(artifacts)
       const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
-      expect(rows.length).toBe(2)
+      expect(rows.length).toBe(3)
       for (const row of rows) {
         expect(row.textContent).not.toContain('✕')
       }

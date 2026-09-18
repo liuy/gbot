@@ -2,6 +2,7 @@ import type { ArtifactListItem, SessionListItem } from './types'
 import { bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
 import { createIconButton } from './buttons'
+import { renderIcon, type IconName } from './icons'
 import { t, type StaticKey } from './i18n'
 
 export interface SidebarHandles {
@@ -290,6 +291,86 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     if (busy) setStreaming(true)
   }
 
+  const artifactRowClass =
+    'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30'
+
+  const artifactIconFor = (name: string): IconName => {
+    if (/\.(mp4|mov|webm)$/.test(name)) return 'film'
+    if (/\.(png|jpe?g|gif|webp)$/.test(name)) return 'image'
+    if (/\.(apk|zip|gz)$/.test(name)) return 'box'
+    if (/\.html?$/.test(name)) return 'globe'
+    return 'file'
+  }
+
+  const artifactFileRow = (a: ArtifactListItem, prefixLen: number, depth: number): HTMLElement => {
+    const row = createElement('div', artifactRowClass + ' text-t2')
+    if (depth > 0) row.style.paddingLeft = 26 + (depth - 1) * 18 + 'px'
+    row.appendChild(
+      renderIcon(artifactIconFor(a.name), { size: 14, className: 'shrink-0 text-t3' }),
+    )
+    const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
+    nameSpan.textContent = a.name.slice(prefixLen)
+    const timeSpan = createElement('span', 'text-[10px] text-t3 shrink-0')
+    timeSpan.textContent = formatRelativeTime(a.mtime)
+    row.append(nameSpan, timeSpan)
+    row.addEventListener('click', () => {
+      handlers.artifactClick(a.name)
+      closeImmediate()
+    })
+    return row
+  }
+
+  // Groups the flat newest-first listing into an in-place tree. A directory
+  // row sits at its newest child's position (groups form at first occurrence,
+  // so group[0] is always the group's newest item) and carries that child's
+  // mtime. prefixLen skips the already-rendered path segments so items keep
+  // their full names — clicks need the full path, display needs the rest.
+  const renderArtifactTree = (
+    items: ArtifactListItem[],
+    prefixLen: number,
+    depth: number,
+    mount: HTMLElement,
+  ) => {
+    const groups = new Map<string, ArtifactListItem[]>()
+    for (const a of items) {
+      const slash = a.name.indexOf('/', prefixLen)
+      const key = slash < 0 ? '' : a.name.slice(prefixLen, slash)
+      const group = groups.get(key)
+      if (group) group.push(a)
+      else groups.set(key, [a])
+    }
+    for (const [dir, group] of groups) {
+      if (!dir) {
+        for (const a of group) mount.appendChild(artifactFileRow(a, prefixLen, depth))
+        continue
+      }
+      const row = createElement('div', artifactRowClass + ' text-t1')
+      row.setAttribute('data-artifact-dir', dir)
+      if (depth > 0) row.style.paddingLeft = 26 + (depth - 1) * 18 + 'px'
+      const chev = renderIcon('chevron-right', {
+        size: 14,
+        className: 'shrink-0 text-t3 transition-transform duration-200',
+      })
+      const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
+      nameSpan.textContent = dir + '/'
+      const timeSpan = createElement('span', 'text-[10px] text-t3 shrink-0')
+      timeSpan.textContent = formatRelativeTime(group[0].mtime)
+      row.append(chev, nameSpan, timeSpan)
+      // Expansion is DOM-local on purpose: setArtifacts rebuilds the whole
+      // tree on every refetch, so persisted open-state would not survive it.
+      // Instant toggle (no height animation) — no max-height cap to clip.
+      const children = createElement('div', 'hidden')
+      renderArtifactTree(group, prefixLen + dir.length + 1, depth + 1, children)
+      row.addEventListener('click', () => {
+        chev.classList.toggle('rotate-90')
+        children.classList.toggle('hidden')
+      })
+      const wrap = createElement('div', '')
+      wrap.append(row, children)
+      mount.appendChild(wrap)
+    }
+  }
+
   const setArtifacts = (items: ArtifactListItem[]) => {
     artifactsList.innerHTML = ''
     if (items.length === 0) {
@@ -302,22 +383,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
       artifactsList.appendChild(empty)
       return
     }
-    for (const a of items) {
-      const row = createElement(
-        'div',
-        'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
-      )
-      const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
-      nameSpan.textContent = a.name
-      const timeSpan = createElement('span', 'text-[10px] text-t3 shrink-0')
-      timeSpan.textContent = formatRelativeTime(a.mtime)
-      row.append(nameSpan, timeSpan)
-      row.addEventListener('click', () => {
-        handlers.artifactClick(a.name)
-        closeImmediate()
-      })
-      artifactsList.appendChild(row)
-    }
+    renderArtifactTree(items, 0, 0, artifactsList)
   }
 
   const startRename = (

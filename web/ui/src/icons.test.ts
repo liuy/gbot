@@ -74,6 +74,18 @@ describe('renderIcon — outline variant', () => {
     expect(renderIcon('file').getAttribute('stroke-width')).toBe('2')
   })
 
+  it('film strokeWidth defaults to 2', () => {
+    expect(renderIcon('film').getAttribute('stroke-width')).toBe('2')
+  })
+
+  it('globe strokeWidth defaults to 2', () => {
+    expect(renderIcon('globe').getAttribute('stroke-width')).toBe('2')
+  })
+
+  it('box strokeWidth defaults to 2', () => {
+    expect(renderIcon('box').getAttribute('stroke-width')).toBe('2')
+  })
+
   it('refresh strokeWidth defaults to 2.5', () => {
     expect(renderIcon('refresh').getAttribute('stroke-width')).toBe('2.5')
   })

@@ -6,6 +6,9 @@ export type IconName =
   | 'camera'
   | 'image'
   | 'file'
+  | 'film'
+  | 'globe'
+  | 'box'
   | 'x'
   | 'refresh'
   | 'upload'
@@ -60,6 +63,21 @@ const ICONS: Record<IconName, IconDef> = {
   },
   file: {
     path: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  film: {
+    path: '<rect x="2" y="2" width="20" height="20" rx="2.18"/><path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  globe: {
+    path: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  box: {
+    path: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
