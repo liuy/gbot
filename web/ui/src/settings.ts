@@ -4,6 +4,7 @@ import { getThemePref, setThemePref, getResolvedTheme, type ThemePref } from './
 import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from './hljs_themes'
 import { getDebugLogs } from './log'
 import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, localeOptions, type Locale, type StaticKey } from './i18n'
+import { fetchRemoteDevices, saveRemoteDevices, testRemoteDevice, type RemoteDevice } from './vnc'
 
 // Settings page — provider CRUD against /api/settings/*. The page is a
 // full-screen overlay (z above sidebar and artifact sheet) opened from the
@@ -690,6 +691,204 @@ export function createSettingsPage(): SettingsPageHandles {
     renderRemoteList()
   }
 
+  // --------------------------------------------------------- remote desktop
+  // Settings-managed VNC device list persisted through the daemon's
+  // /api/settings/remotedesktop surface. Same card-list + drill-in idiom as
+  // the remote endpoints above, but the daemon is the source of truth, so
+  // the section renders everywhere (not Android-bridge-gated).
+  const rdCard = createElement('div', '')
+  rdCard.setAttribute('data-rd-card', '')
+
+  let devicesState: RemoteDevice[] = []
+  let deviceEditIndex = -1
+
+  const rdList = createElement('div', 'px-3')
+  rdList.setAttribute('data-rd-list', '')
+  const renderDeviceList = () => {
+    rdList.replaceChildren()
+    devicesState.forEach((d, i) => {
+      const card = createNode('div', {
+        className: 'mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer',
+        attrs: { 'data-rd-entry': '' },
+      })
+      const r1 = createElement('div', 'flex items-center gap-2')
+      r1.append(createNode('div', { className: 'text-sm font-semibold flex-1', text: d.name }))
+      r1.appendChild(createNode('span', { className: 'text-t3 text-[13px]', text: '›' }))
+      card.append(
+        r1,
+        createNode('div', { className: 'text-[11px] text-t3 font-mono mt-0.5 truncate', text: d.addr }),
+      )
+      card.addEventListener('click', () => openDeviceForm(i))
+      rdList.appendChild(card)
+    })
+  }
+
+  const rdAddBtn = createNode('div', {
+    className: 'flex items-center gap-1.5 px-3.5 py-2.5 text-[13px] text-blue cursor-pointer select-none mb-1',
+    attrs: { 'data-rd-add': '' },
+  })
+  rdAddBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('rdAdd')))
+
+  // Drill-in form — same shape as the remote-endpoints detail form.
+  const rdForm = createElement('div', 'hidden')
+  rdForm.setAttribute('data-rd-form', '')
+  const rdBackBtn = createNode('div', {
+    className: 'w-8 h-8 -ml-1.5 rounded-lg flex items-center justify-center text-t2 cursor-pointer select-none',
+    attrs: { 'data-rd-back': '' },
+  })
+  rdBackBtn.append(renderIcon('chevron-left'))
+  const rdFormHead = createElement('div', 'flex items-center gap-1 px-2 pt-1.5')
+  rdFormHead.append(rdBackBtn, createNode('div', { className: 'text-[13px] font-semibold flex-1', ...L('rdEditTitle') }))
+
+  const rdField = (labelKey: StaticKey, attrs: Record<string, string>, type = 'text') => {
+    const wrap = createElement('div', 'px-3 pt-2')
+    wrap.append(
+      createNode('label', { className: 'block text-[11px] text-t2 mb-1.5', ...L(labelKey) }),
+      createNode('input', {
+        className:
+          'w-full px-3 py-2.5 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+        props: { type, spellcheck: false },
+        attrs,
+      }),
+    )
+    return { wrap, input: wrap.querySelector('input') as HTMLInputElement }
+  }
+  const rdNameField = rdField('rdNameLabel', { 'data-rd-name': '' })
+  const rdPassField = rdField('rdPassLabel', { 'data-rd-pass': '' }, 'password')
+
+  // The addr label row doubles as the probe result line (provider URL field
+  // idiom); the test trigger sits at the input's trailing end.
+  const rdTestResult = createNode('span', {
+    className: 'text-[11px] text-t3',
+    attrs: { 'data-rd-test-result': '' },
+  })
+  const rdAddrLabelRow = createElement('div', 'flex items-baseline mb-1.5')
+  rdAddrLabelRow.append(
+    createNode('span', { className: 'flex-1 text-[11px] text-t2', ...L('rdAddrLabel') }),
+    rdTestResult,
+  )
+  const rdAddrInput = createNode('input', {
+    className:
+      'w-full px-3 py-2.5 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+    props: { type: 'text', spellcheck: false },
+    attrs: { 'data-rd-addr': '' },
+  }) as HTMLInputElement
+  const rdTestBtn = createNode('button', {
+    className: 'text-blue text-[13px] font-medium px-1.5 shrink-0 cursor-pointer bg-transparent border-none',
+    ...L('testBtn', { type: 'button', 'data-rd-test': '' }),
+  }) as HTMLButtonElement
+  const rdAddrRow = createElement('div', 'flex items-center gap-1')
+  rdAddrRow.append(rdAddrInput, rdTestBtn)
+  const rdAddrWrap = createElement('div', 'px-3 pt-2')
+  rdAddrWrap.append(rdAddrLabelRow, rdAddrRow)
+
+  const rdDeleteBtn = createNode('div', {
+    className: 'text-[11px] text-red/85 text-center pt-2.5 cursor-pointer select-none',
+    ...L('remoteDelete', { 'data-rd-delete': '' }),
+  })
+
+  const rdSaveBtn = createNode('button', {
+    className:
+      'block w-[calc(100%-28px)] mx-3.5 mt-1 mb-2.5 py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35 cursor-pointer',
+    ...L('saveBtn', { type: 'button', 'data-rd-save': '' }),
+  }) as HTMLButtonElement
+
+  const showDeviceForm = (open: boolean) => {
+    rdList.classList.toggle('hidden', open)
+    rdAddBtn.classList.toggle('hidden', open)
+    rdForm.classList.toggle('hidden', !open)
+    if (open) rdForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+
+  const openDeviceForm = (index: number) => {
+    deviceEditIndex = index
+    const src = index >= 0 ? devicesState[index] : { name: '', addr: '', pass: '' }
+    rdNameField.input.value = src.name
+    rdAddrInput.value = src.addr
+    rdPassField.input.value = src.pass
+    rdDeleteBtn.classList.toggle('hidden', index < 0)
+    rdTestResult.replaceChildren()
+    rdTestResult.className = 'text-[11px] text-t3'
+    showDeviceForm(true)
+  }
+  rdBackBtn.addEventListener('click', () => showDeviceForm(false))
+  rdAddBtn.addEventListener('click', () => openDeviceForm(-1))
+
+  // One save persists the WHOLE list — the PUT replaces remote_desktop.
+  const persistDevices = async (next: RemoteDevice[]) => {
+    try {
+      await saveRemoteDevices(next)
+      devicesState = next
+      renderDeviceList()
+      showDeviceForm(false)
+      toast(t('remoteSaved'))
+    } catch (e) {
+      // Form stays open — the user's edits survive for a retry.
+      toast(t('saveFailed')((e as Error).message))
+    }
+  }
+
+  rdSaveBtn.addEventListener('click', () => {
+    const name = rdNameField.input.value.trim()
+    const addr = rdAddrInput.value.trim()
+    if (!name) {
+      toast(t('remoteNameRequired'))
+      return
+    }
+    if (!addr) {
+      toast(t('rdAddrRequired'))
+      return
+    }
+    const next = [...devicesState]
+    const entry = { name, addr, pass: rdPassField.input.value }
+    if (deviceEditIndex >= 0) next[deviceEditIndex] = entry
+    else next.push(entry)
+    if (new Set(next.map((d) => d.name)).size !== next.length) {
+      toast(t('remoteNameUnique'))
+      return
+    }
+    void persistDevices(next)
+  })
+
+  rdDeleteBtn.addEventListener('click', () => {
+    if (deviceEditIndex < 0) return
+    void persistDevices(devicesState.filter((_, i) => i !== deviceEditIndex))
+  })
+
+  rdForm.append(
+    rdFormHead,
+    rdNameField.wrap,
+    rdAddrWrap,
+    rdPassField.wrap,
+    rdDeleteBtn,
+    rdSaveBtn,
+  )
+  rdCard.append(rdList, rdAddBtn, rdForm)
+
+  rdTestBtn.addEventListener('click', () => {
+    rdTestResult.replaceChildren()
+    rdTestBtn.textContent = '…'
+    rdTestResult.textContent = t('rdTesting')
+    void (async () => {
+      try {
+        const res = await testRemoteDevice(rdAddrInput.value.trim(), rdPassField.input.value)
+        if (res.ok) {
+          rdTestResult.className = 'text-[11px] text-green'
+          rdTestResult.textContent = `✓ ${res.latencyMs ?? 0}ms`
+        } else {
+          rdTestResult.className = 'text-[11px] text-red'
+          rdTestResult.textContent = `✗ ${res.error ?? 'failed'}`
+        }
+      } catch (err) {
+        // daemon restarting → connection refused: fetch rejects, no HTTP status
+        rdTestResult.className = 'text-[11px] text-red'
+        rdTestResult.textContent = `✗ ${err instanceof Error ? err.message : 'network error'}`
+      } finally {
+        rdTestBtn.textContent = t('testBtn')
+      }
+    })()
+  })
+
   // --------------------------------------------------------------- app logs
   // Read-only view into the Android host's app-side log buffer. The name
   // mirrors AppLogsBridge.BRIDGE_NAME in the Android shell; on a desktop
@@ -866,6 +1065,7 @@ export function createSettingsPage(): SettingsPageHandles {
   // no card at all rather than a degraded hint.
   if (appLogsBridge()) homeScreen.append(appLogCard)
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
+  homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
   // ------------------------------------------------------------------ edit
@@ -1587,6 +1787,14 @@ export function createSettingsPage(): SettingsPageHandles {
         renderHome()
         showScreen(true)
       })
+    // Independent fetch: a device-list failure must not blank the page (the
+    // section just renders empty, editable via +).
+    void fetchRemoteDevices()
+      .then((list) => {
+        devicesState = list
+        renderDeviceList()
+      })
+      .catch(() => {})
   }
   const close = () => {
     opened = false

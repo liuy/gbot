@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { setLocale, initLocale, localeOptions } from './i18n'
 import { pushDebugLog } from './log'
+import type { RemoteDevice } from './vnc'
 import {
   fetchSettings,
   saveSettings,
@@ -42,11 +43,19 @@ interface MockOptions {
   putError?: string
   logs?: string
   logsError?: boolean
+  devices?: RemoteDevice[]
+  devicesError?: boolean
+  deviceTest?: { ok: boolean; latencyMs?: number; error?: string }
 }
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
-// capturing PUT bodies via opts.onPut.
-function makeFetchHandler(opts: MockOptions & { onPut?: (p: SettingsProvider[]) => void } = {}) {
+// capturing PUT bodies via opts.onPut / opts.onPutDevices.
+function makeFetchHandler(
+  opts: MockOptions & {
+    onPut?: (p: SettingsProvider[]) => void
+    onPutDevices?: (d: RemoteDevice[]) => void
+  } = {},
+) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     if (url === '/api/settings/providers') {
@@ -62,6 +71,19 @@ function makeFetchHandler(opts: MockOptions & { onPut?: (p: SettingsProvider[]) 
         status: 200,
         json: async () => opts.payload ?? { providers: [], default: { provider: '', model: '' } },
       }
+    }
+    if (url === '/api/settings/remotedesktop') {
+      if (method === 'PUT') {
+        opts.onPutDevices?.(JSON.parse(String(init?.body)) as RemoteDevice[])
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      if (opts.devicesError) {
+        return { ok: false, status: 500, json: async () => ({}) }
+      }
+      return { ok: true, status: 200, json: async () => ({ devices: opts.devices ?? [] }) }
+    }
+    if (url === '/api/settings/remotedesktop/test') {
+      return { ok: true, status: 200, json: async () => opts.deviceTest ?? { ok: true, latencyMs: 12 } }
     }
     if (url === '/api/logs?tail=500') {
       if (opts.logsError) {
@@ -853,7 +875,7 @@ describe('createSettingsPage', () => {
     const labels = [...home.children]
       .filter((c) => c.className.includes('text-t3'))
       .map((c) => c.textContent)
-    expect(labels).toEqual(['提供方', '默认模型', '通用'])
+    expect(labels).toEqual(['提供方', '默认模型', '通用', '桌面'])
     // Protocol identifiers stay literal — only UI copy is translated.
     const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
     expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')
@@ -1430,5 +1452,208 @@ describe('remote endpoints card list + detail form', () => {
     await flushMicrotasks()
     expect(native.setRemoteTargets).toHaveBeenCalledTimes(1)
     expect(toastText(page)).toBe('')
+  })
+})
+
+describe('remote desktop section', () => {
+  beforeEach(() => {
+    setLocale('en')
+  })
+
+  const DEVICES: RemoteDevice[] = [
+    { name: 'win11', addr: 'ws://127.0.0.1:8006', pass: '' },
+    { name: 'servere5', addr: 'http://127.0.0.1:5901', pass: 'pw' },
+  ]
+
+  const card = (page: { root: HTMLElement }): HTMLElement =>
+    page.root.querySelector('[data-rd-card]') as HTMLElement
+  const entries = (page: { root: HTMLElement }): HTMLElement[] =>
+    Array.from(card(page).querySelectorAll('[data-rd-entry]')) as HTMLElement[]
+  // entry DOM: [0] = name row (name div + chevron), [1] = addr subtitle.
+  const entryName = (e: HTMLElement): string => (e.children[0].children[0] as HTMLElement).textContent ?? ''
+  const entryAddr = (e: HTMLElement): string => (e.children[1] as HTMLElement).textContent ?? ''
+  const formInput = (page: { root: HTMLElement }, sel: string): HTMLInputElement =>
+    card(page).querySelector(sel) as HTMLInputElement
+  const formVisible = (page: { root: HTMLElement }): boolean =>
+    !(card(page).querySelector('[data-rd-form]') as HTMLElement).classList.contains('hidden')
+  const deleteHidden = (page: { root: HTMLElement }): boolean =>
+    (card(page).querySelector('[data-rd-delete]') as HTMLElement).classList.contains('hidden')
+  const toastText = (page: { root: HTMLElement }): string =>
+    (page.root.querySelector('[data-toast]') as HTMLElement).textContent ?? ''
+  const devicePuts = (mock: ReturnType<typeof makeFetchHandler>) =>
+    mock.mock.calls.filter(
+      (c) => c[0] === '/api/settings/remotedesktop' && (c[1] as RequestInit | undefined)?.method === 'PUT',
+    )
+
+  it('renders one entry per device with exact name/addr, between providers and DEFAULT MODEL', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    await vi.waitFor(() => {
+      expect(entries(page)).toHaveLength(2)
+    })
+    expect(entryName(entries(page)[0])).toBe('win11')
+    expect(entryAddr(entries(page)[0])).toBe('ws://127.0.0.1:8006')
+    expect(entryName(entries(page)[1])).toBe('servere5')
+    expect(entryAddr(entries(page)[1])).toBe('http://127.0.0.1:5901')
+    // DOM order: the section card comes after the whole endpoint config —
+    // below the (bridge-gated) remote-endpoints card when it renders; in
+    // this desktop env (no bridge) it is the home screen's last child.
+    const home = page.root.querySelector('[data-screen="home"]') as HTMLElement
+    const pos = (el: HTMLElement) => Array.from(home.children).indexOf(el)
+    expect(pos(page.root.querySelector('[data-default-card]') as HTMLElement)).toBeLessThan(pos(card(page)))
+    expect(home.lastElementChild).toBe(card(page))
+  })
+
+  it('card click opens the prefilled form; back returns to the list', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+    entries(page)[1].click()
+    expect(formVisible(page)).toBe(true)
+    expect((card(page).querySelector('[data-rd-list]') as HTMLElement).classList.contains('hidden')).toBe(true)
+    expect(formInput(page, '[data-rd-name]').value).toBe('servere5')
+    expect(formInput(page, '[data-rd-addr]').value).toBe('http://127.0.0.1:5901')
+    expect(formInput(page, '[data-rd-pass]').value).toBe('pw')
+    expect(formInput(page, '[data-rd-pass]').type).toBe('password')
+    ;(card(page).querySelector('[data-rd-back]') as HTMLElement).click()
+    expect(formVisible(page)).toBe(false)
+    expect((card(page).querySelector('[data-rd-list]') as HTMLElement).classList.contains('hidden')).toBe(false)
+  })
+
+  it('+ opens an empty form with delete hidden', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+    ;(card(page).querySelector('[data-rd-add]') as HTMLElement).click()
+    expect(formVisible(page)).toBe(true)
+    expect(deleteHidden(page)).toBe(true)
+    expect(formInput(page, '[data-rd-name]').value).toBe('')
+    expect(formInput(page, '[data-rd-addr]').value).toBe('')
+    expect(formInput(page, '[data-rd-pass]').value).toBe('')
+  })
+
+  it('save validation: empty name / empty addr / duplicate name toast and send zero PUTs', async () => {
+    let putDevices: RemoteDevice[] | undefined
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      devices: DEVICES,
+      onPutDevices: (d) => (putDevices = d),
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+
+    ;(card(page).querySelector('[data-rd-add]') as HTMLElement).click()
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    expect(toastText(page)).toBe('Name is required')
+
+    input(formInput(page, '[data-rd-name]'), 'nas')
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    expect(toastText(page)).toBe('Address is required')
+
+    input(formInput(page, '[data-rd-addr]'), 'ws://127.0.0.1:1')
+    input(formInput(page, '[data-rd-name]'), 'win11')
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    expect(toastText(page)).toBe('Names must be unique')
+
+    expect(devicePuts(mock)).toHaveLength(0)
+    expect(putDevices).toBeUndefined()
+    expect(formVisible(page)).toBe(true)
+  })
+
+  it('save PUTs the full next list, re-renders the addr, toasts, and closes the form', async () => {
+    let putDevices: RemoteDevice[] | undefined
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      devices: DEVICES,
+      onPutDevices: (d) => (putDevices = d),
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+
+    entries(page)[0].click()
+    input(formInput(page, '[data-rd-addr]'), 'ws://10.0.0.9:8006')
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    // The toast fires after the PUT resolves AND the list re-renders — wait
+    // on it rather than the body capture, which happens mid-flight.
+    await vi.waitFor(() => expect(toastText(page)).toBe('Saved'))
+
+    expect(putDevices).toEqual([
+      { name: 'win11', addr: 'ws://10.0.0.9:8006', pass: '' },
+      { name: 'servere5', addr: 'http://127.0.0.1:5901', pass: 'pw' },
+    ])
+    expect(formVisible(page)).toBe(false)
+    expect(entries(page)).toHaveLength(2)
+    expect(entryAddr(entries(page)[0])).toBe('ws://10.0.0.9:8006')
+  })
+
+  it('delete PUTs the list without the entry and shrinks it by exactly one', async () => {
+    let putDevices: RemoteDevice[] | undefined
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      devices: DEVICES,
+      onPutDevices: (d) => (putDevices = d),
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+
+    entries(page)[1].click()
+    ;(card(page).querySelector('[data-rd-delete]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe('Saved'))
+
+    expect(putDevices).toEqual([{ name: 'win11', addr: 'ws://127.0.0.1:8006', pass: '' }])
+    expect(entries(page)).toHaveLength(1)
+    expect(formVisible(page)).toBe(false)
+  })
+
+  it('test button: pending …/Testing… then ✓ latency (green) or ✗ error (red)', async () => {
+    let resolveProbe: (v: { ok: boolean; latencyMs?: number; error?: string }) => void = () => {}
+    const probe = new Promise<{ ok: boolean; latencyMs?: number; error?: string }>((r) => {
+      resolveProbe = r
+    })
+    const base = makeFetchHandler({ payload: PAYLOAD, devices: DEVICES })
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/remotedesktop/test') {
+        return { ok: true, status: 200, json: async () => probe }
+      }
+      return base(url, init)
+    })
+    vi.stubGlobal('fetch', mock)
+    const page = createSettingsPage()
+    document.body.appendChild(page.root)
+    page.open()
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(2))
+
+    entries(page)[0].click()
+    ;(card(page).querySelector('[data-rd-test]') as HTMLElement).click()
+    expect((card(page).querySelector('[data-rd-test]') as HTMLElement).textContent).toBe('…')
+    expect((card(page).querySelector('[data-rd-test-result]') as HTMLElement).textContent).toBe('Testing…')
+
+    resolveProbe({ ok: true, latencyMs: 37 })
+    await vi.waitFor(() => {
+      expect((card(page).querySelector('[data-rd-test-result]') as HTMLElement).textContent).toBe('✓ 37ms')
+    })
+    expect((card(page).querySelector('[data-rd-test-result]') as HTMLElement).className).toContain('text-green')
+    expect((card(page).querySelector('[data-rd-test]') as HTMLElement).textContent).toBe('Test')
+
+    vi.stubGlobal('fetch', makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, deviceTest: { ok: false, error: 'boom' } }))
+    const failPage = createSettingsPage()
+    document.body.appendChild(failPage.root)
+    failPage.open()
+    await vi.waitFor(() => expect(entries(failPage)).toHaveLength(2))
+    entries(failPage)[0].click()
+    ;(card(failPage).querySelector('[data-rd-test]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((card(failPage).querySelector('[data-rd-test-result]') as HTMLElement).textContent).toBe('✗ boom')
+    })
+    expect((card(failPage).querySelector('[data-rd-test-result]') as HTMLElement).className).toContain('text-red')
+    expect((card(failPage).querySelector('[data-rd-test]') as HTMLElement).textContent).toBe('Test')
+  })
+
+  it('devices fetch failure still renders providers and leaves the section empty', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devicesError: true }))
+    await vi.waitFor(() => {
+      expect(page.root.querySelectorAll('[data-provider-card]').length).toBe(2)
+    })
+    await flushMicrotasks()
+    expect(page.root.querySelectorAll('[data-rd-entry]')).toHaveLength(0)
+    expect(page.root.querySelector('[data-rd-card]')).not.toBeNull()
+    expect(page.root.querySelector('[data-rd-add]')).not.toBeNull()
   })
 })

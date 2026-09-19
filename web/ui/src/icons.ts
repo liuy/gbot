@@ -1,6 +1,10 @@
 export const SVG_NS = 'http://www.w3.org/2000/svg'
 
 export type IconName =
+  | 'keyboard'
+  | 'eye'
+  | 'pointer'
+  | 'maximize'
   | 'plus'
   | 'send'
   | 'camera'
@@ -42,6 +46,26 @@ export interface IconDef {
 }
 
 const ICONS: Record<IconName, IconDef> = {
+  eye: {
+    path: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  pointer: {
+    path: '<path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  maximize: {
+    path: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  keyboard: {
+    path: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 16h8"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
   plus: {
     path: '<path d="M12 5v14M5 12h14"/>',
     variant: 'outline',

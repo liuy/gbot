@@ -422,3 +422,14 @@ body {
 }
 .sheet-handle:hover::after { background: var(--color-t2); }
 .sheet-handle:active { cursor: grabbing; }
+/* Sidebar remote-desktop status dot (prototype .dot.on/.off values) */
+.rd-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--color-t3); opacity: .5; }
+.rd-dot.on { background: var(--color-green); opacity: 1; }
+/* VNC console sheet: veil + bottom-sheet (mobile) / centered card (>=700px) */
+.vnc-veil { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 45; display: flex; align-items: flex-start; justify-content: center; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.vnc-sheet { width: min(560px, 100%); height: min(560px, 88%); background: var(--color-ink2); border: 1px solid var(--color-hairline); border-radius: 0 0 18px 18px; display: flex; flex-direction: column; animation: vnc-up .22s cubic-bezier(.2,.9,.3,1); overflow: hidden; }
+@media (min-width: 700px) { .vnc-sheet { border-radius: 16px; } }
+@keyframes vnc-up { from { transform: translateY(-24px); opacity: .4; } }
+.vnc-screen { flex: 1; position: relative; overflow: hidden; margin: 0 12px 12px; border-radius: 10px; background: linear-gradient(160deg,#1a2530 0%,#0d1218 100%); }
+.vnc-sheet.vnc-max { position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); bottom: env(safe-area-inset-bottom, 0px); width: auto; height: auto; z-index: 46; border-radius: 0; }
+.vnc-kbd-input { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px; opacity: .01; border: none; padding: 0; background: transparent; color: transparent; resize: none; outline: none; }

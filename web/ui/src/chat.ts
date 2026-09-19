@@ -56,6 +56,8 @@ import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
 import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
+import { fetchRemoteDevices, createDeviceProber } from './vnc'
+import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
 import { getConnection } from './ws'
 import { TokenRate } from './token_rate'
@@ -509,6 +511,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // purely manual action via its handle).
   const artifactSheet = createArtifactSheet()
   root.appendChild(artifactSheet.root)
+
+  // VNC console sheet — same persistence rule as the artifact sheet: it is
+  // closed only through its own affordances, never by a session reset.
+  const vncSheet = createVNCSheet()
+  root.appendChild(vncSheet.root)
+  const deviceProber = createDeviceProber()
+  sidebar.onDeviceClick((device) => {
+    vncSheet.open(device)
+  })
 
   // Settings page: full-screen overlay above everything (z-60). Closing the
   // sidebar first keeps the gear's tap from leaving both layers open. A
@@ -1747,6 +1758,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   sidebar.onOpen(() => {
     fetchArtifactList()
       .then((items) => sidebar.setArtifacts(items))
+      .catch(() => {})
+    fetchRemoteDevices()
+      .then((devices) => {
+        sidebar.setRemoteDevices(devices)
+        deviceProber.probe(devices, (name, ok) => sidebar.setDeviceStatus(name, ok))
+      })
       .catch(() => {})
   })
 

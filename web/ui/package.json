@@ -12,6 +12,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "@novnc/novnc": "1.7.0",
     "@vscode/markdown-it-katex": "^1.1.2",
     "dompurify": "^3.4.11",
     "fuzzysearch": "^1.0.3",

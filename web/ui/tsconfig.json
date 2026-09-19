@@ -14,6 +14,6 @@
     "allowImportingTsExtensions": false,
     "types": ["vite/client"]
   },
-  "include": ["src", "src/types.d.ts"],
+  "include": ["src", "src/novnc.d.ts"],
   "exclude": ["src/**/*.test.ts"]
 }

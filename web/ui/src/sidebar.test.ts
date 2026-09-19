@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { createSidebar } from './sidebar'
 import { renderIcon, type IconName } from './icons'
 import type { ArtifactListItem, SessionListItem } from './types'
+import type { RemoteDevice } from './vnc'
 
 function setup() {
   const mainContent = document.createElement('div')
@@ -480,5 +481,79 @@ describe('createSidebar', () => {
       ;(sidebar.root.querySelector('[data-settings-btn]') as HTMLElement).click()
       expect(handler).toHaveBeenCalledTimes(1)
     })
+  })
+})
+
+describe('remote desktop section', () => {
+  const DEVICES: RemoteDevice[] = [
+    { name: 'win11', addr: 'ws://127.0.0.1:8006', pass: '' },
+    { name: 'servere5', addr: 'http://127.0.0.1:5901', pass: 'pw' },
+  ]
+
+  it('hides the section when no desktops are configured and shows it again once one exists', () => {
+    const { sidebar } = setup()
+    const section = sidebar.root.querySelector('.sidebar-devices') as HTMLElement
+    sidebar.setRemoteDevices([])
+    expect(section.classList.contains('hidden')).toBe(true)
+    sidebar.setRemoteDevices([DEVICES[0]])
+    expect(section.classList.contains('hidden')).toBe(false)
+    expect(sidebar.root.querySelectorAll('[data-device-row]').length).toBe(1)
+  })
+
+  it('setRemoteDevices renders one row per device with grey dots, between Games and Artifacts', () => {
+    const { sidebar } = setup()
+    sidebar.setRemoteDevices(DEVICES)
+    const rows = sidebar.root.querySelectorAll('[data-device-row]')
+    expect(rows.length).toBe(2)
+    const dots = sidebar.root.querySelectorAll('[data-device-dot]')
+    expect(dots.length).toBe(2)
+    for (const d of dots) {
+      expect((d as HTMLElement).classList.contains('on')).toBe(false)
+    }
+    expect((rows[0].lastElementChild as HTMLElement).textContent).toBe('win11')
+    expect((rows[1].lastElementChild as HTMLElement).textContent).toBe('servere5')
+    // Section order: Games < Remote Desktop < Artifacts inside the list
+    // container (listContainer children, not document-wide queries).
+    const list = sidebar.root.querySelector('.overflow-y-auto') as HTMLElement
+    const kids = Array.from(list.children)
+    const pos = (el: Element) => kids.indexOf(el)
+    expect(pos(sidebar.root.querySelector('.sidebar-games') as Element)).toBeLessThan(
+      pos(sidebar.root.querySelector('.sidebar-devices') as Element),
+    )
+    expect(pos(sidebar.root.querySelector('.sidebar-devices') as Element)).toBeLessThan(
+      pos(sidebar.root.querySelector('.sidebar-artifacts') as Element),
+    )
+  })
+
+  it('setDeviceStatus flips on onto the named row dot only', () => {
+    const { sidebar } = setup()
+    sidebar.setRemoteDevices(DEVICES)
+    sidebar.setDeviceStatus('win11', true)
+    const dots = [...sidebar.root.querySelectorAll('[data-device-dot]')] as HTMLElement[]
+    expect(dots[0].classList.contains('on')).toBe(true)
+    expect(dots[1].classList.contains('on')).toBe(false)
+    sidebar.setDeviceStatus('win11', false)
+    expect(dots[0].classList.contains('on')).toBe(false)
+    expect(dots[1].classList.contains('on')).toBe(false)
+  })
+
+  it('row click fires onDeviceClick with the exact device object and closes', () => {
+    const { mainContent, sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onDeviceClick(handler)
+    sidebar.open()
+    sidebar.setRemoteDevices(DEVICES)
+    ;(sidebar.root.querySelector('[data-device-row="servere5"]') as HTMLElement).click()
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(DEVICES[1])
+    expect(sidebar.root.style.transform).toBe('translateX(-100%)')
+    expect(mainContent.style.transform).toBe('translateX(0px)')
+  })
+
+  it('zero devices render the header with no rows', () => {
+    const { sidebar } = setup()
+    sidebar.setRemoteDevices([])
+    expect(sidebar.root.querySelector('[data-devices-header]')).not.toBeNull()
+    expect(sidebar.root.querySelectorAll('[data-device-row]').length).toBe(0)
   })
 })

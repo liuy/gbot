@@ -78,6 +78,18 @@ describe('renderIcon — outline variant', () => {
     expect(renderIcon('film').getAttribute('stroke-width')).toBe('2')
   })
 
+  it('eye strokeWidth defaults to 2', () => {
+    expect(renderIcon('eye').getAttribute('stroke-width')).toBe('2')
+  })
+
+  it('pointer strokeWidth defaults to 2', () => {
+    expect(renderIcon('pointer').getAttribute('stroke-width')).toBe('2')
+  })
+
+  it('maximize strokeWidth defaults to 2', () => {
+    expect(renderIcon('maximize').getAttribute('stroke-width')).toBe('2')
+  })
+
   it('globe strokeWidth defaults to 2', () => {
     expect(renderIcon('globe').getAttribute('stroke-width')).toBe('2')
   })

@@ -104,3 +104,26 @@ describe('sidebar i18n', () => {
     expect(localStorage.getItem('gbot-language')).toBe('zh')
   })
 })
+
+describe('sidebar i18n — remote desktop', () => {
+  beforeEach(() => {
+    localStorage.removeItem('gbot-language')
+    document.body.innerHTML = ''
+  })
+  afterEach(() => {
+    localStorage.removeItem('gbot-language')
+    initLocale()
+    document.body.innerHTML = ''
+  })
+
+  it('devices header retranslates on locale switch — same DOM node', () => {
+    const sidebar = mountSidebar()
+    const header = sidebar.root.querySelector('[data-devices-header]') as HTMLElement
+    expect(header.textContent).toBe('Desktops')
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    retranslate(document.body)
+    expect(header.textContent).toBe('桌面')
+    expect(sidebar.root.querySelector('[data-devices-header]')).toBe(header)
+  })
+})

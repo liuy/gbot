@@ -26,6 +26,8 @@ type Config struct {
 	Model     ModelSpec  `json:"model"`               // string "provider/model" or map of tiers {default,lite,pro,max,...}
 	Providers []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
 
+	RemoteDesktop []RemoteDevice `json:"remote_desktop,omitempty"` // wui remote-desktop console targets
+
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
 	Permissions    json.RawMessage      `json:"permissions,omitempty"` // parsed by pkg/permission.LoadConfig()
 
@@ -128,6 +130,15 @@ const (
 	ProviderTypeAnthropic = "anthropic"
 	ProviderTypeResponses = "responses"
 )
+
+// RemoteDevice is one VNC target for the wui remote-desktop console. Addr is
+// normalized server-side (see wui.normalizeVNCAddr) — ws/wss dialed directly,
+// http(s)/bare host forms mapped onto a ws endpoint.
+type RemoteDevice struct {
+	Name string `json:"name"`
+	Addr string `json:"addr"`
+	Pass string `json:"pass,omitempty"` // VNC password; empty = none offered
+}
 
 // ProviderType returns the resolved provider type.
 func (p *Provider) ProviderType() string {
@@ -524,6 +535,65 @@ func SaveProviders(providers []Provider) error {
 		return err
 	}
 	raw["providers"] = providersJSON
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		// The backup must land before any write touches settings.json —
+		// if it fails, abort rather than destroy the only good copy.
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveRemoteDevices replaces the "remote_desktop" key of ~/.gbot/settings.json
+// with devices, preserving every other top-level key verbatim. Same safety
+// contract as SaveProviders (backup first, then atomic tmp+rename); mode is
+// preserved from the existing file, else 0600 (the file carries VNC
+// passwords). Validation lives in the HTTP handler, as providers does.
+func SaveRemoteDevices(devices []RemoteDevice) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage)
+		}
+	}
+
+	devicesJSON, err := json.Marshal(devices)
+	if err != nil {
+		return err
+	}
+	raw["remote_desktop"] = devicesJSON
 
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

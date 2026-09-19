@@ -1,4 +1,5 @@
 import type { ArtifactListItem, SessionListItem } from './types'
+import type { RemoteDevice } from './vnc'
 import { bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
 import { createIconButton } from './buttons'
@@ -20,6 +21,9 @@ export interface SidebarHandles {
   setArtifacts: (items: ArtifactListItem[]) => void
   onArtifactClick: (handler: (name: string) => void) => void
   onClearArtifacts: (handler: () => void) => void
+  setRemoteDevices: (devices: RemoteDevice[]) => void
+  setDeviceStatus: (name: string, ok: boolean) => void
+  onDeviceClick: (handler: (device: RemoteDevice) => void) => void
   onOpenSettings: (handler: () => void) => void
   onOpen: (handler: () => void) => void
 }
@@ -120,6 +124,17 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   }
   gamesSection.append(gamesHeader, gamesList)
   listContainer.appendChild(gamesSection)
+  // Remote-desktop rows: one per configured VNC device with a reachability
+  // dot. Dots start grey (unknown) — the prober wired in chat.ts fills them
+  // after the sidebar opens, so the list itself never blocks render.
+  const devicesSection = createElement('div', 'sidebar-devices')
+  const devicesHeader = createNode('div', {
+    className: 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium',
+    ...L('sidebarRemoteDesktop', { 'data-devices-header': '' }),
+  })
+  const devicesList = createElement('div', '')
+  devicesSection.append(devicesHeader, devicesList)
+  listContainer.appendChild(devicesSection)
   // Artifacts lists the projectspace artifacts directory. Rows open the
   // artifact; the header trash button clears everything (two-tap confirm —
   // artifacts are regenerable by the agent, so bulk delete is recoverable).
@@ -201,6 +216,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     rename: (_id: string, _title: string) => {},
     artifactClick: (_name: string) => {},
     clearArtifacts: () => {},
+    deviceClick: (_d: RemoteDevice) => {},
     openSettings: () => {},
     open: () => {},
   }
@@ -386,6 +402,37 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     renderArtifactTree(items, 0, 0, artifactsList)
   }
 
+  const setRemoteDevices = (devices: RemoteDevice[]) => {
+    // No configured desktops = no section at all: the entry is opt-in and
+    // an empty header above Artifacts would be pure noise.
+    devicesSection.classList.toggle('hidden', devices.length === 0)
+    devicesList.innerHTML = ''
+    for (const d of devices) {
+      const row = createElement(
+        'div',
+        'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+      )
+      row.setAttribute('data-device-row', d.name)
+      const dot = createElement('span', 'rd-dot')
+      dot.setAttribute('data-device-dot', d.name)
+      const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
+      nameSpan.textContent = d.name
+      row.append(dot, nameSpan)
+      row.addEventListener('click', () => {
+        handlers.deviceClick(d)
+        closeImmediate()
+      })
+      devicesList.appendChild(row)
+    }
+  }
+
+  const setDeviceStatus = (name: string, ok: boolean) => {
+    for (const row of devicesList.querySelectorAll('[data-device-row]')) {
+      if ((row as HTMLElement).getAttribute('data-device-row') !== name) continue
+      row.querySelector('[data-device-dot]')?.classList.toggle('on', ok)
+    }
+  }
+
   const startRename = (
     row: HTMLElement,
     titleSpan: HTMLElement,
@@ -434,6 +481,8 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     setStreaming,
     setSessions,
     setArtifacts,
+    setRemoteDevices,
+    setDeviceStatus,
     onSessionClick: (handler) => {
       handlers.sessionClick = handler
     },
@@ -448,6 +497,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     },
     onClearArtifacts: (handler) => {
       handlers.clearArtifacts = handler
+    },
+    onDeviceClick: (handler) => {
+      handlers.deviceClick = handler
     },
     onOpenSettings: (handler) => {
       handlers.openSettings = handler
