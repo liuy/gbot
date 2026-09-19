@@ -747,7 +747,7 @@ export function createSettingsPage(): SettingsPageHandles {
       createNode('input', {
         className:
           'w-full px-3 py-2.5 bg-ink3 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
-        props: { type, spellcheck: false },
+        props: { type, spellcheck: false, autocomplete: type === 'password' ? 'new-password' : 'off' },
         attrs,
       }),
     )
@@ -805,7 +805,7 @@ export function createSettingsPage(): SettingsPageHandles {
     const src = index >= 0 ? devicesState[index] : { name: '', addr: '', pass: '' }
     rdNameField.input.value = src.name
     rdAddrInput.value = src.addr
-    rdPassField.input.value = src.pass
+    rdPassField.input.value = src.pass ?? ''
     rdDeleteBtn.classList.toggle('hidden', index < 0)
     rdTestResult.replaceChildren()
     rdTestResult.className = 'text-[11px] text-t3'
