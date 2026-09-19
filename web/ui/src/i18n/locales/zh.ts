@@ -51,6 +51,7 @@ export const dict: Dict = {
   rdClipSend: '发送',
   rdClipSent: '已发送',
   rdChipFullscreen: '全屏',
+  rdChipViewMode: '视图模式',
   rdStateConnecting: '连接中…',
   rdStateDisconnected: '已断开',
   rdStatePassword: '需要密码 — 请在设置中填写',

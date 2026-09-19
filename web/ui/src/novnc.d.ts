@@ -15,6 +15,8 @@ declare module '@novnc/novnc' {
     constructor(target: HTMLElement, urlOrChannel: string, options?: RFBOptions)
     viewOnly: boolean
     scaleViewport: boolean
+    clipViewport: boolean
+    dragViewport: boolean
     addEventListener(type: string, listener: (e: CustomEvent) => void): void
     removeEventListener(type: string, listener: (e: CustomEvent) => void): void
     disconnect(): void

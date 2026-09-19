@@ -44,6 +44,19 @@ describe('renderIcon — basic SVG element', () => {
   })
 })
 
+describe('renderIcon — one-to-one ratio badge', () => {
+  it('renders the ratio as text, not as stroked paths', () => {
+    const el = renderIcon('one-to-one')
+    const text = el.querySelector('text')
+    expect(text?.textContent).toBe('1:1')
+    // The outline variant strokes the svg; the glyphs must opt out or they
+    // render as hollow outlines at chip size.
+    expect(text?.getAttribute('stroke')).toBe('none')
+    expect(text?.getAttribute('fill')).toBe('currentColor')
+    expect(el.querySelector('rect')).not.toBeNull()
+  })
+})
+
 describe('renderIcon — outline variant', () => {
   it('plus sets outline defaults with strokeWidth 2.5', () => {
     const el = renderIcon('plus')

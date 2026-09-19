@@ -59,6 +59,7 @@ export function createVNCSheet(): VNCSheetHandles {
   }
   // Green pointer = control; grey = view-only — one binary, one button.
   const controlChip = iconBtn('control', 'pointer', 'rdChipControl')
+  const viewChip = iconBtn('view', 'one-to-one', 'rdChipViewMode')
   const fullscreenChip = iconBtn('fullscreen', 'maximize', 'rdChipFullscreen')
   const latencyEl = createNode('span', { className: 'ml-auto text-t3', attrs: { 'data-vnc-latency': '' } })
   const keyboardBtn = createNode('span', {
@@ -67,7 +68,7 @@ export function createVNCSheet(): VNCSheetHandles {
   })
   keyboardBtn.append(renderIcon('keyboard', { size: 15 }))
   keyboardBtn.setAttribute('title', t('rdChipClipboard'))
-  bar.append(controlChip, keyboardBtn, fullscreenChip, latencyEl)
+  bar.append(controlChip, viewChip, keyboardBtn, fullscreenChip, latencyEl)
 
   const screen = createElement('div', 'vnc-screen')
   screen.setAttribute('data-vnc-screen', '')
@@ -98,12 +99,25 @@ export function createVNCSheet(): VNCSheetHandles {
   // probe results from a superseded session are dropped by seq re-check.
   let connectSeq = 0
   let mode: 'view' | 'control' = 'view'
+  // fit = scale the whole remote screen into the sheet (default);
+  // oneToOne = 1:1 pixels, clipped, drag to pan around.
+  let viewMode: 'fit' | 'oneToOne' = 'fit'
 
   const chipOn = (el: HTMLElement) => {
     el.className = ICON_BTN + ' text-green'
   }
   const chipOff = (el: HTMLElement) => {
     el.className = ICON_BTN + ' text-t2'
+  }
+
+  const applyViewMode = (inst: RFB) => {
+    // noVNC's _updateClip() lets scaling trump clipping, so 1:1 requires
+    // scaleViewport off; dragViewport turns a finger drag into a local pan
+    // instead of a remote left-drag.
+    const oneToOne = viewMode === 'oneToOne'
+    inst.scaleViewport = !oneToOne
+    inst.clipViewport = oneToOne
+    inst.dragViewport = oneToOne
   }
 
   const setState = (key: StaticKey, suffix = '') => {
@@ -158,7 +172,7 @@ export function createVNCSheet(): VNCSheetHandles {
         else setState('rdStatePassword')
       })
       inst.viewOnly = mode === 'view'
-      inst.scaleViewport = true
+      applyViewMode(inst)
       // Latency label = server-side probe (WS dial time), refreshed per
       // (re)connect; failures clear it (stale ms numbers lie).
       void testRemoteDevice(device!.addr, device!.pass)
@@ -192,6 +206,14 @@ export function createVNCSheet(): VNCSheetHandles {
       }
       rfb.viewOnly = mode === 'view'
     } else connect()
+  })
+  viewChip.addEventListener('click', () => {
+    viewMode = viewMode === 'oneToOne' ? 'fit' : 'oneToOne'
+    if (viewMode === 'oneToOne') chipOn(viewChip)
+    else chipOff(viewChip)
+    // Live viewport properties (setters recalc clip/scale) — no reconnect.
+    if (rfb && !sessionDead) applyViewMode(rfb)
+    else connect()
   })
   keyboardBtn.addEventListener('click', () => {
     if (document.activeElement === kbdInput) kbdInput.blur()
@@ -251,7 +273,9 @@ export function createVNCSheet(): VNCSheetHandles {
   const openSheet = (d: RemoteDevice) => {
     device = d
     mode = 'view'
+    viewMode = 'fit'
     chipOff(controlChip)
+    chipOff(viewChip)
     chipOff(fullscreenChip)
     keyboardModeOff()
     if (document.activeElement === kbdInput) kbdInput.blur()

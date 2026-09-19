@@ -133,6 +133,66 @@ describe('createVNCSheet', () => {
     expect(inst.viewOnly).toBe(true)
   })
 
+  it('view chip switches to 1:1 clip+drag in place, and back', async () => {
+    const sheet = await openWin11()
+    const inst = instances()[0]
+    const chip = sheet.root.querySelector('[data-vnc-chip="view"]') as HTMLElement
+    expect(chip).not.toBeNull()
+    expect(inst.scaleViewport).toBe(true)
+    expect(inst.clipViewport).toBe(false)
+    expect(inst.dragViewport).toBe(false)
+
+    chip.click()
+    // Same session — viewport properties are live in noVNC.
+    expect(instances()).toHaveLength(1)
+    expect(inst.disconnectCalls).toBe(0)
+    expect(inst.scaleViewport).toBe(false)
+    expect(inst.clipViewport).toBe(true)
+    expect(inst.dragViewport).toBe(true)
+    expect(chip.className).toContain('text-green')
+
+    chip.click()
+    expect(instances()).toHaveLength(1)
+    expect(inst.scaleViewport).toBe(true)
+    expect(inst.clipViewport).toBe(false)
+    expect(inst.dragViewport).toBe(false)
+    expect(chip.className).toContain('text-t2')
+  })
+
+  it('view chip rebuilds only a dead session', async () => {
+    const sheet = await openWin11()
+    instances()[0].fire('disconnect', { clean: false })
+    ;(sheet.root.querySelector('[data-vnc-chip="view"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(instances()).toHaveLength(2))
+    const fresh = instances()[1]
+    expect(fresh.scaleViewport).toBe(false)
+    expect(fresh.clipViewport).toBe(true)
+    expect(fresh.dragViewport).toBe(true)
+  })
+
+  it('chip bar keeps control, view, keyboard, fullscreen order', () => {
+    const sheet = mount()
+    // The keyboard chip predates iconBtn and carries its own attribute, so
+    // both selectors are needed to pin the whole bar order.
+    const ids = Array.from(
+      sheet.root.querySelectorAll('[data-vnc-bar] [data-vnc-chip], [data-vnc-bar] [data-vnc-keyboard]'),
+    ).map((el) => el.getAttribute('data-vnc-chip') ?? 'keyboard')
+    expect(ids).toEqual(['control', 'view', 'keyboard', 'fullscreen'])
+  })
+
+  it('reopening the console resets the view mode to fit', async () => {
+    const sheet = await openWin11()
+    const chip = sheet.root.querySelector('[data-vnc-chip="view"]') as HTMLElement
+    chip.click()
+    expect(instances()[0].clipViewport).toBe(true)
+    sheet.close()
+    sheet.open(NO_PASS)
+    await vi.waitFor(() => expect(instances()).toHaveLength(2))
+    expect(instances()[1].scaleViewport).toBe(true)
+    expect(instances()[1].clipViewport).toBe(false)
+    expect(chip.className).toContain('text-t2')
+  })
+
   it('control chip rebuilds only a dead session', async () => {
     const sheet = await openWin11()
     instances()[0].fire('disconnect', { clean: false })

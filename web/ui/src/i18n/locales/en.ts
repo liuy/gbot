@@ -73,6 +73,7 @@ export const dict = {
   rdClipSend: 'Send',
   rdClipSent: 'Sent',
   rdChipFullscreen: 'Fullscreen',
+  rdChipViewMode: 'View mode',
   rdStateConnecting: 'Connecting…',
   rdStateDisconnected: 'Disconnected',
   rdStatePassword: 'Password required — configure it in Settings',

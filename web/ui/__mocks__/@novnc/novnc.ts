@@ -6,6 +6,8 @@ export interface MockRFBInstance {
   options: { credentials?: { password: string }; wsProtocols?: string[] } | undefined
   viewOnly: boolean
   scaleViewport: boolean
+  clipViewport: boolean
+  dragViewport: boolean
   disconnectCalls: number
   sentCredentials: Array<{ password: string }>
   sentKeys: { keysym: number; down: boolean }[]
@@ -19,6 +21,8 @@ export class MockRFB {
   canvas: HTMLCanvasElement
   viewOnly = false
   scaleViewport = false
+  clipViewport = false
+  dragViewport = false
   disconnectCalls = 0
   sentCredentials: Array<{ password: string }> = []
   sentKeys: { keysym: number; down: boolean }[] = []

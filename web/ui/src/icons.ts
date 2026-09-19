@@ -5,6 +5,7 @@ export type IconName =
   | 'eye'
   | 'pointer'
   | 'maximize'
+  | 'one-to-one'
   | 'plus'
   | 'send'
   | 'camera'
@@ -53,6 +54,15 @@ const ICONS: Record<IconName, IconDef> = {
   },
   pointer: {
     path: '<path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  'one-to-one': {
+    // Ratio badge for the VNC view-mode chip. The text is deliberately large
+    // relative to the frame: at the 15px chip size anything smaller turns to
+    // mush. fill/stroke are set on the text itself, so the outline variant's
+    // stroked defaults do not turn the glyphs into outlines.
+    path: '<rect x="2" y="5" width="20" height="14" rx="3"/><text x="12" y="16" text-anchor="middle" font-size="9.5" font-weight="700" fill="currentColor" stroke="none">1:1</text>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
@@ -201,8 +211,8 @@ export function renderIcon(name: IconName, opts: IconOptions = {}): SVGElement {
   svg.setAttribute('width', String(size))
   svg.setAttribute('height', String(size))
   svg.setAttribute('viewBox', '0 0 24 24')
-  // Decorative: button parents carry aria-label, so the svg must be hidden
-  // from assistive tech to avoid duplicate announcements.
+  // Decorative: the parent chip carries a title, so the svg is hidden from
+  // assistive tech to avoid duplicate announcements.
   svg.setAttribute('aria-hidden', 'true')
   if (opts.className) svg.setAttribute('class', opts.className)
 
