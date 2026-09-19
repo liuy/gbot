@@ -19,24 +19,62 @@ import (
 //go:embed assets/index.html
 var indexHTML []byte
 
+// Prebundled noVNC (esbuild, TLA-safe ESM, software-decode patched).
+// vite's emptyOutDir is disabled so a rebuild cannot wipe it; regenerated
+// via `npm run build:novnc`, and `npm run check:novnc` (wired into
+// `make web-check`) proves the committed bytes are current. Note that
+// disabling emptyOutDir means any other stale file in assets/ survives a
+// build too — assets/ must stay limited to tracked artifacts.
+//
+//go:embed assets/novnc.esm.js
+var novncESM []byte
+
 // gzipIndex compresses the embedded page exactly once; bytes.Buffer writes
 // cannot fail, but the error path is kept so a future source change cannot
 // silently serve an empty body.
 var gzipIndex = sync.OnceValues(func() ([]byte, error) {
+	return gzipBytes(indexHTML)
+})
+
+// gzipNovnc mirrors gzipIndex: the prebundle is ~185 KB and, with
+// Cache-Control: no-store, is re-fetched on every console open — including
+// across the paired-device proxy.
+var gzipNovnc = sync.OnceValues(func() ([]byte, error) {
+	return gzipBytes(novncESM)
+})
+
+func gzipBytes(src []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write(indexHTML); err != nil {
+	if _, err := zw.Write(src); err != nil {
 		return nil, err
 	}
 	if err := zw.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-})
+}
 
-// RegisterStaticRoutes mounts the SPA at mux root. Every path serves the
-// single-file index.html, gzip-compressed.
+// RegisterStaticRoutes mounts the SPA at mux root. Every path except the
+// exact noVNC prebundle path serves the single-file index.html,
+// gzip-compressed.
 func RegisterStaticRoutes(mux *http.ServeMux) {
+	// Exact-path pattern wins over the "/" SPA catch-all below. "GET" also
+	// matches HEAD (Go 1.22 method patterns), so probes get the headers.
+	mux.HandleFunc("GET /assets/novnc.esm.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Content-Encoding", "gzip")
+
+		body, err := gzipNovnc()
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := w.Write(body); err != nil {
+			slog.Warn("wui: novnc.esm.js write failed", "error", err)
+		}
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Content-Encoding", "gzip")

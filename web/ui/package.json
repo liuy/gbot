@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "build:novnc": "node scripts/build-novnc.mjs",
+    "check:novnc": "node scripts/build-novnc.mjs --check"
   },
   "dependencies": {
     "@novnc/novnc": "1.7.0",

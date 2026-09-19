@@ -2,6 +2,7 @@ import type RFB from '@novnc/novnc'
 import { createElement, createNode } from './dom'
 import { t, type StaticKey } from './i18n'
 import { renderIcon, type IconName } from './icons'
+import { loadRFB } from './rfb_loader'
 import { testRemoteDevice, type RemoteDevice } from './vnc'
 
 // Remote-desktop console sheet: noVNC rendered into a bottom-sheet (mobile) /
@@ -121,7 +122,18 @@ export function createVNCSheet(): VNCSheetHandles {
     setState('rdStateConnecting')
     latencyEl.textContent = '…'
     void (async () => {
-      const { default: RFBClass } = await import('@novnc/novnc')
+      let RFBClass: typeof import('@novnc/novnc').default
+      try {
+        RFBClass = await loadRFB()
+      } catch (err) {
+        // A superseded session must not clobber the newer one's state;
+        // a live one keeps the cause in the console — the original bug was
+        // an unexplained load failure with nothing to go on.
+        if (seq !== connectSeq) return
+        console.error('VNC: failed to load the RFB module', err)
+        setState('rdStateFailed')
+        return
+      }
       if (seq !== connectSeq) return
       const inst = new RFBClass(screen, `ws://${location.host}/wui/vnc/${encodeURIComponent(device!.name)}`, {
         credentials: device!.pass ? { password: device!.pass } : undefined,

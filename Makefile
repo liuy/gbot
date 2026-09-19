@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -149,7 +149,10 @@ web-build:
 web-test:
 	cd web/ui && npm test
 
-web-check: web-build web-test web-lint web-weak
+web-check: web-build web-test web-lint web-weak web-novnc
+
+web-novnc:
+	cd web/ui && npm run check:novnc
 
 web-lint:
 	cd web/ui && npm run lint

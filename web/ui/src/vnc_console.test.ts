@@ -3,6 +3,7 @@ import { initLocale } from './i18n'
 import { createVNCSheet } from './vnc_console'
 import type { RemoteDevice } from './vnc'
 import { instances } from '@novnc/novnc'
+import { loadRFB } from './rfb_loader'
 
 // The real noVNC package never loads in tests — an external dependency is
 // mocked, not the system under test. MockRFB (in __mocks__/@novnc/novnc.ts)
@@ -13,6 +14,12 @@ import { instances } from '@novnc/novnc'
 // and the seq-guard test opens twice with no await between, so both imports
 // are in flight at once.
 vi.mock('@novnc/novnc')
+vi.mock('./rfb_loader', async () => {
+  const mod = await import('@novnc/novnc')
+  // vi.fn so individual tests can fail the load (the loader is the seam the
+  // TDZ bug lived behind) without mocking the sheet itself.
+  return { loadRFB: vi.fn(async () => mod.default) }
+})
 
 const WIN11: RemoteDevice = { name: 'win11', addr: 'ws://127.0.0.1:8006', pass: 'pw' }
 const NO_PASS: RemoteDevice = { name: 'mac', addr: 'ws://10.0.0.4:5901', pass: '' }
@@ -195,6 +202,44 @@ describe('createVNCSheet', () => {
     await vi.waitFor(() => {
       expect((sheet.root.querySelector('[data-vnc-latency]') as HTMLElement).textContent).toBe('')
     })
+  })
+
+  it('a failed module load shows the failed state and logs the cause', async () => {
+    vi.mocked(loadRFB).mockRejectedValueOnce(new Error('boom'))
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const sheet = mount()
+      sheet.open(WIN11)
+      await vi.waitFor(() => expect(stateOf(sheet).textContent).toBe('Connection failed'))
+      expect(errSpy).toHaveBeenCalled()
+      expect(instances()).toHaveLength(0)
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it("a superseded session's load failure cannot clobber the newer session", async () => {
+    let rejectFirst!: (err: unknown) => void
+    vi.mocked(loadRFB).mockImplementationOnce(
+      () =>
+        new Promise((_, rej) => {
+          rejectFirst = rej
+        }),
+    )
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const sheet = mount()
+      sheet.open(WIN11)
+      sheet.open(NAS)
+      await vi.waitFor(() => expect(instances()).toHaveLength(1))
+      rejectFirst(new Error('stale load failed'))
+      await flushMicrotasks()
+      expect(stateOf(sheet).textContent).toBe('Connecting…')
+      expect(errSpy).not.toHaveBeenCalled()
+      expect(instances()[0].url).toBe(`ws://${location.host}/wui/vnc/nas`)
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 
   it('✕ and veil-background clicks disconnect and hide the sheet', async () => {
