@@ -16,6 +16,7 @@ type Listener = (e: { detail: Record<string, unknown> }) => void
 
 export class MockRFB {
   static instances: MockRFB[] = []
+  canvas: HTMLCanvasElement
   viewOnly = false
   scaleViewport = false
   disconnectCalls = 0
@@ -28,6 +29,10 @@ export class MockRFB {
     public options?: { credentials?: { password: string }; wsProtocols?: string[] },
   ) {
     MockRFB.instances.push(this)
+    // Real RFB appends its canvas into the target; the sheet dispatches a
+    // synthetic mouseup there to release held buttons.
+    this.canvas = document.createElement('canvas')
+    target.appendChild(this.canvas)
   }
   addEventListener(type: string, listener: Listener): void {
     const arr = this.listeners.get(type) ?? []

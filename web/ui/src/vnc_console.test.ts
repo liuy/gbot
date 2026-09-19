@@ -97,24 +97,48 @@ describe('createVNCSheet', () => {
     expect(stateOf(sheet).classList.contains('hidden')).toBe(true)
   })
 
-  it('control chip reconnects with viewOnly=false; chips restyle mutually exclusively', async () => {
+  it('control chip flips the live session in place; chips restyle mutually exclusively', async () => {
     const sheet = await openWin11()
+    const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    expect(instances()[0].viewOnly).toBe(true)
+
+    chip.click()
+    // Same session: no rebuild, no dropped connection — viewOnly is a live
+    // property in noVNC (its setter grabs/ungrabs the keyboard).
+    expect(instances()).toHaveLength(1)
+    expect(instances()[0].disconnectCalls).toBe(0)
+    expect(instances()[0].viewOnly).toBe(false)
+    expect(chip.className).toContain('text-green')
+
+    chip.click()
+    expect(instances()).toHaveLength(1)
+    expect(instances()[0].viewOnly).toBe(true)
+    expect(chip.className).toContain('text-t2')
+    expect(chip.className).not.toContain('text-green')
+  })
+
+  it('leaving control releases held buttons before flipping view-only', async () => {
+    const sheet = await openWin11()
+    const inst = instances()[0]
+    const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    chip.click()
+    expect(inst.viewOnly).toBe(false)
+    const seen: Array<{ viewOnlyWhenDispatched: boolean }> = []
+    inst.canvas.addEventListener('mouseup', () => {
+      seen.push({ viewOnlyWhenDispatched: inst.viewOnly })
+    })
+    chip.click()
+    // Released while still in control — the guard would drop it afterwards.
+    expect(seen).toEqual([{ viewOnlyWhenDispatched: false }])
+    expect(inst.viewOnly).toBe(true)
+  })
+
+  it('control chip rebuilds only a dead session', async () => {
+    const sheet = await openWin11()
+    instances()[0].fire('disconnect', { clean: false })
     ;(sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).click()
     await vi.waitFor(() => expect(instances()).toHaveLength(2))
-    expect(instances()[0].disconnectCalls).toBe(1)
     expect(instances()[1].viewOnly).toBe(false)
-    expect((sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).className).toContain(
-      'text-green',
-    )
-    ;(sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).click()
-    await vi.waitFor(() => expect(instances()).toHaveLength(3))
-    expect(instances()[2].viewOnly).toBe(true)
-    expect((sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).className).toContain(
-      'text-t2',
-    )
-    expect((sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).className).not.toContain(
-      'text-green',
-    )
   })
 
   it('keyboard button focuses the hidden capture; typing forwards keysyms live', async () => {
@@ -198,7 +222,9 @@ describe('createVNCSheet', () => {
       )
     })
     stubTestEndpoint({ ok: false, error: 'dial tcp refused' })
-    ;(sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).click()
+    // Reconnect by reopening — the control chip no longer rebuilds the session.
+    sheet.close()
+    sheet.open(NO_PASS)
     await vi.waitFor(() => {
       expect((sheet.root.querySelector('[data-vnc-latency]') as HTMLElement).textContent).toBe('')
     })

@@ -92,6 +92,7 @@ export function createVNCSheet(): VNCSheetHandles {
 
   // ------------------------------------------------------------- state
   let rfb: RFB | null = null
+  let sessionDead = false
   let device: RemoteDevice | null = null
   // Bumped on every close/open/connect: stale async import() resolutions and
   // probe results from a superseded session are dropped by seq re-check.
@@ -140,10 +141,12 @@ export function createVNCSheet(): VNCSheetHandles {
         wsProtocols: ['binary'],
       })
       rfb = inst
+      sessionDead = false
       inst.addEventListener('connect', () => {
         stateEl.classList.add('hidden')
       })
       inst.addEventListener('disconnect', (e: CustomEvent) => {
+        sessionDead = true
         setState(e.detail.clean === true ? 'rdStateDisconnected' : 'rdStateFailed')
       })
       inst.addEventListener('securityfailure', (e: CustomEvent) => {
@@ -174,7 +177,21 @@ export function createVNCSheet(): VNCSheetHandles {
     mode = mode === 'control' ? 'view' : 'control'
     if (mode === 'control') chipOn(controlChip)
     else chipOff(controlChip)
-    connect()
+    // viewOnly is a live property in noVNC (its setter grabs/ungrabs the
+    // keyboard), so an established session keeps its screen and auth — only
+    // a dead session needs rebuilding to pick up the mode.
+    if (rfb && !sessionDead) {
+      if (mode === 'view') {
+        // noVNC's setter only ungrabs the keyboard; a button held down at
+        // this moment would stay pressed forever on the server (stuck drag).
+        // A synthetic mouseup (buttons=0 → mask 0) releases it — dispatched
+        // while still in control so it passes the viewOnly guard.
+        screen
+          .querySelector('canvas')
+          ?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }))
+      }
+      rfb.viewOnly = mode === 'view'
+    } else connect()
   })
   keyboardBtn.addEventListener('click', () => {
     if (document.activeElement === kbdInput) kbdInput.blur()
