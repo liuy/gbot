@@ -22,7 +22,6 @@ export interface SidebarHandles {
   onArtifactClick: (handler: (name: string) => void) => void
   onClearArtifacts: (handler: () => void) => void
   setRemoteDevices: (devices: RemoteDevice[]) => void
-  setDeviceStatus: (name: string, ok: boolean) => void
   onDeviceClick: (handler: (device: RemoteDevice) => void) => void
   onOpenSettings: (handler: () => void) => void
   onOpen: (handler: () => void) => void
@@ -124,9 +123,10 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   }
   gamesSection.append(gamesHeader, gamesList)
   listContainer.appendChild(gamesSection)
-  // Remote-desktop rows: one per configured VNC device with a reachability
-  // dot. Dots start grey (unknown) — the prober wired in chat.ts fills them
-  // after the sidebar opens, so the list itself never blocks render.
+  // Remote-desktop rows: one per configured VNC device. No health probing —
+  // a dial-and-drop probe aborts the VNC handshake mid-way and TigerVNC
+  // counts each one as a security failure, blacklisting the source after
+  // five. Connection state belongs to the console sheet, not the list.
   const devicesSection = createElement('div', 'sidebar-devices')
   const devicesHeader = createNode('div', {
     className: 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium',
@@ -413,23 +413,14 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
         'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
       )
       row.setAttribute('data-device-row', d.name)
-      const dot = createElement('span', 'rd-dot')
-      dot.setAttribute('data-device-dot', d.name)
       const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
       nameSpan.textContent = d.name
-      row.append(dot, nameSpan)
+      row.append(nameSpan)
       row.addEventListener('click', () => {
         handlers.deviceClick(d)
         closeImmediate()
       })
       devicesList.appendChild(row)
-    }
-  }
-
-  const setDeviceStatus = (name: string, ok: boolean) => {
-    for (const row of devicesList.querySelectorAll('[data-device-row]')) {
-      if ((row as HTMLElement).getAttribute('data-device-row') !== name) continue
-      row.querySelector('[data-device-dot]')?.classList.toggle('on', ok)
     }
   }
 
@@ -482,7 +473,6 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     setSessions,
     setArtifacts,
     setRemoteDevices,
-    setDeviceStatus,
     onSessionClick: (handler) => {
       handlers.sessionClick = handler
     },

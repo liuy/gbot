@@ -500,16 +500,11 @@ describe('remote desktop section', () => {
     expect(sidebar.root.querySelectorAll('[data-device-row]').length).toBe(1)
   })
 
-  it('setRemoteDevices renders one row per device with grey dots, between Games and Artifacts', () => {
+  it('setRemoteDevices renders one row per device, between Games and Artifacts', () => {
     const { sidebar } = setup()
     sidebar.setRemoteDevices(DEVICES)
     const rows = sidebar.root.querySelectorAll('[data-device-row]')
     expect(rows.length).toBe(2)
-    const dots = sidebar.root.querySelectorAll('[data-device-dot]')
-    expect(dots.length).toBe(2)
-    for (const d of dots) {
-      expect((d as HTMLElement).classList.contains('on')).toBe(false)
-    }
     expect((rows[0].lastElementChild as HTMLElement).textContent).toBe('win11')
     expect((rows[1].lastElementChild as HTMLElement).textContent).toBe('servere5')
     // Section order: Games < Remote Desktop < Artifacts inside the list
@@ -523,18 +518,6 @@ describe('remote desktop section', () => {
     expect(pos(sidebar.root.querySelector('.sidebar-devices') as Element)).toBeLessThan(
       pos(sidebar.root.querySelector('.sidebar-artifacts') as Element),
     )
-  })
-
-  it('setDeviceStatus flips on onto the named row dot only', () => {
-    const { sidebar } = setup()
-    sidebar.setRemoteDevices(DEVICES)
-    sidebar.setDeviceStatus('win11', true)
-    const dots = [...sidebar.root.querySelectorAll('[data-device-dot]')] as HTMLElement[]
-    expect(dots[0].classList.contains('on')).toBe(true)
-    expect(dots[1].classList.contains('on')).toBe(false)
-    sidebar.setDeviceStatus('win11', false)
-    expect(dots[0].classList.contains('on')).toBe(false)
-    expect(dots[1].classList.contains('on')).toBe(false)
   })
 
   it('row click fires onDeviceClick with the exact device object and closes', () => {

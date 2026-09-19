@@ -56,7 +56,7 @@ import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
 import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
-import { fetchRemoteDevices, createDeviceProber } from './vnc'
+import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
 import { getConnection } from './ws'
@@ -516,7 +516,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // closed only through its own affordances, never by a session reset.
   const vncSheet = createVNCSheet()
   root.appendChild(vncSheet.root)
-  const deviceProber = createDeviceProber()
   sidebar.onDeviceClick((device) => {
     vncSheet.open(device)
   })
@@ -1760,10 +1759,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       .then((items) => sidebar.setArtifacts(items))
       .catch(() => {})
     fetchRemoteDevices()
-      .then((devices) => {
-        sidebar.setRemoteDevices(devices)
-        deviceProber.probe(devices, (name, ok) => sidebar.setDeviceStatus(name, ok))
-      })
+      .then((devices) => sidebar.setRemoteDevices(devices))
       .catch(() => {})
   })
 
