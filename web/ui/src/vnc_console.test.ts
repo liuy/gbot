@@ -158,6 +158,27 @@ describe('createVNCSheet', () => {
     expect(fresh.dragViewport).toBe(true)
   })
 
+  it('the IME overlays content while the console is open, and reverts on close', async () => {
+    // index.html carries the viewport meta; jsdom's bare document does not,
+    // so the test installs the production-shaped tag itself.
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'viewport')
+    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover')
+    document.head.appendChild(meta)
+    try {
+      const sheet = await openWin11()
+      expect(meta.getAttribute('content')).toContain('interactive-widget=overlays-content')
+      sheet.close()
+      // Exact restoration, not just key absence — a sloppy remover that
+      // leaves a dangling separator must fail.
+      expect(meta.getAttribute('content')).toBe(
+        'width=device-width, initial-scale=1.0, viewport-fit=cover',
+      )
+    } finally {
+      meta.remove()
+    }
+  })
+
   it('chip tooltips retranslate on a mid-session language switch', async () => {
     const sheet = await openWin11()
     const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement

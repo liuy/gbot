@@ -127,6 +127,23 @@ export function createVNCSheet(): VNCSheetHandles {
     inst.dragViewport = oneToOne
   }
 
+  // Chrome pans the visual viewport to reveal a focused input by default
+  // (interactive-widget=resizes-visual), which pushes the whole page up when
+  // the hidden keystroke capture is focused. overlays-content makes the IME
+  // simply cover the canvas instead — scoped to the console's lifetime so
+  // the chat input keeps its ride-above-keyboard behaviour.
+  const setIMEOverlay = (on: boolean) => {
+    const meta = document.querySelector('meta[name="viewport"]')
+    if (!meta) return
+    const KEY = ', interactive-widget=overlays-content'
+    const cur = meta.getAttribute('content') ?? ''
+    if (on && !cur.includes('interactive-widget')) {
+      meta.setAttribute('content', cur + KEY)
+    } else if (!on && cur.includes(KEY)) {
+      meta.setAttribute('content', cur.replace(KEY, ''))
+    }
+  }
+
   const setState = (key: StaticKey, suffix = '') => {
     stateEl.classList.remove('hidden')
     stateEl.textContent = t(key) + suffix
@@ -290,10 +307,14 @@ export function createVNCSheet(): VNCSheetHandles {
     sheet.classList.remove('vnc-max')
     titleEl.textContent = d.name
     root.style.display = ''
+    setIMEOverlay(true)
     connect()
   }
   const closeSheet = () => {
     connectSeq++
+    // Before disconnect(): a throw there would otherwise strand the meta on,
+    // leaving the chat's input typing blind under the IME until a reload.
+    setIMEOverlay(false)
     rfb?.disconnect()
     rfb = null
     root.style.display = 'none'

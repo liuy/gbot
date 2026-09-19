@@ -429,4 +429,9 @@ body {
 @keyframes vnc-up { from { transform: translateY(-24px); opacity: .4; } }
 .vnc-screen { flex: 1; position: relative; overflow: hidden; margin: 0 12px 12px; border-radius: 10px; background: linear-gradient(160deg,#1a2530 0%,#0d1218 100%); }
 .vnc-sheet.vnc-max { position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); bottom: env(safe-area-inset-bottom, 0px); width: auto; height: auto; z-index: 46; border-radius: 0; }
-.vnc-kbd-input { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px; opacity: .01; border: none; padding: 0; background: transparent; color: transparent; resize: none; outline: none; }
+/* Anchored at the TOP: with interactive-widget=overlays-content the IME
+   covers the screen bottom, and a bottom-anchored focused editable makes
+   the browser scroll the page to reveal it on the first keystroke
+   (whatwg/html#8375). The top is never covered by a docked IME, so no
+   reveal-scroll fires (a floating landscape IME could still sit there). */
+.vnc-kbd-input { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: .01; border: none; padding: 0; background: transparent; color: transparent; resize: none; outline: none; }
