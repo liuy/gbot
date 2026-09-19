@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { initLocale } from './i18n'
+import { initLocale, retranslate } from './i18n'
 import { createVNCSheet } from './vnc_console'
 import type { RemoteDevice } from './vnc'
 import { instances } from '@novnc/novnc'
@@ -68,9 +68,7 @@ describe('createVNCSheet', () => {
     sheet.open(WIN11)
     expect(sheet.root.style.display).toBe('')
     expect(sheet.isOpen()).toBe(true)
-    expect((sheet.root.querySelector('[data-vnc-title]') as HTMLElement).textContent).toBe(
-      'win11 — Console',
-    )
+    expect((sheet.root.querySelector('[data-vnc-title]') as HTMLElement).textContent).toBe('win11')
     expect(stateOf(sheet).textContent).toBe('Connecting…')
     await vi.waitFor(() => expect(instances()).toHaveLength(1))
     const inst = instances()[0]
@@ -79,16 +77,6 @@ describe('createVNCSheet', () => {
     expect(inst.options?.wsProtocols).toEqual(['binary'])
     expect(inst.viewOnly).toBe(true)
     expect(inst.scaleViewport).toBe(true)
-  })
-
-  it('console title localizes when zh is pinned', async () => {
-    localStorage.setItem('gbot-language', 'zh')
-    initLocale()
-    const sheet = mount()
-    sheet.open(WIN11)
-    expect((sheet.root.querySelector('[data-vnc-title]') as HTMLElement).textContent).toBe(
-      'win11 — 控制台',
-    )
   })
 
   it('connect event hides the state overlay', async () => {
@@ -170,14 +158,30 @@ describe('createVNCSheet', () => {
     expect(fresh.dragViewport).toBe(true)
   })
 
-  it('chip bar keeps control, view, keyboard, fullscreen order', () => {
+  it('chip tooltips retranslate on a mid-session language switch', async () => {
+    const sheet = await openWin11()
+    const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    expect(chip.getAttribute('title')).toBe('Control')
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    retranslate(document.body)
+    expect(chip.getAttribute('title')).toBe('接管')
+  })
+
+  it('toolbar row keeps title, chips, latency, close order', () => {
     const sheet = mount()
+    const row = sheet.root.querySelector('[data-vnc-bar]') as HTMLElement
     // The keyboard chip predates iconBtn and carries its own attribute, so
-    // both selectors are needed to pin the whole bar order.
-    const ids = Array.from(
-      sheet.root.querySelectorAll('[data-vnc-bar] [data-vnc-chip], [data-vnc-bar] [data-vnc-keyboard]'),
-    ).map((el) => el.getAttribute('data-vnc-chip') ?? 'keyboard')
-    expect(ids).toEqual(['control', 'view', 'keyboard', 'fullscreen'])
+    // children are classified by attribute rather than one selector.
+    const ids = Array.from(row.children).map((el) => {
+      if (el.hasAttribute('data-vnc-title')) return 'title'
+      if (el.hasAttribute('data-vnc-dot')) return 'dot'
+      if (el.hasAttribute('data-vnc-latency')) return 'latency'
+      if (el.hasAttribute('data-vnc-close')) return 'close'
+      if (el.hasAttribute('data-vnc-keyboard')) return 'keyboard'
+      return el.getAttribute('data-vnc-chip')
+    })
+    expect(ids).toEqual(['title', 'dot', 'control', 'view', 'keyboard', 'fullscreen', 'latency', 'close'])
   })
 
   it('reopening the console resets the view mode to fit', async () => {
@@ -387,9 +391,7 @@ describe('createVNCSheet', () => {
     sheet.open({ name: 'nas', addr: 'ws://10.0.0.8:8006', pass: '' })
     await vi.waitFor(() => expect(instances()).toHaveLength(2))
     expect(instances()[0].disconnectCalls).toBe(1)
-    expect((sheet.root.querySelector('[data-vnc-title]') as HTMLElement).textContent).toBe(
-      'nas — Console',
-    )
+    expect((sheet.root.querySelector('[data-vnc-title]') as HTMLElement).textContent).toBe('nas')
     expect(instances()[1].url).toBe(`ws://${location.host}/wui/vnc/nas`)
   })
 

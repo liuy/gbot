@@ -45,7 +45,6 @@ export const dict: Dict = {
   rdPassLabel: '密码（可选）',
   rdAddrRequired: '地址不能为空',
   rdTesting: '测试中…',
-  rdConsole: (name: string) => `${name} — 控制台`,
   rdChipControl: '接管',
   rdChipClipboard: '输入',
   rdClipSend: '发送',

@@ -67,7 +67,6 @@ export const dict = {
   rdPassLabel: 'Password (optional)',
   rdAddrRequired: 'Address is required',
   rdTesting: 'Testing…',
-  rdConsole: (name: string) => `${name} — Console`,
   rdChipControl: 'Control',
   rdChipClipboard: 'Input',
   rdClipSend: 'Send',

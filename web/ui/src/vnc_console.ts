@@ -34,24 +34,33 @@ export function createVNCSheet(): VNCSheetHandles {
   const sheet = createElement('div', 'vnc-sheet')
   sheet.setAttribute('data-vnc-sheet', '')
 
-  const head = createElement('div', 'flex items-center gap-2.5 px-4 pb-2 pt-1 text-sm font-semibold')
-  const titleEl = createNode('span', { className: 'flex-1', attrs: { 'data-vnc-title': '' } })
+  // One compact toolbar row — device name, mode chips, then latency and
+  // close right-aligned. Vertical space is the scarcest resource in the
+  // sheet, so the old two-row header (title row + chip row) was merged.
+  const bar = createElement(
+    'div',
+    'flex items-center gap-[7px] px-3.5 pb-2 pt-2 text-[11px] text-t2',
+  )
+  bar.setAttribute('data-vnc-bar', '')
+  const titleEl = createNode('span', {
+    className: 'min-w-0 truncate text-[13px] font-semibold text-t1',
+    attrs: { 'data-vnc-title': '' },
+  })
+  // Static separator dot between the name and the chips — no state meaning.
+  const dotEl = createNode('span', {
+    className: 'h-[4px] w-[4px] shrink-0 rounded-full bg-t3',
+    attrs: { 'data-vnc-dot': '' },
+  })
   const closeBtn = createNode('span', {
     className: 'text-t3 cursor-pointer px-2 text-[15px]',
     text: '✕',
     attrs: { 'data-vnc-close': '' },
   })
-  head.append(titleEl, closeBtn)
-
-  const bar = createElement(
-    'div',
-    'flex flex-wrap items-center gap-[7px] px-3.5 pb-2.5 text-[11px] text-t2',
-  )
-  bar.setAttribute('data-vnc-bar', '')
   const iconBtn = (id: string, icon: IconName, labelKey: StaticKey): HTMLElement => {
     const el = createNode('span', {
       className: ICON_BTN,
-      attrs: { 'data-vnc-chip': id },
+      // data-i18n-title keeps the tooltip refreshable by retranslate().
+      attrs: { 'data-vnc-chip': id, 'data-i18n-title': labelKey },
     })
     el.append(renderIcon(icon, { size: 15 }))
     el.setAttribute('title', t(labelKey))
@@ -67,8 +76,9 @@ export function createVNCSheet(): VNCSheetHandles {
     attrs: { 'data-vnc-keyboard': '' },
   })
   keyboardBtn.append(renderIcon('keyboard', { size: 15 }))
+  keyboardBtn.setAttribute('data-i18n-title', 'rdChipClipboard')
   keyboardBtn.setAttribute('title', t('rdChipClipboard'))
-  bar.append(controlChip, viewChip, keyboardBtn, fullscreenChip, latencyEl)
+  bar.append(titleEl, dotEl, controlChip, viewChip, keyboardBtn, fullscreenChip, latencyEl, closeBtn)
 
   const screen = createElement('div', 'vnc-screen')
   screen.setAttribute('data-vnc-screen', '')
@@ -85,10 +95,7 @@ export function createVNCSheet(): VNCSheetHandles {
   kbdInput.setAttribute('autocomplete', 'off')
   kbdInput.setAttribute('autocapitalize', 'off')
 
-  sheet.append(head, bar, screen, kbdInput)
-  root.append(sheet)
-
-  sheet.append(head, bar, screen)
+  sheet.append(bar, screen, kbdInput)
   root.append(sheet)
 
   // ------------------------------------------------------------- state
@@ -131,8 +138,8 @@ export function createVNCSheet(): VNCSheetHandles {
     rfb?.disconnect()
     rfb = null
     // The RFB constructor appends its canvas into the screen — drop the old
-    // session's DOM while keeping the state overlay AND the input bar
-    // (replaceChildren wipes siblings; the bar lives inside the screen).
+    // session's canvas while keeping the state overlay and the keystroke
+    // capture (replaceChildren wipes siblings; kbdInput lives in screen).
     screen.replaceChildren(stateEl, kbdInput)
     setState('rdStateConnecting')
     latencyEl.textContent = '…'
@@ -281,7 +288,7 @@ export function createVNCSheet(): VNCSheetHandles {
     if (document.activeElement === kbdInput) kbdInput.blur()
     kbdInput.value = ''
     sheet.classList.remove('vnc-max')
-    titleEl.textContent = t('rdConsole')(d.name)
+    titleEl.textContent = d.name
     root.style.display = ''
     connect()
   }

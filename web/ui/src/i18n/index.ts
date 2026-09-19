@@ -184,6 +184,12 @@ export function retranslate(root: ParentNode): void {
   for (const el of root.querySelectorAll('[data-i18n-placeholder]')) {
     el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder') as StaticKey))
   }
+
+  // Tooltips are attributes too: icon-only chips carry data-i18n-title so
+  // a mid-session language switch refreshes them with the same pass.
+  for (const el of root.querySelectorAll('[data-i18n-title]')) {
+    el.setAttribute('title', t(el.getAttribute('data-i18n-title') as StaticKey))
+  }
 }
 
 // Self-initialize at module scope: localStorage is synchronous, and every

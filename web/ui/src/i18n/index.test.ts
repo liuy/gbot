@@ -338,3 +338,25 @@ it('t() falls back to English for an unregistered locale', () => {
     expect(input.getAttribute('placeholder')).toBe('Search...')
   })
 })
+
+describe('retranslate — data-i18n-title anchors', () => {
+  it('swaps the title attribute of tooltip-only elements', () => {
+    document.body.innerHTML = ''
+    const chip = document.createElement('span')
+    chip.setAttribute('data-i18n-title', 'rdChipControl')
+    chip.setAttribute('title', 'Control')
+    document.body.appendChild(chip)
+
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+    retranslate(document.body)
+    expect(chip.getAttribute('title')).toBe('接管')
+
+    localStorage.setItem('gbot-language', 'en')
+    initLocale()
+    retranslate(document.body)
+    expect(chip.getAttribute('title')).toBe('Control')
+    localStorage.removeItem('gbot-language')
+    document.body.innerHTML = ''
+  })
+})
