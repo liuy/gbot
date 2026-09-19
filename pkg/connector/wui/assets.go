@@ -29,6 +29,13 @@ var indexHTML []byte
 //go:embed assets/novnc.esm.js
 var novncESM []byte
 
+// @google/model-viewer dist bundle for the artifact glTF viewer (its
+// built-in studio lighting and camera controls replace any hand-built
+// rig). Same embed/gzip lifecycle as the other prebundles.
+//
+//go:embed assets/model-viewer.esm.js
+var modelViewerESM []byte
+
 // gzipIndex compresses the embedded page exactly once; bytes.Buffer writes
 // cannot fail, but the error path is kept so a future source change cannot
 // silently serve an empty body.
@@ -41,6 +48,10 @@ var gzipIndex = sync.OnceValues(func() ([]byte, error) {
 // across the paired-device proxy.
 var gzipNovnc = sync.OnceValues(func() ([]byte, error) {
 	return gzipBytes(novncESM)
+})
+
+var gzipModelViewer = sync.OnceValues(func() ([]byte, error) {
+	return gzipBytes(modelViewerESM)
 })
 
 func gzipBytes(src []byte) ([]byte, error) {
@@ -56,8 +67,8 @@ func gzipBytes(src []byte) ([]byte, error) {
 }
 
 // RegisterStaticRoutes mounts the SPA at mux root. Every path except the
-// exact noVNC prebundle path serves the single-file index.html,
-// gzip-compressed.
+// exact prebundle paths (noVNC, model-viewer) serves the single-file
+// index.html, gzip-compressed.
 func RegisterStaticRoutes(mux *http.ServeMux) {
 	// Exact-path pattern wins over the "/" SPA catch-all below. "GET" also
 	// matches HEAD (Go 1.22 method patterns), so probes get the headers.
@@ -73,6 +84,20 @@ func RegisterStaticRoutes(mux *http.ServeMux) {
 		}
 		if _, err := w.Write(body); err != nil {
 			slog.Warn("wui: novnc.esm.js write failed", "error", err)
+		}
+	})
+	mux.HandleFunc("GET /assets/model-viewer.esm.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Content-Encoding", "gzip")
+
+		body, err := gzipModelViewer()
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := w.Write(body); err != nil {
+			slog.Warn("wui: model-viewer.esm.js write failed", "error", err)
 		}
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 import type { Block } from './model'
 import type { ArtifactListItem } from './types'
 import { createElement } from './dom'
+import { loadModelViewer } from './model_viewer_loader'
 
 // Tool summaries carry the raw Write/Edit file_path. The current convention
 // is an absolute <projectspace>/artifacts/... path; the relative artifacts/
@@ -59,6 +60,13 @@ export function artifactURL(name: string): string {
   // Encode per segment so the directory slash survives as a separator.
   const encoded = name.split('/').map(encodeURIComponent).join('/')
   return `/artifacts/${encoded}`
+}
+
+// isGLTFArtifactName reports whether an artifact opens the 3D viewer instead
+// of the iframe: glTF binaries and JSON are the only artifact types a browser
+// cannot render from a Content-Type alone.
+export function isGLTFArtifactName(name: string): boolean {
+  return /\.(glb|gltf)$/i.test(name)
 }
 
 // The artifacts directory is the source of truth, so the list is fetched on
@@ -154,7 +162,30 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   // without allow-same-origin would re-opaque the origin and kill
   // localStorage despite the header.
   const handle = createElement('div', 'sheet-handle')
-  root.append(frame, handle)
+  const modelHost = createElement('div', 'gltf-host')
+  modelHost.style.display = 'none'
+  root.append(frame, modelHost, handle)
+
+  // One of the two surfaces is visible at a time; display:'' restores the
+  // CSS default (iframe block, host flex child of the sheet).
+  const showFrame = (show: boolean) => {
+    frame.style.display = show ? '' : 'none'
+    modelHost.style.display = show ? 'none' : ''
+  }
+
+  // The <model-viewer> element (Google's component) carries its own
+  // loading/error UI — no overlay of ours on top of it.
+  const mountModelViewer = (url: string) => {
+    const el = document.createElement('model-viewer') as HTMLElement
+    el.className = 'w-full h-full'
+    el.setAttribute('src', url)
+    el.setAttribute('camera-controls', '')
+    el.setAttribute('tone-mapping', 'neutral')
+    el.setAttribute('shadow-intensity', '1')
+    el.setAttribute('touch-action', 'pan-y')
+    modelHost.replaceChildren(el)
+    return el
+  }
 
   // Height is state-driven, never measured: jsdom's getBoundingClientRect is
   // always 0, and the drag math needs the pre-drag pct as a number anyway.
@@ -168,11 +199,32 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   setHeight(0)
 
   const open = (name: string) => {
-    frame.src = artifactURL(name)
     currentName = name
     opened = true
     root.classList.remove('dragging')
     setHeight(SHEET_DEFAULT_H)
+    if (isGLTFArtifactName(name)) {
+      // about:blank unloads a previously-open HTML artifact — clearing the
+      // attribute alone would leave its JS running in the frame.
+      frame.src = 'about:blank'
+      showFrame(false)
+      loadModelViewer()
+        .then(() => {
+          // Close clears currentName; a collapse (close) during the
+          // multi-second bundle import must not mount afterwards.
+          if (currentName !== name || !opened) return
+          mountModelViewer(artifactURL(name))
+        })
+        .catch((err: unknown) => {
+          if (currentName !== name || !opened) return
+          console.error('glTF: model-viewer bundle failed to load', err)
+        })
+    } else {
+      // A non-glTF open retires any mounted model-viewer element.
+      modelHost.replaceChildren()
+      showFrame(true)
+      frame.src = artifactURL(name)
+    }
   }
   const current = () => currentName
 
@@ -180,6 +232,9 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     opened = false
     root.classList.remove('dragging')
     setHeight(0)
+    // Covers the drag-to-collapse path: the viewer must not keep GPU
+    // resources or an in-flight fetch while collapsed.
+    modelHost.replaceChildren()
   }
 
   let dragStartY = 0
@@ -228,6 +283,12 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   handle.addEventListener('pointercancel', endDrag)
 
   const reload = () => {
+    if (isGLTFArtifactName(currentName)) {
+      // Remounting the element refetches the model — that IS the reload
+      // for the viewer (no frame src to self-assign).
+      mountModelViewer(artifactURL(currentName))
+      return
+    }
     // Re-assigning src reloads the frame: the serve route is no-store with a
     // zero modtime, so the fetch cannot be satisfied from cache.
     // eslint-disable-next-line no-self-assign -- intentional reload idiom

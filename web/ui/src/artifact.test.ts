@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
   collectArtifactWrites,
   artifactURL,
@@ -6,8 +6,26 @@ import {
   createArtifactCard,
   createArtifactSheet,
   fetchArtifactList,
+  isGLTFArtifactName,
 } from './artifact'
+import { __record } from './model_viewer_loader'
 import type { Block } from './model'
+
+// The component bundle import is the sheet's external dependency seam —
+// stubbed with a recording factory. __record is the single mechanism tests
+// read; the real module loads Google's <model-viewer> bundle from the
+// daemon, which jsdom must never do (no WebGL).
+vi.mock('./model_viewer_loader', () => {
+  const loads: string[] = []
+  return {
+    __record: { loads },
+    MODEL_VIEWER_URL: '/assets/model-viewer.esm.js',
+    loadModelViewer: () => {
+      loads.push('load')
+      return Promise.resolve()
+    },
+  }
+})
 
 function toolBlock(
   name: string,
@@ -267,6 +285,10 @@ function spyFrameSrcSetter(
 }
 
 describe('createArtifactSheet', () => {
+  beforeEach(() => {
+    __record.loads.length = 0
+  })
+
   function makeSheet() {
     const sheet = createArtifactSheet()
     document.body.appendChild(sheet.root)
@@ -296,6 +318,76 @@ describe('createArtifactSheet', () => {
     // allow-same-origin). An attribute without allow-same-origin would
     // re-opaque the origin and kill localStorage.
     expect(frame.getAttribute('sandbox')).toBeNull()
+  })
+
+  it('open on a .glb swaps to the 3D host and blanks the iframe', () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('model.glb')
+    expect(frame.getAttribute('src')).toBe('about:blank')
+    expect(frame.style.display).toBe('none')
+    expect((sheet.root.querySelector('.gltf-host') as HTMLElement).style.display).toBe('')
+    expect(__record.loads).toEqual(['load'])
+  })
+
+  it('MODEL.GLB and scene.gltf take the same branch (case-insensitive extensions)', () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('MODEL.GLB')
+    expect(frame.getAttribute('src')).toBe('about:blank')
+    sheet.open('scene.gltf')
+    expect(frame.getAttribute('src')).toBe('about:blank')
+    expect(__record.loads).toEqual(['load', 'load'])
+  })
+
+  it('open on a non-glTF artifact keeps the iframe branch, viewer never opens', () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('pic.png')
+    expect(frame.getAttribute('src')).toBe('/artifacts/pic.png')
+    expect(frame.style.display).toBe('')
+    expect((sheet.root.querySelector('.gltf-host') as HTMLElement).style.display).toBe('none')
+    expect(__record.loads).toEqual([])
+  })
+
+  it('glTF → HTML switch tears the model-viewer down and restores the iframe', async () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('model.glb')
+    await vi.waitFor(() => expect(sheet.root.querySelector('model-viewer')).not.toBeNull())
+    sheet.open('game.html')
+    expect(sheet.root.querySelector('model-viewer')).toBeNull()
+    expect(frame.getAttribute('src')).toBe('/artifacts/game.html')
+    expect(frame.style.display).toBe('')
+    expect((sheet.root.querySelector('.gltf-host') as HTMLElement).style.display).toBe('none')
+  })
+
+  it('close() during a pending bundle import keeps the collapsed sheet empty', async () => {
+    stubViewportHeight(768)
+    const { sheet } = makeSheet()
+    sheet.open('model.glb')
+    // Collapse before the import continuation runs: the !opened guard must
+    // suppress the late mount into the collapsed sheet.
+    sheet.close()
+    // Deterministic microtask drain: the import continuation is microtask
+    // work, so draining beats a timeout wait (weak scanner bans those).
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(sheet.root.querySelector('model-viewer')).toBeNull()
+    expect(sheet.root.style.height).toBe('0px')
+  })
+
+  it('reload with a glTF current remounts it with the same URL', async () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('model.glb')
+    const spy = spyFrameSrcSetter(frame)
+    sheet.reload()
+    // Viewer reload is a remount, not a frame src touch.
+    expect(spy.calls).toHaveLength(0)
+    // The component module is already registered in the page — the remount
+    // does not re-import it.
+    expect(__record.loads).toEqual(['load'])
+    spy.restore()
   })
 
   it('single click on handle (no movement) collapses the sheet', () => {
@@ -388,6 +480,19 @@ describe('createArtifactSheet', () => {
     pointer(handle, 'pointermove', 50)
     pointer(handle, 'pointercancel', 50)
     expect(sheet.root.style.height).toBe('0px')
+  })
+})
+
+describe('isGLTFArtifactName', () => {
+  it.each([
+    ['a/b.glb', true],
+    ['x.GLTf', true],
+    ['game.html', false],
+    ['pic.png', false],
+    ['glb.txt', false],
+    ['model.glb2', false],
+  ])('%s dispatches to %s', (name, want) => {
+    expect(isGLTFArtifactName(name)).toBe(want)
   })
 })
 

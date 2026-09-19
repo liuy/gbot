@@ -402,6 +402,18 @@ body {
   background: var(--color-ink2, #0c1018);
   color-scheme: dark;
 }
+/* glTF viewer host: same floating-card geometry as the artifact iframe, but
+   always dark — viewport, grid and light intensities are tuned for it. */
+.artifact-sheet .gltf-host {
+  position: relative;
+  flex: 1;
+  align-self: stretch;
+  margin: calc(10px + env(safe-area-inset-top, 0px)) 10px 10px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-ink2, #0c1018);
+}
+.artifact-sheet .gltf-host canvas { width: 100%; height: 100%; display: block; }
 /* Handle sits on the sheet's bottom edge: pull down = taller, push up = shorter,
    below 15% on release = collapsed. Full-width hit area, 44×5 visual pill. */
 .sheet-handle {

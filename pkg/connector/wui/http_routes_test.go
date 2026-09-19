@@ -119,6 +119,44 @@ func TestRegisterStaticRoutes_ServesPrebundledNovnc(t *testing.T) {
 	}
 }
 
+// TestRegisterStaticRoutes_ServesModelViewer verifies the exact-path
+// model-viewer prebundle route: it must NOT fall through to the SPA catch-all.
+func TestRegisterStaticRoutes_ServesModelViewer(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterStaticRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, body := getDecompressed(t, srv.URL+"/assets/model-viewer.esm.js")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Errorf("Content-Type = %q, want text/javascript", ct)
+	}
+	if len(body) < 100_000 {
+		t.Errorf("body length = %d, want a real model-viewer bundle", len(body))
+	}
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("body is the SPA fallback, not the prebundle")
+	}
+
+	// Query strings (cache-busting) must select the same route.
+	respQ, bodyQ := getDecompressed(t, srv.URL+"/assets/model-viewer.esm.js?v=1")
+	if respQ.StatusCode != http.StatusOK || bodyQ != body {
+		t.Errorf("query variant served differently: status=%d same=%v", respQ.StatusCode, bodyQ == body)
+	}
+
+	respH, err := http.Head(srv.URL + "/assets/model-viewer.esm.js")
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	defer respH.Body.Close()
+	if respH.StatusCode != http.StatusOK {
+		t.Errorf("HEAD status = %d, want %d", respH.StatusCode, http.StatusOK)
+	}
+}
+
 // TestRegisterStaticRoutes_NovncHead verifies HEAD reaches the route (Go 1.22
 // "GET" patterns also match HEAD) rather than the catch-all.
 func TestRegisterStaticRoutes_NovncHead(t *testing.T) {
