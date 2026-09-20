@@ -84,6 +84,7 @@ CHECK_TARGETS := build build-windows build-windows-gui test lint fix web-lint we
 endif
 
 check: $(CHECK_TARGETS)
+	@echo "✓ ALL CHECKS PASSED"
 
 fix:
 	@gofmt -w $(shell find ./pkg ./cmd -name '*.go')
