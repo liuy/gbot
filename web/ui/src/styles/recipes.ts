@@ -75,6 +75,8 @@ export const avatarBase = tv({ base: 'flex h-5 w-5 shrink-0 items-center justify
 export const avatarG = tv({ base: 'text-[11px] font-bold avatar-g-bg' })
 export const avatarU = tv({ base: 'bg-gradient-to-br from-t2 to-t3' })
 export const disconnectBannerClass = tv({
-  base: 'absolute top-11 inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0',
+  // top must mirror the header's height: h-11 content PLUS the edge-to-edge
+  // status-bar inset (the header pads itself with the same env()).
+  base: 'absolute top-[calc(2.75rem+env(safe-area-inset-top,0px))] inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0',
 })
 export const disconnectText = tv({ base: 'text-[12px] text-red' })

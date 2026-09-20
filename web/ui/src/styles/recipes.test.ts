@@ -164,9 +164,12 @@ describe('chat.ts className snapshot guards (via createChat + dispatch)', () => 
 
   it('disconnectBanner and dcText className match current literals', () => {
     mount()
+    // top mirrors the header: fixed h-11 content plus the edge-to-edge
+    // status-bar inset.
+    const TOP = 'top-[calc(2.75rem+env(safe-area-inset-top,0px))]'
     const banner = Array.from(document.querySelectorAll('div'))
-      .find((d) => d.className.includes('top-11') && d.className.includes('card-bg')) as HTMLElement
-    expect(banner.className).toBe('absolute top-11 inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0')
+      .find((d) => d.className.includes(TOP) && d.className.includes('card-bg')) as HTMLElement
+    expect(banner.className).toBe(`absolute ${TOP} inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0`)
     const dcText = banner.querySelector(':scope > span') as HTMLElement
     expect(dcText.className).toBe('text-[12px] text-red')
   })

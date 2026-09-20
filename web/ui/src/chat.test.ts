@@ -2193,6 +2193,11 @@ describe('chat integration', () => {
     stateCb!('reconnecting')
     const banner = document.querySelector('.text-red') as HTMLElement
     expect(banner?.textContent).toContain('reconnecting')
+    // The banner parks below the header, whose height includes the status
+    // bar inset (edge-to-edge) — a fixed top-11 would overlap it on phones.
+    expect(banner?.parentElement?.className).toContain(
+      'top-[calc(2.75rem+env(safe-area-inset-top,0px))]',
+    )
   })
 
   it('disconnect banner shows failure text on disconnected state', () => {
@@ -2205,7 +2210,9 @@ describe('chat integration', () => {
   it('disconnect banner hides on connected state', () => {
     mount()
     stateCb!('reconnecting')
-    const banner = document.querySelector('.absolute.top-11') as HTMLElement
+    const banner = document.querySelector(
+      '.absolute.top-\\[calc\\(2\\.75rem\\+env\\(safe-area-inset-top\\,0px\\)\\)\\]',
+    ) as HTMLElement
     expect(banner.style.opacity).toBe('1')
 
     stateCb!('connected')
