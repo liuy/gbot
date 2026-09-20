@@ -18,8 +18,10 @@ func TestVisibleWidth_PlainASCII(t *testing.T) {
 
 func TestVisibleWidth_Empty(t *testing.T) {
 	t.Parallel()
-	if got := visibleWidth(""); got != 0 {
-		t.Errorf("visibleWidth(\"\") = %d, want 0", got)
+	// The empty string renders no cells.
+	want := 0
+	if got := visibleWidth(""); got != want {
+		t.Errorf("visibleWidth(\"\") = %d, want %d", got, want)
 	}
 }
 

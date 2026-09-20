@@ -417,8 +417,10 @@ func TestLastSelectableUserMessageIndex_FoundMiddle(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}},
 	}
 	got := LastSelectableUserMessageIndex(msgs)
-	if got != 0 {
-		t.Errorf("LastSelectableUserMessageIndex = %d, want 0", got)
+	// The plain user message at index 0 is the last selectable one.
+	want := 0
+	if got != want {
+		t.Errorf("LastSelectableUserMessageIndex = %d, want %d", got, want)
 	}
 }
 
@@ -450,8 +452,10 @@ func TestLastSelectableUserMessageIndex_SingleSelectable(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("only")}},
 	}
 	got := LastSelectableUserMessageIndex(msgs)
-	if got != 0 {
-		t.Errorf("LastSelectableUserMessageIndex = %d, want 0", got)
+	// The single message is selectable, so its index 0 is the answer.
+	want := 0
+	if got != want {
+		t.Errorf("LastSelectableUserMessageIndex = %d, want %d", got, want)
 	}
 }
 

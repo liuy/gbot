@@ -753,11 +753,13 @@ func TestTokenCountForBlock_UnknownType(t *testing.T) {
 
 func TestSafePct_ZeroWhole(t *testing.T) {
 	t.Parallel()
-	if got := safePct(50, 0); got != 0 {
-		t.Errorf("safePct(50, 0) = %f, want 0", got)
+	// safePct guards the divide: a zero or negative whole yields exactly 0.
+	want := 0.0
+	if got := safePct(50, 0); got != want {
+		t.Errorf("safePct(50, 0) = %f, want %f", got, want)
 	}
-	if got := safePct(50, -1); got != 0 {
-		t.Errorf("safePct(50, -1) = %f, want 0", got)
+	if got := safePct(50, -1); got != want {
+		t.Errorf("safePct(50, -1) = %f, want %f", got, want)
 	}
 }
 

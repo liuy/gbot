@@ -133,8 +133,10 @@ func TestQueue_RemoveByUUID_EmptyQueueReturnsFalse(t *testing.T) {
 	if ok := q.RemoveByUUID("u-1"); ok {
 		t.Error("RemoveByUUID on empty queue = true, want false")
 	}
-	if got := q.Len(); got != 0 {
-		t.Errorf("Len after remove on empty = %d, want 0", got)
+	// Nothing was ever enqueued, so the failed remove leaves Len at 0.
+	want := 0
+	if got := q.Len(); got != want {
+		t.Errorf("Len after remove on empty = %d, want %d", got, want)
 	}
 }
 
@@ -175,8 +177,10 @@ func TestSnapshot_EmptyQueueReturnsNil(t *testing.T) {
 	if snap != nil {
 		t.Errorf("Snapshot on empty queue = %v, want nil", snap)
 	}
-	if got := q.Len(); got != 0 {
-		t.Errorf("Len after empty Snapshot = %d, want 0", got)
+	// Snapshot never consumes, and the queue was empty to begin with.
+	want := 0
+	if got := q.Len(); got != want {
+		t.Errorf("Len after empty Snapshot = %d, want %d", got, want)
 	}
 }
 

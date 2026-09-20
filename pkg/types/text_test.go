@@ -8,8 +8,10 @@ import "testing"
 
 func TestEstimateTokens_Empty(t *testing.T) {
 	t.Parallel()
-	if got := EstimateTokens(""); got != 0 {
-		t.Errorf("EstimateTokens(\"\") = %d, want 0", got)
+	// Empty input has zero runes, so the estimate is exactly 0.
+	want := 0
+	if got := EstimateTokens(""); got != want {
+		t.Errorf("EstimateTokens(\"\") = %d, want %d", got, want)
 	}
 }
 

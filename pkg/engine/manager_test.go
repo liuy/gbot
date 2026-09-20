@@ -15,8 +15,10 @@ func newTestView(id, name string) *EngineViewState {
 
 func TestEngineManager_New_StartsEmpty(t *testing.T) {
 	m := NewEngineManager()
-	if got := m.Count(); got != 0 {
-		t.Errorf("Count = %d, want 0", got)
+	// A fresh manager tracks no engines yet.
+	want := 0
+	if got := m.Count(); got != want {
+		t.Errorf("Count = %d, want %d", got, want)
 	}
 	if got := m.Active(); got != nil {
 		t.Errorf("Active = %v, want nil", got)

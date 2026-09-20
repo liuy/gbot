@@ -9074,8 +9074,10 @@ func TestEngine_GetContextTokens(t *testing.T) {
 func TestEngine_GetContextTokens_Zero(t *testing.T) {
 	t.Parallel()
 	eng := &Engine{}
-	if got := eng.GetContextTokens(); got != 0 {
-		t.Errorf("GetContextTokens() = %d, want 0", got)
+	// A zero-value Engine carries no configured context window.
+	want := 0
+	if got := eng.GetContextTokens(); got != want {
+		t.Errorf("GetContextTokens() = %d, want %d", got, want)
 	}
 }
 

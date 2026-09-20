@@ -154,13 +154,15 @@ func TestCalculateToolResultTokens_MixedArray(t *testing.T) {
 }
 
 func TestCalculateToolResultTokens_EmptyContent(t *testing.T) {
+	// nil and empty raw JSON carry no content blocks to estimate.
+	want := 0
 	got := calculateToolResultTokens(nil)
-	if got != 0 {
-		t.Errorf("calculateToolResultTokens(nil) = %d, want 0", got)
+	if got != want {
+		t.Errorf("calculateToolResultTokens(nil) = %d, want %d", got, want)
 	}
 	got = calculateToolResultTokens(json.RawMessage{})
-	if got != 0 {
-		t.Errorf("calculateToolResultTokens(empty) = %d, want 0", got)
+	if got != want {
+		t.Errorf("calculateToolResultTokens(empty) = %d, want %d", got, want)
 	}
 }
 
@@ -355,8 +357,10 @@ func TestEstimateMessagesTokens_SkipsNonUserAssistant(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	if got != 0 {
-		t.Errorf("EstimateMessagesTokens should skip system messages, got %d", got)
+	// System messages are skipped entirely, leaving nothing to estimate.
+	want := 0
+	if got != want {
+		t.Errorf("EstimateMessagesTokens should skip system messages, got %d, want %d", got, want)
 	}
 }
 

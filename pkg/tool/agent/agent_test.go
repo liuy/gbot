@@ -1323,8 +1323,10 @@ func TestCountToolUses_AssistantWithNoToolUse(t *testing.T) {
 			types.NewTextBlock("just text, no tools"),
 		}},
 	}
-	if got := CountToolUses(messages); got != 0 {
-		t.Errorf("expected 0 (no tool_use), got %d", got)
+	// Text-only assistant content contributes no tool_use blocks.
+	want := 0
+	if got := CountToolUses(messages); got != want {
+		t.Errorf("expected %d tool_use blocks (no tool_use), got %d", want, got)
 	}
 }
 

@@ -3124,9 +3124,11 @@ func TestAnimateTokenValue_CrossThreshold(t *testing.T) {
 
 func TestAnimateTokenValue_ZeroTarget(t *testing.T) {
 	t.Parallel()
+	// Zero current and zero target leave nothing to animate toward.
+	want := 0
 	got := animateTokenValue(0, 0)
-	if got != 0 {
-		t.Errorf("animateTokenValue(0, 0) = %d, want 0", got)
+	if got != want {
+		t.Errorf("animateTokenValue(0, 0) = %d, want %d", got, want)
 	}
 }
 

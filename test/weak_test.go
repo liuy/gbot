@@ -253,16 +253,39 @@ var checkPatterns = []checkPattern{
 			}
 			// Exempt: if there's an exact value check for 'got' nearby in the
 			// same test function, this zero-check is a valid early guard.
-			// Scan up to 30 lines before and 10 lines after.
-			start := max(lineIdx-30, 0)
-			for i := start; i <= lineIdx+10 && i < len(lines); i++ {
+			// Scan up to 30 lines before and 10 lines after, clamped to the
+			// enclosing top-level func — a neighboring test's checks say
+			// nothing about this assertion. Anonymous closures ("func(")
+			// are part of the enclosing function, not boundaries.
+			funcStart := lineIdx
+			for i := lineIdx; i >= 0; i-- {
+				trimmed := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(trimmed, "func ") && !strings.HasPrefix(trimmed, "func(") {
+					funcStart = i
+					break
+				}
+			}
+			funcEnd := len(lines) - 1
+			for i := lineIdx + 1; i < len(lines); i++ {
+				trimmed := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(trimmed, "func ") && !strings.HasPrefix(trimmed, "func(") {
+					funcEnd = i - 1
+					break
+				}
+			}
+			start := max(lineIdx-30, funcStart)
+			end := min(lineIdx+10, funcEnd)
+			for i := start; i <= end; i++ {
 				if i == lineIdx {
 					continue
 				}
 				line := lines[i]
-				// Has exact comparison: got == want, got == <non-zero>
+				// Has exact comparison: got == want, got == <non-zero>.
+				// nil comparisons don't qualify — they prove presence of a
+				// value, not its correctness.
 				if (strings.Contains(line, "got ==") || strings.Contains(line, "got !=")) &&
-					!strings.Contains(line, "== 0") && !strings.Contains(line, "!= 0") {
+					!strings.Contains(line, "== 0") && !strings.Contains(line, "!= 0") &&
+					!strings.Contains(line, "== nil") && !strings.Contains(line, "!= nil") {
 					return true
 				}
 				// Has want calculation: want := ... or want = ...
@@ -710,5 +733,125 @@ func TestToolRegistrationOrder(t *testing.T) {
 				"ToolsProvider captures the full tool set.",
 				r.name, r.line, engineNewLine)
 		}
+	}
+}
+
+// zeroCheckPattern returns the "test result compared only to 0" pattern so
+// fixture tests can drive its Exempt logic directly without touching the repo.
+func zeroCheckPattern(t *testing.T) checkPattern {
+	t.Helper()
+	for _, p := range checkPatterns {
+		if p.Name == "test result compared only to 0 (use exact value)" {
+			return p
+		}
+	}
+	t.Fatal(`pattern "test result compared only to 0 (use exact value)" not found`)
+	return checkPattern{}
+}
+
+// fixtureLine returns the index of the first line containing substr.
+func fixtureLine(t *testing.T, lines []string, substr string) int {
+	t.Helper()
+	for i, l := range lines {
+		if strings.Contains(l, substr) {
+			return i
+		}
+	}
+	t.Fatalf("fixture line %q not found", substr)
+	return -1
+}
+
+// TestZeroCheckExemptWindowStopsAtFuncBoundary guards against the scanner
+// borrowing a neighboring test function's exact check as an exemption basis
+// (context_breakdown_test.go:732 once escaped via :706, 26 lines up in a
+// different function).
+func TestZeroCheckExemptWindowStopsAtFuncBoundary(t *testing.T) {
+	src := `package fixture
+
+func TestNeighbor(t *testing.T) {
+	got := helper()
+	if got == 5 {
+		t.Fatal("neighbor exact check")
+	}
+}
+
+func TestTarget(t *testing.T) {
+	got := helper()
+	if got <= 0 {
+		t.Fatal("guard")
+	}
+}
+`
+	lines := strings.Split(src, "\n")
+	idx := fixtureLine(t, lines, "got <= 0")
+	if zeroCheckPattern(t).Exempt("got <= 0", lines, idx) {
+		t.Error("got <= 0 exempted by a neighboring function's exact check; the window must stop at the enclosing func boundary")
+	}
+}
+
+// TestZeroCheckExemptRejectsNilComparison guards against nil comparisons
+// counting as exact value checks: nil proves presence, not correctness.
+func TestZeroCheckExemptRejectsNilComparison(t *testing.T) {
+	src := `package fixture
+
+func TestTarget(t *testing.T) {
+	got := helper()
+	if got != nil {
+		t.Fatal("non-nil")
+	}
+	if got <= 0 {
+		t.Fatal("guard")
+	}
+}
+`
+	lines := strings.Split(src, "\n")
+	idx := fixtureLine(t, lines, "got <= 0")
+	if zeroCheckPattern(t).Exempt("got <= 0", lines, idx) {
+		t.Error("got <= 0 exempted by a nearby got != nil; nil comparison is not an exact value check")
+	}
+}
+
+// TestZeroCheckExemptSameFuncExactCheck pins the preserved exemption: a real
+// exact check on got in the same function still counts as a valid early guard.
+func TestZeroCheckExemptSameFuncExactCheck(t *testing.T) {
+	src := `package fixture
+
+func TestTarget(t *testing.T) {
+	got := helper()
+	if got <= 0 {
+		t.Fatal("guard")
+	}
+	if got != 8 {
+		t.Errorf("got = %d, want 8", got)
+	}
+}
+`
+	lines := strings.Split(src, "\n")
+	idx := fixtureLine(t, lines, "got <= 0")
+	if !zeroCheckPattern(t).Exempt("got <= 0", lines, idx) {
+		t.Error("got <= 0 with a same-function got != 8 check should be exempt")
+	}
+}
+
+// TestZeroCheckExemptSameFuncWantCalc pins the preserved exemption: a want
+// calculation in the same function still counts as an exact-value basis.
+func TestZeroCheckExemptSameFuncWantCalc(t *testing.T) {
+	src := `package fixture
+
+func TestTarget(t *testing.T) {
+	want := 8
+	got := helper()
+	if got <= 0 {
+		t.Fatal("guard")
+	}
+	if got != want {
+		t.Errorf("got = %d, want %d", got, want)
+	}
+}
+`
+	lines := strings.Split(src, "\n")
+	idx := fixtureLine(t, lines, "got <= 0")
+	if !zeroCheckPattern(t).Exempt("got <= 0", lines, idx) {
+		t.Error("got <= 0 with a same-function want calculation should be exempt")
 	}
 }
