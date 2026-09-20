@@ -45,7 +45,7 @@ func TestExecuteNonPTY_Echo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal() error: %v", err)
 	}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestExecuteNonPTY_Stderr(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "echo error >&2", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestExecuteNonPTY_NonZeroExit(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "exit 42", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestExecuteNonPTY_NonZeroExit(t *testing.T) {
 
 func TestExecuteNonPTY_Timeout(t *testing.T) {
 	in := Input{Command: "sleep 60", Timeout: 100}
-	result, err := executeNonPTY(context.Background(), in, "", 100*time.Millisecond, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, "", 100*time.Millisecond, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestExecuteNonPTY_WorkingDir(t *testing.T) {
 
 	dir := os.TempDir()
 	in := Input{Command: "pwd", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, dir, 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, dir, 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestExecuteNonPTY_CommandFailure(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "nonexistent_command_xyz", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestExecuteNonPTY_GenericError(t *testing.T) {
 	cancel()
 
 	in := Input{Command: "echo hi", Timeout: 10000}
-	_, err := executeNonPTY(ctx, in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize)
+	_, err := executeNonPTY(ctx, in, "", 10*time.Second, NewStreamingOutput(nil), false, nil, MaxOutputSize, nil)
 	if err == nil {
 		t.Fatal("expected error with cancelled context")
 	}

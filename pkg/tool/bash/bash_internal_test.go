@@ -64,14 +64,16 @@ func TestBuildCommand(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildCommand(tc.cmd, tc.snapshot)
+			got, _ := buildCommand(tc.cmd, tc.snapshot, false)
 			for _, part := range tc.wantParts {
 				if !strings.Contains(got, part) {
 					t.Errorf("buildCommand() = %q, want to contain %q", got, part)
 				}
 			}
+			// cwd tracking is opt-in per spawn (background jobs pass false);
+			// TestBuildCommand_CwdTracking covers the trackCwd=true form.
 			if strings.Contains(got, "pwd -P") {
-				t.Errorf("buildCommand() = %q, should NOT contain cwd tracking (pwd -P)", got)
+				t.Errorf("buildCommand() = %q, should NOT contain cwd tracking (pwd -P) with trackCwd=false", got)
 			}
 		})
 	}
@@ -99,7 +101,7 @@ func TestExecute_ForceNonPTY(t *testing.T) {
 func TestBuildCommand_Order(t *testing.T) {
 	t.Parallel()
 
-	cmd := buildCommand("ls", nil)
+	cmd, _ := buildCommand("ls", nil, false)
 	parts := strings.Split(cmd, " && ")
 
 	if len(parts) != 2 {
@@ -117,7 +119,7 @@ func TestBuildCommand_WithSnapshot(t *testing.T) {
 	t.Parallel()
 
 	snap := &EnvSnapshot{Path: "/tmp/snapshot-test.sh"}
-	cmd := buildCommand("echo hi", snap)
+	cmd, _ := buildCommand("echo hi", snap, false)
 
 	if !strings.HasPrefix(cmd, "source /tmp/snapshot-test.sh") {
 		t.Errorf("expected command to start with source, got: %q", cmd[:50])
@@ -128,7 +130,7 @@ func TestBuildCommand_WithSnapshot(t *testing.T) {
 func TestBuildCommand_SessionEnvBranch(t *testing.T) {
 	t.Parallel()
 
-	cmd := buildCommand("echo test", nil)
+	cmd, _ := buildCommand("echo test", nil, false)
 	parts := strings.Split(cmd, " && ")
 	if len(parts) != 2 {
 		t.Errorf("expected 2 parts, got %d: %v", len(parts), parts)
@@ -144,7 +146,7 @@ func TestBuildCommand_WithSessionEnv(t *testing.T) {
 	sessionEnvScript = func() string { return "export GBOT_TEST_HOOK=1" }
 	defer func() { sessionEnvScript = orig }()
 
-	cmd := buildCommand("echo", nil)
+	cmd, _ := buildCommand("echo", nil, false)
 	if !strings.Contains(cmd, "export GBOT_TEST_HOOK=1") {
 		t.Errorf("missing session env script in command: %q", cmd)
 	}
@@ -1247,7 +1249,7 @@ func TestExecuteNonPTYAutoBg_StartError(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// Use a non-existent working directory to trigger cmd.Start() error
-	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry(), MaxOutputSize)
+	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry(), MaxOutputSize, nil)
 	if err == nil {
 		t.Fatal("expected error with non-existent working directory")
 	}

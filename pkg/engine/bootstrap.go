@@ -77,6 +77,11 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	reg.MustRegister(grep.New())
 
 	at := agenttool.New()
+	// One-shot injection of the session-start dir: a sub-agent spawned after
+	// a cd gets a system prompt naming the start dir while its engine
+	// actually runs in the parent's live post-cd dir (NewSubEngine reads
+	// getWorkingDir). Known divergence, accepted to keep the AgentTool
+	// decoupled from per-engine state.
 	at.SetWorkingDir(deps.WorkingDir)
 	at.SetGitStatus(deps.GitStatus)
 	at.SetSkillRegistry(deps.SkillReg)

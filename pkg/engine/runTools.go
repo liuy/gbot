@@ -147,6 +147,11 @@ type StreamingToolExecutor struct {
 	// Copied from Engine.currentTurnMsgID so TrackEdit uses the correct messageID.
 	currentTurnMsgID string
 
+	// workingDirSupplier re-reads the engine's live working dir per tool call.
+	// The base tctx is built once per query, but a serial Bash call can cd
+	// mid-query; without this every later call would reuse the stale snapshot.
+	workingDirSupplier func() string
+
 	// sessionAllowed caches "Allow always" decisions for the current session.
 	sessionAllowed map[string]bool
 
@@ -186,6 +191,10 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 }
 
 func (e *StreamingToolExecutor) SetMemoryDir(dir string) { e.memoryDir = dir }
+
+// SetWorkingDirSupplier wires the engine's live working-dir read into the
+// executor so buildToolCtx refreshes WorkingDir per tool call.
+func (e *StreamingToolExecutor) SetWorkingDirSupplier(fn func() string) { e.workingDirSupplier = fn }
 
 // SetAssistantContent sets the current assistant message's content blocks.
 func (e *StreamingToolExecutor) SetAssistantContent(blocks []types.ContentBlock) {
@@ -1179,23 +1188,30 @@ func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseCont
 	e.mu.Lock()
 	msgs := e.messages
 	ac := e.assistantContent
+	supplier := e.workingDirSupplier
 	e.mu.Unlock()
 
+	var cp tool.ToolUseContext
 	if e.tctx == nil {
-		return &tool.ToolUseContext{ToolUseID: toolUseID, Messages: msgs, AssistantContent: ac}
+		cp = tool.ToolUseContext{ToolUseID: toolUseID, Messages: msgs, AssistantContent: ac}
+	} else {
+		cp = *e.tctx
+		cp.ToolUseID = toolUseID
+		if len(msgs) > 0 {
+			cp.Messages = msgs
+		}
+		if len(ac) > 0 {
+			cp.AssistantContent = ac
+		}
 	}
-	cp := *e.tctx
-	cp.ToolUseID = toolUseID
-	if len(msgs) > 0 {
-		cp.Messages = msgs
+	if supplier != nil {
+		cp.WorkingDir = supplier()
 	}
-	if len(ac) > 0 {
-		cp.AssistantContent = ac
-	}
+	tctx := &cp
 	// Wire OnAskInput: creates channel, emits AskEvent{Kind: AskInput}, returns channel.
-	if cp.OnAskInput == nil {
+	if tctx.OnAskInput == nil {
 		emitFn := e.emitEvent
-		cp.OnAskInput = func(prompt string, masked bool, deadline time.Time) chan types.AskResponse {
+		tctx.OnAskInput = func(prompt string, masked bool, deadline time.Time) chan types.AskResponse {
 			ch := make(chan types.AskResponse, 1)
 			emitFn(types.QueryEvent{
 				Type: types.EventAsk,
@@ -1210,7 +1226,7 @@ func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseCont
 			return ch
 		}
 	}
-	return &cp
+	return tctx
 }
 
 // applyContextModifier applies the tool's context modifier if it's not concurrency-safe.

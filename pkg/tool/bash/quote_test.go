@@ -16,7 +16,7 @@ func TestBuildCommand_VariableExpansion(t *testing.T) {
 	t.Parallel()
 	// eval "FOO=bar; echo $FOO" → $FOO expanded before eval, outputs empty
 	//  eval 'FOO=bar; echo $FOO' → $FOO preserved for eval, outputs "bar"
-	cmd := buildCommand("FOO=bar; echo $FOO", nil)
+	cmd, _ := buildCommand("FOO=bar; echo $FOO", nil, false)
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("bash error: %v", err)
@@ -31,7 +31,7 @@ func TestBuildCommand_Heredoc(t *testing.T) {
 	t.Parallel()
 	// eval "cat <<EOF\nhello\nEOF" → newlines escaped to \n, heredoc breaks
 	//  eval 'cat <<EOF\nhello\nEOF' → newlines preserved, heredoc works
-	cmd := buildCommand("cat <<EOF\nhello world\nEOF", nil)
+	cmd, _ := buildCommand("cat <<EOF\nhello world\nEOF", nil, false)
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("bash error: %v", err)
@@ -45,7 +45,7 @@ func TestBuildCommand_StdinRedirect(t *testing.T) {
 	t.Parallel()
 	// Source: bashProvider.ts — shouldAddStdinRedirect adds < /dev/null
 	// to prevent commands from hanging on stdin pipe.
-	cmd := buildCommand("echo hello", nil)
+	cmd, _ := buildCommand("echo hello", nil, false)
 	if !strings.Contains(cmd, "< /dev/null") {
 		t.Errorf("buildCommand() = %q, should contain '< /dev/null' for non-heredoc commands", cmd)
 	}
@@ -54,7 +54,7 @@ func TestBuildCommand_StdinRedirect(t *testing.T) {
 func TestBuildCommand_HeredocNoStdinRedirect(t *testing.T) {
 	t.Parallel()
 	// Source: shellQuoting.ts:59-61 — heredocs provide their own stdin, don't add redirect
-	cmd := buildCommand("cat <<EOF\nhello\nEOF", nil)
+	cmd, _ := buildCommand("cat <<EOF\nhello\nEOF", nil, false)
 	if strings.Contains(cmd, "< /dev/null") {
 		t.Errorf("buildCommand() = %q, should NOT contain '< /dev/null' for heredoc commands", cmd)
 	}
@@ -63,7 +63,7 @@ func TestBuildCommand_HeredocNoStdinRedirect(t *testing.T) {
 func TestBuildCommand_DoubleQuotePreserved(t *testing.T) {
 	t.Parallel()
 	// Double quotes inside the command must be preserved literally
-	cmd := buildCommand(`echo "hello world"`, nil)
+	cmd, _ := buildCommand(`echo "hello world"`, nil, false)
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("bash error: %v", err)
@@ -77,7 +77,7 @@ func TestBuildCommand_DoubleQuotePreserved(t *testing.T) {
 func TestBuildCommand_SingleQuotePreserved(t *testing.T) {
 	t.Parallel()
 	// Single quotes inside the command must be escaped correctly
-	cmd := buildCommand("echo 'hello world'", nil)
+	cmd, _ := buildCommand("echo 'hello world'", nil, false)
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
 		t.Fatalf("bash error: %v", err)
@@ -91,7 +91,7 @@ func TestBuildCommand_SingleQuotePreserved(t *testing.T) {
 func TestBuildCommand_WindowsNullRedirect(t *testing.T) {
 	t.Parallel()
 	// Source: shellQuoting.ts:124-128 — >nul should be rewritten to >/dev/null
-	cmd := buildCommand("ls 2>nul", nil)
+	cmd, _ := buildCommand("ls 2>nul", nil, false)
 	if strings.Contains(cmd, ">nul") && !strings.Contains(cmd, ">/dev/null") {
 		t.Errorf("buildCommand() = %q, should rewrite >nul to >/dev/null", cmd)
 	}

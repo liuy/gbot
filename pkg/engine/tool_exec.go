@@ -56,6 +56,11 @@ func (e *Engine) ExecuteTool(ctx context.Context, name string, args json.RawMess
 			SessionID: e.SessionID(),
 		},
 		UncappedOutput: true, // REPL sub-tool calls get full output
+		// REPL sub-calls share the session cwd so a bash cd persists to the
+		// next sub-call, same as the streaming executor path.
+		WorkingDir:         e.getWorkingDir(),
+		OriginalWorkingDir: e.originalWorkingDir,
+		SetWorkingDir:      e.setWorkingDir,
 	}
 
 	result, err := t.Call(ctx, args, tctx)

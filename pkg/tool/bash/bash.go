@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode"
 
+	shellescape "al.essio.dev/pkg/shellescape"
+
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -272,12 +274,43 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 
 	// Determine working directory
 	cwd := in.CWD
-	if cwd == "" {
+	cwdFromSession := cwd == ""
+	if cwdFromSession {
 		if tctx != nil {
 			cwd = tctx.WorkingDir
 		}
 		if cwd == "" {
 			cwd, _ = os.Getwd()
+		}
+	}
+
+	// Recover if the working directory no longer exists on disk — e.g.
+	// `cd $(mktemp -d) && rm -rf $PWD` left the session in a deleted dir.
+	// Source: Shell.ts:220-238 — fall back to the session's original dir;
+	// when that is gone too, fail the command before spawning.
+	if !dirExists(cwd) {
+		fallback := ""
+		if tctx != nil {
+			fallback = tctx.OriginalWorkingDir
+		}
+		if dirExists(fallback) {
+			// Only rewrite session state when the dead dir was the
+			// session-tracked one — TS has no per-call cwd (Shell.ts:220-238
+			// only ever sees the session cwd), so a one-shot override that
+			// fails must not move the session.
+			if cwdFromSession && tctx != nil && tctx.SetWorkingDir != nil {
+				tctx.SetWorkingDir(fallback)
+			}
+			cwd = fallback
+		} else {
+			// Source: Shell.ts:234-236 — createFailedCommand message.
+			return &tool.ToolResult{
+				Data: &Output{
+					Stderr:   fmt.Sprintf("Working directory %q no longer exists. Please restart Claude from an existing directory.", cwd),
+					ExitCode: 1,
+					CWD:      cwd,
+				},
+			}, nil
 		}
 	}
 
@@ -313,7 +346,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 	if ptySupported {
 		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
 	}
-	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
+	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
 }
 
 // executePTY runs a command in PTY mode with streaming output capture.
@@ -323,7 +356,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 // background job instead of being killed.
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
 func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	wrappedCmd := buildCommand(in.Command, nil)
+	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
 
 	baseEnv := os.Environ()
 	if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
@@ -356,14 +389,14 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 
 	}
 	if shouldAutoBg {
-		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, wrappedCmd, baseEnv, screen, outputCap, emitAskInput)
+		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, wrappedCmd, cwdFile, baseEnv, screen, outputCap, emitAskInput, tctx)
 	}
-	return executePTYSync(ctx, in, cwd, timeout, s, wrappedCmd, baseEnv, screen, outputCap, emitAskInput)
+	return executePTYSync(ctx, in, cwd, timeout, s, wrappedCmd, cwdFile, baseEnv, screen, outputCap, emitAskInput, tctx)
 }
 
 // executePTYSync runs a PTY command synchronously.
 // When timeout fires, the process is killed and TimedOut=true is returned.
-func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse) (*tool.ToolResult, error) {
+func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	exitCode, interrupted, err := runPTYCommand(ctx, wrappedCmd, cwd, baseEnv,
 		screen,
 		timeout,
@@ -371,6 +404,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 	)
 
 	if err != nil {
+		_ = os.Remove(cwdFile)
 		return nil, err
 	}
 
@@ -384,7 +418,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 			Stdout:   stdout,
 			ExitCode: exitCode,
 			TimedOut: interrupted,
-			CWD:      cwd,
+			CWD:      syncCwd(cwdFile, cwd, tctx),
 		},
 	}, nil
 }
@@ -394,7 +428,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 //
 // Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
 // the actual timeout via a timer. When timeout fires, transitions to background.
-func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse) (*tool.ToolResult, error) {
+func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	ptyDone := make(chan struct{})
@@ -429,17 +463,26 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 				Stdout:   stdout,
 				ExitCode: ptyExitCode,
 				TimedOut: ptyInterrupted,
-				CWD:      cwd,
+				CWD:      syncCwd(cwdFile, cwd, tctx),
 			},
 		}, nil
 
 	case <-timer.C:
 		// Timeout fired — transition to background job
 		// Source: BashTool.tsx:924-963 — startBackgrounding
+		// No cwd read-back: the process is still running, so the file
+		// contents are not trustworthy yet (Shell.ts:395 skips background
+		// results).
 		return transitionToBackground(registry, in.Command, int(ptyPID.Load()), s, in, cwd, func(job *BackgroundJob) {
 			<-ptyDone
 			s.FinalUpdate()
 			s.Cleanup()
+			// Cleanup must wait for exit: the command's pwd -P tail rewrites
+			// the file when it finishes, so removing it at transition time
+			// would leave a fresh copy behind. TS hangs unlink off
+			// result.then() (Shell.ts:416-420), which only resolves in
+			// #handleExit. Before Complete so Wait() implies the file is gone.
+			_ = os.Remove(cwdFile)
 			job.Complete(ptyExitCode, ptyInterrupted)
 		})
 	}
@@ -448,23 +491,38 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 // executeNonPTY runs a command without PTY (fallback mode) with streaming output capture.
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background job instead of being killed.
-func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64) (*tool.ToolResult, error) {
+func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if shouldAutoBg {
-		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap)
+		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap, tctx)
 	}
-	return executeNonPTYSync(ctx, in, cwd, timeout, s, outputCap)
+	return executeNonPTYSync(ctx, in, cwd, timeout, s, outputCap, tctx)
 }
 
 // executeNonPTYSync runs a non-PTY command synchronously.
 // When timeout fires, the process is killed and TimedOut=true is returned.
-func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, outputCap int64) (*tool.ToolResult, error) {
+func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("command %q exceeded %s", in.Command, timeout))
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, resolveShellCommand(), "-c", in.Command)
+	// Same buildCommand wrapping as the PTY path — without it cd would not
+	// persist on Linux non-PTY spawns (bare `bash -c <cmd>` drops the
+	// pwd -P tracking tail).
+	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
+	cmd := exec.CommandContext(ctx, resolveShellCommand(), "-c", wrappedCmd)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
 	setSysProcAttrForGroup(cmd)
+	// The wrapped chain forks children (eval'd command, pwd tail) that inherit
+	// the stdout pipe, so killing only the shell would leave cmd.Run blocked
+	// in pipe-drain until they exit. Group-kill matches TS treeKill
+	// (ShellCommand.ts:337-343); bare commands previously exec-optimized into
+	// the shell process and hid this.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return killProcessTree(cmd.Process.Pid)
+		}
+		return nil
+	}
 
 	var stderr bytes.Buffer
 	cmd.Stdout = s
@@ -483,6 +541,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
+			_ = os.Remove(cwdFile)
 			return nil, err
 		}
 	}
@@ -496,7 +555,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 			Stderr:   stderr.String(),
 			ExitCode: exitCode,
 			TimedOut: interrupted,
-			CWD:      cwd,
+			CWD:      syncCwd(cwdFile, cwd, tctx),
 		},
 	}, nil
 }
@@ -507,15 +566,24 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 // When timeout fires, the process transitions to a background job instead of
 // being killed. The foreground result returns immediately with BackgroundJobID set.
 // The process continues running; when it exits, job.Complete is called.
-func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, outputCap int64) (*tool.ToolResult, error) {
+func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	taskCtx, taskCancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", in.Command)
+	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
+	cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", wrappedCmd)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
 	setSysProcAttrForGroup(cmd)
+	// Group-kill on cancel — same reasoning as executeNonPTYSync: the wrapped
+	// chain's children inherit the output pipe and would stall cmd.Wait.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return killProcessTree(cmd.Process.Pid)
+		}
+		return nil
+	}
 
 	var stderr bytes.Buffer
 	cmd.Stdout = s
@@ -523,6 +591,7 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 
 	if err := cmd.Start(); err != nil {
 		taskCancel()
+		_ = os.Remove(cwdFile)
 		return nil, err
 	}
 
@@ -556,13 +625,15 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 				Stdout:   stdout,
 				Stderr:   stderr.String(),
 				ExitCode: exitCode,
-				CWD:      cwd,
+				CWD:      syncCwd(cwdFile, cwd, tctx),
 			},
 		}, nil
 
 	case <-timer.C:
 		// Timeout fired — transition to background job
 		// Source: BashTool.tsx:924-963 — startBackgrounding
+		// No cwd read-back: the process is still running and would write the
+		// file later (Shell.ts:395 skips background results).
 		return transitionToBackground(registry, in.Command, cmd.Process.Pid, s, in, cwd, func(job *BackgroundJob) {
 			defer taskCancel()
 			<-done
@@ -578,6 +649,12 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 			}
 			s.FinalUpdate()
 			s.Cleanup()
+			// Cleanup must wait for exit: the command's pwd -P tail rewrites
+			// the file when it finishes, so removing it at transition time
+			// would leave a fresh copy behind. TS hangs unlink off
+			// result.then() (Shell.ts:416-420), which only resolves in
+			// #handleExit. Before Complete so Wait() implies the file is gone.
+			_ = os.Remove(cwdFile)
 			job.Complete(exitCode, false)
 		})
 	}
@@ -589,11 +666,22 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 // ---------------------------------------------------------------------------
 
 // buildCommand wraps the user command with snapshot sourcing, session env,
-// extglob disable, and eval quoting.
+// extglob disable, eval quoting, and (when trackCwd) cwd tracking.
 //
 // Source: bashProvider.ts:77-198 — buildExecCommand().
 // The wrapper: source snapshot → sessionEnv → disable extglob → eval cmd
-func buildCommand(cmd string, snapshot *EnvSnapshot) string {
+// [→ pwd -P >| cwdFile]
+//
+// trackCwd appends `pwd -P >| <cwdFile>` so the caller can read back the
+// post-command cwd (cd persistence). The `&&` chain means the file is only
+// written when the user command succeeded. Background spawns pass false —
+// nothing would read the file back (Shell.ts:395 skips backgroundTaskId
+// results), so appending would only leak temp files.
+//
+// Returns the wrapped command and the cwd tracking file path ("" when
+// trackCwd is false or the temp file could not be created — tracking
+// degrades to off rather than failing the command).
+func buildCommand(cmd string, snapshot *EnvSnapshot, trackCwd bool) (string, string) {
 	var parts []string
 
 	// 0. Normalize: rewrite Windows >nul redirects (bashProvider.ts:127)
@@ -624,7 +712,64 @@ func buildCommand(cmd string, snapshot *EnvSnapshot) string {
 	evalCmd = "GIT_PAGER=cat " + evalCmd
 	parts = append(parts, evalCmd)
 
-	return strings.Join(parts, " && ")
+	cwdFile := ""
+	if trackCwd {
+		// CreateTemp claims the name atomically, so parallel tool calls can
+		// never collide on the same tracking file (TS's random 4-hex id has
+		// a 1/65536 collision window instead).
+		f, err := os.CreateTemp("", "gbot-*-cwd")
+		if err != nil {
+			return strings.Join(parts, " && "), ""
+		}
+		cwdFile = f.Name()
+		// The shell overwrites the file via `>|`; pre-creating only reserves
+		// the name. `pwd -P` matches the physical path the engine records.
+		_ = f.Close()
+		// Source: bashProvider.ts:186 — quote the path like TS's quote().
+		parts = append(parts, "pwd -P >| "+shellescape.Quote(cwdFile))
+	}
+
+	return strings.Join(parts, " && "), cwdFile
+}
+
+// syncCwd reads back the cwd tracking file after a foreground command and
+// returns the effective cwd: the new physical cwd when the command moved it,
+// otherwise the spawn cwd. When the file reports a change the session state
+// is updated through tctx.SetWorkingDir (nil-safe).
+//
+// Source: Shell.ts:385-421 — readFileSync(...).trim() → compare against the
+// spawn cwd → setCwd; unlinkSync with errors ignored. A missing file (user
+// command failed — the `&&` chain never reached pwd -P) simply leaves the
+// spawn cwd in place; TS reaches the same outcome via its try/catch.
+func syncCwd(cwdFile, spawnCwd string, tctx *tool.ToolUseContext) string {
+	if cwdFile == "" {
+		return spawnCwd
+	}
+	newCwd := ""
+	if data, err := os.ReadFile(cwdFile); err == nil {
+		newCwd = strings.TrimSpace(string(data))
+	}
+	// An empty file must not read as a cwd change; TS's setCwd would
+	// realpath("") → throw → caught, achieving the same no-op.
+	changed := newCwd != "" && newCwd != spawnCwd
+	if changed && tctx != nil && tctx.SetWorkingDir != nil {
+		tctx.SetWorkingDir(newCwd)
+	}
+	// Source: Shell.ts:416-420 — temp file cleanup, failure ignored (the
+	// file legitimately doesn't exist when the command failed).
+	_ = os.Remove(cwdFile)
+	if changed {
+		return newCwd
+	}
+	return spawnCwd
+}
+
+// dirExists reports whether path is present on disk. Pure existence probe —
+// mirrors Shell.ts:222-238 using realpath() only to detect the deleted cwd,
+// never to canonicalize the spawn directory.
+func dirExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // isReadOnlyCommand classifies a command as read-only.
@@ -747,7 +892,10 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			defer taskCancel()
 			defer s.FinalUpdate()
 
-			wrappedCmd := buildCommand(in.Command, nil)
+			// trackCwd=false: nothing reads the file back for background
+			// jobs, so appending pwd -P would only leak a temp file
+			// (Shell.ts:395 skips backgroundTaskId results).
+			wrappedCmd, _ := buildCommand(in.Command, nil, false)
 			baseEnv := os.Environ()
 			if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
 				baseEnv = applyEnvOverrides(baseEnv, overrides)
@@ -792,7 +940,10 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			defer taskCancel()
 			defer s.FinalUpdate()
 
-			cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", in.Command)
+			// Same wrapper as every other path (eval quoting, extglob,
+			// GIT_PAGER) minus cwd tracking — see PTY branch note.
+			wrappedCmd, _ := buildCommand(in.Command, nil, false)
+			cmd := exec.CommandContext(taskCtx, resolveShellCommand(), "-c", wrappedCmd)
 			cmd.Dir = cwd
 			cmd.Env = os.Environ()
 			setSysProcAttrForGroup(cmd)

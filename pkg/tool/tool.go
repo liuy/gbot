@@ -36,11 +36,18 @@ type FileState struct {
 
 // ToolUseContext carries the execution context for each tool call.
 type ToolUseContext struct {
-	Ctx              context.Context
-	Options          ToolUseOptions
-	Messages         []types.Message
-	ToolUseID        string
-	WorkingDir       string
+	Ctx        context.Context
+	Options    ToolUseOptions
+	Messages   []types.Message
+	ToolUseID  string
+	WorkingDir string
+	// OriginalWorkingDir is the session-start directory, used as the spawn
+	// fallback when WorkingDir was deleted on disk (e.g. `cd $(mktemp -d)
+	// && rm -rf $PWD`). Source: Shell.ts:225 — getOriginalCwd().
+	OriginalWorkingDir string
+	// SetWorkingDir persists a working dir change driven by a tool (bash cd
+	// tracking). Nil means the caller doesn't support persistence.
+	SetWorkingDir    func(string)
 	AssistantContent []types.ContentBlock                                                        // current assistant message's content blocks (mid-stream)
 	ReadFileState    map[string]FileState                                                        // keyed by absolute file path
 	OnProgress       func(ProgressUpdate)                                                        // optional — engine sets this for streaming progress

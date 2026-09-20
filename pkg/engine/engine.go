@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -103,28 +104,29 @@ var subEngineSeq atomic.Int64
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
-	provider         llm.Provider
-	tools            map[string]tool.Tool
-	toolOrder        []string
-	toolsProvider    func() map[string]tool.Tool
-	model            string
-	maxTokens        int
-	logger           *slog.Logger
-	mu               sync.RWMutex
-	messages         []types.Message
-	sessionID        string
-	tokenBudget      int
-	turnCount        int
-	dispatcher       types.EventDispatcher
-	workingDir       string
-	memoryDir        string // override for GetMemoryPath; empty = use workingDir-derived path
-	attachments      *attachment.Queue
-	reminderEngine   *attachment.ReminderEngine
-	systemPrompt     string                   // stored system prompt for fork agent access
-	skillListing     string                   // formatted skill listing for /context breakdown
-	agentDefs        []*types.AgentDefinition // agent definitions for /context breakdown
-	queryActive      int32                    // atomic: 1 = query/turn loop running, 0 = idle
-	queryStartMsgIdx int
+	provider           llm.Provider
+	tools              map[string]tool.Tool
+	toolOrder          []string
+	toolsProvider      func() map[string]tool.Tool
+	model              string
+	maxTokens          int
+	logger             *slog.Logger
+	mu                 sync.RWMutex
+	messages           []types.Message
+	sessionID          string
+	tokenBudget        int
+	turnCount          int
+	dispatcher         types.EventDispatcher
+	workingDir         string // mutable — bash cd tracking updates it via setWorkingDir
+	originalWorkingDir string // session-start dir, frozen at construction; spawn fallback when workingDir is deleted
+	memoryDir          string // override for GetMemoryPath; empty = use workingDir-derived path
+	attachments        *attachment.Queue
+	reminderEngine     *attachment.ReminderEngine
+	systemPrompt       string                   // stored system prompt for fork agent access
+	skillListing       string                   // formatted skill listing for /context breakdown
+	agentDefs          []*types.AgentDefinition // agent definitions for /context breakdown
+	queryActive        int32                    // atomic: 1 = query/turn loop running, 0 = idle
+	queryStartMsgIdx   int
 
 	// activeCancel is the cancel function for the currently running query
 	// or attachment processing. Protected by activeCancelMu.
@@ -293,6 +295,24 @@ type Engine struct {
 	sendersMu sync.RWMutex
 }
 
+// getWorkingDir returns the engine's current working directory.
+// workingDir is mutable (bash cd tracking), so every read must hold e.mu —
+// a stale unlocked read races with setWorkingDir from a tool goroutine.
+func (e *Engine) getWorkingDir() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.workingDir
+}
+
+// setWorkingDir updates the engine's working directory after a tool observed
+// a cwd change (bash cd tracking). Last-writer-wins under parallel tool
+// calls, matching TS Shell.ts setCwd semantics.
+func (e *Engine) setWorkingDir(dir string) {
+	e.mu.Lock()
+	e.workingDir = dir
+	e.mu.Unlock()
+}
+
 // Params holds the constructor arguments for Engine.
 type Params struct {
 	Provider          llm.Provider
@@ -395,6 +415,14 @@ func New(p *Params) *Engine {
 		taskList = task.NewList("")
 	}
 
+	// The bash tool falls back to os.Getwd() when Params.WorkingDir is empty,
+	// so the deleted-cwd recovery fallback must use that same directory —
+	// an empty fallback could never be spawned in.
+	originalWorkingDir := p.WorkingDir
+	if originalWorkingDir == "" {
+		originalWorkingDir, _ = os.Getwd()
+	}
+
 	e := &Engine{
 		provider:                p.Provider,
 		tools:                   toolMap,
@@ -415,6 +443,7 @@ func New(p *Params) *Engine {
 		hooks:                   p.Hooks,
 		permissionChecker:       p.PermissionChecker,
 		workingDir:              p.WorkingDir,
+		originalWorkingDir:      originalWorkingDir,
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:          0,
 		toolSearch:              newToolSearchState(),
@@ -2120,7 +2149,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// agent type. Explore/Plan can opt out via omitClaudeMd (not yet ported).
 	// Placed before ToolSearch prepend so final order matches TS:
 	// [deferred-tools, claudeMd+currentDate, ...conversation]
-	ctxMap := ctxbuild.LoadContextFiles(e.workingDir)
+	ctxMap := ctxbuild.LoadContextFiles(e.getWorkingDir())
 	if len(ctxMap) > 0 {
 		ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
 		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
@@ -2428,8 +2457,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							}
 						}
 						baseTctx := &tool.ToolUseContext{
-							Ctx:        ctx,
-							WorkingDir: e.workingDir,
+							Ctx:                ctx,
+							WorkingDir:         e.getWorkingDir(),
+							OriginalWorkingDir: e.originalWorkingDir,
+							SetWorkingDir:      e.setWorkingDir,
 							Options: tool.ToolUseOptions{
 								Tools:             e.tools,
 								PendingMCPServers: e.pendingMCPServerNames(),
@@ -2441,6 +2472,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							func(evt types.QueryEvent) { e.emitEvent(evt) },
 							ctx,
 						)
+						// baseTctx.WorkingDir is a snapshot; the supplier lets
+						// every tool call re-read the live dir after a cd.
+						streamingExecutor.SetWorkingDirSupplier(e.getWorkingDir)
 						streamingExecutor.SetMessages(e.messages)
 						streamingExecutor.SetMemoryDir(e.memoryDir)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
@@ -4345,9 +4379,14 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		sessionID:               e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
 		onCloseFn:               e.onCloseFn,
 		fileHistory:             e.fileHistory, // share same Tracker — sub-agent edits tracked too
-		workingDir:              e.workingDir,
-		systemPrompt:            opts.SystemPrompt,
-		senders:                 make(map[string]send.FileSender),
+		// Sub-engines inherit the parent's live dir at construction (their
+		// session-start dir) but never sync afterwards — a sub-agent's cd must
+		// not move the parent's cwd. originalWorkingDir stays the session
+		// start, matching TS's single global originalCwd.
+		workingDir:         e.getWorkingDir(),
+		originalWorkingDir: e.originalWorkingDir,
+		systemPrompt:       opts.SystemPrompt,
+		senders:            make(map[string]send.FileSender),
 	}
 }
 

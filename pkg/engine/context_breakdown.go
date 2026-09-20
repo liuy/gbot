@@ -208,6 +208,9 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	messages := slicesCloneMessages(e.messages)
 	toolsSnapshot := toolsClone(e.tools)
 	toolSearchSnap := e.toolSearch
+	// Read the field directly: this function already holds e.mu.RLock and
+	// Go's RWMutex forbids recursive RLock (a queued writer between the two
+	// acquisitions would deadlock).
 	workingDir := e.workingDir
 	skillListing := e.skillListing
 	agentDefs := agentDefsClone(e.agentDefs)
