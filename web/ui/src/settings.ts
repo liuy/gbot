@@ -45,6 +45,14 @@ export async function fetchSettings(): Promise<SettingsPayload> {
   return res.json()
 }
 
+// The on-disk settings.json verbatim ("" when the file does not exist yet).
+export async function fetchRawSettings(): Promise<string> {
+  const res = await fetch('/api/settings/raw')
+  if (!res.ok) throw new Error(`settings fetch failed: ${res.status}`)
+  const body = (await res.json()) as { raw: string }
+  return body.raw
+}
+
 export async function saveSettings(providers: SettingsProvider[]): Promise<void> {
   const res = await fetch('/api/settings/providers', {
     method: 'PUT',
@@ -1229,12 +1237,33 @@ export function createSettingsPage(): SettingsPageHandles {
   sheetMask.addEventListener('click', closeSheet)
   sheetTitle.querySelector('[data-sheet-close]')?.addEventListener('click', closeSheet)
 
-  // Escape first, then wrap with highlight spans — same chain as the
-  // prototype; nothing dynamic reaches innerHTML unescaped.
-  const renderJSONPreview = () => {
-    const editing = !editScreen.classList.contains('hidden')
-    const data = editing ? collectFormProvider() : payload.providers
-    const j = JSON.stringify(data, null, 2)
+  // The sheet is a file viewer: it fetches the on-disk settings.json each
+  // time it opens (fresh after a save), and never reflects unsaved form
+  // edits — that is the "file content" semantic. Escape first, then wrap
+  // with highlight spans — same chain as the prototype; nothing dynamic
+  // reaches innerHTML unescaped.
+  // Bumped on every sheet open; stale renders check it before writing DOM.
+  let renderSeq = 0
+  const renderJSONPreview = async () => {
+    // Generation guard: a fast second open must not be overwritten by a
+    // slow first fetch resolving afterwards.
+    const seq = ++renderSeq
+    jsonBox.textContent = '…'
+    let raw: string
+    try {
+      raw = await fetchRawSettings()
+    } catch {
+      // Network failure is not "file missing" — the empty placeholder
+      // promises the file will exist after first save.
+      if (seq === renderSeq) jsonBox.textContent = t('jsonSheetError')
+      return
+    }
+    if (seq !== renderSeq) return
+    if (raw.trim() === '') {
+      jsonBox.textContent = t('jsonSheetEmpty')
+      return
+    }
+    const j = raw
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/"([^"]+)":/g, '<span class="text-[#7fd4ff]">"$1"</span>:')
@@ -1243,8 +1272,8 @@ export function createSettingsPage(): SettingsPageHandles {
     jsonBox.innerHTML = j
   }
   const openSheet = () => {
-    renderJSONPreview()
     sheetWrap.style.display = ''
+    void renderJSONPreview()
   }
   jsonAction.addEventListener('click', openSheet)
 

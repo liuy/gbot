@@ -4,6 +4,7 @@ import { pushDebugLog } from './log'
 import type { RemoteDevice } from './vnc'
 import {
   fetchSettings,
+  fetchRawSettings,
   saveSettings,
   testProvider,
   fetchProviderModels,
@@ -38,6 +39,8 @@ const PAYLOAD: SettingsPayload = {
 
 interface MockOptions {
   payload?: SettingsPayload
+  raw?: string
+  rawError?: boolean
   models?: ModelsResult
   testResult?: { ok: boolean; latencyMs?: number; error?: string }
   putError?: string
@@ -71,6 +74,12 @@ function makeFetchHandler(
         status: 200,
         json: async () => opts.payload ?? { providers: [], default: { provider: '', model: '' } },
       }
+    }
+    if (url === '/api/settings/raw') {
+      if (opts.rawError) {
+        return { ok: false, status: 500, json: async () => ({}) }
+      }
+      return { ok: true, status: 200, json: async () => ({ raw: opts.raw ?? '' }) }
     }
     if (url === '/api/settings/remotedesktop') {
       if (method === 'PUT') {
@@ -143,6 +152,18 @@ describe('fetchSettings', () => {
     expect(mock).toHaveBeenCalledTimes(1)
     expect(mock).toHaveBeenCalledWith('/api/settings/providers')
     expect(got).toEqual(PAYLOAD)
+  })
+})
+
+describe('fetchRawSettings', () => {
+  it('GETs /api/settings/raw and unwraps the raw string', async () => {
+    const mock = makeFetchHandler({ raw: '{\n  "providers": []\n}' })
+    vi.stubGlobal('fetch', mock)
+
+    await expect(fetchRawSettings()).resolves.toBe('{\n  "providers": []\n}')
+
+    expect(mock).toHaveBeenCalledTimes(1)
+    expect(mock).toHaveBeenCalledWith('/api/settings/raw')
   })
 })
 
@@ -734,17 +755,131 @@ describe('createSettingsPage', () => {
     })
   })
 
-  it('JSON sheet shows the provider set', async () => {
-    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+  // File content deliberately carrying a top-level key that exists in NO
+  // provider — its presence in the sheet is the proof we render the FILE,
+  // not a re-stringified providers slice.
+  const RAW_FILE = `{
+  "permission_mode": "default",
+  "providers": [{"name": "zhipu"}]
+}`
+
+  it('JSON sheet shows the full settings.json file with key highlighting, refetching on every open', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, raw: RAW_FILE })
+    const page = await openPage(mock)
 
     ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
 
     const sheet = page.root.querySelector('[data-json-sheet]') as HTMLElement
     expect(sheet.style.display).not.toBe('none')
-    expect(sheet.querySelector('pre')?.textContent).toContain('zhipu')
+    const pre = sheet.querySelector('pre') as HTMLElement
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('permission_mode')
+    })
+    // Highlight chain ran over the file: keys are wrapped in spans.
+    expect([...pre.querySelectorAll('span')].map((s) => s.textContent)).toContain('"permission_mode"')
 
     ;(sheet.querySelector('[data-sheet-close]') as HTMLElement).click()
-    expect((page.root.querySelector('[data-json-sheet]') as HTMLElement).style.display).toBe('none')
+    expect(sheet.style.display).toBe('none')
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('permission_mode')
+    })
+    expect(mock.mock.calls.filter((c) => c[0] === '/api/settings/raw')).toHaveLength(2)
+  })
+
+  it('JSON sheet from the edit screen shows the file, not the unsaved form state', async () => {
+    // File lists zhipu only; the opened form edits xiaomi — the old
+    // slice/collectFormProvider branch would render xiaomi instead.
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, raw: RAW_FILE }))
+
+    ;(page.root.querySelectorAll('[data-provider-card]')[0] as HTMLElement).click()
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+
+    const pre = page.root.querySelector('[data-json-sheet] pre') as HTMLElement
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('permission_mode')
+    })
+    expect(pre.textContent).not.toContain('xiaomi')
+  })
+
+  // The sheet funnels arbitrary user-written file bytes into innerHTML —
+  // the escape chain is the only guard. Swapping the &/< escape order or
+  // widening a capture group must fail HERE, not in production.
+  it('JSON sheet escapes hostile file content instead of parsing it as HTML', async () => {
+    const hostile = '{"note": "<img src=x onerror=alert(1)></span><script>evil()</script> & \\"q\\""}'
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, raw: hostile }))
+
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+
+    const pre = page.root.querySelector('[data-json-sheet] pre') as HTMLElement
+    await vi.waitFor(() => {
+      // textContent decodes entities, so the payload appears as literal
+      // text — proof it was escaped, not parsed as markup.
+      expect(pre.textContent).toContain('<img src=x onerror=alert(1)>')
+    })
+    expect(pre.querySelectorAll('img, script')).toHaveLength(0)
+    // A stray closing tag must not break out of a highlight span either.
+    expect(pre.querySelectorAll('script')).toHaveLength(0)
+  })
+
+  it('JSON sheet distinguishes a fetch failure from a missing file', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, rawError: true }))
+
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+
+    const pre = page.root.querySelector('[data-json-sheet] pre') as HTMLElement
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('Failed to load settings.json')
+    })
+    expect(pre.textContent).not.toContain('not found')
+  })
+
+  it('JSON sheet shows a loading placeholder and a stale fetch cannot overwrite a newer open', async () => {
+    const inner = makeFetchHandler({ payload: PAYLOAD })
+    const parked: Array<{ reject: (e: unknown) => void }> = []
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/raw') {
+        if (parked.length === 0) {
+          // First open: park the fetch until the test rejects it.
+          return new Promise((_resolve, reject) => parked.push({ reject }))
+        }
+        return { ok: true, status: 200, json: async () => ({ raw: '{"note":"second"}' }) }
+      }
+      return inner(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const pre = page.root.querySelector('[data-json-sheet] pre') as HTMLElement
+
+    // First open: the placeholder shows while the fetch is parked.
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    expect(pre.textContent).toBe('…')
+
+    // Close, reopen: the second fetch resolves and renders the file.
+    ;(page.root.querySelector('[data-sheet-close]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('second')
+    })
+
+    // Now the stale first fetch rejects — it must not clobber the sheet.
+    parked[0].reject(new Error('stale'))
+    // Drain microtasks (the stale catch is 2-3 awaits deep) — a real write
+    // would land deterministically, no timer race.
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(pre.textContent).toContain('second')
+  })
+
+  it('JSON sheet shows a placeholder when settings.json does not exist yet', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+
+    const pre = page.root.querySelector('[data-json-sheet] pre') as HTMLElement
+    await vi.waitFor(() => {
+      expect(pre.textContent).toContain('not found')
+    })
+    // No highlight spans over a placeholder.
+    expect(pre.querySelectorAll('span')).toHaveLength(0)
   })
 
   it('toast auto-hides after 2.2s', async () => {

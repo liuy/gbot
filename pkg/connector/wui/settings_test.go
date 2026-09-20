@@ -185,6 +185,69 @@ func TestSettingsGet_EmptyProviders(t *testing.T) {
 	}
 }
 
+// The raw endpoint is a file viewer: every byte on disk, no re-indent, no
+// key filtering — the sheet must show exactly what a text editor would.
+func TestSettingsGet_RawFullFile(t *testing.T) {
+	srv := newSettingsServer(t)
+	seedSettings(t, settingsFixture)
+
+	var got struct {
+		Raw string `json:"raw"`
+	}
+	resp := getJSON(t, srv.URL+"/api/settings/raw", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got.Raw != settingsFixture {
+		t.Errorf("raw must be the file verbatim, got %q", got.Raw)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (a save must never be shadowed by a cached read)", cc)
+	}
+}
+
+func TestSettingsGet_RawMissingFile(t *testing.T) {
+	srv := newSettingsServer(t)
+
+	var got struct {
+		Raw string `json:"raw"`
+	}
+	resp := getJSON(t, srv.URL+"/api/settings/raw", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 on cold start", resp.StatusCode)
+	}
+	if got.Raw != "" {
+		t.Errorf("raw = %q, want empty string", got.Raw)
+	}
+}
+
+// The raw view is strictly read-only: only GET is registered, so the Go 1.22
+// method pattern must 405 anything else.
+func TestSettingsGet_RawIsReadOnly(t *testing.T) {
+	srv := newSettingsServer(t)
+	path, old := seedSettings(t, settingsFixture)
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/settings/raw", strings.NewReader(`{"providers":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, old) {
+		t.Errorf("rejected PUT must leave the file byte-identical")
+	}
+}
+
 func TestSettingsPut_WritesFileAndBacksUp(t *testing.T) {
 	srv := newSettingsServer(t)
 	path, old := seedSettings(t, settingsFixture)

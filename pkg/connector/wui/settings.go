@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ var settingsHTTPTimeout = 10 * time.Second
 // RegisterSettingsRoutes mounts the provider-settings HTTP surface:
 //
 //   - GET  /api/settings/providers  — current providers + resolved default
+//   - GET  /api/settings/raw        — the on-disk settings.json verbatim (read-only)
 //   - PUT  /api/settings/providers  — replace the providers array (backup + atomic write)
 //   - PUT  /api/settings/default    — set the default model tier
 //   - POST /api/settings/test       — live connection probe against one provider
@@ -29,6 +32,7 @@ var settingsHTTPTimeout = 10 * time.Second
 // — they are pure functions of the on-disk config and need no running state.
 func RegisterSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/settings/providers", handleGetProviders)
+	mux.HandleFunc("GET /api/settings/raw", handleGetRawSettings)
 	mux.HandleFunc("PUT /api/settings/default", handleDefaultPut)
 	mux.HandleFunc("PUT /api/settings/providers", handlePutProviders)
 	mux.HandleFunc("POST /api/settings/test", handleTestProvider)
@@ -64,6 +68,23 @@ func handleGetProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def})
+}
+
+// handleGetRawSettings returns the on-disk settings.json verbatim for the
+// JSON sheet — a file viewer, not an editor, so only GET is registered.
+// Like handleGetProviders, cold start (missing/unreadable file) is a normal
+// state and answers {"raw":""}, never an error.
+func handleGetRawSettings(w http.ResponseWriter, r *http.Request) {
+	raw := ""
+	if configDir, err := config.ConfigDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(configDir, "settings.json")); err == nil {
+			raw = string(data)
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, struct {
+		Raw string `json:"raw"`
+	}{Raw: raw})
 }
 
 func handlePutProviders(w http.ResponseWriter, r *http.Request) {
