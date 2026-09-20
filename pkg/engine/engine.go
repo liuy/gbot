@@ -23,6 +23,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
@@ -1024,14 +1025,32 @@ func normalizeAttachmentForAPI(msg types.Message) types.Message {
 
 	isMeta := origin != nil || att.IsMeta
 
-	wrappedText := wrapOriginText(att.Prompt, origin)
-
 	result := types.Message{
 		ID:   att.SourceUUID,
 		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			types.NewTextBlock("<system-reminder>\n" + wrappedText + "\n</system-reminder>"),
-		},
+		Content: func() []types.ContentBlock {
+			// TS array-prompt branch (messages.ts:3758-3779): text blocks join
+			// into one wrapped line; non-text blocks (image, document) ride
+			// along verbatim so attachments queued mid-stream survive the API
+			// hop. TS filters to image blocks only; gbot's queued items can
+			// also carry document reference blocks, so every non-text block
+			// passes. Value-only items reach here with Content=[text(Value)]
+			// (createAttachmentMessages fallback), which joins to the same
+			// wrapped string the string-prompt branch produced.
+			var textParts []string
+			var nonText []types.ContentBlock
+			for _, b := range msg.Content {
+				if b.Type == types.ContentTypeText {
+					textParts = append(textParts, b.Text)
+				} else {
+					nonText = append(nonText, b)
+				}
+			}
+			content := make([]types.ContentBlock, 0, len(nonText)+1)
+			content = append(content,
+				types.NewTextBlock("<system-reminder>\n"+wrapOriginText(strings.Join(textParts, "\n"), origin)+"\n</system-reminder>"))
+			return append(content, nonText...)
+		}(),
 	}
 	if isMeta {
 		result.Flags |= types.FlagMeta
@@ -2092,7 +2111,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	}())
 
 	// Marshal messages for the API request
-	apiMessages := e.prepareAPIMessages()
+	apiMessages := e.prepareAPIMessages(ctx)
 
 	// Prepend user context (AGENTS.md/CLAUDE.md/currentDate).
 	// Source: query.ts:660 — prependUserContext(messages, userContext).
@@ -3007,11 +3026,6 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 	return result
 }
 
-// ContentTypeDocumentLiteral matches the Anthropic "document" content block
-// type string. gbot does not yet define a typed constant for it; the strip
-// path future-proofs by replacing any such block with [document].
-const ContentTypeDocumentLiteral types.ContentType = "document"
-
 // StripMediaFromMessages replaces image/video/document content blocks with
 // [image]/[video]/[document] text placeholders so text-only models don't
 // receive unsupported media payloads. Source: services/compact/compact.ts:145-200.
@@ -3038,7 +3052,7 @@ func StripMediaFromMessages(messages []types.Message) []types.Message {
 			case block.Type == types.ContentTypeVideo:
 				hasMediaBlock = true
 				newContent = append(newContent, types.NewTextBlock("[video]"))
-			case block.Type == ContentTypeDocumentLiteral:
+			case block.Type == types.ContentTypeDocument:
 				hasMediaBlock = true
 				newContent = append(newContent, types.NewTextBlock("[document]"))
 			case block.Type == types.ContentTypeToolResult && len(block.Content) > 0:
@@ -3079,7 +3093,7 @@ func stripNestedMedia(raw json.RawMessage) (json.RawMessage, bool) {
 		case types.ContentTypeVideo:
 			hasMedia = true
 			blocks[i] = types.NewTextBlock("[video]")
-		case ContentTypeDocumentLiteral:
+		case types.ContentTypeDocument:
 			hasMedia = true
 			blocks[i] = types.NewTextBlock("[document]")
 		}
@@ -3153,11 +3167,21 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 	return msgs
 }
 
-// prepareAPIMessages runs the full marshal → budget → normalize → strip →
-// pairing pipeline that callLLM sends to the provider. Extracted so tests can
-// exercise the exact production transformation chain.
-func (e *Engine) prepareAPIMessages() []types.Message {
+// prepareAPIMessages runs the full marshal → expand → budget → normalize →
+// strip → pairing pipeline that callLLM sends to the provider. Extracted so
+// tests can exercise the exact production transformation chain.
+func (e *Engine) prepareAPIMessages(ctx context.Context) []types.Message {
 	apiMessages := e.marshalMessages()
+
+	// Expand document reference blocks into text (parsed markdown from the
+	// media parse cache). Runs right after marshal so every downstream stage
+	// (budget, normalize, strip, pairing) sees plain text — this single choke
+	// point covers the idle QueryWithContent path, the busy
+	// processAttachments path, and restored-session history alike, mirroring
+	// how image blocks flow through unchanged.
+	for i := range apiMessages {
+		apiMessages[i].Content = media.ExpandDocumentBlocks(ctx, apiMessages[i].Content)
+	}
 
 	// Apply per-message tool result budget (TS: applyToolResultBudget).
 	// Replaces large tool results with previews when aggregate per-message

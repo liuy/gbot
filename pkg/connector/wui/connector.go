@@ -1321,6 +1321,16 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 				continue
 			}
 			hm.Blocks = append(hm.Blocks, historyBlock{Kind: "image", Src: dataURL})
+		case types.ContentTypeDocument:
+			// Reference metadata only, like the image block above: the parsed
+			// markdown is re-derived at LLM-request time and never rendered in
+			// chat history.
+			hm.Blocks = append(hm.Blocks, historyBlock{
+				Kind: "document",
+				Name: cb.Name,
+				Mime: cb.Mime,
+				Size: cb.Size,
+			})
 		case types.ContentTypeThinking:
 			if strings.TrimSpace(cb.Thinking) != "" {
 				thinkingEntry := historyThinkingEntry{
@@ -1835,11 +1845,16 @@ type historyChatMsg struct {
 // Text/Thinking/Tools fields concatenate same-type blocks and lose ordering;
 // Blocks is authoritative when present.
 type historyBlock struct {
-	Kind     string                `json:"kind"`               // "text" | "thinking" | "tool" | "image"
+	Kind     string                `json:"kind"`               // "text" | "thinking" | "tool" | "image" | "document"
 	Text     string                `json:"text,omitempty"`     // kind == "text"
 	Thinking *historyThinkingEntry `json:"thinking,omitempty"` // kind == "thinking"
 	Tool     *historyToolEntry     `json:"tool,omitempty"`     // kind == "tool"
 	Src      string                `json:"src,omitempty"`      // kind == "image": data URL
+	// kind == "document": reference metadata only — the frontend renders a
+	// chip, never the parsed markdown.
+	Name string `json:"name,omitempty"`
+	Mime string `json:"mime,omitempty"`
+	Size int64  `json:"size,omitempty"`
 }
 
 type historyThinkingEntry struct {

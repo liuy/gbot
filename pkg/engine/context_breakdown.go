@@ -490,6 +490,13 @@ func tokenCountForBlock(block types.ContentBlock) int {
 		return types.EstimateTokens(block.Thinking)
 	case types.ContentTypeToolUse:
 		return types.EstimateTokens(block.Name + string(block.Input))
+	case types.ContentTypeDocument:
+		// Mirrors the estimator's document case; the default JSON branch
+		// would show a 50k-token document as ~20.
+		if block.EstTokens > 0 {
+			return block.EstTokens
+		}
+		return int(block.Size) / 4
 	default:
 		raw, _ := json.Marshal(block)
 		return types.EstimateTokens(string(raw))

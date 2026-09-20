@@ -2,6 +2,7 @@ export type Block =
 	| { kind: 'text'; id: string; text: string }
 	| { kind: 'user'; id: string; text: string }  // TUI BlockUser — queued msg visual marker
 	| { kind: 'image'; id: string; src: string }  // data URL or blob URL — attachments + history thumbnails
+	| { kind: 'document'; id: string; name: string; mime?: string; size?: number }  // reference block — renders as a display-only chip
 	| { kind: 'thinking'; id: string; text: string; durationNs: number; active: boolean; startedAt: number }
 	| {
 			kind: 'tool'

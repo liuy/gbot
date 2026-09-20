@@ -198,6 +198,7 @@ const (
 	ContentTypeRedacted   ContentType = "redacted_thinking"
 	ContentTypeImage      ContentType = "image"
 	ContentTypeVideo      ContentType = "video"
+	ContentTypeDocument   ContentType = "document"
 )
 
 // CacheControlConfig carries cache control settings for Anthropic API.
@@ -253,6 +254,22 @@ type ContentBlock struct {
 	// Source: Anthropic API image content block — {type:"image", source:{type:"base64", media_type, data}}.
 	Source *ImageSource `json:"source,omitempty"`
 
+	// Document reference fields (type == "document")
+	// Unlike images (which inline base64 bytes), a document block is a
+	// REFERENCE: name/path/mime/size point at the immutable content-hashed
+	// file in the media cache. The parsed markdown is never stored on the
+	// block — it is expanded to text only in the LLM request path (and the
+	// parse result is disk-cached), so chat history stays a small reference.
+	// Name is shared with tool_use (same JSON key); Size is bytes.
+	Path string `json:"path,omitempty"`
+	Mime string `json:"mime,omitempty"`
+	Size int64  `json:"size,omitempty"`
+	// EstTokens is the send-time token estimate of the document's parsed
+	// markdown; context estimation sums it instead of guessing from the
+	// (possibly compressed) file size. Computed with the DEFAULT CJK
+	// ratio — provider-aware consumers may deviate ±30% for CJK docs.
+	EstTokens int `json:"est_tokens,omitempty"`
+
 	// Cache control for incremental caching on the last block.
 	// Source: claude.ts:3089-3106 — addCacheBreakpoints adds cache_control
 	// only to the last block of the last message.
@@ -304,6 +321,20 @@ func NewImageBlock(source ImageSource) ContentBlock {
 	return ContentBlock{Type: ContentTypeImage, Source: &source}
 }
 
+// NewDocumentBlock creates a document reference content block. estTokens is
+// the send-time estimate over the PARSED markdown (Size/4 fallback when the
+// parse failed) — context estimation sums it without touching the filesystem.
+func NewDocumentBlock(name, path, mime string, size int64, estTokens int) ContentBlock {
+	return ContentBlock{
+		Type:      ContentTypeDocument,
+		Name:      name,
+		Path:      path,
+		Mime:      mime,
+		Size:      size,
+		EstTokens: estTokens,
+	}
+}
+
 // MarshalJSON projects ContentBlock onto the LLM wire shape, which is identical
 // to the struct's default marshal EXCEPT the duration fields are dropped:
 // ThinkingDurationNs and ToolDurationNs are gbot-internal metadata with no
@@ -328,6 +359,9 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 		IsError      bool                `json:"is_error,omitempty"`
 		Data         string              `json:"data,omitempty"`
 		Source       *ImageSource        `json:"source,omitempty"`
+		Path         string              `json:"path,omitempty"`
+		Mime         string              `json:"mime,omitempty"`
+		Size         int64               `json:"size,omitempty"`
 		CacheControl *CacheControlConfig `json:"cache_control,omitempty"`
 	}
 	w := wire{
@@ -343,6 +377,9 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 		IsError:      cb.IsError,
 		Data:         cb.Data,
 		Source:       cb.Source,
+		Path:         cb.Path,
+		Mime:         cb.Mime,
+		Size:         cb.Size,
 		CacheControl: cb.CacheControl,
 	}
 	return json.Marshal(w)

@@ -210,6 +210,7 @@ func (a *attachmentAccumulator) buildContents(atts []inboundAttachment) ([]inbou
 				Path: saved.path,
 				Mime: saved.mime,
 				Name: att.Name,
+				Size: att.Size,
 			},
 		})
 	}

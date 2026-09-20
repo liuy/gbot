@@ -1217,7 +1217,7 @@ func TestApplyBudget_FrozenDoesNotAccumulateAcrossTurns(t *testing.T) {
 		// The exact production chain (marshal → budget → normalize → pairing)
 		// that callLLM runs — a shortcut here once masked the pairing step
 		// stripping IDs and let the bug pass a green test.
-		return eng.prepareAPIMessages()
+		return eng.prepareAPIMessages(context.Background())
 	}
 	wasPersisted := func(msgs []types.Message, toolUseID string) bool {
 		for _, m := range msgs {

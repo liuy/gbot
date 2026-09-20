@@ -53,6 +53,15 @@ const XHQ_PIECE = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="
 
 export const BUILTIN_GAMES = [{ id: 'chess', label: 'Chinese Chess', icon: XHQ_PIECE }] as const
 
+// Extension-based file icon for artifact rows and document chips.
+export const artifactIconFor = (name: string): IconName => {
+  if (/\.(mp4|mov|webm)$/.test(name)) return 'film'
+  if (/\.(png|jpe?g|gif|webp)$/.test(name)) return 'image'
+  if (/\.(apk|zip|gz)$/.test(name)) return 'box'
+  if (/\.html?$/.test(name)) return 'globe'
+  return 'file'
+}
+
 export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandles {
   const { mainContent } = opts
 
@@ -309,14 +318,6 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
   const artifactRowClass =
     'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30'
-
-  const artifactIconFor = (name: string): IconName => {
-    if (/\.(mp4|mov|webm)$/.test(name)) return 'film'
-    if (/\.(png|jpe?g|gif|webp)$/.test(name)) return 'image'
-    if (/\.(apk|zip|gz)$/.test(name)) return 'box'
-    if (/\.html?$/.test(name)) return 'globe'
-    return 'file'
-  }
 
   const artifactFileRow = (a: ArtifactListItem, prefixLen: number, depth: number): HTMLElement => {
     const row = createElement('div', artifactRowClass + ' text-t2')

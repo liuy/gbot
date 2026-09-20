@@ -1,4 +1,5 @@
 import { t } from './i18n'
+import { formatArtifactSize } from './artifact'
 import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
 import { createElement, createNode, cx } from './dom'
 import { renderIcon } from './icons'
@@ -536,7 +537,7 @@ export function createInputBar(initial: {
         wrap.appendChild(img)
       } else if (ref.kind === 'document') {
         const span = createElement('span', 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1')
-        span.textContent = `[${ref.file.name}]`
+        span.textContent = `[${ref.file.name} ${formatArtifactSize(ref.file.size)}]`
         if (ref.failed) {
           span.classList.add('border-2', 'border-red-500')
         }

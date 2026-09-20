@@ -200,6 +200,56 @@ func TestImageBlockJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDocumentBlockJSONRoundTrip pins the document block wire shape
+// {type,name,path,mime,size} through both the LLM wire marshal (MarshalJSON)
+// and the storage marshal (MarshalContentBlocksForStorage), proving marshal
+// and unmarshal stay symmetric — the DB round-trip is what history replay
+// depends on.
+func TestDocumentBlockJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	block := types.NewDocumentBlock("report.pdf", "/home/u/.gbot/cache/documents/0123456789abcdef.pdf", "application/pdf", 1234, 300)
+
+	data, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"type":"document","name":"report.pdf","path":"/home/u/.gbot/cache/documents/0123456789abcdef.pdf","mime":"application/pdf","size":1234}`
+	if string(data) != want {
+		t.Fatalf("wire JSON = %s\nwant       %s", string(data), want)
+	}
+
+	var back types.ContentBlock
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Type != types.ContentTypeDocument {
+		t.Fatalf("round-trip Type = %q, want %q", back.Type, types.ContentTypeDocument)
+	}
+	if back.Name != "report.pdf" || back.Path != "/home/u/.gbot/cache/documents/0123456789abcdef.pdf" ||
+		back.Mime != "application/pdf" || back.Size != 1234 {
+		t.Fatalf("round-trip fields = name=%q path=%q mime=%q size=%d", back.Name, back.Path, back.Mime, back.Size)
+	}
+
+	stored, err := types.MarshalContentBlocksForStorage([]types.ContentBlock{block})
+	if err != nil {
+		t.Fatalf("storage marshal: %v", err)
+	}
+	var storedBack []types.ContentBlock
+	if err := json.Unmarshal(stored, &storedBack); err != nil {
+		t.Fatalf("storage unmarshal: %v", err)
+	}
+	if len(storedBack) != 1 {
+		t.Fatalf("storage round-trip len = %d, want 1", len(storedBack))
+	}
+	sb := storedBack[0]
+	if sb.Type != types.ContentTypeDocument || sb.Name != "report.pdf" ||
+		sb.Path != "/home/u/.gbot/cache/documents/0123456789abcdef.pdf" ||
+		sb.Mime != "application/pdf" || sb.Size != 1234 || sb.EstTokens != 300 {
+		t.Fatalf("storage round-trip = %+v", sb)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ContentBlock JSON round-trip
 // ---------------------------------------------------------------------------
@@ -352,7 +402,7 @@ func TestContentBlockMarshalJSON_WireStructMirror(t *testing.T) {
 	t.Parallel()
 
 	block := types.ContentBlock{
-		Type:               types.ContentTypeToolResult,
+		Type:               types.ContentTypeDocument,
 		Text:               "T",
 		Thinking:           "Th",
 		Signature:          "S",
@@ -364,6 +414,9 @@ func TestContentBlockMarshalJSON_WireStructMirror(t *testing.T) {
 		IsError:            true,
 		Data:               "D",
 		Source:             &types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "x"},
+		Path:               "P",
+		Mime:               "M",
+		Size:               42,
 		CacheControl:       &types.CacheControlConfig{Type: "ephemeral"},
 		ThinkingDurationNs: 999,
 		ToolDurationNs:     999,
@@ -386,6 +439,9 @@ func TestContentBlockMarshalJSON_WireStructMirror(t *testing.T) {
 		`"is_error":true`,
 		`"data":"D"`,
 		`"source":`,
+		`"path":"P"`,
+		`"mime":"M"`,
+		`"size":42`,
 		`"cache_control":`,
 	}
 	for _, s := range wantSubstrings {

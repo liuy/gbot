@@ -2341,6 +2341,99 @@ describe('mapHistoryToChatMessages', () => {
     const result = mapHistoryToChatMessages([marker('b1'), marker('b2')])
     expect(result).toEqual([])
   })
+
+  it('maps document history blocks to document chat blocks', () => {
+    const result = mapHistoryToChatMessages([{
+      id: 'u-doc',
+      role: 'user' as const,
+      text: 'see this',
+      thinking: [],
+      tools: [],
+      usage,
+      error: '',
+      status: 'done' as const,
+      startedAt: 0,
+      blocks: [
+        { kind: 'text', text: 'see this' },
+        { kind: 'document', name: 'report.pdf', mime: 'application/pdf', size: 4321 },
+      ],
+    }])
+    expect(result.length).toBe(1)
+    const blocks = result[0].blocks
+    expect(blocks.length).toBe(2)
+    expect(blocks[0].kind).toBe('text')
+    expect(blocks[1].kind).toBe('document')
+    expect(blocks[1]).toEqual({ kind: 'document', id: '', name: 'report.pdf', mime: 'application/pdf', size: 4321 })
+  })
+})
+
+describe('document block history rendering', () => {
+  const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+
+  function dispatchHistory(blocks: unknown[]) {
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-doc',
+        role: 'user',
+        text: 'see this',
+        thinking: [],
+        tools: [],
+        usage,
+        error: '',
+        status: 'done',
+        startedAt: 0,
+        blocks,
+      }],
+      nextCursor: '',
+      hasMore: false,
+    })
+  }
+
+  it('document block renders the upload-style [name size] chip, display-only', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      { kind: 'text', text: 'see this' },
+      { kind: 'document', name: 'report.pdf', mime: 'application/pdf', size: 4321 },
+    ])
+    // Byte-identical to the input-bar pending chip: [name size], no icon,
+    // no click affordance.
+    const chips = Array.from(document.querySelectorAll('span')).filter(el =>
+      el.textContent?.includes('report.pdf'))
+    expect(chips.length).toBe(1)
+    const chip = chips[0] as HTMLElement
+    expect(chip.textContent).toBe('[report.pdf 4.2 KB]')
+    expect(chip.querySelector('svg')).toBeNull()
+    expect(chip.className).not.toContain('cursor')
+    // Reference metadata never surfaces the mime or any parsed markdown.
+    expect(document.body.textContent).not.toContain('application/pdf')
+  })
+
+  it('document chip with unknown size matches the same [name] form', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      { kind: 'text', text: 'see this' },
+      { kind: 'document', name: 'no-size.bin' },
+    ])
+    const chip = Array.from(document.querySelectorAll('span')).find(el =>
+      el.textContent?.includes('no-size.bin')) as HTMLElement
+    expect(chip.textContent).toBe('[no-size.bin]')
+  })
+
+  it('legacy [Document: ...] text block still renders chip plus remaining text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      { kind: 'text', text: '[Document: notes.txt saved at /cache/documents/abc.txt]\nleftover body text' },
+    ])
+    const chip = Array.from(document.querySelectorAll('span')).find(el =>
+      el.textContent === '[notes.txt]')
+    expect(chip).toBeDefined()
+    expect(chip?.textContent).toBe('[notes.txt]')
+    expect(document.body.textContent).toContain('leftover body text')
+  })
 })
 
 describe('file event rendering', () => {

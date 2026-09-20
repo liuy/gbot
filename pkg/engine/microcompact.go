@@ -318,6 +318,14 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 
 			case types.ContentTypeImage:
 				totalTokens += ImageMaxTokenSize
+			case types.ContentTypeDocument:
+				// Send-time estimate over the parsed markdown; the
+				// Size/4 fallback covers a failed parse (estTokens 0).
+				if block.EstTokens > 0 {
+					totalTokens += block.EstTokens
+				} else {
+					totalTokens += int(block.Size) / 4
+				}
 
 			default:
 				raw, _ := json.Marshal(block)

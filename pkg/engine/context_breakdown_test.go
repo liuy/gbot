@@ -712,6 +712,19 @@ func TestLastAPIUsage_NoAssistantMessages(t *testing.T) {
 // tokenCountForBlock tests
 // ---------------------------------------------------------------------------
 
+func TestTokenCountForBlock_Document(t *testing.T) {
+	t.Parallel()
+	// est wins over the size-based fallback and over the tiny JSON branch.
+	est := tokenCountForBlock(types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 2<<20, 5000))
+	if est != 5000 {
+		t.Errorf("document est-tokens branch = %d, want 5000", est)
+	}
+	fallback := tokenCountForBlock(types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 400, 0))
+	if fallback != 100 {
+		t.Errorf("document size/4 fallback = %d, want 100", fallback)
+	}
+}
+
 func TestTokenCountForBlock_Thinking(t *testing.T) {
 	t.Parallel()
 	block := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "I need to think about this carefully"}

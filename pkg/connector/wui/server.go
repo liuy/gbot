@@ -16,7 +16,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/media"
-	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -345,10 +344,10 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 // assembleContentBlocks converts text + inbound content items into the
 // []types.ContentBlock shape the engine consumes. Text is the first block
 // (when non-empty); image items are decoded + resized + base64-encoded via
-// fileread and become a base64 image ContentBlock; document items are parsed
-// inline via fileread and become a [Document: ...] text block. Unrecognized
-// image bytes are logged and skipped — partial
-// degradation is preferred over aborting the entire turn.
+// fileread and become a base64 image ContentBlock; document items become a
+// document REFERENCE block (name/path/mime/size) that the engine expands to
+// parsed text at LLM-request time. Unrecognized image bytes are logged and
+// skipped — partial degradation is preferred over aborting the entire turn.
 func (c *WUIConnector) assembleContentBlocks(ctx context.Context, text string, content []inboundContent) []types.ContentBlock {
 	var blocks []types.ContentBlock
 	if text != "" {
@@ -393,7 +392,15 @@ func (c *WUIConnector) assembleContentBlocks(ctx context.Context, text string, c
 			if name == "" {
 				name = filepath.Base(item.Source.Path)
 			}
-			blocks = append(blocks, c.parseDocument(ctx, item.Source.Path, name))
+			// Parse once HERE (like the old inline flow) so the disk cache
+			// is warm for every later expansion and the block can carry an
+			// exact-ish token estimate; the stored message keeps only the
+			// reference. Parse failure leaves estTokens 0 → Size/4 fallback.
+			est := 0
+			if md, ok := media.ParseDocument(ctx, item.Source.Path); ok {
+				est = types.EstimateTokens(md)
+			}
+			blocks = append(blocks, types.NewDocumentBlock(name, item.Source.Path, item.Source.Mime, item.Source.Size, est))
 		default:
 			slog.Warn("wui: unknown content type, skipping", "type", item.Type)
 		}
@@ -465,34 +472,4 @@ func (c *WUIConnector) abortPendingAsksOnDisconnect() {
 		}
 	}
 	slog.Debug("wui: asks aborted on disconnect", "count", len(asks))
-}
-
-// parseDocument reads the file at path via fileread.Execute and returns a
-// text content block shaped like wechat's downloadFile: a [Document: name
-// saved at path] header line followed by the parsed content. On any failure
-// (parse error, empty content, unsupported format) the block degrades to
-// just the header line — never an error to the caller, because document
-// attachment should not abort the entire user turn.
-//
-// Mirrors wechat connector's downloadFile logic 1:1 (line numbers shift
-// across revisions; locate by function name).
-func (c *WUIConnector) parseDocument(ctx context.Context, path, name string) types.ContentBlock {
-	input, _ := json.Marshal(fileread.Input{FilePath: path})
-	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
-	if err != nil || result == nil {
-		slog.Warn("wui: document parse failed, sending path as fallback", "file", name, "error", err)
-		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
-	}
-	content := ""
-	if out, ok := result.Data.(fileread.TextOutput); ok {
-		content = out.Content
-	} else if s, ok := result.Data.(string); ok {
-		content = s
-	}
-	if content == "" {
-		slog.Warn("wui: document parse returned empty content, sending path as fallback", "file", name)
-		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
-	}
-	slog.Info("wui: document parsed inline", "file", name, "contentLen", len(content))
-	return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]\n%s", name, path, content))
 }

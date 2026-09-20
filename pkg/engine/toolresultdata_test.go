@@ -153,7 +153,7 @@ func TestQuery_ToolResultDataAttachedAndDroppedFromAPI(t *testing.T) {
 		t.Errorf("rich output = %+v, want the executed edit's old/new strings", out)
 	}
 
-	for i, m := range eng.prepareAPIMessages() {
+	for i, m := range eng.prepareAPIMessages(context.Background()) {
 		if m.ToolResultData != nil {
 			t.Errorf("apiMessages[%d] leaks ToolResultData to the provider: %v", i, m.ToolResultData)
 		}

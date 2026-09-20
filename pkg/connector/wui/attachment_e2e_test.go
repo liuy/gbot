@@ -75,6 +75,8 @@ func readWSError(t *testing.T, c *websocket.Conn) string {
 // an httptest server exposing only /ws/chat (the /upload route is gone).
 func setupAttachmentServer(t *testing.T) (*WUIConnector, *httptest.Server) {
 	t.Helper()
+	// Sandbox the send-time parse cache (resolved from HOME).
+	t.Setenv("HOME", t.TempDir())
 	c := newTestConnector(t)
 	store, err := media.NewAt(t.TempDir())
 	if err != nil {
@@ -168,9 +170,9 @@ func TestWSAttachment_RoundTrip_Image(t *testing.T) {
 }
 
 // TestWSAttachment_RoundTrip_Document exercises the document branch: a
-// plain-text document is saved and the dispatched content's text block
-// carries the [Document: name saved at path] header followed by the parsed
-// body.
+// plain-text document is saved and the dispatched content carries a document
+// REFERENCE block (name/path/mime/size) — the parsed markdown is expanded
+// later at LLM-request time, never inlined at send.
 func TestWSAttachment_RoundTrip_Document(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
@@ -214,14 +216,20 @@ func TestWSAttachment_RoundTrip_Document(t *testing.T) {
 		t.Errorf("content[0] = %+v, want text 'summarize this'", call.content[0])
 	}
 	doc := call.content[1]
-	if doc.Type != types.ContentTypeText {
-		t.Fatalf("content[1].Type = %v, want text (document header)", doc.Type)
+	if doc.Type != types.ContentTypeDocument {
+		t.Fatalf("content[1].Type = %v, want document", doc.Type)
 	}
-	if !strings.HasPrefix(doc.Text, "[Document: story.txt saved at ") {
-		t.Errorf("doc.Text = %q, want prefix '[Document: story.txt saved at '", doc.Text)
+	if doc.Name != "story.txt" {
+		t.Errorf("doc.Name = %q, want story.txt", doc.Name)
 	}
-	if !strings.HasSuffix(doc.Text, "the quick brown fox jumps over the lazy dog") {
-		t.Errorf("doc.Text = %q, want suffix body text", doc.Text)
+	if doc.Path == "" || !strings.HasSuffix(doc.Path, ".txt") {
+		t.Errorf("doc.Path = %q, want the saved media-store .txt path", doc.Path)
+	}
+	if doc.Size != int64(len(body)) {
+		t.Errorf("doc.Size = %d, want %d (commit-time declared size)", doc.Size, len(body))
+	}
+	if doc.Text != "" {
+		t.Errorf("doc.Text = %q, want empty (reference block must not inline markdown)", doc.Text)
 	}
 }
 

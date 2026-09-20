@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -25,6 +26,28 @@ func TestTimeBasedMCClearedMessage(t *testing.T) {
 func TestImageMaxTokenSize(t *testing.T) {
 	if ImageMaxTokenSize != 2000 {
 		t.Errorf("ImageMaxTokenSize = %d, want 2000", ImageMaxTokenSize)
+	}
+}
+
+func TestEstimateMessagesTokens_DocumentBlock(t *testing.T) {
+	base := []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}}
+	baseTokens := EstimateMessagesTokens(base)
+	// estTokens wins: a 2 MiB doc with a send-time estimate of 12345 must
+	// count as 12345, not size/4 (524288).
+	withEst := append(slices.Clone(base), types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+		types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 2<<20, 12345),
+	}})
+	got := EstimateMessagesTokens(withEst) - baseTokens
+	if want := 12345 + messageEnvelopeTokens(""); got != want {
+		t.Errorf("document with estTokens estimated at %d, want %d (est+envelope)", got, want)
+	}
+	// estTokens 0 (parse failed at send) falls back to size/4.
+	fallback := append(slices.Clone(base), types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+		types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 400, 0),
+	}})
+	got = EstimateMessagesTokens(fallback) - baseTokens
+	if want := 100 + messageEnvelopeTokens(""); got != want {
+		t.Errorf("document fallback estimated at %d, want %d (size/4+envelope)", got, want)
 	}
 }
 

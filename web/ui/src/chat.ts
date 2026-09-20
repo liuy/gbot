@@ -55,7 +55,7 @@ import { createInputBar, type InputBarHandles, type AttachmentRef } from './inpu
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
-import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
+import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList, formatArtifactSize } from './artifact'
 import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
@@ -199,6 +199,8 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
         } else if (b.kind === 'image') {
           // data URL inlined by backend history replay — no /file endpoint needed.
           m.blocks.push({ kind: 'image', id: '', src: b.src })
+        } else if (b.kind === 'document') {
+          m.blocks.push({ kind: 'document', id: '', name: b.name, mime: b.mime, size: b.size })
         } else if (b.kind === 'thinking') {
           const th = b.thinking!
           m.blocks.push({
@@ -283,6 +285,25 @@ function buildShell(
   return { outer, content }
 }
 
+// buildDocumentChip renders a display-only chip for a document reference
+// block: `[name size]` mono chip — byte-identical to the input bar's
+// pending upload chip, so upload and history render the same (the legacy
+// regex chip shares the shape minus size, which old text blocks never
+// carried). Deliberately NO click behavior (user decision) and never the
+// parsed markdown.
+function buildDocumentChip(name: string, size: number | undefined): HTMLElement {
+  const chip = createElement(
+    'span',
+    'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1',
+  )
+  let label = `[${name}`
+  if (size !== undefined && size > 0) {
+    label += ` ${formatArtifactSize(size)}`
+  }
+  chip.textContent = label + ']'
+  return chip
+}
+
 // Build committed message DOM by replaying blocks through streamDom appenders.
 // Produces the same visual structure streaming builds, so loadHistory output
 // is indistinguishable from a message that just finished streaming.
@@ -295,16 +316,19 @@ function renderCommittedMessageDOM(
   const runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] = []
   if (m.role === 'user') {
     const { outer, content } = buildShell('user')
-    // Render blocks in order. Image blocks land as <img>; text blocks are
-    // parsed for the [Document: ...] prefix emitted by the backend when a
-    // document attachment was sent — the prefix becomes a [filename.ext]
-    // chip and the rest of the text becomes the text span.
+    // Render blocks in order. Image blocks land as <img>; document reference
+    // blocks land as a display-only chip; text blocks are parsed for the
+    // [Document: ...] prefix emitted by the LEGACY inline format (messages
+    // stored before document blocks existed) — the prefix becomes a
+    // [filename.ext] chip and the rest of the text becomes the text span.
     for (const b of m.blocks) {
       if (b.kind === 'image') {
         const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
         img.src = b.src
         img.addEventListener('click', () => showImageLightbox(b.src))
         content.appendChild(img)
+      } else if (b.kind === 'document') {
+        content.appendChild(buildDocumentChip(b.name, b.size))
       } else if (b.kind === 'text' || b.kind === 'user') {
         const text = (b as { text: string }).text
         const docMatch = text.match(/^\[Document: (.+?) saved at .+?\]\n?/)

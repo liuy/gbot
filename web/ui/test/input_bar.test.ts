@@ -237,7 +237,7 @@ describe('createInputBar attachments', () => {
     Object.defineProperty(fileInput, 'files', { value: [file], writable: false })
     fileInput.dispatchEvent(new Event('change'))
     const chipText = handles.root.textContent ?? ''
-    expect(chipText).toContain('[report.pdf]')
+    expect(chipText).toContain('[report.pdf 4 B]')
   })
 
   it('RemoveChipButton_ClearsAttachment', () => {

@@ -18,7 +18,7 @@ func TestNewAt_CreatesSubdirs(t *testing.T) {
 	if s.RootDir != dir {
 		t.Errorf("RootDir = %q, want %q", s.RootDir, dir)
 	}
-	for _, cat := range []Category{CategoryImage, CategoryDocument} {
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse} {
 		info, err := os.Stat(filepath.Join(dir, string(cat)))
 		if err != nil {
 			t.Fatalf("subdir %s not created: %v", cat, err)
@@ -217,6 +217,7 @@ func TestCleanupAll_BothCategories(t *testing.T) {
 	}
 	imgPath, _ := s.Save(CategoryImage, []byte("img-stale"), ".png")
 	docPath, _ := s.Save(CategoryDocument, []byte("doc-stale"), ".pdf")
+	parsePath, _ := s.Save(CategoryParse, []byte("parse-stale"), ".md")
 	old := time.Now().Add(-31 * 24 * time.Hour) // REAL-TIME
 	if err := os.Chtimes(imgPath, old, old); err != nil {
 		t.Fatalf("chtimes img: %v", err)
@@ -224,9 +225,12 @@ func TestCleanupAll_BothCategories(t *testing.T) {
 	if err := os.Chtimes(docPath, old, old); err != nil {
 		t.Fatalf("chtimes doc: %v", err)
 	}
+	if err := os.Chtimes(parsePath, old, old); err != nil {
+		t.Fatalf("chtimes parse: %v", err)
+	}
 	removed := s.CleanupAll(30 * 24 * time.Hour)
-	if removed != 2 {
-		t.Errorf("removed = %d, want 2 (one per category)", removed)
+	if removed != 3 {
+		t.Errorf("removed = %d, want 3 (one per category)", removed)
 	}
 }
 

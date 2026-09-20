@@ -24,6 +24,14 @@ type Category string
 const (
 	CategoryImage    Category = "images"
 	CategoryDocument Category = "documents"
+	// CategoryParse holds document-parse markdown snapshots keyed by the
+	// source document's sha256-16 filename. It nests under CategoryDocument
+	// — derived data lives beside its source category (a future
+	// images/thumbs cache would follow the same pattern). Distinct from
+	// CategoryDocument: documents/ stores the ORIGINAL uploaded bytes;
+	// documents/parse/ stores the derived markdown so re-expansion on
+	// later turns skips the (slow) parse chain.
+	CategoryParse Category = "documents/parse"
 )
 
 // DefaultCleanupInterval is how often the background cleanup loop sweeps the
@@ -44,10 +52,11 @@ type Store struct {
 	stopDone   chan struct{}      // closed when the cleanup goroutine has exited
 }
 
-// New returns a Store rooted at ~/.gbot/cache, ensures the {images,documents}
-// subdirs exist, AND launches the background cleanup goroutine (30-day
-// eviction, DefaultCleanupInterval). The goroutine runs against a background
-// context so it survives connector cancellation. Call Close() to stop it.
+// New returns a Store rooted at ~/.gbot/cache, ensures the category subdirs
+// (images/documents/parse) exist, AND launches the background cleanup
+// goroutine (30-day eviction, DefaultCleanupInterval). The goroutine runs
+// against a background context so it survives connector cancellation. Call
+// Close() to stop it.
 func New() (*Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -69,9 +78,9 @@ func NewAt(rootDir string) (*Store, error) {
 	return newStoreRoot(rootDir)
 }
 
-// newStoreRoot creates the Store and ensures both category subdirs exist.
+// newStoreRoot creates the Store and ensures all category subdirs exist.
 func newStoreRoot(rootDir string) (*Store, error) {
-	for _, cat := range []Category{CategoryImage, CategoryDocument} {
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse} {
 		if err := os.MkdirAll(filepath.Join(rootDir, string(cat)), 0o755); err != nil {
 			return nil, fmt.Errorf("media: create %s dir: %w", cat, err)
 		}
@@ -171,8 +180,8 @@ func (s *Store) Cleanup(cat Category, maxAge time.Duration) int {
 	return removed
 }
 
-// CleanupAll runs Cleanup across both images and documents. Returns the total
-// count of files removed.
+// CleanupAll runs Cleanup across all categories (images, documents, parse).
+// Returns the total count of files removed.
 func (s *Store) CleanupAll(maxAge time.Duration) int {
-	return s.Cleanup(CategoryImage, maxAge) + s.Cleanup(CategoryDocument, maxAge)
+	return s.Cleanup(CategoryImage, maxAge) + s.Cleanup(CategoryDocument, maxAge) + s.Cleanup(CategoryParse, maxAge)
 }

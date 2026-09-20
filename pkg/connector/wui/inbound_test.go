@@ -17,6 +17,9 @@ import (
 // attachment tests to reference by path.
 func setupInboundConnector(t *testing.T) (*WUIConnector, string, string) {
 	t.Helper()
+	// The send-time parse resolves its cache dir from HOME — sandbox it so
+	// these tests never write the real ~/.gbot/cache.
+	t.Setenv("HOME", t.TempDir())
 	c := newTestConnector(t)
 	store, err := media.NewAt(t.TempDir())
 	if err != nil {
@@ -80,14 +83,14 @@ func TestHandleMessageInbound_ImageContent_ConvertedToBase64Block(t *testing.T) 
 	}
 }
 
-func TestHandleMessageInbound_DocumentContent_ConvertedToTextBlock(t *testing.T) {
+func TestHandleMessageInbound_DocumentContent_ConvertedToDocumentBlock(t *testing.T) {
 	c, _, docPath := setupInboundConnector(t)
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return false }
 	mock.systemPromptFn = func() string { return "" }
 
 	c.handleMessageInbound("", []inboundContent{
-		{Type: "document", Source: inboundSource{Type: "file", Path: docPath, Name: "foo.txt"}},
+		{Type: "document", Source: inboundSource{Type: "file", Path: docPath, Name: "foo.txt", Mime: "text/plain", Size: 15}},
 	})
 
 	if !waitFor(time.Second, func() bool {
@@ -107,14 +110,24 @@ func TestHandleMessageInbound_DocumentContent_ConvertedToTextBlock(t *testing.T)
 		t.Fatalf("content blocks = %d, want 1", len(call.content))
 	}
 	b := call.content[0]
-	if b.Type != types.ContentTypeText {
-		t.Errorf("block type = %v, want text", b.Type)
+	if b.Type != types.ContentTypeDocument {
+		t.Fatalf("block type = %v, want document", b.Type)
 	}
-	if !strings.HasPrefix(b.Text, "[Document: foo.txt saved at ") {
-		t.Errorf("text = %q, want prefix [Document: foo.txt saved at ", b.Text)
+	// Reference block carries metadata only — no parsed markdown may be
+	// inlined at send time (that happens at LLM-request time).
+	if b.Name != "foo.txt" || b.Path != docPath || b.Mime != "text/plain" || b.Size != 15 {
+		t.Errorf("document block = name:%q path:%q mime:%q size:%d, want foo.txt/%q/text/plain/15",
+			b.Name, b.Path, b.Mime, b.Size, docPath)
 	}
-	if !strings.HasSuffix(b.Text, "plain text body") {
-		t.Errorf("text = %q, want suffix 'plain text body'", b.Text)
+	if b.Text != "" {
+		t.Errorf("document block inlined text at send time: %q", b.Text)
+	}
+	// Send-time wiring: the parse happened at commit, so est must be the
+	// estimate over the parsed body (not the Size/4 fallback of a skipped
+	// parse).
+	if want := types.EstimateTokens("plain text body"); b.EstTokens != want {
+		t.Errorf("document block est = %d, want %d (estimate over parsed body)",
+			b.EstTokens, want)
 	}
 }
 
@@ -257,74 +270,11 @@ func TestHandleMessageInbound_EngineBusy_EnqueuesWithContent(t *testing.T) {
 	}
 }
 
-// TestParseDocument_FallbackOnParseFailure exercises the parseDocument
-// fallback path: a path that exists on disk (no path validator in the new
-// WS upload flow) but is not a document fileread can convert. The function
-// MUST return a header-only text block, never an error.
-func TestParseDocument_FallbackOnParseFailure(t *testing.T) {
-	c := newTestConnector(t)
-	store, err := media.NewAt(t.TempDir())
-	if err != nil {
-		t.Fatalf("media.NewAt: %v", err)
-	}
-	t.Cleanup(store.Close)
-	c.SetMediaCache(store)
-
-	// Save a file under documents/ with .bin extension — fileread cannot
-	// parse arbitrary binary, so it returns empty/error.
-	garbagePath, err := store.Save(media.CategoryDocument, []byte{0x00, 0x01, 0x02, 0x03}, ".bin")
-	if err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	block := c.parseDocument(context.Background(), garbagePath, "weird.bin")
-	if block.Type != types.ContentTypeText {
-		t.Errorf("block type = %v, want text", block.Type)
-	}
-	if !strings.HasPrefix(block.Text, "[Document: weird.bin saved at ") {
-		t.Errorf("text = %q, want prefix '[Document: weird.bin saved at '", block.Text)
-	}
-	// Fallback path emits ONLY the header line (no trailing newline + body).
-	if strings.Contains(block.Text, "\n") {
-		t.Errorf("fallback text contains newline — should be header-only, got: %q", block.Text)
-	}
-	// The path must be present so the LLM can locate the file if needed.
-	if !strings.HasSuffix(block.Text, garbagePath+"]") {
-		t.Errorf("text = %q, want suffix %q]", block.Text, garbagePath+"]")
-	}
-}
-
-// TestParseDocument_InlineText verifies a real text file is parsed and the
-// content is appended after the [Document: ...] header line.
-func TestParseDocument_InlineText(t *testing.T) {
-	c := newTestConnector(t)
-	store, err := media.NewAt(t.TempDir())
-	if err != nil {
-		t.Fatalf("media.NewAt: %v", err)
-	}
-	t.Cleanup(store.Close)
-	c.SetMediaCache(store)
-
-	const body = "the quick brown fox jumps over the lazy dog"
-	path, err := store.Save(media.CategoryDocument, []byte(body), ".txt")
-	if err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	block := c.parseDocument(context.Background(), path, "story.txt")
-	if block.Type != types.ContentTypeText {
-		t.Errorf("block type = %v, want text", block.Type)
-	}
-	prefix := "[Document: story.txt saved at " + path + "]"
-	if !strings.HasPrefix(block.Text, prefix) {
-		t.Errorf("text = %q, want prefix %q", block.Text, prefix)
-	}
-	// Content follows the header line, separated by newline.
-	rest := strings.TrimPrefix(block.Text, prefix+"\n")
-	if rest != body {
-		t.Errorf("body = %q, want %q", rest, body)
-	}
-}
+// The parseDocument method (send-time inline parse) was removed when
+// documents became reference blocks: parse behavior now lives in
+// pkg/media/parse_test.go (ParseDocument cache hit/miss/failure) and
+// pkg/engine/document_expand_test.go (LLM-context expansion + header-only
+// degradation).
 
 // TestAssembleContentBlocks_UnknownTypeSkipped verifies that content items
 // with an unrecognized type field are silently skipped (defense against
@@ -445,9 +395,11 @@ func TestHandleMessageInbound_DocumentUsesPathBasenameWhenNameEmpty(t *testing.T
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	b := mock.queryWithContentCalls[0].content[0]
-	want := "[Document: " + filepath.Base(docPath) + " saved at " + docPath + "]"
-	if !strings.HasPrefix(b.Text, want) {
-		t.Errorf("text = %q, want prefix %q", b.Text, want)
+	if b.Type != types.ContentTypeDocument {
+		t.Fatalf("block type = %v, want document", b.Type)
+	}
+	if want := filepath.Base(docPath); b.Name != want {
+		t.Errorf("Name = %q, want base name %q", b.Name, want)
 	}
 }
 

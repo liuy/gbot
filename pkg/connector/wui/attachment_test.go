@@ -330,6 +330,10 @@ func TestAttachmentAccumulator_BuildContents_ClassifiesByMime(t *testing.T) {
 	if contents[0].Source.Path == "" || contents[1].Source.Path == "" {
 		t.Error("paths should be populated from saved[id].path")
 	}
+	if contents[1].Source.Size != int64(len(pdfFixture)) {
+		t.Errorf("contents[1].Source.Size = %d, want %d (commit-time declared size for the document block)",
+			contents[1].Source.Size, len(pdfFixture))
+	}
 }
 
 // TestAttachmentAccumulator_BuildContents_MissingIDs_ReturnsError asserts the
