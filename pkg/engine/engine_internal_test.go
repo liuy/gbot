@@ -6394,6 +6394,231 @@ func TestQuery_BackToBackQueriesRaceOnExitPath(t *testing.T) {
 	}
 }
 
+// abortChainDispatcher chains a second query the moment the first emits
+// EventQueryEnd — the TUI/WUI back-to-back pattern. The chained query's
+// response drives a tool that blocks until its context is cancelled, so the
+// second query stays provably mid-flight while the first query's goroutine
+// runs its exit path.
+type abortChainDispatcher struct {
+	eng    *Engine
+	ctx    context.Context
+	prompt string
+	endCh  chan struct{}
+	fired  atomic.Bool
+}
+
+func (d *abortChainDispatcher) Dispatch(event types.QueryEvent) {
+	if event.Type != types.EventQueryEnd || event.Agent != nil {
+		return
+	}
+	if d.fired.CompareAndSwap(false, true) {
+		d.eng.Query(d.ctx, d.prompt, "")
+	}
+	d.endCh <- struct{}{}
+}
+
+// TestQuery_BackToBackSecondQueryAbortAndBusyFlag guards the first query's
+// exit path against wiping state owned by a chained second query. The first
+// query's exit defer unconditionally cleared activeCancel and queryActive, so
+// after a back-to-back Query: Abort() was a no-op (activeCancel=nil) and
+// IsBusy() reported idle while the second query was mid-tool.
+func TestQuery_BackToBackSecondQueryAbortAndBusyFlag(t *testing.T) {
+	toolStarted := make(chan struct{})
+	blockTool := &testTool{
+		name: "Block",
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "first response"), nil)
+	mp.addResponse(toolUseStreamEvents("test", "block_1", "Block", `{}`), nil)
+
+	disp := &abortChainDispatcher{prompt: "second", endCh: make(chan struct{}, 4)}
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Block": blockTool}
+		},
+		Model:      "test",
+		Dispatcher: disp,
+	})
+	defer eng.Close()
+
+	ctx := t.Context()
+	disp.eng = eng
+	disp.ctx = ctx
+
+	eng.Query(ctx, "first", "")
+
+	// Second query reached its blocking tool — it is running, no assumption
+	// about the first query's exit path needed.
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second query to reach its tool")
+	}
+
+	// The first query's goroutine still has to unwind past EventQueryEnd
+	// (snapshotExitState, exit defers). Wait for that exit path to land so
+	// the assertions below observe post-exit state, not a race in flight: in
+	// the buggy build the stomped state (activeCancel=nil or queryActive=0)
+	// appears; in the fixed build neither ever appears while the second
+	// query runs, so the window simply expires.
+	// 500ms is the upper bound for the buggy build to land its stomp (which
+	// happens within milliseconds of EventQueryEnd); the fixed build simply
+	// expires the window and asserts the flag survived.
+	deadline := time.Now().Add(500 * time.Millisecond) // REAL-TIME: exit path runs on a real goroutine; no channel to select on
+	for time.Now().Before(deadline) {
+		eng.activeCancelMu.Lock()
+		ac := eng.activeCancel
+		eng.activeCancelMu.Unlock()
+		if ac == nil || atomic.LoadInt32(&eng.queryActive) == 0 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond) // REAL-TIME: polls a concurrently unwinding goroutine; synctest cannot fake the race
+	}
+
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d while second query is mid-tool, want 1", v)
+	}
+
+	eng.Abort()
+
+	// Drain the first query's buffered end signal so the select below can
+	// only be satisfied by the second query's EventQueryEnd.
+	select {
+	case <-disp.endCh:
+	default:
+	}
+
+	select {
+	case <-disp.endCh: // second EventQueryEnd — Abort reached the live query
+	case <-time.After(5 * time.Second):
+		t.Fatal("Abort() did not cancel the second query within 5s — first query's exit defer wiped activeCancel")
+	}
+}
+
+// TestBeginQueryIfIdle pins the conditional-takeover contract: idle engines
+// start, busy engines refuse without touching state, and endQuery restores
+// eligibility. Guards the double-spawn fix in startProcessAttachmentsIfIdle.
+func TestBeginQueryIfIdle(t *testing.T) {
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	defer eng.Close()
+
+	tok1, ok := eng.beginQueryIfIdle(func() {})
+	if !ok || tok1 != 1 {
+		t.Fatalf("first beginQueryIfIdle = (%d, %v), want (1, true)", tok1, ok)
+	}
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d after take, want 1", v)
+	}
+
+	eng.activeCancelMu.Lock()
+	genBefore := eng.activeGen
+	eng.activeCancelMu.Unlock()
+	tok2, ok := eng.beginQueryIfIdle(func() {})
+	if ok || tok2 != 0 {
+		t.Fatalf("busy beginQueryIfIdle = (%d, %v), want (0, false)", tok2, ok)
+	}
+	eng.activeCancelMu.Lock()
+	untouched := eng.activeGen == genBefore
+	eng.activeCancelMu.Unlock()
+	if !untouched {
+		t.Fatal("refused beginQueryIfIdle mutated activeGen")
+	}
+
+	// Unconditional beginQuery still takes over while busy (Query semantics).
+	tok3 := eng.beginQuery(func() {})
+	if tok3 != 2 {
+		t.Fatalf("beginQuery token = %d, want 2", tok3)
+	}
+	eng.endQuery(tok1) // stale token: no-op, current query keeps running
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d after stale endQuery, want 1", v)
+	}
+	eng.endQuery(tok3)
+	if v := atomic.LoadInt32(&eng.queryActive); v != 0 {
+		t.Fatalf("queryActive = %d after current endQuery, want 0", v)
+	}
+
+	if _, ok := eng.beginQueryIfIdle(func() {}); !ok {
+		t.Fatal("beginQueryIfIdle refused on idle engine after endQuery")
+	}
+}
+
+// TestAbort_SingleQuery_StillCancels pins the pre-existing single-query Abort
+// contract: Abort cancels the running query, the query end event fires, and
+// the engine returns to idle afterwards. The ownership-checked exit cleanup
+// must keep resetting queryActive even though Abort() drops the cancel handle
+// before the query's exit defer runs.
+func TestAbort_SingleQuery_StillCancels(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 10)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	toolStarted := make(chan struct{})
+	blockTool := &testTool{
+		name: "Block",
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", "block_1", "Block", `{}`), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Block": blockTool}
+		},
+		Model:      "test",
+		Dispatcher: dispatcher,
+	})
+	defer eng.Close()
+
+	eng.Query(context.Background(), "run", "")
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool to start")
+	}
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d mid-query, want 1", v)
+	}
+
+	eng.Abort()
+
+	gotEnd := false
+	timeout := time.After(5 * time.Second)
+	for !gotEnd {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryEnd && evt.Agent == nil {
+				gotEnd = true
+			}
+		case <-timeout:
+			t.Fatal("Abort() did not cancel the running single query")
+		}
+	}
+
+	// QueryEnd is emitted inside runTurns, before the exit defers; poll for
+	// the idle transition the exit path must still perform after Abort.
+	idleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME: idle transition happens on the query's exit goroutine
+	for atomic.LoadInt32(&eng.queryActive) != 0 && time.Now().Before(idleDeadline) {
+		time.Sleep(2 * time.Millisecond) // REAL-TIME: polls the exit goroutine's flag reset; no channel to select on
+	}
+	if v := atomic.LoadInt32(&eng.queryActive); v != 0 {
+		t.Fatalf("queryActive = %d after aborted query ended, want 0 (engine stuck busy)", v)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ProcessAttachments — async wrapper integration test
 // ---------------------------------------------------------------------------

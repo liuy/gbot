@@ -814,7 +814,7 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	// 3. Call processAttachments synchronously (same package, no goroutine).
 	//    This creates the attachment message, appends it to e.messages,
 	//    calls runTurns (LLM responds), and calls PersistNewMessages.
-	eng.processAttachments(ctx, eng.systemPrompt)
+	eng.processAttachments(ctx, 0, eng.systemPrompt)
 
 	// 4. Run a third query — PersistNewMessages will persist the new user
 	//    message + LLM response, but the attachment message should have been

@@ -131,8 +131,14 @@ type Engine struct {
 	// activeCancel is the cancel function for the currently running query
 	// or attachment processing. Protected by activeCancelMu.
 	// Exposed via Abort() so TUI can cancel any active engine operation.
+	//
+	// activeGen is the ownership generation of activeCancel: each beginQuery
+	// increments it, and exit cleanups only release state whose token still
+	// matches. Without it, a finished query's exit defer can wipe the cancel
+	// and busy flag a back-to-back successor just registered.
 	activeCancelMu sync.Mutex
 	activeCancel   context.CancelFunc
+	activeGen      uint64
 
 	// isSubagent is true for sub-agent engines created by AgentTool.
 	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
@@ -520,23 +526,63 @@ func (e *Engine) Abort() {
 	}
 }
 
+// beginQuery registers cancel for Abort and marks the engine busy,
+// returning an ownership token (monotonic generation).
+func (e *Engine) beginQuery(cancel context.CancelFunc) uint64 {
+	e.activeCancelMu.Lock()
+	defer e.activeCancelMu.Unlock()
+	return e.beginLocked(cancel)
+}
+
+// beginQueryIfIdle is the conditional counterpart of beginQuery: it starts
+// only when the engine is idle, with the check and the registration in one
+// atomic section. startProcessAttachmentsIfIdle uses this so two concurrent
+// kicks cannot both observe idle and double-spawn attachment processing.
+// Unconditional callers (Query and friends) must NOT use this — a new query
+// always takes over, by design.
+func (e *Engine) beginQueryIfIdle(cancel context.CancelFunc) (uint64, bool) {
+	e.activeCancelMu.Lock()
+	defer e.activeCancelMu.Unlock()
+	// Atomic read: processAttachments' public-entry path writes this flag
+	// outside the mutex, so the lock alone does not order this read.
+	if atomic.LoadInt32(&e.queryActive) != 0 {
+		return 0, false
+	}
+	return e.beginLocked(cancel), true
+}
+
+// beginLocked mutates the active-query state; caller must hold activeCancelMu.
+func (e *Engine) beginLocked(cancel context.CancelFunc) uint64 {
+	e.activeGen++
+	e.activeCancel = cancel
+	atomic.StoreInt32(&e.queryActive, 1)
+	return e.activeGen
+}
+
+// endQuery releases query ownership unless a newer query has taken over —
+// a stale goroutine's cleanup must not clobber the new owner's cancel/flag.
+// The attachment kick runs after unlock: startProcessAttachmentsIfIdle
+// re-enters beginQuery, and the mutex is not reentrant.
+func (e *Engine) endQuery(token uint64) {
+	e.activeCancelMu.Lock()
+	if token == 0 || token != e.activeGen {
+		e.activeCancelMu.Unlock()
+		return
+	}
+	e.activeCancel = nil
+	atomic.StoreInt32(&e.queryActive, 0)
+	e.activeCancelMu.Unlock()
+	e.startProcessAttachmentsIfIdle()
+}
+
 // Query executes the agentic loop for a user message.
 // Source: query.ts:queryLoop() — the while(true) agentic loop.
 func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
-	e.activeCancelMu.Lock()
-	e.activeCancel = cancel
-	e.activeCancelMu.Unlock()
+	token := e.beginQuery(cancel)
 	go func() {
-		atomic.StoreInt32(&e.queryActive, 1)
-		defer func() {
-			cancel()
-			atomic.StoreInt32(&e.queryActive, 0)
-			e.activeCancelMu.Lock()
-			e.activeCancel = nil
-			e.activeCancelMu.Unlock()
-			e.startProcessAttachmentsIfIdle()
-		}()
+		defer e.endQuery(token)
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("engine: panic in queryLoop", "error", r, "stack", string(debug.Stack()))
@@ -549,8 +595,10 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt str
 
 // ProcessAttachments drains pending attachments and runs the turn loop.
 // Public API for callers that need to explicitly trigger attachment processing.
+// Registers no cancel (Abort does not target it), so its run carries no
+// ownership token — processAttachments manages only the busy flag for it.
 func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
-	go e.processAttachments(ctx, systemPrompt)
+	go e.processAttachments(ctx, 0, systemPrompt)
 }
 
 // SetSharedDeps injects the tool creation dependencies for RunAgent.
@@ -812,20 +860,11 @@ func (e *Engine) SetSkillRegistry(reg *skills.Registry) {
 // rendering works identically to a regular query.
 func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
-	e.activeCancelMu.Lock()
-	e.activeCancel = cancel
-	e.activeCancelMu.Unlock()
+	token := e.beginQuery(cancel)
 
 	go func() {
-		atomic.StoreInt32(&e.queryActive, 1)
-		defer func() {
-			cancel()
-			atomic.StoreInt32(&e.queryActive, 0)
-			e.activeCancelMu.Lock()
-			e.activeCancel = nil
-			e.activeCancelMu.Unlock()
-			e.startProcessAttachmentsIfIdle()
-		}()
+		defer e.endQuery(token)
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("engine: panic in RunSkill", "error", r, "stack", string(debug.Stack()))
@@ -928,32 +967,40 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 // No timeout — processAttachments runs the same agentic loop as Query,
 // which may take arbitrarily long (complex tool use, sub-agents).
 func (e *Engine) startProcessAttachmentsIfIdle() {
-	if e.systemPrompt == "" || atomic.LoadInt32(&e.queryActive) != 0 {
+	if e.systemPrompt == "" {
 		return
 	}
 	if e.attachments.Len() == 0 {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	e.activeCancelMu.Lock()
-	e.activeCancel = cancel
-	e.activeCancelMu.Unlock()
+	token, ok := e.beginQueryIfIdle(cancel)
+	if !ok {
+		cancel() // release the WithCancel resources; someone else is running
+		return
+	}
 	go func() {
 		defer cancel()
-		e.processAttachments(ctx, e.systemPrompt)
+		e.processAttachments(ctx, token, e.systemPrompt)
 	}()
 }
 
 // processAttachments is the internal implementation shared by EnqueueAttachment
-// auto-processing and the public ProcessAttachments API.
-func (e *Engine) processAttachments(ctx context.Context, systemPrompt string) {
-	atomic.StoreInt32(&e.queryActive, 1)
+// auto-processing and the public ProcessAttachments API. token comes from
+// beginQuery when this run registered a cancel (the startProcessAttachmentsIfIdle
+// path); 0 for the public entry, which registers no cancel and therefore owns
+// neither the cancel handle nor its cleanup — only the busy flag.
+func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPrompt string) {
+	if token == 0 {
+		atomic.StoreInt32(&e.queryActive, 1)
+	}
 	defer func() {
-		atomic.StoreInt32(&e.queryActive, 0)
-		e.activeCancelMu.Lock()
-		e.activeCancel = nil
-		e.activeCancelMu.Unlock()
-		e.startProcessAttachmentsIfIdle()
+		if token == 0 {
+			atomic.StoreInt32(&e.queryActive, 0)
+			e.startProcessAttachmentsIfIdle()
+			return
+		}
+		e.endQuery(token)
 	}()
 	defer func() {
 		if r := recover(); r != nil {
@@ -4517,11 +4564,10 @@ func (e *Engine) querySource() string {
 // Used by sub-agents created via AgentTool. EventCh is nil — events are silently discarded.
 // Source: TS sync sub-agents execute runAgent() directly in the caller's context.
 func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt string) QueryResult {
-	atomic.StoreInt32(&e.queryActive, 1)
-	defer func() {
-		atomic.StoreInt32(&e.queryActive, 0)
-		e.startProcessAttachmentsIfIdle()
-	}()
+	ctx, cancel := context.WithCancel(ctx)
+	token := e.beginQuery(cancel)
+	defer e.endQuery(token)
+	defer cancel()
 	result := e.queryLoop(ctx, userMessage, systemPrompt)
 	result.Reply = lastAssistantText(result.Messages)
 	return result
@@ -4530,14 +4576,13 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // QuerySyncWithContent is the synchronous counterpart of QueryWithContent,
 // mirroring QuerySync (which is the synchronous counterpart of Query). It runs
 // the agentic loop in the caller's goroutine and returns the result directly —
-// no goroutine, no cancel, no panic recover, identical contract to QuerySync.
+// no goroutine, identical contract to QuerySync.
 // Used by tests and sub-agents that assemble content blocks (text + image).
 func (e *Engine) QuerySyncWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) QueryResult {
-	atomic.StoreInt32(&e.queryActive, 1)
-	defer func() {
-		atomic.StoreInt32(&e.queryActive, 0)
-		e.startProcessAttachmentsIfIdle()
-	}()
+	ctx, cancel := context.WithCancel(ctx)
+	token := e.beginQuery(cancel)
+	defer e.endQuery(token)
+	defer cancel()
 	result := e.queryLoopWithContent(ctx, content, systemPrompt)
 	result.Reply = lastAssistantText(result.Messages)
 	return result
@@ -4550,19 +4595,10 @@ func (e *Engine) QuerySyncWithContent(ctx context.Context, content []types.Conte
 // render it. Async — returns immediately; results arrive via the event stream.
 func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
-	e.activeCancelMu.Lock()
-	e.activeCancel = cancel
-	e.activeCancelMu.Unlock()
+	token := e.beginQuery(cancel)
 	go func() {
-		atomic.StoreInt32(&e.queryActive, 1)
-		defer func() {
-			cancel()
-			atomic.StoreInt32(&e.queryActive, 0)
-			e.activeCancelMu.Lock()
-			e.activeCancel = nil
-			e.activeCancelMu.Unlock()
-			e.startProcessAttachmentsIfIdle()
-		}()
+		defer e.endQuery(token)
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("engine: panic in queryLoop", "error", r, "stack", string(debug.Stack()))
@@ -4577,11 +4613,10 @@ func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBl
 // pre-constructed messages (no user message injection). Used by fork agents
 // that build their own conversation history.
 func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt string) QueryResult {
-	atomic.StoreInt32(&e.queryActive, 1)
-	defer func() {
-		atomic.StoreInt32(&e.queryActive, 0)
-		e.startProcessAttachmentsIfIdle()
-	}()
+	ctx, cancel := context.WithCancel(ctx)
+	token := e.beginQuery(cancel)
+	defer e.endQuery(token)
+	defer cancel()
 	e.setMessages(messages)
 	// Set currentTurnMsgID from the last user message in the provided messages.
 	// Used by TrackEdit and MakeSnapshot for consistent messageID.
