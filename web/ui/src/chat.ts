@@ -51,7 +51,7 @@ import {
 } from './components/stream_dom'
 import { createHeader } from './header'
 import { createSidebar } from './sidebar'
-import { createInputBar, type InputBarHandles, type AttachmentRef } from './input_bar'
+import { createInputBar, type InputBarHandles, type AttachmentRef, type QueuedMsg } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
@@ -79,6 +79,7 @@ import {
   avatarU,
   disconnectBannerClass,
   disconnectText,
+  userEchoBlock,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
 import { renderIcon } from './icons'
@@ -304,6 +305,41 @@ function buildDocumentChip(name: string, size: number | undefined): HTMLElement 
   return chip
 }
 
+// Wire shape of the attachment event's Message payload. QueryEvent.message is
+// untyped in types.ts; this narrows it to the fields the attachment handler
+// reads. Content blocks mirror Go types.ContentBlock JSON tags: image data is
+// base64 (data URL assembled client-side), documents carry reference metadata.
+type AttachmentEventMessage = {
+  attachment?: { prompt?: string; source_uuid?: string }
+  content?: {
+    type: string
+    text?: string
+    source?: { media_type?: string; data?: string }
+    name?: string
+    mime?: string
+    size?: number
+  }[]
+}
+
+// createAttachmentImage mirrors the committed-history image visual exactly
+// (class + lightbox click), so a drained queued attachment looks the same as
+// the same image replayed from history.
+function createAttachmentImage(src: string): HTMLImageElement {
+  const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+  img.src = src
+  img.addEventListener('click', () => showImageLightbox(src))
+  return img
+}
+
+// Attachment echo nodes get their own userEchoBlock container as siblings of
+// the queued-text echo, matching what renderStreamBlock rebuilds from
+// pendingBlocks on rewind/takeover — same block, same DOM shape.
+function appendUserAttachment(parent: HTMLElement, node: HTMLElement, before: Node | null): void {
+  const wrap = createElement('div', userEchoBlock())
+  wrap.appendChild(node)
+  parent.insertBefore(wrap, before)
+}
+
 // Build committed message DOM by replaying blocks through streamDom appenders.
 // Produces the same visual structure streaming builds, so loadHistory output
 // is indistinguishable from a message that just finished streaming.
@@ -448,8 +484,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const pendingToolByID = new Map<string, ToolBlock>()
   const currentSubAgentTextDiv = new Map<string, HTMLDivElement>()
   const currentSubAgentThinking = new Map<string, ThinkingEntry>()
-  let pendingCancel: { uuid: string; text: string }[] | null = null
-  let queuedMsgs: { uuid: string; text: string }[] = []
+  let pendingCancel: QueuedMsg[] | null = null
+  let queuedMsgs: QueuedMsg[] = []
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = createElement('div', 'relative flex flex-col h-dvh')
@@ -1087,6 +1123,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (block.kind === 'user') {
       if (!block.text) return
       appendUserBlock(parent, block.text, before)
+    } else if (block.kind === 'image') {
+      appendUserAttachment(parent, createAttachmentImage(block.src), before)
+    } else if (block.kind === 'document') {
+      appendUserAttachment(parent, buildDocumentChip(block.name, block.size), before)
     } else if (block.kind === 'text') {
       if (!block.text) return
       const div = appendTextBlock(parent, before)
@@ -1546,21 +1586,68 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'retry_attempt':
         return
       case 'attachment': {
-        const att = (e as { message?: { attachment?: { prompt?: string; source_uuid?: string } } }).message?.attachment
+        const msg = (e as { message?: AttachmentEventMessage }).message
+        const att = msg?.attachment
         if (!att) return
-        const text: string = att.prompt ?? ''
         const sourceUUID: string = att.source_uuid ?? ''
-        if (!text) return
+        // Prefer the full content blocks (current wire): attachments live only
+        // there. Prompt is the fallback for servers/events predating content
+        // blocks. Grouped rendering (joined text, then images, then documents)
+        // matches renderUserMessage's visual convention.
+        let text: string = ''
+        const imageSrcs: string[] = []
+        const docs: { name: string; mime?: string; size?: number }[] = []
+        const msgContent = msg?.content
+        if (msgContent && msgContent.length > 0) {
+          for (const b of msgContent) {
+            if (b.type === 'text' && b.text) {
+              text += b.text
+            } else if (b.type === 'image' && b.source?.media_type && b.source.data) {
+              imageSrcs.push(`data:${b.source.media_type};base64,${b.source.data}`)
+            } else if (b.type === 'document' && b.name) {
+              docs.push({ name: b.name, mime: b.mime, size: b.size })
+            }
+          }
+        } else {
+          text = att.prompt ?? ''
+        }
+        if (!text && imageSrcs.length === 0 && docs.length === 0) return
         if (streaming) {
-          pendingBlocks.push({ kind: 'user', id: '', text })
-          if (streamContainer) {
-            appendUserBlock(streamContainer, text, progressAnchor())
+          if (text) {
+            pendingBlocks.push({ kind: 'user', id: '', text })
+            if (streamContainer) {
+              appendUserBlock(streamContainer, text, progressAnchor())
+            }
+          }
+          for (const src of imageSrcs) {
+            pendingBlocks.push({ kind: 'image', id: '', src })
+            if (streamContainer) {
+              appendUserAttachment(streamContainer, createAttachmentImage(src), progressAnchor())
+            }
+          }
+          for (const d of docs) {
+            pendingBlocks.push({ kind: 'document', id: '', name: d.name, mime: d.mime, size: d.size })
+            if (streamContainer) {
+              appendUserAttachment(streamContainer, buildDocumentChip(d.name, d.size), progressAnchor())
+            }
           }
         } else {
           const { outer, content } = buildShell('user')
-          content.appendChild(createUserTextSpan(text))
+          const blocks: Block[] = []
+          if (text) {
+            content.appendChild(createUserTextSpan(text))
+            blocks.push({ kind: 'text', id: '', text })
+          }
+          for (const src of imageSrcs) {
+            content.appendChild(createAttachmentImage(src))
+            blocks.push({ kind: 'image', id: '', src })
+          }
+          for (const d of docs) {
+            content.appendChild(buildDocumentChip(d.name, d.size))
+            blocks.push({ kind: 'document', id: '', name: d.name, mime: d.mime, size: d.size })
+          }
           const m: MessageState = {
-            ...newUserMessage(text),
+            ...newUserMessage('', blocks),
             lastActivityAt: Date.now(),
             domRoot: outer,
             contentDiv: content,
@@ -1684,15 +1771,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // way a failed upload does NOT pollute history with a duplicate entry
     // when the user retries.
     inputHistory.add(fullText)
+    const metas = files.map((ref) => attachmentMeta(ref.file, ref.uploadedID!))
     conn.send({
       type: 'message',
       text: fullText,
-      attachments: files.map((ref) =>
-        attachmentMeta(ref.file, ref.uploadedID!)),
+      attachments: metas,
     })
     inputBar.removeAttachments(all)
     if (streaming) {
-      queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
+      queuedMsgs = [...queuedMsgs, {
+        uuid: '',
+        text: fullText,
+        attachments: metas.map((a) => ({ name: a.name, mime: a.mime })),
+      }]
       inputBar.setQueuedMsgs(queuedMsgs)
       return
     }
@@ -1829,7 +1920,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
 
         if (msg.queuedMsgs && msg.queuedMsgs.length > 0) {
-          queuedMsgs = msg.queuedMsgs.map((m: { uuid: string; text: string }) => ({ uuid: m.uuid, text: m.text }))
+          queuedMsgs = msg.queuedMsgs.map((m) => ({
+            uuid: m.uuid,
+            text: m.text,
+            attachments: m.attachments,
+          }))
           inputBar.setQueuedMsgs(queuedMsgs)
         }
 

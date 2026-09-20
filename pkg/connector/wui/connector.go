@@ -2490,18 +2490,32 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 	slot.ssMu.Unlock()
 }
 
+// queuedAttachmentJSON is the wire shape for one attachment on a queued
+// message: metadata only — never base64 bytes (a 50MB image would bloat the
+// metadata frame). Image blocks carry no filename (filenames don't survive
+// into ContentBlock), so Name stays empty there; the client derives the
+// attachment kind from the mime prefix (image/* vs document mimes).
+type queuedAttachmentJSON struct {
+	Name string `json:"name,omitempty"`
+	Mime string `json:"mime"`
+}
+
 // queuedMsgJSON is the wire shape for a queued user message restored on
-// takeover. Matches the frontend's queuedMsgs entry type {uuid, text}.
+// takeover. Matches the frontend's queuedMsgs entry type {uuid, text,
+// attachments?}.
 type queuedMsgJSON struct {
-	UUID string `json:"uuid"`
-	Text string `json:"text"`
+	UUID        string                 `json:"uuid"`
+	Text        string                 `json:"text"`
+	Attachments []queuedAttachmentJSON `json:"attachments,omitempty"`
 }
 
 // buildQueuedMsgs filters pending attachment items down to user-typed prompt
 // messages and maps them to the wire shape. Job-mode items (system-generated
 // notifications) and meta-tagged items are excluded so only real user input
 // is restored. Text is pulled from Content blocks when present (image/structured
-// attachments), falling back to the plain Value field.
+// attachments), falling back to the plain Value field. Image and document
+// blocks are summarized as attachment metadata so the reconnected client can
+// re-render the queue with the same chips as a normal user message.
 func buildQueuedMsgs(items []types.QueuedItem) []queuedMsgJSON {
 	var out []queuedMsgJSON
 	for _, item := range items {
@@ -2509,18 +2523,26 @@ func buildQueuedMsgs(items []types.QueuedItem) []queuedMsgJSON {
 			continue
 		}
 		text := item.Value
+		var attachments []queuedAttachmentJSON
 		if len(item.Content) > 0 {
 			var sb strings.Builder
 			for _, cb := range item.Content {
-				if cb.Type == types.ContentTypeText {
+				switch cb.Type {
+				case types.ContentTypeText:
 					sb.WriteString(cb.Text)
+				case types.ContentTypeImage:
+					if cb.Source != nil {
+						attachments = append(attachments, queuedAttachmentJSON{Mime: cb.Source.MediaType})
+					}
+				case types.ContentTypeDocument:
+					attachments = append(attachments, queuedAttachmentJSON{Name: cb.Name, Mime: cb.Mime})
 				}
 			}
 			if sb.Len() > 0 {
 				text = sb.String()
 			}
 		}
-		out = append(out, queuedMsgJSON{UUID: item.UUID, Text: text})
+		out = append(out, queuedMsgJSON{UUID: item.UUID, Text: text, Attachments: attachments})
 	}
 	return out
 }

@@ -130,6 +130,129 @@ func TestMetadata_QueuedMsgs(t *testing.T) {
 	}
 }
 
+func TestBuildQueuedMsgs_AttachmentMetadata(t *testing.T) {
+	items := []types.QueuedItem{
+		{
+			UUID: "att-1",
+			Mode: types.ItemModePrompt,
+			Content: []types.ContentBlock{
+				types.NewTextBlock("check these files"),
+				{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "base64", MediaType: "image/png", Data: "SECRETDATA"}},
+				types.NewDocumentBlock("report.pdf", "/cache/report.pdf", "application/pdf", 2048, 512),
+			},
+		},
+	}
+	out := buildQueuedMsgs(items)
+	if len(out) != 1 {
+		t.Fatalf("buildQueuedMsgs returned %d items, want 1", len(out))
+	}
+	if out[0].Text != "check these files" {
+		t.Errorf("out[0].Text = %q, want %q", out[0].Text, "check these files")
+	}
+	if len(out[0].Attachments) != 2 {
+		t.Fatalf("out[0].Attachments has %d entries, want 2 (image + document)", len(out[0].Attachments))
+	}
+	if out[0].Attachments[0].Name != "" || out[0].Attachments[0].Mime != "image/png" {
+		t.Errorf("Attachments[0] = {%q, %q}, want {\"\", image/png}", out[0].Attachments[0].Name, out[0].Attachments[0].Mime)
+	}
+	if out[0].Attachments[1].Name != "report.pdf" || out[0].Attachments[1].Mime != "application/pdf" {
+		t.Errorf("Attachments[1] = {%q, %q}, want {report.pdf, application/pdf}", out[0].Attachments[1].Name, out[0].Attachments[1].Mime)
+	}
+	wire, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal queuedMsgs: %v", err)
+	}
+	if strings.Contains(string(wire), "SECRETDATA") {
+		t.Errorf("queuedMsgs wire leaks image base64 data: %s", string(wire))
+	}
+}
+
+func TestBuildQueuedMsgs_TextOnlyContentHasNoAttachments(t *testing.T) {
+	items := []types.QueuedItem{
+		{
+			UUID:    "t-1",
+			Mode:    types.ItemModePrompt,
+			Content: []types.ContentBlock{types.NewTextBlock("plain")},
+		},
+	}
+	out := buildQueuedMsgs(items)
+	if len(out) != 1 {
+		t.Fatalf("buildQueuedMsgs returned %d items, want 1", len(out))
+	}
+	if len(out[0].Attachments) != 0 {
+		t.Errorf("Attachments = %v, want none for text-only content", out[0].Attachments)
+	}
+	wire, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal queuedMsgs: %v", err)
+	}
+	if strings.Contains(string(wire), "attachments") {
+		t.Errorf("text-only wire should omit attachments field: %s", string(wire))
+	}
+}
+
+func TestMetadata_QueuedMsgsAttachmentMetadataOnWire(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().pendingAttachmentsFn = func() []types.QueuedItem {
+		return []types.QueuedItem{
+			{
+				UUID: "q-att",
+				Mode: types.ItemModePrompt,
+				Content: []types.ContentBlock{
+					types.NewTextBlock("with files"),
+					{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "SECRETDATA"}},
+					types.NewDocumentBlock("notes.pdf", "/cache/notes.pdf", "application/pdf", 4096, 1024),
+				},
+			},
+		}
+	}
+	c.mock().messagesFn = func() []types.Message { return nil }
+
+	mux := http.NewServeMux()
+	var handlerWG sync.WaitGroup
+	mux.HandleFunc("/ws/chat", func(w http.ResponseWriter, r *http.Request) {
+		handlerWG.Add(1)
+		defer handlerWG.Done()
+		ws, err := chatUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			http.Error(w, "upgrade failed", http.StatusInternalServerError)
+			return
+		}
+		serveChatWS(ws, c)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer handlerWG.Wait()
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	defer ws.Close()
+
+	meta := readMetadata(t, ws)
+	raw := string(meta.QueuedMsgs)
+	if raw == "" {
+		t.Fatal("metadata.queuedMsgs is empty, want 1 item")
+	}
+	if strings.Contains(raw, "SECRETDATA") {
+		t.Errorf("queuedMsgs wire frame leaks base64 data: %s", raw)
+	}
+	var queued []queuedMsgJSON
+	if err := json.Unmarshal(meta.QueuedMsgs, &queued); err != nil {
+		t.Fatalf("unmarshal queuedMsgs: %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queuedMsgs has %d items, want 1", len(queued))
+	}
+	if len(queued[0].Attachments) != 2 {
+		t.Fatalf("queued[0].Attachments has %d entries, want 2", len(queued[0].Attachments))
+	}
+	if queued[0].Attachments[0].Mime != "image/jpeg" {
+		t.Errorf("Attachments[0].Mime = %q, want image/jpeg", queued[0].Attachments[0].Mime)
+	}
+	if queued[0].Attachments[1].Name != "notes.pdf" || queued[0].Attachments[1].Mime != "application/pdf" {
+		t.Errorf("Attachments[1] = {%q, %q}, want {notes.pdf, application/pdf}", queued[0].Attachments[1].Name, queued[0].Attachments[1].Mime)
+	}
+}
+
 func TestMetadata_NoQueuedMsgsWhenEmpty(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().messagesFn = func() []types.Message { return nil }

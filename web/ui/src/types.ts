@@ -56,7 +56,7 @@ export type ServerMessage =
       tasks?: { tasks: TaskWireItem[] }
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
       snapshot?: { blocks: Block[] }
-      queuedMsgs?: { uuid: string; text: string }[]
+      queuedMsgs?: { uuid: string; text: string; attachments?: { name?: string; mime: string }[] }[]
       stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
     }
   | { type: 'streamState'; blocks: Block[] }

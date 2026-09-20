@@ -52,6 +52,29 @@ function pressEnter() {
   ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
 }
 
+function attachmentEvent(opts: {
+  content?: unknown[]
+  prompt?: string
+}) {
+  return {
+    type: 'event',
+    event: {
+      type: 'attachment',
+      message: {
+        role: 'user',
+        content: opts.content ?? [],
+        attachment: { prompt: opts.prompt ?? '', source_uuid: '' },
+      },
+    },
+  }
+}
+
+const IMAGE_BLOCK = {
+  type: 'image',
+  source: { type: 'base64', media_type: 'image/png', data: 'aWNl' },
+}
+const DOC_BLOCK = { type: 'document', name: 'notes.md', mime: 'text/markdown', size: 2048 }
+
 beforeEach(() => {
   listeners.clear()
   sent.length = 0
@@ -121,5 +144,62 @@ describe('attachment streaming', () => {
       { type: 'text_delta', text: 'second response' },
     ])
     expect(document.body.textContent).toContain('second response')
+  })
+
+  it('streaming attachment renders text, image and document chip from content blocks', () => {
+    mount()
+    setTextarea('q')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    dispatch(attachmentEvent({
+      content: [
+        { type: 'text', text: 'see this file' },
+        IMAGE_BLOCK,
+        DOC_BLOCK,
+      ],
+      prompt: 'stale prompt',
+    }))
+    expect(document.body.textContent).toContain('see this file')
+    expect(document.body.textContent).not.toContain('stale prompt')
+    const srcs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'))
+    expect(srcs).toContain('data:image/png;base64,aWNl')
+    expect(document.body.textContent).toContain('[notes.md 2.0 KB]')
+  })
+
+  it('non-streaming attachment renders image and document chip from content blocks', () => {
+    mount()
+    setTextarea('q')
+    pressEnter()
+    events([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'first' },
+      { type: 'query_end' },
+    ])
+    dispatch(attachmentEvent({
+      content: [
+        { type: 'text', text: 'look here' },
+        IMAGE_BLOCK,
+        DOC_BLOCK,
+      ],
+    }))
+    expect(document.body.textContent).toContain('look here')
+    const srcs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'))
+    expect(srcs).toContain('data:image/png;base64,aWNl')
+    expect(document.body.textContent).toContain('[notes.md 2.0 KB]')
+  })
+
+  it('attachment with attachments only and no text still renders', () => {
+    mount()
+    setTextarea('q')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    dispatch(attachmentEvent({
+      content: [IMAGE_BLOCK, DOC_BLOCK],
+      prompt: '',
+    }))
+    const srcs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'))
+    expect(srcs).toContain('data:image/png;base64,aWNl')
+    expect(document.body.textContent).toContain('[notes.md 2.0 KB]')
   })
 })

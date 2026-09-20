@@ -2324,6 +2324,52 @@ describe('chat integration', () => {
     expect(document.querySelector('[class*="border-blue/50"]')).toBeNull()
     vi.useRealTimers()
   })
+
+  it('metadata restore renders queued messages with attachment chips', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // A busy engine reconnect: non-empty snapshot flips streaming back on
+    // (metadata's resetAllState runs first), then queuedMsgs restores the queue.
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      snapshot: { blocks: [{ kind: 'text', id: '', text: 'working' }] },
+      queuedMsgs: [{
+        uuid: 'q-1',
+        text: 'review this',
+        attachments: [
+          { name: 'report.pdf', mime: 'application/pdf' },
+          { mime: 'image/jpeg' },
+        ],
+      }],
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    expect(document.body.textContent).toContain('Tap to CANCEL')
+    expect(document.body.textContent).toContain('[report.pdf]')
+    expect(document.body.textContent).toContain('[image/jpeg]')
+  })
+
+  it('queued uuid backfill preserves attachment chips', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      snapshot: { blocks: [{ kind: 'text', id: '', text: 'working' }] },
+      // uuid:'' mirrors a locally-pushed queue entry awaiting its server uuid
+      queuedMsgs: [{ uuid: '', text: 'with file', attachments: [{ name: 'doc.pdf', mime: 'application/pdf' }] }],
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({ type: 'queued', uuid: 'srv-1' })
+    expect(document.body.textContent).toContain('Tap to CANCEL')
+    expect(document.body.textContent).toContain('[doc.pdf]')
+  })
 })
 
 describe('mapHistoryToChatMessages', () => {

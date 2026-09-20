@@ -126,6 +126,35 @@ describe('createInputBar', () => {
     expect(bubbles.length).toBe(2)
   })
 
+  it('setQueuedMsgs with attachments renders attachment chips next to text', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{
+      uuid: 'u-1',
+      text: 'review these',
+      attachments: [
+        { name: 'report.pdf', mime: 'application/pdf' },
+        { mime: 'image/png' },
+      ],
+    }])
+    expect(ib.bubbles.textContent).toContain('review these')
+    expect(ib.bubbles.textContent).toContain('[report.pdf]')
+    // image entries without a name (backend snapshot sends mime only) fall back to the mime
+    expect(ib.bubbles.textContent).toContain('[image/png]')
+    // chips reuse the user-message attachment chip classes (font-mono + bg-ink2)
+    const chips = ib.bubbles.querySelectorAll('span.font-mono.bg-ink2')
+    expect(chips.length).toBe(2)
+    expect(chips[0].textContent).toBe('[report.pdf]')
+    expect(chips[1].textContent).toBe('[image/png]')
+  })
+
+  it('setQueuedMsgs without attachments renders no chips', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'plain' }])
+    expect(ib.bubbles.querySelectorAll('span.font-mono.bg-ink2').length).toBe(0)
+  })
+
   it('setInputText sets textarea value', () => {
     const ib = mount()
     ib.setInputText('hi')

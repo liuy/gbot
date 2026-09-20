@@ -26,6 +26,17 @@ export type AttachmentRef =
   // renderChips' guards skip them.
   | { kind: 'paste'; text: string; lineCount: number; seq: number; failed?: boolean; uploadProgress?: number }
 
+// QueuedMsg mirrors the metadata wire entry for a message waiting in the
+// server-side attachment queue while a query is streaming. Attachments are
+// metadata-only — the backend never sends image bytes in the snapshot, and
+// image entries carry no name (filenames don't survive into the queue's
+// content blocks), so the chip label falls back to the mime.
+export type QueuedMsg = {
+  uuid: string
+  text: string
+  attachments?: { name?: string; mime: string }[]
+}
+
 // INTENTIONAL DIVERGENCE from the TUI (pkg/tui/app.go newlineCount at lines
 // 1736-1744), which does `\r`→`\n` then counts `\n` — that double-counts
 // `\r\n` (a Windows paste of N CRLFs yields newlineCount === 2N). This
@@ -48,7 +59,7 @@ export interface InputBarHandles {
   textarea: HTMLTextAreaElement
   setStreaming: (s: boolean) => void
   setUploading: (u: boolean) => void      // distinct from setStreaming — disables + and textarea
-  setQueuedMsgs: (q: { uuid: string; text: string }[]) => void
+  setQueuedMsgs: (q: QueuedMsg[]) => void
   setInputText: (text: string) => void
   appendQueuedText: (text: string) => void
   setConnected: (c: boolean) => void
@@ -91,7 +102,7 @@ export function createInputBar(initial: {
   let attachments: AttachmentRef[] = []
   let attachmentsChangeCb: (() => void) | null = null
   let retryCb: ((ref: AttachmentRef) => Promise<boolean>) | null = null
-  let queuedMsgs: { uuid: string; text: string }[] = []
+  let queuedMsgs: QueuedMsg[] = []
   let sendCb: ((text: string) => void) | null = null
   let stopCb: (() => void) | null = null
   let cancelCb: (() => void) | null = null
@@ -839,6 +850,16 @@ export function createInputBar(initial: {
       const label = createElement('span', 'text-[10px] text-t2 font-light italic truncate max-w-[240px]')
       label.textContent = m.text
       bub.appendChild(label)
+      for (const a of m.attachments ?? []) {
+        // Same chip classes as user-message document attachments
+        // (renderUserMessage in chat.ts) so a queued bubble reads the same
+        // as the committed message it becomes.
+        const chip = createNode('span', {
+          className: 'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1',
+          text: `[${a.name || a.mime}]`,
+        })
+        bub.appendChild(chip)
+      }
       if (i === 0 && queuedMsgs.length > 1) {
         const more = createElement('span', 'text-[10px] text-t3 mono ml-1')
         more.textContent = `+${queuedMsgs.length - 1} more`
