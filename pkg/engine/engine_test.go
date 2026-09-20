@@ -1086,6 +1086,98 @@ func TestSetMessages(t *testing.T) {
 	}
 }
 
+// TestQuery_ConcurrentSetMessagesDuringQuery guards the e.messages read
+// points a query hits while in flight (microcompact, executor history,
+// reminder context, API marshaling) against unlocked reads. A goroutine
+// hammers SetMessages for the whole query duration — the "caller rewrites
+// history mid-query" scenario. The first turn's tool blocks until released,
+// parking the query in ExecuteAll so the hammer's writes are guaranteed
+// unordered w.r.t. the post-park reads. Run with -race.
+func TestQuery_ConcurrentSetMessagesDuringQuery(t *testing.T) {
+	toolStarted := make(chan struct{})
+	release := make(chan struct{})
+	blockTool := &mockTool{
+		name:    "Block",
+		enabled: true,
+		callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(toolStarted)
+			<-release
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_race_1", "Block", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{blockTool.Name(): blockTool}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Hammer: rewrite history for the whole query duration. The replacement
+	// slice is never mutated after creation, so with locked reads this is
+	// memory-safe even though the query loop keeps using its stale reference.
+	stop := make(chan struct{})
+	var hammerWG sync.WaitGroup
+	hammerWrites := 0 // written by hammer goroutine only; read after Wait
+	hammerWG.Go(func() {
+		replacement := []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("replaced")}},
+		}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				eng.SetMessages(replacement)
+				hammerWrites++
+				runtime.Gosched()
+			}
+		}
+	})
+
+	resCh := make(chan QueryResult, 1)
+	go func() { resCh <- eng.QuerySync(ctx, "hello", "") }()
+
+	// Query is now parked in ExecuteAll behind Block; yield so the hammer
+	// accumulates unordered writes before the engine resumes.
+	<-toolStarted
+	for range 200 {
+		runtime.Gosched()
+	}
+	close(release)
+
+	res := <-resCh
+	close(stop)
+	hammerWG.Wait()
+
+	if hammerWrites < 2 {
+		t.Fatalf("hammer goroutine starved: only %d SetMessages writes landed during the query", hammerWrites)
+	}
+	if res.Error != nil {
+		t.Fatalf("query returned error: %v", res.Error)
+	}
+	// SetMessages never touches usage or turn state, so both are deterministic.
+	if res.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2 (tool turn + terminal turn)", res.TurnCount)
+	}
+	if res.TotalUsage.InputTokens != 30 {
+		t.Errorf("TotalUsage.InputTokens = %d, want 30 (20 + 10 from the two message_start events)", res.TotalUsage.InputTokens)
+	}
+	if res.TotalUsage.OutputTokens != 15 {
+		t.Errorf("TotalUsage.OutputTokens = %d, want 15 (10 + 5 from the two message_delta events)", res.TotalUsage.OutputTokens)
+	}
+}
+
 func TestSetMessages_RestoresToolSearchState(t *testing.T) {
 	t.Parallel()
 
@@ -4126,21 +4218,14 @@ func TestChain_SubEngineBashBackup(t *testing.T) {
 		}
 	}
 subDone:
-	// Yield to let the query goroutine finish its return path.
-	// The goroutine may still be accessing e.messages after emitting
-	// EventQueryEnd. runtime.Gosched() gives it a chance to exit.
-	runtime.Gosched()
-
 	// Verify backup was recorded via shared tracker
 	records := tracker.State().TrackedFiles
 	if len(records) < 1 {
 		t.Fatalf("expected at least 1 backup record from sub-engine, got %d — workingDir not inherited?", len(records))
 	}
 
-	// Restore files directly via tracker (avoids race with query goroutine
-	// that hasn't fully exited — RewindTo on sub-engine is inherently racy
-	// because runTurns reads e.messages without lock after EventQueryEnd).
-	// The RewindTo chain is already tested by TestChain_BashBackupViaQuery.
+	// Restore files directly via tracker — engine-level rewind is covered by
+	// TestChain_BashBackupViaQuery; this test verifies the tracker records.
 	restored, err := tracker.Rewind("")
 	if err != nil {
 		t.Fatalf("Rewind: %v", err)

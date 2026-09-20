@@ -6327,6 +6327,73 @@ func TestQuery_EmitsQueryStart(t *testing.T) {
 	}
 }
 
+// chainDispatcher starts the next Query the moment the previous one emits
+// EventQueryEnd — the same pattern the TUI/connector uses for back-to-back
+// turns. The next Query's goroutine appends its user message under e.mu while
+// the previous query's goroutine is still on its exit path.
+type chainDispatcher struct {
+	eng    *Engine
+	ctx    context.Context
+	prompt string
+	endCh  chan struct{}
+	fired  atomic.Bool
+}
+
+func (d *chainDispatcher) Dispatch(event types.QueryEvent) {
+	if event.Type != types.EventQueryEnd {
+		return
+	}
+	if d.fired.CompareAndSwap(false, true) {
+		d.eng.Query(d.ctx, d.prompt, "")
+	}
+	d.endCh <- struct{}{}
+}
+
+// TestQuery_BackToBackQueriesRaceOnExitPath guards the exit path after
+// EventQueryEnd against unlocked e.messages reads: the chained second Query
+// appends under e.mu while the first query's goroutine builds its QueryResult
+// and runs its exit defers. Run with -race.
+func TestQuery_BackToBackQueriesRaceOnExitPath(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "first response"), nil)
+	mp.addResponse(textStreamEvents("test", "second response"), nil)
+
+	disp := &chainDispatcher{prompt: "second", endCh: make(chan struct{}, 4)}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: disp,
+	})
+	defer eng.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	disp.eng = eng
+	disp.ctx = ctx
+
+	eng.Query(ctx, "first", "")
+
+	<-disp.endCh // first query end — chained second Query already started
+	<-disp.endCh // second query end — both goroutines have appended
+
+	msgs := eng.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("len(Messages()) = %d, want 4 (user+assistant per query)", len(msgs))
+	}
+	wantRoles := []types.Role{types.RoleUser, types.RoleAssistant, types.RoleUser, types.RoleAssistant}
+	for i, want := range wantRoles {
+		if msgs[i].Role != want {
+			t.Errorf("msgs[%d].Role = %q, want %q", i, msgs[i].Role, want)
+		}
+	}
+	if msgs[1].Content[0].Text != "first response" {
+		t.Errorf("msgs[1] text = %q, want %q", msgs[1].Content[0].Text, "first response")
+	}
+	if msgs[3].Content[0].Text != "second response" {
+		t.Errorf("msgs[3] text = %q, want %q", msgs[3].Content[0].Text, "second response")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ProcessAttachments — async wrapper integration test
 // ---------------------------------------------------------------------------

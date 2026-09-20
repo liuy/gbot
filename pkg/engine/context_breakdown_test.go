@@ -729,8 +729,10 @@ func TestTokenCountForBlock_Thinking(t *testing.T) {
 	t.Parallel()
 	block := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "I need to think about this carefully"}
 	got := tokenCountForBlock(block)
-	if got <= 0 {
-		t.Errorf("expected positive token count for thinking block, got %d", got)
+	// Thinking text "I need to think about this carefully" — 35 runes
+	// at 0.20 tokens/char.
+	if got != 7 {
+		t.Errorf("thinking block token count = %d, want 7", got)
 	}
 }
 
@@ -738,8 +740,10 @@ func TestTokenCountForBlock_UnknownType(t *testing.T) {
 	t.Parallel()
 	block := types.ContentBlock{Type: "image", Text: "an image block"}
 	got := tokenCountForBlock(block)
-	if got <= 0 {
-		t.Errorf("expected positive token count for unknown type via JSON marshal, got %d", got)
+	// Marshal yields {"type":"image","text":"an image block"} — 40 runes
+	// at 0.20 tokens/char.
+	if got != 8 {
+		t.Errorf("unknown-type token count = %d, want 8", got)
 	}
 }
 

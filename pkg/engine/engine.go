@@ -1310,8 +1310,27 @@ func (e *Engine) queryLoopWithContent(ctx context.Context, content []types.Conte
 	return e.runTurns(ctx, systemPrompt)
 }
 
+// snapshotExitState captures the fields runTurns reads after emitting
+// EventQueryEnd. Subscribers may start the next query on receiving that
+// event — its appendMessage takes the write lock — so bare field reads on
+// the exit path race with it.
+// No clone: exit paths only read the slice header (len), and async callers
+// discard the result. Element reads here would race with
+// appendInlineInterruptMessage's in-place mutation.
+func (e *Engine) snapshotExitState() (msgs []types.Message, turns int) {
+	e.mu.RLock()
+	msgs = e.messages
+	turns = e.turnCount
+	e.mu.RUnlock()
+	return msgs, turns
+}
+
 // runTurns executes the agentic turn loop. Shared by queryLoop (normal path)
 // and RunForkedQuery (fork agent path).
+//
+// Locking contract: e.mu only guarantees memory safety. A caller rewriting
+// e.messages (SetMessages/Rewind) while a query is in flight leaves the loop
+// reading a stale reference — semantics undefined, tracked as a follow-up.
 func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult {
 	var totalUsage types.Usage
 	// Per-phase wall-clock accumulators (milliseconds) for latency triage.
@@ -1334,12 +1353,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.logger.Error("engine:runTurns_panic", "panic", r, "stack", string(debug.Stack()))
 			panic(r)
 		}
+		msgs, turns := e.snapshotExitState()
 		e.logger.Info("engine:runTurns_exit",
 			"engine_id", e.engineID,
 			"session", fmt.Sprintf("%.8s", e.sessionID),
 			"store_nil", e.store == nil,
-			"messages", len(e.messages),
-			"turns", e.turnCount,
+			"messages", len(msgs),
+			"turns", turns,
 		)
 	}()
 	// Log query summary on every exit path.
@@ -1353,12 +1373,15 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		} else if totalUsage.CacheCreationInputTokens > 0 {
 			cacheStatus = "warm"
 		}
+		e.mu.RLock()
+		turns := e.turnCount
+		e.mu.RUnlock()
 		e.logger.Info("engine:query_summary",
 			"input", totalUsage.InputTokens,
 			"output", totalUsage.OutputTokens,
 			"cache_read", totalUsage.CacheReadInputTokens,
 			"cache_creation", totalUsage.CacheCreationInputTokens,
-			"turns", e.turnCount,
+			"turns", turns,
 			"cache", cacheStatus,
 			"wall_ms", time.Since(queryStart).Milliseconds(),
 			"llm_ms", llmTotalMs,
@@ -1388,7 +1411,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 	// Source: query.ts:413-419 — runs once per query, before autocompact.
 	// Sub-agents use agent-specific querySource so isMainThreadSource excludes them.
 	mcQuerySource := e.querySource()
-	mcResult := MicrocompactMessages(e.messages, mcQuerySource, e.logger)
+	e.mu.RLock()
+	mcMsgs := e.messages
+	e.mu.RUnlock()
+	mcResult := MicrocompactMessages(mcMsgs, mcQuerySource, e.logger)
 	e.setMessages(mcResult.Messages)
 
 	reactiveCompactDone := false
@@ -1403,8 +1429,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		if err := ShouldAbort(ctx, "streaming"); err != nil {
 			e.appendInlineInterruptMessage()
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
+			msgs, _ := e.snapshotExitState()
 			return QueryResult{
-				Messages: e.messages,
+				Messages: msgs,
 				Error:    err,
 			}
 		}
@@ -1512,9 +1539,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
 					CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
 				}})
+				msgs, turns := e.snapshotExitState()
 				return QueryResult{
-					Messages:   e.messages,
-					TurnCount:  e.turnCount,
+					Messages:   msgs,
+					TurnCount:  turns,
 					TotalUsage: totalUsage,
 					Error:      abortErr,
 				}
@@ -1579,9 +1607,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			if abortErr := ShouldAbort(ctx, "streaming"); abortErr != nil {
 				e.appendInlineInterruptMessage()
 				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
+				msgs, turns := e.snapshotExitState()
 				return QueryResult{
-					Messages:   e.messages,
-					TurnCount:  e.turnCount,
+					Messages:   msgs,
+					TurnCount:  turns,
 					TotalUsage: totalUsage,
 					Error:      abortErr,
 				}
@@ -1591,8 +1620,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			// Retry is handled by callLLMWithRetry (stream-level only).
 			e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
+			errMsgs, _ := e.snapshotExitState()
 			return QueryResult{
-				Messages: e.messages,
+				Messages: errMsgs,
 				Error:    err,
 			}
 		}
@@ -1620,7 +1650,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Populate conversation history on the executor so tools
 		// (e.g. Agent tool) can access the full parent conversation.
 		if streamingExecutor != nil {
-			streamingExecutor.SetMessages(e.messages)
+			e.mu.RLock()
+			execMsgs := e.messages
+			e.mu.RUnlock()
+			streamingExecutor.SetMessages(execMsgs)
 
 			// Stage 18: Post-streaming abort check.
 			// Source: query.ts:1015-1029 — consume getRemainingResults or yieldMissingToolResultBlocks.
@@ -1635,9 +1668,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
 					CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
 				}})
+				msgs, turns := e.snapshotExitState()
 				return QueryResult{
-					Messages:   e.messages,
-					TurnCount:  e.turnCount,
+					Messages:   msgs,
+					TurnCount:  turns,
 					TotalUsage: totalUsage,
 					Error:      err,
 				}
@@ -1723,13 +1757,17 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				})
 				e.appendMessage(hookMsg)
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+				e.mu.Lock()
 				e.turnCount++
+				e.mu.Unlock()
 				e.firePostTurnHooks(ctx)
 				continue
 			}
 
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+			e.mu.Lock()
 			e.turnCount++
+			e.mu.Unlock()
 			e.firePostTurnHooks(ctx)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
 				InputTokens:              totalUsage.InputTokens,
@@ -1737,9 +1775,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
 				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
 			}})
+			msgs, turns := e.snapshotExitState()
 			return QueryResult{
-				Messages:   e.messages,
-				TurnCount:  e.turnCount,
+				Messages:   msgs,
+				TurnCount:  turns,
 				TotalUsage: totalUsage,
 			}
 		}
@@ -1799,9 +1838,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
 				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
 			}})
+			msgs, turns := e.snapshotExitState()
 			return QueryResult{
-				Messages:   e.messages,
-				TurnCount:  e.turnCount,
+				Messages:   msgs,
+				TurnCount:  turns,
 				TotalUsage: totalUsage,
 				Error:      err,
 			}
@@ -1836,9 +1876,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// prefix) so prompt cache is preserved.
 		// TS reference: query.ts:1596 — toolResults.push(attachment).
 		if e.reminderEngine != nil {
+			e.mu.RLock()
+			reminderMsgs := e.messages
+			reminderTurns := e.turnCount
+			e.mu.RUnlock()
 			reminderCtx := attachment.ReminderContext{
-				Messages:   e.messages,
-				TurnCount:  e.turnCount,
+				Messages:   reminderMsgs,
+				TurnCount:  reminderTurns,
 				IsSubagent: e.isSubagent,
 				TaskList:   &taskListReaderAdapter{list: e.taskList},
 			}
@@ -1851,7 +1895,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 
 		// Stage 25-26: Turn counting
+		e.mu.Lock()
 		e.turnCount++
+		e.mu.Unlock()
 
 		// Post-turn hooks (session memory extraction, etc.)
 		// TS: executePostSamplingHooks in query.ts after each sampling step.
@@ -1864,9 +1910,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
 		CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
 	}})
+	msgs, turns := e.snapshotExitState()
 	return QueryResult{
-		Messages:   e.messages,
-		TurnCount:  e.turnCount,
+		Messages:   msgs,
+		TurnCount:  turns,
 		TotalUsage: totalUsage,
 	}
 }
@@ -2475,7 +2522,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						// baseTctx.WorkingDir is a snapshot; the supplier lets
 						// every tool call re-read the live dir after a cd.
 						streamingExecutor.SetWorkingDirSupplier(e.getWorkingDir)
-						streamingExecutor.SetMessages(e.messages)
+						e.mu.RLock()
+						streamMsgs := e.messages
+						e.mu.RUnlock()
+						streamingExecutor.SetMessages(streamMsgs)
 						streamingExecutor.SetMemoryDir(e.memoryDir)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
@@ -2969,8 +3019,11 @@ func injectTimestamp(blocks []types.ContentBlock, msg types.Message) []types.Con
 }
 
 func (e *Engine) marshalMessages() []types.Message {
+	e.mu.RLock()
+	msgs := e.messages
+	e.mu.RUnlock()
 	var result []types.Message
-	for _, msg := range e.messages {
+	for _, msg := range msgs {
 		// Skip system messages
 		if msg.Role == types.RoleSystem {
 			continue
