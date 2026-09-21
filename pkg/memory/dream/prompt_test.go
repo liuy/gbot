@@ -19,15 +19,22 @@ func TestSystemPrompt_PhaseStructure(t *testing.T) {
 	}
 }
 
-func TestSystemPrompt_QueriesOverRecall(t *testing.T) {
+func TestSystemPrompt_QueriesPrimaryRecallDeepDive(t *testing.T) {
 	if !strings.Contains(SystemPrompt, "ready-to-run Read queries") {
 		t.Error("system prompt should describe the trigger's pre-built queries")
 	}
 	if !strings.Contains(SystemPrompt, "Recall") {
 		t.Error("system prompt should still keep Recall as the deep-dive tool")
 	}
-	if strings.Contains(SystemPrompt, `Recall(query=`) {
-		t.Error("system prompt should not teach Recall-keyword-first gathering anymore")
+	// Recall deep-dive guidance must be example-driven (trigger conditions,
+	// not abstract advice) — abstract hints proved too weak to change behavior.
+	if !strings.Contains(SystemPrompt, `Recall(query=`) {
+		t.Error("system prompt should include a concrete Recall example")
+	}
+	// Ordering invariant: the pre-built queries come first, Recall deep-dive
+	// after — never Recall-first gathering.
+	if strings.Index(SystemPrompt, "ready-to-run Read queries") > strings.Index(SystemPrompt, `Recall(query=`) {
+		t.Error("query-based gathering must be taught before Recall deep-dive")
 	}
 }
 

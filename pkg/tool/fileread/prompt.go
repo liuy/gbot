@@ -45,6 +45,14 @@ For .sqlite, .sqlite3, .db, .db3 files, append a selector after the path:
 - file.db:table?where=status='active'&order=created:desc — filtered, sorted rows
 - file.db?q=SELECT ... — read-only raw SQL query
 
+The conversation transcript DB (memory.db under the projectspace, path per Environment) is readable this way. Schema (bare path lists all tables; *_fts* internals are not for direct use):
+- messages(seq, session_id, uuid, parent_uuid, logical_parent_uuid, type, subtype, content, metadata, created_at, is_sidechain) — one row per message; content is a JSON block array; is_sidechain=1 rows are sub-agent transcripts, filter to 0 for the main thread
+- sessions(session_id, title, model, agent_type, created_at, updated_at, ...) — join on session_id for readable titles, e.g. WHERE s.title LIKE '%laya%'
+created_at is RFC3339 UTC and lexicographically sortable — convert local times to UTC before querying. Content rows can be large, so project/substr them instead of SELECT *:
+- Time-window browse: memory.db?q=SELECT seq,type,substr(content,1,300) FROM messages WHERE created_at >= '2026-09-20 07:00' AND created_at < '2026-09-20 10:00'
+- Context around a Recall hit: get its session_id and seq (WHERE uuid='...'), then walk that conversation — WHERE session_id='...' AND seq BETWEEN <seq>-N AND <seq>+N ORDER BY seq — sizing N to how much context you need (a couple of rows for the adjacent exchange, tens for the surrounding discussion; seq is global across sessions, so always scope by session_id)
+Use Recall for keyword search; use the DB for precise time windows and surrounding context.
+
 Detection is by file extension AND magic bytes — a .sqlite file that is not a real SQLite database is rejected.
 
 # Archives

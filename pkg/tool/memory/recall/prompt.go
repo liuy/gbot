@@ -14,4 +14,5 @@ Either query or uuid is required.
 
 Output: { messages: [{uuid, content, date}] }
 
-Messages return snippets (~50 chars) around the search term. To read a message's full content, call Recall again with its uuid parameter.`
+Messages return snippets (~50 chars) around the search term. To read a message's full content, call Recall again with its uuid parameter.
+For precise time windows (a specific afternoon) or full transcript context around a result, Read memory.db (path per Environment) with SQL selectors — its created_at column is RFC3339 UTC, while the date fields above are local time: convert before using one as a query bound.`

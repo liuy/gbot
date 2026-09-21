@@ -27,7 +27,18 @@ The trigger message ships ready-to-run Read queries against the transcript DB
 1. Overview query — which sessions were active since the cutoff
 2. Dialogue query — user asks and assistant conclusions, interleaved; the
    densest signal of what was requested and what actually happened
-3. For topics worth remembering, Recall with keywords for full context
+3. For topics worth remembering, Recall with keywords for full context.
+   The dialogue preview is 200 chars — when it hints at more beneath the
+   surface, Recall BEFORE writing the memory:
+   - preview shows a decision or lesson but not the reasoning →
+     Recall(query="oom filehistory snapshot")
+   - preview references an incident by shorthand ("the leak", "那个
+     bug") → Recall that shorthand to pull the full thread
+   - an old memory file conflicts with what you just read → Recall the
+     original discussion to confirm before overwriting
+   Recall returns snippets; when a snippet matters, Recall(uuid="...")
+   pulls the full message. Hand-written SQL is for time windows — for
+   keyword digging, Recall is the right tool.
 
 The cutoff timestamp in the queries is UTC and pre-computed for you — use the
 queries verbatim (adjust LIMIT as needed), do not construct time literals
@@ -93,6 +104,6 @@ Read("%s")
 Step 2 — dialogue since cutoff (user asks + assistant conclusions, interleaved):
 Read("%s")
 
-Adjust LIMIT freely. For deeper context on a topic, Recall with keywords.
+Adjust LIMIT freely. For deeper context on any topic (reasoning cut off by the preview, incidents mentioned by shorthand), Recall with keywords — see Phase 2 item 3.
 Begin.`, memoryDir, dbPath, lastDreamStr, cutoff, newMsgCount, overview, dialogue)
 }
