@@ -572,6 +572,11 @@ func SaveProviders(providers []Provider) error {
 	if err := os.WriteFile(tmpPath, data, mode); err != nil {
 		return err
 	}
+	// WriteFile applies the process umask (Termux runs with 0077), which would
+	// silently drop the preserved bits; chmod is not umask-filtered.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return err
+	}
 	return os.Rename(tmpPath, path)
 }
 
@@ -634,6 +639,11 @@ func SaveRemoteDevices(devices []RemoteDevice) error {
 
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	// See SaveProviders: chmod after WriteFile so a restrictive umask cannot
+	// defeat the preserved mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, path)
@@ -716,6 +726,11 @@ func SaveDefaultModel(provider, model string) error {
 	}
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	// See SaveProviders: chmod after WriteFile so a restrictive umask cannot
+	// defeat the preserved mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, path)

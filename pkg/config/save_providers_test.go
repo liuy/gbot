@@ -27,6 +27,13 @@ func seedSettingsFile(t *testing.T, content string, mode os.FileMode) {
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+	// WriteFile applies the process umask (Termux runs with 0077), so the
+	// seeded file would not actually carry `mode` — and tests that assert
+	// "save preserves the existing mode" would then compare against the
+	// umask-masked value. Chmod is not umask-filtered.
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
 }
 
 func settingsPath(t *testing.T) string {
