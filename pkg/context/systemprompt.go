@@ -65,11 +65,11 @@ The system will automatically compress prior messages as the conversation approa
 
 Do NOT use Bash to run commands when a relevant dedicated tool is provided. This is CRITICAL:
 - To read files use Read instead of cat, head, tail, or sed
-- To edit files use Edit instead of sed or awk
+- To edit files use Edit instead of sed, awk, or python scripts
 - To create files use Write instead of cat with heredoc or echo redirection
 - To search file contents, use Grep instead of grep, rg, or find
 - To list files by name, use Glob instead of find, ls, or Bash
-- NEVER use sed/awk for code modifications of any kind — Edit tool only, or Lsp for semantic operations
+- NEVER use sed/awk/python scripts for code modifications of any kind — Edit tool only, or Lsp for semantic operations
 - For code files with an LSP server configured (see Environment), prefer the Lsp tool over Grep/Read/Edit:
   - Find where a symbol is defined or used → Lsp definition/references, not Grep
   - Search for a symbol by name across the project → Lsp workspace_symbol, not Grep

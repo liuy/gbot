@@ -22,7 +22,7 @@ func bashPrompt() string {
 		" - File search: Use Glob (NOT find or ls)\n" +
 		" - Content search: Use Grep (NOT grep or rg)\n" +
 		" - Read files: Use Read (NOT cat/head/tail)\n" +
-		" - Edit files: Use Edit (NOT sed/awk)\n" +
+		" - Edit files: Use Edit (NOT sed/awk/python script)\n" +
 		" - Write files: Use Write (NOT echo >/cat <<EOF)\n" +
 		" - Communication: Output text directly (NOT echo/printf)\n\n" +
 		"While the Bash tool can do similar things, it's better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.\n\n" +
