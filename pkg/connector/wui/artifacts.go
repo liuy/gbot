@@ -47,7 +47,7 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 		// loopback. allow-top-navigation stays off so an artifact can never
 		// hijack the whole wui page.
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:*; sandbox allow-scripts allow-same-origin allow-popups allow-modals allow-downloads allow-forms")
+		w.Header().Set("Content-Security-Policy", "default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' http:; sandbox allow-scripts allow-same-origin allow-popups allow-modals allow-downloads allow-forms")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 
 		f, err := os.Open(full)
