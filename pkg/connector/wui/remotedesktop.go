@@ -43,11 +43,11 @@ func handleGetRemoteDevices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, remoteDevicesPayload{Devices: []config.RemoteDevice{}})
 		return
 	}
-	if cfg.RemoteDesktop == nil {
-		cfg.RemoteDesktop = []config.RemoteDevice{}
+	if cfg.Desktops == nil {
+		cfg.Desktops = []config.RemoteDevice{}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, remoteDevicesPayload{Devices: cfg.RemoteDesktop})
+	writeJSON(w, http.StatusOK, remoteDevicesPayload{Devices: cfg.Desktops})
 }
 
 func handlePutRemoteDevices(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +214,7 @@ func handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	// cannot be found, same semantics as handleGetRemoteDevices.
 	var devices []config.RemoteDevice
 	if cfg, err := config.Load(); err == nil {
-		devices = cfg.RemoteDesktop
+		devices = cfg.Desktops
 	}
 	var device *config.RemoteDevice
 	for i := range devices {

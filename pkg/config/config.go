@@ -26,7 +26,7 @@ type Config struct {
 	Model     ModelSpec  `json:"model"`               // string "provider/model" or map of tiers {default,lite,pro,max,...}
 	Providers []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
 
-	RemoteDesktop []RemoteDevice `json:"remote_desktop,omitempty"` // wui remote-desktop console targets
+	Desktops []RemoteDevice `json:"desktops,omitempty"` // wui remote-desktop console targets
 
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
 	Permissions    json.RawMessage      `json:"permissions,omitempty"` // parsed by pkg/permission.LoadConfig()
@@ -258,7 +258,22 @@ func loadFromFile(cfg *Config, path string) error {
 		}
 		return err
 	}
-	return json.Unmarshal(data, cfg)
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	// Files written before the rename to "desktops" still carry the old
+	// remote_desktop key; without this fallback those console targets would
+	// be silently dropped on load. When both keys exist, desktops wins.
+	if cfg.Desktops == nil {
+		var legacy struct {
+			RemoteDesktop []RemoteDevice `json:"remote_desktop"`
+		}
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return err
+		}
+		cfg.Desktops = legacy.RemoteDesktop
+	}
+	return nil
 }
 
 // ConfigDir returns the gbot config directory (~/.gbot).
@@ -560,8 +575,9 @@ func SaveProviders(providers []Provider) error {
 	return os.Rename(tmpPath, path)
 }
 
-// SaveRemoteDevices replaces the "remote_desktop" key of ~/.gbot/settings.json
-// with devices, preserving every other top-level key verbatim. Same safety
+// SaveRemoteDevices replaces the "desktops" key of ~/.gbot/settings.json with
+// devices, preserving every other top-level key verbatim, and drops the legacy
+// "remote_desktop" key when present so the two never coexist. Same safety
 // contract as SaveProviders (backup first, then atomic tmp+rename); mode is
 // preserved from the existing file, else 0600 (the file carries VNC
 // passwords). Validation lives in the HTTP handler, as providers does.
@@ -593,7 +609,11 @@ func SaveRemoteDevices(devices []RemoteDevice) error {
 	if err != nil {
 		return err
 	}
-	raw["remote_desktop"] = devicesJSON
+	raw["desktops"] = devicesJSON
+	// raw is the existing file verbatim; the legacy key must be dropped or it
+	// would linger beside desktops and resurrect stale devices on any future
+	// load where desktops is absent (e.g. an empty-list PUT).
+	delete(raw, "remote_desktop")
 
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

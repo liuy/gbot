@@ -822,7 +822,7 @@ export function createSettingsPage(): SettingsPageHandles {
   rdBackBtn.addEventListener('click', () => showDeviceForm(false))
   rdAddBtn.addEventListener('click', () => openDeviceForm(-1))
 
-  // One save persists the WHOLE list — the PUT replaces remote_desktop.
+  // One save persists the WHOLE list — the PUT replaces desktops.
   const persistDevices = async (next: RemoteDevice[]) => {
     try {
       await saveRemoteDevices(next)

@@ -95,7 +95,7 @@ func TestRemoteDesktopGetPutRoundTrip(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	seed := `{
   "providers": [{"name": "zhipu", "url": "https://a", "keys": ["k"], "models": {"glm-5.3": {}}}],
-  "remote_desktop": [
+  "desktops": [
     {"name": "win11", "addr": "ws://127.0.0.1:8006"},
     {"name": "nas", "addr": "wss://nas.local:8006", "pass": "pw"}
   ]
@@ -141,8 +141,8 @@ func TestRemoteDesktopGetPutRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		t.Fatalf("file invalid: %v", err)
 	}
-	if !jsonEqual(t, file["remote_desktop"], json.RawMessage(`[{"name":"only","addr":"ws://127.0.0.1:6080"}]`)) {
-		t.Errorf("remote_desktop = %s, want the PUT body", file["remote_desktop"])
+	if !jsonEqual(t, file["desktops"], json.RawMessage(`[{"name":"only","addr":"ws://127.0.0.1:6080"}]`)) {
+		t.Errorf("desktops = %s, want the PUT body", file["desktops"])
 	}
 	if !jsonEqual(t, file["providers"], json.RawMessage(`[{"name":"zhipu","url":"https://a","keys":["k"],"models":{"glm-5.3":{}}}]`)) {
 		t.Errorf("providers = %s, want unchanged", file["providers"])
@@ -165,7 +165,7 @@ func TestRemoteDesktopGetPutRoundTrip(t *testing.T) {
 
 func TestRemoteDesktopPutValidation(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
-	path, old := seedSettings(t, `{"providers":[{"name":"zhipu","url":"https://a","keys":["k"],"models":{"m":{}}}],"remote_desktop":[{"name":"keep","addr":"ws://127.0.0.1:8006"}]}`)
+	path, old := seedSettings(t, `{"providers":[{"name":"zhipu","url":"https://a","keys":["k"],"models":{"m":{}}}],"desktops":[{"name":"keep","addr":"ws://127.0.0.1:8006"}]}`)
 
 	cases := []struct {
 		name string
@@ -214,8 +214,8 @@ func TestRemoteDesktopPutValidation(t *testing.T) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		t.Fatalf("file invalid: %v", err)
 	}
-	if string(file["remote_desktop"]) != "[]" {
-		t.Errorf("remote_desktop = %s, want []", file["remote_desktop"])
+	if string(file["desktops"]) != "[]" {
+		t.Errorf("desktops = %s, want []", file["desktops"])
 	}
 	var got struct {
 		Devices []json.RawMessage `json:"devices"`
@@ -228,7 +228,7 @@ func TestRemoteDesktopPutValidation(t *testing.T) {
 
 func TestRemoteDesktopPutUndecodableBody(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
-	seedSettings(t, `{"remote_desktop":[{"name":"keep","addr":"ws://127.0.0.1:8006"}]}`)
+	seedSettings(t, `{"desktops":[{"name":"keep","addr":"ws://127.0.0.1:8006"}]}`)
 
 	status, body := putRemoteDevices(t, srv, `{"addr":`)
 	if status != http.StatusBadRequest {
@@ -369,7 +369,7 @@ func TestVNCProxyRelay(t *testing.T) {
 	t.Cleanup(device.Close)
 	// The http:// seed form exercises normalizeVNCAddr through the proxy path
 	// (the echo handler upgrades any path, including /websockify).
-	seedSettings(t, `{"remote_desktop":[{"name":"echo","addr":"`+device.URL+`"}]}`)
+	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+device.URL+`"}]}`)
 
 	dialer := websocket.Dialer{Subprotocols: []string{"binary"}}
 	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/echo"), nil)
@@ -460,7 +460,7 @@ func TestVNCProxyMalformedSettingsFile(t *testing.T) {
 
 func TestVNCProxyDialFailure(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
-	seedSettings(t, `{"remote_desktop":[{"name":"broken","addr":"ws://127.0.0.1:1"}]}`)
+	seedSettings(t, `{"desktops":[{"name":"broken","addr":"ws://127.0.0.1:1"}]}`)
 
 	client, _, err := websocket.DefaultDialer.Dial(wsProxyURL(srv, "/wui/vnc/broken"), nil)
 	if err != nil {
@@ -490,7 +490,7 @@ func TestVNCProxyInvalidAddr(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	// Seeded directly: PUT validation only checks non-empty addr, so a
 	// hand-edited file reaches this path.
-	seedSettings(t, `{"remote_desktop":[{"name":"ftpdev","addr":"ftp://x"}]}`)
+	seedSettings(t, `{"desktops":[{"name":"ftpdev","addr":"ftp://x"}]}`)
 
 	_, resp, err := websocket.DefaultDialer.Dial(wsProxyURL(srv, "/wui/vnc/ftpdev"), nil)
 	if !errors.Is(err, websocket.ErrBadHandshake) {
@@ -533,7 +533,7 @@ func TestRemoteDesktopGetColdStart(t *testing.T) {
 
 func TestVNCProxyNonWebSocketRequest(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
-	seedSettings(t, `{"remote_desktop":[{"name":"echo","addr":"ws://127.0.0.1:8006"}]}`)
+	seedSettings(t, `{"desktops":[{"name":"echo","addr":"ws://127.0.0.1:8006"}]}`)
 
 	// A plain GET (no upgrade headers) fails the upgrade; gorilla has
 	// already written the 400 by the time the handler's error return runs.
