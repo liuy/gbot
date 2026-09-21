@@ -355,7 +355,7 @@ func (a *App) RegisterSkillCommands(cmds map[string]CommandDef) {
 }
 
 // SetDisableFileHistory disables the file history tracker (rewind/restore).
-// Used in daemon mode where TakeSnapshot would walk ~/.gbot/ and OOM.
+// Used in daemon mode, which has no interactive rewind.
 func (a *App) SetDisableFileHistory(v bool) {
 	a.disableFileHistory = v
 }
@@ -510,8 +510,8 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	}
 
 	// Create file history tracker for rewind/restore.
-	// Disabled in daemon mode — TakeSnapshot walks the working directory and
-	// reads every file into memory, which OOMs when workingDir is ~/.gbot/.
+	// Disabled in daemon mode, which has no interactive rewind — backup
+	// writes there would be pure overhead.
 	if sessionID != "" && !a.disableFileHistory {
 		trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
 		tracker := filehistory.NewTracker(trackerDir)

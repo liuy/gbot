@@ -965,9 +965,8 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		}
 	}
 
-	// File history tracking: TrackEdit BEFORE edit, Bash snapshot BEFORE execution.
-	var bashSnap map[string]*filehistory.FileSnapshot
-
+	// File history tracking: TrackEdit BEFORE edit so the pre-edit content
+	// is preserved for rewind/restore.
 	if e.fileHistory != nil && e.currentTurnMsgID != "" {
 		switch tt.Name {
 		case "Edit", "Write":
@@ -977,14 +976,8 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					slog.Warn("filehistory:track_edit_failed", "file", filePath, "err", err)
 				}
 			}
-		case "Bash":
-			if toolCtx.WorkingDir != "" {
-				if snap, snapErr := filehistory.TakeSnapshot(toolCtx.WorkingDir); snapErr == nil {
-					bashSnap = snap
-				}
-			}
 		}
-	} else if tt.Name == "Edit" || tt.Name == "Write" || tt.Name == "Bash" {
+	} else if tt.Name == "Edit" || tt.Name == "Write" {
 		slog.Warn("engine:file_history_skip", "tool", tt.Name, "hasFileHistory", e.fileHistory != nil, "currentTurnMsgID", e.currentTurnMsgID)
 	}
 
@@ -1049,21 +1042,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		},
 	})
 	tt.Result = result
-	// Record file backup for rewind/restore (Edit/Write tools only)
-	// File history: track Bash file changes AFTER execution.
-	// Edit/Write tools already called TrackEdit BEFORE execution above.
-	if e.fileHistory != nil && bashSnap != nil {
-		changes, err := filehistory.DetectChanges(toolCtx.WorkingDir, bashSnap)
-		if err != nil {
-			slog.Warn("filehistory:bash:detect_changes_failed", "err", err)
-		} else {
-			for _, ch := range changes {
-				if err := e.fileHistory.TrackEditFromContent(ch.Path, ch.BeforeContent); err != nil {
-					slog.Warn("filehistory:bash:track_edit_failed", "file", ch.Path, "err", err)
-				}
-			}
-		}
-	}
 	successBlock := types.NewToolResultBlock(tt.ID, resultContent, false)
 	successBlock.ToolDurationNs = elapsed.Nanoseconds()
 	tt.resultBlocks = []types.ContentBlock{successBlock}

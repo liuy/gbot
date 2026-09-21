@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -1198,138 +1195,6 @@ func TestToolNotFound_UnknownTool_NoHint(t *testing.T) {
 	}
 	if !strings.Contains(msg[0].Text, "No such tool available: SomeRandomName") {
 		t.Errorf("expected generic message, got: %q", msg[0].Text)
-	}
-}
-
-// TestChain_BashFileBackup_EmptyWorkingDir_NoBackupRecorded verifies the full
-// executeTool chain for Bash tools when WorkingDir is empty. In this case
-// executeTool skips TakeSnapshot (requires non-empty WorkingDir), so no files
-// are tracked in the tracker.
-func TestChain_BashFileBackup_EmptyWorkingDir_NoBackupRecorded(t *testing.T) {
-	tmp := t.TempDir()
-	testFile := filepath.Join(tmp, "data.txt")
-	if err := os.WriteFile(testFile, []byte("original\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	// Bash-like tool that modifies a file
-	bashTool := &testTool{
-		name: "Bash",
-		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-			_ = os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
-			return &tool.ToolResult{Data: "ok"}, nil
-		},
-	}
-
-	// Create executor WITHOUT WorkingDir — executeTool skips TakeSnapshot
-	toolMap := map[string]tool.Tool{"Bash": bashTool}
-	tctx := &tool.ToolUseContext{} // WorkingDir is empty
-	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
-
-	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
-	e.SetMessages([]types.Message{
-		{ID: "msg-1", Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "run bash"}}},
-	})
-	e.SetFileHistory(tracker)
-	e.currentTurnMsgID = "msg-0"
-
-	result := e.ExecuteAll([]types.ContentBlock{
-		{Type: types.ContentTypeToolUse, ID: "tool_1", Name: "Bash", Input: json.RawMessage(`{}`)},
-	})
-	if len(result.ToolResultBlocks) == 0 {
-		t.Fatal("expected tool result blocks")
-	}
-
-	// Verify: NO tracked files because WorkingDir was empty — TakeSnapshot was skipped
-	state := tracker.State()
-	if len(state.TrackedFiles) != 0 {
-		t.Fatalf("expected 0 tracked files with empty WorkingDir, got %d: %v",
-			len(state.TrackedFiles), state.TrackedFiles)
-	}
-
-	// Verify: only the initial empty snapshot exists (no Bash snapshot created)
-	if len(state.Snapshots) != 1 {
-		t.Fatalf("expected 1 snapshot (initial only), got %d", len(state.Snapshots))
-	}
-
-	// Verify: file was NOT restored to original
-	data, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("read test file: %v", err)
-	}
-	if string(data) != "modified by bash\n" {
-		t.Fatalf("file should still be modified, got %q", string(data))
-	}
-}
-
-// TestChain_BashFileBackup_WithWorkingDir_BackupRecorded verifies that when
-// WorkingDir IS set on tctx, the full chain works:
-// TakeSnapshot → tool call → DetectChanges → TrackEdit for each change.
-// The modified file should appear in TrackedFiles and the latest snapshot's
-// TrackedFileBackups with a non-empty backup file preserving the original content.
-func TestChain_BashFileBackup_WithWorkingDir_BackupRecorded(t *testing.T) {
-	tmp := t.TempDir()
-	testFile := filepath.Join(tmp, "data.txt")
-	originalContent := []byte("original\n")
-	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	bashTool := &testTool{
-		name: "Bash",
-		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-			_ = os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
-			return &tool.ToolResult{Data: "ok"}, nil
-		},
-	}
-
-	// Create executor WITH WorkingDir set
-	toolMap := map[string]tool.Tool{"Bash": bashTool}
-	tctx := &tool.ToolUseContext{WorkingDir: tmp}
-	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
-
-	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
-	e.SetMessages([]types.Message{
-		{ID: "msg-1", Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "run bash"}}},
-	})
-	e.SetFileHistory(tracker)
-	e.currentTurnMsgID = "msg-1"
-
-	result := e.ExecuteAll([]types.ContentBlock{
-		{Type: types.ContentTypeToolUse, ID: "tool_2", Name: "Bash", Input: json.RawMessage(`{}`)},
-	})
-	if len(result.ToolResultBlocks) == 0 {
-		t.Fatal("expected tool result blocks")
-	}
-
-	// Verify: file IS tracked because WorkingDir was set
-	state := tracker.State()
-	if !state.TrackedFiles[testFile] {
-		t.Errorf("expected %s to be in TrackedFiles, got: %v", testFile, state.TrackedFiles)
-	}
-
-	// Verify: the initial snapshot has a backup entry for the file
-	// (TrackEditFromContent adds to the most recent snapshot, doesn't create a new one)
-	lastSnap := state.Snapshots[len(state.Snapshots)-1]
-	backup, ok := lastSnap.TrackedFileBackups[testFile]
-	if !ok {
-		t.Fatalf("expected %s in snapshot TrackedFileBackups, got: %v",
-			testFile, lastSnap.TrackedFileBackups)
-	}
-
-	// Verify: BackupFileName is non-empty (file existed before Bash modified it)
-	if backup.BackupFileName == "" {
-		t.Error("expected non-empty BackupFileName for modified file (file existed before)")
-	}
-
-	// Verify: backup file on disk contains original content
-	backupPath := filepath.Join(tmp, ".backups", backup.BackupFileName)
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("read backup file: %v", err)
-	}
-	if string(data) != string(originalContent) {
-		t.Errorf("backup content = %q, want %q", string(data), string(originalContent))
 	}
 }
 

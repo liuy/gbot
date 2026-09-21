@@ -127,18 +127,8 @@ func (t *Tracker) TrackEdit(filePath string) error {
 	})
 }
 
-// TrackEditFromContent records a file edit using provided content instead of
-// reading from disk. Used for Bash-detected changes where BeforeContent is
-// available from the pre-execution snapshot.
-// nil content means the file did not exist (null backup).
-func (t *Tracker) TrackEditFromContent(filePath string, content []byte) error {
-	return t.trackEditLocked(filePath, func() (FileHistoryBackup, error) {
-		return t.createBackupFromContent(filePath, 1, content)
-	})
-}
-
-// trackEditLocked is the shared implementation for TrackEdit and TrackEditFromContent.
-// backupFn is called inside the mutex to create the v1 backup.
+// trackEditLocked implements TrackEdit. backupFn is called inside the mutex
+// to create the v1 backup.
 func (t *Tracker) trackEditLocked(filePath string, backupFn func() (FileHistoryBackup, error)) error {
 	if filePath == "" {
 		return nil
@@ -568,41 +558,6 @@ func (t *Tracker) createBackup(filePath string, version int) (FileHistoryBackup,
 	}, nil
 }
 
-// createBackupFromContent creates a backup from provided content instead of
-// reading from disk. nil content → null backup (file didn't exist).
-func (t *Tracker) createBackupFromContent(filePath string, version int, content []byte) (FileHistoryBackup, error) {
-	if filePath == "" || content == nil {
-		return FileHistoryBackup{BackupFileName: "", Version: version, BackupTime: time.Now()}, nil
-	}
-
-	backupFileName := getBackupFileName(filePath, version)
-	backupPath := filepath.Join(t.dir, backupFileName)
-
-	if err := t.writeBackupData(backupPath, content, 0o644); err != nil {
-		return FileHistoryBackup{}, fmt.Errorf("filehistory: write backup: %w", err)
-	}
-
-	return FileHistoryBackup{
-		BackupFileName: backupFileName,
-		Version:        version,
-		BackupTime:     time.Now(),
-	}, nil
-}
-
-// writeBackupData writes data to path with lazy mkdir (consistent with copyFileData).
-func (t *Tracker) writeBackupData(path string, data []byte, mode fs.FileMode) error {
-	if err := os.WriteFile(path, data, mode); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o755); mkdirErr != nil {
-			return mkdirErr
-		}
-		return os.WriteFile(path, data, mode)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // restoreBackup — restores a file from its backup.
 // Source: TS fileHistory.ts:804-837 — restoreBackup
@@ -791,39 +746,4 @@ func (t *Tracker) copyStateLocked() FileHistoryState {
 		maps.Copy(result.Snapshots[i].TrackedFileBackups, snap.TrackedFileBackups)
 	}
 	return result
-}
-
-// ---------------------------------------------------------------------------
-// Directory walking utilities (kept from original tracker.go)
-// ---------------------------------------------------------------------------
-
-// skipDir returns true for directories that should be skipped during WalkDir.
-func skipDir(name string) bool {
-	switch name {
-	case ".git", "node_modules", "vendor", "__pycache__", ".hg", ".svn":
-		return true
-	}
-	return false
-}
-
-// IsSkippedDir exposes skipDir for testing.
-func IsSkippedDir(name string) bool {
-	return skipDir(name)
-}
-
-// WalkDir traverses root, calling fn for each file. Skips known large directories.
-// Returns the first error from fn, or a WalkDir error.
-func WalkDir(root string, fn func(path string, d fs.DirEntry) error) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip inaccessible files
-		}
-		if d.IsDir() && skipDir(d.Name()) {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		return fn(path, d)
-	})
 }

@@ -1,9 +1,7 @@
 package filehistory
 
 import (
-	"bytes"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -771,45 +769,6 @@ func TestSnapshotSequenceIncrements(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WalkDir tests
-// ---------------------------------------------------------------------------
-
-// TestWalkDir traverses files in a directory.
-func TestWalkDir(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var files []string
-	err := WalkDir(dir, func(path string, _ os.DirEntry) error {
-		files = append(files, path)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 2 {
-		t.Errorf("expected 2 files, got %d", len(files))
-	}
-}
-
-// TestIsSkippedDir checks known skip directories.
-func TestIsSkippedDir(t *testing.T) {
-	for _, name := range []string{".git", "node_modules", "vendor", "__pycache__"} {
-		if !IsSkippedDir(name) {
-			t.Errorf("expected %q to be skipped", name)
-		}
-	}
-	if IsSkippedDir("src") {
-		t.Error("src should not be skipped")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Dir() tests
 // ---------------------------------------------------------------------------
 
@@ -818,150 +777,6 @@ func TestDir(t *testing.T) {
 	tr := NewTracker(dir)
 	if tr.Dir() != dir {
 		t.Errorf("Dir() = %q, want %q", tr.Dir(), dir)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TrackEditFromContent tests
-// ---------------------------------------------------------------------------
-
-func TestTrackEditFromContent_WithContent(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	filePath := filepath.Join(dir, "src", "main.go")
-	content := []byte("package main\nfunc main() {}\n")
-
-	err := tr.TrackEditFromContent(filePath, content)
-	if err != nil {
-		t.Fatalf("TrackEditFromContent: %v", err)
-	}
-
-	state := tr.State()
-	if len(state.TrackedFiles) != 1 {
-		t.Fatalf("expected 1 tracked file, got %d", len(state.TrackedFiles))
-	}
-
-	snap := state.Snapshots[len(state.Snapshots)-1]
-	backup, ok := snap.TrackedFileBackups[filePath]
-	if !ok {
-		t.Fatal("file not in trackedFileBackups")
-	}
-	if backup.BackupFileName == "" {
-		t.Error("expected non-empty BackupFileName for file with content")
-	}
-	if backup.Version != 1 {
-		t.Errorf("expected version 1, got %d", backup.Version)
-	}
-
-	// Verify backup data on disk matches provided content.
-	backupPath := filepath.Join(dir, backup.BackupFileName)
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("read backup: %v", err)
-	}
-	if !bytes.Equal(data, content) {
-		t.Errorf("backup data = %q, want %q", data, content)
-	}
-}
-
-func TestTrackEditFromContent_NilContent(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	filePath := filepath.Join(dir, "nonexistent.go")
-
-	err := tr.TrackEditFromContent(filePath, nil)
-	if err != nil {
-		t.Fatalf("TrackEditFromContent nil: %v", err)
-	}
-
-	snap := tr.State().Snapshots[len(tr.State().Snapshots)-1]
-	backup, ok := snap.TrackedFileBackups[filePath]
-	if !ok {
-		t.Fatal("file not in trackedFileBackups")
-	}
-	if backup.BackupFileName != "" {
-		t.Errorf("expected empty BackupFileName for nil content, got %q", backup.BackupFileName)
-	}
-}
-
-func TestTrackEditFromContent_EmptyPath(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	err := tr.TrackEditFromContent("", []byte("content"))
-	if err != nil {
-		t.Fatalf("TrackEditFromContent empty path: %v", err)
-	}
-
-	state := tr.State()
-	if len(state.TrackedFiles) != 0 {
-		t.Errorf("expected 0 tracked files for empty path, got %d", len(state.TrackedFiles))
-	}
-}
-
-func TestTrackEditFromContent_DeduplicatesSameTurn(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	filePath := filepath.Join(dir, "main.go")
-	content1 := []byte("version 1")
-	content2 := []byte("version 2")
-
-	if err := tr.TrackEditFromContent(filePath, content1); err != nil {
-		t.Fatalf("first track: %v", err)
-	}
-	if err := tr.TrackEditFromContent(filePath, content2); err != nil {
-		t.Fatalf("second track: %v", err)
-	}
-
-	// Dedup: second call with same snapshot should be skipped.
-	snap := tr.State().Snapshots[len(tr.State().Snapshots)-1]
-	backup := snap.TrackedFileBackups[filePath]
-	backupPath := filepath.Join(dir, backup.BackupFileName)
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("read backup: %v", err)
-	}
-	// Should still be content1 (dedup skips second call).
-	if !bytes.Equal(data, content1) {
-		t.Errorf("backup data = %q, want %q (original, not overwritten)", data, content1)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// writeBackupData / createBackupFromContent — mkdir fallback path
-// ---------------------------------------------------------------------------
-
-func TestWriteBackupData_NestedDir(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	// writeBackupData is called internally. Use TrackEditFromContent to
-	// trigger the writeBackupData path with a deeply nested file path
-	// that doesn't exist yet — forces the lazy mkdir path.
-	filePath := filepath.Join(dir, "a", "b", "c", "deep.go")
-	content := []byte("deep content")
-
-	err := tr.TrackEditFromContent(filePath, content)
-	if err != nil {
-		t.Fatalf("TrackEditFromContent nested: %v", err)
-	}
-
-	snap := tr.State().Snapshots[len(tr.State().Snapshots)-1]
-	backup := snap.TrackedFileBackups[filePath]
-	if backup.BackupFileName == "" {
-		t.Fatal("expected non-empty BackupFileName")
-	}
-
-	backupPath := filepath.Join(dir, backup.BackupFileName)
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("read backup: %v", err)
-	}
-	if !bytes.Equal(data, content) {
-		t.Errorf("backup data = %q, want %q", data, content)
 	}
 }
 
@@ -1251,101 +1066,8 @@ func TestLoadState_EmptySnapshots(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// writeBackupData / copyFileData — ENOENT mkdir fallback paths
+// copyFileData — ENOENT mkdir fallback paths
 // ---------------------------------------------------------------------------
-
-// TestWriteBackupData_MkdirFallback removes the tracker dir before writing,
-// forcing writeBackupData to hit the ENOENT → MkdirAll → retry path.
-func TestWriteBackupData_MkdirFallback(t *testing.T) {
-	baseDir := t.TempDir()
-	backupDir := filepath.Join(baseDir, "backups")
-
-	tr := NewTracker(backupDir)
-	// backupDir now exists (created by NewTracker). Remove it to trigger ENOENT.
-	if err := os.RemoveAll(backupDir); err != nil {
-		t.Fatalf("remove backup dir: %v", err)
-	}
-
-	filePath := filepath.Join(baseDir, "test.go")
-	if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// TrackEditFromContent → createBackupFromContent → writeBackupData
-	err := tr.TrackEditFromContent(filePath, []byte("backup content"))
-	if err != nil {
-		t.Fatalf("expected success with mkdir fallback: %v", err)
-	}
-
-	state := tr.State()
-	snap := state.Snapshots[len(state.Snapshots)-1]
-	backup := snap.TrackedFileBackups[filePath]
-	if backup.BackupFileName == "" {
-		t.Fatal("expected non-empty backup file name")
-	}
-
-	backupPath := filepath.Join(backupDir, backup.BackupFileName)
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("read backup: %v", err)
-	}
-	if string(data) != "backup content" {
-		t.Errorf("backup content = %q, want %q", string(data), "backup content")
-	}
-}
-
-// TestWriteBackupData_MkdirFails creates a file where the dir should be,
-// blocking MkdirAll. writeBackupData should return the mkdir error.
-func TestWriteBackupData_MkdirFails(t *testing.T) {
-	baseDir := t.TempDir()
-	backupDir := filepath.Join(baseDir, "backups")
-
-	tr := NewTracker(backupDir)
-	_ = os.RemoveAll(backupDir)
-
-	// Place a file at backupDir path to block MkdirAll.
-	if err := os.WriteFile(backupDir, []byte("block"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	filePath := filepath.Join(baseDir, "test.go")
-	_ = os.WriteFile(filePath, []byte("content"), 0o644)
-
-	err := tr.TrackEditFromContent(filePath, []byte("backup"))
-	if err == nil {
-		t.Fatal("expected error when mkdir fails")
-	}
-	if !strings.Contains(err.Error(), "write backup") {
-		t.Errorf("error should mention write backup, got: %v", err)
-	}
-}
-
-// TestWriteBackupData_NonENOENTError triggers writeBackupData with a
-// non-ENOENT, non-nil error by making the backup path unwritable.
-func TestWriteBackupData_NonENOENTError(t *testing.T) {
-	baseDir := t.TempDir()
-	backupDir := filepath.Join(baseDir, "backups")
-
-	tr := NewTracker(backupDir)
-
-	// Make the backup dir read-only so WriteFile fails with a permission error
-	// (not ENOENT, since the dir exists).
-	if err := os.Chmod(backupDir, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(backupDir, 0o755) }() // restore for cleanup
-
-	filePath := filepath.Join(baseDir, "test.go")
-	_ = os.WriteFile(filePath, []byte("content"), 0o644)
-
-	err := tr.TrackEditFromContent(filePath, []byte("backup"))
-	if err == nil {
-		t.Fatal("expected error when write fails")
-	}
-	if !strings.Contains(err.Error(), "write backup") {
-		t.Errorf("error should mention write backup, got: %v", err)
-	}
-}
 
 // TestCopyFileData_MkdirFallback removes tracker dir to force copyFileData
 // through the ENOENT → MkdirAll → retry path.
@@ -1980,26 +1702,6 @@ func TestCleanupOldBackups_StatErrorOnSessionDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WalkDir — callback error
-// ---------------------------------------------------------------------------
-
-// TestWalkDir_CallbackError verifies WalkDir propagates the first error from fn.
-func TestWalkDir_CallbackError(t *testing.T) {
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644)
-
-	err := WalkDir(dir, func(path string, _ fs.DirEntry) error {
-		return fmt.Errorf("stop")
-	})
-	if err == nil {
-		t.Fatal("expected error from callback")
-	}
-	if err.Error() != "stop" {
-		t.Errorf("error = %v, want 'stop'", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // HasChangesAtMessage — file unchanged
 // ---------------------------------------------------------------------------
 
@@ -2142,43 +1844,6 @@ func TestRestoreBackup_CopyFail(t *testing.T) {
 		if f == filePath {
 			t.Error("file should not be restored when backup copy fails")
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WalkDir — inaccessible file skip
-// ---------------------------------------------------------------------------
-
-// TestWalkDir_SkipInaccessibleFiles verifies WalkDir skips files that
-// cause access errors.
-func TestWalkDir_SkipInaccessibleFiles(t *testing.T) {
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644)
-
-	// Create a subdirectory with no execute permission.
-	subDir := filepath.Join(dir, "secret")
-	_ = os.MkdirAll(subDir, 0o755)
-	_ = os.WriteFile(filepath.Join(subDir, "b.go"), []byte("y"), 0o644)
-	_ = os.Chmod(subDir, 0o000)
-	defer func() { _ = os.Chmod(subDir, 0o755) }()
-
-	var files []string
-	err := WalkDir(dir, func(path string, _ fs.DirEntry) error {
-		files = append(files, filepath.Base(path))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkDir should not error: %v", err)
-	}
-	// a.go should be found; b.go may or may not be found depending on OS.
-	found := false
-	for _, f := range files {
-		if f == "a.go" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected a.go, got %v", files)
 	}
 }
 
@@ -2728,32 +2393,6 @@ func TestApplySnapshot_DeleteFilePermissionError(t *testing.T) {
 		if f == filePath {
 			t.Error("file should not be in changed list when delete fails")
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// writeBackupData — deep MkdirAll failure (line 583-585)
-// ---------------------------------------------------------------------------
-
-func TestWriteBackupData_DeepMkdirFails(t *testing.T) {
-	baseDir := t.TempDir()
-	backupDir := filepath.Join(baseDir, "backups")
-	tr := NewTracker(backupDir)
-
-	filePath := filepath.Join(baseDir, "test.go")
-	_ = os.WriteFile(filePath, []byte("content"), 0o644)
-
-	// Remove backupDir, then make baseDir read-only so MkdirAll fails.
-	_ = os.RemoveAll(backupDir)
-	_ = os.Chmod(baseDir, 0o555)
-	defer func() { _ = os.Chmod(baseDir, 0o755) }()
-
-	err := tr.TrackEditFromContent(filePath, []byte("backup"))
-	if err == nil {
-		t.Fatal("expected error when MkdirAll fails")
-	}
-	if !strings.Contains(err.Error(), "write backup") {
-		t.Errorf("error should mention write backup, got: %v", err)
 	}
 }
 
