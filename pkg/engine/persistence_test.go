@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1080,5 +1081,274 @@ func TestListSessions_FilteredByEngineID(t *testing.T) {
 	}
 	if sessions2[0].EngineID != "e2" {
 		t.Errorf("eng2 ListSessions returned session with EngineID=%q, want e2", sessions2[0].EngineID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Three-tier persistence: query entry / turn boundary / query-exit defer
+// ---------------------------------------------------------------------------
+
+// newPersistTestEngine wires an engine for the three-tier persistence tests:
+// real store, mock provider, mock tools. QuerySync runs the loop in the test
+// goroutine, so callFn/post-turn-hook captures are deterministic mid-query
+// observation points.
+func newPersistTestEngine(t *testing.T, store *short.Store, sessionID string, mp *mockProvider, tools map[string]tool.Tool) *Engine {
+	t.Helper()
+	eng := New(&Params{
+		Provider:      mp,
+		ToolsProvider: func() map[string]tool.Tool { return tools },
+		Model:         "test-model",
+		Logger:        slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(sessionID)
+	eng.SetSystemPrompt(`{"role":"system","content":"You are a helpful assistant."}`)
+	return eng
+}
+
+// TestRunTurns_EntryPersist_UserMessageBeforeFirstTurn verifies the query's
+// user message reaches the DB at query entry, before the first turn completes.
+// With only the query-exit defer, a process kill during the first LLM call
+// lost the user's request entirely (the 2026-09 OOM incident).
+func TestRunTurns_EntryPersist_UserMessageBeforeFirstTurn(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	var snapshot []*short.TranscriptMessage
+	var snapErr error
+	toolA := &mockTool{
+		name:    "tool_a",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			snapshot, snapErr = store.LoadMessages(session.SessionID)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu-a", "tool_a", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	eng := newPersistTestEngine(t, store, session.SessionID, mp, map[string]tool.Tool{toolA.Name(): toolA})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if result := eng.QuerySync(ctx, "check the build", ""); result.Error != nil {
+		t.Fatalf("query: %v", result.Error)
+	}
+	if snapErr != nil {
+		t.Fatalf("mid-query LoadMessages: %v", snapErr)
+	}
+	if snapshot == nil {
+		t.Fatal("tool callFn never ran — test setup broken")
+	}
+	if len(snapshot) != 1 {
+		t.Fatalf("store during first turn has %d messages, want 1 (user message persisted at query entry)", len(snapshot))
+	}
+	snapEng, err := short.StoreMessagesToEngine(snapshot)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if snapEng[0].Role != types.RoleUser {
+		t.Errorf("entry-persisted message role = %q, want user", snapEng[0].Role)
+	}
+	if text := textOfBlocks(snapEng[0].Content); text != "check the build" {
+		t.Errorf("entry-persisted message text = %q, want %q", text, "check the build")
+	}
+}
+
+// TestRunTurns_TurnBoundaryPersist_MidQuery verifies a completed tool-use turn
+// (assistant tool_use + tool_result) is persisted at the turn boundary, before
+// the query finishes. Before turn-level persistence, the DB stayed empty for
+// the whole query, so a mid-query kill lost every completed turn.
+func TestRunTurns_TurnBoundaryPersist_MidQuery(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// tool_b runs in turn 2, i.e. strictly after the turn-1 boundary persist.
+	var afterTurn1 []*short.TranscriptMessage
+	var snapErr error
+	toolA := &mockTool{name: "tool_a", enabled: true}
+	toolB := &mockTool{
+		name:    "tool_b",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			afterTurn1, snapErr = store.LoadMessages(session.SessionID)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu-a", "tool_a", `{}`), nil)
+	mp.addResponse(toolUseStreamEvents("test-model", "tu-b", "tool_b", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
+
+	eng := newPersistTestEngine(t, store, session.SessionID, mp, map[string]tool.Tool{
+		toolA.Name(): toolA,
+		toolB.Name(): toolB,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if result := eng.QuerySync(ctx, "run the checks", ""); result.Error != nil {
+		t.Fatalf("query: %v", result.Error)
+	}
+	if snapErr != nil {
+		t.Fatalf("mid-query LoadMessages: %v", snapErr)
+	}
+	if afterTurn1 == nil {
+		t.Fatal("tool_b callFn never ran — test setup broken")
+	}
+	if len(afterTurn1) != 3 {
+		t.Fatalf("store during turn 2 has %d messages, want 3 (user + turn-1 assistant + tool_result)", len(afterTurn1))
+	}
+	turn1, err := short.StoreMessagesToEngine(afterTurn1)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	wantRoles := []string{string(types.RoleUser), string(types.RoleAssistant), string(types.RoleUser)}
+	for i, want := range wantRoles {
+		if string(turn1[i].Role) != want {
+			t.Errorf("turn-1 persisted msg[%d].Role = %q, want %q", i, turn1[i].Role, want)
+		}
+	}
+	var toolUseSeen, toolResultSeen bool
+	for _, b := range turn1[1].Content {
+		if b.Type == types.ContentTypeToolUse && b.Name == "tool_a" {
+			toolUseSeen = true
+		}
+	}
+	for _, b := range turn1[2].Content {
+		if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu-a" {
+			toolResultSeen = true
+		}
+	}
+	if !toolUseSeen {
+		t.Error("turn-1 persisted assistant message has no tool_use block for tool_a")
+	}
+	if !toolResultSeen {
+		t.Error("turn-1 persisted messages have no tool_result for tu-a — completed turn lost mid-query")
+	}
+
+	// Query finished: user + 2 tool turns + terminal answer = 6 messages.
+	final, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("final LoadMessages: %v", err)
+	}
+	if len(final) != 6 {
+		t.Fatalf("store after query has %d messages, want 6", len(final))
+	}
+}
+
+// TestRunTurns_TerminalTurnPersistedByDefer verifies the terminal text-only
+// answer is persisted by the query-exit defer: the terminal path returns from
+// a branch that never reaches the loop-continue turn boundary.
+func TestRunTurns_TerminalTurnPersistedByDefer(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "The final answer is 42."), nil)
+	eng := newPersistTestEngine(t, store, session.SessionID, mp, nil)
+
+	// firePostTurnHooks only runs when ContextWindow > 0; compactor stays nil
+	// so shouldAutoCompact never fires.
+	eng.SetCompactor(nil, AutoCompactConfig{ContextWindow: 128000})
+	var hookSnapshot []*short.TranscriptMessage
+	var hookLoadErr error
+	var hookRan bool
+	eng.RegisterPostTurnHook(func(_ context.Context, _ []types.Message, _ int, _ string) {
+		if hookRan {
+			return
+		}
+		hookRan = true
+		hookSnapshot, hookLoadErr = store.LoadMessages(session.SessionID)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if result := eng.QuerySync(ctx, "meaning of life", ""); result.Error != nil {
+		t.Fatalf("query: %v", result.Error)
+	}
+	if !hookRan {
+		t.Fatal("post-turn hook never fired — test setup broken")
+	}
+	if hookLoadErr != nil {
+		t.Fatalf("post-turn hook LoadMessages: %v", hookLoadErr)
+	}
+	// Terminal-path post-turn hook runs before the return+defer, so at that
+	// point the DB must hold exactly the entry-persisted user message.
+	if len(hookSnapshot) != 1 {
+		t.Fatalf("store at terminal post-turn hook has %d messages, want 1 (user only, final answer not yet persisted)", len(hookSnapshot))
+	}
+
+	final, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("final LoadMessages: %v", err)
+	}
+	if len(final) != 2 {
+		t.Fatalf("store after query has %d messages, want 2 (user + final answer)", len(final))
+	}
+	finalEng, err := short.StoreMessagesToEngine(final)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if finalEng[1].Role != types.RoleAssistant {
+		t.Errorf("final msg role = %q, want assistant", finalEng[1].Role)
+	}
+	if text := textOfBlocks(finalEng[1].Content); text != "The final answer is 42." {
+		t.Errorf("final answer text = %q, want %q", text, "The final answer is 42.")
+	}
+	if idx := eng.LastPersistedIdx(); idx != 2 {
+		t.Errorf("LastPersistedIdx after query = %d, want 2", idx)
+	}
+}
+
+// TestRunTurns_SubagentGuardSkipsPersistPoints verifies a sub-agent engine
+// skips all three persistence call points — sub-agent transcripts are
+// ephemeral, and the call-site guard keeps the per-turn skip INFO log out of
+// sub-agent runs.
+func TestRunTurns_SubagentGuardSkipsPersistPoints(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	toolA := &mockTool{name: "tool_a", enabled: true}
+	mp := &mockProvider{}
+	// Tool turn exercises the turn-boundary call site; terminal text exercises
+	// entry + defer; all three must be no-ops for a sub-agent.
+	mp.addResponse(toolUseStreamEvents("test-model", "tu-a", "tool_a", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "sub-agent done"), nil)
+
+	eng := newPersistTestEngine(t, store, session.SessionID, mp, map[string]tool.Tool{toolA.Name(): toolA})
+	eng.isSubagent = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if result := eng.QuerySync(ctx, "sub-agent task", ""); result.Error != nil {
+		t.Fatalf("query: %v", result.Error)
+	}
+
+	msgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("sub-agent wrote %d messages to the session store, want 0 (all persist points guarded)", len(msgs))
+	}
+	if idx := eng.LastPersistedIdx(); idx != 0 {
+		t.Errorf("sub-agent LastPersistedIdx = %d, want 0", idx)
 	}
 }

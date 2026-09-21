@@ -1437,6 +1437,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		)
 	}()
 
+	// Crash window: get the query's user message to the DB before any LLM
+	// spend. TS align: QueryEngine.ts:451 awaits the user message write ahead
+	// of the query loop, so a kill right after submit loses nothing.
+	if !e.isSubagent && e.store != nil && e.sessionID != "" {
+		e.PersistNewMessages()
+	}
+
 	// MakeSnapshot BEFORE the tool loop — aligned with TS QueryEngine.ts:641-654.
 	// TS calls fileHistoryMakeSnapshot before the ask() loop, so the snapshot
 	// captures pre-edit state. Rewind can then restore files to before edits.
@@ -1949,6 +1956,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Post-turn hooks (session memory extraction, etc.)
 		// TS: executePostSamplingHooks in query.ts after each sampling step.
 		e.firePostTurnHooks(ctx)
+
+		// Persist at the turn boundary so a mid-query process kill (OOM, power
+		// loss) loses at most the in-flight turn, not every completed turn of
+		// the query. The query-exit defer still covers the terminal-turn final
+		// answer, which returns from a branch that never reaches this point.
+		if !e.isSubagent && e.store != nil && e.sessionID != "" {
+			e.PersistNewMessages()
+		}
 	}
 
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{

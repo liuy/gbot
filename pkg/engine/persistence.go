@@ -10,7 +10,11 @@ import (
 )
 
 // PersistNewMessages persists uncommitted engine messages to the short-term store.
-// Called after each successful query (outside the for-loop, before EventQueryEnd).
+// Incremental (lastPersistedIdx cursor) and idempotent, so runTurns calls it at
+// three points: query entry (the user message reaches the DB before any LLM
+// spend), every turn boundary (a mid-query process kill loses at most the
+// in-flight turn), and a query-exit defer that covers paths bypassing the
+// loop-continue boundary (terminal-turn final answer, abort markers).
 // Silently returns if store is nil or sessionID is empty (sub-agents, headless mode).
 //
 // IMPORTANT: This method acquires e.mu.Lock(). Under the lock, use direct field
