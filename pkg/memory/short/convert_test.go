@@ -223,11 +223,272 @@ func TestStoreMessagesToEngine(t *testing.T) {
 	})
 }
 
+// TestEngineMessagesToStore_DegradesUnserializableMessage reproduces the
+// 2026-09-22 incident shape at the convert layer: one message whose blocks
+// cannot be marshaled (here, a tool_use with truncated args JSON) previously
+// failed the whole batch, wedging lastPersistedIdx and dropping every later
+// message of the session. The batch must instead degrade the poisoned message
+// — and the message holding the paired tool_result, so replayed history keeps
+// tool_use/tool_result pairs intact — to text dumps naming the block types
+// and the error, while every other message persists untouched.
+func TestEngineMessagesToStore_DegradesUnserializableMessage(t *testing.T) {
+	t.Parallel()
+
+	// Layer-1 normalization absorbs malformed Input/Content payloads; this
+	// poison survives it via cross-corruption — valid Input, invalid bytes in
+	// the Content field of a tool_use block (the type-gated switch only
+	// normalizes Input there).
+	poisoned := types.NewToolUseBlock("tu-bad", "Skill", json.RawMessage(`{"command":"git commit"}`))
+	poisoned.Content = json.RawMessage(`[{"type":"te`)
+
+	msgs := []types.Message{
+		{ID: "u-ok", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("q")}},
+		{
+			ID:   "a-poison",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewTextBlock("calling skill"),
+				poisoned,
+			},
+		},
+		{
+			ID:   "u-pair",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu-bad", json.RawMessage(`"skill tool: invalid input"`), true),
+			},
+		},
+		{ID: "a-ok", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}},
+	}
+
+	result, err := EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore must never fail the batch: %v", err)
+	}
+	if len(result) != 4 {
+		t.Fatalf("expected 4 store messages, got %d", len(result))
+	}
+
+	wantUUIDs := []string{"u-ok", "a-poison", "u-pair", "a-ok"}
+	for i, want := range wantUUIDs {
+		if result[i].UUID != want {
+			t.Errorf("result[%d].UUID = %q, want %q", i, result[i].UUID, want)
+		}
+	}
+
+	if result[0].Content != `[{"type":"text","text":"q"}]` {
+		t.Errorf("result[0].Content = %s, want untouched text message", result[0].Content)
+	}
+	if result[3].Content != `[{"type":"text","text":"done"}]` {
+		t.Errorf("result[3].Content = %s, want untouched text message", result[3].Content)
+	}
+
+	// The poisoned assistant message degrades to a text dump naming the
+	// original block types and the underlying marshal error.
+	poison := result[1].Content
+	if !strings.Contains(poison, "tool_use") || !strings.Contains(poison, "tu-bad") {
+		t.Errorf("poisoned dump lost block type/id: %s", poison)
+	}
+	if !strings.Contains(poison, "unexpected end of JSON input") {
+		t.Errorf("poisoned dump lost marshal error: %s", poison)
+	}
+	if strings.Contains(poison, `"command":"git commit`) {
+		t.Errorf("poisoned dump leaked the unserializable raw JSON: %s", poison)
+	}
+
+	// The paired tool_result message degrades too, also naming the root error.
+	pair := result[2].Content
+	if !strings.Contains(pair, "tool_result") || !strings.Contains(pair, "tu-bad") {
+		t.Errorf("paired dump lost block type/tool_use_id: %s", pair)
+	}
+	if !strings.Contains(pair, "unexpected end of JSON input") {
+		t.Errorf("paired dump lost root marshal error: %s", pair)
+	}
+
+	// Degraded rows must themselves parse back as valid block JSON — replay
+	// feeds them straight through StoreMessageToEngine.
+	for i, tm := range result[1:3] {
+		var blocks []types.ContentBlock
+		if err := json.Unmarshal([]byte(tm.Content), &blocks); err != nil {
+			t.Errorf("result[%d] degraded content is not valid JSON: %v", i+1, err)
+		}
+	}
+}
+
+// TestEngineMessagesToStore_PairDegradationPropagatesThroughBatchedToolResults
+// covers the transitive half of pair degradation: gbot batches several
+// tool_results into one user message, so degrading that message (because one
+// of its results pairs with a poisoned tool_use) also orphans the healthy
+// calls whose results shared the batch. Their assistant tool_use messages
+// must degrade too, or replayed history ships tool_use blocks without
+// results.
+func TestEngineMessagesToStore_PairDegradationPropagatesThroughBatchedToolResults(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			ID:   "a-poison",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				// Cross-corrupted block: valid Input, invalid Content bytes —
+				// the marshal-fatal shape that survives layer-1 normalization.
+				func() types.ContentBlock {
+					b := types.NewToolUseBlock("tu-bad", "Skill", json.RawMessage(`{"command":"oops"}`))
+					b.Content = json.RawMessage(`[{"type":"te`)
+					return b
+				}(),
+			},
+		},
+		{
+			ID:   "a-healthy",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock("tu-good", "Bash", json.RawMessage(`{"command":"ls"}`)),
+			},
+		},
+		{
+			ID:   "u-batch",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu-bad", json.RawMessage(`"skill tool: invalid input"`), true),
+				types.NewToolResultBlock("tu-good", json.RawMessage(`"file.txt"`), false),
+			},
+		},
+	}
+
+	result, err := EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore must never fail the batch: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 store messages, got %d", len(result))
+	}
+	for i, id := range []string{"a-poison", "a-healthy", "u-batch"} {
+		if result[i].UUID != id {
+			t.Errorf("result[%d].UUID = %q, want %q", i, result[i].UUID, id)
+		}
+		if !strings.Contains(result[i].Content, "[storage fallback]") {
+			t.Errorf("result[%d] (%s) should be degraded: %s", i, id, result[i].Content)
+		}
+	}
+	// The healthy assistant call degrades because its result shared the
+	// batched user message, and the reason must trace back to the root error.
+	if !strings.Contains(result[1].Content, "tu-good") || !strings.Contains(result[1].Content, "unexpected end of JSON input") {
+		t.Errorf("healthy call dump lost its id or root error: %s", result[1].Content)
+	}
+}
+
+// TestEngineMessagesToStore_EmptyInputToolUsePersists is the end-to-end
+// persistence semantics of the 2026-09-22 incident, at the PersistNewMessages
+// boundary: an assistant message finalized with an empty tool_use Input (GLM
+// cut the Skill args mid-stream) plus its error tool_result must convert
+// successfully — as real blocks, not a text dump — so the session keeps
+// landing in the DB and restart replay works.
+func TestEngineMessagesToStore_EmptyInputToolUsePersists(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			ID:   "a-glitch",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock("tu-glitch", "Skill", json.RawMessage(" ")),
+			},
+		},
+		{
+			ID:   "u-glitch",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu-glitch", json.RawMessage(`"skill tool: invalid input"`), true),
+			},
+		},
+	}
+
+	result, err := EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 store messages, got %d", len(result))
+	}
+	if !strings.Contains(result[0].Content, `"input":null`) {
+		t.Errorf("result[0].Content = %s, want input serialized as null", result[0].Content)
+	}
+	if !strings.Contains(result[1].Content, `"tool_use_id":"tu-glitch"`) {
+		t.Errorf("result[1].Content = %s, want paired tool_result", result[1].Content)
+	}
+	if strings.Contains(result[0].Content, "[storage fallback]") {
+		t.Errorf("result[0] should persist as real blocks, not a dump: %s", result[0].Content)
+	}
+
+	// Replay: the stored rows convert back, and the blank-input tool_use
+	// marshals onto the wire as a valid object.
+	back := StoreMessageToEngine(result[0])
+	if len(back.Content) != 1 || back.Content[0].Type != types.ContentTypeToolUse {
+		t.Fatalf("round-trip lost the tool_use block: %+v", back.Content)
+	}
+	wire, err := json.Marshal(back.Content[0])
+	if err != nil {
+		t.Fatalf("replayed tool_use wire marshal: %v", err)
+	}
+	if !strings.Contains(string(wire), `"input":{}`) {
+		t.Errorf("replayed tool_use wire form = %s, want \"input\":{}", wire)
+	}
+}
+
 // TestEngineMessagesToStore_PreservesDuration verifies the persistence path
 // (EngineMessagesToStore → DB string → StoreMessageToEngine) round-trips both
 // ThinkingDurationNs and ToolDurationNs with their exact integer values.
 // Guards against a regression where someone reverts Step 4 to plain json.Marshal,
 // which would silently drop the duration fields via the custom MarshalJSON.
+// TestEngineMessagesToStore_TruncatedInputToolUsePersists is the 2026-09-22
+// live-repro shape: the argument stream was cut mid-JSON, so Input held
+// non-blank truncated bytes ({"args":"cut). Layer-1 must absorb it at the
+// block level — real tool_use block with input:null, no fallback dump — so
+// history still renders the Skill call.
+func TestEngineMessagesToStore_TruncatedInputToolUsePersists(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			ID:   "a-cut",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "plan"},
+				{Type: types.ContentTypeText, Text: "invoking"},
+				types.NewToolUseBlock("tu-cut", "Skill", json.RawMessage(`{"args":"实现 gbot`)),
+			},
+		},
+		{
+			ID:   "u-cut",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu-cut", json.RawMessage(`"skill tool: invalid input: unexpected end of JSON input"`), true),
+			},
+		},
+	}
+
+	result, err := EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 store messages, got %d", len(result))
+	}
+	got := result[0].Content
+	for _, want := range []string{`"type":"thinking"`, `"type":"text"`, `"type":"tool_use"`, `"name":"Skill"`, `"input":null`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("structure lost: %s missing from %s", want, got)
+		}
+	}
+	if strings.Contains(got, "[storage fallback]") {
+		t.Errorf("truncated input must not reach the fallback: %s", got)
+	}
+	if !strings.Contains(result[1].Content, `"tool_use_id":"tu-cut"`) {
+		t.Errorf("result[1].Content = %s, want paired tool_result intact", result[1].Content)
+	}
+}
+
 func TestEngineMessagesToStore_PreservesDuration(t *testing.T) {
 	t.Parallel()
 

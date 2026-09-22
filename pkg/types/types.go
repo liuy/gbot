@@ -382,6 +382,17 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 		Size:         cb.Size,
 		CacheControl: cb.CacheControl,
 	}
+	// tool_use.input must reach the provider as a JSON object: blank would
+	// abort this marshal outright, and omitting the key or leaking a literal
+	// null gets the request rejected. Truncated non-blank bytes are equally
+	// fatal to the provider, so they map to {} too. The main replay path has
+	// no malformed block filter (FilterIncompleteToolCalls only guards the
+	// fork path), so the wire form self-protects here — including against
+	// the explicit nulls storage normalization writes for stream-truncated
+	// tool calls.
+	if cb.Type == ContentTypeToolUse && (needsStorageNull(cb.Input) || isNullJSON(cb.Input)) {
+		w.Input = json.RawMessage("{}")
+	}
 	return json.Marshal(w)
 }
 
