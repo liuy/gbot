@@ -1221,14 +1221,14 @@ export function createSettingsPage(): SettingsPageHandles {
   const sheetMask = createNode('div', { className: 'fixed inset-0 z-[70] bg-black/50' })
   const sheet = createNode('div', {
     className:
-      'fixed left-1/2 -translate-x-1/2 bottom-0 z-[71] w-full max-w-[420px] bg-ink border border-hairline rounded-t-[20px] p-4 max-h-[70vh] overflow-y-auto',
+      'fixed left-1/2 -translate-x-1/2 bottom-0 z-[71] w-full max-w-[420px] md:max-w-2xl bg-ink border border-hairline rounded-t-[20px] p-4 max-h-[70vh] overflow-y-auto',
   })
   const sheetTitle = createElement('div', 'flex justify-between text-[13px] font-semibold mb-2.5')
   sheetTitle.append(
     createNode('span', L('jsonSheetTitle')),
     createNode('span', { className: 'text-t3 cursor-pointer', text: '✕', attrs: { 'data-sheet-close': '' } }),
   )
-  const jsonBox = createElement('pre', 'bg-ink2 border border-hairline rounded-xl p-3 font-mono text-[10.5px] leading-relaxed text-t2 whitespace-pre overflow-auto max-h-[380px]')
+  const jsonBox = createElement('pre', 'bg-ink2 border border-hairline rounded-xl p-3 font-mono text-[10.5px] leading-relaxed text-t2 whitespace-pre overflow-auto max-h-[380px] md:max-h-[50vh]')
   sheet.append(sheetTitle, jsonBox)
   sheetWrap.append(sheetMask, sheet)
   const closeSheet = () => {
