@@ -2375,6 +2375,16 @@ describe('chat integration', () => {
 describe('mapHistoryToChatMessages', () => {
   const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
   const user = (id: string, text: string) => ({ id, role: 'user' as const, text, thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0 })
+  it('propagates error through assistant merge so partial+error turns keep their error box on restart', () => {
+    const result = mapHistoryToChatMessages([
+      user('u1', 'go'),
+      { id: 'a1', role: 'assistant' as const, text: 'partial answer', thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0, blocks: [] },
+      { id: 'a2', role: 'assistant' as const, text: '', thinking: [], tools: [], usage, error: 'API Error 529: service overloaded', status: 'done' as const, startedAt: 0, blocks: [] },
+    ])
+    expect(result.length).toBe(2)
+    expect(result[1].blocks[0].kind === 'text' && (result[1].blocks[0] as { text: string }).text).toBe('partial answer')
+    expect(result[1].error).toBe('API Error 529: service overloaded')
+  })
   const marker = (id: string) => ({ id, role: 'system' as const, compactBoundary: true, text: '', thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0 })
 
   it('filters out system-role markers between regular messages', () => {

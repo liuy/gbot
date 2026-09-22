@@ -164,6 +164,7 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
     if (last && last.role === 'assistant' && h.role === 'assistant') {
       last.text += h.text ?? ''
       last.blocks = [...(last.blocks ?? []), ...(h.blocks ?? [])]
+      if (h.error) last.error = h.error
       if (h.usage) {
         last.usage = {
           inputTokens: (last.usage?.inputTokens ?? 0) + h.usage.inputTokens,

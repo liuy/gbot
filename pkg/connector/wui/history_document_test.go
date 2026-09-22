@@ -6,10 +6,33 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// TestBuildHistoryChatMsg_DocumentBlock_ReferenceOnly pins the history wire
-// shape for document blocks: a "document" block carrying name/mime/size —
-// reference metadata for the frontend chip, never the parsed markdown and
-// never merged into the legacy Text field.
+// TestBuildHistoryChatMsg_APIErrorFlagToErrorField pins the restart styling
+// contract: a FlagAPIError assistant message must serialize its text into the
+// wire `error` field (frontend errorBox) and NOT as chat text — matching the
+// live query_end rendering, with no content sniffing anywhere.
+func TestBuildHistoryChatMsg_APIErrorFlagToErrorField(t *testing.T) {
+	c := newTestConnector(t)
+
+	m := types.Message{
+		ID:        "a1",
+		Role:      types.RoleAssistant,
+		Timestamp: fixedTimestamp,
+		Content:   []types.ContentBlock{types.NewTextBlock("API Error 402: Insufficient account balance")},
+	}
+	m.Flags |= types.FlagAPIError
+
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
+	if hm.Error != "API Error 402: Insufficient account balance" {
+		t.Errorf("Error = %q, want the failure text", hm.Error)
+	}
+	if hm.Text != "" {
+		t.Errorf("Text = %q, want empty — error text must not double as chat text", hm.Text)
+	}
+	if len(hm.Blocks) != 0 {
+		t.Errorf("Blocks = %+v, want none — error renders via the error field only", hm.Blocks)
+	}
+}
+
 func TestBuildHistoryChatMsg_DocumentBlock_ReferenceOnly(t *testing.T) {
 	c := newTestConnector(t)
 

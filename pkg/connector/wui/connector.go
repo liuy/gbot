@@ -1298,6 +1298,14 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 	for _, cb := range m.Content {
 		switch cb.Type {
 		case types.ContentTypeText:
+			// Flagged API-error messages render as an error box on replay,
+			// matching the live query_end path. The flag round-trips through
+			// the store's metadata JSON, so restart styling needs no
+			// content sniffing.
+			if m.HasFlag(types.FlagAPIError) {
+				hm.Error += cb.Text
+				continue
+			}
 			hm.Text += cb.Text
 			// Match TUI's engineMessagesToViews: skip whitespace-only text
 			// blocks in the ordered array so they don't consume an

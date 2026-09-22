@@ -489,12 +489,13 @@ func TestEngineMessagesToStore_TruncatedInputToolUsePersists(t *testing.T) {
 	}
 }
 
-// TestEngineMessagesToStore_APIErrorMessagePrefixSurvivesRoundTrip locks the
-// durable half of the API-error persistence feature: FlagAPIError does not
-// round-trip, so the "API Error" text prefix is the ONLY signal a restart has
-// that the request failed (TS API_ERROR_MESSAGE_PREFIX detection). If a store
-// change ever drops or mangles the text, restarts lose the error entirely.
-func TestEngineMessagesToStore_APIErrorMessagePrefixSurvivesRoundTrip(t *testing.T) {
+// TestEngineMessagesToStore_APIErrorMessageRoundTrip locks both halves of
+// the API-error persistence contract: FlagAPIError round-trips through the
+// metadata JSON (the structured signal replay styling consumes), and the
+// "API Error" text prefix survives verbatim (the model-facing marker for
+// the next turn, TS API_ERROR_MESSAGE_PREFIX). Losing either half breaks
+// restart parity differently.
+func TestEngineMessagesToStore_APIErrorMessageRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	msgs := []types.Message{
@@ -520,6 +521,9 @@ func TestEngineMessagesToStore_APIErrorMessagePrefixSurvivesRoundTrip(t *testing
 	back := StoreMessageToEngine(result[1])
 	if back.Role != types.RoleAssistant {
 		t.Fatalf("restored role = %s, want assistant", back.Role)
+	}
+	if !back.HasFlag(types.FlagAPIError) {
+		t.Error("FlagAPIError must round-trip via metadata so replay styling and filtering survive restarts")
 	}
 	if len(back.Content) != 1 || back.Content[0].Type != types.ContentTypeText {
 		t.Fatalf("restored content shape wrong: %+v", back.Content)
