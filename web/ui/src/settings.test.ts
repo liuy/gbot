@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { setLocale, initLocale, localeOptions } from './i18n'
+import { setLocale, initLocale, localeOptions, t } from './i18n'
 import { pushDebugLog } from './log'
 import type { RemoteDevice } from './vnc'
 import {
@@ -13,6 +13,16 @@ import {
   type SettingsProvider,
   type ModelsResult,
 } from './settings'
+
+// markUpgrading must be a no-op spy here: settings.ts arms upgrade mode
+// on a 202, and the real one would touch module state no WS exists for.
+// refuseUpgrade likewise — the capsule lives in the chat shell.
+vi.mock('./upgrade_mode', () => ({
+  refuseUpgrade: vi.fn(),
+}))
+vi.mock('./ws', () => ({
+  markUpgrading: vi.fn(),
+}))
 
 // Two providers with the default on the SECOND one — discriminates name-match
 // from index-0 in the default-pill rendering. First provider has no type
@@ -49,6 +59,9 @@ interface MockOptions {
   devices?: RemoteDevice[]
   devicesError?: boolean
   deviceTest?: { ok: boolean; latencyMs?: number; error?: string }
+  admin?: { busy: boolean; items: unknown[]; upgradable: boolean; build: string, reason?: string }
+  restartPostStatus?: number
+  restartPost?: { status: number; body: unknown }
 }
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
@@ -102,6 +115,13 @@ function makeFetchHandler(
     }
     if (url === '/api/settings/test') {
       return { ok: true, status: 200, json: async () => opts.testResult ?? { ok: true, latencyMs: 412 } }
+    }
+    if (url === '/api/admin/restart') {
+      if (method === 'POST') {
+        if (opts.restartPost) return { ok: opts.restartPost.status < 400, status: opts.restartPost.status, json: async () => opts.restartPost!.body }
+        return { ok: opts.restartPostStatus !== 409, status: opts.restartPostStatus ?? 202, json: async () => ({ status: 'upgrading' }) }
+      }
+      return { ok: true, status: 200, json: async () => opts.admin ?? { busy: false, items: [], upgradable: true, build: 'dev · none' } }
     }
     if (url === '/api/settings/models') {
       return { ok: true, status: 200, json: async () => opts.models ?? { mode: 'fetched', models: [] } }
@@ -1010,7 +1030,7 @@ describe('createSettingsPage', () => {
     const labels = [...home.children]
       .filter((c) => c.className.includes('text-t3'))
       .map((c) => c.textContent)
-    expect(labels).toEqual(['提供方', '默认模型', '通用', '桌面'])
+    expect(labels).toEqual(['提供方', '默认模型', '通用', '系统', '桌面'])
     // Protocol identifiers stay literal — only UI copy is translated.
     const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
     expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')
@@ -1289,7 +1309,7 @@ describe('app log card', () => {
     const page = await openAppLog(vi.fn(() => LINES))
     const tabs = [...page.root.querySelectorAll('[data-applog-tab]')] as HTMLElement[]
     expect(tabs.map((b) => b.getAttribute('data-applog-tab'))).toEqual(['app', 'wui', 'gbot'])
-    expect(tabs.map((b) => b.textContent)).toEqual(['app', 'wui', 'gbot'])
+    expect(tabs.map((b) => b.textContent)).toEqual(['app', 'wui', 'GBot'])
     const active = page.root.querySelector('[data-applog-tab="app"]') as HTMLElement
     const inactive = page.root.querySelector('[data-applog-tab="wui"]') as HTMLElement
     expect(active.className).toContain('text-t1')
@@ -1301,14 +1321,14 @@ describe('app log card', () => {
     expect(body.textContent).toContain('[17:01:01] gbot: ready')
   })
 
-  it('keeps the tab labels literal app/wui/gbot under zh (technical terms)', async () => {
+  it('keeps the tab labels literal app/wui/GBot under zh (technical terms)', async () => {
     localStorage.setItem('gbot-language', 'zh')
     initLocale()
     const page = await openAppLog(vi.fn(() => LINES))
     const labels = [...page.root.querySelectorAll('[data-applog-tab]')].map(
       (b) => (b as HTMLElement).textContent,
     )
-    expect(labels).toEqual(['app', 'wui', 'gbot'])
+    expect(labels).toEqual(['app', 'wui', 'GBot'])
   })
 
   it('switching to the wui tab swaps the body to the WUI console ring buffer', async () => {
@@ -1790,5 +1810,138 @@ describe('remote desktop section', () => {
     expect(page.root.querySelectorAll('[data-rd-entry]')).toHaveLength(0)
     expect(page.root.querySelector('[data-rd-card]')).not.toBeNull()
     expect(page.root.querySelector('[data-rd-add]')).not.toBeNull()
+  })
+})
+
+describe('SYSTEM card (admin restart)', () => {
+  it('keeps the button clickable under the TUI refusal and routes the code to the capsule, not static text', async () => {
+    const { refuseUpgrade } = await import('./upgrade_mode')
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: {
+        busy: false, items: [], upgradable: false, build: '1.2.3 · abc1234',
+        reason: 'tui_mode',
+      },
+      restartPost: { status: 501, body: { error: 'TUI mode cannot hot-restart — exit and start the new binary manually', reason: 'tui_mode' } },
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    ;(page.root.querySelector('[data-restart-btn]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-restart-btn]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(refuseUpgrade).toHaveBeenCalledWith('tui_mode', 'TUI mode cannot hot-restart — exit and start the new binary manually')
+    })
+    expect(page.root.querySelector('[data-system-active]')).toBeNull()
+  })
+
+  it('renders the build identity and an enabled restart button when idle + upgradable', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    expect(page.root.querySelector('[data-system-active]')).toBeNull()
+  })
+
+  it('busy keeps the button disabled with no inline notice', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: true, items: [{}, {}], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    expect((page.root.querySelector('[data-restart-btn]') as HTMLButtonElement).disabled).toBe(true)
+    expect(page.root.querySelector('[data-system-active]')).toBeNull()
+  })
+
+  it('restart is two-tap: first tap arms (red confirm label, no POST), second tap fires', async () => {
+    const { markUpgrading } = await import('./ws')
+    const mock = makeFetchHandler({ payload: PAYLOAD, restartPostStatus: 202 })
+    const page = await openPage(mock)
+
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => { expect(btn.disabled).toBe(false) })
+    btn.click()
+    await flushMicrotasks()
+
+    expect(btn.textContent).toBe(t('restartConfirmArm'))
+    expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
+    btn.click()
+    await flushMicrotasks()
+
+    expect(markUpgrading).toHaveBeenCalledTimes(1)
+    const posts = mock.mock.calls.filter(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')
+    expect(posts.length).toBe(1)
+  })
+
+  it('armed restart disarms after 5s, restoring the resting label', async () => {
+    vi.useFakeTimers()
+    try {
+      await import('./ws')
+      const mock = makeFetchHandler({ payload: PAYLOAD, restartPostStatus: 202 })
+      const page = await openPage(mock)
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => { expect(btn.disabled).toBe(false) })
+      btn.click()
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      vi.advanceTimersByTime(4999)
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      vi.advanceTimersByTime(1)
+      expect(btn.textContent).toBe(t('restartBtn'))
+      btn.click()
+      expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('409 silently refreshes — busy disables the button, no notice', async () => {
+    await import('./ws')
+    // Mutated in place after the initial idle render — the handler's json()
+    // reads opts.admin at call time, so the 409's refresh sees the busy turn.
+    const admin = { busy: false, items: [] as unknown[], upgradable: true, build: '1.2.3 · abc1234' }
+    const mock = makeFetchHandler({ payload: PAYLOAD, restartPostStatus: 409, admin })
+    const page = await openPage(mock)
+
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => { expect(btn.disabled).toBe(false) })
+    admin.busy = true
+    admin.items = [{ kind: 'query' }]
+    btn.click()
+    btn.click()
+    await flushMicrotasks()
+
+    expect(page.root.querySelector('[data-toast]')?.textContent ?? '').not.toContain('busy')
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('renders localized labels under zh via data-i18n anchors', async () => {
+    setLocale('zh')
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toBe('重启 GBot')
+    expect(page.root.textContent).toContain('系统')
+    expect(page.root.textContent).toContain('版本号')
+    setLocale('en')
   })
 })

@@ -68,6 +68,14 @@ func main() {
 		os.Exit(0)
 	}
 
+	// `gbot restart` subcommand: POST the admin restart endpoint. Checked
+	// before app.Start() so no PID file is created for this one-shot
+	// command. ParseFlags ignores the bare "restart" token, so -p works
+	// before or after it.
+	if slices.IndexFunc(os.Args[1:], func(a string) bool { return a == "restart" }) >= 0 {
+		os.Exit(runRestart(restartBaseURL(opts.WSPort), os.Stdout))
+	}
+
 	inst, err := app.Start(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

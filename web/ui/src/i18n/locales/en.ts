@@ -40,7 +40,7 @@ export const dict = {
   appLogRow: 'Logs',
   appLogTabApp: 'app',
   appLogTabWui: 'wui',
-  appLogTabGbot: 'gbot',
+  appLogTabGbot: 'GBot',
   appLogCopy: 'Copy',
   appLogCopied: 'Copied',
   appLogCopyFailed: 'Copy failed',
@@ -177,6 +177,16 @@ export const dict = {
   ctxCatMessages: 'Messages',
   ctxCatFreeSpace: 'Free space',
   ctxCatAutocompactBuffer: 'Autocompact buffer',
+
+  systemSection: 'SYSTEM',
+  buildRow: 'Version',
+  restartBtn: 'Restart GBot',
+  restartConfirmArm: 'Confirm restart?',
+  restartFailed: 'Restart failed',
+  upgradeCapsuleText: 'Upgrading…',
+  upgradeRecoveredText: 'Recovered',
+  upgradeRefusedPrefix: 'Restart refused — ',
+  refusalTuiMode: 'TUI mode cannot hot-restart — exit and start the new binary manually',
 } as const
 
 export const endonym = 'English'

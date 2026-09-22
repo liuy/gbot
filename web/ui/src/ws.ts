@@ -3,7 +3,7 @@ import type { ServerMessage } from './types'
 type Listener = (msg: ServerMessage) => void
 type BinaryListener = (data: ArrayBuffer) => void
 
-export type ConnState = 'connected' | 'reconnecting' | 'disconnected'
+export type ConnState = 'connected' | 'reconnecting' | 'disconnected' | 'upgrading'
 
 export interface WebSocketConnection {
   subscribe: (listener: Listener) => () => void
@@ -25,6 +25,8 @@ interface InternalState {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   disposed: boolean
   disableReconnect: boolean
+  upgrading: boolean
+  upgradeStartedAt: number
 }
 
 let state: InternalState | null = null
@@ -40,6 +42,8 @@ function createState(): InternalState {
     reconnectTimer: null,
     disposed: false,
     disableReconnect: false,
+    upgrading: false,
+    upgradeStartedAt: 0,
   }
 }
 
@@ -63,6 +67,41 @@ function scheduleReconnect(s: InternalState, wsUrl: string) {
   }, 1000)
 }
 
+// 250 ms cadence, no 5-try cap: the child inherits the port so reconnects
+// succeed as soon as it serves; a hard 90 s cap bounds a daemon that is
+// gone for good (rollback keeps the old process answering, so this only
+// fires when there is truly nothing to come back to).
+function scheduleUpgradeReconnect(s: InternalState, wsUrl: string) {
+  s.connected = false
+  if (s.disposed) return
+  if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
+  if (Date.now() - s.upgradeStartedAt > 90_000) {
+    s.upgrading = false
+    notifyState(s, 'disconnected')
+    return
+  }
+  notifyState(s, 'upgrading')
+  s.reconnectTimer = setTimeout(() => {
+    connect(s, wsUrl)
+  }, 250)
+}
+
+function enterUpgrade(s: InternalState) {
+  if (s.upgrading) return
+  s.upgrading = true
+  s.upgradeStartedAt = Date.now()
+  notifyState(s, 'upgrading')
+}
+
+function beginUpgrade(s: InternalState, wsUrl: string) {
+  // Inline flag+timestamp without enterUpgrade's notify — the single
+  // 'upgrading' notification comes from scheduleUpgradeReconnect below
+  // (enterUpgrade + schedule would notify twice).
+  s.upgrading = true
+  s.upgradeStartedAt = Date.now()
+  scheduleUpgradeReconnect(s, wsUrl)
+}
+
 function connect(s: InternalState, wsUrl: string) {
   if (s.disposed) return
   if (s.ws) {
@@ -77,11 +116,24 @@ function connect(s: InternalState, wsUrl: string) {
 
   ws.onopen = () => {
     s.reconnectCount = 0
+    s.upgrading = false
     s.connected = true
     notifyState(s, 'connected')
   }
 
   ws.onclose = (ev: CloseEvent) => {
+    // 1012 = service restart: enter upgrading mode (fast reconnect, no
+    // error visuals) BEFORE the taken_over check — during handover a
+    // reconnect may briefly land on the still-draining old process, whose
+    // takeover close must not strand the client.
+    if (!s.upgrading && ev.code === 1012) {
+      beginUpgrade(s, wsUrl)
+      return
+    }
+    if (s.upgrading) {
+      scheduleUpgradeReconnect(s, wsUrl)
+      return
+    }
     // Server sends close frame with code 1000 + reason "taken_over" when
     // another client takes over this session. We must NOT auto-reconnect,
     // otherwise the two clients ping-pong fighting for the slot. Any
@@ -132,8 +184,17 @@ function manualReconnect() {
   if (!state) return
   state.reconnectCount = 0
   state.disableReconnect = false  // reset takeover guard — user explicitly wants back
+  state.upgrading = false
   const wsUrl = `ws://${location.host}/ws/chat`
   connect(state, wsUrl)
+}
+
+// Arms upgrade mode from the settings page right after a 202, before the
+// 1012 close arrives — the capsule and fast-reconnect are then already
+// in place when the socket drops.
+export function markUpgrading() {
+  if (!state) return
+  enterUpgrade(state)
 }
 
 function connFromState(s: InternalState): WebSocketConnection {

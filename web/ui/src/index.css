@@ -126,6 +126,10 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
+/* Upgrade freeze: slight desaturation of the in-flight message only —
+   CSS-only so no content DOM is restructured during a restart. */
+.stream-dim { filter: saturate(.55); transition: filter .3s; }
+
 /* Scrollbar — completely hidden, touch scroll only */
 ::-webkit-scrollbar {
   width: 0;

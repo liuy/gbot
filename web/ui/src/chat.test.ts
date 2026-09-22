@@ -90,6 +90,17 @@ beforeEach(() => {
 })
 
 describe('chat integration', () => {
+  it('mounts the upgrade capsule at the shell root, outside the transform trap', () => {
+    const chat = mount()
+    const capsule = chat.root.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule).toBeTruthy()
+    // The capsule is fixed z-70 and must float above the opaque z-60
+    // settings sheet (restart is initiated FROM settings). Sidebar
+    // toggling parks a translateX(0) on mainContent — a lingering
+    // transform makes it a stacking context that would trap the capsule.
+    // Only a direct shell-root child stacks as authored.
+    expect(capsule.parentElement).toBe(chat.root)
+  })
   it('send shows user message and dispatches message', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

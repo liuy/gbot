@@ -5,6 +5,8 @@ import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from '.
 import { getDebugLogs } from './log'
 import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, localeOptions, type Locale, type StaticKey } from './i18n'
 import { fetchRemoteDevices, saveRemoteDevices, testRemoteDevice, type RemoteDevice } from './vnc'
+import { refuseUpgrade } from './upgrade_mode'
+import { markUpgrading } from './ws'
 
 // Settings page — provider CRUD against /api/settings/*. The page is a
 // full-screen overlay (z above sidebar and artifact sheet) opened from the
@@ -43,6 +45,36 @@ export async function fetchSettings(): Promise<SettingsPayload> {
   const res = await fetch('/api/settings/providers')
   if (!res.ok) throw new Error(`settings fetch failed: ${res.status}`)
   return res.json()
+}
+
+// Admin restart surface (binary hot restart): live busy state + build
+// identity for the SYSTEM card, and the trigger POST.
+export interface AdminState {
+  busy: boolean
+  items: unknown[]
+  upgradable: boolean
+  build: string
+  reason?: string
+}
+
+export async function fetchAdminState(): Promise<AdminState> {
+  const res = await fetch('/api/admin/restart')
+  if (!res.ok) throw new Error(`admin state fetch failed: ${res.status}`)
+  return res.json()
+}
+
+// Status plus the 501 envelope on refusal-shaped replies: "reason" is the
+// stable code (capsule i18n), "error" the human fallback sentence.
+export async function postRestart(): Promise<{ status: number; error?: string; reason?: string }> {
+  const res = await fetch('/api/admin/restart', {
+    method: 'POST',
+    headers: jsonHeaders,
+  })
+  if (res.status !== 202) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; reason?: string }
+    return { status: res.status, error: body.error, reason: body.reason }
+  }
+  return { status: res.status }
 }
 
 // The on-disk settings.json verbatim ("" when the file does not exist yet).
@@ -490,6 +522,102 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsRow.row,
     hljsPanel,
   )
+
+  // ------------------------------------------------------------- SYSTEM card
+  // Build identity + restart button. The whole card stays mounted even when
+  // this platform cannot upgrade — the button then renders disabled instead
+  // of the section vanishing between platforms.
+  const systemCard = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
+  const systemRow = (k: StaticKey, valueEl: HTMLElement) => {
+    const row = createElement('div', 'flex items-center gap-2 px-3.5 py-3 select-none')
+    row.append(createNode('span', { className: 'text-[13px] font-medium flex-1', ...L(k) }), valueEl)
+    return row
+  }
+  const buildValue = createNode('span', {
+    className: 'text-[12px] text-t2 font-mono',
+    attrs: { 'data-system-build': '' },
+  })
+  // Two-tap confirm (sidebar trash precedent): resting = theme-neutral
+  // text-t1 (white in dark, near-black in light); first tap arms into the
+  // destructive red with a confirm label, disarmed after 5s; second tap
+  // fires. No window.confirm — it breaks the app's visual language.
+  const RESTART_REST = 'bg-ink3 text-t1 border border-hairline rounded-xl py-2.5 px-3 text-[13px] font-semibold w-full cursor-pointer'
+  const RESTART_ARMED = 'bg-red/15 text-red border border-red/45 rounded-xl py-2.5 px-3 text-[13px] font-semibold w-full cursor-pointer'
+  const restartBtn = createNode('button', {
+    className: RESTART_REST,
+    ...L('restartBtn', { type: 'button', 'data-restart-btn': '' }),
+  }) as HTMLButtonElement
+  restartBtn.disabled = true
+  let restartArmed = false
+  let restartDisarmTimer: ReturnType<typeof setTimeout> | null = null
+  const setRestartArmed = (on: boolean) => {
+    restartArmed = on
+    if (restartDisarmTimer) { clearTimeout(restartDisarmTimer); restartDisarmTimer = null }
+    restartBtn.className = on ? RESTART_ARMED : RESTART_REST
+    if (on) {
+      // Drop the data-i18n anchor while armed: a live locale switch must
+      // not rewrite the armed label back to the resting one.
+      restartBtn.removeAttribute('data-i18n')
+      restartBtn.textContent = t('restartConfirmArm')
+      restartDisarmTimer = setTimeout(() => setRestartArmed(false), 5000)
+    } else {
+      restartBtn.setAttribute('data-i18n', 'restartBtn')
+      restartBtn.textContent = t('restartBtn')
+    }
+  }
+  const restartRow = createElement('div', 'flex flex-col gap-1.5 px-3.5 py-3')
+  restartRow.append(restartBtn)
+  systemCard.append(
+    systemRow('buildRow', buildValue),
+    divider(),
+    restartRow,
+  )
+
+  // Network/parsing errors deliberately leave the last values in place —
+  // the daemon is briefly down exactly when this poll matters most (the
+  // handover window), and stale version text beats a blank card.
+  const refreshSystem = async () => {
+    try {
+      const body = await fetchAdminState()
+      buildValue.textContent = body.build
+      // Busy and platform-unsupported disable silently — the simplest
+      // truthful state. A refusal WITH a reason code stays clickable: the
+      // click surfaces the localized refusal through the status capsule.
+      restartBtn.disabled = body.busy || (!body.upgradable && !body.reason)
+      // A state turn that disables the button also disarms — never show a
+      // red "confirm?" label on a button that cannot fire.
+      if (restartBtn.disabled && restartArmed) setRestartArmed(false)
+    } catch {
+      // keep last known values
+    }
+  }
+
+  restartBtn.addEventListener('click', async () => {
+    if (restartBtn.disabled) return
+    if (!restartArmed) {
+      setRestartArmed(true)
+      return
+    }
+    setRestartArmed(false)
+    try {
+      const { status, error, reason } = await postRestart()
+      if (status === 202) {
+        // Arm upgrade mode before the 1012 arrives: capsule + fast
+        // reconnect are then already in place when the socket drops.
+        markUpgrading()
+      } else if (status === 409) {
+        // Race: busy arrived after the GET. The refresh disables the
+        // button; no notice — the state itself is the message.
+        await refreshSystem()
+      } else if (status === 501) {
+        refuseUpgrade(reason ?? '', error ?? '')
+      } else {
+        toast(t('restartFailed'))
+      }
+    } catch {
+      toast(t('restartFailed'))
+    }
+  })
 
   // ------------------------------------------------------------ remote endpoints
   // Card list + detail form for the header's target-switch popup — Android
@@ -1068,6 +1196,8 @@ export function createSettingsPage(): SettingsPageHandles {
     defaultCard,
     sectionLabel('generalSection'),
     generalCard,
+    sectionLabel('systemSection'),
+    systemCard,
   )
   // The card is Android-shell-only: absent bridge (desktop browser) means
   // no card at all rather than a degraded hint.
@@ -1801,9 +1931,13 @@ export function createSettingsPage(): SettingsPageHandles {
   })
 
   // ------------------------------------------------------------------ open
+  let systemPollTimer: ReturnType<typeof setInterval> | null = null
   const open = () => {
     opened = true
     root.style.display = ''
+    if (systemPollTimer) clearInterval(systemPollTimer)
+    void refreshSystem()
+    systemPollTimer = setInterval(() => { void refreshSystem() }, 5000)
     void fetchSettings()
       .then((p) => {
         payload = p
@@ -1828,6 +1962,7 @@ export function createSettingsPage(): SettingsPageHandles {
   const close = () => {
     opened = false
     root.style.display = 'none'
+    if (systemPollTimer) { clearInterval(systemPollTimer); systemPollTimer = null }
     closeSheet()
   }
 

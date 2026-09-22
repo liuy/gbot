@@ -37,6 +37,7 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
@@ -94,6 +95,8 @@ type engineClient interface {
 	// compact boundary. See engineAdapter.PreCompactMessages for contract.
 	PreCompactMessages(delivered, limit int) (msgs []*short.TranscriptMessage, total int, hasBoundary bool)
 	ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error)
+	// Jobs snapshots the engine's background jobs for the restart busy probe.
+	Jobs() []*job.JobInfo
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -184,6 +187,14 @@ func (a *engineAdapter) PreCompactMessages(delivered, limit int) ([]*short.Trans
 
 func (a *engineAdapter) ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error) {
 	return a.eng.ManualCompact(ctx, userMsg, customInstructions)
+}
+
+func (a *engineAdapter) Jobs() []*job.JobInfo {
+	refs := a.eng.ToolRefs()
+	if refs.JobReg == nil {
+		return nil
+	}
+	return refs.JobReg.List()
 }
 
 // queryStats accumulates per-query stats (usage + start time + tool count +
@@ -295,6 +306,10 @@ type engineSlot struct {
 	queryStats  queryStats
 	taskToolIDs map[string]bool
 	active      atomic.Bool
+	// name is the manager's display name; system marks dream-like engines.
+	// Both feed the restart busy report (system engines are excluded there).
+	name   string
+	system bool
 }
 
 // wsMsg carries one outbound WS frame through wsCh. isBinary selects the
@@ -546,6 +561,8 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 		engine:      &engineAdapter{eng: vs.Engine},
 		hub:         h,
 		taskToolIDs: map[string]bool{},
+		name:        vs.Name,
+		system:      vs.System,
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
 
@@ -583,6 +600,130 @@ func (c *WUIConnector) Stop() {
 // Send on the wui connector; it exists solely to satisfy the
 // connector.Connector contract.
 func (c *WUIConnector) Send(userID, text string) error { return nil }
+
+// CloseForUpgrade closes the active chat WS with 1012 (Service Restart)
+// so the client enters upgrade mode (fast reconnect, no error visuals)
+// instead of the generic reconnect path. WriteControl is gorilla's only
+// concurrency-safe write vs the wsWriter goroutine — same exception as
+// takeover.
+func (c *WUIConnector) CloseForUpgrade() {
+	if ws := c.activeWS.Swap(nil); ws != nil {
+		closeFrame := websocket.FormatCloseMessage(1012, "upgrading")
+		_ = ws.WriteControl(websocket.CloseMessage, closeFrame, time.Now().Add(time.Second))
+		_ = ws.Close()
+	}
+}
+
+// BusyReport lists what a restart would interrupt right now. Dream
+// (system) engines are excluded on purpose: an interrupted dream tick is
+// acceptable — its watermark self-heals on the next tick. Exported
+// because pkg/app wires it into AdminDeps.Probe AND the SIGUSR2
+// handler — both triggers must see the same activity list.
+func (c *WUIConnector) BusyReport() BusyReport {
+	c.slotsMu.RLock()
+	slots := make([]*engineSlot, 0, len(c.slots))
+	for _, s := range c.slots {
+		slots = append(slots, s)
+	}
+	c.slotsMu.RUnlock()
+
+	report := BusyReport{Items: []BusyItem{}}
+	for _, s := range slots {
+		if s.system {
+			continue
+		}
+		if s.engine.IsBusy() {
+			report.Items = append(report.Items, BusyItem{
+				Kind:     "query",
+				Engine:   s.name,
+				EngineID: s.engine.EngineID(),
+				Session:  activeSessionTitle(s.engine),
+				Detail:   inFlightPromptExcerpt(s.engine),
+			})
+			report.Busy = true
+		}
+		for _, j := range s.engine.Jobs() {
+			if j == nil || j.Status != "running" {
+				continue
+			}
+			detail := j.Command
+			if detail == "" {
+				detail = j.Description
+			}
+			report.Items = append(report.Items, BusyItem{
+				Kind:     "job",
+				Engine:   s.name,
+				EngineID: s.engine.EngineID(),
+				Detail:   detail,
+			})
+			report.Busy = true
+		}
+	}
+	return report
+}
+
+// activeSessionTitle resolves the engine's current session title from its
+// recent-session list. Empty string when nothing matches — a missing title
+// must not blank the rest of the busy item.
+func activeSessionTitle(eng engineClient) string {
+	sid := eng.SessionID()
+	if sid == "" {
+		return ""
+	}
+	sessions, err := eng.ListSessions(50)
+	if err != nil {
+		return ""
+	}
+	for _, s := range sessions {
+		if s != nil && s.SessionID == sid {
+			return s.Title
+		}
+	}
+	return ""
+}
+
+// busyDetailMaxRunes caps the in-flight prompt excerpt; the trailing
+// ellipsis is added only when truncation actually happened.
+const busyDetailMaxRunes = 80
+
+// inFlightPromptExcerpt extracts the user prompt of the query in flight:
+// the first user message at or after QueryStartMsgIdx, text blocks joined.
+func inFlightPromptExcerpt(eng engineClient) string {
+	msgs := eng.Messages()
+	start := eng.QueryStartMsgIdx()
+	if start < 0 {
+		start = 0
+	}
+	if start > len(msgs) {
+		start = len(msgs)
+	}
+	for _, m := range msgs[start:] {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		var parts []string
+		for _, cb := range m.Content {
+			if cb.Text != "" {
+				parts = append(parts, cb.Text)
+			}
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		return truncateRunes(strings.Join(parts, " "), busyDetailMaxRunes)
+	}
+	return ""
+}
+
+// truncateRunes cuts by runes so multi-byte prompts survive truncation
+// intact (a byte cut could split a CJK character and corrupt the display).
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
 
 // fileStartMsg is the wire shape of the file_start text frame (server → browser).
 type fileStartMsg struct {

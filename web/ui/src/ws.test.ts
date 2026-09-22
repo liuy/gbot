@@ -138,6 +138,104 @@ describe('ws reconnect backoff', () => {
   })
 })
 
+describe('ws upgrading mode', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.stubGlobal('location', { host: 'localhost' })
+    vi.useFakeTimers()
+    vi.resetModules()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('close 1012 enters upgrading and reconnects on the 250ms fast cadence', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    MockWebSocket.instances[0].onclose!({ code: 1012 } as CloseEvent)
+    expect(states).toEqual(['connected', 'upgrading'])
+    expect(MockWebSocket.instances.length).toBe(1)
+    vi.advanceTimersByTime(249)
+    expect(MockWebSocket.instances.length).toBe(1)
+    vi.advanceTimersByTime(1)
+    expect(MockWebSocket.instances.length).toBe(2)
+  })
+
+  it('upgrading reconnects keep going past 5 failures without disconnecting', async () => {
+    const { getConnection } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    MockWebSocket.instances[0].onclose!({ code: 1012 } as CloseEvent)
+    for (let i = 0; i < 6; i++) {
+      MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
+      vi.advanceTimersByTime(250)
+    }
+    expect(states).not.toContain('disconnected')
+    expect(states.filter(s => s === 'reconnecting').length).toBe(0)
+    expect(states[states.length - 1]).toBe('upgrading')
+    // 1 initial socket + 6 reconnect sockets (one per 250 ms cycle).
+    expect(MockWebSocket.instances.length).toBe(7)
+  })
+
+  it('markUpgrading then close 1006 stays in upgrading, onopen recovers to connected', async () => {
+    const { getConnection, markUpgrading } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    markUpgrading()
+    expect(states).toEqual(['connected', 'upgrading'])
+    MockWebSocket.instances[0].onclose!({ code: 1006 } as CloseEvent)
+    expect(states[states.length - 1]).toBe('upgrading')
+
+    vi.advanceTimersByTime(250)
+    MockWebSocket.instances[1].onopen!()
+    expect(states[states.length - 1]).toBe('connected')
+  })
+
+  it('taken_over during upgrading still reconnects (not disconnected)', async () => {
+    const { getConnection, markUpgrading } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    markUpgrading()
+    MockWebSocket.instances[0].onclose!({ code: 1000, reason: 'taken_over' } as CloseEvent)
+    expect(states).not.toContain('disconnected')
+    expect(states[states.length - 1]).toBe('upgrading')
+    vi.advanceTimersByTime(250)
+    expect(MockWebSocket.instances.length).toBe(2)
+  })
+
+  it('90s cap gives up and reports disconnected', async () => {
+    const { getConnection, markUpgrading } = await import('./ws')
+    const conn = getConnection()
+    const states: string[] = []
+    conn.onStateChange((s) => states.push(s))
+
+    MockWebSocket.instances[0].onopen!()
+    markUpgrading()
+    MockWebSocket.instances[0].onclose!({ code: 1006 } as CloseEvent)
+    vi.setSystemTime(Date.now() + 91_000)
+    MockWebSocket.instances[MockWebSocket.instances.length - 1].onclose!({ code: 1006 } as CloseEvent)
+    expect(states[states.length - 1]).toBe('disconnected')
+    const lenAfterCap = MockWebSocket.instances.length
+    vi.advanceTimersByTime(1000)
+    expect(MockWebSocket.instances.length).toBe(lenAfterCap)
+  })
+})
+
 describe('ws binary frame routing', () => {
   beforeEach(() => {
     MockWebSocket.instances = []

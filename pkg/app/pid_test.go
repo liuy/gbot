@@ -11,7 +11,7 @@ import (
 
 func TestAcquirePID_Success(t *testing.T) {
 	projectDir := t.TempDir()
-	cleanup, err := acquirePID(projectDir)
+	cleanup, err := acquirePID(projectDir, false)
 	if err != nil {
 		t.Fatalf("acquirePID failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestAcquirePID_StalePID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := acquirePID(projectDir)
+	cleanup, err := acquirePID(projectDir, false)
 	if err != nil {
 		t.Fatalf("acquirePID should succeed for stale PID, got: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestAcquirePID_LivePID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := acquirePID(projectDir)
+	_, err := acquirePID(projectDir, false)
 	if err == nil {
 		t.Fatal("expected error for live PID, got nil")
 	}
@@ -81,7 +81,7 @@ func TestAcquirePID_Cleanup(t *testing.T) {
 	projectDir := t.TempDir()
 	pidPath := project.PIDFile(projectDir)
 
-	cleanup, err := acquirePID(projectDir)
+	cleanup, err := acquirePID(projectDir, false)
 	if err != nil {
 		t.Fatalf("acquirePID failed: %v", err)
 	}
@@ -105,6 +105,45 @@ func TestIsProcessAlive_Self(t *testing.T) {
 	}
 }
 
+// A tableflip child boots while its parent still holds the PID file: the
+// guard must be skippable (file still overwritten with our PID) while the
+// default path keeps refusing.
+func TestAcquirePID_SkipsLiveGuard(t *testing.T) {
+	projectDir := t.TempDir()
+	pidPath := project.PIDFile(projectDir)
+
+	// Occupy with our own PID (always alive).
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	cleanup, err := acquirePID(projectDir, true)
+	if err != nil {
+		t.Fatalf("acquirePID(dir, true) with live holder failed: %v", err)
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read PID file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("PID file contains non-integer: %q", string(data))
+	}
+	if pid != os.Getpid() {
+		t.Errorf("PID = %d, want %d (file must be overwritten even when the guard is skipped)", pid, os.Getpid())
+	}
+
+	// Re-occupy (cleanup above removed it only at defer time — rewrite).
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+		t.Fatalf("rewrite pid file: %v", err)
+	}
+	if _, err := acquirePID(projectDir, false); err == nil {
+		t.Fatal("acquirePID(dir, false) with live holder succeeded, want 'already running' error")
+	}
+}
+
 func TestIsProcessAlive_Nonexistent(t *testing.T) {
 	// PID 999999999 is very unlikely to exist
 	if isProcessAlive(999999999) {
@@ -121,7 +160,7 @@ func TestAcquirePID_CorruptPIDFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := acquirePID(projectDir)
+	cleanup, err := acquirePID(projectDir, false)
 	if err != nil {
 		t.Fatalf("acquirePID should succeed for corrupt PID file, got: %v", err)
 	}

@@ -60,6 +60,7 @@ import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
 import { getConnection } from './ws'
+import { createUpgradeCapsule, setStreamFreeze } from './upgrade_mode'
 import { TokenRate } from './token_rate'
 import { History } from './history'
 import { initTheme } from './theme'
@@ -529,6 +530,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   disconnectBanner.appendChild(dcText)
   mainContent.appendChild(disconnectBanner)
 
+  // Upgrade capsule (binary hot restart): floats below the header during
+  // the handover; owns ALL upgrading visuals so the disconnect banner
+  // stays untouched. Mounts on the shell root, NOT mainContent: sidebar
+  // toggling parks a translateX(0) on mainContent, and that lingering
+  // transform is a stacking context that traps the fixed capsule under
+  // the opaque z-60 settings sheet (restart is initiated FROM settings).
+  const capsule = createUpgradeCapsule()
+  root.appendChild(capsule.root)
+
   const wrapper = createElement('div', 'mx-auto max-w-2xl py-4')
 
   const topSentinel = createElement('div', 'h-px')
@@ -617,17 +627,45 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     dcDotTimer = setTimeout(tick, 1000)
   }
+  let rollbackTimer: ReturnType<typeof setTimeout> | null = null
+  const clearRollbackTimer = () => {
+    if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null }
+  }
   conn.onStateChange?.((cs) => {
     stopDots()
     if (cs === 'connected') {
       disconnectBanner.style.maxHeight = '0px'
       disconnectBanner.style.opacity = '0'
       disconnectBanner.style.cursor = 'default'
+      if (capsule.active()) {
+        clearRollbackTimer()
+        capsule.recovered()
+        document.body.removeAttribute('data-upgrading')
+        setStreamFreeze(messagesContainer, false)
+      }
     } else if (cs === 'reconnecting') {
       disconnectBanner.style.cursor = 'default'
       startDots()
       disconnectBanner.style.maxHeight = '40px'
       disconnectBanner.style.opacity = '1'
+    } else if (cs === 'upgrading') {
+      // Capsule owns the visuals; the banner must not appear for a planned
+      // restart. Rollback bail-out: if the socket never actually dropped,
+      // the server answered our reconnect with the old process (the
+      // upgrade failed) — 20 s of "upgrading" against a live socket means
+      // nothing is happening.
+      capsule.enter()
+      document.body.setAttribute('data-upgrading', '1')
+      if (streaming) setStreamFreeze(messagesContainer, true)
+      clearRollbackTimer()
+      rollbackTimer = window.setTimeout(() => {
+        rollbackTimer = null
+        if (conn.connected) {
+          capsule.dismiss()
+          document.body.removeAttribute('data-upgrading')
+          setStreamFreeze(messagesContainer, false)
+        }
+      }, 20_000)
     } else {
       dcText.textContent = 'Reconnection failed. Tap to retry.'
       disconnectBanner.style.cursor = 'pointer'

@@ -93,7 +93,8 @@ func Start(opts Options) (*Instance, error) {
 		}
 	}
 
-	pidCleanup, err := acquirePID(projectDir)
+	upg := newUpgrader()
+	pidCleanup, err := acquirePID(projectDir, upg != nil && upg.HasParent())
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +107,9 @@ func Start(opts Options) (*Instance, error) {
 		if dreamCancel != nil {
 			dreamCancel()
 		}
-		pidCleanup()
+		if !handedOver.Load() {
+			pidCleanup()
+		}
 		os.Exit(0)
 	}()
 
@@ -240,11 +243,16 @@ func Start(opts Options) (*Instance, error) {
 		// Preflight the bind so a port conflict fails fast, BEFORE engines,
 		// hooks, and connectors run user-visible side effects; the real
 		// listener still opens late (TOCTOU gap is harmless — the late
-		// listen also errors fatally).
-		if ln, err := net.Listen("tcp", wsListenAddr()); err != nil {
-			return nil, fmt.Errorf("ws server: %w", err)
-		} else {
-			_ = ln.Close()
+		// listen also errors fatally). Skipped on an upgraded child: it
+		// inherits the listening fd, and a fresh bind would fail with
+		// EADDRINUSE against the parent's still-live listener — the
+		// conflict probe only makes sense on a cold boot.
+		if upg == nil || !upg.HasParent() {
+			if ln, err := net.Listen("tcp", wsListenAddr()); err != nil {
+				return nil, fmt.Errorf("ws server: %w", err)
+			} else {
+				_ = ln.Close()
+			}
 		}
 	}
 
@@ -565,15 +573,53 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterRemoteDesktopRoutes(wsMux)
 		wui.RegisterVNCProxyRoutes(wsMux)
 		wui.RegisterLogRoutes(wsMux, logPath)
+		// TUI-mode processes are gated from hot-restart entirely (the child
+		// would die on raw-mode EIO after Ready — 2026-09-22 incident).
+		// Code drives wui i18n; message is for CLI consumers.
+		refusalCode, refusalMsg := "", ""
+		if upg != nil && !opts.DaemonMode {
+			refusalCode = wui.RefusalTUIMode
+			refusalMsg = "TUI mode cannot hot-restart — exit and start the new binary manually"
+		}
+		wui.RegisterAdminRoutes(wsMux, wui.AdminDeps{
+			Probe:              wc.BusyReport,
+			Upgrade:            upgradeGate(upg, opts.DaemonMode),
+			UnsupportedCode:    refusalCode,
+			UnsupportedMessage: refusalMsg,
+			Version:            wui.AdminVersion{Build: VersionInfo()},
+		})
+		notifyUpgradeSignal(upg, upgradeGate(upg, opts.DaemonMode), wc.BusyReport, !opts.DaemonMode)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
 
 		// All routes mounted — NOW open the port (see comment at wsMux
 		// creation): accepting a connection means every endpoint is live.
 		wsAddr := wsListenAddr()
-		if _, err := computer.StartWSServer(wsRegistry, wsAddr, wsMux); err != nil {
+		var ln net.Listener
+		if upg != nil {
+			ln, err = upg.Listen("tcp", wsAddr)
+		} else {
+			ln, err = net.Listen("tcp", wsAddr)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("ws server: %w", err)
+		}
+		srv, err := computer.StartWSServerOn(wsRegistry, ln, wsMux)
+		if err != nil {
 			return nil, fmt.Errorf("ws server: %w", err)
 		}
 		slog.Info("ws:listen", "addr", wsAddr)
+		if upg != nil {
+			// Ready() is what tells the parent this child is fully initialized;
+			// failing it makes the parent kill us — the rollback path. Sound
+			// ONLY because TUI-mode parents never upgrade (upgradeGate): the
+			// child is always daemon-mode, so everything that could still fail
+			// after this point is fatal anyway. If TUI-as-attachable-client
+			// ever lands, Ready must move past the TUI leg instead.
+			if err := upg.Ready(); err != nil {
+				return nil, fmt.Errorf("upgrade ready: %w", err)
+			}
+			go watchUpgradeExit(upg, srv, wc, dreamCancel)
+		}
 	}
 
 	return &Instance{

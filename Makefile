@@ -10,6 +10,8 @@ PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
 GBOT_HOME := $(HOME)/.gbot
 VERSION ?= 0.0.0-dev
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS := -X 'github.com/liuy/gbot/pkg/app.version=$(VERSION)' -X 'github.com/liuy/gbot/pkg/app.commit=$(COMMIT)'
 
 # -N: disable optimization (keeps locals alive for inspection)
 # -l: disable inlining (preserves real call frames)
@@ -20,7 +22,7 @@ all: build
 
 # build compiles frontend (web/ui) + backend (Go binary).
 build: web-build
-	go build -o $(BINARY) $(CMD)
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 # build-android compiles a binary that can replace the GBot APK's gbot
 # on-device (Termux). Run this on the phone, then cp to /usr/bin/gbot.
@@ -111,7 +113,7 @@ package-android: build-android
 	bash scripts/package-android.sh $(VERSION)
 
 wails-build: web-build
-	go build -o $(BINARY) ./cmd/gbot/
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/gbot/
 
 # e2e
 agent-start: build

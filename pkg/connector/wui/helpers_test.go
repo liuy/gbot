@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -76,6 +77,7 @@ type mockEngine struct {
 	thinkingFn         func() llm.Effort
 	preCompactFn       func(delivered, limit int) ([]*short.TranscriptMessage, int, bool)
 	manualCompactFn    func(ctx context.Context, userMsg types.Message, instructions string) (*short.CompactResult, error)
+	jobsFn             func() []*job.JobInfo
 
 	// Recorded calls for assertions.
 	queryCalls            []queryCall
@@ -405,6 +407,13 @@ func (m *mockEngine) ManualCompact(ctx context.Context, userMsg types.Message, i
 		return fn(ctx, userMsg, instructions)
 	}
 	return nil, nil
+}
+
+func (m *mockEngine) Jobs() []*job.JobInfo {
+	if m.jobsFn != nil {
+		return m.jobsFn()
+	}
+	return nil
 }
 
 // newTestConnectorWithHub builds a WUIConnector with a mockEngine and the

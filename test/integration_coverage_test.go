@@ -168,6 +168,20 @@ var requiredScenarios = []RequiredScenario{
 		NamePattern: `Search.*Message|SearchMessage`,
 		Description: "Full-text search across session messages returns correct results",
 	},
+
+	// --- hot-restart (tableflip) ---
+	{
+		Feature:     "hot-restart",
+		Package:     "pkg/app",
+		NamePattern: `Upgrade.*E2E|Upgrade.*Rollback`,
+		Description: "tableflip FD inheritance with zero-downtime probe + broken-binary rollback",
+	},
+	{
+		Feature:     "hot-restart",
+		Package:     "pkg/connector/wui",
+		NamePattern: `AdminRestart|RequestRestart`,
+		Description: "admin restart endpoint + shared gated entry: busy 409 with live activity list, idle 202, GET state",
+	},
 }
 
 // findTestInPkg searches all _test.go files in a directory for a test function

@@ -288,6 +288,65 @@ func TestStartWSServer_BindFailure(t *testing.T) {
 	}
 }
 
+// The tableflip path injects an already-open listener (inherited fd), so
+// StartWSServerOn must serve the mux on exactly that listener — including the
+// device routes RegisterDeviceWS mounts — and srv.Close must stop it.
+func TestStartWSServerOn_ServesInjectedListener(t *testing.T) {
+	t.Parallel()
+	reg := NewConnectionRegistry()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	srv, err := StartWSServerOn(reg, ln, http.NewServeMux())
+	if err != nil {
+		t.Fatalf("StartWSServerOn: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Unrouted path → 404 proves the injected listener serves the mux.
+	resp, err := http.Get("http://" + addr + "/no-such-path")
+	if err != nil {
+		t.Fatalf("GET on injected listener: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /no-such-path status = %d, want 404", resp.StatusCode)
+	}
+
+	// Plain GET on /ws fails the gorilla handshake with 400 — proves the
+	// device route is registered even on the injected-listener path.
+	respWS, err := http.Get("http://" + addr + "/ws")
+	if err != nil {
+		t.Fatalf("GET /ws: %v", err)
+	}
+	defer respWS.Body.Close()
+	if respWS.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET /ws status = %d, want 400 (failed WS handshake)", respWS.StatusCode)
+	}
+
+	if err := srv.Close(); err != nil {
+		t.Fatalf("srv.Close: %v", err)
+	}
+	dialErr := make(chan error, 1)
+	go func() {
+		c, _, derr := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
+		if c != nil {
+			_ = c.Close()
+		}
+		dialErr <- derr
+	}()
+	select {
+	case derr := <-dialErr:
+		if derr == nil {
+			t.Fatal("dial succeeded after srv.Close, want refusal")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for post-Close dial attempt")
+	}
+}
+
 func TestRegDial_NoRegistry(t *testing.T) {
 	t.Parallel()
 	// NewAndroidBackend() sets dial = b.regDial with registry nil → Connect

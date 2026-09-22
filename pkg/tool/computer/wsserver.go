@@ -107,6 +107,13 @@ func StartWSServer(reg *ConnectionRegistry, addr string, mux *http.ServeMux) (*h
 	if err != nil {
 		return nil, err
 	}
+	return StartWSServerOn(reg, ln, mux)
+}
+
+// StartWSServerOn serves mux on an already-open listener ln. The daemon's
+// tableflip path owns listener creation (inherited fd vs fresh bind) and
+// passes it here.
+func StartWSServerOn(reg *ConnectionRegistry, ln net.Listener, mux *http.ServeMux) (*http.Server, error) {
 	RegisterDeviceWS(mux, reg)
 	srv := &http.Server{Handler: mux}
 	go func() {

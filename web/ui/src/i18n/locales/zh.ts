@@ -18,7 +18,7 @@ export const dict: Dict = {
   appLogRow: '日志',
   appLogTabApp: 'app',
   appLogTabWui: 'wui',
-  appLogTabGbot: 'gbot',
+  appLogTabGbot: 'GBot',
   appLogCopy: '复制',
   appLogCopied: '已复制',
   appLogCopyFailed: '复制失败',
@@ -152,6 +152,16 @@ export const dict: Dict = {
   ctxCatMessages: '消息',
   ctxCatFreeSpace: '剩余空间',
   ctxCatAutocompactBuffer: '自动压缩缓冲区',
+
+  systemSection: '系统',
+  buildRow: '版本号',
+  restartBtn: '重启 GBot',
+  restartConfirmArm: '确认重启？',
+  restartFailed: '重启失败',
+  upgradeCapsuleText: '升级中…',
+  upgradeRecoveredText: '已恢复',
+  upgradeRefusedPrefix: '无法热重启 — ',
+  refusalTuiMode: 'TUI 模式无法热重启 — 请退出后手动启动新版本',
 }
 
 export const endonym = '简体中文'
