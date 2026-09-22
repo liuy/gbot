@@ -9410,29 +9410,44 @@ func TestStreamErrorGeneratesSyntheticToolResults(t *testing.T) {
 		t.Errorf("error should contain 'service overloaded', got: %v", result.Error)
 	}
 
-	// Verify the engine appended the partial assistant message.
-	var assistantMsg *types.Message
+	// Verify the engine appended the partial assistant message (with the
+	// orphaned tool_use) and, after it, the terminal-error assistant message.
+	var partialMsg, errMsg *types.Message
 	var userMsg *types.Message
 	for i := range eng.messages {
-		if eng.messages[i].Role == types.RoleAssistant {
-			assistantMsg = &eng.messages[i]
-		}
-		if eng.messages[i].Role == types.RoleUser {
-			userMsg = &eng.messages[i]
+		m := &eng.messages[i]
+		switch {
+		case m.Role == types.RoleAssistant && m.HasFlag(types.FlagAPIError):
+			errMsg = m
+		case m.Role == types.RoleAssistant:
+			partialMsg = m
+		case m.Role == types.RoleUser:
+			userMsg = m
 		}
 	}
 
-	if assistantMsg == nil {
-		t.Fatal("expected assistant message in engine messages")
+	if partialMsg == nil {
+		t.Fatal("expected partial assistant message in engine messages")
 	}
 	hasToolUse := false
-	for _, b := range assistantMsg.Content {
+	for _, b := range partialMsg.Content {
 		if b.Type == types.ContentTypeToolUse && b.ID == "tu_err" {
 			hasToolUse = true
 		}
 	}
 	if !hasToolUse {
 		t.Error("expected tool_use tu_err in assistant message")
+	}
+
+	// Terminal error must also persist as a flagged visible message.
+	if errMsg == nil {
+		t.Fatal("expected flagged API-error assistant message after the partial one")
+	}
+	if !strings.Contains(errMsg.Content[0].Text, "service overloaded") {
+		t.Errorf("API-error message should name the failure, got: %q", errMsg.Content[0].Text)
+	}
+	if errMsg.HasFlag(types.FlagMeta) {
+		t.Error("API-error message must stay visible")
 	}
 
 	// Verify synthetic tool_result was generated.

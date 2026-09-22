@@ -489,6 +489,49 @@ func TestEngineMessagesToStore_TruncatedInputToolUsePersists(t *testing.T) {
 	}
 }
 
+// TestEngineMessagesToStore_APIErrorMessagePrefixSurvivesRoundTrip locks the
+// durable half of the API-error persistence feature: FlagAPIError does not
+// round-trip, so the "API Error" text prefix is the ONLY signal a restart has
+// that the request failed (TS API_ERROR_MESSAGE_PREFIX detection). If a store
+// change ever drops or mangles the text, restarts lose the error entirely.
+func TestEngineMessagesToStore_APIErrorMessagePrefixSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{ID: "u1", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		func() types.Message {
+			m := types.NewAssistantMessage([]types.ContentBlock{
+				types.NewTextBlock("API Error 429: rate limited"),
+			})
+			m.ID = "a1"
+			m.Flags |= types.FlagAPIError
+			return m
+		}(),
+	}
+
+	result, err := EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 store messages, got %d", len(result))
+	}
+
+	back := StoreMessageToEngine(result[1])
+	if back.Role != types.RoleAssistant {
+		t.Fatalf("restored role = %s, want assistant", back.Role)
+	}
+	if len(back.Content) != 1 || back.Content[0].Type != types.ContentTypeText {
+		t.Fatalf("restored content shape wrong: %+v", back.Content)
+	}
+	if !strings.HasPrefix(back.Content[0].Text, "API Error") {
+		t.Errorf("restored text lost the durable prefix: %q", back.Content[0].Text)
+	}
+	if !strings.Contains(back.Content[0].Text, "rate limited") {
+		t.Errorf("restored text lost the failure detail: %q", back.Content[0].Text)
+	}
+}
+
 func TestEngineMessagesToStore_PreservesDuration(t *testing.T) {
 	t.Parallel()
 

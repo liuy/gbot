@@ -355,10 +355,12 @@ func TestOpenAISSE_ToolCallFragmented(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 5b. ToolCallArgsCutByMaxTokens — the 2026-09-22 incident shape: the argument
-//     stream is cut mid-JSON by finish_reason "length". The provider must
-//     still close the tool block with the partial bytes delivered verbatim —
-//     never fabricate a valid input — so downstream storage normalization
-//     (needsStorageNull) sees the true corruption. The provider lies to no one.
+//
+//	stream is cut mid-JSON by finish_reason "length". The provider must
+//	still close the tool block with the partial bytes delivered verbatim —
+//	never fabricate a valid input — so downstream storage normalization
+//	(needsStorageNull) sees the true corruption. The provider lies to no one.
+//
 // ---------------------------------------------------------------------------
 func TestOpenAISSE_ToolCallArgsCutByMaxTokens(t *testing.T) {
 	t.Parallel()

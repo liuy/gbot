@@ -68,6 +68,15 @@ const (
 	// FlagVisibleInTranscriptOnly marks messages visible only in transcript view.
 	// Source: TS isVisibleInTranscriptOnly in MessageSelector.tsx:780.
 	FlagVisibleInTranscriptOnly
+
+	// FlagAPIError marks an assistant message synthesized from a terminal
+	// API error (429/5xx/auth) — the model never produced a real response.
+	// Visible on purpose: restart history and the next turn's model both
+	// need to see that the request failed. In-process only — the store does
+	// not round-trip Flags, so durable detection uses the "API Error"
+	// text prefix (TS API_ERROR_MESSAGE_PREFIX, errors.ts:54).
+	// Source: TS createAssistantAPIErrorMessage in messages.ts:435.
+	FlagAPIError
 )
 
 // HasFlag checks if the message has a specific flag set.

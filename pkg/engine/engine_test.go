@@ -796,6 +796,37 @@ func TestQuery_StreamError_APIErrorTerminal(t *testing.T) {
 	if mp.index != 1 {
 		t.Errorf("expected 1 provider call, got %d", mp.index)
 	}
+
+	// The terminal API error must survive as a flagged assistant message in
+	// history (TS createAssistantAPIErrorMessage / isApiErrorMessage). Without
+	// it a restart shows a lone user query with no reply, and the next turn's
+	// model has no idea the request failed.
+	msgs := eng.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages in history after terminal API error")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != types.RoleAssistant {
+		t.Fatalf("last message role = %s, want assistant (error message)", last.Role)
+	}
+	if !last.HasFlag(types.FlagAPIError) {
+		t.Error("error message must carry FlagAPIError")
+	}
+	if len(last.Content) != 1 || last.Content[0].Type != types.ContentTypeText {
+		t.Fatalf("error message content shape wrong: %+v", last.Content)
+	}
+	errText := last.Content[0].Text
+	if !strings.Contains(errText, "rate limited") {
+		t.Errorf("error message text should name the failure, got: %q", errText)
+	}
+	// APIError.Error() already yields "API Error 429: ..." — the synthesized
+	// message must not double the prefix.
+	if n := strings.Count(errText, "API Error"); n != 1 {
+		t.Errorf("error message should carry the API Error marker exactly once, got %d in %q", n, errText)
+	}
+	if last.HasFlag(types.FlagMeta) {
+		t.Error("error message must be visible (no FlagMeta) — the next turn's model needs to see what happened")
+	}
 }
 
 func TestQuery_DisabledToolSkipped(t *testing.T) {

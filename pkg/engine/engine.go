@@ -1673,6 +1673,22 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			// Stage 16: Error handling — all errors are terminal here.
 			// Retry is handled by callLLMWithRetry (stream-level only).
 			e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
+			// Persist the failure as a flagged assistant message (TS
+			// createAssistantAPIErrorMessage / isApiErrorMessage): without it
+			// a restart shows a lone user query, and the next turn's model
+			// has no idea the request failed. Visible on purpose.
+			// FormatLLMError sanitizes (no raw URLs/IPs) and already
+			// prefixes APIError with "API Error 429: ..." — prepend only
+			// when missing so the durable marker never doubles.
+			errText := llm.FormatLLMError(err)
+			if !strings.HasPrefix(errText, "API Error") {
+				errText = "API Error: " + errText
+			}
+			errMsg := types.NewAssistantMessage([]types.ContentBlock{
+				types.NewTextBlock(errText),
+			})
+			errMsg.Flags |= types.FlagAPIError
+			e.appendMessage(errMsg)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 			errMsgs, _ := e.snapshotExitState()
 			return QueryResult{
