@@ -98,12 +98,17 @@ Transcript DB: %s
 Last consolidation: %s (query cutoff: '%s' UTC)
 New main-thread messages since cutoff: %d
 
-Step 1 — overview, which sessions were active:
-Read("%s")
+Read("%s")   — overview: sessions active since the cutoff
+Read("%s")   — dialogue previews since the cutoff
 
-Step 2 — dialogue since cutoff (user asks + assistant conclusions, interleaved):
-Read("%s")
-
-Adjust LIMIT freely. For deeper context on any topic (reasoning cut off by the preview, incidents mentioned by shorthand), Recall with keywords — see Phase 2 item 3.
+This run, per the phases in your system prompt:
+Phase 2 (gather) — run both queries above; while the dialogue query still
+returns rows, re-run it with AND seq > <last returned seq> until the
+window is exhausted. When a preview hints at reasoning or incidents
+beneath the surface, Recall with keywords before moving on.
+Phase 3 (consolidate) — before overwriting a memory that conflicts with
+what you read, Recall the original discussion to confirm.
+Phase 4 (prune) — before deleting a memory as stale, Recall to confirm
+it has been superseded.
 Begin.`, memoryDir, dbPath, lastDreamStr, cutoff, newMsgCount, overview, dialogue)
 }

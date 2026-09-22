@@ -19,6 +19,10 @@ func TestSystemPrompt_PhaseStructure(t *testing.T) {
 	}
 }
 
+// TestSystemPrompt_QueriesPrimaryRecallDeepDive guards the standing manual:
+// queries first, Recall deep-dive after — never Recall-first gathering.
+// (Pagination/coverage teaching intentionally lives in the trigger runbook,
+// not here; see TestTriggerMessage_PhaseFramingNotSteps.)
 func TestSystemPrompt_QueriesPrimaryRecallDeepDive(t *testing.T) {
 	if !strings.Contains(SystemPrompt, "ready-to-run Read queries") {
 		t.Error("system prompt should describe the trigger's pre-built queries")
@@ -131,5 +135,39 @@ func TestTriggerMessage_Queries(t *testing.T) {
 	}
 	if !strings.Contains(result, "is_sidechain = 0") {
 		t.Error("queries must exclude sidechain (sub-agent) messages")
+	}
+}
+
+// TestTriggerMessage_PhaseFramingNotSteps guards the trigger's role: a
+// per-window RUNBOOK aligned to the system prompt's phase names — never its
+// own step enumeration. On 2026-09-22 the old "Step 1/Step 2 ... Begin"
+// framing drowned the system prompt's workflow: the dream ran the two
+// copy-pasteable queries and used Recall zero times. The runbook must carry
+// the three operational musts the system prompt cannot hammer home alone:
+// seq-cursor pagination to exhaustion, and Recall at each of its three
+// intervention points (gather depth, conflict check before overwrite,
+// staleness check before prune).
+func TestTriggerMessage_PhaseFramingNotSteps(t *testing.T) {
+	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7)
+
+	for _, step := range []string{"Step 1", "Step 2", "Step 3"} {
+		if strings.Contains(result, step) {
+			t.Errorf("trigger must not invent step numbering %q — phases live in the system prompt", step)
+		}
+	}
+	if !strings.Contains(result, "AND seq > <last returned seq>") {
+		t.Error("trigger must teach seq-cursor pagination to window exhaustion")
+	}
+	for _, phase := range []string{"Phase 2 (gather)", "Phase 3 (consolidate)", "Phase 4 (prune)"} {
+		if !strings.Contains(result, phase) {
+			t.Errorf("trigger runbook missing %s", phase)
+		}
+	}
+	if strings.Count(result, "Recall") < 3 {
+		t.Errorf("trigger must name Recall at all three intervention points, got %d mentions", strings.Count(result, "Recall"))
+	}
+	if !strings.Contains(result, "Begin.") {
+		t.Error("trigger should end with the begin cue")
 	}
 }
