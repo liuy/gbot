@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -349,6 +350,69 @@ func TestOpenAISSE_ToolCallFragmented(t *testing.T) {
 	}
 	if events[3].Delta.PartialJSON != `"/etc/hosts"}` {
 		t.Errorf("second delta = %q, want '\"/etc/hosts\"}'", events[3].Delta.PartialJSON)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 5b. ToolCallArgsCutByMaxTokens — the 2026-09-22 incident shape: the argument
+//     stream is cut mid-JSON by finish_reason "length". The provider must
+//     still close the tool block with the partial bytes delivered verbatim —
+//     never fabricate a valid input — so downstream storage normalization
+//     (needsStorageNull) sees the true corruption. The provider lies to no one.
+// ---------------------------------------------------------------------------
+func TestOpenAISSE_ToolCallArgsCutByMaxTokens(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_cut","type":"function","function":{"name":"Skill","arguments":"{\"args\":\"实现 g"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"bot"}}]},"finish_reason":null}]}`,
+		"",
+		// Budget exhausted mid-argument: no closing bytes ever arrive.
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta", // {"args":"实现 g
+		"content_block_delta", // bot
+		"message_delta",       // finish_reason=length arrives first
+		"content_block_stop",  // tool block closed at stream end
+		"message_stop",
+	)
+
+	var gotArgs []byte
+	for _, ev := range events {
+		if ev.Type == "content_block_delta" && ev.Delta != nil && ev.Delta.Type == "input_json_delta" {
+			gotArgs = append(gotArgs, ev.Delta.PartialJSON...)
+		}
+	}
+	// The fragments concatenate to truncated, invalid JSON — exactly what the
+	// engine will assign to ContentBlock.Input and storage must normalize.
+	if want := `{"args":"实现 gbot`; string(gotArgs) != want {
+		t.Errorf("accumulated args = %q, want truncated %q", gotArgs, want)
+	}
+	if json.Valid(gotArgs) {
+		t.Errorf("cut args must remain invalid JSON, got %q", gotArgs)
+	}
+
+	for _, ev := range events {
+		if ev.Type == "message_delta" && ev.DeltaMsg != nil {
+			if ev.DeltaMsg.StopReason != "max_tokens" {
+				t.Errorf("StopReason = %q, want max_tokens", ev.DeltaMsg.StopReason)
+			}
+		}
 	}
 }
 
