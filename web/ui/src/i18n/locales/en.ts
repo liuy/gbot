@@ -69,6 +69,7 @@ export const dict = {
   rdTesting: 'Testing…',
   rdChipControl: 'Control',
   rdChipKeyboard: 'Input',
+  rdKbdNonAscii: 'This character cannot be sent as keystrokes — use the VM input method',
   rdChipFullscreen: 'Fullscreen',
   rdChipViewMode: 'View mode',
   rdStateConnecting: 'Connecting…',

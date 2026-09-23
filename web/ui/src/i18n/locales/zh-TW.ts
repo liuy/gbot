@@ -47,6 +47,7 @@ export const dict: Dict = {
   rdTesting: '測試中…',
   rdChipControl: '接管',
   rdChipKeyboard: '輸入',
+  rdKbdNonAscii: '該字元無法經鍵盤直發，請用虛擬機內輸入法',
   rdChipFullscreen: '全螢幕',
   rdChipViewMode: '檢視模式',
   rdStateConnecting: '連線中…',

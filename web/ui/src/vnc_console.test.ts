@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { initLocale, retranslate } from './i18n'
+import { initLocale, retranslate, t } from './i18n'
 import { createVNCSheet } from './vnc_console'
 import type { RemoteDevice } from './vnc'
 import { instances } from '@novnc/novnc'
@@ -239,9 +239,11 @@ describe('createVNCSheet', () => {
     expect(instances()[0].sentKeys).toEqual([
       { keysym: 0x61, down: true },
       { keysym: 0x61, down: false },
-      { keysym: 0x01000000 + 0x4f60, down: true },
-      { keysym: 0x01000000 + 0x4f60, down: false },
     ])
+    // CJK has no scancode — QEMU's reverse keymap drops it. Nothing is sent
+    // (silently forwarding a dead keysym only logs warnings server-side);
+    // a toast tells the user to use the guest IME instead.
+    expect(sheet.root.querySelector('[data-vnc-toast]')?.textContent).toBe(t('rdKbdNonAscii'))
     // The capture stays empty — it is an event source, not a text field.
     expect(kbd.value).toBe('')
     kbd.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }))
@@ -520,5 +522,38 @@ describe('createVNCSheet', () => {
     sheet.open(WIN11)
     await vi.waitFor(() => expect(instances()).toHaveLength(1))
     expect(instances()[0].url).toBe('wss://servere5.ts.net/wui/vnc/win11')
+  })
+  // QEMU's VNC reverse keymap drops Shift for punctuation (':' arrives as
+  // ';'). Shifted ASCII is therefore sent as a composed sequence:
+  // Shift down, base key, base up, Shift up.
+  it.each<[string, number]>([
+    [':', 0x3b],
+    ['?', 0x2f],
+    ['A', 0x61],
+    ['~', 0x60],
+    ['@', 0x32],
+  ])('typing %s composes shift + the US-layout base key', async (ch, base) => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const inst = instances()[0]
+    inst.sentKeys = []
+    kbd.dispatchEvent(new InputEvent('input', { data: ch }))
+    expect(inst.sentKeys).toEqual([
+      { keysym: 0xffe1, down: true },
+      { keysym: base, down: true },
+      { keysym: base, down: false },
+      { keysym: 0xffe1, down: false },
+    ])
+  })
+  it('unshifted ASCII sends a plain pair — no shift composition', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const inst = instances()[0]
+    inst.sentKeys = []
+    kbd.dispatchEvent(new InputEvent('input', { data: '1' }))
+    expect(inst.sentKeys).toEqual([
+      { keysym: 0x31, down: true },
+      { keysym: 0x31, down: false },
+    ])
   })
 })

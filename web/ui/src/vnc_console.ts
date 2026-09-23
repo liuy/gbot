@@ -261,16 +261,55 @@ export function createVNCSheet(): VNCSheetHandles {
       e.preventDefault()
     }
   })
+  // QEMU's VNC reverse keymap drops Shift for punctuation when a bare
+  // keysym arrives (':' types as ';'), so shifted ASCII is composed as
+  // Shift+base key — the vncdotool --force-caps precedent (SPECIAL_KEYS_US).
+  // Non-ASCII has no en-US scancode at all: those characters ride the guest
+  // IME or clipboard, never keystrokes.
+  const SHIFTED_US: Record<string, string> = {
+    '~': '`', '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6',
+    '&': '7', '*': '8', '(': '9', ')': '0', '_': '-', '+': '=',
+    '{': '[', '}': ']', '|': '\\', ':': ';', '"': "'", '<': ',', '>': '.',
+    '?': '/',
+  }
+  const kbdToast = createElement(
+    'div',
+    'fixed left-1/2 -translate-x-1/2 bottom-24 z-[70] rounded-full bg-ink3 border border-hairline px-4 py-1.5 text-[12px] text-t2 shadow-lg opacity-0 transition-opacity duration-300 pointer-events-none',
+  )
+  kbdToast.setAttribute('data-vnc-toast', '')
+  sheet.append(kbdToast)
+  let kbdToastTimer: ReturnType<typeof setTimeout> | null = null
+  const showKbdToast = (msg: string) => {
+    kbdToast.textContent = msg
+    kbdToast.classList.remove('opacity-0')
+    if (kbdToastTimer) clearTimeout(kbdToastTimer)
+    kbdToastTimer = setTimeout(() => kbdToast.classList.add('opacity-0'), 2500)
+  }
+  const sendCharAsKeys = (inst: RFB, ch: string): boolean => {
+    const base = SHIFTED_US[ch] ?? (ch >= 'A' && ch <= 'Z' ? ch.toLowerCase() : null)
+    if (base) {
+      inst.sendKey(0xffe1, null, true)
+      const k = base.charCodeAt(0)
+      inst.sendKey(k, null, true)
+      inst.sendKey(k, null, false)
+      inst.sendKey(0xffe1, null, false)
+      return true
+    }
+    const cp = ch.codePointAt(0)!
+    if (cp > 0x7f) return false
+    inst.sendKey(cp, null, true)
+    inst.sendKey(cp, null, false)
+    return true
+  }
   // Printed characters (incl. IME composition results) arrive here.
   kbdInput.addEventListener('input', (ev) => {
     const e = ev as InputEvent
     if (!rfb || !e.data) return
+    let skipped = false
     for (const ch of e.data) {
-      const cp = ch.codePointAt(0)!
-      const keysym = cp > 0xff ? 0x01000000 + cp : cp
-      rfb.sendKey(keysym, null, true)
-      rfb.sendKey(keysym, null, false)
+      if (!sendCharAsKeys(rfb, ch)) skipped = true
     }
+    if (skipped) showKbdToast(t('rdKbdNonAscii'))
     kbdInput.value = ''
   })
   kbdInput.addEventListener('blur', () => keyboardModeOff())
