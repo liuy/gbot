@@ -1284,10 +1284,20 @@ describe('app log card', () => {
     expect(page.root.querySelector('[data-applog-bottom]')).toBeNull()
   })
 
-  it('hides the app logs card entirely when the bridge global is absent (desktop)', async () => {
-    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    expect(page.root.querySelector('[data-applog-row]')).toBeNull()
-    expect(page.root.querySelector('[data-applog-panel]')).toBeNull()
+  it('shows the log viewer on desktop with no app tab, defaulting to gbot', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, logs: 'daemon desktop line' })
+    const page = await openPage(mock)
+    // No GBotAppLogs stub: desktop browser. The viewer still mounts...
+    expect(page.root.querySelector('[data-applog-row]')).not.toBeNull()
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    // ...without the app tab, defaulting to the daemon log tab.
+    expect(page.root.querySelector('[data-applog-tab="app"]')).toBeNull()
+    expect(page.root.querySelector('[data-applog-tab="wui"]')).not.toBeNull()
+    expect(page.root.querySelector('[data-applog-tab="gbot"]')?.classList.contains('text-t1')).toBe(true)
+    await vi.waitFor(() => {
+      const body = page.root.querySelector('[data-applog-lines]') as HTMLElement
+      expect(body.textContent).toContain('daemon desktop line')
+    })
   })
 
   it('copy writes the fetched tail via the clipboard API and toasts success', async () => {

@@ -1101,10 +1101,9 @@ export function createSettingsPage(): SettingsPageHandles {
   const renderAppLogPanel = () => {
     appLogPanel.replaceChildren()
     const bridge = appLogsBridge()
-    if (!bridge) return
-    // Default back to the app tab on every open — matches the pre-tabs
-    // behavior where an open always showed the freshest bridge tail.
-    activeLogTab = 'app'
+    // Default tab follows the platform: the freshest Android host buffer
+    // when the shell is present, the daemon log otherwise (desktop).
+    activeLogTab = bridge ? 'app' : 'gbot'
     appLogText = ''
 
     // Tab row (left) + copy icon (right) share one row; tabs are literal
@@ -1124,11 +1123,16 @@ export function createSettingsPage(): SettingsPageHandles {
     )
     body.setAttribute('data-applog-lines', '')
 
-    const tabKeys: Array<readonly [AppLogTab, StaticKey]> = [
-      ['app', 'appLogTabApp'],
-      ['wui', 'appLogTabWui'],
-      ['gbot', 'appLogTabGbot'],
-    ]
+    const tabKeys: Array<readonly [AppLogTab, StaticKey]> = bridge
+      ? [
+          ['app', 'appLogTabApp'],
+          ['wui', 'appLogTabWui'],
+          ['gbot', 'appLogTabGbot'],
+        ]
+      : [
+          ['wui', 'appLogTabWui'],
+          ['gbot', 'appLogTabGbot'],
+        ]
     const setActiveTabStyles = () => {
       for (const btn of tabsRow.querySelectorAll('[data-applog-tab]')) {
         const el = btn as HTMLElement
@@ -1154,7 +1158,8 @@ export function createSettingsPage(): SettingsPageHandles {
 
     const loadActiveTab = () => {
       if (activeLogTab === 'app') {
-        fillBody(bridge.tail(500))
+        // The app tab only exists when the shell registered the bridge.
+        if (bridge) fillBody(bridge.tail(500))
       } else if (activeLogTab === 'wui') {
         fillBody(getDebugLogs().join('\n'))
       } else {
@@ -1232,16 +1237,14 @@ export function createSettingsPage(): SettingsPageHandles {
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
   // GENERAL closes the page as the catch-all section (iOS Settings shape):
-  // language/theme/hljs, then the android log viewer, then version+restart
-  // as the very last row. The log rows are Android-shell-only: absent
-  // bridge means no rows rather than a degraded hint.
+  // language/theme/hljs, then the log viewer, then version+restart as the
+  // very last row. The viewer mounts everywhere — desktop simply has no
+  // app tab (no Android shell bridge) and defaults to the daemon log.
   generalCard.append(divider(), systemRow)
-  if (appLogsBridge()) {
-    const logDivider = divider()
-    generalCard.insertBefore(logDivider, systemRow)
-    generalCard.insertBefore(appLogHead, logDivider)
-    generalCard.insertBefore(appLogPanel, logDivider)
-  }
+  const logDivider = divider()
+  generalCard.insertBefore(logDivider, systemRow)
+  generalCard.insertBefore(appLogHead, logDivider)
+  generalCard.insertBefore(appLogPanel, logDivider)
   homeScreen.append(sectionLabel('generalSection'), generalCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
