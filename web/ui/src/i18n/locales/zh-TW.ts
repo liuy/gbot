@@ -153,7 +153,6 @@ export const dict: Dict = {
   ctxCatFreeSpace: '剩餘空間',
   ctxCatAutocompactBuffer: '自動壓縮緩衝區',
 
-  systemSection: '系統',
   buildRow: '版本號',
   restartBtn: '重啟 GBot',
   restartConfirmArm: '確認重啟？',

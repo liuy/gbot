@@ -44,7 +44,20 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 	t.Setenv("UPGRADE_TEST_DIR", sigDir)
 	t.Setenv("UPGRADE_TEST_ADDR", addr)
 
+	// A fresh helper must not believe it has a tableflip parent. When this
+	// test runs INSIDE a hot-restarted daemon (the daemon is itself a
+	// tableflip child and its env — TABLEFLIP_HAS_PARENT_*=yes — leaks
+	// into every descendant shell), the helper's tableflip.New would try
+	// to decode parent fds that don't exist here and die with EBADF.
+	helperEnv := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "TABLEFLIP_") {
+			continue
+		}
+		helperEnv = append(helperEnv, kv)
+	}
 	root := exec.Command(helperBin)
+	root.Env = helperEnv
 	root.Stdout, root.Stderr = os.Stderr, os.Stderr
 	if err := root.Start(); err != nil {
 		t.Fatalf("start root helper: %v", err)

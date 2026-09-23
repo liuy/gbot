@@ -1030,7 +1030,7 @@ describe('createSettingsPage', () => {
     const labels = [...home.children]
       .filter((c) => c.className.includes('text-t3'))
       .map((c) => c.textContent)
-    expect(labels).toEqual(['提供方', '默认模型', '通用', '系统', '桌面'])
+    expect(labels).toEqual(['提供方', '默认模型', '通用', '桌面'])
     // Protocol identifiers stay literal — only UI copy is translated.
     const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
     expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')
@@ -1655,7 +1655,11 @@ describe('remote desktop section', () => {
     const home = page.root.querySelector('[data-screen="home"]') as HTMLElement
     const pos = (el: HTMLElement) => Array.from(home.children).indexOf(el)
     expect(pos(page.root.querySelector('[data-default-card]') as HTMLElement)).toBeLessThan(pos(card(page)))
-    expect(home.lastElementChild).toBe(card(page))
+    // The system card sits below the remote-desktop card — the last
+    // element of the settings page.
+    const sysCard = (page.root.querySelector('[data-system-row]') as HTMLElement).parentElement as HTMLElement
+    expect(pos(card(page))).toBeLessThan(pos(sysCard))
+    expect(home.lastElementChild).toBe(sysCard)
   })
 
   it('card click opens the prefilled form; back returns to the list', async () => {
@@ -1926,6 +1930,49 @@ describe('SYSTEM card (admin restart)', () => {
 
     expect(page.root.querySelector('[data-toast]')?.textContent ?? '').not.toContain('busy')
     expect(btn.disabled).toBe(true)
+  })
+
+  it('places the system line last — one row inside the standard card chrome', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    const home = page.root.querySelector('[data-screen="home"]') as HTMLElement
+    const card = (page.root.querySelector('[data-system-row]') as HTMLElement).parentElement as HTMLElement
+    expect(home.lastElementChild).toBe(card)
+    // Same card chrome as every other section — a naked row would float.
+    expect(card.className).toContain('bg-ink2')
+    expect(card.className).toContain('rounded-xl')
+    // One row: label + value together on the left, restart pushed right.
+    const row = page.root.querySelector('[data-system-row]') as HTMLElement
+    const value = row.querySelector('[data-system-build]') as HTMLElement
+    expect(value.className).not.toContain('text-right')
+    expect((row.querySelector('[data-restart-btn]') as HTMLElement).className).toContain('ml-auto')
+  })
+
+  it('renders the restart action as a borderless red row, not a chunky CTA button', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toContain('GBot')
+    })
+    const row = page.root.querySelector('[data-restart-btn]') as HTMLElement
+    expect(row.tagName).toBe('BUTTON')
+    expect(row.className).not.toMatch(/border-(?!none)/)
+    // Resting keeps the normal label color — destructive red appears only
+    // when armed. Compact inline chip, not a block row.
+    expect(row.className).toContain('text-t1')
+    expect(row.className).not.toContain('text-red')
+    expect(row.className).toContain('px-2')
+    expect(row.className).not.toContain('w-full')
+    expect(row.className).not.toContain('font-semibold')
   })
 
   it('renders localized labels under zh via data-i18n anchors', async () => {

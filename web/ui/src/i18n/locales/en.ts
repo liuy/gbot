@@ -178,7 +178,6 @@ export const dict = {
   ctxCatFreeSpace: 'Free space',
   ctxCatAutocompactBuffer: 'Autocompact buffer',
 
-  systemSection: 'SYSTEM',
   buildRow: 'Version',
   restartBtn: 'Restart GBot',
   restartConfirmArm: 'Confirm restart?',

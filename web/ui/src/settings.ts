@@ -523,26 +523,23 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsPanel,
   )
 
-  // ------------------------------------------------------------- SYSTEM card
-  // Build identity + restart button. The whole card stays mounted even when
-  // this platform cannot upgrade — the button then renders disabled instead
-  // of the section vanishing between platforms.
-  const systemCard = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
-  const systemRow = (k: StaticKey, valueEl: HTMLElement) => {
-    const row = createElement('div', 'flex items-center gap-2 px-3.5 py-3 select-none')
-    row.append(createNode('span', { className: 'text-[13px] font-medium flex-1', ...L(k) }), valueEl)
-    return row
-  }
+  // ------------------------------------------------------------- SYSTEM footer
+  // The whole system section collapsed to ONE borderless line at the very
+  // bottom: version label + build identity + restart. No card chrome — two
+  // rows never justified a card (iOS "About" row pattern). Stays mounted
+  // even when this platform cannot upgrade: the restart action renders
+  // disabled instead of the line vanishing between platforms.
   const buildValue = createNode('span', {
-    className: 'text-[12px] text-t2 font-mono',
+    className: 'truncate text-[12px] text-t2 font-mono',
     attrs: { 'data-system-build': '' },
   })
-  // Two-tap confirm (sidebar trash precedent): resting = theme-neutral
-  // text-t1 (white in dark, near-black in light); first tap arms into the
-  // destructive red with a confirm label, disarmed after 5s; second tap
-  // fires. No window.confirm — it breaks the app's visual language.
-  const RESTART_REST = 'bg-ink3 text-t1 border border-hairline rounded-xl py-2.5 px-3 text-[13px] font-semibold w-full cursor-pointer'
-  const RESTART_ARMED = 'bg-red/15 text-red border border-red/45 rounded-xl py-2.5 px-3 text-[13px] font-semibold w-full cursor-pointer'
+  // Restart is an inline text action, not a CTA: system-level destructive
+  // actions stay quiet until armed. Resting keeps the normal text-t1 color
+  // like every other label; the destructive red appears only when armed.
+  // Two-tap confirm (sidebar trash precedent): first tap arms into a red
+  // "confirm?" chip, disarmed after 5s; second tap fires.
+  const RESTART_REST = 'ml-auto shrink-0 bg-transparent border-none px-2 py-1 rounded-lg text-[13px] font-medium text-t1 cursor-pointer'
+  const RESTART_ARMED = 'ml-auto shrink-0 bg-red/10 border-none px-2 py-1 rounded-lg text-[13px] font-semibold text-red cursor-pointer'
   const restartBtn = createNode('button', {
     className: RESTART_REST,
     ...L('restartBtn', { type: 'button', 'data-restart-btn': '' }),
@@ -565,13 +562,18 @@ export function createSettingsPage(): SettingsPageHandles {
       restartBtn.textContent = t('restartBtn')
     }
   }
-  const restartRow = createElement('div', 'flex flex-col gap-1.5 px-3.5 py-3')
-  restartRow.append(restartBtn)
-  systemCard.append(
-    systemRow('buildRow', buildValue),
-    divider(),
-    restartRow,
+  // One row inside the standard card chrome: same visual language as every
+  // other settings card (a naked row would float oddly at the page bottom),
+  // but the whole system section is still just one line.
+  const systemCard = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
+  const systemRow = createElement('div', 'flex items-center gap-2 px-3.5 py-3 select-none')
+  systemRow.setAttribute('data-system-row', '')
+  systemRow.append(
+    createNode('span', { className: 'text-[13px] font-medium', ...L('buildRow') }),
+    buildValue,
+    restartBtn,
   )
+  systemCard.append(systemRow)
 
   // Network/parsing errors deliberately leave the last values in place —
   // the daemon is briefly down exactly when this poll matters most (the
@@ -584,6 +586,7 @@ export function createSettingsPage(): SettingsPageHandles {
       // truthful state. A refusal WITH a reason code stays clickable: the
       // click surfaces the localized refusal through the status capsule.
       restartBtn.disabled = body.busy || (!body.upgradable && !body.reason)
+      restartBtn.classList.toggle('opacity-40', restartBtn.disabled)
       // A state turn that disables the button also disarms — never show a
       // red "confirm?" label on a button that cannot fire.
       if (restartBtn.disabled && restartArmed) setRestartArmed(false)
@@ -1196,14 +1199,15 @@ export function createSettingsPage(): SettingsPageHandles {
     defaultCard,
     sectionLabel('generalSection'),
     generalCard,
-    sectionLabel('systemSection'),
-    systemCard,
   )
   // The card is Android-shell-only: absent bridge (desktop browser) means
   // no card at all rather than a degraded hint.
   if (appLogsBridge()) homeScreen.append(appLogCard)
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
+  // SYSTEM card goes LAST: the system/destructive line closes the page,
+  // never mixed into the regular configuration flow.
+  homeScreen.append(systemCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
   // ------------------------------------------------------------------ edit
