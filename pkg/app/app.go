@@ -17,6 +17,7 @@ import (
 
 type Options struct {
 	DaemonMode bool
+	NoTUI      bool // no bubbletea loop: set by -d and -p; the only "headless" axis
 	WSPort     string
 	Verbose    bool
 }
@@ -39,11 +40,13 @@ type Instance struct {
 	HookSystem         *hooks.Hooks
 	WorkingDir         string
 	ProjectDir         string
-	DaemonMode         bool
-	WSPort             string
-	Hub                *hub.Hub
-	MediaStores        []*media.Store
-	LSPReg             *lsp.Registry
-	Logger             *slog.Logger
-	PIDCleanup         func()
+	// NoTUI on the Instance means "no bubbletea loop consumes TUIHandler
+	// events" — engines must get a plain hub, not the TUI handler.
+	NoTUI       bool
+	WSPort      string
+	Hub         *hub.Hub
+	MediaStores []*media.Store
+	LSPReg      *lsp.Registry
+	Logger      *slog.Logger
+	PIDCleanup  func()
 }

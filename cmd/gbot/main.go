@@ -83,7 +83,7 @@ func main() {
 	}
 	defer inst.Cleanup()
 
-	if opts.DaemonMode {
+	if opts.NoTUI {
 		// WS server is already started inside app.Start(). runDaemon waits
 		// for a signal (non-Windows) or shows a wails window (Windows).
 		runDaemon(inst, opts.WSPort)

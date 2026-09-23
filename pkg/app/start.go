@@ -224,7 +224,7 @@ func Start(opts Options) (*Instance, error) {
 
 	gitStatus := ctxbuild.LoadGitStatus(workingDir)
 
-	needWS := opts.DaemonMode || opts.WSPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
+	needWS := opts.NoTUI || opts.WSPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
 	var wsRegistry *computer.ConnectionRegistry
 	var wsMux *http.ServeMux
 	wsListenAddr := func() string {
@@ -314,8 +314,8 @@ func Start(opts Options) (*Instance, error) {
 		}
 		var engineHub *hub.Hub
 		var handler *tui.TUIHandler
-		if opts.DaemonMode {
-			// No TUI in daemon mode — skip TUIHandler entirely. Its appCh
+		if opts.NoTUI {
+			// No TUI loop — skip TUIHandler entirely. Its appCh
 			// has no readEvents consumer without a bubbletea loop, so any
 			// event would block the engine goroutine on appCh <- msg.
 			engineHub = hub.NewHub()
@@ -449,7 +449,7 @@ func Start(opts Options) (*Instance, error) {
 			WorkingDir:         workingDir,
 			Store:              store,
 			Logger:             logger,
-			DaemonMode:         opts.DaemonMode,
+			NoTUI:              opts.NoTUI,
 		})
 		dreamEng.SetStore(store, projectDir)
 		resumeDreamSession(dreamEng, store, projectDir)
@@ -577,18 +577,18 @@ func Start(opts Options) (*Instance, error) {
 		// would die on raw-mode EIO after Ready — 2026-09-22 incident).
 		// Code drives wui i18n; message is for CLI consumers.
 		refusalCode, refusalMsg := "", ""
-		if upg != nil && !opts.DaemonMode {
+		if upg != nil && !opts.NoTUI {
 			refusalCode = wui.RefusalTUIMode
 			refusalMsg = "TUI mode cannot hot-restart — exit and start the new binary manually"
 		}
 		wui.RegisterAdminRoutes(wsMux, wui.AdminDeps{
 			Probe:              wc.BusyReport,
-			Upgrade:            upgradeGate(upg, opts.DaemonMode),
+			Upgrade:            upgradeGate(upg, opts.NoTUI),
 			UnsupportedCode:    refusalCode,
 			UnsupportedMessage: refusalMsg,
 			Version:            wui.AdminVersion{Build: VersionInfo()},
 		})
-		notifyUpgradeSignal(upg, upgradeGate(upg, opts.DaemonMode), wc.BusyReport, !opts.DaemonMode)
+		notifyUpgradeSignal(upg, upgradeGate(upg, opts.NoTUI), wc.BusyReport, !opts.NoTUI)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
 
 		// All routes mounted — NOW open the port (see comment at wsMux
@@ -640,7 +640,7 @@ func Start(opts Options) (*Instance, error) {
 		HookSystem:         hookSystem,
 		WorkingDir:         workingDir,
 		ProjectDir:         projectDir,
-		DaemonMode:         opts.DaemonMode,
+		NoTUI:              opts.NoTUI,
 		WSPort:             opts.WSPort,
 		Hub:                h,
 		MediaStores:        mediaStores,
@@ -660,7 +660,7 @@ type dreamEngineDeps struct {
 	WorkingDir         string
 	Store              *short.Store
 	Logger             *slog.Logger
-	DaemonMode         bool
+	NoTUI              bool
 }
 
 // createDreamEngine builds a top-level engine for dream memory consolidation.
@@ -715,7 +715,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 
 	var dreamHub types.EventDispatcher
 	var dreamHandler *tui.TUIHandler
-	if d.DaemonMode {
+	if d.NoTUI {
 		dreamHub = hub.NewHub()
 	} else {
 		h, handler := tui.NewEngineHubWithHandler("dream", nil)

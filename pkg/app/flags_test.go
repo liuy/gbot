@@ -14,9 +14,15 @@ func TestParseFlags_Default(t *testing.T) {
 		if !opts.DaemonMode {
 			t.Errorf("DaemonMode = false, want true on android")
 		}
+		if !opts.NoTUI {
+			t.Errorf("NoTUI = false, want true on android (no terminal — a bubbletea loop would fail and wui would never mount)")
+		}
 	} else {
 		if opts.DaemonMode {
 			t.Errorf("DaemonMode = true, want false")
+		}
+		if opts.NoTUI {
+			t.Errorf("NoTUI = true, want false")
 		}
 	}
 	if opts.Verbose {
@@ -79,5 +85,50 @@ func TestParseFlags_LongFlags(t *testing.T) {
 	}
 	if opts.WSPort != "4000" {
 		t.Errorf("WSPort = %q, want 4000", opts.WSPort)
+	}
+}
+
+// TestParseFlags_PortImpliesNoTUI pins the 2026-09-23 flag matrix:
+// bare `gbot` = TUI only (unchanged); ANY explicit -p/--port presence
+// (value given or not, default value or not) = serve wui, no TUI.
+// -d is NoTUI + the global isolated daemon (chdir).
+func TestParseFlags_PortImpliesNoTUI(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("android forces DaemonMode; flag matrix is moot")
+	}
+	cases := []struct {
+		name     string
+		args     []string
+		wantNoT  bool
+		wantPT   string
+		wantDaem bool
+	}{
+		{"no flags", nil, false, "8765", false},
+		{"bare -p", []string{"-p"}, true, "8765", false},
+		{"-p with port", []string{"-p", "1234"}, true, "1234", false},
+		{"explicit default port still counts", []string{"-p", "8765"}, true, "8765", false},
+		{"--port long form", []string{"--port", "9"}, true, "9", false},
+		{"verbose alone stays TUI", []string{"-v"}, false, "8765", false},
+		{"-p followed by a flag keeps default port", []string{"-p", "-v"}, true, "8765", false},
+		{"daemon is NoTUI and isolated", []string{"-d"}, true, "8765", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := ParseFlags(tc.args)
+			if opts.NoTUI != tc.wantNoT {
+				t.Errorf("NoTUI = %v, want %v", opts.NoTUI, tc.wantNoT)
+			}
+			if opts.WSPort != tc.wantPT {
+				t.Errorf("WSPort = %q, want %q", opts.WSPort, tc.wantPT)
+			}
+			if opts.DaemonMode != tc.wantDaem {
+				t.Errorf("DaemonMode = %v, want %v", opts.DaemonMode, tc.wantDaem)
+			}
+		})
+	}
+
+	// `-p -v` must keep Verbose — the flag after -p is not its port.
+	if opts := ParseFlags([]string{"-p", "-v"}); !opts.Verbose {
+		t.Error("-v after bare -p must still register as Verbose")
 	}
 }

@@ -65,7 +65,7 @@ func TestStart_PortOpenImpliesRoutesReady(t *testing.T) {
 
 	startErr := make(chan error, 1)
 	go func() {
-		_, err := Start(Options{DaemonMode: true})
+		_, err := Start(Options{DaemonMode: true, NoTUI: true})
 		startErr <- err
 	}()
 
@@ -112,7 +112,7 @@ func TestStart_FailFastOnOccupiedPort(t *testing.T) {
 	}
 	defer ln.Close()
 
-	if _, err := Start(Options{DaemonMode: true}); err == nil {
+	if _, err := Start(Options{DaemonMode: true, NoTUI: true}); err == nil {
 		t.Fatal("expected Start to fail on occupied port")
 	} else if !strings.Contains(err.Error(), "ws server") {
 		t.Fatalf("unexpected error: %v", err)

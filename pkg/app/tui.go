@@ -19,7 +19,7 @@ import (
 func (inst *Instance) RunTUI() error {
 	app := tui.NewAppWithManager(inst.EngineMgr, inst.SystemPrompt, inst.Hub)
 	app.SetProviders(inst.ProviderMap, inst.Cfg)
-	if inst.DaemonMode {
+	if inst.NoTUI {
 		app.SetDisableFileHistory(true)
 	}
 	if len(inst.SkillCmdsForTUI) > 0 {
