@@ -171,12 +171,16 @@ function connect(s: InternalState, wsUrl: string) {
   }
 }
 
+// https pages must open wss (browsers block ws:// as mixed content), e.g.
+// when the wui is served through `tailscale serve` with a real certificate.
+const chatWsUrl = () =>
+  `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/chat`
+
 export function getConnection(): WebSocketConnection {
   if (state) return connFromState(state)
   const s = createState()
   state = s
-  const wsUrl = `ws://${location.host}/ws/chat`
-  connect(s, wsUrl)
+  connect(s, chatWsUrl())
   return connFromState(s)
 }
 
@@ -185,7 +189,7 @@ function manualReconnect() {
   state.reconnectCount = 0
   state.disableReconnect = false  // reset takeover guard — user explicitly wants back
   state.upgrading = false
-  const wsUrl = `ws://${location.host}/ws/chat`
+  const wsUrl = chatWsUrl()
   connect(state, wsUrl)
 }
 

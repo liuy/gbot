@@ -46,7 +46,7 @@ export const dict: Dict = {
   rdAddrRequired: '地址不能为空',
   rdTesting: '测试中…',
   rdChipControl: '接管',
-  rdChipClipboard: '输入',
+  rdChipKeyboard: '输入',
   rdClipSend: '发送',
   rdClipSent: '已发送',
   rdChipFullscreen: '全屏',

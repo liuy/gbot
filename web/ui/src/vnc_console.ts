@@ -76,8 +76,8 @@ export function createVNCSheet(): VNCSheetHandles {
     attrs: { 'data-vnc-keyboard': '' },
   })
   keyboardBtn.append(renderIcon('keyboard', { size: 15 }))
-  keyboardBtn.setAttribute('data-i18n-title', 'rdChipClipboard')
-  keyboardBtn.setAttribute('title', t('rdChipClipboard'))
+  keyboardBtn.setAttribute('data-i18n-title', 'rdChipKeyboard')
+  keyboardBtn.setAttribute('title', t('rdChipKeyboard'))
   bar.append(titleEl, dotEl, controlChip, viewChip, keyboardBtn, fullscreenChip, latencyEl, closeBtn)
 
   const screen = createElement('div', 'vnc-screen')
@@ -174,7 +174,10 @@ export function createVNCSheet(): VNCSheetHandles {
         return
       }
       if (seq !== connectSeq) return
-      const inst = new RFBClass(screen, `ws://${location.host}/wui/vnc/${encodeURIComponent(device!.name)}`, {
+      // wss when the wui itself is https (tailscale serve) — ws:// would be
+      // blocked as mixed content.
+      const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const inst = new RFBClass(screen, `${wsProto}://${location.host}/wui/vnc/${encodeURIComponent(device!.name)}`, {
         credentials: device!.pass ? { password: device!.pass } : undefined,
         wsProtocols: ['binary'],
       })
@@ -296,9 +299,12 @@ export function createVNCSheet(): VNCSheetHandles {
 
   const openSheet = (d: RemoteDevice) => {
     device = d
-    mode = 'view'
+    // Always start in control: mainstream mobile remote clients default to
+    // interactive with view-only as the opt-out, and in the default fit
+    // view a finger has no pan need that control mode would steal.
+    mode = 'control'
+    chipOn(controlChip)
     viewMode = 'fit'
-    chipOff(controlChip)
     chipOff(viewChip)
     chipOff(fullscreenChip)
     keyboardModeOff()

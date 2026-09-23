@@ -75,7 +75,7 @@ describe('createVNCSheet', () => {
     expect(inst.url).toBe(`ws://${location.host}/wui/vnc/win11`)
     expect(inst.options?.credentials?.password).toBe('pw')
     expect(inst.options?.wsProtocols).toEqual(['binary'])
-    expect(inst.viewOnly).toBe(true)
+    expect(inst.viewOnly).toBe(false)
     expect(inst.scaleViewport).toBe(true)
   })
 
@@ -88,28 +88,26 @@ describe('createVNCSheet', () => {
   it('control chip flips the live session in place; chips restyle mutually exclusively', async () => {
     const sheet = await openWin11()
     const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
-    expect(instances()[0].viewOnly).toBe(true)
+    expect(instances()[0].viewOnly).toBe(false)
 
     chip.click()
     // Same session: no rebuild, no dropped connection — viewOnly is a live
     // property in noVNC (its setter grabs/ungrabs the keyboard).
     expect(instances()).toHaveLength(1)
     expect(instances()[0].disconnectCalls).toBe(0)
-    expect(instances()[0].viewOnly).toBe(false)
-    expect(chip.className).toContain('text-green')
+    expect(instances()[0].viewOnly).toBe(true)
+    expect(chip.className).toContain('text-t2')
 
     chip.click()
     expect(instances()).toHaveLength(1)
-    expect(instances()[0].viewOnly).toBe(true)
-    expect(chip.className).toContain('text-t2')
-    expect(chip.className).not.toContain('text-green')
+    expect(instances()[0].viewOnly).toBe(false)
+    expect(chip.className).toContain('text-green')
   })
 
   it('leaving control releases held buttons before flipping view-only', async () => {
     const sheet = await openWin11()
     const inst = instances()[0]
     const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
-    chip.click()
     expect(inst.viewOnly).toBe(false)
     const seen: Array<{ viewOnlyWhenDispatched: boolean }> = []
     inst.canvas.addEventListener('mouseup', () => {
@@ -223,7 +221,7 @@ describe('createVNCSheet', () => {
     instances()[0].fire('disconnect', { clean: false })
     ;(sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).click()
     await vi.waitFor(() => expect(instances()).toHaveLength(2))
-    expect(instances()[1].viewOnly).toBe(false)
+    expect(instances()[1].viewOnly).toBe(true)
   })
 
   it('keyboard button focuses the hidden capture; typing forwards keysyms live', async () => {
@@ -493,5 +491,34 @@ describe('createVNCSheet', () => {
     rejectWin11(new Error('probe aborted'))
     await flushMicrotasks()
     expect(label.textContent).toBe('34ms')
+  })
+
+  // Control is the default on every device (2026-09-23): mobile remote
+  // clients default to interactive with view-only as the opt-out.
+  it('opens in control mode with the chip lit', async () => {
+    const sh = await openWin11()
+    expect(instances()[0].viewOnly).toBe(false)
+    const control = sh.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    expect(control.className).toContain('text-green')
+  })
+  it('reopening after flipping to view restores control mode', async () => {
+    const sh = await openWin11()
+    const control = sh.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    control.click()
+    expect(instances()[0].viewOnly).toBe(true)
+    sh.open(NAS)
+    await vi.waitFor(() => expect(instances()).toHaveLength(2))
+    expect(instances()[1].viewOnly).toBe(false)
+    expect(
+      (sh.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).className,
+    ).toContain('text-green')
+  })
+  it('dials wss for the VNC socket on an https page', async () => {
+    vi.stubGlobal('location', { protocol: 'https:', host: 'servere5.ts.net' })
+    expect(location.protocol).toBe('https:')
+    const sheet = mount()
+    sheet.open(WIN11)
+    await vi.waitFor(() => expect(instances()).toHaveLength(1))
+    expect(instances()[0].url).toBe('wss://servere5.ts.net/wui/vnc/win11')
   })
 })

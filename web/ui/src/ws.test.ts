@@ -11,8 +11,10 @@ class MockWebSocket {
   onerror: (() => void) | null = null
   onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null
   sentMessages: string[] = []
+  urls: string[] = []
 
-  constructor() {
+  constructor(...args: ConstructorParameters<typeof WebSocket>) {
+    this.urls.push(String(args[0]))
     MockWebSocket.instances.push(this)
   }
   close() {
@@ -38,6 +40,24 @@ describe('ws reconnect backoff', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('dials wss on an https page and ws otherwise (tailscale-serve entrance)', async () => {
+    // The stub must actually shape the module's URL choice — a silently
+    // no-op stub would render both assertions below meaningless.
+    vi.stubGlobal('location', { protocol: 'https:', host: 'servere5.ts.net' })
+    expect(location.protocol).toBe('https:')
+    const { getConnection } = await import('./ws')
+    getConnection()
+    expect(MockWebSocket.instances[0].urls[0]).toBe('wss://servere5.ts.net/ws/chat')
+
+    vi.resetModules()
+    MockWebSocket.instances = []
+    vi.stubGlobal('location', { protocol: 'http:', host: '192.168.3.207' })
+    expect(location.protocol).toBe('http:')
+    const mod2 = await import('./ws')
+    mod2.getConnection()
+    expect(MockWebSocket.instances[0].urls[0]).toBe('ws://192.168.3.207/ws/chat')
   })
 
   it('reconnect delay stays 1s when onclose fires before onopen (rapid disconnect)', async () => {

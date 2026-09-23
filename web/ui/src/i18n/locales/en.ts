@@ -68,7 +68,7 @@ export const dict = {
   rdAddrRequired: 'Address is required',
   rdTesting: 'Testing…',
   rdChipControl: 'Control',
-  rdChipClipboard: 'Input',
+  rdChipKeyboard: 'Input',
   rdClipSend: 'Send',
   rdClipSent: 'Sent',
   rdChipFullscreen: 'Fullscreen',
