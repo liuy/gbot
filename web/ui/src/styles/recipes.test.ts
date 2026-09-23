@@ -301,7 +301,7 @@ describe('task_panel.ts className snapshot guards', () => {
 describe('utils.ts className snapshot guards', () => {
   it('createPopupPanel (top, no class) matches current literal', () => {
     const panel = createPopupPanel()
-    expect(panel.className).toBe('bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm fixed left-1/2 -translate-x-1/2 top-12')
+    expect(panel.className).toBe('bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm fixed left-1/2 -translate-x-1/2 top-[calc(env(safe-area-inset-top,0px)+3rem)]')
   })
 
   it('createPopupPanel (bottom, no class) matches current literal', () => {

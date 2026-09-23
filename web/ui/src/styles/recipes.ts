@@ -16,7 +16,7 @@ export const floatingButton = tv({
 
 export const popupPanel = tv({
   base: 'bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl modal-enter z-40 hidden w-[90vw] max-w-sm fixed',
-  variants: { position: { top: 'left-1/2 -translate-x-1/2 top-12', bottom: 'left-1/2 -translate-x-1/2 bottom-20' } },
+  variants: { position: { top: 'left-1/2 -translate-x-1/2 top-[calc(env(safe-area-inset-top,0px)+3rem)]', bottom: 'left-1/2 -translate-x-1/2 bottom-20' } },
 })
 
 export const anchoredPopup = tv({

@@ -690,13 +690,16 @@ describe('createComboButton', () => {
     expect(trigger.className).toBe(before)
   })
 
-  it('bottom omitted keeps the default top-12 position', () => {
+  it('bottom omitted keeps the default top position, clearing the status bar', () => {
     document.body.innerHTML = ''
     const h = createComboButton({ label: 'auto', onOpen: () => {} })
     document.body.appendChild(h.wrap)
     h.open()
     const panel = document.body.querySelector('.modal-enter') as HTMLElement
-    expect(panel.classList.contains('top-12')).toBe(true)
+    // The header is sticky under the status bar with an env() inset — a
+    // hardcoded top-12 would open the panel behind it on phones.
+    expect(panel.classList.contains('top-[calc(env(safe-area-inset-top,0px)+3rem)]')).toBe(true)
+    expect(panel.classList.contains('top-12')).toBe(false)
     document.body.innerHTML = ''
   })
 })
