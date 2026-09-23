@@ -47,5 +47,6 @@ func bashPrompt() string {
 		"   - Do not retry failing commands in a sleep loop — diagnose the root cause.\n" +
 		"   - If waiting for a background job you started with " + bt + "run_in_background" + bt + ", you will be notified when it completes — do not poll.\n" +
 		"   - If you must poll an external process, use a check command (e.g. " + bt + "gh run view" + bt + ") rather than sleeping first.\n" +
-		"   - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user."
+		"   - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.\n" +
+		" - Interactive prompts (passwords, confirmations — e.g. sudo) are forwarded to the user automatically: run the command as usual and wait. Do not ask the user to run privileged or interactive commands themselves."
 }
