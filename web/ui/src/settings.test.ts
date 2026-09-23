@@ -1933,6 +1933,59 @@ describe('SYSTEM card (admin restart)', () => {
     expect(btn.disabled).toBe(true)
   })
 
+  it('long-press on the build value copies it; a short tap does not', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const write = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
+    const page = await openPage(mock)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    const value = page.root.querySelector('[data-system-build]') as HTMLElement
+
+    vi.useFakeTimers()
+    value.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    vi.advanceTimersByTime(499)
+    value.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    vi.advanceTimersByTime(2000)
+    expect(write).not.toHaveBeenCalled()
+
+    value.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    expect(write).toHaveBeenCalledWith('1.2.3 · abc1234')
+    await Promise.resolve()
+    await Promise.resolve()
+    vi.advanceTimersByTime(1800)
+    vi.useRealTimers()
+    expect(page.root.querySelector('[data-toast]')?.textContent).toContain('Copied')
+  })
+  it('long-press copies via execCommand when the clipboard API is absent (WebView on http)', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    // jsdom does not implement execCommand at all — install the WebView's
+    // contract by hand.
+    const exec = vi.fn(() => true)
+    document.execCommand = exec as unknown as typeof document.execCommand
+    const page = await openPage(mock)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+    })
+    const value = page.root.querySelector('[data-system-build]') as HTMLElement
+    vi.useFakeTimers()
+    value.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    vi.advanceTimersByTime(1800)
+    vi.useRealTimers()
+    expect(exec).toHaveBeenCalledWith('copy')
+    expect(page.root.querySelector('[data-toast]')?.textContent).toContain('Copied')
+    delete (document as unknown as Record<string, unknown>).execCommand
+  })
   it('places version as the last row of the GENERAL card, log rows above it (android)', async () => {
     const mock = makeFetchHandler({
       payload: PAYLOAD,

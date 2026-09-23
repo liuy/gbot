@@ -568,6 +568,47 @@ export function createSettingsPage(): SettingsPageHandles {
     buildValue,
     restartBtn,
   )
+  // Long-press the build value to copy it. The clipboard API is the primary
+  // path (https entrances); the execCommand fallback keeps the gesture
+  // working inside the Android WebView on http where navigator.clipboard is
+  // undefined — a long-press counts as the required user activation.
+  const copyBuild = () => {
+    const text = buildValue.textContent ?? ''
+    if (navigator.clipboard) {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => toast(t('appLogCopied')))
+        .catch(() => toast(t('appLogCopyFailed')))
+      return
+    }
+    const scratch = document.createElement('textarea')
+    scratch.value = text
+    scratch.style.position = 'fixed'
+    scratch.style.opacity = '0'
+    document.body.appendChild(scratch)
+    scratch.select()
+    const ok = document.execCommand('copy')
+    scratch.remove()
+    toast(ok ? t('appLogCopied') : t('appLogCopyFailed'))
+  }
+  let buildPressTimer: ReturnType<typeof setTimeout> | null = null
+  const cancelBuildPress = () => {
+    if (buildPressTimer) {
+      clearTimeout(buildPressTimer)
+      buildPressTimer = null
+    }
+  }
+  buildValue.addEventListener('pointerdown', () => {
+    cancelBuildPress()
+    buildPressTimer = setTimeout(() => {
+      buildPressTimer = null
+      copyBuild()
+    }, 500)
+  })
+  buildValue.addEventListener('pointerup', cancelBuildPress)
+  buildValue.addEventListener('pointercancel', cancelBuildPress)
+  // The WebView's long-press text-selection menu must not fight ours.
+  buildValue.addEventListener('contextmenu', (e) => e.preventDefault())
 
   // Network/parsing errors deliberately leave the last values in place —
   // the daemon is briefly down exactly when this poll matters most (the
