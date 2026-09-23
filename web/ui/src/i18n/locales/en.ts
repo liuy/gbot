@@ -69,8 +69,6 @@ export const dict = {
   rdTesting: 'Testing…',
   rdChipControl: 'Control',
   rdChipKeyboard: 'Input',
-  rdClipSend: 'Send',
-  rdClipSent: 'Sent',
   rdChipFullscreen: 'Fullscreen',
   rdChipViewMode: 'View mode',
   rdStateConnecting: 'Connecting…',

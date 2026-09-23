@@ -47,8 +47,6 @@ export const dict: Dict = {
   rdTesting: '測試中…',
   rdChipControl: '接管',
   rdChipKeyboard: '輸入',
-  rdClipSend: '傳送',
-  rdClipSent: '已傳送',
   rdChipFullscreen: '全螢幕',
   rdChipViewMode: '檢視模式',
   rdStateConnecting: '連線中…',

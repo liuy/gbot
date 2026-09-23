@@ -523,12 +523,7 @@ export function createSettingsPage(): SettingsPageHandles {
     hljsPanel,
   )
 
-  // ------------------------------------------------------------- SYSTEM footer
-  // The whole system section collapsed to ONE borderless line at the very
-  // bottom: version label + build identity + restart. No card chrome — two
-  // rows never justified a card (iOS "About" row pattern). Stays mounted
-  // even when this platform cannot upgrade: the restart action renders
-  // disabled instead of the line vanishing between platforms.
+  // ------------------------------------------------------------- SYSTEM row
   const buildValue = createNode('span', {
     className: 'truncate text-[12px] text-t2 font-mono',
     attrs: { 'data-system-build': '' },
@@ -562,10 +557,10 @@ export function createSettingsPage(): SettingsPageHandles {
       restartBtn.textContent = t('restartBtn')
     }
   }
-  // One row inside the standard card chrome: same visual language as every
-  // other settings card (a naked row would float oddly at the page bottom),
-  // but the whole system section is still just one line.
-  const systemCard = createElement('div', 'mx-3 bg-ink2 border border-hairline rounded-xl overflow-hidden')
+  // One row inside the GENERAL card: label + build left, restart right —
+  // no standalone system card. Stays mounted even when this platform cannot
+  // upgrade: the restart action renders disabled instead of the line
+  // vanishing between platforms.
   const systemRow = createElement('div', 'flex items-center gap-2 px-3.5 py-3 select-none')
   systemRow.setAttribute('data-system-row', '')
   systemRow.append(
@@ -573,7 +568,6 @@ export function createSettingsPage(): SettingsPageHandles {
     buildValue,
     restartBtn,
   )
-  systemCard.append(systemRow)
 
   // Network/parsing errors deliberately leave the last values in place —
   // the daemon is briefly down exactly when this poll matters most (the
@@ -1040,7 +1034,6 @@ export function createSettingsPage(): SettingsPageHandles {
   const appLogsBridge = (): AppLogsBridge | undefined =>
     (window as unknown as Record<string, AppLogsBridge | undefined>)[APP_LOGS_BRIDGE]
 
-  const appLogCard = createElement('div', 'mx-3 mt-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden')
   const appLogHead = createElement('div', 'flex items-center gap-2 px-3.5 py-3 cursor-pointer select-none')
   appLogHead.setAttribute('data-applog-row', '')
   const appLogChev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
@@ -1053,7 +1046,6 @@ export function createSettingsPage(): SettingsPageHandles {
   // lingers when the buffer changed while collapsed).
   const appLogPanel = createElement('div', 'hidden border-t border-hairline')
   appLogPanel.setAttribute('data-applog-panel', '')
-
   // Unified logs viewer, 3 tabs sharing one body + copy button:
   //   app  — Android host log buffer via the GBotAppLogs bridge
   //   wui  — this WebView's console ring buffer (log.ts)
@@ -1189,25 +1181,27 @@ export function createSettingsPage(): SettingsPageHandles {
       appLogPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   })
-  appLogCard.append(appLogHead, appLogPanel)
-
   homeScreen.append(
     sectionLabel('providersSection'),
     provList,
     addProviderBtn,
     sectionLabel('defaultModelSection'),
     defaultCard,
-    sectionLabel('generalSection'),
-    generalCard,
   )
-  // The card is Android-shell-only: absent bridge (desktop browser) means
-  // no card at all rather than a degraded hint.
-  if (appLogsBridge()) homeScreen.append(appLogCard)
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
-  // SYSTEM card goes LAST: the system/destructive line closes the page,
-  // never mixed into the regular configuration flow.
-  homeScreen.append(systemCard)
+  // GENERAL closes the page as the catch-all section (iOS Settings shape):
+  // language/theme/hljs, then the android log viewer, then version+restart
+  // as the very last row. The log rows are Android-shell-only: absent
+  // bridge means no rows rather than a degraded hint.
+  generalCard.append(divider(), systemRow)
+  if (appLogsBridge()) {
+    const logDivider = divider()
+    generalCard.insertBefore(logDivider, systemRow)
+    generalCard.insertBefore(appLogHead, logDivider)
+    generalCard.insertBefore(appLogPanel, logDivider)
+  }
+  homeScreen.append(sectionLabel('generalSection'), generalCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 
   // ------------------------------------------------------------------ edit
