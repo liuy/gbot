@@ -1961,7 +1961,7 @@ describe('SYSTEM card (admin restart)', () => {
     })
     const page = await openPage(mock)
     await vi.waitFor(() => {
-      expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toContain('GBot')
+      expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toContain('Restart')
     })
     const row = page.root.querySelector('[data-restart-btn]') as HTMLElement
     expect(row.tagName).toBe('BUTTON')
@@ -1986,7 +1986,7 @@ describe('SYSTEM card (admin restart)', () => {
     await vi.waitFor(() => {
       expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
     })
-    expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toBe('重启 GBot')
+    expect((page.root.querySelector('[data-restart-btn]') as HTMLElement).textContent).toBe('重启')
     expect(page.root.textContent).toContain('系统')
     expect(page.root.textContent).toContain('版本号')
     setLocale('en')

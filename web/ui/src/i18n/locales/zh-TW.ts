@@ -154,7 +154,7 @@ export const dict: Dict = {
   ctxCatAutocompactBuffer: '自動壓縮緩衝區',
 
   buildRow: '版本號',
-  restartBtn: '重啟 GBot',
+  restartBtn: '重啟',
   restartConfirmArm: '確認重啟？',
   restartFailed: '重啟失敗',
   upgradeCapsuleText: '升級中…',

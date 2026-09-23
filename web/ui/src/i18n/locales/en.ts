@@ -179,7 +179,7 @@ export const dict = {
   ctxCatAutocompactBuffer: 'Autocompact buffer',
 
   buildRow: 'Version',
-  restartBtn: 'Restart GBot',
+  restartBtn: 'Restart',
   restartConfirmArm: 'Confirm restart?',
   restartFailed: 'Restart failed',
   upgradeCapsuleText: 'Upgrading…',
