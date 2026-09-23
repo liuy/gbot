@@ -251,6 +251,13 @@ describe('createVNCSheet', () => {
       { keysym: 0xff08, down: true },
       { keysym: 0xff08, down: false },
     ])
+    // CapsLock toggle rides keydown too — the mouse-only escape hatch for
+    // a guest caps-lock flipped by real-keyboard passthrough.
+    kbd.dispatchEvent(new KeyboardEvent('keydown', { key: 'CapsLock' }))
+    expect(instances()[0].sentKeys.slice(-2)).toEqual([
+      { keysym: 0xffe5, down: true },
+      { keysym: 0xffe5, down: false },
+    ])
     kbd.dispatchEvent(new Event('blur'))
     expect(
       (sheet.root.querySelector('[data-vnc-keyboard]') as HTMLElement).classList.contains(

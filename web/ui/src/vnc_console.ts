@@ -259,6 +259,12 @@ export function createVNCSheet(): VNCSheetHandles {
       rfb.sendKey(0xff0d, null, true)
       rfb.sendKey(0xff0d, null, false)
       e.preventDefault()
+    } else if (e.key === 'CapsLock') {
+      // The guest caps-lock can get flipped by real-keyboard passthrough;
+      // the capture box is the mouse-only way to toggle it back.
+      rfb.sendKey(0xffe5, null, true)
+      rfb.sendKey(0xffe5, null, false)
+      e.preventDefault()
     }
   })
   // QEMU's VNC reverse keymap drops Shift for punctuation when a bare
