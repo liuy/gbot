@@ -117,10 +117,12 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				if len(msg.Attachments) > 0 {
 					// Two-phase commit: user_message is the commit frame. All
-					// attachment ids must already be in acc.saved (uploaded
-					// beforehand via attachment_start/binary/end). A missing
-					// id means the upload failed or never ran — reject the
-					// whole message so partial state never reaches the
+					// attachment ids must already be staged — normally in
+					// acc.saved (uploaded beforehand via
+					// attachment_start/binary/end); cancel-restored ids resolve
+					// through the connector-level map in resolveContents. A
+					// missing id means the upload failed or never ran — reject
+					// the whole message so partial state never reaches the
 					// engine. An active upload (activeID != "") means the
 					// user tried to commit mid-stream — also reject; the
 					// frontend learns to wait for attachment_end.
@@ -128,7 +130,7 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 						c.sendWS(buildError(errors.New("attachment upload in progress; wait for current attachment to finish")))
 						continue
 					}
-					contents, missing := acc.buildContents(msg.Attachments)
+					contents, missing := c.resolveContents(acc, msg.Attachments)
 					if missing != "" {
 						c.sendWS(buildError(fmt.Errorf("missing attachment uploads: %s", missing)))
 						continue
@@ -175,16 +177,41 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				var removed []string
-				eng := c.activeEngine()
-				for _, id := range msg.UUIDs {
-					if id != "" && eng != nil && eng.RemoveAttachment(id) {
-						removed = append(removed, id)
+				var restored []queuedMsgJSON
+				// Single locked fetch — separate activeSlot/activeEngine
+				// reads could straddle an engine switch.
+				slot := c.activeSlot()
+				if slot != nil && slot.engine != nil {
+					eng := slot.engine
+					// Bump FIRST so in-flight parse goroutines that capture
+					// an older epoch restore instead of enqueueing.
+					slot.cancelEpoch.Add(1)
+					want := make(map[string]bool, len(msg.UUIDs))
+					for _, id := range msg.UUIDs {
+						want[id] = true
+					}
+					for _, item := range eng.PendingAttachments() {
+						if item.Mode != types.ItemModePrompt || item.IsMeta {
+							continue
+						}
+						// Empty uuid list pops everything pending — the
+						// client cancels before the server-assigned uuids
+						// arrive, and those items must not leak into the
+						// next turn.
+						if len(want) > 0 && !want[item.UUID] {
+							continue
+						}
+						if eng.RemoveAttachment(item.UUID) {
+							removed = append(removed, item.UUID)
+							restored = append(restored, c.buildRestoredMsg(item))
+						}
 					}
 				}
 				resp, _ := json.Marshal(struct {
-					Type    string   `json:"type"`
-					Removed []string `json:"removed"`
-				}{Type: "cancel_result", Removed: removed})
+					Type     string          `json:"type"`
+					Removed  []string        `json:"removed"`
+					Restored []queuedMsgJSON `json:"restored,omitempty"`
+				}{Type: "cancel_result", Removed: removed, Restored: restored})
 				c.sendWS(resp)
 			}
 		case "history_request":
@@ -262,6 +289,11 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 	}
 }
 
+// assembleGate, when non-nil, runs at the top of the assemble goroutine so
+// tests can hold a message mid-parse and bump the cancel epoch before the
+// enqueue decision. nil in production.
+var assembleGate func()
+
 // handleMessageInbound dispatches a user message (text + optional content
 // blocks) to the active engine. Content blocks reference files saved by the
 // WS chunked-upload path (or the legacy content[] field for tests); each is
@@ -294,16 +326,28 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 // runs in a goroutine so a slow 50MB PDF parse cannot block readLoop from
 // draining concurrent stop / ask_response / cancel_queued frames.
 func (c *WUIConnector) handleMessageInbound(text string, content []inboundContent) {
-	eng := c.activeEngine()
-	if eng == nil {
+	slot := c.activeSlot()
+	if slot == nil || slot.engine == nil {
 		return
 	}
+	eng := slot.engine
 	if text != "" {
 		c.appendInputHistory(text)
 	}
 	// Read busy SYNCHRONOUSLY — see the doc comment for the race this prevents.
 	busy := eng.IsBusy()
+	// Captured on the readLoop BEFORE the parse goroutine starts: if the
+	// user cancels the queue while a document is still parsing, the epoch
+	// bumps and the assembled item is restored to the client instead of
+	// enqueued (the client has already cleared its queue bubbles).
+	epoch := slot.cancelEpoch.Load()
 	go func() {
+		// Test gate for the mid-parse cancel window: tests block here to
+		// hold the goroutine between epoch capture and the enqueue compare.
+		// nil in production.
+		if assembleGate != nil {
+			assembleGate()
+		}
 		ctx := engine.WithSource(context.Background(), "wui")
 		blocks := c.assembleContentBlocks(ctx, text, content)
 		if len(blocks) == 0 {
@@ -316,6 +360,21 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 			return
 		}
 		if busy {
+			if slot.cancelEpoch.Load() != epoch {
+				// Cancelled mid-parse: the client already cleared its queue
+				// bubbles and will never match a late 'queued' uuid stamp.
+				// Restore the assembled message directly, same payload shape
+				// as a synchronous pop.
+				restored := c.buildRestoredMsg(types.QueuedItem{
+					Value: text, Content: blocks, Mode: types.ItemModePrompt,
+				})
+				resp, _ := json.Marshal(struct {
+					Type     string          `json:"type"`
+					Restored []queuedMsgJSON `json:"restored"`
+				}{Type: "cancel_result", Restored: []queuedMsgJSON{restored}})
+				c.sendWS(resp)
+				return
+			}
 			attachUUID := uuid.NewString()
 			eng.EnqueueAttachment(types.QueuedItem{
 				Value:     text,

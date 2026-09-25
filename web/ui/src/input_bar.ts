@@ -17,8 +17,8 @@ import { createIconButton } from './buttons'
 // completed or has failed; onSend uses this to skip re-uploading refs
 // whose bytes are already staged server-side.
 export type AttachmentRef =
-  | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
-  | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string }
+  | { kind: 'image'; file: File; previewURL: string; remotePath?: string; mime?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string; restoredSize?: number }
+  | { kind: 'document'; file: File; remotePath?: string; failed?: boolean; uploadProgress?: number; uploadedID?: string; restoredSize?: number }
   // paste refs carry failed?/uploadProgress? purely for union compat —
   // markAttachmentFailures and setAttachmentProgress write to the
   // unconstrained AttachmentRef type. Paste never enters the upload loop
@@ -34,7 +34,10 @@ export type AttachmentRef =
 export type QueuedMsg = {
   uuid: string
   text: string
-  attachments?: { name?: string; mime: string }[]
+  // previewURL keeps image blob URLs alive across the queue lifetime so a
+  // cancel-restore can rebuild the chip thumbnail locally (the blobs are
+  // never revoked — removeAttachments only drops refs).
+  attachments?: { name?: string; mime: string; size?: number; previewURL?: string }[]
 }
 
 // INTENTIONAL DIVERGENCE from the TUI (pkg/tui/app.go newlineCount at lines
@@ -62,6 +65,7 @@ export interface InputBarHandles {
   setQueuedMsgs: (q: QueuedMsg[]) => void
   setInputText: (text: string) => void
   appendQueuedText: (text: string) => void
+  addRestoredAttachment: (meta: { id: string; name?: string; mime: string; size?: number; previewURL?: string }) => void
   setConnected: (c: boolean) => void
   getAttachments: () => AttachmentRef[]
   markAttachmentFailures: (refs: AttachmentRef[]) => void
@@ -838,13 +842,31 @@ export function createInputBar(initial: {
     // No custom shortcuts — textarea already provides all needed editing.
   })
 
+  // renderedBubbleKeys tracks which queue bubbles already played their enter
+  // animation. renderBubbles rebuilds the strip wholesale (replaceChildren);
+  // without this, every setQueuedMsgs — including the uuid stamp that
+  // follows each enqueue — replays modal-enter on ALL bubbles, which reads
+  // as a full-strip flash right after queuing an attachment message.
+  // Keyed by position+content, NOT uuid: the stamp mutates uuid in place
+  // and must not re-trigger the animation.
+  const renderedBubbleKeys = new Set<string>()
+  const bubbleKey = (m: QueuedMsg, i: number) => `${i} | ${m.text} | ${(m.attachments ?? []).map((a) => a.name ?? a.mime).join(' ')}`
+
   const renderBubbles = () => {
     bubbles.replaceChildren()
-    if (!streaming) return
+    if (!streaming) {
+      renderedBubbleKeys.clear()
+      return
+    }
     queuedMsgs.forEach((m, i) => {
+      const key = bubbleKey(m, i)
+      const isNew = !renderedBubbleKeys.has(key)
+      renderedBubbleKeys.add(key)
       const bub = createElement(
         'div',
-        'mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer',
+        isNew
+          ? 'queued-bubble mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
+          : 'queued-bubble mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit cursor-pointer',
       )
       bub.replaceChildren(renderIcon('dot', { size: 11, strokeWidth: 2.5, className: 'text-t3' }))
       const label = createElement('span', 'text-[10px] text-t2 font-light italic truncate max-w-[240px]')
@@ -921,6 +943,30 @@ export function createInputBar(initial: {
       const existing = textarea.value
       textarea.value = existing === '' ? text : text + '\n' + existing
       textarea.focus()
+      recomputeCanSend()
+    },
+    // addRestoredAttachment rebuilds a chip for an attachment that already
+    // lives server-side (cancel-queued restore): the ref carries the fresh
+    // upload id so a re-send skips the byte upload entirely. The stub File
+    // only supplies name/mime for display; the real size rides the ref.
+    // previewURL (kept by the queued bubble's blob) restores the local
+    // thumbnail without any server round-trip.
+    addRestoredAttachment: (meta: {
+      id: string
+      name?: string
+      mime: string
+      size?: number
+      previewURL?: string
+    }) => {
+      const kind: AttachmentRef['kind'] = meta.mime.startsWith('image/') ? 'image' : 'document'
+      const name = meta.name || (kind === 'image' ? `image.${meta.mime.split('/')[1] || 'png'}` : 'document')
+      const ref: AttachmentRef =
+        kind === 'image'
+          ? { kind: 'image', file: new File([], name, { type: meta.mime }), previewURL: meta.previewURL || '', mime: meta.mime, uploadedID: meta.id, restoredSize: meta.size }
+          : { kind: 'document', file: new File([], name, { type: meta.mime }), uploadedID: meta.id, restoredSize: meta.size }
+      attachments.push(ref)
+      renderChips()
+      attachmentsChangeCb?.()
       recomputeCanSend()
     },
     getAttachments: () => attachments,

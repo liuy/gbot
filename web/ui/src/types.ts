@@ -22,7 +22,7 @@ export type ServerMessage =
   | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
   | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
   | { type: 'queued'; uuid: string }
-  | { type: 'cancel_result'; removed: string[] }
+  | { type: 'cancel_result'; removed?: string[]; restored?: { text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[] }
   | { type: 'event'; event: QueryEvent }
   | {
       type: 'ask'

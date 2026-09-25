@@ -242,6 +242,14 @@ func TestRegisterChatWS_AskRoundTrip(t *testing.T) {
 func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
+	// The handler pre-filters via PendingAttachments (it must snapshot each
+	// item's content to build the restore payload) — feed the queue.
+	mock.pendingAttachmentsFn = func() []types.QueuedItem {
+		return []types.QueuedItem{
+			{UUID: "u-1", Value: "one", Mode: types.ItemModePrompt},
+			{UUID: "u-2", Value: "two", Mode: types.ItemModePrompt},
+		}
+	}
 
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -282,6 +290,12 @@ func TestRegisterChatWS_CancelQueuedBatch(t *testing.T) {
 func TestRegisterChatWS_CancelQueuedBatch_FiltersEmpty(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
+	mock.pendingAttachmentsFn = func() []types.QueuedItem {
+		return []types.QueuedItem{
+			{UUID: "u-1", Value: "one", Mode: types.ItemModePrompt},
+			{UUID: "u-2", Value: "two", Mode: types.ItemModePrompt},
+		}
+	}
 
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)

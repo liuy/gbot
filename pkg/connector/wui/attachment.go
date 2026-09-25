@@ -221,6 +221,17 @@ func (a *attachmentAccumulator) buildContents(atts []inboundAttachment) ([]inbou
 }
 
 // reset clears all state (called after a successful commit/dispatch).
+// bindSaved registers an already-persisted file under a fresh upload id so
+// a client re-send referencing the id resolves through the normal
+// two-phase commit path. Used by cancel-restore to make queued attachments
+// re-sendable without re-uploading bytes.
+func (a *attachmentAccumulator) bindSaved(id string, att savedAttachment) {
+	if a.saved == nil {
+		a.saved = make(map[string]savedAttachment)
+	}
+	a.saved[id] = att
+}
+
 func (a *attachmentAccumulator) reset() {
 	a.saved = nil
 	a.activeID = ""

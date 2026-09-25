@@ -54,7 +54,6 @@ function pressEnter() {
 
 // Enter streaming turn, then enqueue messages (each gets stamped on 'queued').
 function startStreamAndEnqueue(texts: string[]): Record<string, string> {
-  // First send a real user msg + start streaming.
   setTextarea('initial')
   pressEnter()
   events([{ type: 'query_start' }])
@@ -73,7 +72,7 @@ function startStreamAndEnqueue(texts: string[]): Record<string, string> {
 // which also use the modal-enter class). The InputBar's root is .absolute.bottom-0.
 function queuedBubbles(): NodeListOf<HTMLElement> {
   const inputBarRoot = document.querySelector('.absolute.bottom-0') as HTMLElement
-  return inputBarRoot.querySelectorAll('.modal-enter')
+  return inputBarRoot.querySelectorAll('.queued-bubble')
 }
 
 beforeEach(() => {
@@ -83,30 +82,23 @@ beforeEach(() => {
 })
 
 describe('cancel_result: queued message restore', () => {
-  it('3-queue partial drain + cancel restores drained msgs only', () => {
+  it('3-queue partial drain + cancel restores only what the server returned', () => {
     mount()
     const stamps = startStreamAndEnqueue(['msg1', 'msg2', 'msg3'])
-
-    // 3 bubbles visible while streaming.
     expect(queuedBubbles().length).toBe(3)
 
-    // Up key triggers cancel_queued for all stamped.
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
-    ta.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
-    )
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
 
-    // Server reports only msg1 drained (msg2/msg3 still queued, removed).
+    // Server popped only msg2/msg3 (msg1 already drained as a turn).
     dispatch({
       type: 'cancel_result',
       removed: [stamps['msg2'], stamps['msg3']],
+      restored: [{ text: 'msg2' }, { text: 'msg3' }],
     })
 
-    // Input restored with msg2\nmsg3 (NOT msg1 — drained).
     expect(ta.value).toBe('msg2\nmsg3')
-
-    // cancel_queued sent with all three stamped UUIDs.
-    const cancelReq = sent.find((m) => m.type === 'cancel_queued')
+    const cancelReq = sent.find((m) => m.type === 'cancel_queued') as { uuids: string[] }
     expect(cancelReq).toBeTruthy()
     expect(cancelReq.uuids.sort()).toEqual(
       [stamps['msg1'], stamps['msg2'], stamps['msg3']].sort(),
@@ -118,12 +110,103 @@ describe('cancel_result: queued message restore', () => {
     const stamps = startStreamAndEnqueue(['a', 'b', 'c'])
 
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
-    ta.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
-    )
-    // Only 'a' was successfully removed (b/c drained by engine).
-    dispatch({ type: 'cancel_result', removed: [stamps['a']] })
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    dispatch({
+      type: 'cancel_result',
+      removed: [stamps['a']],
+      restored: [{ text: 'a' }],
+    })
     expect(ta.value).toBe('a')
+  })
+
+  it('Up key sends cancel_queued; restore waits for the server payload', () => {
+    mount()
+    const stamps = startStreamAndEnqueue(['one', 'two'])
+
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    // Nothing restored yet — the server owns the pop now.
+    expect(ta.value).toBe('')
+    const cancelReq = sent.find((m) => m.type === 'cancel_queued') as { uuids: string[] }
+    expect(cancelReq.uuids.sort()).toEqual([stamps['one'], stamps['two']].sort())
+
+    dispatch({
+      type: 'cancel_result',
+      removed: [stamps['one'], stamps['two']],
+      restored: [{ text: 'one' }, { text: 'two' }],
+    })
+    // InputBar.appendQueuedText prefixes new text before existing.
+    expect(ta.value).toBe('one\ntwo')
+  })
+
+  it('optimistic cancel (no server uuid) routes through the server pop-all', () => {
+    mount()
+    setTextarea('initial')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    setTextarea('optimistic msg')
+    pressEnter()
+    // No 'queued' event dispatched — uuids all empty.
+
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+
+    // Empty uuid list = pop-all: the server-side item must not leak into
+    // the next turn, and the restore rides on cancel_result.
+    const cancelReq = sent.find((m) => m.type === 'cancel_queued') as { uuids: string[] }
+    expect(cancelReq).toBeTruthy()
+    expect(cancelReq.uuids).toEqual([])
+    expect(ta.value).toBe('')
+
+    dispatch({
+      type: 'cancel_result',
+      removed: ['server-side-uuid'],
+      restored: [{ text: 'optimistic msg' }],
+    })
+    expect(ta.value).toBe('optimistic msg')
+  })
+
+  it('restored attachments rebuild chips that re-send without re-upload', () => {
+    mount()
+    setTextarea('initial')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    setTextarea('with pic')
+    pressEnter()
+    dispatch({ type: 'queued', uuid: 'u1' })
+
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    dispatch({
+      type: 'cancel_result',
+      removed: ['u1'],
+      restored: [
+        {
+          text: 'with pic',
+          attachments: [{ id: 'fresh-id', mime: 'image/png', size: 1234 }],
+        },
+      ],
+    })
+    expect(ta.value).toBe('with pic')
+
+    // Chip rebuilt (image chip renders an img with alt = synthesized name).
+    const chipImg = document.querySelector(
+      '.absolute.bottom-0 img[alt^="image."]',
+    ) as HTMLImageElement | null
+    if (!chipImg) throw new Error('restored image chip not rendered')
+
+    // Re-send while idle: the frame references the fresh id and the REAL
+    // size (the stub File is zero-byte).
+    events([{ type: 'query_end' }])
+    setTextarea('again')
+    pressEnter()
+    const frame = sent
+      .filter((m) => (m as { type?: string }).type === 'message')
+      .pop() as { attachments?: { id: string; size: number }[] }
+    if (!frame || !frame.attachments) {
+      throw new Error('re-send message frame with attachments never sent')
+    }
+    expect(frame.attachments).toEqual([{ id: 'fresh-id', name: 'image.png', mime: 'image/png', size: 1234 }])
   })
 })
 
@@ -133,43 +216,7 @@ describe('multi-queue: InputBar renders one bubble per queued', () => {
     const stamps = startStreamAndEnqueue(['first', 'second', 'third'])
     const bubbles = queuedBubbles()
     expect(bubbles.length).toBe(3)
-    // First bubble shows "Tap to CANCEL all" (multi-queue mode).
     expect(bubbles[0].textContent).toContain('Tap to CANCEL all')
-    // FIFO: first stamp went to 'first'.
     expect(stamps['first']).toBe('uuid-first')
-  })
-
-  it('Up key pops all queued back to input', () => {
-    mount()
-    const stamps = startStreamAndEnqueue(['one', 'two'])
-
-    const ta = document.querySelector('textarea') as HTMLTextAreaElement
-    ta.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
-    )
-    dispatch({
-      type: 'cancel_result',
-      removed: [stamps['one'], stamps['two']],
-    })
-    // InputBar.appendQueuedText prefixes new text before existing.
-    expect(ta.value).toBe('one\ntwo')
-  })
-
-  it('optimistic cancel (no server uuid) restores input immediately', () => {
-    mount()
-    // Send while streaming — queue without server-stamped uuid.
-    setTextarea('initial')
-    pressEnter()
-    events([{ type: 'query_start' }])
-    setTextarea('optimistic msg')
-    pressEnter()
-    // No dispatch of 'queued' event — uuid stays empty string.
-    // ArrowUp triggers onCancelQueued.
-    const ta = document.querySelector('textarea') as HTMLTextAreaElement
-    ta.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
-    )
-    // Text restored immediately, no cancel_queued sent.
-    expect(ta.value).toBe('optimistic msg')
   })
 })

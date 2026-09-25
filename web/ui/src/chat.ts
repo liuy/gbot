@@ -486,7 +486,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const pendingToolByID = new Map<string, ToolBlock>()
   const currentSubAgentTextDiv = new Map<string, HTMLDivElement>()
   const currentSubAgentThinking = new Map<string, ThinkingEntry>()
-  let pendingCancel: QueuedMsg[] | null = null
   let queuedMsgs: QueuedMsg[] = []
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
@@ -784,7 +783,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     setStreaming(false)
     console.debug('[chat] resetAllState')
     queuedMsgs = []
-    pendingCancel = null
     inputBar.setQueuedMsgs([])
     for (const m of messages) m.domRoot.remove()
     messages.length = 0
@@ -1810,7 +1808,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // way a failed upload does NOT pollute history with a duplicate entry
     // when the user retries.
     inputHistory.add(fullText)
-    const metas = files.map((ref) => attachmentMeta(ref.file, ref.uploadedID!))
+    const metas = files.map((ref) => attachmentMeta(ref.file, ref.uploadedID!, ref.restoredSize))
     conn.send({
       type: 'message',
       text: fullText,
@@ -1821,7 +1819,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       queuedMsgs = [...queuedMsgs, {
         uuid: '',
         text: fullText,
-        attachments: metas.map((a) => ({ name: a.name, mime: a.mime })),
+        // Keep each image's blob URL and every meta alive on the bubble:
+        // removeAttachments never revokes blobs, so a cancel-restore can
+        // rebuild the chip thumbnail and original filename locally.
+        attachments: metas.map((a, i) => {
+          const ref = files[i]
+          return {
+            name: a.name,
+            mime: a.mime,
+            size: a.size,
+            previewURL: ref && ref.kind === 'image' ? ref.previewURL : undefined,
+          }
+        }),
       }]
       inputBar.setQueuedMsgs(queuedMsgs)
       return
@@ -1838,17 +1847,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const onCancelQueued = () => {
     if (queuedMsgs.length === 0) return
-    const uuids = queuedMsgs.map((m) => m.uuid).filter((u) => u !== '')
-    pendingCancel = queuedMsgs
-    if (uuids.length > 0) {
-      conn.send({ type: 'cancel_queued', uuids })
-    } else {
-      const joined = queuedMsgs.map((m) => m.text).join('\n')
-      inputBar.appendQueuedText(joined)
-      queuedMsgs = []
-      inputBar.setQueuedMsgs([])
-      pendingCancel = null
-    }
+    // Always go through the server: uuids may not have arrived yet (the
+    // server assigns them asynchronously), and an empty list means pop-all,
+    // which also prevents the server-side items from leaking into the next
+    // turn. cancel_result carries the restored text AND re-staged
+    // attachments.
+    conn.send({
+      type: 'cancel_queued',
+      uuids: queuedMsgs.map((m) => m.uuid).filter((u) => u !== ''),
+    })
   }
 
   inputBar.onSend(onSend)
@@ -2045,18 +2052,33 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'cancel_result': {
-        const removed = new Set(msg.removed)
-        const snapshot = pendingCancel
-        pendingCancel = null
-        if (snapshot) {
-          const toRestore = snapshot.filter((m) => removed.has(m.uuid))
-          if (toRestore.length > 0) {
-            const joined = toRestore.map((m) => m.text).join('\n')
-            inputBar.appendQueuedText(joined)
-          }
-        }
+        // Capture local bubble metas BEFORE clearing: the server payload
+        // carries fresh ids but image blocks lose filenames server-side,
+        // and the blob-URL thumbnails only exist client-side.
+        const localByUUID = new Map(queuedMsgs.filter((m) => m.uuid !== '').map((m) => [m.uuid, m]))
         queuedMsgs = []
         inputBar.setQueuedMsgs([])
+        const restored = msg.restored as
+          | { uuid?: string; text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[]
+          | undefined
+        if (restored && restored.length > 0) {
+          const joined = restored.map((m) => m.text).filter(Boolean).join('\n')
+          if (joined) inputBar.appendQueuedText(joined)
+          for (const m of restored) {
+            const local = m.uuid ? localByUUID.get(m.uuid) : undefined
+            for (let i = 0; i < (m.attachments ?? []).length; i++) {
+              const att = m.attachments![i]
+              const lm = local?.attachments?.[i]
+              inputBar.addRestoredAttachment({
+                id: att.id,
+                mime: att.mime,
+                name: att.name || lm?.name,
+                size: att.size ?? lm?.size,
+                previewURL: lm?.previewURL,
+              })
+            }
+          }
+        }
         return
       }
       case 'history':

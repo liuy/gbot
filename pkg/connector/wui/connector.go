@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
@@ -305,6 +306,13 @@ type engineSlot struct {
 	streamState streamState
 	queryStats  queryStats
 	taskToolIDs map[string]bool
+	// cancelEpoch bumps on every cancel_queued for this engine. The async
+	// assemble goroutine captures it at frame receipt and compares before
+	// enqueueing — a bump means the user cancelled while a document was
+	// still parsing (up to 30s), and the item must NOT enter the queue
+	// (the client has already cleared its bubbles); it is restored to the
+	// client instead, exactly like a synchronous pop.
+	cancelEpoch atomic.Uint64
 	active      atomic.Bool
 	// name is the manager's display name; system marks dream-like engines.
 	// Both feed the restart busy report (system engines are excluded there).
@@ -380,6 +388,15 @@ type WUIConnector struct {
 	// until SetMediaCache is called — handlers must check for nil and
 	// degrade to text-only when unset.
 	mediaCache *media.Store
+
+	// restoredUploads keeps cancel-restored attachment ids alive across WS
+	// reconnects: the accumulator is per-connection, so without this map a
+	// page refresh between restore and re-send would leave the chip's id
+	// unresolvable ("missing attachment uploads"). Guarded by restoreMu.
+	// Entries are intentionally never evicted: they must survive multiple
+	// re-send attempts, and each is a tiny path/mime/kind struct.
+	restoreMu       sync.Mutex
+	restoredUploads map[string]savedAttachment
 
 	// thumbs memoizes resized history thumbnails (data URL form) so
 	// buildHistoryChatMsg does not re-decode on every history_request.
@@ -2647,6 +2664,11 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 type queuedAttachmentJSON struct {
 	Name string `json:"name,omitempty"`
 	Mime string `json:"mime"`
+	// ID and Size are set ONLY on the cancel-restore path: a fresh upload id
+	// re-bound to the cached bytes lets the client rebuild a chip that
+	// re-sends without re-uploading.
+	ID   string `json:"id,omitempty"`
+	Size int    `json:"size,omitempty"`
 }
 
 // queuedMsgJSON is the wire shape for a queued user message restored on
@@ -2656,6 +2678,101 @@ type queuedMsgJSON struct {
 	UUID        string                 `json:"uuid"`
 	Text        string                 `json:"text"`
 	Attachments []queuedAttachmentJSON `json:"attachments,omitempty"`
+}
+
+// rememberUpload mirrors a cancel-restored attachment id at the connector
+// level so it survives WS reconnects (the accumulator is per-connection).
+func (c *WUIConnector) rememberUpload(id string, att savedAttachment) {
+	c.restoreMu.Lock()
+	defer c.restoreMu.Unlock()
+	if c.restoredUploads == nil {
+		c.restoredUploads = make(map[string]savedAttachment)
+	}
+	c.restoredUploads[id] = att
+}
+
+// resolveContents is buildContents with a connector-level fallback for ids
+// restored in a PREVIOUS connection (page refresh between restore and
+// re-send would otherwise strand the chip with "missing attachment
+// uploads").
+func (c *WUIConnector) resolveContents(acc *attachmentAccumulator, atts []inboundAttachment) ([]inboundContent, string) {
+	out, missing := acc.buildContents(atts)
+	if missing == "" {
+		return out, ""
+	}
+	// Bind any missing ids found in the connector-level map (idempotent for
+	// ids that already resolved), then rebuild once.
+	c.restoreMu.Lock()
+	for _, att := range atts {
+		if saved, ok := c.restoredUploads[att.ID]; ok {
+			acc.bindSaved(att.ID, saved)
+		}
+	}
+	c.restoreMu.Unlock()
+	return acc.buildContents(atts)
+}
+
+// buildRestoredMsg maps ONE popped queue item to the cancel-restore wire
+// shape: text plus attachments re-staged under fresh upload ids. Documents
+// re-bind their existing 30-day cache path (no IO); images re-materialize
+// their bytes into the cache from the in-block base64. Ids are registered
+// ONLY in the connector-level restoredUploads map (mutex-guarded): this
+// runs on the readLoop for pops AND on parse goroutines for late restores,
+// while the per-connection accumulator stays readLoop-owned. The commit
+// path (resolveContents) binds ids into the accumulator on demand, which
+// covers both same-connection and post-reconnect re-sends.
+func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
+	msg := queuedMsgJSON{UUID: item.UUID}
+	var sb strings.Builder
+	for _, cb := range item.Content {
+		switch cb.Type {
+		case types.ContentTypeText:
+			if cb.Text != "" {
+				sb.WriteString(cb.Text)
+			}
+		case types.ContentTypeDocument:
+			if cb.Path == "" {
+				continue
+			}
+			id := uuid.NewString()
+			c.rememberUpload(id, savedAttachment{path: cb.Path, mime: cb.Mime, kind: "document"})
+			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
+				ID: id, Name: cb.Name, Mime: cb.Mime, Size: int(cb.Size),
+			})
+		case types.ContentTypeImage:
+			if cb.Source == nil || cb.Source.Data == "" {
+				continue
+			}
+			data, err := base64.StdEncoding.DecodeString(cb.Source.Data)
+			if err != nil {
+				slog.Warn("wui:restore image decode failed, dropping attachment", "error", err)
+				continue
+			}
+			ext := ".png"
+			if i := strings.Index(cb.Source.MediaType, "/"); i >= 0 {
+				ext = "." + cb.Source.MediaType[i+1:]
+			}
+			path, err := c.mediaCache.Save(media.CategoryImage, data, ext)
+			if err != nil {
+				slog.Warn("wui:restore image re-materialize failed", "error", err)
+				continue
+			}
+			id := uuid.NewString()
+			c.rememberUpload(id, savedAttachment{path: path, mime: cb.Source.MediaType, kind: "image"})
+			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
+				ID: id, Mime: cb.Source.MediaType, Size: len(data),
+			})
+		}
+	}
+	// Same precedence as buildQueuedMsgs: content text wins when present,
+	// otherwise the plain Value field (they duplicate each other for
+	// messages assembled from text+attachments).
+	if sb.Len() > 0 {
+		msg.Text = sb.String()
+	} else {
+		msg.Text = item.Value
+	}
+	return msg
 }
 
 // buildQueuedMsgs filters pending attachment items down to user-typed prompt

@@ -31,12 +31,14 @@ function sniffFromExt(name: string): string {
   return m[ext] || 'application/octet-stream'
 }
 
-export function attachmentMeta(file: File, id: string): AttachmentMeta {
+// sizeOverride carries the REAL byte count for restored attachments whose
+// chip holds a zero-byte stub File (bytes live server-side under the id).
+export function attachmentMeta(file: File, id: string, sizeOverride?: number): AttachmentMeta {
   return {
     id,
     name: file.name,
     mime: file.type || sniffFromExt(file.name),
-    size: file.size,
+    size: sizeOverride ?? file.size,
   }
 }
 

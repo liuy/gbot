@@ -760,3 +760,52 @@ describe('createInputBar — thinking effort control', () => {
     vi.useRealTimers()
   })
 })
+
+describe('addRestoredAttachment', () => {
+  it('renders the local blob thumbnail and original name when provided', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.addRestoredAttachment({
+      id: 'fresh-1',
+      name: 'cat.jpg',
+      mime: 'image/jpeg',
+      size: 2048,
+      previewURL: 'blob:preview',
+    })
+    const img = ib.root.querySelector('img[alt="cat.jpg"]') as HTMLImageElement | null
+    if (!img) throw new Error('restored image chip not rendered')
+    expect(img.src).toBe('blob:preview')
+  })
+
+  it('falls back to a synthetic name and empty preview when local meta is gone', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.addRestoredAttachment({ id: 'fresh-2', mime: 'image/png', size: 64 })
+    const img = ib.root.querySelector('img[alt^="image."]')
+    if (!img) throw new Error('synthetic chip not rendered')
+    expect(img.getAttribute('src')).toBe('')
+  })
+})
+
+describe('queue bubble enter animation', () => {
+  it('replays modal-enter only for newly added bubbles', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: '', text: 'one' }])
+    let first = ib.bubbles.querySelector('div')
+    if (!first) throw new Error('no bubble rendered')
+    expect(first.className).toContain('modal-enter')
+
+    // uuid stamp re-render: same bubble content, must NOT re-animate.
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'one' }])
+    first = ib.bubbles.querySelector('div')
+    if (!first) throw new Error('bubble vanished on stamp')
+    expect(first.className).not.toContain('modal-enter')
+
+    // a NEW message still animates.
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'one' }, { uuid: '', text: 'two' }])
+    const second = ib.bubbles.querySelectorAll('div')[1]
+    if (!second) throw new Error('second bubble missing')
+    expect(second.className).toContain('modal-enter')
+  })
+})
