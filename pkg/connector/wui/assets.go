@@ -3,7 +3,9 @@ package wui
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -35,6 +37,18 @@ var novncESM []byte
 //
 //go:embed assets/model-viewer.esm.js
 var modelViewerESM []byte
+
+// wuiAssetHash fingerprints the UNCOMPRESSED page: gzip headers carry
+// MTIME, so hashing the compressed bytes would flap every build even when
+// content is unchanged. Sent on every WS connection (metadata's connect
+// payload); after a daemon upgrade (tableflip/REUSEPORT) the reconnecting
+// client compares it against its boot snapshot and hard-reloads to pick up
+// the new bundle. The embed is immutable for the process lifetime, so
+// OnceValue keeps concurrent connections race-free without re-hashing.
+var wuiAssetHash = sync.OnceValue(func() string {
+	sum := sha256.Sum256(indexHTML)
+	return hex.EncodeToString(sum[:])
+})
 
 // gzipIndex compresses the embedded page exactly once; bytes.Buffer writes
 // cannot fail, but the error path is kept so a future source change cannot

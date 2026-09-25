@@ -19,7 +19,7 @@ export type ArtifactListItem = {
 }
 
 export type ServerMessage =
-  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
+  | { type: 'connect_status'; connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string; wuiHash?: string }
   | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed?: string[]; restored?: { text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[] }
@@ -50,7 +50,7 @@ export type ServerMessage =
     }
   | {
       type: 'metadata'
-      connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string }
+      connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string; wuiHash?: string }
       config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string }
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }

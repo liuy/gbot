@@ -2307,6 +2307,7 @@ func (c *WUIConnector) buildConnectStatus(slot *engineSlot) []byte {
 		InputHistory []string `json:"inputHistory,omitempty"`
 		EngineID     string   `json:"engineID"`
 		EngineName   string   `json:"engineName"`
+		WuiHash      string   `json:"wuiHash"`
 	}{
 		Type:         "connect_status",
 		Connected:    true,
@@ -2316,6 +2317,7 @@ func (c *WUIConnector) buildConnectStatus(slot *engineSlot) []byte {
 		InputHistory: inputHistory,
 		EngineID:     slot.engineID,
 		EngineName:   engineName,
+		WuiHash:      wuiAssetHash(),
 	})
 	return payload
 }

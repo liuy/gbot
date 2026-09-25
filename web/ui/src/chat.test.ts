@@ -2816,3 +2816,56 @@ describe('sidebar artifacts', () => {
     })
   })
 })
+
+describe('wui asset hash reload', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function metaFrame(wuiHash?: string) {
+    return {
+      type: 'metadata',
+      connect: wuiHash === undefined
+        ? { connected: true }
+        : { connected: true, wuiHash },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    }
+  }
+
+  it('reloads exactly once when a reconnect reports a different bundle hash', () => {
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    mount()
+    // Boot: first frame per page lifetime only records the baseline.
+    dispatch(metaFrame('hash-a'))
+    expect(reloadSpy).toHaveBeenCalledTimes(0)
+    // Transient drop, same binary: reconnect rides the identical hash.
+    dispatch(metaFrame('hash-a'))
+    expect(reloadSpy).toHaveBeenCalledTimes(0)
+    // Daemon upgraded (tableflip/REUSEPORT): the new process serves a new
+    // bundle, so the reconnecting page must hard-reload.
+    dispatch(metaFrame('hash-b'))
+    expect(reloadSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reload when the hash disappears (older daemon, no new information)', () => {
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    mount()
+    dispatch(metaFrame('hash-a'))
+    dispatch(metaFrame())
+    expect(reloadSpy).toHaveBeenCalledTimes(0)
+  })
+
+  it('hash-less first frame stores no baseline, so a later hashed frame does not reload', () => {
+    const reloadSpy = vi.fn()
+    vi.stubGlobal('location', { reload: reloadSpy })
+    mount()
+    dispatch(metaFrame())
+    dispatch(metaFrame('hash-a'))
+    expect(reloadSpy).toHaveBeenCalledTimes(0)
+  })
+})

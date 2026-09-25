@@ -1902,6 +1902,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   let currentSessionID = ''
 
+  // Boot snapshot of the served bundle's fingerprint (metadata connect
+  // wuiHash). Daemon upgrades via tableflip/REUSEPORT keep the WS session
+  // alive across the binary swap, so a changed hash on a later metadata
+  // frame is the only signal that this page runs stale JS.
+  let wuiHashSnapshot: string | undefined
+
   sidebar.onSessionClick((id) => {
     conn.send({ type: 'session_switch', sessionID: id })
   })
@@ -1948,6 +1954,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     switch (msg.type) {
       case 'metadata': {
         const c = msg.connect
+        // Bundle staleness check before state reset: on reload the rest of
+        // this handler is wasted work. First frame per page lifetime only
+        // records the baseline; an absent hash (older daemon) carries no
+        // new information and never triggers a reload.
+        if (c.wuiHash !== undefined) {
+          if (wuiHashSnapshot === undefined) {
+            wuiHashSnapshot = c.wuiHash
+          } else if (c.wuiHash !== wuiHashSnapshot) {
+            location.reload()
+            return
+          }
+        }
         sidebar.closeImmediate()
         header.setStatus(c.connected)
         header.setModel(c.model ?? '')
