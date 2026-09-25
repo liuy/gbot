@@ -77,6 +77,7 @@ function scheduleUpgradeReconnect(s: InternalState, wsUrl: string) {
   if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
   if (Date.now() - s.upgradeStartedAt > 90_000) {
     s.upgrading = false
+    console.info('[ws] upgrade gave up after 90s — falling back to manual retry')
     notifyState(s, 'disconnected')
     return
   }
@@ -116,6 +117,8 @@ function connect(s: InternalState, wsUrl: string) {
 
   ws.onopen = () => {
     s.reconnectCount = 0
+    if (s.upgrading) console.info('[ws] upgrade socket reconnected '
+      + `after ${Math.round(Date.now() - s.upgradeStartedAt)}ms`)
     s.upgrading = false
     s.connected = true
     notifyState(s, 'connected')

@@ -153,6 +153,11 @@ object GbotProcess {
                 put("TMPDIR", "$prefixDir/tmp")
                 put("PREFIX", "$prefixDir")
                 put("GODEBUG", "netdns=cgo")
+                // App-supervised mode: REUSEPORT binds (no tableflip — its
+                // handed-over child is an orphan the phantom killer reaps),
+                // TERM closes client sockets with 1012, and /api/admin/
+                // stepdown can hand the PID lock to a replacement.
+                put("GBOT_SUPERVISED", "1")
                 // Go's time.initLocal() is a UTC stub on Android (golang/go#20455);
                 // pass the system timezone so gbot can set time.Local from it.
                 put("TZ", java.util.TimeZone.getDefault().id)
@@ -163,10 +168,10 @@ object GbotProcess {
                 }
             }
 
-            process = pb.start()
+            val proc = pb.start()
+            process = proc
             // Pipe gbot stdout/stderr into logBuffer (surfaced in the WUI
             // app-log panel) so crash messages and panic traces are visible.
-            val proc = process!!
             Thread {
                 try {
                     proc.inputStream.bufferedReader().useLines { lines ->
@@ -185,6 +190,131 @@ object GbotProcess {
             Log.e(TAG, "Failed to start gbot", e)
             return false
         }
+    }
+
+    /** App-supervised zero-downtime restart (the WUI restart button's
+     *  Android path — see GBOT_SUPERVISED in the daemon). Orchestration:
+     *  1. POST /api/admin/stepdown — the daemon releases its PID lock but
+     *     KEEPS SERVING (busy → 409, we abort, nothing changed);
+     *  2. spawn the replacement, which binds the same port via SO_REUSEPORT
+     *     (an app-owned direct child, never an orphan);
+     *  3. poll GET /api/admin/restart until it answers with a pid different
+     *     from the predecessor's — REUSEPORT routes accepts to either
+     *     process during the overlap, so a changed pid proves the
+     *     replacement is serving;
+     *  4. TERM the predecessor: its TERM handler closes client sockets
+     *     with 1012 (WUI upgrade fast-reconnect) and it exits onto the
+     *     replacement.
+     *  Failure at any point after stepdown leaves the predecessor serving
+     *  untouched (its lock self-reclaims after a TTL) — worst case equals
+     *  the status quo, never worse. */
+    fun restartSupervised(context: Context, onLog: (String) -> Unit): Boolean = synchronized(lock) {
+        val log: (String) -> Unit = { msg ->
+            synchronized(logBuffer) { logBuffer.append("$msg\n") }
+            onLog(msg)
+        }
+        val predecessor = process
+        if (predecessor?.isAlive != true) {
+            log("restart: no live daemon — plain start")
+            return start(context, onLog)
+        }
+        // Fetch the predecessor's identity BEFORE touching any lock state:
+        // without it the probe can never confirm a replacement, so spawning
+        // one would be guaranteed churn — abort while nothing changed.
+        val predecessorPid = httpAdmin("GET", "/api/admin/restart")
+            .second?.let { parseAdminPid(it) }
+        if (predecessorPid == null) {
+            log("restart: daemon not answering admin endpoint — keeping daemon")
+            return false
+        }
+        when (httpAdmin("POST", "/api/admin/stepdown").first) {
+            200 -> {}
+            409 -> { log("restart: daemon busy — refused"); return false }
+            else -> { log("restart: stepdown failed — keeping daemon"); return false }
+        }
+        // start() early-returns "already running" while the predecessor is
+        // tracked — detach it first so start() spawns the replacement.
+        process = null
+        if (!start(context, onLog)) {
+            process = predecessor
+            log("restart: replacement spawn failed — predecessor still serving")
+            return false
+        }
+        val replacement = process!!
+        val ready = pollForReplacementPid(
+            fetchPid = { httpAdmin("GET", "/api/admin/restart").second?.let { parseAdminPid(it) } },
+            oldPid = predecessorPid,
+        )
+        if (ready) {
+            appendEvent(TAG, "Stopping gbot (predecessor)")
+            Log.i(TAG, "Stopping gbot (predecessor)")
+            predecessor.destroy()
+            log("restart: replacement serving — predecessor draining")
+            return true
+        }
+        if (predecessor.isAlive) {
+            log("restart: replacement not ready — discarding it, predecessor continues")
+            replacement.destroy()
+            process = predecessor
+            return false
+        }
+        // Predecessor died during the probe — the replacement is all we
+        // have; keep it and let its own boot be the verdict.
+        log("restart: predecessor lost during handover — keeping replacement")
+        true
+    }
+
+    /** One admin-endpoint round trip: (httpStatus, body). Status -1 =
+     *  connect/read failure. Loopback only, 3 s budgets — the daemon is
+     *  local or something is very wrong. "Connection: close" defeats the
+     *  JVM's keep-alive pool: a pooled TCP connection is pinned to ONE
+     *  REUSEPORT listener, so a restart-overlap probe reusing it would
+     *  read the predecessor's pid forever (2026-09-25: 20 s probes that
+     *  never saw the serving replacement). Fresh connections hash to
+     *  either listener — the probe flips within a few polls. */
+    internal fun httpAdmin(method: String, path: String, port: Int = 8765): Pair<Int, String?> {
+        val conn = java.net.URL("http://127.0.0.1:$port$path").openConnection()
+            as java.net.HttpURLConnection
+        conn.requestMethod = method
+        conn.setRequestProperty("Connection", "close")
+        conn.connectTimeout = 3000
+        conn.readTimeout = 3000
+        return try {
+            val code = conn.responseCode
+            val body = if (code in 200..399) {
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } else null
+            code to body
+        } catch (e: Exception) {
+            -1 to null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Pulls "pid" out of the GET /api/admin/restart payload. Hand-rolled
+     *  (no org.json): local JVM unit tests stub org.json into throwers, and
+     *  this parse is exactly what the restart handover depends on. */
+    internal fun parseAdminPid(json: String): Long? =
+        Regex("\"pid\"\\s*:\\s*(\\d+)").find(json)?.groupValues?.get(1)?.toLongOrNull()
+
+    /** True once fetchPid yields any pid other than the predecessor's.
+     *  Clock and sleep injectable for tests. */
+    internal fun pollForReplacementPid(
+        fetchPid: () -> Long?,
+        oldPid: Long,
+        deadlineMs: Long = 20_000,
+        sleepMs: Long = 250,
+        now: () -> Long = System::currentTimeMillis,
+        sleep: (Long) -> Unit = Thread::sleep,
+    ): Boolean {
+        val deadline = now() + deadlineMs
+        while (now() < deadline) {
+            val pid = fetchPid()
+            if (pid != null && pid != oldPid) return true
+            sleep(sleepMs)
+        }
+        return false
     }
 
     fun stop() {

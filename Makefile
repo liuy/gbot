@@ -28,7 +28,7 @@ build: web-build
 # on-device (Termux). Run this on the phone, then cp to /usr/bin/gbot.
 build-android: web-build
 	CGO_ENABLED=1 go build -tags android,production,netcgo \
-		-trimpath -ldflags="-w -s" \
+		-trimpath -ldflags="-w -s $(LDFLAGS)" \
 		-o gbot-android ./cmd/gbot/
 
 build-debug:

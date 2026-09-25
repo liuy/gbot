@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -102,12 +103,19 @@ func Start(opts Options) (*Instance, error) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	var dreamCancel context.CancelFunc
+	// Late-wired: the connector that must receive the 1012 close exists
+	// only later in the boot; TERM before that just exits (nothing to
+	// notify yet — same as pre-existing behavior).
+	var supervisedClose atomic.Value // func()
 	go func() {
 		<-sigCh
 		if dreamCancel != nil {
 			dreamCancel()
 		}
-		if !handedOver.Load() {
+		if closeWS, ok := supervisedClose.Load().(func()); ok && closeWS != nil {
+			closeWS()
+		}
+		if !handedOver.Load() && !steppedDown.Load() {
 			pidCleanup()
 		}
 		os.Exit(0)
@@ -246,8 +254,11 @@ func Start(opts Options) (*Instance, error) {
 		// listen also errors fatally). Skipped on an upgraded child: it
 		// inherits the listening fd, and a fresh bind would fail with
 		// EADDRINUSE against the parent's still-live listener — the
-		// conflict probe only makes sense on a cold boot.
-		if upg == nil || !upg.HasParent() {
+		// conflict probe only makes sense on a cold boot. Also skipped in
+		// supervised mode: the whole point there is binding ALONGSIDE the
+		// still-draining predecessor (SO_REUSEPORT), which a plain probe
+		// bind would misread as a conflict.
+		if !supervisedMode() && (upg == nil || !upg.HasParent()) {
 			if ln, err := net.Listen("tcp", wsListenAddr()); err != nil {
 				return nil, fmt.Errorf("ws server: %w", err)
 			} else {
@@ -532,6 +543,9 @@ func Start(opts Options) (*Instance, error) {
 
 	if needWS && wsMux != nil {
 		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
+		if supervisedMode() {
+			supervisedClose.Store(func() { wc.CloseForUpgrade() })
+		}
 		// Register the Send tool + "wui" FileSender on every engine restored
 		// at boot. Engines created later via engine_new are wired inside
 		// createEngineForWUI.
@@ -587,6 +601,15 @@ func Start(opts Options) (*Instance, error) {
 			UnsupportedCode:    refusalCode,
 			UnsupportedMessage: refusalMsg,
 			Version:            wui.AdminVersion{Build: VersionInfo()},
+			PID:                os.Getpid(),
+			// Stepdown lets the supervising app hand the PID lock to a
+			// replacement BEFORE spawning it (the replacement's own boot
+			// would otherwise trip the liveness guard against us). This
+			// process keeps serving until it gets TERM — the overlap is
+			// the restart. Lock discipline + TTL re-claim: supervised.go.
+			Stepdown: func() (bool, wui.BusyReport) {
+				return supervisedStepdown(wc.BusyReport, pidCleanup, projectDir)
+			},
 		})
 		notifyUpgradeSignal(upg, upgradeGate(upg, opts.NoTUI), wc.BusyReport, !opts.NoTUI)
 		slog.Info("wui: mounted on ws mux", "engines", engineMgr.Count())
@@ -595,9 +618,14 @@ func Start(opts Options) (*Instance, error) {
 		// creation): accepting a connection means every endpoint is live.
 		wsAddr := wsListenAddr()
 		var ln net.Listener
-		if upg != nil {
+		switch {
+		case upg != nil:
 			ln, err = upg.Listen("tcp", wsAddr)
-		} else {
+		case supervisedMode():
+			// Overlap bind: the predecessor (if any) holds the port with
+			// SO_REUSEPORT too, so both serve during the handover window.
+			ln, err = listenTCPReuseport(wsAddr)
+		default:
 			ln, err = net.Listen("tcp", wsAddr)
 		}
 		if err != nil {

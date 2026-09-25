@@ -772,6 +772,19 @@ class ChatFragment : Fragment() {
             context?.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
                 ?.getString(KEY_REMOTES, null)?.takeIf { it.isNotBlank() } ?: "[]"
 
+        // WUI restart button's Android path: app-supervised REUSEPORT
+        // handover (the daemon-side tableflip path is a no-go here — its
+        // child is an orphan the phantom process killer reaps). Fire and
+        // forget: the page observes the predecessor's 1012 WS close, the
+        // same flow as the POST /api/admin/restart path on desktop.
+        @JavascriptInterface
+        fun restartDaemon() {
+            val app = context?.applicationContext ?: return
+            Thread {
+                GbotProcess.restartSupervised(app) { }
+            }.start()
+        }
+
         // Persist the WHOLE endpoint list (settings card saves all entries in
         // one shot). Returns false when validation failed (reason surfaced as
         // a Kotlin toast) so the page can skip its own saved-toast.

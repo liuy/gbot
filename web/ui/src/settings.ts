@@ -65,7 +65,20 @@ export async function fetchAdminState(): Promise<AdminState> {
 
 // Status plus the 501 envelope on refusal-shaped replies: "reason" is the
 // stable code (capsule i18n), "error" the human fallback sentence.
+// Android app path: when the GBotNative bridge exposes restartDaemon, the
+// app supervises the whole restart (stepdown + REUSEPORT overlap + swap —
+// the daemon-side tableflip handover is unsafe under Android's phantom
+// process killer). Fire-and-forget: the page learns the outcome from the
+// predecessor's 1012 WS close, identical to the POST path's capsule flow.
+export function nativeRestartAvailable(): boolean {
+  return typeof (window as any).GBotNative?.restartDaemon === 'function'
+}
+
 export async function postRestart(): Promise<{ status: number; error?: string; reason?: string }> {
+  if (nativeRestartAvailable()) {
+    ;(window as any).GBotNative.restartDaemon()
+    return { status: 202 }
+  }
   const res = await fetch('/api/admin/restart', {
     method: 'POST',
     headers: jsonHeaders,
@@ -620,7 +633,10 @@ export function createSettingsPage(): SettingsPageHandles {
       // Busy and platform-unsupported disable silently — the simplest
       // truthful state. A refusal WITH a reason code stays clickable: the
       // click surfaces the localized refusal through the status capsule.
-      restartBtn.disabled = body.busy || (!body.upgradable && !body.reason)
+      // Supervised Android daemons report upgradable=false (no tableflip)
+      // but restart via the GBotNative bridge — keep the button alive.
+      restartBtn.disabled = body.busy ||
+        (!body.upgradable && !body.reason && !nativeRestartAvailable())
       restartBtn.classList.toggle('opacity-40', restartBtn.disabled)
       // A state turn that disables the button also disarms — never show a
       // red "confirm?" label on a button that cannot fire.

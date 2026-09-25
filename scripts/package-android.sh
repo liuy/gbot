@@ -9,6 +9,11 @@
 set -euo pipefail
 
 VERSION="${1:-0.0.0-dev}"
+COMMIT="$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Same injection as the Makefile LDFLAGS: the embedded binary reports
+# "version · commit" in the WUI; without it a refreshed install shows
+# "dev · unknown" (2026-09-25).
+EMBED_LDFLAGS="-w -s -X 'github.com/liuy/gbot/pkg/app.version=${VERSION}' -X 'github.com/liuy/gbot/pkg/app.commit=${COMMIT}'"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="${ROOT}/dist"
 CACHE="${HOME}/.gbot/cache/package-android"
@@ -71,7 +76,7 @@ cd "${ROOT}"
 if [ -n "${PREFIX:-}" ] && case "${PREFIX}" in */com.termux/*) true;; *) false;; esac; then
     # Termux: native arm64, use system Go directly
     go build -tags production,netcgo \
-        -trimpath -buildvcs=false -ldflags="-w -s" \
+        -trimpath -buildvcs=false -ldflags="${EMBED_LDFLAGS}" \
         -o "${ASSETS}/gbot-arm64" \
         ./cmd/gbot/
 else
@@ -94,7 +99,7 @@ else
     export GOOS=android
     export GOARCH=arm64
     go build -tags android,production,netcgo \
-        -trimpath -buildvcs=false -ldflags="-w -s" \
+        -trimpath -buildvcs=false -ldflags="${EMBED_LDFLAGS}" \
         -o "${ASSETS}/gbot-arm64" \
         ./cmd/gbot/
 fi

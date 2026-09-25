@@ -63,4 +63,63 @@ class GbotProcessTest {
 		GbotProcess.stop()
 		assertThat(GbotProcess.logBuffer.length).isEqualTo(0)
 	}
+
+	@Test
+	fun parseAdminPid_extractsPidFromRealisticPayload() {
+		val json = """{"busy":false,"items":[],"upgradable":true,"pid":17643,"build":"0.0.0-dev · 60060d72"}"""
+		assertThat(GbotProcess.parseAdminPid(json)).isEqualTo(17643L)
+	}
+
+	@Test
+	fun parseAdminPid_returnsNullWhenAbsentOrGarbled() {
+		assertThat(GbotProcess.parseAdminPid("""{"busy":true}""")).isNull()
+		assertThat(GbotProcess.parseAdminPid("not json")).isNull()
+		assertThat(GbotProcess.parseAdminPid("\"pid\": \"abc\"")).isNull()
+	}
+
+	@Test
+	fun pollForReplacementPid_trueOncePidChanges() {
+		val pids = arrayOf(11L, 11L, 22L)
+		var i = 0
+		val ok = GbotProcess.pollForReplacementPid(
+			fetchPid = { pids[i++] },
+			oldPid = 11L,
+			deadlineMs = 1000,
+			sleepMs = 0,
+			now = { 0L },
+			sleep = { },
+		)
+		assertThat(ok).isTrue()
+	}
+
+	@Test
+	fun pollForReplacementPid_falseWhenPidNeverChanges() {
+		var tick = 0L
+		val ok = GbotProcess.pollForReplacementPid(
+			fetchPid = { 11L },
+			oldPid = 11L,
+			deadlineMs = 1000,
+			sleepMs = 0,
+			// Clock advances 500 ms per read: one poll round, then the
+			// deadline (1000) expires the loop.
+			now = { tick += 500; tick },
+			sleep = { },
+		)
+		assertThat(ok).isFalse()
+	}
+
+	@Test
+	fun pollForReplacementPid_nullFetchKeepsPollingThenSucceeds() {
+		val answers = arrayOf<Long?>(null, null, 99L)
+		var i = 0
+		val ok = GbotProcess.pollForReplacementPid(
+			fetchPid = { answers[i++] },
+			oldPid = 11L,
+			deadlineMs = 1000,
+			sleepMs = 0,
+			now = { 0L },
+			sleep = { },
+		)
+		assertThat(ok).isTrue()
+	}
 }

@@ -76,6 +76,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        GbotProcess.stop()
+        // Background: restartSupervised can hold the GbotProcess monitor for
+        // a whole replacement probe (~26 s); a synchronous stop() here would
+        // park the main thread behind it — ANR on swipe-away mid-restart.
+        // isFinishing: config-change recreations (font scale, locale) must
+        // not stop the daemon — the recreate's onCreate would spawn into a
+        // lock-less kill.
+        if (isFinishing) Thread { GbotProcess.stop() }.start()
     }
 }

@@ -21,13 +21,17 @@ import (
 // connector-backed Probe (mockEngine) and the given Upgrade fake, so the
 // REAL RequestRestart gating runs behind the full handler path.
 func newAdminTestServer(t *testing.T, c *WUIConnector, upgrade func() error) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	RegisterAdminRoutes(mux, AdminDeps{
+	return newAdminTestServerDeps(t, c, AdminDeps{
 		Probe:   c.BusyReport,
 		Upgrade: upgrade,
 		Version: AdminVersion{Build: "test-v · test-c"},
 	})
+}
+
+func newAdminTestServerDeps(t *testing.T, c *WUIConnector, deps AdminDeps) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	RegisterAdminRoutes(mux, deps)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -442,5 +446,104 @@ func TestBusyReport_ItemsNeverNil(t *testing.T) {
 	}
 	if !bytes.Contains(raw, []byte(`"items":[]`)) {
 		t.Errorf("wire shape = %s, want items:[]", raw)
+	}
+}
+
+// --- stepdown (app-supervised restart handover) ---
+
+func TestStepdown_Idle200ReleasesOnce(t *testing.T) {
+	c := newTestConnector(t)
+	released := 0
+	srv := newAdminTestServerDeps(t, c, AdminDeps{
+		Probe: c.BusyReport,
+		Stepdown: func() (bool, BusyReport) {
+			report := c.BusyReport()
+			if report.Busy {
+				return true, report
+			}
+			released++
+			return false, report
+		},
+	})
+	resp, err := http.Post(srv.URL+"/api/admin/stepdown", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST stepdown: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if released != 1 {
+		t.Errorf("released = %d, want 1", released)
+	}
+}
+
+func TestStepdown_Busy409KeepsLock(t *testing.T) {
+	c := newTestConnector(t)
+	setSlotName(t, c, "Main")
+	c.mock().isBusyFn = func() bool { return true }
+	released := false
+	srv := newAdminTestServerDeps(t, c, AdminDeps{
+		Probe: c.BusyReport,
+		Stepdown: func() (bool, BusyReport) {
+			report := c.BusyReport()
+			if report.Busy {
+				return true, report
+			}
+			released = true
+			return false, report
+		},
+	})
+	resp, err := http.Post(srv.URL+"/api/admin/stepdown", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST stepdown: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if released {
+		t.Error("lock must stay held on busy refusal")
+	}
+}
+
+func TestStepdown_Nil501(t *testing.T) {
+	c := newTestConnector(t)
+	srv := newAdminTestServer(t, c, nil)
+	resp, err := http.Post(srv.URL+"/api/admin/stepdown", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST stepdown: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+// The GET payload carries this process's PID so the supervising app can
+// detect the replacement daemon behind a REUSEPORT overlap.
+func TestAdminStateGET_CarriesPid(t *testing.T) {
+	c := newTestConnector(t)
+	srv := newAdminTestServerDeps(t, c, AdminDeps{
+		Probe: c.BusyReport,
+		PID:   4242,
+	})
+	resp, err := http.Get(srv.URL + "/api/admin/restart")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Pid   int    `json:"pid"`
+		Build string `json:"build"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Pid != 4242 {
+		t.Errorf("pid = %d, want 4242", body.Pid)
+	}
+	if body.Build != "" {
+		t.Errorf("build must stay top-level, got %q", body.Build)
 	}
 }

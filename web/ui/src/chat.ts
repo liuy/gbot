@@ -666,6 +666,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
       }, 20_000)
     } else {
+      // Give-up (the binary never came back within 90 s): retire the
+      // upgrading visuals — a frozen capsule reads as a hang — and fall
+      // back to the ordinary retry banner.
+      if (capsule.active()) {
+        capsule.dismiss()
+        document.body.removeAttribute('data-upgrading')
+        setStreamFreeze(messagesContainer, false)
+      }
       dcText.textContent = 'Reconnection failed. Tap to retry.'
       disconnectBanner.style.cursor = 'pointer'
       disconnectBanner.style.maxHeight = '40px'

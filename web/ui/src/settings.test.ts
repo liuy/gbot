@@ -2070,3 +2070,57 @@ describe('SYSTEM card (admin restart)', () => {
     setLocale('en')
   })
 })
+
+describe('SYSTEM card (native restart bridge)', () => {
+  const withNativeBridge = (fn: (fired: () => number) => Promise<void>) => async () => {
+    let fired = 0
+    ;(window as any).GBotNative = { restartDaemon: () => { fired++ } }
+    try {
+      await fn(() => fired)
+    } finally {
+      delete (window as any).GBotNative
+    }
+  }
+  it('keeps the button enabled when the daemon is not upgradable (supervised Android)',
+    withNativeBridge(async (fired) => {
+      const mock = makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: false, build: '1.2.3 · abc1234' },
+      })
+      const page = await openPage(mock)
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+      })
+      expect((page.root.querySelector('[data-restart-btn]') as HTMLButtonElement).disabled).toBe(false)
+    }))
+  it('two-tap fires the bridge instead of POST and still arms upgrade mode',
+    withNativeBridge(async (fired) => {
+      const { markUpgrading } = await import('./ws')
+      const mock = makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: false, build: '1.2.3 · abc1234' },
+      })
+      const page = await openPage(mock)
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => { expect(btn.disabled).toBe(false) })
+      btn.click()
+      await flushMicrotasks()
+      btn.click()
+      await flushMicrotasks()
+      expect(fired()).toBe(1)
+      expect(markUpgrading).toHaveBeenCalled()
+      expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
+    }))
+  it('busy still disables the button even with the bridge',
+    withNativeBridge(async (fired) => {
+      const mock = makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: true, items: [{}], upgradable: false, build: '1.2.3 · abc1234' },
+      })
+      const page = await openPage(mock)
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('1.2.3 · abc1234')
+      })
+      expect((page.root.querySelector('[data-restart-btn]') as HTMLButtonElement).disabled).toBe(true)
+    }))
+})

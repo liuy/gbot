@@ -72,6 +72,16 @@ type AdminDeps struct {
 	UnsupportedCode    string
 	UnsupportedMessage string
 	Version            AdminVersion
+	// PID identifies THIS process in the GET payload: the supervising app
+	// polls the endpoint during a restart overlap and treats a pid change
+	// as "the replacement is serving" (SO_REUSEPORT routes accepts to
+	// either process during the handover).
+	PID int
+	// Stepdown, when non-nil, releases the single-instance PID lock for an
+	// imminent app-spawned replacement while this process keeps serving
+	// until TERM. Returns busy=true → the endpoint answers 409 and the
+	// lock stays held. Nil → 501 (nothing supervises this daemon).
+	Stepdown func() (busy bool, report BusyReport)
 }
 
 // Refusal codes for AdminDeps.UnsupportedCode — contract with the wui
@@ -79,11 +89,14 @@ type AdminDeps struct {
 const RefusalTUIMode = "tui_mode"
 
 // adminStatePayload is the GET /api/admin/restart body: busy state +
-// activity list + whether this platform can upgrade + build identity.
+// activity list + whether this platform can upgrade + build identity +
+// the serving process's PID (restart-overlap probe). AdminVersion stays
+// embedded so "build" remains a top-level field (WUI + app parse it).
 type adminStatePayload struct {
 	BusyReport
 	Upgradable bool   `json:"upgradable"`
 	Reason     string `json:"reason,omitempty"`
+	Pid        int    `json:"pid"`
 	AdminVersion
 }
 
@@ -102,8 +115,23 @@ func RegisterAdminRoutes(mux *http.ServeMux, deps AdminDeps) {
 			BusyReport:   deps.Probe(),
 			Upgradable:   deps.Upgrade != nil,
 			Reason:       deps.UnsupportedCode,
+			Pid:          deps.PID,
 			AdminVersion: deps.Version,
 		})
+	})
+	mux.HandleFunc("POST /api/admin/stepdown", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Stepdown == nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{
+				"error": "stepdown not supported: no supervisor owns this daemon",
+			})
+			return
+		}
+		busy, report := deps.Stepdown()
+		if busy {
+			writeJSON(w, http.StatusConflict, report)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "stepped_down"})
 	})
 	mux.HandleFunc("POST /api/admin/restart", func(w http.ResponseWriter, r *http.Request) {
 		outcome, report := RequestRestart(deps.Probe, deps.Upgrade)

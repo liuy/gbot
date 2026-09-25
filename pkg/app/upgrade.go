@@ -60,6 +60,12 @@ func upgradeGate(upg Upgrader, daemonMode bool) func() error {
 // PATH lookup — so pin argv[0] to os.Executable() before any Upgrade runs
 // (tableflip reads os.Args[0] at upgrade time).
 func newUpgrader() Upgrader {
+	// Supervised daemons never tableflip: the app orchestrates REUSEPORT
+	// overlaps instead (an upgraded tableflip child is an orphan grandchild
+	// the Android phantom killer targets).
+	if supervisedMode() {
+		return nil
+	}
 	if exe, err := os.Executable(); err == nil {
 		os.Args[0] = exe
 	}
