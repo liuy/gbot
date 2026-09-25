@@ -2111,6 +2111,31 @@ describe('SYSTEM card (native restart bridge)', () => {
       expect(markUpgrading).toHaveBeenCalled()
       expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
     }))
+  it('remote page target never fires the bridge — POSTs the remote daemon instead',
+    withNativeBridge(async (fired) => {
+      // The Android WebView injects the bridge on every page it loads,
+      // including remote gbot endpoints; the bridge only restarts the
+      // PHONE-LOCAL daemon. A remote page must restart the remote server.
+      vi.stubGlobal('location', { hostname: '100.117.35.55', port: '1234', protocol: 'https:', origin: 'https://100.117.35.55:1234' })
+      const mock = makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      })
+      const page = await openPage(mock)
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => { expect(btn.disabled).toBe(false) })
+      btn.click()
+      await flushMicrotasks()
+      btn.click()
+      await flushMicrotasks()
+      expect(fired()).toBe(0)
+      expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(true)
+      // Remote 202 arms the capsule the same way — the page now waits on
+      // the REMOTE daemon's 1012, which the POSTed target will produce.
+      const { markUpgrading } = await import('./ws')
+      expect(markUpgrading).toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    }))
   it('busy still disables the button even with the bridge',
     withNativeBridge(async (_fired) => {
       const mock = makeFetchHandler({

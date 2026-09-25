@@ -79,6 +79,13 @@ declare global {
 }
 
 export function nativeRestartAvailable(): boolean {
+  // The bridge restarts the DEVICE-LOCAL daemon (the Android WebView's
+  // 127.0.0.1:8765). A page pointed at a REMOTE target must restart the
+  // remote server via POST — firing the bridge there would silently
+  // restart the phone's daemon while the page waits for the remote's
+  // 1012 close, stuck in "upgrading" forever.
+  const h = location.hostname
+  if (h !== '127.0.0.1' && h !== 'localhost' && h !== '::1') return false
   return typeof window.GBotNative?.restartDaemon === 'function'
 }
 
