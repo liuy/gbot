@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/filehistory"
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
@@ -5858,5 +5859,71 @@ func TestQuery_GlobWirePlainText(t *testing.T) {
 	}
 	if strings.Contains(wire, `\"filenames\"`) {
 		t.Errorf("wire text = %q, still carries the JSON escape wall", wire)
+	}
+}
+
+// stopFailureRecorder captures hook dispatches for the terminal-error path.
+type stopFailureRecorder struct {
+	mu     sync.Mutex
+	events []string
+	reason string
+	fired  chan struct{}
+	once   sync.Once
+}
+
+func newStopFailureRecorder() *stopFailureRecorder {
+	return &stopFailureRecorder{fired: make(chan struct{})}
+}
+
+func (r *stopFailureRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration, extraEnv []string) hooks.HookResult {
+	r.mu.Lock()
+	r.events = append(r.events, input.HookEventName)
+	r.reason = input.Reason
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.fired) })
+	return hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, HookName: command}
+}
+
+func (r *stopFailureRecorder) snapshot() (events []string, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...), r.reason
+}
+
+// TestTerminalAPIErrorFiresStopFailureNotStop pins the TS query.ts:1259-1265
+// contract: an API-error turn fires the dedicated StopFailure hooks
+// (fire-and-forget) and skips normal Stop hooks — the model never produced a
+// response, so a blocking Stop hook would loop error→hook→retry→error.
+func TestTerminalAPIErrorFiresStopFailureNotStop(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(nil, &llm.APIError{Type: "rate_limit_error", Message: "rate limited", Status: 429, Retryable: true})
+	rec := newStopFailureRecorder()
+	h := hooks.NewHooks(hooks.HooksConfig{
+		"StopFailure": []hooks.HookMatcher{{Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "on-failure"},
+		}}},
+		"Stop": []hooks.HookMatcher{{Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "on-stop"},
+		}}},
+	}, rec)
+	eng := New(&Params{Provider: mp, Model: "m", Logger: slog.Default(), Hooks: h})
+	t.Cleanup(func() { eng.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if res := eng.QuerySync(ctx, "test", ""); res.Error == nil {
+		t.Fatal("expected terminal error")
+	}
+	// Fire-and-forget: signal-driven wait, no sleep-poll (weak-test P2).
+	select {
+	case <-rec.fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopFailure hook never fired within 2s")
+	}
+	got, reason := rec.snapshot()
+	if len(got) != 1 || got[0] != "StopFailure" {
+		t.Fatalf("expected exactly one StopFailure dispatch, got %v", got)
+	}
+	if !strings.Contains(reason, "rate limited") {
+		t.Errorf("Reason must carry the error text for TS matchQuery parity, got %q", reason)
 	}
 }

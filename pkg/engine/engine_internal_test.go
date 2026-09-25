@@ -8872,6 +8872,12 @@ func TestStreamInterrupt_PartialToolInput_PostLoop(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_post", Name: "Bash"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"command":"sleep`}}
+		// Sentinel: the unbuffered send below returns only when the engine
+		// RECEIVED it — and the engine processes stream events sequentially,
+		// so receipt of the sentinel proves every earlier event was fully
+		// processed. Cancelling after close(started) is then race-free even
+		// under parallel-test load.
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `1`}}
 		close(started)
 		<-ctx.Done()
 		// Don't send more events — channel closes via defer.
@@ -8917,6 +8923,10 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 		// Block 1: incomplete tool_use
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_partial", Name: "Agent"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"prompt":"do someth`}}
+		// Sentinel (see PartialToolInput_PostLoop): receipt of this send
+		// proves the complete call_complete block and the first partial
+		// delta were processed before cancel can fire.
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `x`}}
 		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `ing`}}
@@ -9005,6 +9015,9 @@ func TestStreamInterrupt_TextOnly_NoPanic(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "I was thinking"}}
+		// Sentinel (see PartialToolInput_PostLoop): receipt proves the first
+		// text delta was processed before cancel can fire.
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: " "}}
 		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "..."}}

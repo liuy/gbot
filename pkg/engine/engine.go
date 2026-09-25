@@ -1689,6 +1689,28 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			})
 			errMsg.Flags |= types.FlagAPIError
 			e.appendMessage(errMsg)
+			// TS query.ts:1259-1265: an API-error turn skips normal stop
+			// hooks (the model never produced a response — a blocking Stop
+			// hook would loop error→hook→retry→error) and fires the
+			// dedicated StopFailure hooks instead, fire-and-forget so the
+			// error return never waits on notification scripts.
+			if e.hooks != nil {
+				input := &hooks.HookInput{
+					HookEventName: string(hooks.HookStopFailure),
+					SessionID:     e.sessionID,
+					Reason:        errText,
+				}
+				go func() {
+					// runAsyncHook precedent: a panicking hook executor must
+					// never take down the engine goroutine.
+					defer func() {
+						if r := recover(); r != nil {
+							e.logger.Error("StopFailure hook panic", "panic", r)
+						}
+					}()
+					e.hooks.StopFailure(context.Background(), input)
+				}()
+			}
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 			errMsgs, _ := e.snapshotExitState()
 			return QueryResult{
