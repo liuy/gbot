@@ -160,6 +160,7 @@ export const dict: Dict = {
   upgradeRecoveredText: '已恢复',
   upgradeRefusedPrefix: '无法热重启 — ',
   refusalTuiMode: 'TUI 模式无法热重启 — 请退出后手动启动新版本',
+  uiRefreshed: '已刷新',
 }
 
 export const endonym = '简体中文'

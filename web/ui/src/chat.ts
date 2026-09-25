@@ -59,6 +59,7 @@ import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchAr
 import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
+import { t } from './i18n'
 import { getConnection } from './ws'
 import { createUpgradeCapsule, setStreamFreeze } from './upgrade_mode'
 import { TokenRate } from './token_rate'
@@ -457,6 +458,9 @@ function buildTimeDivider(label: string): HTMLElement {
   return container
 }
 
+// Matches settings.ts's toast window so both surfaces feel identical.
+const TOAST_MS = 2200
+
 export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Module-level state (persists across createChat calls in the same
   // session, mirroring persistedMessages in ChatInterface.tsx).
@@ -600,6 +604,37 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     sidebar.closeImmediate()
     settingsPage.open()
   })
+
+  // Auto-reload toast: the pre-reload wuiHash check (metadata handler below)
+  // parks a marker in sessionStorage — the only state surviving
+  // location.reload() — and consuming it here turns the otherwise-silent
+  // page flash into a one-shot confirmation. Root-level mount (not
+  // mainContent) for the same stacking-context reason as the capsule.
+  const toastEl = createNode('div', {
+    className:
+      'fixed left-1/2 bottom-10 -translate-x-1/2 z-[80] bg-ink3 border border-hairline text-t1 text-[12px] px-4 py-2 rounded-full opacity-0 transition-opacity duration-250 pointer-events-none whitespace-nowrap',
+    attrs: { 'data-toast': '' },
+  })
+  root.appendChild(toastEl)
+  let toastTimer: number | undefined
+  // 'toast-show' has no CSS rule — it is the test-observable marker for
+  // the opacity-0 toggle that actually drives visibility.
+  const toast = (msg: string) => {
+    toastEl.textContent = msg
+    toastEl.classList.remove('opacity-0')
+    toastEl.classList.add('toast-show')
+    window.clearTimeout(toastTimer)
+    toastTimer = window.setTimeout(() => {
+      toastEl.classList.add('opacity-0')
+      toastEl.classList.remove('toast-show')
+    }, TOAST_MS)
+  }
+  if (sessionStorage.getItem('wuiAutoReloaded')) {
+    // Remove first so a reload loop (marker set, reload, marker set, …)
+    // can never chain toasts across boots — one marker buys one toast.
+    sessionStorage.removeItem('wuiAutoReloaded')
+    toast(t('uiRefreshed'))
+  }
 
   // Live path and history replay share this derivation — replay has no
   // separate artifact logic.
@@ -1962,6 +1997,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           if (wuiHashSnapshot === undefined) {
             wuiHashSnapshot = c.wuiHash
           } else if (c.wuiHash !== wuiHashSnapshot) {
+            // Must land BEFORE reload(): the reloaded page boots fresh JS
+            // with no memory of this decision, so sessionStorage is the
+            // only channel to request the "refreshed" toast there.
+            sessionStorage.setItem('wuiAutoReloaded', '1')
             location.reload()
             return
           }

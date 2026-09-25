@@ -2818,7 +2818,13 @@ describe('sidebar artifacts', () => {
 })
 
 describe('wui asset hash reload', () => {
+  beforeEach(() => {
+    // The reload marker lives in sessionStorage, which jsdom shares across
+    // every test in this file — a leaked flag would toast on later mounts.
+    sessionStorage.clear()
+  })
   afterEach(() => {
+    sessionStorage.clear()
     vi.unstubAllGlobals()
   })
 
@@ -2849,6 +2855,9 @@ describe('wui asset hash reload', () => {
     // bundle, so the reconnecting page must hard-reload.
     dispatch(metaFrame('hash-b'))
     expect(reloadSpy).toHaveBeenCalledTimes(1)
+    // The reload itself is silent — the marker is what lets the reloaded
+    // page explain the flash with a toast.
+    expect(sessionStorage.getItem('wuiAutoReloaded')).toBe('1')
   })
 
   it('does not reload when the hash disappears (older daemon, no new information)', () => {
@@ -2858,6 +2867,7 @@ describe('wui asset hash reload', () => {
     dispatch(metaFrame('hash-a'))
     dispatch(metaFrame())
     expect(reloadSpy).toHaveBeenCalledTimes(0)
+    expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 
   it('hash-less first frame stores no baseline, so a later hashed frame does not reload', () => {
@@ -2867,5 +2877,33 @@ describe('wui asset hash reload', () => {
     dispatch(metaFrame())
     dispatch(metaFrame('hash-a'))
     expect(reloadSpy).toHaveBeenCalledTimes(0)
+    expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
+  })
+
+  // The settings page (mounted inside createChat) ships its own hidden
+  // [data-toast]; the chat toast is a DIRECT child of the shell root —
+  // same root-level mount as the upgrade capsule, for the same
+  // stacking-context reason (mainContent's lingering transform traps
+  // fixed children under the z-60 settings sheet).
+  function chatToast(): HTMLElement {
+    const chat = mount()
+    return chat.root.querySelector(':scope > [data-toast]') as HTMLElement
+  }
+
+  it('boot with the reload marker toasts the refresh once and clears the marker', () => {
+    sessionStorage.setItem('wuiAutoReloaded', '1')
+    const toastEl = chatToast()
+    expect(toastEl.textContent).toBe('Refreshed')
+    expect(toastEl.classList.contains('toast-show')).toBe(true)
+    expect(toastEl.classList.contains('opacity-0')).toBe(false)
+    expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
+  })
+
+  it('plain boot without the marker renders the toast hidden', () => {
+    const toastEl = chatToast()
+    expect(toastEl.textContent).toBe('')
+    expect(toastEl.classList.contains('toast-show')).toBe(false)
+    expect(toastEl.classList.contains('opacity-0')).toBe(true)
+    expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 })

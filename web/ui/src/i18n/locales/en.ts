@@ -185,6 +185,7 @@ export const dict = {
   upgradeRecoveredText: 'Recovered',
   upgradeRefusedPrefix: 'Restart refused — ',
   refusalTuiMode: 'TUI mode cannot hot-restart — exit and start the new binary manually',
+  uiRefreshed: 'Refreshed',
 } as const
 
 export const endonym = 'English'
