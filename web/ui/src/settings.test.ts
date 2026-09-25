@@ -2074,15 +2074,15 @@ describe('SYSTEM card (admin restart)', () => {
 describe('SYSTEM card (native restart bridge)', () => {
   const withNativeBridge = (fn: (fired: () => number) => Promise<void>) => async () => {
     let fired = 0
-    ;(window as any).GBotNative = { restartDaemon: () => { fired++ } }
+    window.GBotNative = { restartDaemon: () => { fired++ } }
     try {
       await fn(() => fired)
     } finally {
-      delete (window as any).GBotNative
+      delete window.GBotNative
     }
   }
   it('keeps the button enabled when the daemon is not upgradable (supervised Android)',
-    withNativeBridge(async (fired) => {
+    withNativeBridge(async (_fired) => {
       const mock = makeFetchHandler({
         payload: PAYLOAD,
         admin: { busy: false, items: [], upgradable: false, build: '1.2.3 · abc1234' },
@@ -2112,7 +2112,7 @@ describe('SYSTEM card (native restart bridge)', () => {
       expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
     }))
   it('busy still disables the button even with the bridge',
-    withNativeBridge(async (fired) => {
+    withNativeBridge(async (_fired) => {
       const mock = makeFetchHandler({
         payload: PAYLOAD,
         admin: { busy: true, items: [{}], upgradable: false, build: '1.2.3 · abc1234' },

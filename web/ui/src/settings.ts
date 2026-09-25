@@ -70,13 +70,21 @@ export async function fetchAdminState(): Promise<AdminState> {
 // the daemon-side tableflip handover is unsafe under Android's phantom
 // process killer). Fire-and-forget: the page learns the outcome from the
 // predecessor's 1012 WS close, identical to the POST path's capsule flow.
+
+// Native bridge injected by the desktop/Android shell (absent in browsers).
+declare global {
+  interface Window {
+    GBotNative?: { restartDaemon: () => void }
+  }
+}
+
 export function nativeRestartAvailable(): boolean {
-  return typeof (window as any).GBotNative?.restartDaemon === 'function'
+  return typeof window.GBotNative?.restartDaemon === 'function'
 }
 
 export async function postRestart(): Promise<{ status: number; error?: string; reason?: string }> {
   if (nativeRestartAvailable()) {
-    ;(window as any).GBotNative.restartDaemon()
+    window.GBotNative!.restartDaemon()
     return { status: 202 }
   }
   const res = await fetch('/api/admin/restart', {

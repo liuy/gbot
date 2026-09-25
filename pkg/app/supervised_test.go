@@ -72,7 +72,16 @@ func TestSupervisedStepdown_TTLReclaimsWhenNoSuccessor(t *testing.T) {
 	pidPath := resetStepdown(t)
 	defer shortReclaimTTL(t)()
 	supervisedStepdown(idleReport, func() {}, filepath.Dir(pidPath))
-	time.Sleep(200 * time.Millisecond)
+	deadline := time.Now().Add(500 * time.Millisecond) // REAL-TIME: bounded poll; TTL is 60ms, 500ms is the failure ceiling
+	for time.Now().Before(deadline) {                  // REAL-TIME
+		data, err := os.ReadFile(pidPath)
+		if err == nil {
+			if pid, _ := strconv.Atoi(string(data)); pid == os.Getpid() {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: re-check loop for the TTL re-claim
+	}
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		t.Fatalf("TTL re-claim must restore the lock: %v", err)
@@ -92,7 +101,16 @@ func TestSupervisedStepdown_TTLNeverClobbersSuccessor(t *testing.T) {
 	if err := os.WriteFile(pidPath, []byte("424242"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	// REAL-TIME: watch strictly past the 60ms TTL so the reclaimer had its
+	// chance; 500ms gives 8x margin under CI load without dragging the suite.
+	deadline := time.Now().Add(500 * time.Millisecond) // REAL-TIME
+	for time.Now().Before(deadline) {                  // REAL-TIME
+		data, _ := os.ReadFile(pidPath)
+		if string(data) != "424242" {
+			t.Fatalf("successor's PID file clobbered: %q", string(data))
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: re-check loop through the TTL window
+	}
 	data, _ := os.ReadFile(pidPath)
 	if string(data) != "424242" {
 		t.Errorf("successor's PID file clobbered: %q", string(data))
