@@ -64,14 +64,12 @@ func NewResponsesProvider(cfg *ResponsesConfig) *ResponsesProvider {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
 	return &ResponsesProvider{
-		BaseProvider: BaseProvider{
-			name:        cfg.Name,
-			httpClient:  newLLMHTTPClient(cfg.Timeout),
-			retryConfig: DefaultRetryConfig(),
-			// 90s, not openai.go's 60s: reasoning-phase deltas can arrive in
-			// bursts spaced further apart than chat-completion tokens.
-			idleTimeout: DefaultSSETimeout,
-		},
+		name:        cfg.Name,
+		httpClient:  newLLMHTTPClient(cfg.Timeout),
+		retryConfig: DefaultRetryConfig(),
+		// 90s, not openai.go's 60s: reasoning-phase deltas can arrive in
+		// bursts spaced further apart than chat-completion tokens.
+		idleTimeout: DefaultSSETimeout,
 		apiKey:      cfg.APIKey,
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
 		model:       cfg.Model,

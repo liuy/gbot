@@ -4808,8 +4808,8 @@ func TestComputeSearchReadKind(t *testing.T) {
 		ToolsProvider: func() map[string]tool.Tool {
 			return map[string]tool.Tool{
 				"Grep": &searchReadStub{
-					stubTool: stubTool{name: "Grep"},
-					srk:      tool.SearchReadKind{IsSearch: true},
+					name: "Grep",
+					srk:  tool.SearchReadKind{IsSearch: true},
 				},
 				"Bash": &stubTool{name: "Bash"},
 			}

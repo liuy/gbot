@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // ForkSession creates a child session that branches from a parent session.

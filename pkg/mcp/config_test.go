@@ -2772,10 +2772,8 @@ func (p *errorSaveProvider) SaveLocalMcpServers(servers map[string]McpServerConf
 
 func TestAddMcpConfig_UserSaveError(t *testing.T) {
 	provider := &errorSaveProvider{
-		mockConfigProvider: mockConfigProvider{
-			userServers: map[string]McpServerConfig{},
-		},
-		saveErr: fmt.Errorf("disk full"),
+		userServers: map[string]McpServerConfig{},
+		saveErr:     fmt.Errorf("disk full"),
 	}
 	cfg := &StdioConfig{Command: "node"}
 	err := AddMcpConfig("srv", cfg, ScopeUser, "", provider, nil, nil)
@@ -2789,10 +2787,8 @@ func TestAddMcpConfig_UserSaveError(t *testing.T) {
 
 func TestAddMcpConfig_LocalSaveError(t *testing.T) {
 	provider := &errorSaveProvider{
-		mockConfigProvider: mockConfigProvider{
-			localServers: map[string]McpServerConfig{},
-		},
-		saveErr: fmt.Errorf("permission denied"),
+		localServers: map[string]McpServerConfig{},
+		saveErr:      fmt.Errorf("permission denied"),
 	}
 	cfg := &StdioConfig{Command: "node"}
 	err := AddMcpConfig("srv", cfg, ScopeLocal, "", provider, nil, nil)
@@ -2810,10 +2806,8 @@ func TestAddMcpConfig_LocalSaveError(t *testing.T) {
 
 func TestRemoveMcpConfig_UserSaveError(t *testing.T) {
 	provider := &errorSaveProvider{
-		mockConfigProvider: mockConfigProvider{
-			userServers: map[string]McpServerConfig{
-				"srv": &StdioConfig{Command: "echo"},
-			},
+		userServers: map[string]McpServerConfig{
+			"srv": &StdioConfig{Command: "echo"},
 		},
 		saveErr: fmt.Errorf("io error"),
 	}
@@ -2828,10 +2822,8 @@ func TestRemoveMcpConfig_UserSaveError(t *testing.T) {
 
 func TestRemoveMcpConfig_LocalSaveError(t *testing.T) {
 	provider := &errorSaveProvider{
-		mockConfigProvider: mockConfigProvider{
-			localServers: map[string]McpServerConfig{
-				"srv": &StdioConfig{Command: "echo"},
-			},
+		localServers: map[string]McpServerConfig{
+			"srv": &StdioConfig{Command: "echo"},
 		},
 		saveErr: fmt.Errorf("io error"),
 	}
@@ -2858,9 +2850,7 @@ func (p *errorSaveDisabledProvider) SaveProjectDisabledServers(names []string) e
 
 func TestSetMcpServerEnabled_SaveError(t *testing.T) {
 	provider := &errorSaveDisabledProvider{
-		mockConfigProvider: mockConfigProvider{
-			disabledServers: []string{},
-		},
+		disabledServers: []string{},
 	}
 	err := SetMcpServerEnabled("srv", false, provider)
 	if err == nil {

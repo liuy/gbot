@@ -1,6 +1,6 @@
 module github.com/liuy/gbot
 
-go 1.26.1
+go 1.27
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0
@@ -20,7 +20,6 @@ require (
 	github.com/extrame/xls v0.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/gomarkdown/markdown v0.0.0-20260417124207-7d523f7318df
-	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/klippa-app/go-pdfium v1.19.4
@@ -80,6 +79,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/jolestar/go-commons-pool/v2 v2.1.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect

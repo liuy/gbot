@@ -8,8 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // CreateSession creates a new session with a generated UUID bound to the

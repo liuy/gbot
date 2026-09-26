@@ -54,13 +54,11 @@ func TestAnthropicToolInput_TimeoutDisabled(t *testing.T) {
 	defer srv.Close()
 
 	provider := &AnthropicProvider{
-		BaseProvider: BaseProvider{
-			httpClient:  srv.Client(),
-			idleTimeout: 50 * time.Millisecond,
-		},
-		apiKey:  "test-key",
-		baseURL: srv.URL,
-		model:   "test-model",
+		httpClient:  srv.Client(),
+		idleTimeout: 50 * time.Millisecond,
+		apiKey:      "test-key",
+		baseURL:     srv.URL,
+		model:       "test-model",
 	}
 
 	req := &Request{

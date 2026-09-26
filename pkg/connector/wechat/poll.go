@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -200,7 +200,7 @@ func (c *WeChatConnector) enqueue(userID, text string, content []types.ContentBl
 			Mode:      types.ItemModePrompt,
 			Priority:  types.PriorityNext,
 			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
-			UUID:      uuid.NewString(),
+			UUID:      uuid.New().String(),
 			Timestamp: time.Now(),
 		})
 		return

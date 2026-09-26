@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/media"
@@ -375,7 +375,7 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 				c.sendWS(resp)
 				return
 			}
-			attachUUID := uuid.NewString()
+			attachUUID := uuid.New().String()
 			eng.EnqueueAttachment(types.QueuedItem{
 				Value:     text,
 				Content:   blocks,

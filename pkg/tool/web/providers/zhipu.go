@@ -10,8 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 var (

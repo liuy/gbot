@@ -2293,8 +2293,8 @@ func runWireBlocksTool(t *testing.T, blocks []types.ContentBlock, callFn func(co
 	t.Helper()
 
 	wt := &wireBlocksTestTool{
-		testTool: testTool{name: "WireTool", callFn: callFn},
-		blocks:   blocks,
+		name: "WireTool", callFn: callFn,
+		blocks: blocks,
 	}
 	toolMap := map[string]tool.Tool{"WireTool": wt}
 	tctx := &tool.ToolUseContext{}
@@ -2404,11 +2404,9 @@ func TestExecuteTool_ErrorPathUsesArrayForm(t *testing.T) {
 	t.Parallel()
 
 	wt := &wireBlocksTestTool{
-		testTool: testTool{
-			name: "ErrTool",
-			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				return nil, errors.New("boom")
-			},
+		name: "ErrTool",
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, errors.New("boom")
 		},
 		blocks: []types.ContentBlock{types.NewTextBlock("should-not-be-used")},
 	}
@@ -2449,11 +2447,9 @@ func TestEmitToolError_UsesArrayForm(t *testing.T) {
 	t.Parallel()
 
 	wt := &wireBlocksTestTool{
-		testTool: testTool{
-			name: "BoomTool",
-			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				return nil, errors.New("boom")
-			},
+		name: "BoomTool",
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, errors.New("boom")
 		},
 		blocks: []types.ContentBlock{types.NewTextBlock("should-not-be-used")},
 	}

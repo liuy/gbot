@@ -84,15 +84,13 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 	}
 
 	return &AnthropicProvider{
-		BaseProvider: BaseProvider{
-			name:        cfg.Name,
-			httpClient:  newLLMHTTPClient(cfg.Timeout),
-			retryConfig: cfg.RetryConfig,
-			idleTimeout: DefaultSSETimeout,
-		},
-		apiKey:  cfg.APIKey,
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		model:   cfg.Model,
+		name:        cfg.Name,
+		httpClient:  newLLMHTTPClient(cfg.Timeout),
+		retryConfig: cfg.RetryConfig,
+		idleTimeout: DefaultSSETimeout,
+		apiKey:      cfg.APIKey,
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		model:       cfg.Model,
 	}
 }
 

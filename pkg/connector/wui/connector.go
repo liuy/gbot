@@ -27,8 +27,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
@@ -2736,7 +2736,7 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 			if cb.Path == "" {
 				continue
 			}
-			id := uuid.NewString()
+			id := uuid.New().String()
 			c.rememberUpload(id, savedAttachment{path: cb.Path, mime: cb.Mime, kind: "document"})
 			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
 				ID: id, Name: cb.Name, Mime: cb.Mime, Size: int(cb.Size),
@@ -2759,7 +2759,7 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 				slog.Warn("wui:restore image re-materialize failed", "error", err)
 				continue
 			}
-			id := uuid.NewString()
+			id := uuid.New().String()
 			c.rememberUpload(id, savedAttachment{path: path, mime: cb.Source.MediaType, kind: "image"})
 			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
 				ID: id, Mime: cb.Source.MediaType, Size: len(data),

@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+	"uuid"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
@@ -1603,7 +1603,7 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	if _, ok := a.commands.LookupSlashCommand(text); ok {
 		return nil
 	}
-	id := uuid.NewString()
+	id := uuid.New().String()
 	a.engine.EnqueueAttachment(types.QueuedItem{
 		Value:     text,
 		Mode:      types.ItemModePrompt,

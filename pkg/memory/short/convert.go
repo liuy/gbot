@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 

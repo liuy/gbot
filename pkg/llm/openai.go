@@ -56,12 +56,10 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
 	return &OpenAIProvider{
-		BaseProvider: BaseProvider{
-			name:        cfg.Name,
-			httpClient:  newLLMHTTPClient(cfg.Timeout),
-			retryConfig: DefaultRetryConfig(),
-			idleTimeout: 60 * time.Second,
-		},
+		name:        cfg.Name,
+		httpClient:  newLLMHTTPClient(cfg.Timeout),
+		retryConfig: DefaultRetryConfig(),
+		idleTimeout: 60 * time.Second,
 		apiKey:      cfg.APIKey,
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
 		model:       cfg.Model,

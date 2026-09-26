@@ -1,11 +1,11 @@
 package short
 
 import (
-	"github.com/google/uuid"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 )
 
 // TestCreateSession verifies CreateSession creates a session with correct fields.

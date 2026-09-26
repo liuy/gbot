@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"uuid"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"

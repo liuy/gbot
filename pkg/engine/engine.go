@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/filehistory"
@@ -40,7 +41,6 @@ import (
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
 
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/engine/attachment"
 )
 

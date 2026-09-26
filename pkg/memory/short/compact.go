@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"slices"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
