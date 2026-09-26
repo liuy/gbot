@@ -24,6 +24,21 @@ describe('theme engine', () => {
     expect(typeof hook).toBe('function')
   })
 
+  it('NoSavedPref_DefaultsToSystem_FollowingOS', () => {
+    // Fresh visitor with no stored preference must resolve from the OS:
+    // the default is 'system', not a hardcoded theme.
+    const orig = window.matchMedia
+    try {
+      window.matchMedia = ((q: string) =>
+        ({ matches: true, media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as unknown as typeof matchMedia
+      setup() // no pref stored
+      expect(getThemePref()).toBe('system')
+      expect(document.documentElement.dataset.theme).toBe('light')
+    } finally {
+      window.matchMedia = orig
+    }
+  })
+
   it('SystemLight_SetsLightTheme', () => {
     const { hook } = setup('system')
     hook(true)

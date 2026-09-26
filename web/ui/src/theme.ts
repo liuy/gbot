@@ -16,7 +16,7 @@ export type ThemePref = 'dark' | 'light' | 'system'
 let lastNativeIsLight: boolean | null = null
 
 export const getThemePref = (): ThemePref =>
-  (localStorage.getItem('gbot-theme') || 'dark') as ThemePref
+  (localStorage.getItem('gbot-theme') || 'system') as ThemePref
 
 const resolveTheme = (pref: ThemePref): 'dark' | 'light' => {
   if (pref === 'system') {
