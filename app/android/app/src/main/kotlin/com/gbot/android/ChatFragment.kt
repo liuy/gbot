@@ -409,6 +409,14 @@ class ChatFragment : Fragment() {
                     if ((host == "localhost" || host == "127.0.0.1" || host == "::1") && port == 8765) {
                         return false
                     }
+                    // Same-origin navigations stay in the WebView too: the
+                    // active remote endpoint is loaded here by loadUrl, and
+                    // its JS reload (asset auto-refresh) or in-page links are
+                    // app surface, not external links. Without this the
+                    // reload bounced into a bottom-sheet Custom Tab.
+                    if (sameOrigin(view?.url, url)) {
+                        return false
+                    }
                     // External http(s): partial bottom-sheet custom tab at
                     // half screen height (adjustable). Chrome builds without
                     // partial-tab support ignore the height extras and fall
@@ -612,6 +620,17 @@ class ChatFragment : Fragment() {
 
     private fun targetPrefs() =
         requireContext().getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+
+    /** Scheme+host+port equality — origin comparison for navigation gating.
+     *  WebView.getUrl() returns String, WebResourceRequest.getUrl() a Uri. */
+    private fun sameOrigin(currentUrl: String?, target: Uri): Boolean {
+        if (currentUrl == null) return false
+        val current = Uri.parse(currentUrl)
+        return current.scheme?.lowercase() == target.scheme?.lowercase() &&
+            current.host?.lowercase() == target.host?.lowercase() &&
+            current.port == target.port
+    }
+
     private fun currentTarget(): String =
         targetPrefs().getString(KEY_TARGET, TARGET_LOCAL) ?: TARGET_LOCAL
 

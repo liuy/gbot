@@ -2880,30 +2880,24 @@ describe('wui asset hash reload', () => {
     expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 
-  // The settings page (mounted inside createChat) ships its own hidden
-  // [data-toast]; the chat toast is a DIRECT child of the shell root —
-  // same root-level mount as the upgrade capsule, for the same
-  // stacking-context reason (mainContent's lingering transform traps
-  // fixed children under the z-60 settings sheet).
-  function chatToast(): HTMLElement {
+  // The refresh notice rides the upgrade capsule (data-status-capsule).
+  function bootCapsule(): HTMLElement {
     const chat = mount()
-    return chat.root.querySelector(':scope > [data-toast]') as HTMLElement
+    return chat.root.querySelector('[data-status-capsule]') as HTMLElement
   }
 
-  it('boot with the reload marker toasts the refresh once and clears the marker', () => {
+  it('boot with the reload marker shows the refresh in the capsule once and clears the marker', () => {
     sessionStorage.setItem('wuiAutoReloaded', '1')
-    const toastEl = chatToast()
-    expect(toastEl.textContent).toBe('Refreshed')
-    expect(toastEl.classList.contains('toast-show')).toBe(true)
-    expect(toastEl.classList.contains('opacity-0')).toBe(false)
+    const capsuleEl = bootCapsule()
+    expect(capsuleEl.textContent).toBe('Refreshed')
+    expect(capsuleEl.classList.contains('opacity-0')).toBe(false)
     expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 
-  it('plain boot without the marker renders the toast hidden', () => {
-    const toastEl = chatToast()
-    expect(toastEl.textContent).toBe('')
-    expect(toastEl.classList.contains('toast-show')).toBe(false)
-    expect(toastEl.classList.contains('opacity-0')).toBe(true)
+  it('plain boot without the marker keeps the capsule hidden', () => {
+    const capsuleEl = bootCapsule()
+    expect(capsuleEl.textContent).toBe('')
+    expect(capsuleEl.classList.contains('opacity-0')).toBe(true)
     expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 })
