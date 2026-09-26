@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -158,8 +159,8 @@ func (s *ReplState) findToolViewLocked(id string) *ToolCallView {
 		}
 	}
 	// 3. Search messages recursively
-	for i := len(s.messages) - 1; i >= 0; i-- {
-		if found := findToolViewInBlocks(s.messages[i].Blocks, id); found != nil {
+	for _, v := range slices.Backward(s.messages) {
+		if found := findToolViewInBlocks(v.Blocks, id); found != nil {
 			return found
 		}
 	}

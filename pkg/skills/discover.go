@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -85,8 +86,8 @@ func (r *Registry) AddSkillDirectories(dirs []string) error {
 	// Process in reverse order (shallower first) so deeper paths override
 	// Source: loadSkillsDir.ts:945-951
 	r.mu.Lock()
-	for i := len(allLoaded) - 1; i >= 0; i-- {
-		skill := allLoaded[i]
+	for _, skill := range slices.Backward(allLoaded) {
+
 		r.dynamicSkills[skill.Name] = skill
 	}
 	r.mu.Unlock()

@@ -1755,8 +1755,7 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("PerformMCPOAuthFlow() = nil, want error after cancellation")
 	}
-	var authErr *AuthenticationCancelledError
-	if !errors.As(err, &authErr) {
+	if _, ok := errors.AsType[*AuthenticationCancelledError](err); !ok {
 		t.Errorf("error = %T, want AuthenticationCancelledError", err)
 	}
 }

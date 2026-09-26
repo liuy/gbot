@@ -12,6 +12,7 @@ package attachment
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -130,8 +131,8 @@ func CountAssistantTurnsSinceLastEvent(
 	isAssistantToolUse func(content []types.ContentBlock) bool,
 	isReminder func(msg types.Message) bool,
 ) (turnsSince int, foundEvent bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for _, msg := range slices.Backward(messages) {
+
 		// Reminder check applies to any role (reminders are user messages).
 		if isReminder(msg) {
 			return turnsSince, true

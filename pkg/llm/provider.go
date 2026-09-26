@@ -197,8 +197,7 @@ func (e *APIError) Error() string {
 
 // IsRetryable returns whether the error can be retried.
 func IsRetryable(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Retryable
 	}
 	return false
@@ -213,8 +212,7 @@ func IsRetryable(err error) bool {
 // fallback patterns are centralized in overflow.go and cover all providers
 // gbot is likely to meet — see overflow.go for the per-provider examples.
 func IsContextOverflow(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		// Rate limiting is never context overflow, even if the message
 		// happens to contain a generic phrase like "too many tokens per
 		// minute" that a fallback pattern would catch.
@@ -231,8 +229,7 @@ func IsContextOverflow(err error) bool {
 
 // IsMaxOutputTokens returns whether the error is max_output_tokens withholding.
 func IsMaxOutputTokens(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Type == "max_output_tokens"
 	}
 	return false
@@ -240,8 +237,7 @@ func IsMaxOutputTokens(err error) bool {
 
 // IsRateLimit returns whether the error is a rate limit error.
 func IsRateLimit(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status == 429
 	}
 	return false
@@ -249,8 +245,7 @@ func IsRateLimit(err error) bool {
 
 // IsOverloaded returns whether the error is a 529 overloaded error.
 func IsOverloaded(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status == 529
 	}
 	return false
@@ -258,8 +253,7 @@ func IsOverloaded(err error) bool {
 
 // IsServerError returns whether the error is a 5xx server error.
 func IsServerError(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500 && apiErr.Status < 600
 	}
 	return false

@@ -149,7 +149,7 @@ func TestExecute_Sqlite_SchemaWireNumbersFromLineOne(t *testing.T) {
 	// executeSqliteRead's StartLine:1 must reach the wire: numbering starts
 	// at "1\t" over the schema's first line — raw unnumbered content here
 	// would mean the field is dropped somewhere in the pipeline.
-	first := strings.SplitN(blocks[0].Text, "\n", 2)[0]
+	first, _, _ := strings.Cut(blocks[0].Text, "\n")
 	if !strings.HasPrefix(first, "1\tCREATE TABLE users") {
 		t.Errorf("first wire line = %q, want prefix %q", first, "1\\tCREATE TABLE users")
 	}

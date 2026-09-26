@@ -125,7 +125,7 @@ type Engine struct {
 	systemPrompt       string                   // stored system prompt for fork agent access
 	skillListing       string                   // formatted skill listing for /context breakdown
 	agentDefs          []*types.AgentDefinition // agent definitions for /context breakdown
-	queryActive        int32                    // atomic: 1 = query/turn loop running, 0 = idle
+	queryActive        atomic.Int32             // atomic: 1 = query/turn loop running, 0 = idle
 	queryStartMsgIdx   int
 
 	// activeCancel is the cancel function for the currently running query
@@ -365,12 +365,12 @@ type QueryResult struct {
 // lastAssistantText returns the text content of the last assistant message
 // in msgs, or empty string if there is none.
 func lastAssistantText(msgs []types.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != types.RoleAssistant {
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role != types.RoleAssistant {
 			continue
 		}
 		var sb strings.Builder
-		for _, block := range msgs[i].Content {
+		for _, block := range msg.Content {
 			if block.Type == types.ContentTypeText {
 				sb.WriteString(block.Text)
 			}
@@ -545,7 +545,7 @@ func (e *Engine) beginQueryIfIdle(cancel context.CancelFunc) (uint64, bool) {
 	defer e.activeCancelMu.Unlock()
 	// Atomic read: processAttachments' public-entry path writes this flag
 	// outside the mutex, so the lock alone does not order this read.
-	if atomic.LoadInt32(&e.queryActive) != 0 {
+	if e.queryActive.Load() != 0 {
 		return 0, false
 	}
 	return e.beginLocked(cancel), true
@@ -555,7 +555,7 @@ func (e *Engine) beginQueryIfIdle(cancel context.CancelFunc) (uint64, bool) {
 func (e *Engine) beginLocked(cancel context.CancelFunc) uint64 {
 	e.activeGen++
 	e.activeCancel = cancel
-	atomic.StoreInt32(&e.queryActive, 1)
+	e.queryActive.Store(1)
 	return e.activeGen
 }
 
@@ -570,7 +570,7 @@ func (e *Engine) endQuery(token uint64) {
 		return
 	}
 	e.activeCancel = nil
-	atomic.StoreInt32(&e.queryActive, 0)
+	e.queryActive.Store(0)
 	e.activeCancelMu.Unlock()
 	e.startProcessAttachmentsIfIdle()
 }
@@ -992,11 +992,11 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 // neither the cancel handle nor its cleanup — only the busy flag.
 func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPrompt string) {
 	if token == 0 {
-		atomic.StoreInt32(&e.queryActive, 1)
+		e.queryActive.Store(1)
 	}
 	defer func() {
 		if token == 0 {
-			atomic.StoreInt32(&e.queryActive, 0)
+			e.queryActive.Store(0)
 			e.startProcessAttachmentsIfIdle()
 			return
 		}
@@ -3432,7 +3432,7 @@ func (e *Engine) snapshotQueryStart() {
 func (e *Engine) QueryStartMsgIdx() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if atomic.LoadInt32(&e.queryActive) == 0 {
+	if e.queryActive.Load() == 0 {
 		return -1
 	}
 	return e.queryStartMsgIdx
@@ -4332,9 +4332,9 @@ func (e *Engine) SetSessionMemory(sm *session.SessionMemory) {
 			}
 			// Count tool calls in last assistant turn
 			toolCalls := 0
-			for i := len(messages) - 1; i >= 0; i-- {
-				if messages[i].Role == types.RoleAssistant {
-					for _, block := range messages[i].Content {
+			for _, message := range slices.Backward(messages) {
+				if message.Role == types.RoleAssistant {
+					for _, block := range message.Content {
 						if block.Type == types.ContentTypeToolUse {
 							toolCalls++
 						}
@@ -4674,9 +4674,9 @@ func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, s
 	// Set currentTurnMsgID from the last user message in the provided messages.
 	// Used by TrackEdit and MakeSnapshot for consistent messageID.
 	e.currentTurnMsgID = ""
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.RoleUser {
-			e.currentTurnMsgID = messages[i].ID
+	for _, message := range slices.Backward(messages) {
+		if message.Role == types.RoleUser {
+			e.currentTurnMsgID = message.ID
 			break
 		}
 	}
@@ -4701,7 +4701,7 @@ func (e *Engine) SystemPrompt() string { return e.systemPrompt }
 
 // IsBusy reports whether a query or attachment-processing turn is running.
 func (e *Engine) IsBusy() bool {
-	return atomic.LoadInt32(&e.queryActive) != 0
+	return e.queryActive.Load() != 0
 }
 
 // AttachmentsLen returns the number of items in the attachment queue.

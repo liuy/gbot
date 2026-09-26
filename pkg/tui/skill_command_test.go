@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,9 +182,9 @@ func TestHandleSubmitRepl_SkillCommand_Fork_VisibleInMessages(t *testing.T) {
 	}
 
 	var skillCard *ToolCallView
-	for i := len(app.repl.messages) - 1; i >= 0; i-- {
-		for j := len(app.repl.messages[i].Blocks) - 1; j >= 0; j-- {
-			blk := &app.repl.messages[i].Blocks[j]
+	for _, v := range slices.Backward(app.repl.messages) {
+		for j := len(v.Blocks) - 1; j >= 0; j-- {
+			blk := &v.Blocks[j]
 			if blk.Type == BlockTool && blk.ToolCall.Name == "Skill" {
 				skillCard = &blk.ToolCall
 				break

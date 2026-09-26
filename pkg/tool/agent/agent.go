@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -560,8 +561,8 @@ var getOSVersion = sync.OnceValue(func() string {
 // Called on user_cancel_background (AgentTool.tsx:1006) and user_kill_async
 // (agentToolUtils.ts:658) to preserve what the agent accomplished before being killed.
 func ExtractPartialResult(messages []types.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for _, msg := range slices.Backward(messages) {
+
 		if msg.Role != types.RoleAssistant {
 			continue
 		}
@@ -618,9 +619,9 @@ func GetLastToolUseName(msg types.Message) string {
 	}
 	// Walk backward to find the last tool_use block.
 	// Source: TS uses Array.findLast() — Go equivalent is reverse iteration.
-	for i := len(msg.Content) - 1; i >= 0; i-- {
-		if msg.Content[i].Type == types.ContentTypeToolUse {
-			return msg.Content[i].Name
+	for _, v := range slices.Backward(msg.Content) {
+		if v.Type == types.ContentTypeToolUse {
+			return v.Name
 		}
 	}
 	return ""
@@ -635,8 +636,8 @@ func GetLastToolUseName(msg types.Message) string {
 func FinalizeResult(messages []types.Message, agentType string, startTime time.Time, totalUsage types.Usage, toolUseCount int) *types.SubQueryResult {
 	// Backward walk: find the last assistant message with text content.
 	// Source: agentToolUtils.ts:301-317
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for _, msg := range slices.Backward(messages) {
+
 		if msg.Role != types.RoleAssistant {
 			continue
 		}

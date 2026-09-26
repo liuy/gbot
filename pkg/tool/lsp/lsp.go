@@ -390,7 +390,13 @@ func formatJSON(raw json.RawMessage) string {
 
 // extractHoverText converts LSP Hover contents to plain text.
 func extractHoverText(contents any) string {
-	if raw, ok := contents.(json.RawMessage); ok && len(raw) > 0 {
+	if raw, ok := contents.(json.RawMessage); ok {
+		// Go 1.27 aliased RawMessage to jsontext.Value, whose empty value
+		// formats as "" — make the empty case explicit rather than relying
+		// on fmt's slice formatting.
+		if len(raw) == 0 {
+			return ""
+		}
 		var decoded any
 		if err := json.Unmarshal(raw, &decoded); err == nil {
 			return extractHoverText(decoded)

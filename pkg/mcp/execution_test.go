@@ -176,8 +176,7 @@ func TestCallMCPTool_IsError(t *testing.T) {
 		t.Errorf("error = %q, want to contain error message", err.Error())
 	}
 	// Should be McpToolCallError
-	var toolErr *McpToolCallError
-	if !errors.As(err, &toolErr) {
+	if _, ok := errors.AsType[*McpToolCallError](err); !ok {
 		t.Errorf("expected *McpToolCallError, got %T: %v", err, err)
 	}
 }
@@ -899,8 +898,7 @@ func TestCallMCPTool_AuthError(t *testing.T) {
 	errMsg := err.Error()
 	t.Logf("auth error type: %T, message: %v", err, err)
 
-	var authErr *McpAuthError
-	if errors.As(err, &authErr) {
+	if authErr, ok := errors.AsType[*McpAuthError](err); ok {
 		if authErr.ServerName != "auth-server" {
 			t.Errorf("ServerName = %q, want %q", authErr.ServerName, "auth-server")
 		}
@@ -952,8 +950,7 @@ func TestCallMCPTool_SessionExpiredError(t *testing.T) {
 	errMsg := err.Error()
 	t.Logf("session error type: %T, message: %v", err, err)
 
-	var toolErr *McpToolCallError
-	if errors.As(err, &toolErr) {
+	if toolErr, ok := errors.AsType[*McpToolCallError](err); ok {
 		// Verify it's for the right server and tool
 		if toolErr.ServerName != "expired-server" {
 			t.Errorf("ServerName = %q, want %q", toolErr.ServerName, "expired-server")

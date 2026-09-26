@@ -17,8 +17,7 @@ func FormatLLMError(err error) string {
 	}
 
 	// APIError already formats as "API Error 429: message"
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Error()
 	}
 
@@ -33,8 +32,7 @@ func FormatLLMError(err error) string {
 	}
 
 	// Network errors
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		if netErr.Timeout() {
 			return "Network Error: Request timed out"
 		}

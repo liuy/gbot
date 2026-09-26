@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -347,8 +348,8 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 // precise base, then estimating tokens for messages after it.
 // Source: TS tokens.ts:226-261 — tokenCountWithEstimation.
 func TokenCountWithEstimation(messages []types.Message) int {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for i, msg := range slices.Backward(messages) {
+
 		if msg.Role != types.RoleAssistant || msg.Usage == nil {
 			continue
 		}

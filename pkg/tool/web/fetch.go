@@ -231,7 +231,7 @@ func loadPageAttempt(
 	}
 
 	rawCT := resp.Header.Get("Content-Type")
-	ct := strings.SplitN(rawCT, ";", 2)[0]
+	ct, _, _ := strings.Cut(rawCT, ";")
 	ct = strings.TrimSpace(strings.ToLower(ct))
 	finalURL := resp.Request.URL.String()
 

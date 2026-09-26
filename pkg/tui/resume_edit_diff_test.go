@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,8 +40,8 @@ func editTurnMessages(legacy bool) []types.Message {
 func findEditToolOutput(t *testing.T, msgs []types.Message) string {
 	t.Helper()
 	views := engineMessagesToViews(msgs, map[string]tool.Tool{"Edit": fileedit.New()})
-	for i := len(views) - 1; i >= 0; i-- {
-		for _, b := range views[i].Blocks {
+	for _, view := range slices.Backward(views) {
+		for _, b := range view.Blocks {
 			if b.Type == BlockTool {
 				return b.ToolCall.Output
 			}
@@ -102,8 +103,8 @@ func TestResume_EditUnmarshalableRichFallsBack(t *testing.T) {
 func TestResume_EditMissingToolFallsBackToWire(t *testing.T) {
 	msgs := editTurnMessages(false)
 	views := engineMessagesToViews(msgs, map[string]tool.Tool{})
-	for i := len(views) - 1; i >= 0; i-- {
-		for _, b := range views[i].Blocks {
+	for _, view := range slices.Backward(views) {
+		for _, b := range view.Blocks {
 			if b.Type == BlockTool {
 				got := b.ToolCall.Output
 				if strings.Contains(got, `"filePath"`) || strings.Contains(got, `"oldString"`) {

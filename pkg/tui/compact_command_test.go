@@ -9,6 +9,7 @@ package tui
 // readEvents therefore blocks on appCh forever (no toolEndMsg is produced).
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -219,9 +220,9 @@ func TestApp_CompactQueryEndMsg_SyncsContextUsed(t *testing.T) {
 }
 
 func lastUserMessageText(msgs []MessageView) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && len(msgs[i].Blocks) > 0 {
-			return msgs[i].Blocks[0].Text
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == "user" && len(msg.Blocks) > 0 {
+			return msg.Blocks[0].Text
 		}
 	}
 	return ""

@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4622,8 +4623,7 @@ func TestInlineInterrupt_LoopTopAbort_NoInterruptMessage(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context")
 	}
-	var ae *AbortError
-	if !errors.As(result.Error, &ae) {
+	if _, ok := errors.AsType[*AbortError](result.Error); !ok {
 		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
 	}
 	if hasInterruptMessage(result.Messages) {
@@ -4769,8 +4769,8 @@ func TestAppendInlineInterrupt_PostToolAbort_AppendsToAssistant(t *testing.T) {
 
 	// Search backwards for the last assistant message — interrupt must be there.
 	var lastAsstIdx = -1
-	for i := len(result.Messages) - 1; i >= 0; i-- {
-		if result.Messages[i].Role == types.RoleAssistant {
+	for i, v := range slices.Backward(result.Messages) {
+		if v.Role == types.RoleAssistant {
 			lastAsstIdx = i
 			break
 		}
@@ -4816,8 +4816,7 @@ func TestAppendInlineInterrupt_AutoRewindPath_NoEmit(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context")
 	}
-	var ae *AbortError
-	if !errors.As(result.Error, &ae) {
+	if _, ok := errors.AsType[*AbortError](result.Error); !ok {
 		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
 	}
 	if hasInterruptMessage(result.Messages) {
@@ -6476,13 +6475,13 @@ func TestQuery_BackToBackSecondQueryAbortAndBusyFlag(t *testing.T) {
 		eng.activeCancelMu.Lock()
 		ac := eng.activeCancel
 		eng.activeCancelMu.Unlock()
-		if ac == nil || atomic.LoadInt32(&eng.queryActive) == 0 {
+		if ac == nil || eng.queryActive.Load() == 0 {
 			break
 		}
 		time.Sleep(2 * time.Millisecond) // REAL-TIME: polls a concurrently unwinding goroutine; synctest cannot fake the race
 	}
 
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d while second query is mid-tool, want 1", v)
 	}
 
@@ -6513,7 +6512,7 @@ func TestBeginQueryIfIdle(t *testing.T) {
 	if !ok || tok1 != 1 {
 		t.Fatalf("first beginQueryIfIdle = (%d, %v), want (1, true)", tok1, ok)
 	}
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d after take, want 1", v)
 	}
 
@@ -6537,11 +6536,11 @@ func TestBeginQueryIfIdle(t *testing.T) {
 		t.Fatalf("beginQuery token = %d, want 2", tok3)
 	}
 	eng.endQuery(tok1) // stale token: no-op, current query keeps running
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d after stale endQuery, want 1", v)
 	}
 	eng.endQuery(tok3)
-	if v := atomic.LoadInt32(&eng.queryActive); v != 0 {
+	if v := eng.queryActive.Load(); v != 0 {
 		t.Fatalf("queryActive = %d after current endQuery, want 0", v)
 	}
 
@@ -6589,7 +6588,7 @@ func TestAbort_SingleQuery_StillCancels(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for tool to start")
 	}
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d mid-query, want 1", v)
 	}
 
@@ -6611,10 +6610,10 @@ func TestAbort_SingleQuery_StillCancels(t *testing.T) {
 	// QueryEnd is emitted inside runTurns, before the exit defers; poll for
 	// the idle transition the exit path must still perform after Abort.
 	idleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME: idle transition happens on the query's exit goroutine
-	for atomic.LoadInt32(&eng.queryActive) != 0 && time.Now().Before(idleDeadline) {
+	for eng.queryActive.Load() != 0 && time.Now().Before(idleDeadline) {
 		time.Sleep(2 * time.Millisecond) // REAL-TIME: polls the exit goroutine's flag reset; no channel to select on
 	}
-	if v := atomic.LoadInt32(&eng.queryActive); v != 0 {
+	if v := eng.queryActive.Load(); v != 0 {
 		t.Fatalf("queryActive = %d after aborted query ended, want 0 (engine stuck busy)", v)
 	}
 }
@@ -7809,8 +7808,7 @@ func TestQuery_RetryAbortErrorNoRetry(t *testing.T) {
 	}
 
 	// Should be AbortError, NOT retried
-	var abortErr *AbortError
-	if !errors.As(result.Error, &abortErr) {
+	if _, ok := errors.AsType[*AbortError](result.Error); !ok {
 		t.Errorf("expected *AbortError, got %T: %v", result.Error, result.Error)
 	}
 
@@ -7857,8 +7855,7 @@ func TestQuery_RetryContextCancellation(t *testing.T) {
 	}
 
 	// Should indicate cancellation (AbortError or context error)
-	var abortErr *AbortError
-	if !errors.As(result.Error, &abortErr) {
+	if _, ok := errors.AsType[*AbortError](result.Error); !ok {
 		// Also accept raw context error
 		if !strings.Contains(result.Error.Error(), "context canceled") {
 			t.Errorf("expected AbortError or context cancellation, got: %v", result.Error)
@@ -7942,8 +7939,7 @@ func TestStreamErrorTypeDiscrimination(t *testing.T) {
 		t.Errorf("Model = %q, want %q", si.Model, "claude-3")
 	}
 
-	var se *StreamEndedError
-	if !errors.As(ended, &se) {
+	if _, ok := errors.AsType[*StreamEndedError](ended); !ok {
 		t.Error("errors.As should match *StreamEndedError")
 	}
 
@@ -7965,8 +7961,7 @@ func TestStreamErrorTypeDiscrimination(t *testing.T) {
 	if !isStreamError(wrapped) {
 		t.Error("isStreamError should return true for wrapped StreamInterruptedError")
 	}
-	var si2 *StreamInterruptedError
-	if !errors.As(wrapped, &si2) {
+	if _, ok := errors.AsType[*StreamInterruptedError](wrapped); !ok {
 		t.Error("errors.As should unwrap to *StreamInterruptedError")
 	}
 }
@@ -9150,7 +9145,7 @@ func TestRunForkedQuery_BlocksConcurrentProcessAttachments(t *testing.T) {
 	}
 
 	// At this point queryActive MUST be 1.
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d during RunForkedQuery, want 1", v)
 	}
 
@@ -9163,7 +9158,7 @@ func TestRunForkedQuery_BlocksConcurrentProcessAttachments(t *testing.T) {
 	eng.startProcessAttachmentsIfIdle()
 
 	// queryActive must still be 1 (no second goroutine changed it).
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d after startProcessAttachmentsIfIdle, want 1 (concurrent goroutine spawned!)", v)
 	}
 
@@ -9219,7 +9214,7 @@ func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
 		t.Fatal("timed out waiting for QuerySync to start")
 	}
 
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d during QuerySync, want 1", v)
 	}
 
@@ -9229,7 +9224,7 @@ func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
 	})
 	eng.startProcessAttachmentsIfIdle()
 
-	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+	if v := eng.queryActive.Load(); v != 1 {
 		t.Fatalf("queryActive = %d after startProcessAttachmentsIfIdle, want 1 (concurrent goroutine spawned!)", v)
 	}
 

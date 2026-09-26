@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -446,12 +447,12 @@ func TruncateToTokens(messages []*TranscriptMessage, maxTokens int) []*Transcrip
 
 	totalTokens := 0
 	// Count from tail backwards
-	for i := len(messages) - 1; i >= 0; i-- {
-		msgTokens := types.EstimateTokens(messages[i].Content)
+	for i, message := range slices.Backward(messages) {
+		msgTokens := types.EstimateTokens(message.Content)
 		if totalTokens+msgTokens > maxTokens {
 			// Include this message if we'd otherwise have nothing
 			if i == len(messages)-1 {
-				return []*TranscriptMessage{messages[i]}
+				return []*TranscriptMessage{message}
 			}
 			return messages[i+1:]
 		}

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1055,9 +1056,9 @@ func computeReservedTokens(contextWindow, maxTokens int) int {
 }
 
 func lastAPIUsage(messages []types.Message) *APIUsageSnapshot {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.RoleAssistant && messages[i].Usage != nil {
-			u := messages[i].Usage
+	for _, message := range slices.Backward(messages) {
+		if message.Role == types.RoleAssistant && message.Usage != nil {
+			u := message.Usage
 			if u.InputTokens == 0 && u.OutputTokens == 0 &&
 				u.CacheCreationInputTokens == 0 && u.CacheReadInputTokens == 0 {
 				continue

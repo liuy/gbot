@@ -77,8 +77,7 @@ func (sc *SearchChain) Search(ctx context.Context, params SearchParams) (*Search
 			return resp, nil
 		}
 
-		var spe *SearchProviderError
-		if errors.As(err, &spe) {
+		if spe, ok := errors.AsType[*SearchProviderError](err); ok {
 			failures = append(failures, spe.Error())
 			continue
 		}

@@ -614,9 +614,9 @@ func CheckResponseForCacheBreak(key PromptStateKey, cacheReadTokens, cacheCreati
 	// Find last assistant message timestamp for TTL detection
 	// Source: TS lines 460-463
 	var timeSinceLastAssistantMsg int64 = -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].role == "assistant" {
-			timeSinceLastAssistantMsg = time.Since(messages[i].timestamp).Milliseconds()
+	for _, message := range slices.Backward(messages) {
+		if message.role == "assistant" {
+			timeSinceLastAssistantMsg = time.Since(message.timestamp).Milliseconds()
 			break
 		}
 	}

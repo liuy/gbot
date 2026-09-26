@@ -811,20 +811,20 @@ func TestConcurrentDispatch(t *testing.T) {
 	h := NewHooks(config, rec)
 
 	var wg sync.WaitGroup
-	var callCount int64
+	var callCount atomic.Int64
 	for range 10 {
 		wg.Go(func() {
 			_, results := h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
 			if len(results) != 1 {
 				t.Errorf("expected 1 result, got %d", len(results))
 			}
-			atomic.AddInt64(&callCount, 1)
+			callCount.Add(1)
 		})
 	}
 	wg.Wait()
 
-	if atomic.LoadInt64(&callCount) != 10 {
-		t.Errorf("expected 10 concurrent calls, got %d", atomic.LoadInt64(&callCount))
+	if callCount.Load() != 10 {
+		t.Errorf("expected 10 concurrent calls, got %d", callCount.Load())
 	}
 }
 

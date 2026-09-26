@@ -3,6 +3,7 @@ package short
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -124,8 +125,8 @@ func RestoreAgentFromSession(messages []*TranscriptMessage) *AgentState {
 // TS: sessionRestore.ts:77-93
 func ExtractTodosFromTranscript(messages []*TranscriptMessage) []*TodoItem {
 	// Search backwards from the end to find the latest TodoWrite
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for _, msg := range slices.Backward(messages) {
+
 		if msg.Type != "assistant" {
 			continue
 		}
@@ -317,8 +318,8 @@ func (s *Store) ProcessResumedConversation(sessionID string, messages []*Transcr
 // Logs warnings via slog for any inconsistencies (fail-open).
 // TS: sessionStorage.ts:2224-2243
 func CheckResumeConsistency(chain []*TranscriptMessage) {
-	for i := len(chain) - 1; i >= 0; i-- {
-		msg := chain[i]
+	for i, msg := range slices.Backward(chain) {
+
 		if msg.Type != "system" || msg.Subtype != "turn_duration" {
 			continue
 		}

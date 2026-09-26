@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -338,9 +339,9 @@ func TestBuildForkMessages_ContainsLatestUserMessage(t *testing.T) {
 	// callFork splits at the last assistant message
 	var triggerAssistant *types.Message
 	var contextHistory []types.Message
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.RoleAssistant {
-			msg := messages[i]
+	for i, msg := range slices.Backward(messages) {
+		if msg.Role == types.RoleAssistant {
+
 			triggerAssistant = &msg
 			contextHistory = messages[:i]
 			break

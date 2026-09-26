@@ -888,8 +888,8 @@ func getProjectMcpConfigs(cwd string) (map[string]ScopedMcpServerConfig, []Valid
 	}
 
 	// Process from root downward to CWD (closer files have higher priority).
-	for i := len(dirs) - 1; i >= 0; i-- {
-		mcpJsonPath := filepath.Join(dirs[i], ".mcp.json")
+	for _, dir := range slices.Backward(dirs) {
+		mcpJsonPath := filepath.Join(dir, ".mcp.json")
 		config, errs := ParseMcpConfigFromFilePath(mcpJsonPath, true, ScopeProject)
 
 		if config == nil {

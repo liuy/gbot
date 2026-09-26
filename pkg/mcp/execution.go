@@ -642,12 +642,10 @@ func CallMCPToolWithUrlElicitationRetry(ctx context.Context, params CallMCPToolP
 // Source: client.ts:2862-2868 — checks McpError.code !== ErrorCode.UrlElicitationRequired
 func isURLElicitationError(err error) bool {
 	// Unwrap McpToolCallError to get the underlying error
-	var toolErr *McpToolCallError
-	if errors.As(err, &toolErr) {
+	if toolErr, ok := errors.AsType[*McpToolCallError](err); ok {
 		err = toolErr.Err
 	}
-	var rpcErr *jsonrpc.Error
-	if errors.As(err, &rpcErr) {
+	if rpcErr, ok := errors.AsType[*jsonrpc.Error](err); ok {
 		return rpcErr.Code == mcp.CodeURLElicitationRequired
 	}
 	return false

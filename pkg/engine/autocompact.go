@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -161,8 +162,8 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 	targetKeepTokens := max(min(c.engine.ContextWindow()/5, 60000), 2000)
 
 	totalTokens := 0
-	for i := len(messages) - 1; i >= 0; i-- {
-		tokens := types.EstimateTokens(messages[i].Content)
+	for i, message := range slices.Backward(messages) {
+		tokens := types.EstimateTokens(message.Content)
 		if totalTokens+tokens > targetKeepTokens {
 			return i + 1
 		}

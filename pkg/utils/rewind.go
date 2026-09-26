@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -84,8 +85,8 @@ func IsSelectableUserMessage(msg types.Message) bool {
 // LastSelectableUserMessageIndex returns the index of the last user message
 // selectable for rewind, or -1 if none.
 func LastSelectableUserMessageIndex(msgs []types.Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if IsSelectableUserMessage(msgs[i]) {
+	for i, msg := range slices.Backward(msgs) {
+		if IsSelectableUserMessage(msg) {
 			return i
 		}
 	}

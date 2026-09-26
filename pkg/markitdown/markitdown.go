@@ -143,7 +143,7 @@ func (m *MarkItDown) ConvertURL(url string) (*DocumentConverterResult, error) {
 	}
 
 	// Extract extension from URL path
-	urlPath := strings.Split(url, "?")[0]
+	urlPath, _, _ := strings.Cut(url, "?")
 	info.Extension = strings.ToLower(filepath.Ext(urlPath))
 
 	// Extract filename from URL

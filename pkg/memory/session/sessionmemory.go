@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -300,9 +301,9 @@ func (sm *SessionMemory) ensureFile() error {
 // lastAssistantHasToolCalls checks if the last assistant message contains tool_use blocks.
 // TS source: sessionMemory.ts:168 — hasToolCallsInLastTurn.
 func lastAssistantHasToolCalls(messages []types.Message) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.RoleAssistant {
-			for _, block := range messages[i].Content {
+	for _, message := range slices.Backward(messages) {
+		if message.Role == types.RoleAssistant {
+			for _, block := range message.Content {
 				if block.Type == types.ContentTypeToolUse {
 					return true
 				}

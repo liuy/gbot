@@ -636,7 +636,7 @@ func TestExtractHoverText_EdgeCases(t *testing.T) {
 		{"raw json string", json.RawMessage(`"hello"`), "hello"},
 		{"raw json array", json.RawMessage(`["a","b"]`), "a\n\nb"},
 		{"raw json bad", json.RawMessage(`not json`), "not json"},
-		{"raw json empty", json.RawMessage(``), "[]"},
+		{"raw json empty", json.RawMessage(``), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

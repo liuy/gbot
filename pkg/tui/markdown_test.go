@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -818,8 +819,8 @@ func TestRender_Table_CJK(t *testing.T) {
 	// Should have 5+ lines: top border, header, separator, data row, bottom border
 	// Note: last element may be empty due to trailing \n, so find last non-empty
 	lastNonEmpty := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if lines[i] != "" {
+	for i, line := range slices.Backward(lines) {
+		if line != "" {
 			lastNonEmpty = i
 			break
 		}
