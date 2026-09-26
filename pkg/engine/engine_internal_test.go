@@ -6732,25 +6732,39 @@ func TestAbort_CancelsProcessAttachmentsAfterQueryEnds(t *testing.T) {
 	eventCh := make(chan types.QueryEvent, 20)
 	dispatcher := &chanDispatcher{ch: eventCh}
 
-	// First response: for the initial Query (returns immediately)
+	// gatedProvider: call #1 (the Query) answers instantly; call #2 (the
+	// post-query attachment run) blocks in its stream until released or
+	// its context is cancelled. Without the gate the mock answers in
+	// microseconds and the attachment run SETS and CLEARS activeCancel
+	// before a loaded test goroutine can ever observe it (the original
+	// flake: full-suite runs on a loaded phone timed out waiting).
 	mp := &mockProvider{}
 	mp.addResponse([]llm.StreamEvent{
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}},
 		{Type: "message_stop"},
 	}, nil)
+	gated := &attachmentGateProvider{first: mp, gate: make(chan struct{})}
 
 	eng := New(&Params{
-		Provider:   mp,
+		Provider:   gated,
 		Model:      "test",
 		Dispatcher: dispatcher,
 	})
-	defer eng.Close()
+	defer func() {
+		close(gated.gate)
+		eng.Close()
+	}()
 
-	// Queue an attachment so processAttachments starts after Query finishes
+	// Queue an attachment so processAttachments starts after Query finishes.
+	// PriorityLater is the contract for "post-query work": turn boundaries
+	// (DrainByPriority(PriorityNext)) must NOT adopt it mid-query — the
+	// default PriorityNext made this test racy, with the turn loop
+	// sometimes eating the item before the post-query kick could run it.
 	eng.EnqueueAttachment(types.QueuedItem{
-		Value: "post-query work",
-		Mode:  types.ItemModeJob,
+		Value:    "post-query work",
+		Mode:     types.ItemModeJob,
+		Priority: types.PriorityLater,
 	})
 	eng.systemPrompt = "test"
 
@@ -6758,9 +6772,10 @@ func TestAbort_CancelsProcessAttachmentsAfterQueryEnds(t *testing.T) {
 	ctx := context.Background()
 	eng.Query(ctx, "hello", "test")
 
-	// Wait for Query to finish and processAttachments to start
+	// Wait for Query to finish. The attachment kick runs from Query's
+	// teardown — after these events — so polling beats assuming order.
 	var gotQueryEnd, gotTurnStart bool
-	timeout := time.After(5 * time.Second)
+	eventTimeout := time.After(5 * time.Second)
 	for !gotQueryEnd || !gotTurnStart {
 		select {
 		case evt := <-eventCh:
@@ -6770,18 +6785,72 @@ func TestAbort_CancelsProcessAttachmentsAfterQueryEnds(t *testing.T) {
 			if evt.Type == types.EventTurnStart && evt.Agent == nil {
 				gotTurnStart = true
 			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for events: queryEnd=%v turnStart=%v", gotQueryEnd, gotTurnStart)
+		case <-eventTimeout:
+			t.Fatalf("timed out waiting for query events: queryEnd=%v turnStart=%v", gotQueryEnd, gotTurnStart)
 		}
 	}
 
-	// processAttachments is running. activeCancel must be non-nil so Abort() works.
+	// processAttachments is now gated mid-stream: activeCancel must be
+	// registered (and STAY registered — the gate holds the run open) so
+	// Abort() is live.
+	cancelTimeout := time.After(5 * time.Second)
+	for {
+		eng.activeCancelMu.Lock()
+		ac := eng.activeCancel
+		eng.activeCancelMu.Unlock()
+		if ac != nil {
+			break
+		}
+		select {
+		case <-cancelTimeout:
+			t.Fatal("activeCancel never registered for the gated attachment run — Abort() would be a no-op")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+
+	// Abort must cancel the gated run and clear the handle.
+	eng.Abort()
 	eng.activeCancelMu.Lock()
 	ac := eng.activeCancel
 	eng.activeCancelMu.Unlock()
-	if ac == nil {
-		t.Fatal("activeCancel is nil during processAttachments — defer ordering wipes it out, Abort() is a no-op")
+	if ac != nil {
+		t.Fatal("activeCancel still set after Abort")
 	}
+}
+
+// attachmentGateProvider answers the FIRST Stream call from a wrapped
+// provider (the initial Query) and gates every later call: its stream
+// emits nothing until the gate closes or the request context is
+// cancelled, holding the attachment run mid-turn so tests can observe
+// in-flight state (activeCancel) deterministically.
+type attachmentGateProvider struct {
+	first llm.Provider
+	gate  chan struct{}
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *attachmentGateProvider) Name() string { return "gated" }
+func (p *attachmentGateProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+func (p *attachmentGateProvider) Stream(ctx context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n == 1 {
+		return p.first.Stream(ctx, req)
+	}
+	ch := make(chan llm.StreamEvent, 1)
+	go func() {
+		defer close(ch)
+		select {
+		case <-p.gate:
+		case <-ctx.Done():
+		}
+	}()
+	return ch, nil
 }
 
 // Regression: ESC aborts query mid-tool, attachment queued during tool execution.
