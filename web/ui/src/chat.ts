@@ -489,6 +489,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const currentSubAgentTextDiv = new Map<string, HTMLDivElement>()
   const currentSubAgentThinking = new Map<string, ThinkingEntry>()
   let queuedMsgs: QueuedMsg[] = []
+  // Local metas for the attachment blocks of the last abort-rewound user
+  // message, awaiting the server's restore_result. Holds what only the
+  // client knows (blob-URL thumbnails, original document names/sizes); the
+  // server payload carries fresh upload ids.
+  let rewindAttachments: { name?: string; size?: number; previewURL?: string }[] | null = null
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = createElement('div', 'relative flex flex-col h-dvh')
@@ -802,6 +807,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     console.debug('[chat] resetAllState')
     queuedMsgs = []
     inputBar.setQueuedMsgs([])
+    rewindAttachments = null
     for (const m of messages) m.domRoot.remove()
     messages.length = 0
     // Dividers are not tracked in messages[] (they aren't message roots) —
@@ -1297,10 +1303,31 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               const textBlock = userMsg.blocks.find(
                 (b) => b.kind === 'text',
               ) as { text?: string } | undefined
-              if (textBlock?.text) {
+              // Pop the prompt when there is anything to restore: text OR
+              // attachments (an attachments-only prompt must not linger as
+              // a ghost bubble).
+              const attBlocks = userMsg.blocks.filter(
+                (b) => b.kind === 'image' || b.kind === 'document',
+              )
+              if (textBlock?.text || attBlocks.length > 0) {
                 userMsg.domRoot.remove()
                 messages.pop()
-                inputBar.setInputText(textBlock.text)
+                if (textBlock?.text) {
+                  inputBar.setInputText(textBlock.text)
+                }
+                // The popped prompt's attachments still live server-side
+                // (engine history / media cache); ask the connector to
+                // re-bind them under fresh upload ids so the chips re-send
+                // without re-picking files. Stash the local-only metas
+                // (blob-URL thumbnails, document names) for restore_result.
+                if (attBlocks.length > 0) {
+                  rewindAttachments = attBlocks.map((b) =>
+                    b.kind === 'image'
+                      ? { previewURL: b.src }
+                      : { name: b.name, size: b.size },
+                  )
+                  conn.send({ type: 'restore_attachments' })
+                }
               }
             }
           }
@@ -1756,6 +1783,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           text: `[${ref.file.name}]`,
         })
         content.appendChild(span)
+        blocks.push({ kind: 'document', id: '', name: ref.file.name, mime: ref.file.type, size: ref.file.size })
       }
     }
     const m: MessageState = {
@@ -2119,6 +2147,26 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             }
           }
         }
+        return
+      }
+      case 'restore_result': {
+        // Server entries align BY INDEX with the rewind stash (both follow
+        // the prompt's block order). Image entries carry no filename
+        // server-side and the blob-URL thumbnail only exists client-side,
+        // so the local metas fill the gaps before staging the chips.
+        if (!rewindAttachments) return
+        const atts = msg.attachments ?? []
+        for (let i = 0; i < atts.length; i++) {
+          const local = rewindAttachments[i]
+          inputBar.addRestoredAttachment({
+            id: atts[i].id,
+            mime: atts[i].mime,
+            name: atts[i].name || local?.name,
+            size: atts[i].size ?? local?.size,
+            previewURL: local?.previewURL,
+          })
+        }
+        rewindAttachments = null
         return
       }
       case 'history':

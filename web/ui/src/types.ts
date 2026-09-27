@@ -23,6 +23,7 @@ export type ServerMessage =
   | { type: 'stats'; usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed?: string[]; restored?: { text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[] }
+  | { type: 'restore_result'; attachments?: { id: string; name?: string; mime: string; size?: number }[] }
   | { type: 'event'; event: QueryEvent }
   | {
       type: 'ask'

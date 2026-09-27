@@ -214,6 +214,8 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 				}{Type: "cancel_result", Removed: removed, Restored: restored})
 				c.sendWS(resp)
 			}
+		case "restore_attachments":
+			c.handleRestoreAttachments()
 		case "history_request":
 			var msg struct {
 				Cursor string `json:"cursor"`
@@ -334,6 +336,11 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 	if text != "" {
 		c.appendInputHistory(text)
 	}
+	// A new commit supersedes any pending rewind stash: the user moved on,
+	// so a later restore must not resurrect the aborted prompt's chips.
+	c.restoreMu.Lock()
+	c.rewindStash = nil
+	c.restoreMu.Unlock()
 	// Read busy SYNCHRONOUSLY — see the doc comment for the race this prevents.
 	busy := eng.IsBusy()
 	// Captured on the readLoop BEFORE the parse goroutine starts: if the

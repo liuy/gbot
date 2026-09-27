@@ -2901,3 +2901,169 @@ describe('wui asset hash reload', () => {
     expect(sessionStorage.getItem('wuiAutoReloaded')).toBe(null)
   })
 })
+
+// jsdom has no URL.createObjectURL — the input bar needs it to mint preview
+// blob URLs when an image attachment is picked.
+describe('abort rewind attachment restore', () => {
+  const hadCreateObjectURL = 'createObjectURL' in URL
+  const origCreateObjectURL = (URL as { createObjectURL?: (b: Blob) => string }).createObjectURL
+  const hadRevokeObjectURL = 'revokeObjectURL' in URL
+  const origRevokeObjectURL = (URL as { revokeObjectURL?: (u: string) => void }).revokeObjectURL
+  let blobSeq = 0
+
+  beforeAll(() => {
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: () => `blob:mock-${++blobSeq}`,
+      configurable: true,
+      writable: true,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: () => {},
+      configurable: true,
+      writable: true,
+    })
+  })
+  afterAll(() => {
+    if (hadCreateObjectURL) {
+      Object.defineProperty(URL, 'createObjectURL', {
+        value: origCreateObjectURL,
+        configurable: true,
+        writable: true,
+      })
+    } else {
+      delete (URL as { createObjectURL?: unknown }).createObjectURL
+    }
+    if (hadRevokeObjectURL) {
+      Object.defineProperty(URL, 'revokeObjectURL', {
+        value: origRevokeObjectURL,
+        configurable: true,
+        writable: true,
+      })
+    } else {
+      delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
+    }
+  })
+
+  // pickIntoInput feeds a File through one of the hidden <input type=file>
+  // pickers (image picker excludes the camera input via the capture attr).
+  function pickIntoInput(match: (input: HTMLInputElement) => boolean, file: File) {
+    const input = Array.from(document.querySelectorAll('input[type=file]')).find((el) =>
+      match(el as HTMLInputElement),
+    ) as HTMLInputElement | undefined
+    if (!input) throw new Error('matching file input not found')
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  const messageFrames = () =>
+    sent.filter(
+      (m) =>
+        (m as { type?: string; attachments?: { id: string; name?: string; mime: string; size: number }[] })
+          .type === 'message' &&
+        Array.isArray(
+          (m as { attachments?: { id: string }[] }).attachments,
+        ),
+    ) as { text: string; attachments: { id: string; name?: string; mime: string; size: number }[] }[]
+
+  it('abort with no content restores text and re-stages attachment chips via restore_result', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    pickIntoInput(
+      (i) => i.accept === 'image/*' && !i.hasAttribute('capture'),
+      new File([], 'cat.png', { type: 'image/png' }),
+    )
+    pickIntoInput(
+      (i) => i.accept.includes('.pdf'),
+      new File([], 'notes.pdf', { type: 'application/pdf' }),
+    )
+    setTextarea('see this')
+    pressEnter()
+    await vi.waitFor(() => {
+      if (messageFrames().length !== 1 || messageFrames()[0].attachments.length !== 2) {
+        throw new Error('commit frame with 2 attachments not sent yet')
+      }
+    })
+
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    clickStop()
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('see this')
+    expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(true)
+
+    dispatch({
+      type: 'restore_result',
+      attachments: [
+        { id: 'fresh-img', mime: 'image/png', size: 1234 },
+        { id: 'fresh-doc', name: 'notes.pdf', mime: 'application/pdf', size: 4321 },
+      ],
+    })
+
+    // Image chip reuses the local blob thumbnail (server ids carry no bytes).
+    const chipImg = document.querySelector('img.w-12') as HTMLImageElement | null
+    if (!chipImg) throw new Error('restored image chip not rendered')
+    expect(chipImg.src).toBe('blob:mock-1')
+    // Document chip keeps its original filename from the local stash.
+    const chipStrip = document.querySelector('.flex-wrap.gap-2') as HTMLElement | null
+    if (!chipStrip) throw new Error('chip strip not found')
+    expect(chipStrip.textContent).toContain('notes.pdf')
+
+    // Re-send references the fresh ids without re-uploading bytes.
+    setTextarea('again')
+    pressEnter()
+    await vi.waitFor(() => {
+      const frames = messageFrames()
+      const last = frames[frames.length - 1]
+      if (!last || last.attachments.map((a) => a.id).join(',') !== 'fresh-img,fresh-doc') {
+        throw new Error('re-send frame ids not staged yet')
+      }
+    })
+  })
+
+  it('text-only abort rewind restores the text but sends no restore_attachments frame', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('just words')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    clickStop()
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('just words')
+    expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(false)
+  })
+
+  it('attachments-only abort pops the ghost bubble and asks for a restore', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    pickIntoInput(
+      (i) => i.accept.includes('.pdf'),
+      new File([], 'notes.pdf', { type: 'application/pdf' }),
+    )
+    pressEnter()
+    await vi.waitFor(() => {
+      const frames = messageFrames()
+      if (frames.length !== 1 || frames[0].attachments.length !== 1) {
+        throw new Error('commit frame with 1 attachment not sent yet')
+      }
+    })
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    clickStop()
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    // No text to restore, but the bubble must not linger as a ghost.
+    expect(document.body.textContent.includes('[notes.pdf]')).toBe(false)
+    expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(true)
+  })
+
+  it('restore_result without a pending rewind stash stages nothing', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'restore_result',
+      attachments: [{ id: 'stray', mime: 'image/png', size: 10 }],
+    })
+    expect(document.querySelector('img.w-12')).toBe(null)
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+  })
+})

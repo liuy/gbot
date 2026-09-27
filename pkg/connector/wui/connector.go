@@ -398,6 +398,11 @@ type WUIConnector struct {
 	restoreMu       sync.Mutex
 	restoredUploads map[string]savedAttachment
 
+	// rewindStash holds the attachment blocks of the last auto-rewound prompt
+	// (see rewindStash). Written by the hub goroutine in autoRewindOnAbortFor,
+	// consumed by readLoop's restore_attachments handler. Guarded by restoreMu.
+	rewindStash *rewindStash
+
 	// thumbs memoizes resized history thumbnails (data URL form) so
 	// buildHistoryChatMsg does not re-decode on every history_request.
 	thumbs *thumbCache
@@ -1177,6 +1182,16 @@ func (c *WUIConnector) shouldAutoRewindFor(eng engineClient) bool {
 	return utils.MessagesAfterAreOnlySynthetic(msgs, lastUserIdx)
 }
 
+// rewindStash captures the attachment blocks of the prompt removed by an
+// auto-rewind abort. The rewind runs in onEngineEvent BEFORE the aborted
+// query_end frame reaches the client, so by the time the client asks to
+// re-stage its attachments the prompt is already gone from engine history —
+// a walk over Messages() alone would find nothing (or an older prompt).
+type rewindStash struct {
+	engineID string
+	blocks   []types.ContentBlock
+}
+
 // autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given engine.
 func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) {
 	if !c.shouldAutoRewindFor(eng) {
@@ -1187,6 +1202,18 @@ func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) {
 	if lastUserIdx < 0 {
 		return
 	}
+	// Stash the prompt's attachment blocks BEFORE the rewind drops them —
+	// restore_attachments arrives after RewindTo, so this is the only copy.
+	// A text-only rewind stores nil, which also retires any older stash.
+	var attBlocks []types.ContentBlock
+	for _, cb := range msgs[lastUserIdx].Content {
+		if cb.Type == types.ContentTypeImage || cb.Type == types.ContentTypeDocument {
+			attBlocks = append(attBlocks, cb)
+		}
+	}
+	c.restoreMu.Lock()
+	c.rewindStash = &rewindStash{engineID: eng.EngineID(), blocks: attBlocks}
+	c.restoreMu.Unlock()
 	if err := eng.RewindTo(lastUserIdx); err != nil {
 		slog.Warn("wui: autoRewind failed", "idx", lastUserIdx, "error", err)
 	}
@@ -2716,8 +2743,9 @@ func (c *WUIConnector) resolveContents(acc *attachmentAccumulator, atts []inboun
 
 // buildRestoredMsg maps ONE popped queue item to the cancel-restore wire
 // shape: text plus attachments re-staged under fresh upload ids. Documents
-// re-bind their existing 30-day cache path (no IO); images re-materialize
-// their bytes into the cache from the in-block base64. Ids are registered
+// re-bind their existing 30-day cache path (no IO); file-sourced images
+// re-bind their path the same way, while base64 images (queued items)
+// re-materialize their bytes into the cache. Ids are registered
 // ONLY in the connector-level restoredUploads map (mutex-guarded): this
 // runs on the readLoop for pops AND on parse goroutines for late restores,
 // while the per-connection accumulator stays readLoop-owned. The commit
@@ -2742,7 +2770,23 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 				ID: id, Name: cb.Name, Mime: cb.Mime, Size: int(cb.Size),
 			})
 		case types.ContentTypeImage:
-			if cb.Source == nil || cb.Source.Data == "" {
+			if cb.Source == nil {
+				continue
+			}
+			if cb.Source.Data == "" {
+				// File-sourced image blocks (sessions rehydrated from the
+				// store keep file references instead of inlined base64):
+				// re-bind the existing path like the document branch, no IO.
+				// Live-dispatched prompts carry base64 and take the path
+				// below.
+				if cb.Source.Path == "" {
+					continue
+				}
+				id := uuid.New().String()
+				c.rememberUpload(id, savedAttachment{path: cb.Source.Path, mime: cb.Source.MediaType, kind: "image"})
+				msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
+					ID: id, Mime: cb.Source.MediaType,
+				})
 				continue
 			}
 			data, err := base64.StdEncoding.DecodeString(cb.Source.Data)
@@ -2813,6 +2857,76 @@ func buildQueuedMsgs(items []types.QueuedItem) []queuedMsgJSON {
 		out = append(out, queuedMsgJSON{UUID: item.UUID, Text: text, Attachments: attachments})
 	}
 	return out
+}
+
+// takeRewindStash consumes the auto-rewind stash for engineID. One-shot on
+// purpose: a second restore request must not resurrect an already-served
+// prompt. A stash for a different engine (background abort) stays put.
+func (c *WUIConnector) takeRewindStash(engineID string) []types.ContentBlock {
+	c.restoreMu.Lock()
+	defer c.restoreMu.Unlock()
+	if c.rewindStash == nil || c.rewindStash.engineID != engineID || len(c.rewindStash.blocks) == 0 {
+		return nil
+	}
+	blocks := c.rewindStash.blocks
+	c.rewindStash = nil
+	return blocks
+}
+
+// lastPromptAttachmentBlocks walks backwards for the last real user prompt
+// carrying image/document blocks. tool_result messages ALSO carry Role user
+// (and the engine batches several into one message), and meta messages are
+// system-generated — both are skipped. A prompt without attachment blocks
+// does not match and the walk continues past it.
+func lastPromptAttachmentBlocks(msgs []types.Message) []types.ContentBlock {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != types.RoleUser || m.HasFlag(types.FlagMeta) {
+			continue
+		}
+		var blocks []types.ContentBlock
+		hasToolResult := false
+		for _, cb := range m.Content {
+			switch cb.Type {
+			case types.ContentTypeToolResult:
+				hasToolResult = true
+			case types.ContentTypeImage, types.ContentTypeDocument:
+				blocks = append(blocks, cb)
+			}
+		}
+		if hasToolResult || len(blocks) == 0 {
+			continue
+		}
+		return blocks
+	}
+	return nil
+}
+
+// handleRestoreAttachments serves the client's abort-rewind re-stage request:
+// the client popped the empty-aborted user bubble (restoring its text
+// locally) and asks the connector to make the dropped attachments
+// re-sendable. Prefers the stash captured at auto-rewind time — the rewind
+// already removed the prompt from engine history before the client could
+// ask — and falls back to walking Messages() for the last attachment-bearing
+// prompt. Responds restore_result with the re-staged attachments reusing
+// buildRestoredMsg's id/rememberUpload machinery, so a re-send commit
+// resolves the ids without re-uploading bytes.
+func (c *WUIConnector) handleRestoreAttachments() {
+	attachments := []queuedAttachmentJSON{}
+	if slot := c.activeSlot(); slot != nil && slot.engine != nil {
+		blocks := c.takeRewindStash(slot.engineID)
+		if len(blocks) == 0 {
+			blocks = lastPromptAttachmentBlocks(slot.engine.Messages())
+		}
+		if len(blocks) > 0 {
+			attachments = append(attachments, c.buildRestoredMsg(types.QueuedItem{Content: blocks}).Attachments...)
+		}
+	}
+	resp, _ := json.Marshal(struct {
+		Type        string                 `json:"type"`
+		Attachments []queuedAttachmentJSON `json:"attachments"`
+	}{Type: "restore_result", Attachments: attachments})
+	c.sendWS(resp)
 }
 
 // switchEngine is the unified engine switch (pointer swap only). Deactivates
