@@ -3021,6 +3021,46 @@ describe('abort rewind attachment restore', () => {
     })
   })
 
+  it('first connect after auto-refresh keeps the refreshed notice (no false recovered)', () => {
+    sessionStorage.setItem('wuiAutoReloaded', '1')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    expect(document.body.textContent).toContain('Refreshed')
+    // The reloaded page's first WS connect must not mistake the active
+    // notice capsule (Refreshed) for an in-flight upgrade and swap in
+    // Recovered — the capsule is shared by notifyCapsule and the upgrade
+    // flow, so active() alone cannot tell them apart.
+    stateCb?.('connected')
+    expect(document.body.textContent).toContain('Refreshed')
+    expect(document.body.textContent).not.toContain('Recovered')
+  })
+
+  it('refreshed notice auto-dismisses after 1s', () => {
+    sessionStorage.setItem('wuiAutoReloaded', '1')
+    vi.useFakeTimers()
+    try {
+      mount()
+      const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+      expect(capsule.classList.contains('opacity-0')).toBe(false)
+      vi.advanceTimersByTime(999)
+      expect(capsule.classList.contains('opacity-0')).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(capsule.classList.contains('opacity-0')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('real upgrade cycle still reports recovered and clears data-upgrading', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    stateCb?.('upgrading')
+    expect(document.body.getAttribute('data-upgrading')).toBe('1')
+    stateCb?.('connected')
+    expect(document.body.textContent).toContain('Recovered')
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+  })
+
   it('abort with queued follow-ups keeps the interrupted turn (no rewind)', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

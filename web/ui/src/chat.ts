@@ -613,7 +613,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // createUpgradeCapsule above has registered the handle by this point.
   if (sessionStorage.getItem('wuiAutoReloaded')) {
     sessionStorage.removeItem('wuiAutoReloaded')
-    notifyCapsule(t('uiRefreshed'), { durationMs: 1600 })
+    notifyCapsule(t('uiRefreshed'), { durationMs: 1000 })
   }
 
   // Live path and history replay share this derivation — replay has no
@@ -645,13 +645,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const clearRollbackTimer = () => {
     if (rollbackTimer) { clearTimeout(rollbackTimer); rollbackTimer = null }
   }
+  // The upgrade flow and generic notices share one capsule, so capsule
+  // .active() cannot tell "upgrading" from "a notice is showing" — a fresh
+  // page's first connect with the Refreshed notice up would otherwise be
+  // misread as an upgrade recovery. This flag tracks the upgrade flow only.
+  let capsuleUpgrading = false
   conn.onStateChange?.((cs) => {
     stopDots()
     if (cs === 'connected') {
       disconnectBanner.style.maxHeight = '0px'
       disconnectBanner.style.opacity = '0'
       disconnectBanner.style.cursor = 'default'
-      if (capsule.active()) {
+      if (capsuleUpgrading) {
+        capsuleUpgrading = false
         clearRollbackTimer()
         capsule.recovered()
         document.body.removeAttribute('data-upgrading')
@@ -668,6 +674,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       // the server answered our reconnect with the old process (the
       // upgrade failed) — 20 s of "upgrading" against a live socket means
       // nothing is happening.
+      capsuleUpgrading = true
       capsule.enter()
       document.body.setAttribute('data-upgrading', '1')
       if (streaming) setStreamFreeze(messagesContainer, true)
@@ -675,6 +682,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       rollbackTimer = window.setTimeout(() => {
         rollbackTimer = null
         if (conn.connected) {
+          capsuleUpgrading = false
           capsule.dismiss()
           document.body.removeAttribute('data-upgrading')
           setStreamFreeze(messagesContainer, false)
@@ -684,7 +692,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       // Give-up (the binary never came back within 90 s): retire the
       // upgrading visuals — a frozen capsule reads as a hang — and fall
       // back to the ordinary retry banner.
-      if (capsule.active()) {
+      if (capsuleUpgrading) {
+        capsuleUpgrading = false
         capsule.dismiss()
         document.body.removeAttribute('data-upgrading')
         setStreamFreeze(messagesContainer, false)
