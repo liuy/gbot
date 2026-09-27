@@ -210,6 +210,9 @@ export type QueryEvent = {
     error: string
   }
   aborted?: boolean
+  /** Set when the server actually auto-rewound the aborted prompt (empty
+   * queue). Absent when the interrupted turn stays (queued follow-ups). */
+  rewound?: boolean
 }
 
 export type AskDecision = 'allow' | 'deny' | 'allow_always'

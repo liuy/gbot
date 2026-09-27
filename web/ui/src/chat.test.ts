@@ -215,7 +215,7 @@ describe('chat integration', () => {
     clickStop()
     dispatchEvents([
       { type: 'thinking_end' },
-      { type: 'query_end', aborted: true },
+      { type: 'query_end', aborted: true, rewound: true },
     ])
     expect(document.body.textContent).not.toContain('test query')
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
@@ -256,7 +256,7 @@ describe('chat integration', () => {
       clickStop()
       dispatchEvents([
         { type: 'thinking_end' },
-        { type: 'query_end', aborted: true },
+        { type: 'query_end', aborted: true, rewound: true },
       ])
       const ta = document.querySelector('textarea') as HTMLTextAreaElement
       expect(ta.value).toBe('repeat me')
@@ -2986,7 +2986,7 @@ describe('abort rewind attachment restore', () => {
 
     dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
     clickStop()
-    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true, rewound: true }])
 
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
     expect(ta.value).toBe('see this')
@@ -3021,6 +3021,22 @@ describe('abort rewind attachment restore', () => {
     })
   })
 
+  it('abort with queued follow-ups keeps the interrupted turn (no rewind)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('query A')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    clickStop()
+    // Server skipped the rewind (queue non-empty — B runs next); rewound is
+    // absent on the wire. A must stay on screen and NOT clobber the input.
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    expect(document.body.textContent).toContain('query A')
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('')
+    expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(false)
+  })
+
   it('text-only abort rewind restores the text but sends no restore_attachments frame', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -3028,7 +3044,7 @@ describe('abort rewind attachment restore', () => {
     pressEnter()
     dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
     clickStop()
-    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true, rewound: true }])
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
     expect(ta.value).toBe('just words')
     expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(false)
@@ -3050,7 +3066,7 @@ describe('abort rewind attachment restore', () => {
     })
     dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
     clickStop()
-    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true }])
+    dispatchEvents([{ type: 'thinking_end' }, { type: 'query_end', aborted: true, rewound: true }])
     // No text to restore, but the bubble must not linger as a ghost.
     expect(document.body.textContent.includes('[notes.pdf]')).toBe(false)
     expect(sent.some((m) => (m as { type?: string }).type === 'restore_attachments')).toBe(true)

@@ -54,6 +54,12 @@ import (
 type queryEventWithAbort struct {
 	types.QueryEvent
 	Aborted bool `json:"aborted,omitempty"`
+	// Rewound reports that the server actually auto-rewound the aborted
+	// prompt out of the transcript. The client rewinds its bubbles only on
+	// this flag — its queue view can diverge from the engine's, and a
+	// client-side rewind without the server's would resurrect the prompt on
+	// the next history load.
+	Rewound bool `json:"rewound,omitempty"`
 }
 
 // engineClient is the subset of engine.Engine methods the connector uses.
@@ -1113,21 +1119,21 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	isQueryEnd := event.Type == types.EventQueryEnd && event.Agent == nil
 
 	aborted := false
+	rewound := false
 	if isQueryEnd && event.Error != nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
-			rewind := c.shouldAutoRewindFor(slot.engine)
-			slog.Debug("wui:abort", "engine", engineID, "shouldAutoRewind", rewind, "msgs", len(slot.engine.Messages()))
+			rewound = c.autoRewindOnAbortFor(slot.engine)
+			slog.Info("wui:abort", "engine", engineID, "rewound", rewound, "msgs", len(slot.engine.Messages()))
 			// Engine emits the interrupt text via text_start/delta/end on
 			// its own; the connector only needs to drive rewind here.
-			c.autoRewindOnAbortFor(slot.engine)
 		}
 	}
 
 	payload, err := json.Marshal(struct {
 		Type  string              `json:"type"`
 		Event queryEventWithAbort `json:"event"`
-	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted}})
+	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted, Rewound: rewound}})
 	if err != nil {
 		slog.Warn("wui: marshal event failed", "type", event.Type, "error", err)
 		return
@@ -1174,6 +1180,22 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 // shouldAutoRewindFor checks whether autoRewindOnAbortFor would rewind, using
 // the given engine (per-engine, not global).
 func (c *WUIConnector) shouldAutoRewindFor(eng engineClient) bool {
+	// TS parity: the auto-restore guard requires an empty command queue
+	// (REPL.tsx getCommandQueueLength() === 0). When the user queued B while
+	// A ran, aborting A keeps A as an interrupted turn and B runs next —
+	// restoring A's prompt into the input while B starts answering would be
+	// incoherent. Safe against the B-drain race only because hub.Dispatch
+	// runs onEngineEvent synchronously inside emitEvent and the drain starts
+	// in a deferred endQuery after runTurns returns — B is deterministically
+	// still queued here. An async-dispatch refactor would need re-verification
+	// (a drained B would NOT be caught by the synthetic check below: an
+	// empty tail makes it vacuously true). Non-meta filter is deliberate —
+	// meta prompts are system-generated, unlike TS's user-command queue.
+	for _, item := range eng.PendingAttachments() {
+		if item.Mode == types.ItemModePrompt && !item.IsMeta {
+			return false
+		}
+	}
 	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
@@ -1192,15 +1214,16 @@ type rewindStash struct {
 	blocks   []types.ContentBlock
 }
 
-// autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given engine.
-func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) {
+// autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given
+// engine. Returns whether the rewind ran.
+func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) bool {
 	if !c.shouldAutoRewindFor(eng) {
-		return
+		return false
 	}
 	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
-		return
+		return false
 	}
 	// Stash the prompt's attachment blocks BEFORE the rewind drops them —
 	// restore_attachments arrives after RewindTo, so this is the only copy.
@@ -1216,7 +1239,9 @@ func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) {
 	c.restoreMu.Unlock()
 	if err := eng.RewindTo(lastUserIdx); err != nil {
 		slog.Warn("wui: autoRewind failed", "idx", lastUserIdx, "error", err)
+		return false
 	}
+	return true
 }
 
 // inputHistoryEntry is the JSONL on-disk format for the shared input history,

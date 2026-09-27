@@ -1268,7 +1268,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'query_end': {
         if (e.agent) return
         const wasAborted = !!e.aborted
-        console.debug('[chat] query_end aborted=' + wasAborted)
+        // The server owns the rewind decision (queue-aware, TS parity): only
+        // mirror its rewind when it actually performed one. hasContent covers
+        // the same turn into the commit path either way.
+        const serverRewound = !!e.rewound
+        console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound)
         finalizeRunningBlocks(pendingBlocks, wasAborted)
 
         if (wasAborted) {
@@ -1283,8 +1287,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
                 b.kind === 'user',
             )
 
-          if (hasContent) {
-            // COMMIT path: DOM stays; record the snapshot for history/reconnect.
+          if (hasContent || !serverRewound) {
+            // COMMIT path: DOM stays. Either the turn produced something, or
+            // the server kept the interrupted turn (queue non-empty — TS
+            // parity: B runs next, A is not restored into the input).
             if (last && last.role === 'assistant') {
               last.blocks = pendingBlocks.slice()
               last.status = 'done'

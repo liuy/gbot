@@ -308,3 +308,75 @@ func TestRestoreAttachments_AfterAbortRewindServesStashedPrompt(t *testing.T) {
 		t.Fatalf("second restore_result must serialize attachments as [], got %s", raw2)
 	}
 }
+
+// TestAutoRewindSkippedWithQueuedPrompt pins TS parity: when a prompt is
+// queued while the aborted turn ran, the interrupted turn STAYS in the
+// transcript (no rewind) and the query_end wire frame reports rewound=false —
+// the queued message runs next instead of restoring the old prompt.
+func TestAutoRewindSkippedWithQueuedPrompt(t *testing.T) {
+	c, srv := setupAttachmentServer(t)
+	mock := c.mock()
+	mock.systemPromptFn = func() string { return "" }
+	mock.isBusyFn = func() bool { return false }
+
+	msgs := []types.Message{{
+		ID: "m1", Role: types.RoleUser, Timestamp: fixedTimestamp,
+		Content: []types.ContentBlock{types.NewTextBlock("query A")},
+	}}
+	mock.messagesFn = func() []types.Message {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return append([]types.Message(nil), msgs...)
+	}
+	mock.pendingAttachmentsFn = func() []types.QueuedItem {
+		return []types.QueuedItem{{
+			UUID: "q-b", Mode: types.ItemModePrompt,
+			Value: "queued B",
+			Content: []types.ContentBlock{types.NewTextBlock("queued B")},
+		}}
+	}
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, ws)
+
+	slot := c.activeSlot()
+	if slot == nil || slot.hub == nil {
+		t.Fatal("no active slot/hub")
+	}
+	slot.hub.Dispatch(types.QueryEvent{
+		Type:  types.EventQueryEnd,
+		Error: &engine.AbortError{Err: context.Canceled},
+	})
+
+	raw := readUntilType(t, ws, "event")
+	var frame struct {
+		Event struct {
+			Type    string `json:"type"`
+			Aborted bool   `json:"aborted"`
+			Rewound bool   `json:"rewound"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("event frame decode: %v (%s)", err, raw)
+	}
+	if frame.Event.Type != "query_end" {
+		t.Fatalf("event type = %q, want query_end (%s)", frame.Event.Type, raw)
+	}
+	if !frame.Event.Aborted {
+		t.Fatalf("query_end aborted = false, want true (%s)", raw)
+	}
+	if frame.Event.Rewound {
+		t.Fatalf("query_end rewound = true, want false (queue non-empty)")
+	}
+
+	mock.mu.Lock()
+	rewinds := len(mock.rewindCalls)
+	remaining := len(msgs)
+	mock.mu.Unlock()
+	if rewinds != 0 {
+		t.Fatalf("rewind ran %d times, want 0 (queued prompt keeps the turn)", rewinds)
+	}
+	if remaining != 1 {
+		t.Fatalf("messages after abort = %d, want 1 (interrupted prompt stays)", remaining)
+	}
+}
