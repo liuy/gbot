@@ -567,7 +567,7 @@ describe('createArtifactSheet walk mode', () => {
     window.history.replaceState(null, '', '/')
   })
 
-  it('toggle click enters walk: attribute set, dataset entering, spinner indexing, label exit', async () => {
+  it('toggle click enters walk: attribute set, dataset entering, spinner indexing, toggle becomes door icon', async () => {
     const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
     const el = await openGlb()
     toggle.click()
@@ -576,7 +576,11 @@ describe('createArtifactSheet walk mode', () => {
     expect(spinner.style.display).toBe('')
     expect(spinner.classList.contains('failed')).toBe(false)
     expect(spinner.textContent).toBe(t('walkIndexing'))
-    expect(toggle.textContent).toBe(t('walkExit'))
+    // Walk state is icon-only: no text, the door glyph, an a11y label.
+    expect(toggle.classList.contains('icon-only')).toBe(true)
+    expect(toggle.textContent).toBe('')
+    expect(toggle.querySelector('svg')).not.toBeNull()
+    expect(toggle.getAttribute('aria-label')).toBe(t('walkExit'))
   })
 
   it('walk-indexed moves entering to active and hides the spinner', async () => {

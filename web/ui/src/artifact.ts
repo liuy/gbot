@@ -1,6 +1,7 @@
 import type { Block } from './model'
 import type { ArtifactListItem } from './types'
 import { createElement } from './dom'
+import { renderIcon } from './icons'
 import { loadModelViewer } from './model_viewer_loader'
 import { t } from './i18n'
 
@@ -179,11 +180,24 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   const sheetUi = createElement('div', 'sheet-ui')
   const walkToggle = createElement('button', 'walk-toggle')
   walkToggle.type = 'button'
-  walkToggle.textContent = t('walkEnter')
   const walkSpinner = createElement('div', 'walk-loading')
   const walkHint = createElement('div', 'walk-hint')
   sheetUi.append(walkToggle, walkSpinner, walkHint)
   root.append(frame, modelHost, sheetUi, handle)
+
+  // Entry: text CTA naming the mode. Inside: exit icon only (label kept for
+  // a11y). Same vertical padding as .walk-hint so the capsules align.
+  const setWalkToggleMode = (walking: boolean) => {
+    walkToggle.classList.toggle('icon-only', walking)
+    if (walking) {
+      walkToggle.replaceChildren(renderIcon('door-exit', { size: 14 }))
+      walkToggle.setAttribute('aria-label', t('walkExit'))
+    } else {
+      walkToggle.textContent = t('walkEnter')
+      walkToggle.removeAttribute('aria-label')
+    }
+  }
+  setWalkToggleMode(false)
 
   // One of the two surfaces is visible at a time; display:'' restores the
   // CSS default (iframe block, host flex child of the sheet).
@@ -212,7 +226,7 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     walkElement = null
     root.dataset.walk = ''
     showWalkSpinner(null)
-    walkToggle.textContent = t('walkEnter')
+    setWalkToggleMode(false)
     walkHint.classList.remove('visible')
   }
 
@@ -248,7 +262,7 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     walkElement.setAttribute('walk', '')
     root.dataset.walk = 'entering'
     showWalkSpinner(t('walkIndexing'))
-    walkToggle.textContent = t('walkExit')
+    setWalkToggleMode(true)
     setWalkHint()
     walkHint.classList.add('visible')
   }
@@ -257,7 +271,7 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     walkElement?.removeAttribute('walk')
     root.dataset.walk = ''
     showWalkSpinner(null)
-    walkToggle.textContent = t('walkEnter')
+    setWalkToggleMode(false)
     walkHint.classList.remove('visible')
   }
 

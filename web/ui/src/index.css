@@ -470,13 +470,30 @@ model-viewer { --progress-bar-color: var(--color-blue); }
   color: #fff;
   font-size: 12px;
   line-height: 1;
-  padding: 9px 14px;
+  /* Same vertical padding as .walk-hint so both capsules measure equally. */
+  padding: 8px 14px;
   border-radius: 999px;
   cursor: pointer;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   transition: background .2s ease;
 }
+.walk-toggle.icon-only {
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Bare glyph; padding keeps the touch target at capsule height. */
+  background: transparent;
+  border-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.walk-toggle.icon-only:hover {
+  background: rgba(255,255,255,.08);
+  border-color: rgba(255,255,255,.09);
+}
+.walk-toggle.icon-only svg { display: block; }
 .walk-toggle:hover { background: rgba(10,14,20,.75); }
 .walk-loading {
   display: flex;
@@ -511,6 +528,8 @@ model-viewer { --progress-bar-color: var(--color-blue); }
   z-index: 5;
   display: flex;
   align-items: center;
+  /* Match .walk-toggle's line-height so both capsules align. */
+  line-height: 1;
   gap: 7px;
   font-size: 12px;
   color: #fff;

@@ -30,6 +30,7 @@ export type IconName =
   | 'check'
   | 'search'
   | 'settings'
+  | 'door-exit'
   | 'trash'
 
 export type IconVariant = 'outline' | 'solid' | 'mixed'
@@ -112,6 +113,13 @@ const ICONS: Record<IconName, IconDef> = {
   },
   box: {
     path: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  'door-exit': {
+    // Walk-mode exit: a door frame with an arrow leaving it — "back out of
+    // the space you are in", chosen over an X (reads as "close the viewer").
+    path: '<path d="M15 4h3.5a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 18.5 20H15"/><path d="M10 8.5 6.5 12l3.5 3.5M6.5 12h9"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
