@@ -456,6 +456,11 @@ body {
   gap: 8px;
   pointer-events: none;
 }
+/* Recolor the model-viewer loading bar to the theme accent — custom
+   properties inherit through the shadow root, so one line covers every
+   artifact's progress bar. */
+model-viewer { --progress-bar-color: var(--color-blue); }
+
 .sheet-ui > * { pointer-events: auto; }
 /* Modern glass look; stays in the top-right stack — the stack position was
    never the problem, the near-black fill was. */
