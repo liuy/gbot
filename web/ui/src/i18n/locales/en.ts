@@ -191,6 +191,7 @@ export const dict = {
   walkExit: 'Exit walk mode',
   walkIndexing: 'Building scene index…',
   walkFailed: 'Walk mode failed',
+  walkNoFloor: 'Walk mode is not supported for this model',
   walkHintMove: 'move',
   walkHintLook: 'drag to look',
   walkHintTouch: 'Left half: move · Right half: look',

@@ -19,8 +19,7 @@
 //   node scripts/build-model-viewer.mjs --check   verify the committed bundle is
 //                                                 current (used by `make web-check`)
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { readFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { readFileSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -35,28 +34,6 @@ const check = process.argv.includes('--check')
 // relies on to prove the committed artifact is current. Bundle bytes will
 // forever differ from the old upstream dist copy (esbuild vs rollup/terser);
 // currency is measured against OUR build only.
-//
-// __WALK_BUILD__ is a content hash of the fork sources — deterministic (so
-// --check stays valid) yet guaranteed to change whenever any source changes,
-// which is what lets the walk debug overlay prove which code a client is
-// actually running.
-function sourceHash() {
-  const hash = createHash('sha1')
-  const walk = (dir) => {
-    for (const name of readdirSync(dir).sort()) {
-      const p = join(dir, name)
-      if (statSync(p).isDirectory()) {
-        walk(p)
-      } else {
-        hash.update(name)
-        hash.update(readFileSync(p))
-      }
-    }
-  }
-  walk(join(ui, 'src', 'model-viewer'))
-  return hash.digest('hex').slice(0, 8)
-}
-
 function bundle(target) {
   mkdirSync(dirname(target), { recursive: true })
   execFileSync(
@@ -70,7 +47,6 @@ function bundle(target) {
       '--tsconfig=src/model-viewer/tsconfig.json',
       '--minify',
       '--legal-comments=inline',
-      `--define:__WALK_BUILD__=${JSON.stringify(sourceHash())}`,
       `--outfile=${target}`,
     ],
     { cwd: ui, stdio: ['ignore', 'ignore', check ? 'ignore' : 'inherit'] },

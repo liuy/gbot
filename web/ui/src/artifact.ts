@@ -200,6 +200,8 @@ export function createArtifactSheet(): ArtifactSheetHandles {
       return
     }
     walkSpinner.classList.toggle('failed', text === t('walkFailed'))
+    // Informational copy: no spinner glyph — nothing is loading.
+    walkSpinner.classList.toggle('notice', text === t('walkNoFloor'))
     walkSpinner.textContent = text
     walkSpinner.style.display = ''
   }
@@ -261,9 +263,31 @@ export function createArtifactSheet(): ArtifactSheetHandles {
 
   // Both failure paths (fork walk-error, base-element webglcontextlost) land
   // here: back to orbit with the failure copy held until the next transition.
-  const failWalk = () => {
+  // `no-walkable-floor` is not a malfunction — the model simply has nothing
+  // to stand on — so the copy names that and the toggle hides for this mount
+  // (clicking it again could only repeat the answer).
+  let noFloorTimer = 0
+  const failWalk = (message?: string) => {
     if (root.dataset.walk === '') return
     exitWalk()
+    if (message === 'no-walkable-floor') {
+      walkToggle.style.display = 'none'
+      showWalkSpinner(t('walkNoFloor'))
+      // Informational, not an error state — auto-dismiss like a toast (3 s:
+      // the short-copy convention, Ant Design's default). The text latch
+      // keeps the timer from clearing a newer transition's copy, and the
+      // handle keeps back-to-back refusals from stacking timers.
+      if (noFloorTimer !== 0) {
+        window.clearTimeout(noFloorTimer)
+      }
+      noFloorTimer = window.setTimeout(() => {
+        noFloorTimer = 0
+        if (walkSpinner.textContent === t('walkNoFloor')) {
+          showWalkSpinner(null)
+        }
+      }, 3000)
+      return
+    }
     showWalkSpinner(t('walkFailed'))
   }
 
@@ -311,7 +335,9 @@ export function createArtifactSheet(): ArtifactSheetHandles {
       root.dataset.walk = 'active'
       showWalkSpinner(null)
     })
-    el.addEventListener('walk-error', failWalk)
+    el.addEventListener('walk-error', (event) => {
+      failWalk((event as CustomEvent<{ message?: string }>).detail?.message)
+    })
     // The base element re-dispatches WebGL context loss and load failure as
     // error events with detail.type — only those types are walk-relevant.
     el.addEventListener('error', (event) => {

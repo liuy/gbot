@@ -499,6 +499,7 @@ model-viewer { --progress-bar-color: var(--color-blue); }
   animation: spin .9s linear infinite;
 }
 .walk-loading.failed::before { animation: none; border-top-color: #ff8a80; }
+.walk-loading.notice::before { display: none; }
 /* Walk hint: top-center glass pill (same slot on phone and desktop); retires
    on the first real input. Fixed to the viewport — the sheet frame is a
    zero-height coordinate anchor, not a box. */

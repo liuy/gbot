@@ -607,6 +607,41 @@ describe('createArtifactSheet walk mode', () => {
     expect(spinner.textContent).toBe(t('walkIndexing'))
   })
 
+  it('no-walkable-floor refusal exits, hides the toggle, and names the model', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    expect(sheet.root.dataset.walk).toBe('entering')
+    el.dispatchEvent(new CustomEvent('walk-error', { detail: { message: 'no-walkable-floor' } }))
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('')
+    expect(spinner.textContent).toBe(t('walkNoFloor'))
+    // Not a malfunction — the spinner must not wear the failed look or spin.
+    expect(spinner.classList.contains('failed')).toBe(false)
+    expect(spinner.classList.contains('notice')).toBe(true)
+    // The toggle hides for this mount: clicking again could only repeat the answer.
+    expect(toggle.style.display).toBe('none')
+  })
+
+  it('no-walkable-floor notice auto-dismisses after 3s', async () => {
+    const { toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    // Fake clock first: the dismissal timer must be scheduled on it.
+    vi.useFakeTimers()
+    try {
+      el.dispatchEvent(new CustomEvent('walk-error', { detail: { message: 'no-walkable-floor' } }))
+      expect(spinner.textContent).toBe(t('walkNoFloor'))
+      vi.advanceTimersByTime(2999)
+      expect(spinner.textContent).toBe(t('walkNoFloor'))
+      vi.advanceTimersByTime(1)
+      expect(spinner.style.display).toBe('none')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('toggle while active exits: attribute removed, dataset orbit, label reset, late walk-indexed ignored', async () => {
     const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
     const el = await openGlb()

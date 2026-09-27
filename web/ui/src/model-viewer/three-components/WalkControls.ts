@@ -10,10 +10,7 @@ import type {ModelViewerElement} from '../model-viewer.js';
 import type {ModelScene} from './ModelScene.js';
 import {SmoothControls} from './SmoothControls.js';
 import {
-  bvhPatched,
   buildBVH,
-  debugFloorProbe,
-  debugLargestMeshProbe,
   disposeBVH,
   horizontalBlocked,
   installBVHPatches,
@@ -50,15 +47,6 @@ const WALK_FOV_DEG = 70;
 // groundEyeY converges asymptotically; without an epsilon the tail of the
 // damp would queue renders forever on a stationary camera.
 const EYE_EPSILON = 1e-4;
-
-// __WALK_BUILD__ is define-injected by build-model-viewer.mjs (content hash
-// of the fork sources) so a failure-badge screenshot identifies the exact
-// running code. Inline styles keep the badge self-contained.
-declare const __WALK_BUILD__: string;
-const DEBUG_CSS = 'position:absolute;top:18px;left:18px;z-index:5;' +
-    'pointer-events:none;white-space:pre;font:11px/1.6 monospace;color:#9f9;' +
-    'background:rgba(0,0,0,.55);padding:6px 9px;border-radius:8px;';
-const n = (value: number): string => value.toFixed(2);
 
 interface IndexedGeometry extends BufferGeometry {
   boundsTree?: unknown;
@@ -136,8 +124,6 @@ export class WalkControls {
   private spawnCz = 0;
   private spawnMinY = 0;
   private spawnMaxY = 0;
-  private debugEl: HTMLDivElement | null = null;
-  private buildMs = 0;
 
   constructor(config: WalkControlsConfig) {
     this.config = config;
@@ -276,10 +262,6 @@ export class WalkControls {
     if (element.cameraControls) {
       this.controls.enableInteraction();
     }
-    // The failure badge describes the walk session, not the model — a healthy
-    // exit must not leave it behind.
-    this.debugEl?.remove();
-    this.debugEl = null;
     scene.queueRender();
 
     if (!RETAIN_BVH) {
@@ -306,8 +288,6 @@ export class WalkControls {
     this.disposed = true;
     this.detachInput();
     this.removeJoystickDom();
-    this.debugEl?.remove();
-    this.debugEl = null;
   }
 
   private attachInput(): void {
@@ -471,15 +451,12 @@ export class WalkControls {
     const model = this.config.scene.model;
     try {
       if (model != null) {
-        const t0 = performance.now();
         buildBVH(model);
-        this.buildMs = Math.round(performance.now() - t0);
         this.indexedModel = model;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!this.disposed) {
-        this.debugSet(['BVH ERROR ' + message]);
         this.config.onError(message);
       }
       return;
@@ -487,14 +464,16 @@ export class WalkControls {
     if (!this.disposed) {
       this.groundReady = true;
       this.placeSpawn(model);
-      this.config.onIndexed();
+      if (!this.disposed) {
+        this.config.onIndexed();
+      }
     }
   }
 
   // Runs once the BVH exists: maps the raw-space box into world space through
   // the model's live matrixWorld (ModelScene's target-group centering makes
-  // raw ≠ world), then solves the standing spawn and shows the failure badge
-  // only when even the sky-fallback rule had to step in.
+  // raw ≠ world), then solves the standing spawn — refusing the mode entirely
+  // when no standable floor exists.
   private placeSpawn(model: Object3D | null): void {
     if (model == null) {
       return;
@@ -503,8 +482,6 @@ export class WalkControls {
     worldBox.copy(this.config.scene.boundingBox);
     worldBox.applyMatrix4(model.matrixWorld);
     const worldCenter = worldBox.getCenter(new Vector3());
-    const span = worldBox.max.y - worldBox.min.y;
-    const fromY = worldBox.max.y + span * 0.01;
     const probe: SpawnProbe = {
       floorY: (x, z, y) => sampleFloorY(model, x, z, y),
       blocked: (x, y, z, dirX, dirZ, far) =>
@@ -512,64 +489,20 @@ export class WalkControls {
     };
     const solve = solveSpawn(
         worldCenter.x, worldCenter.z, worldBox.min.y, worldBox.max.y, probe);
-    this.config.scene.camera.position.set(solve.x, solve.eyeY, solve.z);
-    if (solve.source === 'sky') {
-      // The sky fallback means no standable floor was found anywhere — the
-      // one degraded outcome worth surfacing. The probe/mesh lines below are
-      // exactly the numbers that cracked the villa black screen (ray vs
-      // model-space fault split), so they ride along with the badge.
-      const probeLine = debugFloorProbe(
-          model, worldCenter.x, worldCenter.z, fromY);
-      const meshLine = debugLargestMeshProbe(
-          model, worldCenter.x, worldCenter.z, fromY);
-      this.reportSpawnFailure(solve, model, worldCenter, probeLine, meshLine);
-    } else {
-      this.debugEl?.remove();
-      this.debugEl = null;
+    // A walkable space must contain the standing eye: smooth closed objects
+    // (helmet, pipe, sphere) always present an up-facing top surface to the
+    // probe — their "floor" is their own top, putting the eye above the whole
+    // model. Without this check they enter into a blank view.
+    if (solve.source === 'sky' || solve.eyeY > worldBox.max.y) {
+      // Nothing standable anywhere — the honest answer is to refuse the mode
+      // (a helmet is not a building). The artifact layer exits and shows the
+      // no-floor copy; the camera never stays in the sky pose.
+      this.config.onError('no-walkable-floor');
+      this.config.scene.queueRender();
+      return;
     }
+    this.config.scene.camera.position.set(solve.x, solve.eyeY, solve.z);
     this.config.scene.queueRender();
   }
 
-  // Failure-only badge: invisible on every healthy model; appears only when
-  // the spawn solver fell back to the sky pose, and then reports the numbers
-  // that localize a space/transform fault. The build hash makes any screenshot
-  // self-identifying.
-  private reportSpawnFailure(
-      solve: SpawnSolve, model: Object3D, worldCenter: Vector3,
-      probeLine: {raw: number; horiz: number; y: number | null},
-      meshLine: {name: string; raw: number; localOrigin: string}): void {
-    const pos = new Vector3();
-    const quat = new Quaternion();
-    const scl = new Vector3();
-    model.matrixWorld.decompose(pos, quat, scl);
-    const size = this.config.scene.boundingBox.getSize(new Vector3());
-    this.debugSet([
-      `行走兜底：未找到可站立地面 · 构建 ${__WALK_BUILD__}`,
-      `span ${n(size.x)}×${n(size.y)}×${n(size.z)} · ` +
-          `出生(world) ${n(solve.x)}, ${n(solve.z)}`,
-      `probe raw=${probeLine.raw} horiz=${probeLine.horiz} ` +
-          `y=${probeLine.y == null ? 'null' : n(probeLine.y)} ` +
-          `patched=${bvhPatched() ? 'yes' : 'NO'}`,
-      `model pos=(${n(pos.x)},${n(pos.y)},${n(pos.z)}) ` +
-          `scale=(${scl.x.toExponential(1)},${scl.y.toExponential(1)},` +
-          `${scl.z.toExponential(1)}) bvhbuild=${this.buildMs}ms`,
-      `mesh0 ${meshLine.name} raw=${meshLine.raw} ` +
-          `localO=${meshLine.localOrigin}`,
-    ]);
-  }
-
-  private debugSet(lines: string[]): void {
-    if (this.debugEl == null) {
-      const container = this.config.inputElement.parentElement;
-      const root = this.config.inputElement.getRootNode();
-      if (container == null || !(root instanceof ShadowRoot)) {
-        return;
-      }
-      const el = document.createElement('div');
-      el.style.cssText = DEBUG_CSS;
-      container.appendChild(el);
-      this.debugEl = el;
-    }
-    this.debugEl.textContent = lines.join('\n');
-  }
 }

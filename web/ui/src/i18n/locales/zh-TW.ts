@@ -166,6 +166,7 @@ export const dict: Dict = {
   walkExit: '退出行走',
   walkIndexing: '正在建構場景索引…',
   walkFailed: '行走模式失敗',
+  walkNoFloor: '該模型不支援行走模式',
   walkHintMove: '移動',
   walkHintLook: '拖曳環顧',
   walkHintTouch: '左半屏移動 · 右半屏環顧',
