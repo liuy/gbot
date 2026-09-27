@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -65,10 +66,17 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 				return
 			}
 			if !st.IsDir() {
-				// Zero modtime: ServeContent emits no Last-Modified and never
-				// negotiates a 304 — combined with no-store this guarantees an
-				// iframe reload always fetches fresh content.
-				http.ServeContent(w, r, st.Name(), time.Time{}, f)
+				// Strong validator from the file identity — mtime+size is
+				// cheap and changes whenever the file does. `no-cache` keeps
+				// every open revalidated (edited HTML artifacts still show up
+				// on the next reload) while an unchanged 394 MB GLB costs one
+				// header round-trip (304, no body) instead of a full
+				// re-download. ServeContent answers If-None-Match /
+				// If-Modified-Since from the ETag and modtime set here.
+				etag := fmt.Sprintf(`"%x-%x"`, st.ModTime().UnixNano(), st.Size())
+				w.Header().Set("ETag", etag)
+				w.Header().Set("Cache-Control", "no-cache")
+				http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 				return
 			}
 		}

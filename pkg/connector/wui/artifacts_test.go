@@ -73,8 +73,8 @@ func TestRegisterArtifactRoutes_ServesFileWithHeaders(t *testing.T) {
 		t.Errorf("body = %q, want %q — SPA catch-all must not swallow the artifact route", string(body), artifactGameHTML)
 	}
 	h := resp.Header
-	if got := h.Get("Cache-Control"); got != "no-store" {
-		t.Errorf("Cache-Control = %q, want no-store", got)
+	if got := h.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
 	}
 	const wantCSP = "default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' http:; sandbox allow-scripts allow-same-origin allow-popups allow-modals allow-downloads allow-forms"
 	if got := h.Get("Content-Security-Policy"); got != wantCSP {
@@ -83,32 +83,85 @@ func TestRegisterArtifactRoutes_ServesFileWithHeaders(t *testing.T) {
 	if got := h.Get("X-Frame-Options"); got != "SAMEORIGIN" {
 		t.Errorf("X-Frame-Options = %q, want SAMEORIGIN", got)
 	}
-	if got := h.Get("Last-Modified"); got != "" {
-		t.Errorf("Last-Modified = %q, want empty (zero modtime forbids 304 negotiation)", got)
+	if got := h.Get("ETag"); got == "" {
+		t.Error("ETag is empty, want a strong validator for 304 negotiation")
+	}
+	if got := h.Get("Last-Modified"); got == "" {
+		t.Error("Last-Modified is empty, want the file modtime for 304 negotiation")
 	}
 	if got := h.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html prefix", got)
 	}
 }
 
-func TestRegisterArtifactRoutes_ConditionalRequestStill200(t *testing.T) {
+func TestRegisterArtifactRoutes_ConditionalRequestNegotiates304(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "game.html", artifactGameHTML)
 	srv := newArtifactTestServer(t, dir)
+
+	first, err := http.Get(srv.URL + "/artifacts/game.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := first.Header.Get("ETag")
+	io.Copy(io.Discard, first.Body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK || etag == "" {
+		t.Fatalf("first GET = %d etag %q, want 200 with an ETag", first.StatusCode, etag)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/artifacts/game.html", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("If-Modified-Since", "Mon, 01 Jan 2035 00:00:00 GMT")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("If-None-Match", etag)
+	revalidated, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer revalidated.Body.Close()
+	body, err := io.ReadAll(revalidated.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revalidated.StatusCode != http.StatusNotModified {
+		t.Fatalf("If-None-Match round-trip = %d, want 304 (no re-download)", revalidated.StatusCode)
+	}
+	if len(body) != 0 {
+		t.Errorf("304 body = %d bytes, want empty", len(body))
+	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (zero modtime must defeat 304)", resp.StatusCode)
+	// The If-Modified-Since path must negotiate 304 from the modtime too.
+	sinceReq, err := http.NewRequest(http.MethodGet, srv.URL+"/artifacts/game.html", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sinceReq.Header.Set("If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
+	sinceResp, err := http.DefaultClient.Do(sinceReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sinceResp.Body.Close()
+	if sinceResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("If-Modified-Since = %d, want 304", sinceResp.StatusCode)
+	}
+
+	// A content change must produce a new validator and fresh bytes.
+	writeArtifactFile(t, dir, "game.html", "v2 content")
+	changed, err := http.Get(srv.URL + "/artifacts/game.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer changed.Body.Close()
+	changedBody, err := io.ReadAll(changed.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.StatusCode != http.StatusOK || string(changedBody) != "v2 content" {
+		t.Fatalf("after edit: status %d body %q, want 200 with fresh bytes", changed.StatusCode, string(changedBody))
+	}
+	if changed.Header.Get("ETag") == etag {
+		t.Error("ETag unchanged after file edit — clients would be served stale caches forever")
 	}
 }
 
