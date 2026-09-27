@@ -104,8 +104,12 @@ func TestRegisterArtifactRoutes_ConditionalRequestNegotiates304(t *testing.T) {
 		t.Fatal(err)
 	}
 	etag := first.Header.Get("ETag")
-	io.Copy(io.Discard, first.Body)
-	first.Body.Close()
+	if _, err := io.Copy(io.Discard, first.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if first.StatusCode != http.StatusOK || etag == "" {
 		t.Fatalf("first GET = %d etag %q, want 200 with an ETag", first.StatusCode, etag)
 	}
@@ -132,11 +136,17 @@ func TestRegisterArtifactRoutes_ConditionalRequestNegotiates304(t *testing.T) {
 	}
 
 	// The If-Modified-Since path must negotiate 304 from the modtime too.
+	// Deterministic input: the file's own modtime (a moving time.Now() could
+	// trail a coarser mtime and make the test flaky).
+	fi, err := os.Stat(filepath.Join(dir, "game.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	sinceReq, err := http.NewRequest(http.MethodGet, srv.URL+"/artifacts/game.html", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sinceReq.Header.Set("If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
+	sinceReq.Header.Set("If-Modified-Since", fi.ModTime().UTC().Format(http.TimeFormat))
 	sinceResp, err := http.DefaultClient.Do(sinceReq)
 	if err != nil {
 		t.Fatal(err)
