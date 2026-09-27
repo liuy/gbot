@@ -11,9 +11,12 @@
     "test:watch": "vitest --config vitest.config.ts",
     "lint": "eslint src/",
     "build:novnc": "node scripts/build-novnc.mjs",
-    "check:novnc": "node scripts/build-novnc.mjs --check"
+    "check:novnc": "node scripts/build-novnc.mjs --check",
+    "build:mv": "node scripts/build-model-viewer.mjs",
+    "check:mv": "node scripts/build-model-viewer.mjs --check"
   },
   "dependencies": {
+    "@monogrid/gainmap-js": "3.4.0",
     "@novnc/novnc": "1.7.0",
     "@vscode/markdown-it-katex": "^1.1.2",
     "dompurify": "^3.4.11",
@@ -21,14 +24,16 @@
     "highlight.js": "^11.10.0",
     "idiomorph": "^0.7.4",
     "katex": "^0.16.47",
+    "lit": "3.3.3",
     "markdown-it": "^14.1.0",
     "markdown-it-highlightjs": "^4.2.0",
     "tailwind-merge": "^3.6.0",
-    "tailwind-variants": "^3.2.2"
+    "tailwind-variants": "^3.2.2",
+    "three": "0.183.2",
+    "three-mesh-bvh": "0.9.15"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@google/model-viewer": "^4.3.1",
     "@tailwindcss/vite": "^4.3.2",
     "@types/dompurify": "^3.0.5",
     "@types/markdown-it": "^14.1.2",

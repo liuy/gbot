@@ -1,4 +1,4 @@
-.PHONY: web-novnc all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -145,17 +145,24 @@ app-check:
 # web-build regenerates the React SPA embedded into the Go binary.
 # Assets are checked into pkg/connector/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
-web-build:
+web-build: web-mv-gen
 	cd web/ui && export LD_PRELOAD="$${LD_PRELOAD:-$${PREFIX:+$$PREFIX/lib/libtermux-exec.so}}" && npm ci && npm run build
 	gzip -kf pkg/connector/wui/assets/index.html
 
 web-test:
 	cd web/ui && npm test
 
-web-check: web-build web-test web-lint web-weak web-novnc
+web-check: web-build web-test web-lint web-weak web-novnc web-mv
 
 web-novnc:
 	cd web/ui && npm run check:novnc
+
+web-mv:
+	cd web/ui && npm run check:mv
+# Regenerates (not checks) the model-viewer bundle so `make build` can never
+# embed a stale one — fork source edits need no remembered pre-step.
+web-mv-gen:
+	cd web/ui && npm run build:mv
 
 web-lint:
 	cd web/ui && npm run lint

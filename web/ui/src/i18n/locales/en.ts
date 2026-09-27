@@ -186,6 +186,14 @@ export const dict = {
   upgradeRefusedPrefix: 'Restart refused — ',
   refusalTuiMode: 'TUI mode cannot hot-restart — exit and start the new binary manually',
   uiRefreshed: 'Refreshed',
+
+  walkEnter: 'Walk mode',
+  walkExit: 'Exit walk mode',
+  walkIndexing: 'Building scene index…',
+  walkFailed: 'Walk mode failed',
+  walkHintMove: 'move',
+  walkHintLook: 'drag to look',
+  walkHintTouch: 'Left half: move · Right half: look',
 } as const
 
 export const endonym = 'English'

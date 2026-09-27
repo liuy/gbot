@@ -66,11 +66,17 @@ func TestMetadata_ConnectCarriesWuiHash(t *testing.T) {
 
 	got := readConnectWuiHash(t, url)
 	if got == "" {
-		t.Fatal("connect.wuiHash is empty, want sha256 of the embedded index.html")
+		t.Fatal("connect.wuiHash is empty, want sha256 over the embedded assets")
 	}
-	sum := sha256.Sum256(indexHTML)
-	if want := hex.EncodeToString(sum[:]); got != want {
-		t.Fatalf("connect.wuiHash = %q, want %q (sha256 of the uncompressed embedded index.html)", got, want)
+	// The fingerprint must cover ALL served assets: the ES module bundles live
+	// for the page's lifetime, so a bundle-only change with an unchanged
+	// index.html has to flip the hash or reconnecting clients never reload.
+	h := sha256.New()
+	h.Write(indexHTML)
+	h.Write(novncESM)
+	h.Write(modelViewerESM)
+	if want := hex.EncodeToString(h.Sum(nil)); got != want {
+		t.Fatalf("connect.wuiHash = %q, want %q (sha256 over index.html + novnc + model-viewer)", got, want)
 	}
 
 	// The client compares the hash across reconnects, so every connection

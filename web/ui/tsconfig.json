@@ -15,5 +15,5 @@
     "types": ["vite/client"]
   },
   "include": ["src", "src/novnc.d.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts", "src/model-viewer"]
 }

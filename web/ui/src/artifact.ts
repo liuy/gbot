@@ -2,6 +2,7 @@ import type { Block } from './model'
 import type { ArtifactListItem } from './types'
 import { createElement } from './dom'
 import { loadModelViewer } from './model_viewer_loader'
+import { t } from './i18n'
 
 // Tool summaries carry the raw Write/Edit file_path. The current convention
 // is an absolute <projectspace>/artifacts/... path; the relative artifacts/
@@ -67,6 +68,12 @@ export function artifactURL(name: string): string {
 // cannot render from a Content-Type alone.
 export function isGLTFArtifactName(name: string): boolean {
   return /\.(glb|gltf)$/i.test(name)
+}
+
+// The walk toggle is always visible (single-user deployment); ?walk-off
+// hides it as a kill-switch.
+export function isWalkToggleEnabled(search: string): boolean {
+  return !new URLSearchParams(search).has('walk-off')
 }
 
 // The artifacts directory is the source of truth, so the list is fetched on
@@ -164,7 +171,19 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   const handle = createElement('div', 'sheet-handle')
   const modelHost = createElement('div', 'gltf-host')
   modelHost.style.display = 'none'
-  root.append(frame, modelHost, handle)
+
+  // Walk-mode overlay (the forked <model-viewer walk> attribute): sibling of
+  // modelHost so modelHost.replaceChildren() can never wipe it. dataset.walk
+  // on the sheet root — '' (orbit) | 'entering' | 'active' — is the CSS and
+  // test anchor; the walkFailed notice is spinner-only state.
+  const sheetUi = createElement('div', 'sheet-ui')
+  const walkToggle = createElement('button', 'walk-toggle')
+  walkToggle.type = 'button'
+  walkToggle.textContent = t('walkEnter')
+  const walkSpinner = createElement('div', 'walk-loading')
+  const walkHint = createElement('div', 'walk-hint')
+  sheetUi.append(walkToggle, walkSpinner, walkHint)
+  root.append(frame, modelHost, sheetUi, handle)
 
   // One of the two surfaces is visible at a time; display:'' restores the
   // CSS default (iframe block, host flex child of the sheet).
@@ -173,7 +192,108 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     modelHost.style.display = show ? 'none' : ''
   }
 
-  // The <model-viewer> element (Google's component) carries its own
+  let walkElement: HTMLElement | null = null
+
+  const showWalkSpinner = (text: string | null) => {
+    if (text === null) {
+      walkSpinner.style.display = 'none'
+      return
+    }
+    walkSpinner.classList.toggle('failed', text === t('walkFailed'))
+    walkSpinner.textContent = text
+    walkSpinner.style.display = ''
+  }
+
+  // UI-only reset: the mounted element itself is torn down by the
+  // replaceChildren() that every caller of this performs (or is about to).
+  const resetWalkUi = () => {
+    walkElement = null
+    root.dataset.walk = ''
+    showWalkSpinner(null)
+    walkToggle.textContent = t('walkEnter')
+    walkHint.classList.remove('visible')
+  }
+
+  // Desktop hint renders real keycap chips — the fastest-to-read control
+  // idiom; touch keeps the plain zone sentence. Coarse pointer is the
+  // touch-first test (a touchscreen laptop has maxTouchPoints > 0 but a
+  // fine mouse); jsdom has no matchMedia and falls back to maxTouchPoints.
+  const setWalkHint = () => {
+    walkHint.replaceChildren()
+    const coarse = window.matchMedia == null
+      ? navigator.maxTouchPoints > 0
+      : window.matchMedia('(pointer: coarse)').matches
+    if (coarse) {
+      walkHint.textContent = t('walkHintTouch')
+      return
+    }
+    for (const key of ['W', 'A', 'S', 'D']) {
+      const kbd = document.createElement('kbd')
+      kbd.textContent = key
+      walkHint.append(kbd)
+    }
+    const move = document.createElement('span')
+    move.textContent = t('walkHintMove')
+    const dot = document.createElement('i')
+    dot.textContent = '·'
+    const look = document.createElement('span')
+    look.textContent = t('walkHintLook')
+    walkHint.append(move, dot, look)
+  }
+
+  const enterWalk = () => {
+    if (walkElement == null) return
+    walkElement.setAttribute('walk', '')
+    root.dataset.walk = 'entering'
+    showWalkSpinner(t('walkIndexing'))
+    walkToggle.textContent = t('walkExit')
+    setWalkHint()
+    walkHint.classList.add('visible')
+  }
+
+  const exitWalk = () => {
+    walkElement?.removeAttribute('walk')
+    root.dataset.walk = ''
+    showWalkSpinner(null)
+    walkToggle.textContent = t('walkEnter')
+    walkHint.classList.remove('visible')
+  }
+
+  // Both failure paths (fork walk-error, base-element webglcontextlost) land
+  // here: back to orbit with the failure copy held until the next transition.
+  const failWalk = () => {
+    if (root.dataset.walk === '') return
+    exitWalk()
+    showWalkSpinner(t('walkFailed'))
+  }
+
+  // The hint persists the whole walk session and retires on the first real
+  // input only: a touch pointerdown anywhere on the viewer (joystick anchor
+  // or look drag) on touch devices; a desktop drag retires it via the same
+  // pointerdown path (pointer lock is no longer used on desktop).
+  const hideWalkHint = () => {
+    walkHint.classList.remove('visible')
+  }
+  const onWalkPointerDown = () => {
+    if (root.dataset.walk === '') return
+    hideWalkHint()
+  }
+
+  walkToggle.addEventListener('click', () => {
+    if (walkElement == null) return
+    if (root.dataset.walk === '') {
+      enterWalk()
+    } else {
+      exitWalk()
+    }
+  })
+
+  // Toggle visibility: GLB artifact open; ?walk-off is the kill-switch.
+  const syncWalkToggle = (glTF: boolean) => {
+    walkToggle.style.display = glTF && isWalkToggleEnabled(location.search) ? '' : 'none'
+  }
+
+  // The <model-viewer> element (our model-viewer fork) carries its own
   // loading/error UI — no overlay of ours on top of it.
   const mountModelViewer = (url: string) => {
     const el = document.createElement('model-viewer') as HTMLElement
@@ -183,6 +303,27 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     el.setAttribute('tone-mapping', 'neutral')
     el.setAttribute('shadow-intensity', '1')
     el.setAttribute('touch-action', 'pan-y')
+    // Walk events ride on the element itself so a remount starts clean.
+    el.addEventListener('walk-indexed', () => {
+      // Only the entering state accepts the event — a late event after an
+      // exit (exit-during-indexing race) must change nothing.
+      if (root.dataset.walk !== 'entering') return
+      root.dataset.walk = 'active'
+      showWalkSpinner(null)
+    })
+    el.addEventListener('walk-error', failWalk)
+    // The base element re-dispatches WebGL context loss and load failure as
+    // error events with detail.type — only those types are walk-relevant.
+    el.addEventListener('error', (event) => {
+      // The DOM types the element error event as ErrorEvent; the fork's
+      // re-dispatches are CustomEvents carrying detail.
+      const type = (event as unknown as CustomEvent<{ type?: string }>).detail?.type
+      // A load failure while entering means walk-indexed never fires — fail
+      // the walk instead of holding the indexing copy forever.
+      if (type === 'webglcontextlost' || type === 'loadfailure') failWalk()
+    })
+    el.addEventListener('pointerdown', onWalkPointerDown)
+    walkElement = el
     modelHost.replaceChildren(el)
     return el
   }
@@ -208,6 +349,10 @@ export function createArtifactSheet(): ArtifactSheetHandles {
       // attribute alone would leave its JS running in the frame.
       frame.src = 'about:blank'
       showFrame(false)
+      // A fresh mount never carries the walk attribute, so the walk state
+      // reset is explicit — the sheetUi overlay survives the remount.
+      resetWalkUi()
+      syncWalkToggle(true)
       loadModelViewer()
         .then(() => {
           // Close clears currentName; a collapse (close) during the
@@ -220,6 +365,8 @@ export function createArtifactSheet(): ArtifactSheetHandles {
           console.error('glTF: model-viewer bundle failed to load', err)
         })
     } else {
+      resetWalkUi()
+      syncWalkToggle(false)
       // A non-glTF open retires any mounted model-viewer element.
       modelHost.replaceChildren()
       showFrame(true)
@@ -235,6 +382,8 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     // Covers the drag-to-collapse path: the viewer must not keep GPU
     // resources or an in-flight fetch while collapsed.
     modelHost.replaceChildren()
+    resetWalkUi()
+    syncWalkToggle(false)
   }
 
   let dragStartY = 0
@@ -284,6 +433,10 @@ export function createArtifactSheet(): ArtifactSheetHandles {
 
   const reload = () => {
     if (isGLTFArtifactName(currentName)) {
+      // Reload always lands in orbit: the fresh element mounts without the
+      // walk attribute, and the sheetUi overlay survives the remount as a
+      // sibling — only this explicit reset clears walk state.
+      resetWalkUi()
       // Remounting the element refetches the model — that IS the reload
       // for the viewer (no frame src to self-assign).
       mountModelViewer(artifactURL(currentName))

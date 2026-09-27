@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "es2017",
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "lib": ["es2017", "dom"],
+    "strict": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false
+  },
+  "include": ["./**/*.ts"]
+}

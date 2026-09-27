@@ -161,6 +161,14 @@ export const dict: Dict = {
   upgradeRefusedPrefix: '无法热重启 — ',
   refusalTuiMode: 'TUI 模式无法热重启 — 请退出后手动启动新版本',
   uiRefreshed: '已刷新',
+
+  walkEnter: '行走模式',
+  walkExit: '退出行走',
+  walkIndexing: '正在构建场景索引…',
+  walkFailed: '行走模式失败',
+  walkHintMove: '移动',
+  walkHintLook: '拖拽环顾',
+  walkHintTouch: '左半屏移动 · 右半屏环顾',
 }
 
 export const endonym = '简体中文'

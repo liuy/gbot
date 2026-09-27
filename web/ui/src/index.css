@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Tailwind v4 auto-scans the whole project for class tokens; the vendored
+   model-viewer tree (SVG/CSS-in-TS assets) must not influence app CSS. */
+@source not "./model-viewer";
+
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 @theme {
@@ -438,6 +442,103 @@ body {
 }
 .sheet-handle:hover::after { background: var(--color-t2); }
 .sheet-handle:active { cursor: grabbing; }
+/* Walk-mode overlay, top-right of the glTF sheet. Sibling of .gltf-host so
+   viewer remounts (open/reload) never wipe it. pointer-events pass through
+   the column except on the interactive children themselves. */
+.sheet-ui {
+  position: absolute;
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  right: 18px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+.sheet-ui > * { pointer-events: auto; }
+/* Modern glass look; stays in the top-right stack — the stack position was
+   never the problem, the near-black fill was. */
+.walk-toggle {
+  border: 1px solid rgba(255,255,255,.09);
+  background: rgba(10,14,20,.55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  padding: 9px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background .2s ease;
+}
+.walk-toggle:hover { background: rgba(10,14,20,.75); }
+.walk-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(12,16,24,.82);
+  padding: 7px 11px;
+  border-radius: 10px;
+}
+/* Compositor-thread spinner: keeps animating through the main-thread freeze
+   of the synchronous BVH build on very large models. */
+.walk-loading::before {
+  content: '';
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.25);
+  border-top-color: #fff;
+  animation: spin .9s linear infinite;
+}
+.walk-loading.failed::before { animation: none; border-top-color: #ff8a80; }
+/* Walk hint: top-center glass pill (same slot on phone and desktop); retires
+   on the first real input. Fixed to the viewport — the sheet frame is a
+   zero-height coordinate anchor, not a box. */
+.walk-hint {
+  position: fixed;
+  left: 50%;
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(10,14,20,.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.09);
+  padding: 8px 14px;
+  border-radius: 999px;
+  opacity: 0;
+  /* Purely informational: never an invisible click-catcher in orbit mode. */
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .3s ease, visibility 0s linear .3s;
+}
+.walk-hint.visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .3s ease;
+  animation: walk-hint-in .35s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes walk-hint-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+}
+.walk-hint kbd {
+  font: 600 11px/1 ui-monospace, monospace;
+  color: #fff;
+  background: rgba(255,255,255,.12);
+  border: 1px solid rgba(255,255,255,.18);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 3px 5px;
+}
+.walk-hint i { font-style: normal; opacity: .45; }
 /* VNC console sheet: veil + bottom-sheet (mobile) / centered card (>=700px) */
 .vnc-veil { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 45; display: flex; align-items: flex-start; justify-content: center; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 .vnc-sheet { width: min(560px, 100%); height: min(560px, 88%); background: var(--color-ink2); border: 1px solid var(--color-hairline); border-radius: 0 0 18px 18px; display: flex; flex-direction: column; animation: vnc-up .22s cubic-bezier(.2,.9,.3,1); overflow: hidden; }

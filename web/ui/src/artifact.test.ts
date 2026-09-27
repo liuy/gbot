@@ -7,7 +7,9 @@ import {
   createArtifactSheet,
   fetchArtifactList,
   isGLTFArtifactName,
+  isWalkToggleEnabled,
 } from './artifact'
+import { t } from './i18n'
 import { __record } from './model_viewer_loader'
 import type { Block } from './model'
 
@@ -480,6 +482,304 @@ describe('createArtifactSheet', () => {
     pointer(handle, 'pointermove', 50)
     pointer(handle, 'pointercancel', 50)
     expect(sheet.root.style.height).toBe('0px')
+  })
+})
+
+describe('isWalkToggleEnabled', () => {
+  it.each([
+    ['', true],
+    ['?walk-off', false],
+    ['?a=1&walk-off=1', false],
+    ['?walk-offx=1', true],
+    ['?other=walk-off', true],
+  ])('%s gates to %s', (search, want) => {
+    expect(isWalkToggleEnabled(search)).toBe(want)
+  })
+})
+
+describe('createArtifactSheet walk mode', () => {
+  // Sheets stay attached across a test's assertions (two sheets live at once
+  // in the ?walk-off case), so cleanup is deferred to afterEach.
+  const sheetRoots: HTMLElement[] = []
+  const matchMediaRestores: (() => void)[] = []
+  beforeEach(() => {
+    __record.loads.length = 0
+  })
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+    for (const root of sheetRoots) root.remove()
+    sheetRoots.length = 0
+    for (const restore of matchMediaRestores) restore()
+    matchMediaRestores.length = 0
+    // jsdom has no maxTouchPoints of its own — restore 0, not a delete
+    // (undefined would defeat the `<= 0` desktop guard).
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      configurable: true,
+      value: 0,
+    })
+    delete (document as { pointerLockElement?: unknown }).pointerLockElement
+  })
+
+  // jsdom defaults: maxTouchPoints 0 (desktop), no pointer lock API. The
+  // overrides shadow the properties with configurable own ones so the
+  // afterEach delete restores the defaults.
+  const setTouchDevice = (points: number) => {
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      configurable: true,
+      value: points,
+    })
+    // setWalkHint tests coarse-pointer first; jsdom's matchMedia never
+    // matches, so pin it to the fixture's intent.
+    const orig = window.matchMedia
+    window.matchMedia = ((q: string) =>
+      ({ matches: points > 0, media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, dispatchEvent: () => false })) as unknown as typeof matchMedia
+    matchMediaRestores.push(() => { window.matchMedia = orig })
+  }
+
+  function makeWalkSheet() {
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheetRoots.push(sheet.root)
+    const toggle = sheet.root.querySelector('.walk-toggle') as HTMLButtonElement
+    const spinner = sheet.root.querySelector('.walk-loading') as HTMLElement
+    const hint = sheet.root.querySelector('.walk-hint') as HTMLElement
+    const openGlb = async (name = 'model.glb') => {
+      sheet.open(name)
+      await vi.waitFor(() =>
+        expect(sheet.root.querySelector('model-viewer')).not.toBeNull(),
+      )
+      return sheet.root.querySelector('model-viewer') as HTMLElement
+    }
+    return { sheet, toggle, spinner, hint, openGlb }
+  }
+
+  it('renders the walk toggle for a GLB unless ?walk-off', async () => {
+    const shown = makeWalkSheet()
+    await shown.openGlb()
+    expect(shown.toggle.style.display).toBe('')
+    shown.sheet.open('game.html')
+    expect(shown.toggle.style.display).toBe('none')
+
+    window.history.replaceState(null, '', '/?walk-off')
+    const hidden = makeWalkSheet()
+    await hidden.openGlb()
+    expect(hidden.toggle.style.display).toBe('none')
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('toggle click enters walk: attribute set, dataset entering, spinner indexing, label exit', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    expect(el.getAttribute('walk')).toBe('')
+    expect(sheet.root.dataset.walk).toBe('entering')
+    expect(spinner.style.display).toBe('')
+    expect(spinner.classList.contains('failed')).toBe(false)
+    expect(spinner.textContent).toBe(t('walkIndexing'))
+    expect(toggle.textContent).toBe(t('walkExit'))
+  })
+
+  it('walk-indexed moves entering to active and hides the spinner', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('walk-indexed'))
+    expect(sheet.root.dataset.walk).toBe('active')
+    expect(spinner.style.display).toBe('none')
+  })
+
+  it('walk-error while entering exits to orbit and shows walkFailed until the next toggle', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('walk-error', { detail: { message: 'x' } }))
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('')
+    expect(spinner.classList.contains('failed')).toBe(true)
+    expect(spinner.textContent).toBe(t('walkFailed'))
+    expect(toggle.textContent).toBe(t('walkEnter'))
+
+    toggle.click()
+    expect(el.getAttribute('walk')).toBe('')
+    expect(sheet.root.dataset.walk).toBe('entering')
+    expect(spinner.classList.contains('failed')).toBe(false)
+    expect(spinner.textContent).toBe(t('walkIndexing'))
+  })
+
+  it('toggle while active exits: attribute removed, dataset orbit, label reset, late walk-indexed ignored', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('walk-indexed'))
+    toggle.click()
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+    expect(toggle.textContent).toBe(t('walkEnter'))
+    // A late indexed event after exit must not resurrect walk state.
+    el.dispatchEvent(new CustomEvent('walk-indexed'))
+    expect(sheet.root.dataset.walk).toBe('')
+  })
+
+  it('close() while walk empties the host and clears the overlay', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    await openGlb()
+    toggle.click()
+    sheet.close()
+    expect(sheet.root.querySelector('model-viewer')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+    expect(toggle.style.display).toBe('none')
+  })
+
+  it('reload() while entering remounts without walk and resets the overlay', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    sheet.reload()
+    const fresh = sheet.root.querySelector('model-viewer') as HTMLElement
+    expect(fresh).not.toBe(el)
+    expect(fresh.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+    expect(toggle.textContent).toBe(t('walkEnter'))
+  })
+
+  it('webglcontextlost while entering walk exits to orbit and shows walkFailed', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('error', { detail: { type: 'webglcontextlost' } }))
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('')
+    expect(spinner.classList.contains('failed')).toBe(true)
+    expect(spinner.textContent).toBe(t('walkFailed'))
+    expect(toggle.textContent).toBe(t('walkEnter'))
+  })
+
+  it('load failure while entering walk exits to orbit and shows walkFailed', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('error', { detail: { type: 'loadfailure' } }))
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('')
+    expect(spinner.classList.contains('failed')).toBe(true)
+    expect(spinner.textContent).toBe(t('walkFailed'))
+    expect(toggle.textContent).toBe(t('walkEnter'))
+  })
+
+  it('webglcontextlost outside walk changes nothing (orbit-only recovery)', async () => {
+    const { sheet, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    el.dispatchEvent(new CustomEvent('error', { detail: { type: 'webglcontextlost' } }))
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+  })
+
+  it('exit during entering clears the spinner; a late walk-indexed changes nothing', async () => {
+    const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    toggle.click()
+    expect(el.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+    // The disposed controller suppresses its callback: the race is pinned at
+    // the seam the sheet can observe.
+    el.dispatchEvent(new CustomEvent('walk-indexed'))
+    expect(sheet.root.dataset.walk).toBe('')
+    expect(spinner.style.display).toBe('none')
+  })
+
+  it('three enter/exit cycles set and remove the walk attribute exactly 3 times each', async () => {
+    const { toggle, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    const setSpy = vi.spyOn(el, 'setAttribute')
+    const removeSpy = vi.spyOn(el, 'removeAttribute')
+    for (let i = 0; i < 3; i++) {
+      toggle.click()
+      expect(el.getAttribute('walk')).toBe('')
+      toggle.click()
+      expect(el.getAttribute('walk')).toBeNull()
+    }
+    expect(setSpy.mock.calls.filter((call) => call[0] === 'walk')).toHaveLength(3)
+    expect(removeSpy.mock.calls.filter((call) => call[0] === 'walk')).toHaveLength(3)
+  })
+
+  it('opening another GLB while walking mounts a fresh element without walk', async () => {
+    const { sheet, toggle, openGlb } = makeWalkSheet()
+    const first = await openGlb('a.glb')
+    toggle.click()
+    const second = await openGlb('b.glb')
+    expect(second).not.toBe(first)
+    expect(second.getAttribute('walk')).toBeNull()
+    expect(sheet.root.dataset.walk).toBe('')
+  })
+
+  it('entering walk shows the hint with the touch copy and keeps it up (no auto-hide)', async () => {
+    setTouchDevice(1)
+    const { sheet, toggle, hint, openGlb } = makeWalkSheet()
+    await openGlb()
+    toggle.click()
+    expect(hint.textContent).toBe(t('walkHintTouch'))
+    expect(hint.classList.contains('visible')).toBe(true)
+    // The hint stays until the first real input — nothing else retires it.
+    expect(sheet.root.dataset.walk).toBe('entering')
+  })
+
+  it('entering walk renders desktop keycap chips when the device has no touch points', async () => {
+    const { toggle, hint, openGlb } = makeWalkSheet()
+    await openGlb()
+    toggle.click()
+    expect(hint.querySelectorAll('kbd')).toHaveLength(4)
+    expect(hint.textContent).toBe('WASD' + t('walkHintMove') + '·' + t('walkHintLook'))
+    expect(hint.classList.contains('visible')).toBe(true)
+  })
+
+  it('the first touch pointerdown hides the hint — joystick (left) or look (right) half', async () => {
+    setTouchDevice(1)
+    const { toggle, hint, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      width: 100,
+    } as DOMRect)
+    toggle.click()
+    el.dispatchEvent(new PointerEvent('pointerdown', { clientX: 30, bubbles: true }))
+    expect(hint.classList.contains('visible')).toBe(false)
+    // Re-entry re-arms the hint; the first look-drag (right half) dismisses it too.
+    toggle.click()
+    toggle.click()
+    expect(hint.classList.contains('visible')).toBe(true)
+    el.dispatchEvent(new PointerEvent('pointerdown', { clientX: 70, bubbles: true }))
+    expect(hint.classList.contains('visible')).toBe(false)
+  })
+
+  it('desktop: the first pointerdown (look drag) retires the hint', async () => {
+    const { toggle, hint, openGlb } = makeWalkSheet()
+    const el = await openGlb()
+    toggle.click()
+    expect(hint.classList.contains('visible')).toBe(true)
+    el.dispatchEvent(new PointerEvent('pointerdown', { clientX: 30, bubbles: true }))
+    expect(hint.classList.contains('visible')).toBe(false)
+  })
+
+  it('exit and close clear the hint; re-enter shows it again', async () => {
+    setTouchDevice(1)
+    const { sheet, toggle, hint, openGlb } = makeWalkSheet()
+    await openGlb()
+    toggle.click()
+    expect(hint.classList.contains('visible')).toBe(true)
+    toggle.click()
+    expect(hint.classList.contains('visible')).toBe(false)
+    toggle.click()
+    expect(hint.classList.contains('visible')).toBe(true)
+    sheet.close()
+    expect(hint.classList.contains('visible')).toBe(false)
   })
 })
 
