@@ -2,15 +2,21 @@ package wui
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,11 +77,23 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 				// every open revalidated (edited HTML artifacts still show up
 				// on the next reload) while an unchanged 394 MB GLB costs one
 				// header round-trip (304, no body) instead of a full
-				// re-download. ServeContent answers If-None-Match /
-				// If-Modified-Since from the ETag and modtime set here.
+				// re-download.
+				//
+				// The representation depends on Accept-Encoding, so Vary goes
+				// on every file response (both encodings, 200 and 304 alike)
+				// or a shared cache could serve the gzip bytes to a client
+				// that never asked for them.
+				w.Header().Set("Vary", "Accept-Encoding")
+				if ct := artifactContentType(st.Name()); ct != "" {
+					w.Header().Set("Content-Type", ct)
+				}
+				w.Header().Set("Cache-Control", "no-cache")
+				if gzipEligible(r, f, st) {
+					serveArtifactGzipped(w, r, f, st)
+					return
+				}
 				etag := fmt.Sprintf(`"%x-%x"`, st.ModTime().UnixNano(), st.Size())
 				w.Header().Set("ETag", etag)
-				w.Header().Set("Cache-Control", "no-cache")
 				http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 				return
 			}
@@ -110,6 +128,327 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// artifactGzipMinSize is the floor under which compression costs more than
+// it saves: the HTML/JS artifacts this daemon serves are KB-scale, so only
+// the big model/video payloads ever qualify.
+const artifactGzipMinSize = 1 << 20
+
+// artifactContentType pins the Content-Type for model formats. The system
+// mime table is machine-dependent (/etc/mime.types may or may not know glb),
+// and the gzip path cannot sniff its compressed bytes at all, so these two
+// formats are mapped explicitly on both serve paths.
+func artifactContentType(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".glb":
+		return "model/gltf-binary"
+	case ".gltf":
+		return "model/gltf+json"
+	}
+	return ""
+}
+
+// acceptsGzip reports whether the request's Accept-Encoding lists gzip as an
+// exact member — "x-gzip" and a lying "gzip;q=0" must not count as
+// acceptance.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.TrimSpace(part) == "gzip" {
+			return true
+		}
+	}
+	return false
+}
+
+// gzipEligible reports whether the request's client accepts gzip and the
+// file would benefit: at least artifactGzipMinSize bytes and not already a
+// compressed medium. A non-seekable or unreadable file returns false, which
+// only downgrades to the identity path (ServeContent would fail on such a
+// file regardless).
+func gzipEligible(r *http.Request, f *os.File, st os.FileInfo) (eligible bool) {
+	if !acceptsGzip(r) {
+		return false
+	}
+	if st.Size() < artifactGzipMinSize {
+		return false
+	}
+	// The sniff below consumes bytes; every exit from here on must rewind
+	// the file or the identity ServeContent fallback would emit a truncated
+	// body. A deferred seek on the named return covers all of them,
+	// including the blocklist fallthrough.
+	defer func() {
+		if _, err := f.Seek(0, 0); err != nil {
+			eligible = false
+		}
+	}()
+	head := make([]byte, 512)
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return false
+	}
+	ct := http.DetectContentType(head[:n])
+	switch {
+	case ct == "application/zip", ct == "application/gzip", ct == "application/x-gzip":
+		return false
+	case strings.HasPrefix(ct, "image/") && ct != "image/svg+xml":
+		return false
+	case strings.HasPrefix(ct, "video/"), strings.HasPrefix(ct, "audio/"):
+		return false
+	}
+	return true
+}
+
+// etagMatches implements If-None-Match: `*` matches any representation, the
+// header is a comma list, and comparison is weak (a W/ prefix on either
+// side still counts).
+func etagMatches(ifNoneMatch, etag string) bool {
+	for _, part := range strings.Split(ifNoneMatch, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" {
+			return true
+		}
+		if strings.HasPrefix(part, "W/") {
+			part = part[2:]
+		}
+		if part == etag {
+			return true
+		}
+	}
+	return false
+}
+
+// notModifiedSince implements If-Modified-Since: the file is fresh in the
+// client's cache when its modtime (at Last-Modified's second resolution) is
+// at or before the validator time.
+func notModifiedSince(ims string, modtime time.Time) bool {
+	if ims == "" || modtime.IsZero() {
+		return false
+	}
+	t, err := http.ParseTime(ims)
+	if err != nil {
+		return false
+	}
+	modtime = modtime.Truncate(time.Second)
+	return !modtime.After(t)
+}
+
+// serveArtifactGzipped serves f gzipped from the in-memory cache (see
+// gzipCache). net/http exports no helper for a conditional non-seekable body
+// (writeNotModified is unexported and ServeContent's precondition logic
+// exists to serve Range, which a compressed stream cannot honor), so the
+// preconditions are replicated here — in net/http's precedence order:
+// If-None-Match, when present, alone decides the outcome and
+// If-Modified-Since is consulted only in its absence. ORing the two would
+// wrongly 304 a client whose cached ETag is stale but whose IMS happens to
+// be fresh.
+func serveArtifactGzipped(w http.ResponseWriter, r *http.Request, f *os.File, st os.FileInfo) {
+	// The gz- prefix keeps the two representations' validators distinct so
+	// a cached identity ETag can never 304 the gzip body and vice versa.
+	gzTag := fmt.Sprintf(`"gz-%x-%x"`, st.ModTime().UnixNano(), st.Size())
+	w.Header().Set("ETag", gzTag)
+	w.Header().Set("Last-Modified", st.ModTime().UTC().Format(http.TimeFormat))
+	w.Header().Set("Content-Encoding", "gzip")
+	if w.Header().Get("Content-Type") == "" {
+		// Compressed bytes cannot be sniffed; without the explicit model
+		// map there is nothing better to report.
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	var hit bool
+	if inm := r.Header.Get("If-None-Match"); len(inm) > 0 {
+		hit = etagMatches(inm, gzTag)
+	} else {
+		hit = notModifiedSince(r.Header.Get("If-Modified-Since"), st.ModTime())
+	}
+	if hit {
+		// net/http's writeNotModified semantics: a 304 carries no
+		// representation headers, and Last-Modified drops whenever an ETag
+		// is present — the 304 echoes exactly one validator, so a client
+		// cannot pair a fresh ETag with a stale modtime across
+		// representations.
+		w.Header().Del("Content-Type")
+		w.Header().Del("Content-Encoding")
+		w.Header().Del("Last-Modified")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if r.Method == http.MethodHead {
+		return
+	}
+	gz, err := artifactGzipCache.get(
+		f.Name(), st.ModTime().UnixNano(), st.Size(),
+		func() ([]byte, error) {
+			// gzipEligible's sniff rewound the file, so this reads from 0;
+			// the caller returns without reusing f afterwards.
+			src, err := io.ReadAll(f)
+			if err != nil {
+				return nil, err
+			}
+			var buf bytes.Buffer
+			zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := zw.Write(src); err != nil {
+				return nil, err
+			}
+			if err := zw.Close(); err != nil {
+				return nil, err
+			}
+			return buf.Bytes(), nil
+		})
+	if err != nil {
+		// Nothing was written yet, but the representation headers above
+		// would make the client gunzip http.Error's plaintext — drop them.
+		w.Header().Del("Content-Encoding")
+		w.Header().Del("Content-Type")
+		w.Header().Del("ETag")
+		w.Header().Del("Last-Modified")
+		slog.Warn("artifact gzip compress", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// The exact compressed size is the point of the cache: without it the
+	// response goes out chunked, fetch progress loses its denominator and
+	// the progress bar never renders.
+	w.Header().Set("Content-Length", strconv.Itoa(len(gz)))
+	if _, err := w.Write(gz); err != nil {
+		slog.Warn("artifact gzip write", "err", err)
+	}
+}
+
+// artifactGzipCacheMaxEntries/Bytes bound the pinned memory: three resident
+// ~80 MB compressed GLBs (the 97 MB test model compresses to ~81 MB) stay
+// well under the byte cap, and a fourth distinct model evicts the least
+// recently used one instead of growing.
+const (
+	artifactGzipCacheMaxEntries = 3
+	artifactGzipCacheMaxBytes   = 400 << 20
+)
+
+// artifactGzipCache is the daemon-wide cache behind serveArtifactGzipped.
+var artifactGzipCache = newGzipCache(artifactGzipCacheMaxEntries, artifactGzipCacheMaxBytes)
+
+// gzipCacheEntry is one compressed representation. mtimeNano+size is the
+// same identity the ETag is built from, so a cache hit is exactly the case
+// where the validator the client holds still matches the bytes served.
+type gzipCacheEntry struct {
+	mtimeNano int64
+	size      int64
+	gz        []byte
+	lastUsed  int64
+}
+
+// gzipCall is one in-flight compression that concurrent first-hits of the
+// same path join instead of duplicating.
+type gzipCall struct {
+	done      chan struct{}
+	gz        []byte
+	err       error
+}
+
+// gzipCache memoizes compress() results per (path, mtimeNano, size) in a
+// bounded LRU. x/sync/singleflight is not a dependency of this module, so
+// the coalescing is the classic mutex+map-of-calls handroll.
+type gzipCache struct {
+	mu           sync.Mutex
+	maxEntries   int
+	maxBytes     int64
+	entries      map[string]*gzipCacheEntry
+	calls        map[string]*gzipCall
+	tick         int64
+	bytes        int64
+	compressions atomic.Int64
+}
+
+func newGzipCache(maxEntries int, maxBytes int64) *gzipCache {
+	return &gzipCache{
+		maxEntries: maxEntries,
+		maxBytes:   maxBytes,
+		entries:    map[string]*gzipCacheEntry{},
+		calls:      map[string]*gzipCall{},
+	}
+}
+
+// get returns the cached compressed bytes for (path, mtimeNano, size),
+// running compress at most once per identity across concurrent callers. A
+// flight whose identity no longer matches (the file changed while it was
+// being compressed) makes the joiner loop and start its own compression,
+// so no caller is ever served a validator/bytes mismatch.
+func (c *gzipCache) get(path string, mtimeNano, size int64, compress func() ([]byte, error)) ([]byte, error) {
+	for {
+		c.mu.Lock()
+		if e, ok := c.entries[path]; ok && e.mtimeNano == mtimeNano && e.size == size {
+			c.tick++
+			e.lastUsed = c.tick
+			gz := e.gz
+			c.mu.Unlock()
+			return gz, nil
+		}
+		if call, ok := c.calls[path]; ok {
+			c.mu.Unlock()
+			<-call.done
+			if call.err != nil {
+				return nil, call.err
+			}
+			// Loop: the flight's result is in entries when the identity
+			// still matches, and a stale identity needs a fresh pass.
+			continue
+		}
+		call := &gzipCall{done: make(chan struct{})}
+		c.calls[path] = call
+		c.mu.Unlock()
+
+		c.compressions.Add(1)
+		gz, err := compress()
+
+		c.mu.Lock()
+		call.gz, call.err = gz, err
+		delete(c.calls, path)
+		if err == nil {
+			c.insertLocked(path, mtimeNano, size, gz)
+		}
+		c.mu.Unlock()
+		close(call.done)
+		return gz, err
+	}
+}
+
+// insertLocked stores the entry and evicts least-recently-used victims
+// until both caps hold. The just-inserted entry is never a victim: a single
+// compressed file larger than maxBytes still has to be servable, and it
+// evicts everything else instead.
+func (c *gzipCache) insertLocked(path string, mtimeNano, size int64, gz []byte) {
+	if old, ok := c.entries[path]; ok {
+		c.bytes -= int64(len(old.gz))
+	}
+	c.tick++
+	c.entries[path] = &gzipCacheEntry{
+		mtimeNano: mtimeNano,
+		size:      size,
+		gz:        gz,
+		lastUsed:  c.tick,
+	}
+	c.bytes += int64(len(gz))
+	for len(c.entries) > c.maxEntries || c.bytes > c.maxBytes {
+		victim := ""
+		var minUsed int64
+		for k, e := range c.entries {
+			if k == path {
+				continue
+			}
+			if victim == "" || e.lastUsed < minUsed {
+				victim = k
+				minUsed = e.lastUsed
+			}
+		}
+		if victim == "" {
+			return
+		}
+		c.bytes -= int64(len(c.entries[victim].gz))
+		delete(c.entries, victim)
+	}
 }
 
 // serveBundledGame serves the embedded page for a builtin registry name and

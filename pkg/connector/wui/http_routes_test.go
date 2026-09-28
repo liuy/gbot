@@ -24,8 +24,10 @@ func gzipBody(t *testing.T, body io.Reader) string {
 	return string(data)
 }
 
-// getDecompressed fetches a URL with gzip transport disabled (so we can
-// verify the raw Content-Encoding header), then decompresses the body.
+// getDecompressed fetches a URL with an explicit Accept-Encoding: gzip and
+// gzip transport disabled (so the raw Content-Encoding header survives and
+// the body is not transparently decoded), then decompresses the body. The
+// /assets/ routes negotiate; the explicit header is what selects gzip here.
 func getDecompressed(t *testing.T, url string) (*http.Response, string) {
 	t.Helper()
 	client := &http.Client{
@@ -33,7 +35,12 @@ func getDecompressed(t *testing.T, url string) (*http.Response, string) {
 			DisableCompression: true,
 		},
 	}
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", url, err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}

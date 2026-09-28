@@ -26,11 +26,12 @@ export type LoadingAttributeValue = 'auto'|'lazy'|'eager';
 
 export const PROGRESS_BAR_UPDATE_THRESHOLD = 100;
 
-const DEFAULT_DRACO_DECODER_LOCATION =
-    'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
+// gbot fork: decoders are vendored into the wui binary and served from this
+// origin — no CDN fetch at runtime. The ModelViewerElement global config
+// can still override these.
+const DEFAULT_DRACO_DECODER_LOCATION = '/assets/draco/';
 
-const DEFAULT_KTX2_TRANSCODER_LOCATION =
-    'https://www.gstatic.com/basis-universal/versioned/2021-04-15-ba1c3e4/';
+const DEFAULT_KTX2_TRANSCODER_LOCATION = '/assets/basis/';
 
 const DEFAULT_LOTTIE_LOADER_LOCATION =
     'https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/loaders/LottieLoader.js';
@@ -97,8 +98,9 @@ export interface ModelViewerGlobalConfig {
  * The DRACO decoder will be loaded on-demand if a glTF that uses the DRACO mesh
  * compression extension is encountered.
  *
- * By default, the DRACO decoder will be loaded from a Google CDN. It is
- * possible to customize where the decoder is loaded from by defining a global
+ * By default, the DRACO decoder will be loaded from this origin (the wui
+ * serves the vendored decoder files under /assets/draco/). It is possible
+ * to customize where the decoder is loaded from by defining a global
  * configuration option for `<model-viewer>` like so:
  *
  * ```html

@@ -161,6 +161,11 @@ export class CachingGLTFLoader<T extends GLTFInstanceConstructor =
     this[$GLTFInstance] = GLTFInstance;
     this[$loader].setDRACOLoader(dracoLoader);
     this[$loader].setKTX2Loader(ktx2Loader);
+    // The decoder ships inside this bundle (three's lib copy is
+    // self-contained: wasm embedded, no fetch), so every loader gets it
+    // unconditionally — EXT_meshopt_compression must not depend on the app
+    // configuring meshoptDecoderLocation first.
+    this[$loader].setMeshoptDecoder(MeshoptDecoder);
   }
 
   protected[$loader]: GLTFLoader = new GLTFLoader().register(
@@ -239,3 +244,11 @@ export class CachingGLTFLoader<T extends GLTFInstanceConstructor =
     return clone;
   }
 }
+
+// gbot fork: decoder runtimes are vendored into the wui binary and served
+// same-origin, so the defaults point at /assets. Applied at module init —
+// before any element or load — so loaders constructed directly (not via a
+// model-viewer element) get the same paths; LoadingMixin's constructor
+// re-applies the identical values when an element exists.
+CachingGLTFLoader.setDRACODecoderLocation('/assets/draco/');
+CachingGLTFLoader.setKTX2TranscoderLocation('/assets/basis/');
