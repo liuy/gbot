@@ -1228,18 +1228,32 @@ export function createSettingsPage(): SettingsPageHandles {
       tabsRow.appendChild(btn)
     }
 
+    const copyAppLogViaExecCommand = () => {
+      const scratch = document.createElement('textarea')
+      scratch.value = appLogText
+      scratch.style.position = 'fixed'
+      scratch.style.opacity = '0'
+      document.body.appendChild(scratch)
+      scratch.select()
+      const ok = document.execCommand('copy')
+      scratch.remove()
+      toast(ok ? t('appLogCopied') : t('appLogCopyFailed'))
+    }
+
     copyBtn.addEventListener('click', () => {
-      // jsdom and non-secure contexts have no clipboard API — degrade to the
-      // failure toast instead of throwing inside the click handler.
+      // Primary: the clipboard API (https entrances). Fallback: execCommand
+      // — the Android WebView on http has no navigator.clipboard at all,
+      // and a plain failure toast made app-log copy permanently broken
+      // there. jsdom has neither path and still lands on the failure toast.
       const clip = navigator.clipboard
-      if (!clip) {
-        toast(t('appLogCopyFailed'))
+      if (clip) {
+        void clip
+          .writeText(appLogText)
+          .then(() => toast(t('appLogCopied')))
+          .catch(() => copyAppLogViaExecCommand())
         return
       }
-      void clip
-        .writeText(appLogText)
-        .then(() => toast(t('appLogCopied')))
-        .catch(() => toast(t('appLogCopyFailed')))
+      copyAppLogViaExecCommand()
     })
 
     actions.append(tabsRow, copyBtn)

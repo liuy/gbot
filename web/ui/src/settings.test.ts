@@ -1418,12 +1418,41 @@ describe('app log card', () => {
     }
   })
 
-  it('copy degrades to a failure toast when the clipboard API is missing', async () => {
+  it('copy falls back to execCommand when the clipboard API is absent (WebView on http)', async () => {
     const page = await openAppLog(vi.fn(() => LINES))
-    ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
-    await vi.waitFor(() => {
-      expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copy failed')
+    // jsdom does not implement execCommand at all — install the WebView's
+    // contract by hand.
+    const exec = vi.fn(() => true)
+    document.execCommand = exec as unknown as typeof document.execCommand
+    try {
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copied')
+      })
+      expect(exec).toHaveBeenCalledWith('copy')
+    } finally {
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('copy falls back to execCommand when writeText rejects', async () => {
+    const page = await openAppLog(vi.fn(() => LINES))
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
     })
+    const exec = vi.fn(() => true)
+    document.execCommand = exec as unknown as typeof document.execCommand
+    try {
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Copied')
+      })
+      expect(exec).toHaveBeenCalledWith('copy')
+    } finally {
+      delete (document as unknown as Record<string, unknown>).execCommand
+      Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 })
 
