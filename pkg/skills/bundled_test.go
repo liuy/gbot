@@ -2,7 +2,26 @@ package skills
 
 import (
 	"testing"
+
+	"github.com/liuy/gbot/pkg/types"
 )
+
+func TestRegisterBundledSkills_OnlyGoalRemains(t *testing.T) {
+	// 2026-09-30 ruling: goal is the only bundled skill. debug/execute/
+	// plan/review were cut — goal drives those phases via sub-agents, and
+	// every bundled entry costs system-prompt tokens on every call.
+	reg := NewRegistry(t.TempDir())
+	reg.RegisterBundledSkills()
+	var names []string
+	for _, s := range reg.GetAllSkills() {
+		if s.Source == types.SkillSourceBundled {
+			names = append(names, s.Name)
+		}
+	}
+	if len(names) != 1 || names[0] != "goal" {
+		t.Fatalf("bundled skills = %v, want exactly [goal]", names)
+	}
+}
 
 func TestRegisterBundledSkills_LoadsGoal(t *testing.T) {
 	reg := NewRegistry(t.TempDir())

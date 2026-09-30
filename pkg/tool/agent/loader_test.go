@@ -566,6 +566,26 @@ func TestLoader_LoadAndList(t *testing.T) {
 	}
 }
 
+func TestBundledAgents_NoDebugger(t *testing.T) {
+	// 2026-09-30 ruling: the debugger agent is cut (near-zero use; TDD
+	// discipline lives in CLAUDE.md and Executor covers repro tests).
+	// The four orchestration agents must survive the cut.
+	loader := NewLoader(t.TempDir())
+	loader.Load()
+	have := map[string]bool{}
+	for _, a := range loader.ListAll() {
+		have[a.AgentType] = true
+	}
+	if have["Debugger"] {
+		t.Fatal("Debugger agent still present — bundled/debugger.md should be gone")
+	}
+	for _, want := range []string{"Critic", "Executor", "Planner", "Reviewer"} {
+		if !have[want] {
+			t.Errorf("orchestration agent %q missing after the cut", want)
+		}
+	}
+}
+
 func TestLoader_LazyLoading(t *testing.T) {
 	loader := NewLoader(t.TempDir())
 
