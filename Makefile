@@ -123,7 +123,32 @@ agent-stop:
 	./gbot-agent stop
 
 install: build
-	@mkdir -p $(GBOT_HOME)/agents $(GBOT_HOME)/skills
+	@mkdir -p $(GBOT_HOME)/bin $(GBOT_HOME)/agents $(GBOT_HOME)/skills
+	@cp $(BINARY) $(GBOT_HOME)/bin/.$(BINARY).tmp && mv $(GBOT_HOME)/bin/.$(BINARY).tmp $(GBOT_HOME)/bin/$(BINARY)
+	@echo "Installed binary to $(GBOT_HOME)/bin/$(BINARY)"
+	@if command -v rg >/dev/null 2>&1; then \
+		echo "rg: $$(rg --version | head -1)"; \
+	else \
+		echo "WARNING: ripgrep not found (gbot search tools depend on it)."; \
+		echo "  debian/ubuntu: apt install ripgrep"; \
+		echo "  fedora/rhel:   dnf install ripgrep"; \
+		echo "  arch:          pacman -S ripgrep"; \
+	fi
+	@missing=""; \
+	for cmd in ls cat cp mv rm mkdir sed awk; do \
+		command -v $$cmd >/dev/null 2>&1 || missing="$$missing $$cmd"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "WARNING: missing base commands:$$missing — install coreutils."; \
+	fi
+	@if ! echo ":$$PATH:" | grep -q ":$(GBOT_HOME)/bin:"; then \
+		for rc in $$HOME/.bashrc $$HOME/.zshrc; do \
+			[ -f "$$rc" ] || continue; \
+			grep -q 'PATH=.*\.gbot/bin' "$$rc" && continue; \
+			printf '\n# added by gbot install\nexport PATH="%s/bin:$$PATH"\n' "$(GBOT_HOME)" >> "$$rc"; \
+			echo "PATH: appended $(GBOT_HOME)/bin to $$rc (reopen shell to apply)"; \
+		done; \
+	fi
 	@if [ -d agents ]; then \
 		cp agents/*.md $(GBOT_HOME)/agents/; \
 		echo "Installed agents to $(GBOT_HOME)/agents/"; \
