@@ -331,7 +331,7 @@ func TestAutoRewindSkippedWithQueuedPrompt(t *testing.T) {
 	mock.pendingAttachmentsFn = func() []types.QueuedItem {
 		return []types.QueuedItem{{
 			UUID: "q-b", Mode: types.ItemModePrompt,
-			Value: "queued B",
+			Value:   "queued B",
 			Content: []types.ContentBlock{types.NewTextBlock("queued B")},
 		}}
 	}

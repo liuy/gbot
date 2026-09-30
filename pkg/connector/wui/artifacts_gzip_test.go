@@ -416,7 +416,9 @@ func TestArtifactGzipCacheSingleFlight(t *testing.T) {
 				return
 			}
 			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				t.Errorf("close response body: %v", closeErr)
+			}
 			results <- result{status: resp.StatusCode, body: body, err: err}
 		}()
 	}

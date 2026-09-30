@@ -208,9 +208,7 @@ func etagMatches(ifNoneMatch, etag string) bool {
 		if part == "*" {
 			return true
 		}
-		if strings.HasPrefix(part, "W/") {
-			part = part[2:]
-		}
+		part = strings.TrimPrefix(part, "W/")
 		if part == etag {
 			return true
 		}
@@ -343,9 +341,9 @@ type gzipCacheEntry struct {
 // gzipCall is one in-flight compression that concurrent first-hits of the
 // same path join instead of duplicating.
 type gzipCall struct {
-	done      chan struct{}
-	gz        []byte
-	err       error
+	done chan struct{}
+	gz   []byte
+	err  error
 }
 
 // gzipCache memoizes compress() results per (path, mtimeNano, size) in a
