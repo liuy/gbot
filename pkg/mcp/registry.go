@@ -1072,7 +1072,16 @@ func (r *Registry) handleConfigReload() {
 	defer r.reloadMu.Unlock()
 
 	// Re-read configs from disk (project .mcp.json only — plugin servers are preserved below)
-	configs, _ := GetProjectMcpConfigsFromCwd(r.configDir)
+	configs, configErrs := GetProjectMcpConfigsFromCwd(r.configDir)
+	if dropped := serverDroppingErrors(configErrs); len(dropped) > 0 {
+		// A broken config must not reconcile connections down to zero; keep
+		// serving the previous state until the config is fixed. Missing-env
+		// errors keep their servers, so they don't bail.
+		for _, e := range dropped {
+			slog.Warn("mcp: reload skipped, invalid server config", "path", e.Path, "error", e.Message)
+		}
+		return
+	}
 
 	r.mu.Lock()
 	oldConfigs := r.configs

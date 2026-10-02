@@ -1123,3 +1123,61 @@ func TestStartConfigWatch_WithConfigFile_StartsWatcher(t *testing.T) {
 		t.Error("configWatcher should be created when .mcp.json exists")
 	}
 }
+
+// Regression: a config reload that hits a schema-invalid server must bail
+// (connections survive) instead of reconciling down to zero — and a fixed
+// config must re-trigger the reload so the bail never stalls permanently.
+func TestIntegration_ConfigReload_BailOnBrokenConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	t1a, t2a := mcp.NewInMemoryTransports()
+	server1 := mcp.NewServer(&mcp.Implementation{Name: "srv1", Version: "1.0"}, nil)
+	mcp.AddTool(server1, &mcp.Tool{Name: "tool1", Description: "Tool one"}, echoHandler)
+	go func() { _, _ = server1.Connect(context.Background(), t1a, nil) }()
+	provider := newInMemoryProvider()
+	provider.mu.Lock()
+	provider.transports["srv1"] = t2a
+	provider.mu.Unlock()
+	mgr := NewClientManager(provider, true, "")
+	registry := NewRegistry(mgr, ChangeCallbacks{})
+	registry.configDir = tmpDir
+	defer registry.Close()
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"srv1":{"command":"echo","args":["hello"]}}}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	configs, _ := GetProjectMcpConfigsFromCwd(tmpDir)
+	registry.ConnectAll(context.Background(), configs)
+	registry.mu.RLock()
+	_, connected := registry.connections["srv1"]
+	registry.mu.RUnlock()
+	if !connected {
+		t.Fatal("srv1 should be connected after initial load")
+	}
+
+	// Break srv1's own entry (stdio without command): the schema error keeps
+	// ParseMcpConfig from emitting srv1 at all, so a reload WITHOUT the bail
+	// would reconcile connections down to zero. The bail must keep srv1 alive.
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"srv1":{}}}`), 0644); err != nil {
+		t.Fatalf("write broken config: %v", err)
+	}
+	registry.handleConfigReload()
+	registry.mu.RLock()
+	_, stillConnected := registry.connections["srv1"]
+	registry.mu.RUnlock()
+	if !stillConnected {
+		t.Error("srv1 connection lost after bail on broken config")
+	}
+
+	// Fix the config (valid single server) — the next reload must proceed
+	// (no permanent stall).
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"srv1":{"command":"echo","args":["hello"]}}}`), 0644); err != nil {
+		t.Fatalf("write fixed config: %v", err)
+	}
+	registry.handleConfigReload()
+	registry.mu.RLock()
+	_, hasSrv1 := registry.connections["srv1"]
+	registry.mu.RUnlock()
+	if !hasSrv1 {
+		t.Error("srv1 should still be connected after fixed-config reload")
+	}
+}

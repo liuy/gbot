@@ -825,6 +825,10 @@ func GetProjectMcpConfigsFromCwd(cwd string) (servers map[string]ScopedMcpServer
 		}
 		return map[string]ScopedMcpServerConfig{}, nonMissing
 	}
+	// ParseMcpConfig drops servers that fail schema validation and reports
+	// them here; without this append those errors vanish and the caller sees
+	// a silently empty config.
+	errors = append(errors, errs...)
 
 	parsed, parseErrs := loadMcpServersFromConfig(config)
 	if len(parseErrs) > 0 {
@@ -912,12 +916,29 @@ func getProjectMcpConfigs(cwd string) (map[string]ScopedMcpServerConfig, []Valid
 		}
 
 		parsed, parseErrs := loadMcpServersFromConfig(config)
+		// Same root hole as GetProjectMcpConfigsFromCwd: ParseMcpConfig-level
+		// validation errors vanish for non-nil configs unless re-appended.
+		allErrors = append(allErrors, errs...)
 		allErrors = append(allErrors, parseErrs...)
 		scoped := AddScopeToServers(parsed, ScopeProject)
 		maps.Copy(allServers, scoped) // closer files override parent configs
 	}
 
 	return allServers, allErrors
+}
+
+// serverDroppingErrors filters validation errors that caused servers to be
+// dropped from the parsed view. "Missing environment variables" errors keep
+// the server (with the literal ${VAR} intact) and must not trigger the
+// add/remove/reload guards.
+func serverDroppingErrors(errs []ValidationError) []ValidationError {
+	var dropped []ValidationError
+	for _, e := range errs {
+		if !strings.HasPrefix(e.Message, "Missing environment variables") {
+			dropped = append(dropped, e)
+		}
+	}
+	return dropped
 }
 
 // loadMcpServersFromConfig parses the raw messages in McpJsonConfig into McpServerConfig values.
@@ -973,7 +994,12 @@ func AddMcpConfig(
 
 	switch scope {
 	case ScopeProject:
-		existing, _ := GetProjectMcpConfigsFromCwd(cwd)
+		existing, errs := GetProjectMcpConfigsFromCwd(cwd)
+		if dropped := serverDroppingErrors(errs); len(dropped) > 0 {
+			// Writing here would replace the whole file from a view that
+			// dropped invalid servers, wiping them.
+			return fmt.Errorf("cannot add MCP server %q: existing .mcp.json has invalid server configs: %v", name, dropped)
+		}
 		if _, ok := existing[name]; ok {
 			return fmt.Errorf("MCP server %s already exists in .mcp.json", name)
 		}
@@ -1011,7 +1037,12 @@ func RemoveMcpConfig(
 ) error {
 	switch scope {
 	case ScopeProject:
-		existing, _ := GetProjectMcpConfigsFromCwd(cwd)
+		existing, errs := GetProjectMcpConfigsFromCwd(cwd)
+		if dropped := serverDroppingErrors(errs); len(dropped) > 0 {
+			// Writing here would replace the whole file from a view that
+			// dropped invalid servers, wiping the remaining ones.
+			return fmt.Errorf("cannot remove MCP server %q: existing .mcp.json has invalid server configs: %v", name, dropped)
+		}
 		if _, ok := existing[name]; !ok {
 			return fmt.Errorf("no MCP server found with name: %s in .mcp.json", name)
 		}

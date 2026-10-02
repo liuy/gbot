@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +82,104 @@ func TestParseMcpConfigRoundTripsNonStdioTypes(t *testing.T) {
 				t.Fatalf("%s: typeless re-marshal no longer parses as stdio: %v", name, err)
 			}
 		}
+	}
+}
+
+// Regression: AddMcpConfig on a project dir whose .mcp.json has validation
+// errors must refuse to write — the old behavior read an empty view and
+// rewrote the file, wiping every existing server.
+func TestAddMcpConfigRefusesBrokenFile(t *testing.T) {
+	dir := t.TempDir()
+	broken := `{"mcpServers":{"broken":{}}}` // stdio without command = validation error
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
+		t.Fatalf("write broken .mcp.json: %v", err)
+	}
+
+	err := AddMcpConfig("new-srv", &StdioConfig{Command: "foo"}, ScopeProject, dir, nil, nil, nil)
+	if err == nil {
+		t.Fatal("AddMcpConfig succeeded on a broken .mcp.json — existing servers would be wiped")
+	}
+	if want := "invalid server configs"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %q does not mention %q", err, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(after) != broken {
+		t.Fatalf(".mcp.json was modified:\n%s", after)
+	}
+}
+
+// Missing-env-var errors keep their servers, so they must not block Add.
+func TestMissingEnvVarDoesNotBlockAdd(t *testing.T) {
+	dir := t.TempDir()
+	mcpJson := `{"mcpServers":{"gh":{"type":"http","url":"https://api.github.com/mcp","headers":{"Authorization":"Bearer ${UNSET_VAR}"}}}}`
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(mcpJson), 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	if err := AddMcpConfig("extra", &StdioConfig{Command: "foo"}, ScopeProject, dir, nil, nil, nil); err != nil {
+		t.Fatalf("missing env var blocked Add: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	for _, want := range []string{`"gh"`, `"extra"`, "UNSET_VAR"} {
+		if !strings.Contains(string(after), want) {
+			t.Fatalf(".mcp.json missing %s after add:\n%s", want, after)
+		}
+	}
+}
+
+// Mirror of the Add guard: Remove must also refuse on a broken file.
+func TestRemoveMcpConfigRefusesBrokenFile(t *testing.T) {
+	dir := t.TempDir()
+	broken := `{"mcpServers":{"broken":{}}}`
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
+		t.Fatalf("write broken .mcp.json: %v", err)
+	}
+
+	err := RemoveMcpConfig("broken", ScopeProject, dir, nil)
+	if err == nil {
+		t.Fatal("RemoveMcpConfig succeeded on a broken .mcp.json")
+	}
+	if want := "invalid server configs"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %q does not mention %q", err, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(after) != broken {
+		t.Fatalf(".mcp.json was modified:\n%s", after)
+	}
+}
+
+// A file with one valid and one schema-invalid server must surface the
+// server-level validation error instead of silently dropping the server.
+func TestGetProjectMcpConfigsReturnsServerLevelErrors(t *testing.T) {
+	dir := t.TempDir()
+	mcpJson := `{"mcpServers":{"good":{"command":"echo","args":["hi"]},"bad":{}}}`
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(mcpJson), 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+	servers, errs := GetProjectMcpConfigsFromCwd(dir)
+	if len(servers) != 1 {
+		t.Fatalf("servers = %d, want 1 (good only)", len(servers))
+	}
+	if _, ok := servers["good"]; !ok {
+		t.Fatalf("good server missing: %+v", servers)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs = %d, want 1 server-level error", len(errs))
+	}
+	if errs[0].Path != "mcpServers.bad" {
+		t.Fatalf("errs[0].Path = %q, want mcpServers.bad", errs[0].Path)
 	}
 }
