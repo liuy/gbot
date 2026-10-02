@@ -73,6 +73,10 @@ func (c *StdioConfig) GetTransport() Transport { return TransportStdio }
 
 // SSEConfig — Source: types.ts:58-66 McpSSEServerConfigSchema
 type SSEConfig struct {
+	// Type round-trips the "sse" discriminator through ExpandConfigEnv's
+	// re-marshal; without it the type field is dropped and the config is
+	// re-parsed as stdio ("command cannot be empty").
+	Type          Transport         `json:"type"`
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`
@@ -84,9 +88,10 @@ func (c *SSEConfig) GetTransport() Transport { return TransportSSE }
 // SSEIDEConfig — Source: types.ts:69-76 McpSSEIDEServerConfigSchema
 // Internal-only server type for IDE extensions.
 type SSEIDEConfig struct {
-	URL                 string `json:"url"`
-	IDEName             string `json:"ideName"`
-	IDERunningInWindows bool   `json:"ideRunningInWindows,omitempty"`
+	Type                Transport `json:"type"`
+	URL                 string    `json:"url"`
+	IDEName             string    `json:"ideName"`
+	IDERunningInWindows bool      `json:"ideRunningInWindows,omitempty"`
 }
 
 func (c *SSEIDEConfig) GetTransport() Transport { return TransportSSEIDE }
@@ -94,16 +99,21 @@ func (c *SSEIDEConfig) GetTransport() Transport { return TransportSSEIDE }
 // WSIDEConfig — Source: types.ts:79-87 McpWebSocketIDEServerConfigSchema
 // Internal-only server type for IDE extensions.
 type WSIDEConfig struct {
-	URL                 string `json:"url"`
-	IDEName             string `json:"ideName"`
-	AuthToken           string `json:"authToken,omitempty"`
-	IDERunningInWindows bool   `json:"ideRunningInWindows,omitempty"`
+	Type                Transport `json:"type"`
+	URL                 string    `json:"url"`
+	IDEName             string    `json:"ideName"`
+	AuthToken           string    `json:"authToken,omitempty"`
+	IDERunningInWindows bool      `json:"ideRunningInWindows,omitempty"`
 }
 
 func (c *WSIDEConfig) GetTransport() Transport { return TransportWSIDE }
 
 // HTTPConfig — Source: types.ts:89-97 McpHTTPServerConfigSchema
 type HTTPConfig struct {
+	// Type round-trips the "http" discriminator through ExpandConfigEnv's
+	// re-marshal; without it the type field is dropped and the config is
+	// re-parsed as stdio ("command cannot be empty").
+	Type          Transport         `json:"type"`
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`
@@ -114,6 +124,9 @@ func (c *HTTPConfig) GetTransport() Transport { return TransportHTTP }
 
 // WSConfig — Source: types.ts:99-106 McpWebSocketServerConfigSchema
 type WSConfig struct {
+	// Type exists so the discriminator survives ExpandConfigEnv's re-marshal
+	// (same reason as on SSEConfig/HTTPConfig).
+	Type          Transport         `json:"type"`
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`

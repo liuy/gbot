@@ -456,7 +456,12 @@ func (r *Registry) GetResources() []ServerResource {
 // Returns nil registry if no servers are configured (no .mcp.json or empty servers).
 // This is the primary entry point for wiring MCP into the engine at startup.
 func LoadAndConnectMCP(ctx context.Context, cwd string, provider TransportProvider, pluginServers map[string]ScopedMcpServerConfig) (*Registry, error) {
-	configs, _ := GetProjectMcpConfigsFromCwd(cwd)
+	configs, configErrs := GetProjectMcpConfigsFromCwd(cwd)
+	for _, e := range configErrs {
+		// Discarding these is what made bad configs fail silently as
+		// "0 servers discovered" instead of a diagnosable validation error.
+		slog.Warn("mcp: skipping invalid server config", "path", e.Path, "error", e.Message)
+	}
 
 	// Merge plugin servers into configs
 	maps.Copy(configs, pluginServers)

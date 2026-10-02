@@ -432,21 +432,31 @@ func ExpandConfigEnv(cfg McpServerConfig) (expanded McpServerConfig, missingVars
 		}, dedupStrings(missingVars)
 
 	case *SSEConfig:
+		// TS expands {...remoteConfig, url, headers} — headersHelper and
+		// oauth pass through unexpanded.
 		return &SSEConfig{
-			URL:     expandString(c.URL),
-			Headers: expandMap(c.Headers),
+			Type:          c.Type,
+			URL:           expandString(c.URL),
+			Headers:       expandMap(c.Headers),
+			HeadersHelper: c.HeadersHelper,
+			OAuth:         c.OAuth,
 		}, dedupStrings(missingVars)
 
 	case *HTTPConfig:
 		return &HTTPConfig{
-			URL:     expandString(c.URL),
-			Headers: expandMap(c.Headers),
+			Type:          c.Type,
+			URL:           expandString(c.URL),
+			Headers:       expandMap(c.Headers),
+			HeadersHelper: c.HeadersHelper,
+			OAuth:         c.OAuth,
 		}, dedupStrings(missingVars)
 
 	case *WSConfig:
 		return &WSConfig{
-			URL:     expandString(c.URL),
-			Headers: expandMap(c.Headers),
+			Type:          c.Type,
+			URL:           expandString(c.URL),
+			Headers:       expandMap(c.Headers),
+			HeadersHelper: c.HeadersHelper,
 		}, dedupStrings(missingVars)
 
 	case *SSEIDEConfig, *WSIDEConfig, *SDKConfig, *ClaudeAIProxyConfig:
