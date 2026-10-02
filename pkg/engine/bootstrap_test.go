@@ -617,16 +617,20 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
+	// Register a simple tool so REPL can call it — the engine only sees tools
+	// captured by ToolsProvider at construction time.
+	engTestTool := &mockTool{name: "TestTool"}
 	eng := New(&Params{
-		Provider:   mp,
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"TestTool": engTestTool}
+		},
 		Model:      "test",
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
 	defer eng.Close()
 
-	// Register a simple tool so REPL can call it
-	engTestTool := &mockTool{name: "TestTool"}
 	refs.Reg.MustRegister(engTestTool)
 
 	WireEngine(eng, refs, deps)
@@ -647,13 +651,43 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 	if result == nil {
 		t.Fatal("REPL.Call returned nil result")
 	}
-	// Verify output contains "hello"
+	// Verify output contains "hello" — read it off the wire form the LLM sees
 	outputStr := ""
 	if result.Data != nil {
-		outputStr, _ = result.Data.(string)
+		blocks := refs.REPL.FormatWireBlocks(result.Data)
+		if len(blocks) != 1 {
+			t.Fatalf("len(blocks) = %d, want 1 text block", len(blocks))
+		}
+		outputStr = blocks[0].Text
 	}
 	if !strings.Contains(outputStr, "hello") {
 		t.Errorf("REPL output should contain 'hello', got: %s", outputStr)
+	}
+
+	// Full chain: bootstrap lister builds the JS tools object from AllTools,
+	// and the tools.X property routes through eng.ExecuteTool.
+	replInput2, _ := json.Marshal(map[string]any{
+		"code":       `const r = tools.TestTool({}); console.log(typeof r + ":" + r)`,
+		"session_id": "test-repl-session",
+	})
+	result2, err := refs.REPL.Call(context.Background(), replInput2, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{
+			SessionID: "test-repl-session",
+		},
+	})
+	if err != nil {
+		t.Fatalf("REPL.Call with tools.TestTool failed: %v", err)
+	}
+	wire2 := ""
+	if result2.Data != nil {
+		blocks := refs.REPL.FormatWireBlocks(result2.Data)
+		if len(blocks) != 1 {
+			t.Fatalf("len(blocks) = %d, want 1 text block", len(blocks))
+		}
+		wire2 = blocks[0].Text
+	}
+	if wire2 != "string:ok\n" {
+		t.Errorf("tools.TestTool chain: got %q, want %q", wire2, "string:ok\n")
 	}
 }
 

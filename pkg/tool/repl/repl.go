@@ -10,8 +10,17 @@ import (
 	"sync"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
 )
+
+// replResult is the structured output of one Execute: captured console output
+// plus image evidence attached via image(). Unexported on purpose — it only
+// crosses the wire through FormatWireBlocks/DecodeResult, never as raw JSON.
+type replResult struct {
+	Text   string               `json:"text"`
+	Images []types.ContentBlock `json:"images,omitempty"`
+}
 
 // REPLTool — concrete struct implementing tool.Tool (like AgentTool).
 
@@ -32,6 +41,7 @@ type replInput struct {
 type REPLTool struct {
 	sessions     sync.Map // sessionID → *Session
 	toolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
+	toolLister   func() []ToolMeta
 }
 
 // New creates a new REPLTool. Returns concrete type for SetToolExecutor injection.
@@ -58,6 +68,13 @@ func (t *REPLTool) Close() {
 // Pattern mirrors AgentTool.SetEngine (injection to break circular dependency).
 func (t *REPLTool) SetToolExecutor(fn func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
 	t.toolExecutor = fn
+}
+
+// SetToolLister injects the fresh tool inventory provider from bootstrap.
+// The lister is invoked on every Execute (not snapshotted) so MCP tools that
+// connect/disconnect mid-session appear and disappear in the JS tools object.
+func (t *REPLTool) SetToolLister(fn func() []ToolMeta) {
+	t.toolLister = fn
 }
 
 // Name returns the tool name.
@@ -144,15 +161,11 @@ func (t *REPLTool) handleExecute(ctx context.Context, code, sessionID string, tc
 	}
 	session := sessionI.(*Session)
 
-	// Build tool adapter: toolExecutor(name, args) → string for toolFn field
-	var toolFn func(ctx context.Context, name, argsJSON string) string
+	// Build tool adapter: errors propagate to JS as throws — no string prefix.
+	var toolFn ToolCallFn
 	if t.toolExecutor != nil {
-		toolFn = func(ctx context.Context, name, argsJSON string) string {
-			result, err := t.toolExecutor(ctx, name, json.RawMessage(argsJSON))
-			if err != nil {
-				return "ERROR: " + err.Error()
-			}
-			return result
+		toolFn = func(ctx context.Context, name, argsJSON string) (string, error) {
+			return t.toolExecutor(ctx, name, json.RawMessage(argsJSON))
 		}
 	}
 
@@ -166,26 +179,48 @@ func (t *REPLTool) handleExecute(ctx context.Context, code, sessionID string, tc
 		cwd, _ = os.Getwd()
 	}
 
-	// Execute the code
-	output, execErr := session.Execute(ctx, cleanCode, cwd, toolFn, timeoutMs)
+	// Execute the code — the lister rides along so the session installs a
+	// fresh tools inventory under its own lock (per-Execute state must not
+	// be written from outside it).
+	output, evidence, execErr := session.Execute(ctx, cleanCode, cwd, toolFn, timeoutMs, t.toolLister)
 	if execErr != nil {
 		return nil, execErr
 	}
 
-	return &tool.ToolResult{Data: output}, nil
+	res := replResult{Text: output}
+
+	// Attach image evidence collected via image(). Cap enforced at read time:
+	// each image rides the tool_result wire, so extra calls are dropped with
+	// a warning instead of silently flooding the context.
+	if n := len(evidence); n > maxImagesPerExecute {
+		res.Text += fmt.Sprintf("\n[image] limit reached: kept first %d of %d", maxImagesPerExecute, n)
+	}
+	for _, p := range evidence {
+		if len(res.Images) == maxImagesPerExecute {
+			break
+		}
+		block, ok := fileread.ReadAsImageBlock(ctx, p)
+		if !ok {
+			res.Text += "\n[image] unreadable: " + p
+			continue
+		}
+		res.Images = append(res.Images, block)
+	}
+
+	return &tool.ToolResult{Data: res}, nil
 }
 
 // handleReset clears a session.
 func (t *REPLTool) handleReset(sessionID string) (*tool.ToolResult, error) {
 	sessionVal, ok := t.sessions.Load(sessionID)
 	if !ok {
-		return &tool.ToolResult{Data: "Session reset (new)"}, nil
+		return &tool.ToolResult{Data: replResult{Text: "Session reset (new)"}}, nil
 	}
 	session := sessionVal.(*Session)
 	if err := session.Reset(); err != nil {
 		return nil, fmt.Errorf("reset session: %w", err)
 	}
-	return &tool.ToolResult{Data: "Session reset"}, nil
+	return &tool.ToolResult{Data: replResult{Text: "Session reset"}}, nil
 }
 
 // CheckPermissions returns PermissionAllowDecision.
@@ -210,37 +245,82 @@ func (t *REPLTool) RenderResult(data any) string {
 	switch v := data.(type) {
 	case string:
 		return v
+	case replResult:
+		out := v.Text
+		if len(v.Images) > 0 {
+			// TUI cards are text-only; the images themselves travel on the
+			// wire, so the card just shows a placeholder count line.
+			out += fmt.Sprintf("\n📎 %d images", len(v.Images))
+		}
+		return out
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
 }
 
-// FormatWireBlocks sends the raw execution output as a single text block.
-// TS REPLTool has no mapToolResult override, so the raw output is the wire.
+// FormatWireBlocks sends the console output as one text block followed by one
+// image block per evidence image. The string path preserves the pre-evidence
+// wire shape (TS REPLTool has no mapToolResult override — raw output is the wire).
 func (t *REPLTool) FormatWireBlocks(data any) []types.ContentBlock {
-	if s, ok := data.(string); ok {
-		return []types.ContentBlock{types.NewTextBlock(s)}
+	switch v := data.(type) {
+	case replResult:
+		blocks := make([]types.ContentBlock, 0, 1+len(v.Images))
+		blocks = append(blocks, types.NewTextBlock(v.Text))
+		blocks = append(blocks, v.Images...)
+		return blocks
+	case string:
+		return []types.ContentBlock{types.NewTextBlock(v)}
+	default:
+		raw, _ := json.Marshal(data)
+		return []types.ContentBlock{types.NewTextBlock(string(raw))}
 	}
-	raw, _ := json.Marshal(data)
-	return []types.ContentBlock{types.NewTextBlock(string(raw))}
 }
 
 func (t *REPLTool) DecodeResult(raw json.RawMessage) (any, error) {
-	text, err := tool.UnmarshalSingleBlock(raw)
-	if err != nil {
+	if len(raw) == 0 || raw[0] != '[' {
+		preview := string(raw)
+		if runes := []rune(preview); len(runes) > 80 {
+			preview = string(runes[:80])
+		}
+		return nil, fmt.Errorf("repl: DecodeResult expects array-form content, got %q", preview)
+	}
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, err
 	}
-	// Wire history: pre-plaintext sessions stored json.Marshal(string), so
-	// the wire text is itself a JSON string literal — unwrap once more for
-	// those. New wires carry the raw output; a raw output that happens to be
-	// a valid JSON string literal loses one layer of quotes (accepted
-	// ambiguity, same tradeoff as Lsp).
-	var s string
-	if json.Unmarshal([]byte(text), &s) == nil {
-		return s, nil
+	var text string
+	var images []types.ContentBlock
+	haveText := false
+	for _, b := range blocks {
+		switch b.Type {
+		case types.ContentTypeText:
+			// First text block wins; later ones are duplicates from old wires.
+			if !haveText {
+				text, haveText = b.Text, true
+			}
+		case types.ContentTypeImage:
+			if b.Source != nil {
+				images = append(images, b)
+			}
+		}
 	}
-	return text, nil
+	if !haveText {
+		return nil, fmt.Errorf("repl: DecodeResult found no text block in array")
+	}
+	if len(images) == 0 {
+		// Wire history: pre-plaintext sessions stored json.Marshal(string), so
+		// the wire text is itself a JSON string literal — unwrap once more for
+		// those. New wires carry the raw output; a raw output that happens to be
+		// a valid JSON string literal loses one layer of quotes (accepted
+		// ambiguity, same tradeoff as Lsp).
+		var s string
+		if json.Unmarshal([]byte(text), &s) == nil {
+			return s, nil
+		}
+		return text, nil
+	}
+	return replResult{Text: text, Images: images}, nil
 }
 
 // CleanSession removes a session from the map and closes it.

@@ -32,6 +32,25 @@ const (
 	maxTimeout     = 600000 // maximum @timeout pragma value (ms)
 )
 
+// replToolName is the engine-registered name of this tool. The tools object
+// filters it out so JS code cannot re-enter the REPL recursively.
+const replToolName = "Repl"
+
+// maxImagesPerExecute caps image() evidence per Execute — images ride the
+// tool_result wire and would otherwise blow up token cost unchecked.
+const maxImagesPerExecute = 8
+
+// ToolMeta is one entry of the fresh tool inventory injected per Execute.
+type ToolMeta struct {
+	Name        string
+	Description string
+}
+
+// ToolCallFn executes one engine tool call with full permission checking.
+// The error return replaces the old "ERROR: " string-prefix convention:
+// session.go turns it into a JS throw with the original message.
+type ToolCallFn func(ctx context.Context, name, argsJSON string) (string, error)
+
 // Session wraps a goja event loop for JavaScript execution.
 // Each SessionID maps to one Session in REPLTool's sync.Map.
 type Session struct {
@@ -39,9 +58,14 @@ type Session struct {
 	vm         *goja.Runtime
 	mu         sync.Mutex
 	currentBuf *bytes.Buffer // swapped per Execute
-	ctx        context.Context
-	toolFn     func(ctx context.Context, name, argsJSON string) string // per-Execute tool executor
-	closed     bool
+	// currentEvidence collects image() paths for this Execute; Execute
+	// snapshots it under the lock before returning so callers never touch
+	// the live field.
+	currentEvidence []string
+	ctx             context.Context
+	toolFn          ToolCallFn // per-Execute tool executor
+	toolLister      func() []ToolMeta
+	closed          bool
 }
 
 // NewSession creates a new goja event loop session with custom console and JS globals.
@@ -97,38 +121,24 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 		}
 	})
 
-	// --- tool (reads s.toolFn directly) ---
-	if err := vm.Set("tool", func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		argsVal := call.Argument(1)
-		var argsJSON string
-		if goja.IsUndefined(argsVal) {
-			argsJSON = "{}"
-		} else {
-			switch v := argsVal.Export().(type) {
-			case string:
-				argsJSON = v
-			default:
-				b, err := json.Marshal(v)
-				if err != nil {
-					panic(vm.ToValue("failed to marshal tool args: " + err.Error()))
-				}
-				argsJSON = string(b)
-			}
+	// --- image(path): queue a local image file as evidence for this Execute ---
+	if err := vm.Set("image", func(call goja.FunctionCall) goja.Value {
+		pathVal := call.Argument(0)
+		path := pathVal.String()
+		if goja.IsUndefined(pathVal) || goja.IsNull(pathVal) || path == "" {
+			panic(vm.ToValue("image: path required"))
 		}
-		if s.toolFn == nil {
-			panic(vm.ToValue("tool executor not available"))
-		}
-		result := s.toolFn(s.ctx, name, argsJSON)
-		if strings.HasPrefix(result, "ERROR: ") {
-			panic(vm.ToValue(result))
-		}
-		return vm.ToValue(result)
+		s.currentEvidence = append(s.currentEvidence, path)
+		return vm.ToValue(path)
 	}); err != nil {
-		return fmt.Errorf("set tool: %w", err)
+		return fmt.Errorf("set image: %w", err)
 	}
 
 	// setTimeout/clearTimeout provided by eventloop — no manual registration needed.
+
+	// tools/ALL_TOOLS with an empty inventory; Execute reinstalls a fresh
+	// snapshot from the lister before every run.
+	s.installToolsGlobals(vm)
 
 	// --- __reportError (internal, used by async IIFE wrapper) ---
 	if err := vm.Set("__reportError", func(call goja.FunctionCall) goja.Value {
@@ -148,9 +158,102 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 	return nil
 }
 
+// installToolsGlobals rebuilds the tools object and ALL_TOOLS from the current
+// tool lister. Runs on every Execute: MCP servers connect and disconnect
+// between runs, so a snapshot taken at session creation would go stale.
+func (s *Session) installToolsGlobals(vm *goja.Runtime) {
+	toolsObj := vm.NewObject()
+	entries := []any{}
+	if s.toolLister != nil {
+		// Distinct names can sanitize to the same identifier ("a-b" and
+		// "a_b" both become "a_b"); first arrival wins so tools and
+		// ALL_TOOLS never disagree on the callable set.
+		seen := make(map[string]bool)
+		for _, meta := range s.toolLister() {
+			if meta.Name == replToolName {
+				continue
+			}
+			key := normalizeIdentifier(meta.Name)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := toolsObj.Set(key, s.newToolInvoker(vm, meta.Name)); err != nil {
+				continue
+			}
+			entry := vm.NewObject()
+			_ = entry.Set("name", key)
+			_ = entry.Set("description", meta.Description)
+			entries = append(entries, entry)
+		}
+	}
+	// vm.Set with fixed string keys and freshly built values cannot fail.
+	_ = vm.Set("tools", toolsObj)
+	_ = vm.Set("ALL_TOOLS", vm.NewArray(entries...))
+}
+
+// newToolInvoker builds the JS function for one tools.<Name> property. It
+// captures the real tool name; normalizeIdentifier only shapes the property
+// key the caller sees.
+func (s *Session) newToolInvoker(vm *goja.Runtime, name string) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		argsVal := call.Argument(0)
+		var argsJSON string
+		if goja.IsUndefined(argsVal) || goja.IsNull(argsVal) {
+			argsJSON = "{}"
+		} else if str, ok := argsVal.Export().(string); ok {
+			argsJSON = str
+		} else {
+			b, err := json.Marshal(argsVal.Export())
+			if err != nil {
+				panic(vm.ToValue("failed to marshal tool args: " + err.Error()))
+			}
+			argsJSON = string(b)
+		}
+		if s.toolFn == nil {
+			panic(vm.ToValue("tool executor not available"))
+		}
+		result, err := s.toolFn(s.ctx, name, argsJSON)
+		if err != nil {
+			panic(vm.ToValue(err.Error()))
+		}
+		// Mirror JSON.parse: JSON output reaches JS as a real object/array,
+		// non-JSON output stays a string.
+		var parsed any
+		if json.Unmarshal([]byte(result), &parsed) == nil {
+			return vm.ToValue(parsed)
+		}
+		return vm.ToValue(result)
+	}
+}
+
+// normalizeIdentifier rewrites a tool name into a valid JS identifier,
+// mirroring codex normalize_code_mode_identifier: invalid characters become
+// '_', and a non-letter first character becomes '_' too.
+func normalizeIdentifier(name string) string {
+	runes := []rune(name)
+	out := make([]rune, 0, len(runes))
+	for i, ch := range runes {
+		letter := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+		digit := ch >= '0' && ch <= '9'
+		if ch == '_' || ch == '$' || letter || (i > 0 && digit) {
+			out = append(out, ch)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	if len(out) == 0 {
+		return "_"
+	}
+	return string(out)
+}
+
 // Execute runs JavaScript code in the session's goja event loop.
 // toolFn receives context for cancellation — threaded through to the injected toolExecutor.
-func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn func(ctx context.Context, name, argsJSON string) string, timeoutMs int64) (output string, err error) {
+// toolLister is this run's tool inventory source; evidence returns the image()
+// paths collected during the run, snapshotted under the lock so the caller
+// never races a concurrent Execute or Close on the live field.
+func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn ToolCallFn, timeoutMs int64, toolLister func() []ToolMeta) (output string, evidence []string, err error) {
 	// Catch panics from goja — mark session unusable.
 	defer func() {
 		if r := recover(); r != nil {
@@ -166,7 +269,7 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return "", fmt.Errorf("session closed")
+		return "", nil, fmt.Errorf("session closed")
 	}
 
 	// Clear any leftover interrupt from previous execution.
@@ -197,8 +300,10 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	if toolFn != nil {
 		s.toolFn = toolFn
 	}
+	s.toolLister = toolLister
 	buf := new(bytes.Buffer)
 	s.currentBuf = buf
+	s.currentEvidence = nil
 
 	// Execute on event loop — Run() processes all async work until done.
 	var evalErr error
@@ -207,6 +312,7 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 			// Error ignored: vm.Set with fixed string key and string value cannot fail.
 			_ = vm.Set("cwd", cwd)
 		}
+		s.installToolsGlobals(vm)
 
 		// Wrap in async IIFE with try/catch — enables top-level await and captures errors.
 		wrapped := "(async () => {\ntry {\n" + code + "\n} catch(e) {\n__reportError(e instanceof Error ? e.stack || e.message : String(e));\n}\n})()"
@@ -234,7 +340,13 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 		}
 	}
 
-	return output, nil
+	// Snapshot evidence while the lock is still held — callers read the copy
+	// after Execute returns, when another goroutine may already be running
+	// the next Execute or Close.
+	evidence = make([]string, len(s.currentEvidence))
+	copy(evidence, s.currentEvidence)
+
+	return output, evidence, nil
 }
 
 // Reset clears the session by creating a new event loop and VM.
@@ -272,6 +384,7 @@ func (s *Session) Close() {
 		return
 	}
 	s.toolFn = nil
+	s.toolLister = nil
 	s.closed = true
 }
 

@@ -2,9 +2,15 @@ package repl
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,18 +34,47 @@ func newTestSession(t *testing.T) *Session {
 
 // mockToolFn returns a tool function that responds to known tool names.
 // Unexpected tool calls fail the test immediately.
-func mockToolFn(t *testing.T, responses map[string]string) func(ctx context.Context, name, argsJSON string) string {
+func mockToolFn(t *testing.T, responses map[string]string) ToolCallFn {
 	t.Helper()
 	var mu sync.Mutex
-	return func(_ context.Context, name, argsJSON string) string {
+	return func(_ context.Context, name, argsJSON string) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if resp, ok := responses[name]; ok {
-			return resp
+			return resp, nil
 		}
 		t.Fatalf("unexpected tool call: %s (args: %s)", name, argsJSON)
-		return ""
+		return "", nil
 	}
+}
+
+// execResult extracts the structured result from a ToolResult, failing the
+// test if the tool returned a different Data type.
+func execResult(t *testing.T, r *tool.ToolResult) replResult {
+	t.Helper()
+	out, ok := r.Data.(replResult)
+	if !ok {
+		t.Fatalf("Data type = %T, want replResult", r.Data)
+	}
+	return out
+}
+
+// writeTestPNG writes a valid 2x2 PNG into a temp dir and returns its path.
+func writeTestPNG(t *testing.T) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	path := filepath.Join(t.TempDir(), "evidence.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create temp png: %v", err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close png: %v", err)
+	}
+	return path
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +83,7 @@ func mockToolFn(t *testing.T, responses map[string]string) func(ctx context.Cont
 
 func TestConsoleLog(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `console.log("hello")`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log("hello")`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -59,7 +94,7 @@ func TestConsoleLog(t *testing.T) {
 
 func TestConsoleLogVariable(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `const x = 1; console.log(x)`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `const x = 1; console.log(x)`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -71,7 +106,7 @@ func TestConsoleLogVariable(t *testing.T) {
 func TestES6ArrowFunction(t *testing.T) {
 	s := newTestSession(t)
 	code := `const greet = (name) => "hello " + name; console.log(greet("world"))`
-	output, err := s.Execute(context.Background(), code, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), code, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -83,7 +118,7 @@ func TestES6ArrowFunction(t *testing.T) {
 func TestTopLevelAwait(t *testing.T) {
 	s := newTestSession(t)
 	code := `const x = await Promise.resolve(42); console.log(x)`
-	output, err := s.Execute(context.Background(), code, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), code, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -101,12 +136,12 @@ func TestPersistentVariables(t *testing.T) {
 	toolFn := mockToolFn(t, nil)
 
 	// Top-level variables persist across Execute calls in the same session.
-	_, err := s.Execute(context.Background(), `globalThis.count = 42`, "", toolFn, 10000)
+	_, _, err := s.Execute(context.Background(), `globalThis.count = 42`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute 1: %v", err)
 	}
 
-	output, err := s.Execute(context.Background(), `console.log(globalThis.count)`, "", toolFn, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log(globalThis.count)`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute 2: %v", err)
 	}
@@ -122,7 +157,7 @@ func TestPersistentVariables(t *testing.T) {
 func TestBufferLifecycle(t *testing.T) {
 	s := newTestSession(t)
 
-	output1, err := s.Execute(context.Background(), `console.log("first")`, "", nil, 10000)
+	output1, _, err := s.Execute(context.Background(), `console.log("first")`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute 1: %v", err)
 	}
@@ -130,7 +165,7 @@ func TestBufferLifecycle(t *testing.T) {
 		t.Errorf("first: expected 'first', got %q", output1)
 	}
 
-	output2, err := s.Execute(context.Background(), `console.log("second")`, "", nil, 10000)
+	output2, _, err := s.Execute(context.Background(), `console.log("second")`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute 2: %v", err)
 	}
@@ -151,7 +186,7 @@ func TestReset(t *testing.T) {
 	s := newTestSession(t)
 
 	// Set a variable
-	_, _ = s.Execute(context.Background(), `var resetTest = 99`, "", nil, 10000)
+	_, _, _ = s.Execute(context.Background(), `var resetTest = 99`, "", nil, 10000, nil)
 
 	// Reset session
 	if err := s.Reset(); err != nil {
@@ -159,7 +194,7 @@ func TestReset(t *testing.T) {
 	}
 
 	// Variable should be gone
-	output, err := s.Execute(context.Background(), `try { console.log(resetTest) } catch(e) { console.log("reset ok") }`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `try { console.log(resetTest) } catch(e) { console.log("reset ok") }`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute after reset: %v", err)
 	}
@@ -177,7 +212,7 @@ func TestTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	output, err := s.Execute(ctx, `while(true) {}`, "", nil, 1000) // 1s timeout
+	output, _, err := s.Execute(ctx, `while(true) {}`, "", nil, 1000, nil) // 1s timeout
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -196,7 +231,7 @@ func TestContextCancel(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		output, _ := s.Execute(ctx, `while(true) { /* spin */ }`, "", nil, 60000)
+		output, _, _ := s.Execute(ctx, `while(true) { /* spin */ }`, "", nil, 60000, nil)
 		done <- output
 	}()
 
@@ -214,62 +249,567 @@ func TestContextCancel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// tool() through mock toolFn
+// tools.* object: existence, invocation, argument forms, result semantics
 // ---------------------------------------------------------------------------
 
-func TestToolFunction(t *testing.T) {
+func TestToolsObjectExists(t *testing.T) {
 	s := newTestSession(t)
+
+	// Default session (no lister) still exposes an empty tools object.
+	output, _, err := s.Execute(context.Background(), `console.log(typeof tools); console.log(Object.keys(tools).length)`, "", nil, 10000, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %q", output)
+	}
+	if lines[0] != "object" {
+		t.Errorf("typeof tools = %q, want 'object'", lines[0])
+	}
+	if lines[1] != "0" {
+		t.Errorf("empty session tools size = %q, want '0'", lines[1])
+	}
+
+	// With a lister the registered tool becomes a function property.
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	output, _, err = s.Execute(context.Background(), `console.log(typeof tools.Echo); console.log(typeof tools.Missing)`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute with lister: %v", err)
+	}
+	lines = strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %q", output)
+	}
+	if lines[0] != "function" {
+		t.Errorf("typeof tools.Echo = %q, want 'function'", lines[0])
+	}
+	if lines[1] != "undefined" {
+		t.Errorf("typeof tools.Missing = %q, want 'undefined'", lines[1])
+	}
+}
+
+func TestToolsObjectInvoke(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
 	toolFn := mockToolFn(t, map[string]string{
 		"Echo": `{"result": "echoed"}`,
 	})
 
-	output, err := s.Execute(context.Background(),
-		`const r = tool("Echo", JSON.stringify({msg: "hi"})); console.log(r)`,
-		"", toolFn, 10000)
+	output, _, err := s.Execute(context.Background(),
+		`const r = tools.Echo({msg: "hi"}); console.log(r.result)`,
+		"", toolFn, 10000, lister)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "echoed") {
-		t.Errorf("expected tool result 'echoed', got %q", output)
+	if got := strings.TrimSpace(output); got != "echoed" {
+		t.Errorf("tools.Echo result field: got %q, want 'echoed'", got)
+	}
+}
+
+func TestToolsStringArgsPassthrough(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	var gotArgs string
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		gotArgs = argsJSON
+		return `{"ok":true}`, nil
+	}
+
+	output, _, err := s.Execute(context.Background(),
+		`const r = tools.Echo('{"raw":true}'); console.log(r.ok)`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotArgs != `{"raw":true}` {
+		t.Errorf("string args must pass through verbatim, got %q", gotArgs)
+	}
+	if got := strings.TrimSpace(output); got != "true" {
+		t.Errorf("result field: got %q, want 'true'", got)
+	}
+}
+
+func TestToolsUndefinedArgsDefault(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	var gotArgs string
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		gotArgs = argsJSON
+		return `{"result": "no-args"}`, nil
+	}
+
+	output, _, err := s.Execute(context.Background(),
+		`const r = tools.Echo(); console.log(r.result)`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotArgs != "{}" {
+		t.Errorf("missing args must default to {}, got %q", gotArgs)
+	}
+	if got := strings.TrimSpace(output); got != "no-args" {
+		t.Errorf("result field: got %q, want 'no-args'", got)
+	}
+}
+
+func TestToolsResultParsesToObject(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		return `{"a": 1, "b": [1, 2]}`, nil
+	}
+
+	// JSON output must surface as a real JS object/array, not a string.
+	output, _, err := s.Execute(context.Background(),
+		`const r = tools.Echo({});
+		 const ok = typeof r === "object" && r.a === 1 && Array.isArray(r.b) && r.b.length === 2 && r.b[1] === 2;
+		 console.log(ok)`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(output); got != "true" {
+		t.Errorf("JSON result must parse to object: got %q, want 'true'", got)
+	}
+}
+
+// Scalar JSON output must decode to real JS primitives, not strings.
+func TestToolsResultScalarJSONTypes(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	toolFn := func(_ context.Context, _, argsJSON string) (string, error) {
+		if strings.Contains(argsJSON, "num") {
+			return "42", nil
+		}
+		return "true", nil
+	}
+
+	output, _, err := s.Execute(context.Background(),
+		`const n = tools.Echo({kind: "num"});
+		 const b = tools.Echo({kind: "bool"});
+		 console.log(typeof n === "number" && n === 42);
+		 console.log(typeof b === "boolean" && b === true);`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %q", output)
+	}
+	if lines[0] != "true" {
+		t.Errorf("string \"42\" must arrive as JS number 42, got %q", lines[0])
+	}
+	if lines[1] != "true" {
+		t.Errorf("string \"true\" must arrive as JS boolean true, got %q", lines[1])
+	}
+}
+
+func TestToolsResultStringPassthrough(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		return "plain output not json", nil
+	}
+
+	output, _, err := s.Execute(context.Background(),
+		`const r = tools.Echo({}); console.log(typeof r + ":" + r)`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(output); got != "string:plain output not json" {
+		t.Errorf("non-JSON result must stay a string: got %q", got)
+	}
+}
+
+func TestToolsErrorThrows(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Fail", Description: "fails"}}
+	}
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		return "", errors.New("tool execution failed")
+	}
+
+	output, _, err := s.Execute(context.Background(),
+		`try { tools.Fail({}); console.log("missed") } catch(e) { console.log("caught:" + e) }`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(output); got != "caught:tool execution failed" {
+		t.Errorf("tool error must throw with original message: got %q", got)
 	}
 }
 
 func TestToolNotFound(t *testing.T) {
 	s := newTestSession(t)
-	// Use custom toolFn that returns error for unknown tools (mockToolFn would t.Fatalf)
-	toolFn := func(_ context.Context, name, argsJSON string) string {
-		return "ERROR: tool " + name + " not found"
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "Known", Description: "known"},
+			{Name: "NoSuchTool", Description: "missing from the engine"},
+		}
+	}
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		return "", fmt.Errorf("tool %s not found", name)
 	}
 
-	output, err := s.Execute(context.Background(),
-		`try { tool("NoSuchTool", "{}"); console.log("missed") } catch(e) { console.log("caught: " + e) }`,
-		"", toolFn, 10000)
+	output, _, err := s.Execute(context.Background(),
+		`try { tools.NoSuchTool({}); console.log("missed") } catch(e) { console.log("caught: " + e) }`,
+		"", toolFn, 10000, lister)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "caught:") {
-		t.Errorf("expected tool error to be caught, got %q", output)
-	}
-	if !strings.Contains(output, "ERROR: tool NoSuchTool not found") {
-		t.Errorf("expected ERROR message in output, got %q", output)
+	if got := strings.TrimSpace(output); got != "caught: tool NoSuchTool not found" {
+		t.Errorf("unexpected tool error must surface verbatim: got %q", got)
 	}
 }
 
-func TestToolErrorPrefix(t *testing.T) {
+func TestToolFnNotAvailable(t *testing.T) {
 	s := newTestSession(t)
-	toolFn := func(_ context.Context, name, argsJSON string) string {
-		return "ERROR: something went wrong"
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
 	}
-
-	output, err := s.Execute(context.Background(),
-		`try { tool("Fail", "{}"); console.log("missed") } catch(e) { console.log("caught: " + e) }`,
-		"", toolFn, 10000)
+	// Execute with nil toolFn — the property exists but invoking it must throw.
+	output, _, err := s.Execute(context.Background(),
+		`try { tools.Echo({}); console.log("missed") } catch(e) { console.log(e) }`,
+		"", nil, 10000, lister)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "caught:") {
-		t.Errorf("expected tool error to be caught via throw, got %q", output)
+	if got := strings.TrimSpace(output); got != "tool executor not available" {
+		t.Errorf("expected 'tool executor not available' error, got %q", got)
 	}
+}
+
+func TestToolArgs_NaN(t *testing.T) {
+	// NaN is exported as float64(math.NaN()), which json.Marshal rejects.
+	// This covers the marshal error → panic path in the tools invoker.
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	}
+	toolFn := func(_ context.Context, _, _ string) (string, error) {
+		return "should not reach", nil
+	}
+	output, _, err := s.Execute(context.Background(),
+		`try { tools.Echo(NaN) } catch(e) { console.log("caught:" + e) }`,
+		"", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(output); got != "caught:failed to marshal tool args: json: unsupported value: NaN" {
+		t.Errorf("expected marshal error message, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ALL_TOOLS global
+// ---------------------------------------------------------------------------
+
+func TestAllToolsContent(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "Bash", Description: "Run commands"},
+			{Name: "Read", Description: "Read files"},
+		}
+	}
+
+	output, _, err := s.Execute(context.Background(), `
+		console.log(Array.isArray(ALL_TOOLS));
+		console.log(ALL_TOOLS.length);
+		console.log(ALL_TOOLS[0].name + "|" + ALL_TOOLS[0].description);
+		console.log(ALL_TOOLS[1].name + "|" + ALL_TOOLS[1].description);
+	`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	want := []string{"true", "2", "Bash|Run commands", "Read|Read files"}
+	if len(lines) != len(want) {
+		t.Fatalf("expected %d lines, got %q", len(want), output)
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Errorf("line %d: got %q, want %q", i, lines[i], w)
+		}
+	}
+}
+
+func TestAllToolsAndToolsExcludeRepl(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "Bash", Description: "Run commands"},
+			{Name: replToolName, Description: "self"},
+		}
+	}
+
+	output, _, err := s.Execute(context.Background(), `
+		console.log(typeof tools.Repl);
+		console.log(ALL_TOOLS.length + ":" + ALL_TOOLS[0].name);
+	`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %q", output)
+	}
+	if lines[0] != "undefined" {
+		t.Errorf("tools.Repl must be excluded, got %q", lines[0])
+	}
+	if lines[1] != "1:Bash" {
+		t.Errorf("ALL_TOOLS must exclude Repl, got %q", lines[1])
+	}
+}
+
+// TestToolsFreshListerPerExecute pins the freshness contract: the lister is
+// invoked on every Execute so MCP connect/disconnect is reflected immediately.
+func TestToolsFreshListerPerExecute(t *testing.T) {
+	s := newTestSession(t)
+	calls := 0
+	lister := func() []ToolMeta {
+		calls++
+		if calls == 1 {
+			return []ToolMeta{{Name: "Echo", Description: "first"}}
+		}
+		return []ToolMeta{
+			{Name: "Echo", Description: "first"},
+			{Name: "Ping", Description: "second"},
+		}
+	}
+
+	output1, _, err := s.Execute(context.Background(), `console.log(typeof tools.Ping)`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute 1: %v", err)
+	}
+	if got := strings.TrimSpace(output1); got != "undefined" {
+		t.Errorf("first run: tools.Ping = %q, want 'undefined'", got)
+	}
+
+	output2, _, err := s.Execute(context.Background(), `console.log(typeof tools.Ping)`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute 2: %v", err)
+	}
+	if got := strings.TrimSpace(output2); got != "function" {
+		t.Errorf("second run: tools.Ping = %q, want 'function'", got)
+	}
+	if calls != 2 {
+		t.Errorf("lister invoked %d times, want 2", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JS identifier sanitization of tool names
+// ---------------------------------------------------------------------------
+
+func TestToolsIdentifierSanitized(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "hidden-dynamic-tool", Description: "d"}}
+	}
+
+	output, _, err := s.Execute(context.Background(), `
+		console.log(typeof tools["hidden_dynamic_tool"]);
+		console.log(tools["hidden-dynamic-tool"] === undefined);
+	`, "", nil, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %q", output)
+	}
+	if lines[0] != "function" {
+		t.Errorf("sanitized property must be callable, got %q", lines[0])
+	}
+	if lines[1] != "true" {
+		t.Errorf("raw name must not be a property, got %q", lines[1])
+	}
+}
+
+// "a-b" and "a_b" sanitize to the same identifier; the first arrival wins in
+// both tools and ALL_TOOLS so the callable set stays consistent.
+func TestToolsSanitizedCollisionKeepsFirst(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "a-b", Description: "first"},
+			{Name: "a_b", Description: "second"},
+		}
+	}
+	toolFn := func(_ context.Context, name, _ string) (string, error) {
+		return `{"from": "` + name + `"}`, nil
+	}
+
+	output, _, err := s.Execute(context.Background(), `
+		console.log(Object.keys(tools).length);
+		console.log(ALL_TOOLS.length);
+		console.log(ALL_TOOLS[0].name);
+		console.log(tools.a_b().from);
+	`, "", toolFn, 10000, lister)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	want := []string{"1", "1", "a_b", "a-b"}
+	if len(lines) != len(want) {
+		t.Fatalf("expected %d lines, got %q", len(want), output)
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Errorf("line %d: got %q, want %q", i, lines[i], w)
+		}
+	}
+}
+
+func TestNormalizeIdentifier(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"Bash", "Bash"},
+		{"mcp__github__get_issue", "mcp__github__get_issue"},
+		{"hidden-dynamic-tool", "hidden_dynamic_tool"},
+		{"9lives", "_lives"},
+		{"with space", "with_space"},
+		{"ok$Name_1", "ok$Name_1"},
+		{"", "_"},
+	}
+	for _, tt := range tests {
+		if got := normalizeIdentifier(tt.in); got != tt.want {
+			t.Errorf("normalizeIdentifier(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// image(path) evidence
+// ---------------------------------------------------------------------------
+
+func TestImageUndefinedPathPanics(t *testing.T) {
+	s := newTestSession(t)
+	output, _, err := s.Execute(context.Background(),
+		`try { image(); console.log("missed") } catch(e) { console.log("caught:" + e) }`,
+		"", nil, 10000, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := strings.TrimSpace(output); got != "caught:image: path required" {
+		t.Errorf("expected path-required error, got %q", got)
+	}
+}
+
+func TestImageEvidenceWire(t *testing.T) {
+	pngPath := writeTestPNG(t)
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+
+	code := `image(` + strconv.Quote(pngPath) + `); console.log("shot taken")`
+	input, _ := json.Marshal(replInput{Code: code})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options:    tool.ToolUseOptions{SessionID: "img-evidence"},
+		WorkingDir: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := execResult(t, result)
+	if out.Text != "shot taken\n" {
+		t.Errorf("Text = %q, want %q", out.Text, "shot taken\n")
+	}
+	if len(out.Images) != 1 {
+		t.Fatalf("len(Images) = %d, want 1", len(out.Images))
+	}
+	block := out.Images[0]
+	if block.Type != types.ContentTypeImage {
+		t.Errorf("block type = %q, want image", block.Type)
+	}
+	if block.Source == nil {
+		t.Fatal("image block missing source")
+	}
+	if block.Source.Type != "base64" {
+		t.Errorf("source type = %q, want base64", block.Source.Type)
+	}
+	if block.Source.MediaType != "image/png" {
+		t.Errorf("media type = %q, want image/png", block.Source.MediaType)
+	}
+	dec, err := base64.StdEncoding.DecodeString(block.Source.Data)
+	if err != nil {
+		t.Fatalf("decode base64 source: %v", err)
+	}
+	pngSig := []byte("\x89PNG\r\n\x1a\n")
+	if len(dec) < len(pngSig) || string(dec[:len(pngSig)]) != string(pngSig) {
+		t.Errorf("decoded source is not PNG bytes (len %d)", len(dec))
+	}
+	r.CleanSession("img-evidence")
+}
+
+func TestImageCapEight(t *testing.T) {
+	pngPath := writeTestPNG(t)
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+
+	code := `for (let i = 0; i < 10; i++) { image(` + strconv.Quote(pngPath) + `); }`
+	input, _ := json.Marshal(replInput{Code: code})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options:    tool.ToolUseOptions{SessionID: "img-cap"},
+		WorkingDir: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := execResult(t, result)
+	if len(out.Images) != 8 {
+		t.Fatalf("len(Images) = %d, want 8", len(out.Images))
+	}
+	if out.Text != "\n[image] limit reached: kept first 8 of 10" {
+		t.Errorf("Text = %q, want cap warning", out.Text)
+	}
+	r.CleanSession("img-cap")
+}
+
+func TestImageMissingFileWarning(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+
+	input, _ := json.Marshal(replInput{Code: `image("/nonexistent/evidence.png")`})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options:    tool.ToolUseOptions{SessionID: "img-missing"},
+		WorkingDir: "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := execResult(t, result)
+	if len(out.Images) != 0 {
+		t.Fatalf("len(Images) = %d, want 0", len(out.Images))
+	}
+	if out.Text != "\n[image] unreadable: /nonexistent/evidence.png" {
+		t.Errorf("Text = %q, want unreadable warning", out.Text)
+	}
+	r.CleanSession("img-missing")
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +823,7 @@ func TestClose(t *testing.T) {
 	}
 	s.Close()
 
-	_, err = s.Execute(context.Background(), `console.log("after close")`, "", nil, 10000)
+	_, _, err = s.Execute(context.Background(), `console.log("after close")`, "", nil, 10000, nil)
 	if err == nil {
 		t.Error("expected error after Close()")
 	}
@@ -298,7 +838,7 @@ func TestClose(t *testing.T) {
 
 func TestCwdInjection(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `console.log(cwd)`, "/tmp/test", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log(cwd)`, "/tmp/test", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -371,11 +911,11 @@ func TestSetTimeoutBasic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	output, err := s.Execute(ctx, `
+	output, _, err := s.Execute(ctx, `
 		var result = "before";
 		setTimeout(function() { result = "fired" }, 10);
 		console.log(result)
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -394,10 +934,10 @@ func TestSetTimeoutCallbackFires(t *testing.T) {
 	// Start code that sets a timeout
 	done := make(chan string, 1)
 	go func() {
-		output, _ := s.Execute(ctx, `
+		output, _, _ := s.Execute(ctx, `
 			setTimeout(function() { console.log("callback_ran") }, 10);
 			console.log("scheduled");
-		`, "", toolFn, 10000)
+		`, "", toolFn, 10000, nil)
 		done <- output
 	}()
 
@@ -423,16 +963,16 @@ func TestClearTimeout(t *testing.T) {
 	defer cancel()
 
 	// Schedule and immediately cancel
-	_, err := s.Execute(ctx, `
+	_, _, err := s.Execute(ctx, `
 		var id = setTimeout(function() { console.log("should_not_run") }, 20);
 		clearTimeout(id);
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
 	// Verify callback did NOT run
-	output, err := s.Execute(ctx, `"undefined"`, "", toolFn, 10000)
+	output, _, err := s.Execute(ctx, `"undefined"`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute check: %v", err)
 	}
@@ -445,13 +985,13 @@ func TestSetTimeoutReturnID(t *testing.T) {
 	s := newTestSession(t)
 	toolFn := mockToolFn(t, nil)
 
-	output, err := s.Execute(context.Background(), `
+	output, _, err := s.Execute(context.Background(), `
 		var id1 = setTimeout(function(){}, 10);
 		var id2 = setTimeout(function(){}, 10);
 		// setTimeout returns truthy, unique values
 		console.log(id1 && id2 ? "ok" : "fail");
 		console.log(id1 === id2 ? "same" : "unique");
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -467,10 +1007,10 @@ func TestSetTimeoutCallbackOutputInResult(t *testing.T) {
 	s := newTestSession(t)
 	toolFn := mockToolFn(t, nil)
 
-	output, err := s.Execute(context.Background(), `
+	output, _, err := s.Execute(context.Background(), `
 		setTimeout(function() { console.log("from callback") }, 5);
 		console.log("main code")
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -520,12 +1060,12 @@ func TestREPLToolCallExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	output, ok := result.Data.(string)
-	if !ok {
-		t.Fatalf("expected string result, got %T", result.Data)
+	out := execResult(t, result)
+	if out.Text != "hello from repl\n" {
+		t.Errorf("expected 'hello from repl', got %q", out.Text)
 	}
-	if !strings.Contains(output, "hello from repl") {
-		t.Errorf("expected 'hello from repl', got %q", output)
+	if len(out.Images) != 0 {
+		t.Errorf("expected no images, got %d", len(out.Images))
 	}
 	r.CleanSession("test-session")
 }
@@ -551,8 +1091,8 @@ func TestREPLToolReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call reset: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "reset") {
-		t.Errorf("expected reset message, got %q", result.Data)
+	if got := execResult(t, result).Text; got != "Session reset" {
+		t.Errorf("expected 'Session reset', got %q", got)
 	}
 
 	input2, _ := json.Marshal(replInput{Code: `try { console.log(replResetTest) } catch(e) { console.log("gone") }`})
@@ -562,8 +1102,8 @@ func TestREPLToolReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call 2: %v", err)
 	}
-	if !strings.Contains(result2.Data.(string), "gone") {
-		t.Errorf("expected variable cleared after reset, got %q", result2.Data)
+	if got := execResult(t, result2).Text; got != "gone\n" {
+		t.Errorf("expected variable cleared after reset, got %q", got)
 	}
 	r.CleanSession("test-reset")
 }
@@ -589,8 +1129,8 @@ func TestREPLToolSessionIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call B: %v", err)
 	}
-	if !strings.Contains(resultB.Data.(string), "isolated") {
-		t.Errorf("sessions should be isolated, got %q", resultB.Data)
+	if got := execResult(t, resultB).Text; got != "isolated\n" {
+		t.Errorf("sessions should be isolated, got %q", got)
 	}
 	r.CleanSession("session-a")
 	r.CleanSession("session-b")
@@ -609,8 +1149,8 @@ func TestREPLToolWithPragma(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "pragma test") {
-		t.Errorf("expected 'pragma test', got %q", result.Data)
+	if got := execResult(t, result).Text; got != "pragma test\n" {
+		t.Errorf("expected 'pragma test', got %q", got)
 	}
 	r.CleanSession("pragma-test")
 }
@@ -624,17 +1164,21 @@ func TestPromptContains(t *testing.T) {
 	p := r.Prompt()
 
 	checks := []string{
-		"tool(name, args)",
-		"console.log",
+		"tools.",
+		"ALL_TOOLS",
+		"image(",
+		"globalThis",
 		"@timeout:",
+		"console.log",
 		"setTimeout",
-		"clearTimeout",
-		"async/await",
 	}
 	for _, check := range checks {
 		if !strings.Contains(p, check) {
 			t.Errorf("prompt missing %q", check)
 		}
+	}
+	if strings.Contains(p, "tool(") {
+		t.Error("prompt must not teach the removed tool() global")
 	}
 }
 
@@ -721,13 +1265,13 @@ func TestAsyncAwaitModule(t *testing.T) {
 	ctx := context.Background()
 
 	// Async function with await — must work via Compile+EvalBytecodeValue (EvalModule)
-	output, err := s.Execute(ctx, `
+	output, _, err := s.Execute(ctx, `
 async function fetchDouble(x) {
 	return await Promise.resolve(x * 2);
 }
 const result = await fetchDouble(21);
 console.log("result=" + result);
-`, "", nil, 10000)
+`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -740,11 +1284,11 @@ func TestPromiseChain(t *testing.T) {
 	s := newTestSession(t)
 	ctx := context.Background()
 
-	output, err := s.Execute(ctx, `
+	output, _, err := s.Execute(ctx, `
 const p = Promise.resolve("hello");
 const result = await p.then(s => s.toUpperCase());
 console.log(result);
-`, "", nil, 10000)
+`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -763,7 +1307,7 @@ func TestCwdAccessibleFromModule(t *testing.T) {
 
 	// cwd must be accessible from ES module code (EvalModule).
 	//var cwd in EvalGlobal is NOT visible from module scope.
-	output, err := s.Execute(ctx, `console.log(cwd);`, "/home/test/dir", nil, 10000)
+	output, _, err := s.Execute(ctx, `console.log(cwd);`, "/home/test/dir", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -780,7 +1324,7 @@ func TestCwdFallbackToGetwd(t *testing.T) {
 	ctx := context.Background()
 
 	wd, _ := os.Getwd()
-	output, err := s.Execute(ctx, `console.log(cwd);`, wd, nil, 10000)
+	output, _, err := s.Execute(ctx, `console.log(cwd);`, wd, nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -810,7 +1354,7 @@ func TestCall_CwdFallbackWhenWorkingDirEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	got := strings.TrimSpace(result.Data.(string))
+	got := strings.TrimSpace(execResult(t, result).Text)
 	if got != wd {
 		t.Errorf("cwd with empty WorkingDir: got %q, want %q (os.Getwd)", got, wd)
 	}
@@ -828,7 +1372,7 @@ func TestConsoleLogMultipleArgs(t *testing.T) {
 	defer s.Close()
 
 	// Standard JS: console.log("a", "b", 1) → "a b 1"
-	output, err := s.Execute(context.Background(), `console.log("a", "b", 1)`, "", nil, 0)
+	output, _, err := s.Execute(context.Background(), `console.log("a", "b", 1)`, "", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -954,6 +1498,22 @@ func TestRenderResult(t *testing.T) {
 	if got := r.RenderResult(42); got != "42" {
 		t.Errorf("int: expected '42', got %q", got)
 	}
+	if got := r.RenderResult(replResult{Text: "out"}); got != "out" {
+		t.Errorf("replResult text-only: expected 'out', got %q", got)
+	}
+	if got := r.RenderResult(replResult{}); got != "" {
+		t.Errorf("empty replResult: expected empty string, got %q", got)
+	}
+	withImages := replResult{
+		Text: "out",
+		Images: []types.ContentBlock{
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "aGk="}),
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "eW8="}),
+		},
+	}
+	if got := r.RenderResult(withImages); got != "out\n📎 2 images" {
+		t.Errorf("replResult with images: got %q, want 'out\\n📎 2 images'", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -994,8 +1554,8 @@ func TestREPLToolCallNilTctx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "auto session") {
-		t.Errorf("expected 'auto session', got %q", result.Data)
+	if got := execResult(t, result).Text; got != "auto session\n" {
+		t.Errorf("expected 'auto session', got %q", got)
 	}
 	r.Close()
 }
@@ -1009,8 +1569,8 @@ func TestREPLToolResetNonexistentSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for reset of nonexistent session, got %v", err)
 	}
-	if result.Data.(string) != "Session reset (new)" {
-		t.Errorf("expected 'Session reset (new)', got %q", result.Data)
+	if got := execResult(t, result).Text; got != "Session reset (new)" {
+		t.Errorf("expected 'Session reset (new)', got %q", got)
 	}
 }
 
@@ -1023,8 +1583,8 @@ func TestREPLToolNoToolExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "no executor") {
-		t.Errorf("expected 'no executor', got %q", result.Data)
+	if got := execResult(t, result).Text; got != "no executor\n" {
+		t.Errorf("expected 'no executor', got %q", got)
 	}
 	r.CleanSession("no-exec-test")
 }
@@ -1034,16 +1594,18 @@ func TestREPLToolToolExecutorError(t *testing.T) {
 	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("tool execution failed")
 	})
-	input, _ := json.Marshal(replInput{Code: `try { tool("Fail", "{}"); console.log("missed") } catch(e) { console.log(e) }`})
+	r.SetToolLister(func() []ToolMeta {
+		return []ToolMeta{{Name: "Fail", Description: "fails"}}
+	})
+	input, _ := json.Marshal(replInput{Code: `try { tools.Fail({}); console.log("missed") } catch(e) { console.log(e) }`})
 	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "tool-err-test"},
 	})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	output := result.Data.(string)
-	if !strings.Contains(output, "ERROR: tool execution failed") {
-		t.Errorf("expected error prefix in output, got %q", output)
+	if got := execResult(t, result).Text; got != "tool execution failed\n" {
+		t.Errorf("expected error message thrown to JS, got %q", got)
 	}
 	r.CleanSession("tool-err-test")
 }
@@ -1073,7 +1635,7 @@ func TestSetTimeoutCtxCancel(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		output, _ := s.Execute(ctx, `for (var i = 0; i < 100000; i++) { /* spin */ }`, "", toolFn, 10000)
+		output, _, _ := s.Execute(ctx, `for (var i = 0; i < 100000; i++) { /* spin */ }`, "", toolFn, 10000, nil)
 		done <- output
 	}()
 
@@ -1092,10 +1654,10 @@ func TestSetTimeoutCallbackError(t *testing.T) {
 	ctx := context.Background()
 	toolFn := mockToolFn(t, nil)
 
-	output, err := s.Execute(ctx, `
+	output, _, err := s.Execute(ctx, `
 		setTimeout(function() { throw new Error("timer callback error") }, 5);
 		console.log("main code")
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1110,32 +1672,14 @@ func TestSetTimeoutMultipleCallbackErrors(t *testing.T) {
 	ctx := context.Background()
 	toolFn := mockToolFn(t, nil)
 
-	_, err := s.Execute(ctx, `
+	_, _, err := s.Execute(ctx, `
 		setTimeout(function() { throw new Error("error1") }, 5);
 		setTimeout(function() { throw new Error("error2") }, 10);
-	`, "", toolFn, 10000)
+	`, "", toolFn, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	// goja eventloop handles timer errors internally; verify no crash
-}
-
-// ---------------------------------------------------------------------------
-// tool() when no toolFn is set
-// ---------------------------------------------------------------------------
-
-func TestToolFnNotAvailable(t *testing.T) {
-	s := newTestSession(t)
-	// Execute with nil toolFn — session.toolFn stays nil
-	output, err := s.Execute(context.Background(),
-		`try { tool("Echo", "{}"); console.log("missed") } catch(e) { console.log(e) }`,
-		"", nil, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "tool executor not available") {
-		t.Errorf("expected 'tool executor not available' error, got %q", output)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,28 +1702,6 @@ func TestParseUintExtended(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid character") {
 		t.Errorf("invalid char: expected 'invalid character', got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Tool args: object (non-string) through tool()
-// ---------------------------------------------------------------------------
-
-func TestToolWithObjectArgs(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, map[string]string{
-		"Echo": `{"result": "ok"}`,
-	})
-
-	// Pass JS object (not a string) — hits default case in tool() args handling
-	output, err := s.Execute(context.Background(),
-		`const r = tool("Echo", {msg: "hi"}); console.log(r)`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "ok") {
-		t.Errorf("expected tool result, got %q", output)
 	}
 }
 
@@ -1211,15 +1733,18 @@ func TestREPLToolToolExecutorSuccess(t *testing.T) {
 	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
 		return "tool result: " + name, nil
 	})
-	input, _ := json.Marshal(replInput{Code: `const r = tool("Echo", "{}"); console.log(r)`})
+	r.SetToolLister(func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
+	})
+	input, _ := json.Marshal(replInput{Code: `const r = tools.Echo({}); console.log(r)`})
 	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "tool-ok-test"},
 	})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "tool result: Echo") {
-		t.Errorf("expected 'tool result: Echo', got %q", result.Data)
+	if got := execResult(t, result).Text; got != "tool result: Echo\n" {
+		t.Errorf("expected 'tool result: Echo', got %q", got)
 	}
 	r.CleanSession("tool-ok-test")
 }
@@ -1257,7 +1782,7 @@ func TestREPLToolExecuteOnClosedSession(t *testing.T) {
 
 func TestCompileError(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `invalid {{{js`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `invalid {{{js`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute should not return Go error for JS compile error: %v", err)
 	}
@@ -1268,9 +1793,9 @@ func TestCompileError(t *testing.T) {
 
 func TestOutputAndError(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(),
+	output, _, err := s.Execute(context.Background(),
 		`console.log("before error"); throw new Error("boom")`,
-		"", nil, 10000)
+		"", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1293,9 +1818,9 @@ func TestErrorStackTraceAdjustsLineNumbers(t *testing.T) {
 	// User code starts at line 3 inside the async IIFE wrapper (2 header lines).
 	// Stack traces should show adjusted line numbers, not the raw wrapper-internal ones.
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(),
+	output, _, err := s.Execute(context.Background(),
 		"console.log(\"line1\")\nconsole.log(\"line2\")\nthrow new Error(\"line3\")",
-		"", nil, 10000)
+		"", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1345,8 +1870,8 @@ func TestCrossCallPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "survives") {
-		t.Errorf("expected 'survives' from cross-call variable, got %q", result.Data)
+	if got := execResult(t, result).Text; got != "survives\n" {
+		t.Errorf("expected 'survives' from cross-call variable, got %q", got)
 	}
 
 	// Call 3: overwrite and verify
@@ -1357,8 +1882,8 @@ func TestCrossCallPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update call: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "updated") {
-		t.Errorf("expected 'updated' after overwrite, got %q", result.Data)
+	if got := execResult(t, result).Text; got != "updated\n" {
+		t.Errorf("expected 'updated' after overwrite, got %q", got)
 	}
 
 	r.CleanSession("persist-test")
@@ -1383,7 +1908,9 @@ func TestConcurrentSessions(t *testing.T) {
 			Options: tool.ToolUseOptions{SessionID: "concurrent-A"},
 		})
 		if result != nil {
-			doneA <- result.Data.(string)
+			if out, ok := result.Data.(replResult); ok {
+				doneA <- out.Text
+			}
 		}
 	}()
 
@@ -1392,13 +1919,15 @@ func TestConcurrentSessions(t *testing.T) {
 			Options: tool.ToolUseOptions{SessionID: "concurrent-B"},
 		})
 		if result != nil {
-			doneB <- result.Data.(string)
+			if out, ok := result.Data.(replResult); ok {
+				doneB <- out.Text
+			}
 		}
 	}()
 
 	select {
 	case resultA := <-doneA:
-		if !strings.Contains(resultA, "A") {
+		if resultA != "A\n" {
 			t.Errorf("session A: expected 'A', got %q", resultA)
 		}
 	case <-time.After(5 * time.Second):
@@ -1407,7 +1936,7 @@ func TestConcurrentSessions(t *testing.T) {
 
 	select {
 	case resultB := <-doneB:
-		if !strings.Contains(resultB, "B") {
+		if resultB != "B\n" {
 			t.Errorf("session B: expected 'B', got %q", resultB)
 		}
 	case <-time.After(5 * time.Second):
@@ -1442,8 +1971,8 @@ func TestResetClearsStateViaCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify globalThis: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "before_reset") {
-		t.Fatalf("expected 'before_reset' before reset, got %q", result.Data)
+	if got := execResult(t, result).Text; got != "before_reset\n" {
+		t.Fatalf("expected 'before_reset' before reset, got %q", got)
 	}
 
 	// Call 3: reset
@@ -1463,8 +1992,8 @@ func TestResetClearsStateViaCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify globalThis: %v", err)
 	}
-	if !strings.Contains(result.Data.(string), "cleared") {
-		t.Errorf("expected 'cleared' after reset, got %q", result.Data)
+	if got := execResult(t, result).Text; got != "cleared\n" {
+		t.Errorf("expected 'cleared' after reset, got %q", got)
 	}
 
 	r.CleanSession("reset-clear")
@@ -1481,15 +2010,21 @@ func TestPromiseAllWithAwait(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer s.Close()
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "Glob", Description: "globs"},
+			{Name: "Grep", Description: "greps"},
+		}
+	}
 
-	toolFn := func(_ context.Context, name, argsJSON string) string {
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
 		switch name {
 		case "Glob":
-			return "file1.go\nfile2.go\nfile3.go"
+			return "file1.go\nfile2.go\nfile3.go", nil
 		case "Grep":
-			return "file1.go:1:TODO fix\nfile2.go:5:TODO refactor"
+			return "file1.go:1:TODO fix\nfile2.go:5:TODO refactor", nil
 		default:
-			return ""
+			return "", nil
 		}
 	}
 
@@ -1498,8 +2033,8 @@ await new Promise(resolve => setTimeout(resolve, 50));
 
 // Promise.all with tool calls
 const results = await Promise.all([
-  tool("Glob", JSON.stringify({pattern: "**/*.go"})),
-  tool("Grep", JSON.stringify({pattern: "TODO"}))
+  tools.Glob(JSON.stringify({pattern: "**/*.go"})),
+  tools.Grep(JSON.stringify({pattern: "TODO"}))
 ]);
 console.log("files:", results[0].split("\n").length);
 console.log("todos:", results[1].split("\n").length);
@@ -1507,7 +2042,7 @@ console.log("todos:", results[1].split("\n").length);
 console.log("saved:", globalThis.fileCount);
 `
 
-	output, execErr := s.Execute(context.Background(), code, "", toolFn, 30000)
+	output, _, execErr := s.Execute(context.Background(), code, "", toolFn, 30000, lister)
 
 	if execErr != nil {
 		t.Fatalf("Execute: %v", execErr)
@@ -1524,21 +2059,27 @@ console.log("saved:", globalThis.fileCount);
 }
 
 func TestExecutePromiseAllWithTool(t *testing.T) {
-	// Promise.all + await with synchronous tool() calls — verify it executes correctly.
+	// Promise.all + await with tools.* calls — verify it executes correctly.
 	s, err := NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer s.Close()
-
-	toolFn := func(_ context.Context, name, argsJSON string) string {
-		return "mock-result"
+	lister := func() []ToolMeta {
+		return []ToolMeta{
+			{Name: "Glob", Description: "globs"},
+			{Name: "Grep", Description: "greps"},
+		}
 	}
 
-	output, execErr := s.Execute(context.Background(),
-		`const results = await Promise.all([tool("Glob", JSON.stringify({pattern: "*"})), tool("Grep", JSON.stringify({pattern: "TODO"}))]);
+	toolFn := func(_ context.Context, name, argsJSON string) (string, error) {
+		return "mock-result", nil
+	}
+
+	output, _, execErr := s.Execute(context.Background(),
+		`const results = await Promise.all([tools.Glob({pattern: "*"}), tools.Grep({pattern: "TODO"})]);
 		console.log("got", results.length, "results");`,
-		"", toolFn, 10000)
+		"", toolFn, 10000, lister)
 
 	if execErr != nil {
 		t.Fatalf("Execute: %v", execErr)
@@ -1554,17 +2095,20 @@ func TestExecutePromiseAllWithTool(t *testing.T) {
 
 func TestInterrupt(t *testing.T) {
 	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "ready", Description: "signals readiness"}}
+	}
 	done := make(chan string, 1)
 	ready := make(chan struct{})
 	go func() {
-		toolFn := func(_ context.Context, name, _ string) string {
+		toolFn := func(_ context.Context, name, _ string) (string, error) {
 			if name == "ready" {
 				close(ready)
-				return "ok"
+				return "ok", nil
 			}
-			return "ERROR: unknown tool " + name
+			return "", fmt.Errorf("unknown tool %s", name)
 		}
-		output, _ := s.Execute(context.Background(), `tool("ready", ""); while(true) {}`, "", toolFn, 60000)
+		output, _, _ := s.Execute(context.Background(), `tools.ready(""); while(true) {}`, "", toolFn, 60000, lister)
 		done <- output
 	}()
 	<-ready
@@ -1581,7 +2125,7 @@ func TestInterrupt(t *testing.T) {
 
 func TestConsoleLogNull(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `console.log(null)`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log(null)`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1593,7 +2137,7 @@ func TestConsoleLogNull(t *testing.T) {
 
 func TestConsoleLogObject(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `console.log({a: 1})`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log({a: 1})`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1602,27 +2146,11 @@ func TestConsoleLogObject(t *testing.T) {
 	}
 }
 
-func TestToolWithUndefinedArgs(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, map[string]string{
-		"Echo": `{"result": "no-args"}`,
-	})
-	output, err := s.Execute(context.Background(),
-		`const r = tool("Echo"); console.log(r)`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "no-args") {
-		t.Errorf("expected tool result with default args, got %q", output)
-	}
-}
-
 func TestPromiseRejection(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(),
+	output, _, err := s.Execute(context.Background(),
 		`console.log("before"); Promise.reject("boom")`,
-		"", nil, 10000)
+		"", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -1636,20 +2164,23 @@ func TestPromiseRejection(t *testing.T) {
 
 func TestCancelWithOutput(t *testing.T) {
 	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "ready", Description: "signals readiness"}}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan string, 1)
 	ready := make(chan struct{})
 	go func() {
-		toolFn := func(_ context.Context, name, _ string) string {
+		toolFn := func(_ context.Context, name, _ string) (string, error) {
 			if name == "ready" {
 				close(ready)
-				return "ok"
+				return "ok", nil
 			}
-			return "ERROR: unknown tool " + name
+			return "", fmt.Errorf("unknown tool %s", name)
 		}
-		output, _ := s.Execute(ctx, `console.log("before cancel"); tool("ready", ""); while(true) {}`, "", toolFn, 60000)
+		output, _, _ := s.Execute(ctx, `console.log("before cancel"); tools.ready(""); while(true) {}`, "", toolFn, 60000, lister)
 		done <- output
 	}()
 
@@ -1679,7 +2210,7 @@ func TestExecuteRecoversFromClosedVM(t *testing.T) {
 	// Close the session directly
 	s.Close()
 
-	output, execErr := s.Execute(context.Background(), `console.log("hello")`, "", nil, 10000)
+	output, _, execErr := s.Execute(context.Background(), `console.log("hello")`, "", nil, 10000, nil)
 
 	// Must return error for closed session
 	if execErr == nil {
@@ -1690,6 +2221,73 @@ func TestExecuteRecoversFromClosedVM(t *testing.T) {
 	}
 	if output != "" {
 		t.Errorf("expected empty output, got %q", output)
+	}
+}
+
+func TestCloseDuringExecute(t *testing.T) {
+	s := newTestSession(t)
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "ready", Description: "signals readiness"}}
+	}
+
+	type execOutcome struct {
+		output   string
+		evidence []string
+		err      error
+	}
+	done := make(chan execOutcome, 1)
+	ready := make(chan struct{})
+	go func() {
+		toolFn := func(_ context.Context, name, _ string) (string, error) {
+			if name == "ready" {
+				close(ready)
+				return "ok", nil
+			}
+			return "", fmt.Errorf("unknown tool %s", name)
+		}
+		// while(true) parks Execute inside the event loop after the ready
+		// signal, so Close() must interrupt the VM and wait on s.mu — a
+		// regression that closes without interrupting hangs here instead.
+		output, evidence, err := s.Execute(context.Background(), `tools.ready(""); while(true) {}`, "", toolFn, 60000, lister)
+		done <- execOutcome{output, evidence, err}
+	}()
+
+	<-ready
+	// Close blocks on s.mu until Execute releases it, so after Close returns
+	// the closed flag is set — the follow-up Execute below deterministically
+	// takes the "session closed" path.
+	s.Close()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Errorf("first Execute: expected nil error (interrupt surfaces in output), got %v", res.err)
+		}
+		if !strings.HasPrefix(res.output, "[JS Error]") {
+			t.Errorf("first Execute: expected output starting with '[JS Error]' from Close interrupt, got %q", res.output)
+		}
+		if strings.HasPrefix(res.output, "[JS fatal]") {
+			t.Errorf("first Execute: panic recovered during Close, got %q", res.output)
+		}
+		if len(res.evidence) != 0 {
+			t.Errorf("first Execute: expected empty evidence snapshot, got %v", res.evidence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after Close — deadlock between Close and Execute")
+	}
+
+	out2, ev2, err2 := s.Execute(context.Background(), `console.log("nope")`, "", nil, 10000, nil)
+	if err2 == nil {
+		t.Fatal("second Execute after Close: expected error, got nil")
+	}
+	if err2.Error() != "session closed" {
+		t.Errorf("second Execute after Close: got %q, want exactly \"session closed\"", err2.Error())
+	}
+	if out2 != "" {
+		t.Errorf("second Execute after Close: expected empty output, got %q", out2)
+	}
+	if len(ev2) != 0 {
+		t.Errorf("second Execute after Close: expected empty evidence, got %v", ev2)
 	}
 }
 
@@ -1735,7 +2333,7 @@ func TestJsValueToString_Direct(t *testing.T) {
 func TestExecute_PanicRecovery(t *testing.T) {
 	s := newTestSession(t)
 	// Cause a fatal panic by recursively calling until stack overflow
-	output, err := s.Execute(context.Background(), `function f(){f()} f()`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `function f(){f()} f()`, "", nil, 10000, nil)
 	if err != nil {
 		t.Logf("stack overflow returned error (acceptable): %v", err)
 	}
@@ -1815,7 +2413,7 @@ func TestAdjustStackLines(t *testing.T) {
 func TestReset_Success(t *testing.T) {
 	s := newTestSession(t)
 	// Execute something first
-	if _, err := s.Execute(context.Background(), `var x = 1`, "", nil, 10000); err != nil {
+	if _, _, err := s.Execute(context.Background(), `var x = 1`, "", nil, 10000, nil); err != nil {
 		t.Fatalf("first execute: %v", err)
 	}
 
@@ -1825,7 +2423,7 @@ func TestReset_Success(t *testing.T) {
 	}
 
 	// After reset, x should be gone (new VM)
-	output, err := s.Execute(context.Background(), `console.log(typeof x)`, "", nil, 10000)
+	output, _, err := s.Execute(context.Background(), `console.log(typeof x)`, "", nil, 10000, nil)
 	if err != nil {
 		t.Fatalf("post-reset execute: %v", err)
 	}
@@ -1837,7 +2435,7 @@ func TestReset_Success(t *testing.T) {
 
 func TestExecute_Timeout(t *testing.T) {
 	s := newTestSession(t)
-	output, err := s.Execute(context.Background(), `while(true) {}`, "", nil, 1000)
+	output, _, err := s.Execute(context.Background(), `while(true) {}`, "", nil, 1000, nil)
 	if err != nil {
 		t.Fatalf("timeout execute returned error: %v", err)
 	}
@@ -1850,42 +2448,22 @@ func TestExecute_Timeout(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// json.Marshal error path for tool args (NaN)
-// ---------------------------------------------------------------------------
-
-func TestToolArgs_NaN(t *testing.T) {
-	// NaN is exported as float64(math.NaN()), which json.Marshal rejects.
-	// This covers session.go:104-105 — the marshal error → panic path.
-	s := newTestSession(t)
-	toolFn := func(_ context.Context, _, _ string) string {
-		return "should not reach"
-	}
-	output, err := s.Execute(context.Background(),
-		`try { tool("test", NaN) } catch(e) { console.log("caught:" + e) }`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "failed to marshal tool args") {
-		t.Errorf("expected marshal error in output, got: %s", output)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Panic recovery from Go-level panic (circular ref in Export)
 // ---------------------------------------------------------------------------
 
 func TestExecute_CircularRefPanic(t *testing.T) {
-	// A circular JS object passed to tool() causes infinite recursion
+	// A circular JS object passed to tools.Echo causes infinite recursion
 	// in goja's Export(), triggering a Go stack overflow panic.
-	// This covers session.go:147-153 — the defer/recover panic path.
 	s := newTestSession(t)
-	toolFn := func(_ context.Context, _, _ string) string {
-		return "should not reach"
+	lister := func() []ToolMeta {
+		return []ToolMeta{{Name: "Echo", Description: "echoes"}}
 	}
-	output, err := s.Execute(context.Background(),
-		`var obj = {}; obj.self = obj; tool("test", obj)`,
-		"", toolFn, 10000)
+	toolFn := func(_ context.Context, _, _ string) (string, error) {
+		return "should not reach", nil
+	}
+	output, _, err := s.Execute(context.Background(),
+		`var obj = {}; obj.self = obj; tools.Echo(obj)`,
+		"", toolFn, 10000, lister)
 	// The panic is caught by Execute's defer/recover
 	if err != nil && !strings.Contains(err.Error(), "closed") {
 		t.Logf("error (acceptable): %v", err)
@@ -1926,11 +2504,7 @@ func TestHandleReset_NewSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleReset unexpected error: %v", err)
 	}
-	got, ok := result.Data.(string)
-	if !ok {
-		t.Fatalf("result.Data type = %T, want string", result.Data)
-	}
-	if got != "Session reset (new)" {
+	if got := execResult(t, result).Text; got != "Session reset (new)" {
 		t.Errorf("handleReset on missing session = %q, want \"Session reset (new)\"", got)
 	}
 }
@@ -1952,8 +2526,7 @@ func TestHandleReset_ExistingSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleReset error: %v", err)
 	}
-	got := result.Data.(string)
-	if got != "Session reset" {
+	if got := execResult(t, result).Text; got != "Session reset" {
 		t.Errorf("handleReset on existing session = %q, want \"Session reset\"", got)
 	}
 }
@@ -1968,7 +2541,7 @@ func TestExecute_ContextCancel(t *testing.T) {
 		<-time.After(50 * time.Millisecond)
 		cancel()
 	}()
-	out, err := s.Execute(ctx, `while(true) {}`, "", nil, 5000)
+	out, _, err := s.Execute(ctx, `while(true) {}`, "", nil, 5000, nil)
 	if err != nil {
 		t.Fatalf("Execute with cancel returned error: %v", err)
 	}
@@ -1982,7 +2555,7 @@ func TestExecute_ContextCancel(t *testing.T) {
 func TestExecute_NegativeTimeout(t *testing.T) {
 	s := newTestSession(t)
 	// Pass negative timeout — should use default.
-	out, err := s.Execute(context.Background(), `console.log("ok")`, "", nil, -1)
+	out, _, err := s.Execute(context.Background(), `console.log("ok")`, "", nil, -1, nil)
 	if err != nil {
 		t.Fatalf("Execute with negative timeout: %v", err)
 	}
@@ -1994,7 +2567,7 @@ func TestExecute_NegativeTimeout(t *testing.T) {
 // TestExecute_ZeroTimeout covers the timeoutMs == 0 default branch.
 func TestExecute_ZeroTimeout(t *testing.T) {
 	s := newTestSession(t)
-	out, err := s.Execute(context.Background(), `console.log("zero")`, "", nil, 0)
+	out, _, err := s.Execute(context.Background(), `console.log("zero")`, "", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Execute with zero timeout: %v", err)
 	}
@@ -2014,7 +2587,7 @@ func TestNewSession_ErrorRecovery(t *testing.T) {
 	if s == nil {
 		t.Fatal("NewSession returned nil session")
 	}
-	out, err := s.Execute(context.Background(), `console.log(1 + 1)`, "", nil, 5000)
+	out, _, err := s.Execute(context.Background(), `console.log(1 + 1)`, "", nil, 5000, nil)
 	if err != nil {
 		t.Fatalf("Execute on new session: %v", err)
 	}

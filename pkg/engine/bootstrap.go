@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -190,4 +191,27 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 			return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
 		})
 	}
+
+	// REPL tool lister → fresh tool inventory for the JS tools object.
+	// Called on every Repl Execute so MCP tools that connect mid-session
+	// are discovered without restarting the JS VM.
+	// AllTools() is live while ExecuteTool resolves against e.tools (refreshed per callLLM), so a tool connecting mid-turn shows up in tools.* but fails until the next turn.
+	refs.REPL.SetToolLister(func() []repl.ToolMeta {
+		all := eng.AllTools()
+		names := make([]string, 0, len(all))
+		for name := range all {
+			names = append(names, name)
+		}
+		// Sorted for a stable ALL_TOOLS order across Executes.
+		slices.Sort(names)
+		metas := make([]repl.ToolMeta, 0, len(names))
+		for _, name := range names {
+			desc, err := all[name].Description(nil)
+			if err != nil {
+				desc = ""
+			}
+			metas = append(metas, repl.ToolMeta{Name: name, Description: desc})
+		}
+		return metas
+	})
 }
