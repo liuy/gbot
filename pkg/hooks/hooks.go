@@ -350,6 +350,9 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 			} else if hookCfg.Code != "" {
 				result.HookName = hookCfg.Code
 			}
+			// One INFO per executed hook — skip-path silence is the matcher
+			// gate's live evidence, and outcome makes failures greppable.
+			slog.Info("hooks: hook ran", "type", string(hookCfg.Type), "event", string(event), "outcome", result.Outcome.String())
 			results = append(results, result)
 			// 6. Short-circuit on blocking
 			if result.Outcome == HookOutcomeBlocking {
