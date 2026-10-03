@@ -31,13 +31,13 @@ func createMockPlugin(t *testing.T, name string) string {
 func createMockPluginAt(t *testing.T, root, name string) {
 	t.Helper()
 
-	// .gbot-plugin/plugin.json
-	manifestDir := filepath.Join(root, ".gbot-plugin")
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
-		t.Fatalf("mkdir manifest: %v", err)
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatalf("mkdir plugin root: %v", err)
 	}
+
+	// plugin.json (root-level manifest)
 	manifest := `{"name":"` + name + `","version":"1.0.0","skills":"./skills/","mcpServers":"./.mcp.json"}`
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "plugin.json"), []byte(manifest), 0644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 
@@ -687,12 +687,11 @@ func TestDiscoverPlugins_FromDir(t *testing.T) {
 	base := t.TempDir()
 	pluginsDir := filepath.Join(base, "plugins")
 	pluginDir := filepath.Join(pluginsDir, "test-plugin")
-	manifestDir := filepath.Join(pluginDir, ".gbot-plugin")
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	manifest := `{"name":"test-plugin","version":"1.0.0","skills":"./skills/"}`
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Non-plugin directory (no manifest)
@@ -730,12 +729,11 @@ func TestDiscoverPlugins_BrokenManifest_Skip(t *testing.T) {
 	base := t.TempDir()
 	pluginsDir := filepath.Join(base, "plugins")
 	pluginDir := filepath.Join(pluginsDir, "broken-plugin")
-	manifestDir := filepath.Join(pluginDir, ".gbot-plugin")
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	// Invalid JSON manifest
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte("{bad json"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte("{bad json"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -752,12 +750,11 @@ func TestDiscoverPlugins_UsingOverride(t *testing.T) {
 	base := t.TempDir()
 	pluginsDir := filepath.Join(base, "plugins")
 	pluginDir := filepath.Join(pluginsDir, "ovr-plugin")
-	manifestDir := filepath.Join(pluginDir, ".gbot-plugin")
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	manifest := `{"name":"ovr-plugin","version":"2.0.0"}`
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1009,20 +1006,18 @@ func TestLoadAndInitialize_BrokenPlugin_FailOpen(t *testing.T) {
 
 	// Create a valid plugin and a broken one
 	goodDir := filepath.Join(pluginsDir, "good-plugin")
-	goodManifest := filepath.Join(goodDir, ".gbot-plugin")
-	if err := os.MkdirAll(goodManifest, 0755); err != nil {
+	if err := os.MkdirAll(goodDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(goodManifest, "plugin.json"), []byte(`{"name":"good-plugin","version":"1.0.0"}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(goodDir, "plugin.json"), []byte(`{"name":"good-plugin","version":"1.0.0"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	badDir := filepath.Join(pluginsDir, "bad-plugin")
-	badManifest := filepath.Join(badDir, ".gbot-plugin")
-	if err := os.MkdirAll(badManifest, 0755); err != nil {
+	if err := os.MkdirAll(badDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(badManifest, "plugin.json"), []byte("{broken"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(badDir, "plugin.json"), []byte("{broken"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1085,12 +1080,8 @@ func TestLoadMcpServers_InvalidServerConfig(t *testing.T) {
 
 func TestLoadPlugin_NilManifest(t *testing.T) {
 	root := t.TempDir()
-	manifestDir := filepath.Join(root, ".gbot-plugin")
-	if err := os.MkdirAll(manifestDir, 0755); err != nil {
-		t.Fatal(err)
-	}
 	// Write manifest with empty name (valid JSON but empty name)
-	if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(`{"version":"1.0.0"}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "plugin.json"), []byte(`{"version":"1.0.0"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	plugin, err := LoadPlugin(root)
@@ -1373,7 +1364,7 @@ func TestLoadAndInitialize_DiscoverError(t *testing.T) {
 
 func TestLoadHooks_NonIsNotExistError(t *testing.T) {
 	tmpDir := t.TempDir()
-	pluginDir := filepath.Join(tmpDir, "my-plugin", ".gbot-plugin")
+	pluginDir := filepath.Join(tmpDir, "my-plugin")
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1405,7 +1396,7 @@ func TestLoadHooks_NonIsNotExistError(t *testing.T) {
 
 func TestLoadSkills_NonIsNotExistError(t *testing.T) {
 	tmpDir := t.TempDir()
-	pluginDir := filepath.Join(tmpDir, "my-plugin", ".gbot-plugin")
+	pluginDir := filepath.Join(tmpDir, "my-plugin")
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

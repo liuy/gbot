@@ -1,9 +1,13 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +22,7 @@ func TestNewAt_CreatesSubdirs(t *testing.T) {
 	if s.RootDir != dir {
 		t.Errorf("RootDir = %q, want %q", s.RootDir, dir)
 	}
-	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse} {
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse, CategoryTrace} {
 		info, err := os.Stat(filepath.Join(dir, string(cat)))
 		if err != nil {
 			t.Fatalf("subdir %s not created: %v", cat, err)
@@ -209,6 +213,39 @@ func TestCleanup_MissingDir_NotError(t *testing.T) {
 	}
 }
 
+func TestCleanup_StatErrorWarns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o000 does not block stat on Windows")
+	}
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	// Strip search permission on the store root so the category stat fails
+	// with a permission error, not IsNotExist.
+	if err := os.Chmod(s.RootDir, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(s.RootDir, 0o755) }()
+
+	var logBuf bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldDefault)
+
+	removed := s.Cleanup(CategoryImage, time.Hour)
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0 on stat error", removed)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "cleanup stat failed") {
+		t.Errorf("cleanup log = %q, want a stat-failed warning (silent permission errors hide a dead sweep)", logs)
+	}
+	if !strings.Contains(logs, string(CategoryImage)) {
+		t.Errorf("cleanup log = %q, want it to name the failing dir %q", logs, string(CategoryImage))
+	}
+}
+
 func TestCleanupAll_BothCategories(t *testing.T) {
 	t.Parallel()
 	s, err := NewAt(t.TempDir())
@@ -218,6 +255,7 @@ func TestCleanupAll_BothCategories(t *testing.T) {
 	imgPath, _ := s.Save(CategoryImage, []byte("img-stale"), ".png")
 	docPath, _ := s.Save(CategoryDocument, []byte("doc-stale"), ".pdf")
 	parsePath, _ := s.Save(CategoryParse, []byte("parse-stale"), ".md")
+	tracePath, _ := s.Save(CategoryTrace, []byte("trace-stale"), ".zip")
 	old := time.Now().Add(-31 * 24 * time.Hour) // REAL-TIME
 	if err := os.Chtimes(imgPath, old, old); err != nil {
 		t.Fatalf("chtimes img: %v", err)
@@ -228,9 +266,12 @@ func TestCleanupAll_BothCategories(t *testing.T) {
 	if err := os.Chtimes(parsePath, old, old); err != nil {
 		t.Fatalf("chtimes parse: %v", err)
 	}
+	if err := os.Chtimes(tracePath, old, old); err != nil {
+		t.Fatalf("chtimes trace: %v", err)
+	}
 	removed := s.CleanupAll(30 * 24 * time.Hour)
-	if removed != 3 {
-		t.Errorf("removed = %d, want 3 (one per category)", removed)
+	if removed != 4 {
+		t.Errorf("removed = %d, want 4 (one per category)", removed)
 	}
 }
 
@@ -341,4 +382,37 @@ func TestStartCleanup_EvictsOldFiles(t *testing.T) {
 	}
 	stop()
 	t.Errorf("stale file not evicted by StartCleanup loop")
+}
+
+func TestCleanupNestedSubdirs(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	nested := filepath.Join(s.RootDir, "traces", "browser")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(nested, "20260101-000000.zip")
+	fresh := filepath.Join(nested, "fresh.zip")
+	if err := os.WriteFile(old, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fresh, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-31 * 24 * time.Hour) // REAL-TIME
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	removed := s.Cleanup(CategoryTrace, 30*24*time.Hour)
+	if removed != 1 {
+		t.Fatalf("Cleanup removed %d files, want 1 (nested old zip)", removed)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old nested zip still exists")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh zip was removed: %v", err)
+	}
 }

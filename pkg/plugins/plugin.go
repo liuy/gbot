@@ -4,7 +4,7 @@
 //   - src/services/mcp/mcpPluginIntegration.ts — TS plugin integration
 //   - src/schemas/plugins.ts — Plugin manifest schemas
 //
-// Plugin directory: ~/.gbot/plugins/{name}/.gbot-plugin/plugin.json
+// Plugin directory: ~/.gbot/plugins/{name}/plugin.json
 // Discovery: simple directory scan, no installed_plugins.json.
 package plugins
 
@@ -20,13 +20,23 @@ import (
 // Types — plugin manifest and resolved plugin
 // ---------------------------------------------------------------------------
 
-// PluginManifest is the plugin definition read from .gbot-plugin/plugin.json.
-// Source: schemas/plugins.ts — PluginSchema.
+// PluginManifest is the plugin definition read from plugin.json at the plugin
+// root. Source: schemas/plugins.ts — PluginSchema.
 type PluginManifest struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	Skills     string `json:"skills,omitempty"`     // relative path, e.g. "./skills/"
-	McpServers string `json:"mcpServers,omitempty"` // relative path, e.g. "./.mcp.json"
+	McpServers string `json:"mcpServers,omitempty"` // relative path, e.g. "./mcp.json"
+	Repls      string `json:"repls,omitempty"`      // relative dir of .js files preloaded into the REPL, e.g. "./repl/"
+}
+
+// ReplScript is one plugin-supplied JS file evaluated into the REPL globals
+// after tools/ALL_TOOLS/image are registered, so scripts can build harness
+// helpers over tools.* (e.g. a browser.* namespace wrapping playwright tools).
+type ReplScript struct {
+	Plugin string // owning plugin name, e.g. "browser-use"
+	Name   string // file base name, e.g. "harness.js"
+	Source string // file content
 }
 
 // ResolvedPlugin is a fully discovered plugin with loaded manifest.
@@ -37,10 +47,10 @@ type ResolvedPlugin struct {
 }
 
 // ---------------------------------------------------------------------------
-// Variable substitution — ${GBOT_PLUGIN_ROOT} and ${GBOT_PLUGIN_DATA}
+// Variable substitution — ${GBOT_PLUGIN_ROOT}, ${GBOT_PLUGIN_DATA}, ${GBOT_CACHE_DIR}
 //
 // Two-phase strategy:
-//   - Phase 1: substitutePluginVars() replaces ${GBOT_PLUGIN_ROOT}/${GBOT_PLUGIN_DATA}
+//   - Phase 1: substitutePluginVars() replaces ${GBOT_PLUGIN_ROOT}/${GBOT_PLUGIN_DATA}/${GBOT_CACHE_DIR}
 //     in MCP config values (JSON strings) at load time.
 //   - Phase 2: mcp.ExpandConfigEnv() handles remaining ${VAR} references via os.ExpandEnv.
 //
@@ -55,12 +65,18 @@ const (
 
 	// EnvVarPluginData is the environment variable for the plugin data directory.
 	EnvVarPluginData = "GBOT_PLUGIN_DATA"
+
+	// EnvVarCacheDir is the environment variable for the gbot cache directory
+	// (same root as pkg/media, so plugin-written artifacts join the 30-day sweep).
+	EnvVarCacheDir = "GBOT_CACHE_DIR"
 )
 
-// substitutePluginVars replaces ${GBOT_PLUGIN_ROOT} and ${GBOT_PLUGIN_DATA} in a string.
-func substitutePluginVars(s, pluginRoot, pluginData string) string {
+// substitutePluginVars replaces ${GBOT_PLUGIN_ROOT}, ${GBOT_PLUGIN_DATA} and
+// ${GBOT_CACHE_DIR} in a string.
+func substitutePluginVars(s, pluginRoot, pluginData, cacheDir string) string {
 	s = strings.ReplaceAll(s, "${GBOT_PLUGIN_ROOT}", pluginRoot)
 	s = strings.ReplaceAll(s, "${GBOT_PLUGIN_DATA}", pluginData)
+	s = strings.ReplaceAll(s, "${GBOT_CACHE_DIR}", cacheDir)
 	return s
 }
 
@@ -70,6 +86,7 @@ func pluginEnvVars(pluginRoot, pluginName string) []string {
 	return []string{
 		EnvVarPluginRoot + "=" + pluginRoot,
 		EnvVarPluginData + "=" + dataDir,
+		EnvVarCacheDir + "=" + CacheDir(),
 	}
 }
 
@@ -99,12 +116,19 @@ func PluginDataDir(pluginName string) string {
 	return filepath.Join(home, ".gbot", "plugins", "data", pluginName)
 }
 
+// CacheDir returns the gbot cache directory (~/.gbot/cache/), same root as
+// pkg/media's Store so plugin artifacts share the 30-day LRU sweep.
+func CacheDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gbot", "cache")
+}
+
 // ---------------------------------------------------------------------------
 // Discovery — directory scan of ~/.gbot/plugins/
 // ---------------------------------------------------------------------------
 
 // DiscoverPlugins scans the plugin directory for valid plugins.
-// A valid plugin has a .gbot-plugin/plugin.json file.
+// A valid plugin has a plugin.json file at its root.
 func DiscoverPlugins() ([]*ResolvedPlugin, error) {
 	dir, err := PluginsDir()
 	if err != nil {
@@ -161,7 +185,7 @@ func LoadPlugin(rootPath string) (*ResolvedPlugin, error) {
 
 // LoadManifest reads and parses the plugin manifest.
 func LoadManifest(pluginRoot string) (*PluginManifest, error) {
-	path := filepath.Join(pluginRoot, ".gbot-plugin", "plugin.json")
+	path := filepath.Join(pluginRoot, "plugin.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)

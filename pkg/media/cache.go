@@ -32,6 +32,10 @@ const (
 	// documents/parse/ stores the derived markdown so re-expansion on
 	// later turns skips the (slow) parse chain.
 	CategoryParse Category = "documents/parse"
+	// CategoryTrace holds Playwright/browser trace archives written by plugin
+	// MCP servers via ${GBOT_CACHE_DIR}/traces/... — registered here so the
+	// category dir is created at startup and swept by CleanupAll like the rest.
+	CategoryTrace Category = "traces"
 )
 
 // DefaultCleanupInterval is how often the background cleanup loop sweeps the
@@ -53,7 +57,7 @@ type Store struct {
 }
 
 // New returns a Store rooted at ~/.gbot/cache, ensures the category subdirs
-// (images/documents/parse) exist, AND launches the background cleanup
+// (images/documents/parse/traces) exist, AND launches the background cleanup
 // goroutine (30-day eviction, DefaultCleanupInterval). The goroutine runs
 // against a background context so it survives connector cancellation. Call
 // Close() to stop it.
@@ -80,7 +84,7 @@ func NewAt(rootDir string) (*Store, error) {
 
 // newStoreRoot creates the Store and ensures all category subdirs exist.
 func newStoreRoot(rootDir string) (*Store, error) {
-	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse} {
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse, CategoryTrace} {
 		if err := os.MkdirAll(filepath.Join(rootDir, string(cat)), 0o755); err != nil {
 			return nil, fmt.Errorf("media: create %s dir: %w", cat, err)
 		}
@@ -143,45 +147,51 @@ func (s *Store) Save(cat Category, data []byte, ext string) (string, error) {
 	return dst, nil
 }
 
-// Cleanup removes files in {root}/{category}/ whose mtime is older than maxAge.
-// Returns the count of files removed. Errors on individual files are logged
-// (slog.Warn) and skipped so one unreadable file does not abort the sweep.
+// Cleanup removes files under {root}/{category}/ whose mtime is older than
+// maxAge. Nested subdirectories are traversed (tools like MCP servers nest
+// their outputs); empty dirs are left in place. Returns the count of files
+// removed. Errors on individual files are logged (slog.Warn) and skipped so
+// one unreadable file does not abort the sweep.
 func (s *Store) Cleanup(cat Category, maxAge time.Duration) int {
 	dir := filepath.Join(s.RootDir, string(cat))
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// Missing dir is not fatal — nothing to clean.
-		if os.IsNotExist(err) {
-			return 0
+	if _, err := os.Stat(dir); err != nil {
+		if !os.IsNotExist(err) {
+			// Permission errors etc. mean the sweep silently did nothing —
+			// surface it or stale files accumulate invisibly.
+			slog.Warn("media: cleanup stat failed", "dir", dir, "error", err)
 		}
-		slog.Warn("media: cleanup readdir failed", "dir", dir, "error", err)
+		// Missing dir is not fatal — nothing to clean.
 		return 0
 	}
 	cutoff := time.Now().Add(-maxAge)
 	removed := 0
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			slog.Warn("media: cleanup stat failed", "file", entry.Name(), "error", err)
-			continue
+			slog.Warn("media: cleanup walk failed", "path", path, "error", err)
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			slog.Warn("media: cleanup stat failed", "file", path, "error", err)
+			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(dir, entry.Name())
 			if err := os.Remove(path); err != nil {
 				slog.Warn("media: cleanup remove failed", "file", path, "error", err)
-				continue
+				return nil
 			}
 			removed++
 		}
-	}
+		return nil
+	})
 	return removed
 }
 
-// CleanupAll runs Cleanup across all categories (images, documents, parse).
-// Returns the total count of files removed.
+// CleanupAll runs Cleanup across all categories (images, documents, parse,
+// traces). Returns the total count of files removed.
 func (s *Store) CleanupAll(maxAge time.Duration) int {
-	return s.Cleanup(CategoryImage, maxAge) + s.Cleanup(CategoryDocument, maxAge) + s.Cleanup(CategoryParse, maxAge)
+	return s.Cleanup(CategoryImage, maxAge) + s.Cleanup(CategoryDocument, maxAge) + s.Cleanup(CategoryParse, maxAge) + s.Cleanup(CategoryTrace, maxAge)
 }

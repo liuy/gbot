@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/config"
@@ -24,11 +25,12 @@ import (
 
 // LoadedPlugins holds everything loaded from all discovered plugins.
 type LoadedPlugins struct {
-	McpServers map[string]mcp.ScopedMcpServerConfig
-	Hooks      hooks.HooksConfig
-	Skills     []types.SkillCommand
-	Agents     []types.AgentDefinition
-	EnvVars    []string
+	McpServers  map[string]mcp.ScopedMcpServerConfig
+	Hooks       hooks.HooksConfig
+	Skills      []types.SkillCommand
+	Agents      []types.AgentDefinition
+	ReplScripts []ReplScript
+	EnvVars     []string
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,9 @@ func LoadAndInitialize(ctx context.Context, cwd string, cfg *config.Config) (*Lo
 		// Load skills
 		result.Skills = append(result.Skills, loadSkills(plugin)...)
 
+		// Load REPL harness scripts
+		result.ReplScripts = append(result.ReplScripts, loadReplScripts(plugin)...)
+
 		// Load agents
 		result.Agents = append(result.Agents, loadAgents(plugin)...)
 	}
@@ -107,7 +112,7 @@ func loadMcpServers(plugin *ResolvedPlugin) map[string]mcp.ScopedMcpServerConfig
 
 	// Substitute ${GBOT_PLUGIN_ROOT} in the raw JSON before parsing
 	pluginData := PluginDataDir(plugin.Name)
-	expanded := substitutePluginVars(string(data), plugin.RootPath, pluginData)
+	expanded := substitutePluginVars(string(data), plugin.RootPath, pluginData, CacheDir())
 
 	// Parse as McpJsonConfig
 	var config mcp.McpJsonConfig
@@ -265,6 +270,40 @@ func loadSkills(plugin *ResolvedPlugin) []types.SkillCommand {
 		result = append(result, *skill)
 	}
 
+	return result
+}
+
+// loadReplScripts — scan repl/*.js (flat, sorted for deterministic order),
+// return raw sources for REPL preloading. Missing dir = no scripts (not an
+// error, same tolerance as skills).
+func loadReplScripts(plugin *ResolvedPlugin) []ReplScript {
+	var result []ReplScript
+	if plugin.Manifest == nil || plugin.Manifest.Repls == "" {
+		return result
+	}
+	replDir := resolvePluginPath(plugin.RootPath, plugin.Manifest.Repls)
+	entries, err := os.ReadDir(replDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("plugins: read repl dir", "plugin", plugin.Name, "error", err)
+		}
+		return result
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".js") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(replDir, name))
+		if err != nil {
+			slog.Warn("plugins: read repl script", "plugin", plugin.Name, "file", name, "error", err)
+			continue
+		}
+		result = append(result, ReplScript{Plugin: plugin.Name, Name: name, Source: string(data)})
+	}
 	return result
 }
 

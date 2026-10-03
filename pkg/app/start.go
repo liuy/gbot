@@ -33,6 +33,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/plugins"
 	"github.com/liuy/gbot/pkg/project"
+	"github.com/liuy/gbot/pkg/tool/repl"
 
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
@@ -165,6 +166,13 @@ func Start(opts Options) (*Instance, error) {
 	loadedPlugins, pluginErr := plugins.LoadAndInitialize(context.Background(), workingDir, cfg)
 	if pluginErr != nil {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
+	}
+	if loadedPlugins != nil && len(loadedPlugins.ReplScripts) > 0 {
+		scripts := make([]repl.ReplScript, 0, len(loadedPlugins.ReplScripts))
+		for _, ps := range loadedPlugins.ReplScripts {
+			scripts = append(scripts, repl.ReplScript{Name: ps.Plugin + ":" + ps.Name, Source: ps.Source})
+		}
+		repl.SetReplScripts(scripts)
 	}
 
 	logger := slog.Default()

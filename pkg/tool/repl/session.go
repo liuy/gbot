@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -139,6 +140,17 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 	// tools/ALL_TOOLS with an empty inventory; Execute reinstalls a fresh
 	// snapshot from the lister before every run.
 	s.installToolsGlobals(vm)
+
+	// Plugin harness scripts: evaluated once per session, after tools.* are
+	// registered so they can compose over them. Scripts hang state off
+	// globalThis (e.g. closures on browser.*); re-evaluating per Execute
+	// would silently wipe it. A broken script is skipped (warn) — one plugin
+	// must not take down the session for every other plugin.
+	for _, ps := range replScripts {
+		if _, err := vm.RunString(ps.Source); err != nil {
+			slog.Warn("repl: plugin script failed to load", "script", ps.Name, "error", err)
+		}
+	}
 
 	// --- __reportError (internal, used by async IIFE wrapper) ---
 	if err := vm.Set("__reportError", func(call goja.FunctionCall) goja.Value {

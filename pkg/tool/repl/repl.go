@@ -77,6 +77,25 @@ func (t *REPLTool) SetToolLister(fn func() []ToolMeta) {
 	t.toolLister = fn
 }
 
+// replScripts are plugin-supplied harness sources preloaded into every new
+// session (set once at startup from LoadedPlugins; engine-agnostic because
+// sessions are created lazily inside whatever engine runs the tool).
+var replScripts []ReplScript
+
+// ReplScript is one preloaded plugin JS file. Same shape as
+// plugins.ReplScript (duplicated here to avoid an import cycle; bootstrap
+// converts between them).
+type ReplScript struct {
+	Name   string
+	Source string
+}
+
+// SetReplScripts sets the harness scripts evaluated into new sessions.
+// Call once at startup; later calls only affect sessions created afterwards.
+func SetReplScripts(scripts []ReplScript) {
+	replScripts = scripts
+}
+
 // Name returns the tool name.
 func (t *REPLTool) Name() string { return "Repl" }
 
