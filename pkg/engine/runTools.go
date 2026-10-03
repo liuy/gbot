@@ -161,6 +161,11 @@ type StreamingToolExecutor struct {
 	// isSubEngine is true for sub-engine executors. Sub-engines auto-deny asks
 	// since they run in the background and can't show interactive dialogs.
 	isSubEngine bool
+
+	// toolNameRecorder receives each executed tool's name for Stop-hook
+	// matcher gating (Engine.recordTurnTool). Nil on standalone executors
+	// (ConcurrentToolLoop, tests) — recording is engine-specific.
+	toolNameRecorder func(string)
 }
 
 // NewStreamingToolExecutor creates a new concurrent tool executor.
@@ -236,6 +241,13 @@ func (e *StreamingToolExecutor) SetFileHistory(fh *filehistory.Tracker) {
 // SetSubEngine marks this executor as running inside a sub-engine.
 func (e *StreamingToolExecutor) SetSubEngine(v bool) {
 	e.isSubEngine = v
+}
+
+// SetToolNameRecorder wires the engine's per-query tool-name collector. Every
+// tool invocation that passes permission checks and PreToolUse hooks is
+// reported here, feeding the Stop matcher's ToolNames gate.
+func (e *StreamingToolExecutor) SetToolNameRecorder(fn func(string)) {
+	e.toolNameRecorder = fn
 }
 
 // askUser asks the user for permission via TUI dialog.
@@ -979,6 +991,13 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		}
 	} else if tt.Name == "Edit" || tt.Name == "Write" {
 		slog.Warn("engine:file_history_skip", "tool", tt.Name, "hasFileHistory", e.fileHistory != nil, "currentTurnMsgID", e.currentTurnMsgID)
+	}
+
+	// Record at the invocation choke point: gates above (permission, ask,
+	// PreToolUse block) already returned, so only tools that actually run
+	// enter the Stop matcher's collection.
+	if e.toolNameRecorder != nil {
+		e.toolNameRecorder(tt.Name)
 	}
 
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)

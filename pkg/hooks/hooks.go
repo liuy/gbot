@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -255,7 +256,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 	// 2. For each matcher, check pattern match
 	var results []HookResult
 	for _, cm := range compiled {
-		if !cm.matchFn(input.ToolName) {
+		if !matcherAllows(cm.matchFn, input) {
 			continue
 		}
 		for _, hookCfg := range cm.hooks {
@@ -347,6 +348,23 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 		}
 	}
 	return results
+}
+
+// matcherAllows decides whether a compiled matcher's hooks run for input.
+// Tool events keep TS semantics — the pattern is matched against the single
+// ToolName. Stop-class events carry no ToolName; when the engine filled
+// ToolNames (the tools executed this query), the matcher any-matches across
+// that collection so a hook only runs when the query actually used a
+// matching tool. An empty ToolNames falls through to the legacy
+// match-on-empty-string, preserving empty-matcher-runs-always semantics.
+func matcherAllows(matchFn func(string) bool, input *HookInput) bool {
+	if input.ToolName != "" {
+		return matchFn(input.ToolName)
+	}
+	if len(input.ToolNames) > 0 {
+		return slices.ContainsFunc(input.ToolNames, matchFn)
+	}
+	return matchFn("")
 }
 
 // ---------------------------------------------------------------------------

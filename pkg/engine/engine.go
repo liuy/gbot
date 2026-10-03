@@ -214,6 +214,15 @@ type Engine struct {
 	// Nil when no hooks are configured.
 	hooks *hooks.Hooks
 
+	// turnToolNames records which tools were actually executed during the
+	// current query (deduped). Reset at query start by runTurns, recorded by
+	// each StreamingToolExecutor through SetToolNameRecorder, read by
+	// runStopHook to fill HookInput.ToolNames for Stop matcher gating.
+	// Dedicated mutex: recorders run on parallel tool goroutines while e.mu
+	// is busy elsewhere; a private lock keeps the tool path deadlock-free.
+	turnToolMu    sync.Mutex
+	turnToolNames map[string]struct{}
+
 	// agentMetaDepth tracks nesting depth for sub-agent rendering.
 	// 0 = main engine, 1 = direct child, 2 = grandchild, etc.
 	agentMetaDepth int
@@ -1379,6 +1388,7 @@ func (e *Engine) snapshotExitState() (msgs []types.Message, turns int) {
 // e.messages (SetMessages/Rewind) while a query is in flight leaves the loop
 // reading a stale reference — semantics undefined, tracked as a follow-up.
 func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult {
+	e.resetTurnTools()
 	var totalUsage types.Usage
 	// Per-phase wall-clock accumulators (milliseconds) for latency triage.
 	// Filled during the loop, logged in the deferred query_summary.
@@ -2018,6 +2028,35 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 	}
 }
 
+// recordTurnTool adds a tool name to the current query's collection.
+// Called from parallel tool-execution goroutines.
+func (e *Engine) recordTurnTool(name string) {
+	e.turnToolMu.Lock()
+	e.turnToolNames[name] = struct{}{}
+	e.turnToolMu.Unlock()
+}
+
+// resetTurnTools clears the collection at query start so Stop gating sees
+// only the current query's tools, never a previous query's leftovers.
+func (e *Engine) resetTurnTools() {
+	e.turnToolMu.Lock()
+	e.turnToolNames = make(map[string]struct{})
+	e.turnToolMu.Unlock()
+}
+
+// snapshotTurnToolNames returns the query's executed tool names in stable
+// order (sorted) for HookInput.ToolNames.
+func (e *Engine) snapshotTurnToolNames() []string {
+	e.turnToolMu.Lock()
+	defer e.turnToolMu.Unlock()
+	names := make([]string, 0, len(e.turnToolNames))
+	for name := range e.turnToolNames {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // runStopHook calls the Stop or SubagentStop hook.
 // Returns non-nil if any hook blocks (exit 2), giving the LLM another turn.
 // Source: stopHooks.ts — handleStopHooks.
@@ -2028,6 +2067,7 @@ func (e *Engine) runStopHook(ctx context.Context) *hooks.HookResult {
 	input := &hooks.HookInput{
 		HookEventName: string(hooks.HookStop),
 		SessionID:     e.sessionID,
+		ToolNames:     e.snapshotTurnToolNames(),
 	}
 	if e.isSubagent {
 		input.HookEventName = string(hooks.HookSubagentStop)
@@ -2628,6 +2668,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						streamingExecutor.SetMessages(streamMsgs)
 						streamingExecutor.SetMemoryDir(e.memoryDir)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
+						streamingExecutor.SetToolNameRecorder(e.recordTurnTool)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
 						streamingExecutor.SetFileHistory(e.fileHistory)
 						streamingExecutor.currentTurnMsgID = e.currentTurnMsgID

@@ -122,6 +122,12 @@ type HookInput struct {
 	ToolUseID    string          `json:"tool_use_id,omitempty"`
 	ToolResponse json.RawMessage `json:"tool_response,omitempty"`
 
+	// ToolNames lists the tool names actually executed during the query
+	// (deduped). Filled by the engine for stop-class events (Stop,
+	// SubagentStop) so a matcher can gate on whether the query used a
+	// matching tool. gbot extension — TS stopHooks.ts has no matcher path.
+	ToolNames []string `json:"tool_names,omitempty"`
+
 	// SessionStart-specific
 	Source string `json:"source,omitempty"` // "startup" | "resume" | "clear"
 
