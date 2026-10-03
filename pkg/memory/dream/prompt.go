@@ -18,7 +18,9 @@ You are performing a dream — a reflective pass over your memory files. Synthes
 
 - ls the memory directory to see what already exists
 - Read MEMORY.md to understand the current index
-- Skim existing topic files so you improve them rather than creating duplicates
+- Grep-then-write: before creating any file, Grep the memory directory for
+  same-topic files and read them — index lines alone can't reveal topical
+  overlap (two lines can each look legitimate while covering one topic)
 
 ## Phase 2 — Gather recent signal
 
@@ -26,7 +28,9 @@ The trigger message ships ready-to-run Read queries against the transcript DB
 (excluded: this dream session, tool noise). Work them in order:
 1. Overview query — which sessions were active since the cutoff
 2. Dialogue query — user asks and assistant conclusions, interleaved; the
-   densest signal of what was requested and what actually happened
+   densest signal of what was requested and what actually happened.
+   While it still returns rows, re-run it with AND seq > <last returned
+   seq> until the window is exhausted
 3. For topics worth remembering, Recall with keywords for full context.
    The dialogue preview is 200 chars — when it hints at more beneath the
    surface, Recall BEFORE writing the memory:
@@ -48,16 +52,22 @@ yourself.
 
 For each thing worth remembering, write or update a memory file:
 - Merge new signal into existing topic files rather than creating near-duplicates
+- Same topic in multiple files = merge into one (keep the fresher frontmatter,
+  fold the content together), delete the redundant files
 - Convert relative dates ("yesterday", "last week") to absolute dates
 - Delete contradicted facts — if today's investigation disproves an old memory, fix it at the source
 
 ## Phase 4 — Prune and index
 
-Update MEMORY.md so it stays under ~50 lines AND under ~25KB. It's an index, not a dump:
+Update MEMORY.md so it stays well under 25KB. It's an index, not a dump:
+- Lines past 200 are hard-truncated from every conversation's context — the
+  tail entries silently vanish. Keep the index well clear of that wall
 - Each entry should be one line under ~150 characters
 - Format: - [Title](file.md) — one-line hook
-- Remove pointers to stale, wrong, or superseded memories
-- Add pointers to newly important memories
+- Remove pointers to stale, wrong, superseded, or duplicated memories — the
+  bar is "every line earns its keep", not a line count
+- If the index is already past the wall: ls the memory directory and rebuild
+  the index from the files on disk (files survive; only the index lines were lost)
 - Never write memory content directly into MEMORY.md
 
 ---
@@ -102,13 +112,15 @@ Read("%s")   — overview: sessions active since the cutoff
 Read("%s")   — dialogue previews since the cutoff
 
 This run, per the phases in your system prompt:
+Phase 1 (orient) — orient before writing: the grep-then-write rule applies
+from the first file you touch.
 Phase 2 (gather) — run both queries above; while the dialogue query still
 returns rows, re-run it with AND seq > <last returned seq> until the
 window is exhausted. When a preview hints at reasoning or incidents
-beneath the surface, Recall with keywords before moving on.
+beneath the surface, use the Recall tool with keywords before moving on.
 Phase 3 (consolidate) — before overwriting a memory that conflicts with
-what you read, Recall the original discussion to confirm.
-Phase 4 (prune) — before deleting a memory as stale, Recall to confirm
-it has been superseded.
+what you read, use the Recall tool on the original discussion to confirm.
+Phase 4 (prune) — before deleting a memory as stale or duplicated,
+use the Recall tool to confirm.
 Begin.`, memoryDir, dbPath, lastDreamStr, cutoff, newMsgCount, overview, dialogue)
 }

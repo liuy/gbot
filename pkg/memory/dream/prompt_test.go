@@ -64,11 +64,14 @@ func TestSystemPrompt_PruneGuidance(t *testing.T) {
 	if !strings.Contains(SystemPrompt, "MEMORY.md") {
 		t.Error("system prompt missing MEMORY.md reference")
 	}
-	if !strings.Contains(SystemPrompt, "~50 lines") {
-		t.Error("system prompt should mention ~50 line index cap")
+	if !strings.Contains(SystemPrompt, "hard-truncated") {
+		t.Error("system prompt should mention the 200-line hard truncation wall")
 	}
 	if !strings.Contains(SystemPrompt, "~150 characters") {
 		t.Error("system prompt should mention ~150 character per-line cap")
+	}
+	if !strings.Contains(SystemPrompt, "same topic in multiple files") && !strings.Contains(SystemPrompt, "Same topic in multiple files") {
+		t.Error("system prompt should authorize merging duplicated topic files")
 	}
 }
 
