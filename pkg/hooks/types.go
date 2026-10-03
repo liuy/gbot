@@ -50,6 +50,7 @@ const (
 	HookTypeCommand HookType = "command" // BashCommandHookSchema
 	HookTypePrompt  HookType = "prompt"  // PromptHookSchema
 	HookTypeAgent   HookType = "agent"   // AgentHookSchema
+	HookTypeJS      HookType = "js"      // inline function expression, evaluated in the REPL VM
 	// HookTypeHTTP is not yet implemented. TS: HttpHookSchema (schemas/hooks.ts:97-126)
 )
 
@@ -63,9 +64,10 @@ const (
 // HookConfig is a single hook definition.
 // Source: schemas/hooks.ts:32-163 — discriminated union on Type field.
 type HookConfig struct {
-	Type          HookType `json:"type"`                    // discriminator: "command"|"prompt"|"agent"
+	Type          HookType `json:"type"`                    // discriminator: "command"|"prompt"|"agent"|"js"
 	Command       string   `json:"command,omitempty"`       // command hook: shell command to execute
 	Prompt        string   `json:"prompt,omitempty"`        // prompt/agent hook: $ARGUMENTS substitution
+	Code          string   `json:"code,omitempty"`          // js hook: inline function expression, no file/path — same inline philosophy as Command/Prompt
 	Model         string   `json:"model,omitempty"`         // prompt/agent hook: model override (default: small fast model)
 	If            string   `json:"if,omitempty"`            // permission rule filter (暂不实现)
 	Timeout       int      `json:"timeout,omitempty"`       // seconds, 0 → default (600s for command, 30s for prompt)
@@ -254,6 +256,39 @@ type AgentExecutor interface {
 	ExecuteAgentHook(ctx context.Context, prompt string, model string, tools []string, maxTurns int, timeout time.Duration) (ok bool, reason string, err error)
 }
 
+// JsHookRunner evaluates a js hook's function expression in a JS runtime.
+// Implemented by *repl.REPLTool, injected at bootstrap. The interface lives
+// here so pkg/hooks needs no dependency on pkg/tool/repl (same pattern as
+// HookExecutor/PromptExecutor). ctx is the dispatch context — a query
+// cancellation must be able to interrupt a running hook.
+type JsHookRunner interface {
+	RunHook(ctx context.Context, source string, input json.RawMessage, timeout time.Duration) (result string, err error)
+}
+
+// ---------------------------------------------------------------------------
+// Hook-origin ctx marker — js hook re-entrancy guard
+// ---------------------------------------------------------------------------
+
+// hookOriginKey keys the boolean marking a ctx as carrying a tool call issued
+// from js hook code. Defined in pkg/hooks (not pkg/tool/repl) because this is
+// the only acyclic direction: repl imports hooks to mark the ctx, dispatch
+// checks it here, and hooks must never import repl.
+type hookOriginKey struct{}
+
+// WithHookOrigin marks ctx as originating from a tool call made by js hook
+// code (hook session tools.*). Dispatch skips js hooks for such ctxs: running
+// one would re-enter the hook session while its mutex is held for the whole
+// outer hook and deadlock. Non-js hooks still run — the event stays lossless.
+func WithHookOrigin(ctx context.Context) context.Context {
+	return context.WithValue(ctx, hookOriginKey{}, true)
+}
+
+// FromHookOrigin reports whether ctx carries the hook-origin marker.
+func FromHookOrigin(ctx context.Context) bool {
+	marked, _ := ctx.Value(hookOriginKey{}).(bool)
+	return marked
+}
+
 // ---------------------------------------------------------------------------
 // Timeout constants — source: hooks.ts:166-168
 // ---------------------------------------------------------------------------
@@ -278,6 +313,11 @@ const (
 	// DefaultAgentMaxTurns is the maximum number of turns for agent hooks.
 	// Source: execAgentHook.ts — 50 turns.
 	DefaultAgentMaxTurns = 50
+
+	// DefaultJsHookTimeout is the default timeout for js hooks
+	// (HookConfig.Timeout overrides). Event-based defaults do not apply —
+	// js hooks use this uniformly across events.
+	DefaultJsHookTimeout = 10 * time.Second
 )
 
 // ---------------------------------------------------------------------------

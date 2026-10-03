@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -25,6 +26,7 @@ type Hooks struct {
 	executor       HookExecutor
 	promptExecutor PromptExecutor
 	agentExecutor  AgentExecutor
+	jsRunner       JsHookRunner
 	onceFired      sync.Map // tracks which hooks have already fired
 	trusted        bool     // workspace trust status
 	mu             sync.RWMutex
@@ -75,6 +77,14 @@ func (h *Hooks) SetAgentExecutor(ae AgentExecutor) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.agentExecutor = ae
+}
+
+// SetJsHookRunner injects the js hook runner.
+// Breaks circular import: pkg/hooks/ cannot import pkg/tool/repl/.
+func (h *Hooks) SetJsHookRunner(jr JsHookRunner) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.jsRunner = jr
 }
 
 // SetTrust marks the workspace as trusted or untrusted.
@@ -231,6 +241,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 	exec := h.executor
 	pe := h.promptExecutor
 	ae := h.agentExecutor
+	jr := h.jsRunner
 	h.mu.RUnlock()
 
 	if !trusted {
@@ -258,9 +269,20 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 
 			// 5. Execute by type
 			timeout := TimeoutForHook(hookCfg.Timeout, event)
+			if hookCfg.Type == HookTypeJS && hookCfg.Timeout <= 0 {
+				// js hooks use one flat default; event-based defaults (e.g.
+				// SessionEnd's 1.5s) do not apply.
+				timeout = DefaultJsHookTimeout
+			}
 			// Async hooks run in background, don't block dispatch.
 			// Source: hooks.ts:995-1030 — async/asyncRewake path.
 			if hookCfg.Async || hookCfg.AsyncRewake {
+				// js hooks do not support async yet — a misconfigured js+async
+				// hook is skipped with a warning instead of silently dropped.
+				if hookCfg.Type == HookTypeJS {
+					slog.Warn("hooks: js hook does not support async, skipping", "event", event)
+					continue
+				}
 				h.runAsyncHook(ctx, exec, pe, ae, hookCfg, input, timeout, cm.pluginRoot)
 				continue
 			}
@@ -286,6 +308,27 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 					continue
 				}
 				result = execAgentHook(ctx, ae, hookCfg, input, timeout)
+			case HookTypeJS:
+				// A tool call issued from js hook code re-enters dispatch
+				// with the hook-origin marker on its ctx: running another js
+				// hook here would re-enter the hook session whose mutex the
+				// outer hook holds for its whole run. Skipping only the js
+				// hook keeps the event lossless — every other hook type runs.
+				if FromHookOrigin(ctx) {
+					continue
+				}
+				if jr == nil {
+					slog.Warn("hooks: js hook skipped, no runner injected", "event", event)
+					continue
+				}
+				if hookCfg.Code == "" {
+					slog.Warn("hooks: js hook skipped, empty code", "event", event)
+					continue
+				}
+				// PluginRoot injection is command-specific (GBOT_PLUGIN_ROOT for
+				// file resolution); js hooks are inline code with no path, so
+				// cm.pluginRoot is intentionally unused here.
+				result = execJsHook(ctx, jr, hookCfg, input, timeout)
 			default:
 				continue
 			}
@@ -293,6 +336,8 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 				result.HookName = hookCfg.Command
 			} else if hookCfg.Prompt != "" {
 				result.HookName = hookCfg.Prompt
+			} else if hookCfg.Code != "" {
+				result.HookName = hookCfg.Code
 			}
 			results = append(results, result)
 			// 6. Short-circuit on blocking
@@ -318,6 +363,9 @@ func onceKey(event HookEventName, matcher string, cfg HookConfig) string {
 	}
 	if cfg.Prompt != "" {
 		fmt.Fprintf(&b, "|%s", cfg.Prompt)
+	}
+	if cfg.Code != "" {
+		fmt.Fprintf(&b, "|%s", cfg.Code)
 	}
 	if cfg.If != "" {
 		fmt.Fprintf(&b, "|%s", cfg.If)
@@ -381,6 +429,25 @@ func execAgentHook(ctx context.Context, ae AgentExecutor, hook HookConfig, input
 		return HookResult{Outcome: HookOutcomeBlocking, Stderr: reason}
 	}
 	return HookResult{Outcome: HookOutcomeSuccess}
+}
+
+// execJsHook evaluates a js hook through the injected runner.
+// Input JSON is byte-identical to what ExecuteHook pipes to command stdin.
+// The runner's return value is recorded verbatim (Stdout) and not interpreted —
+// semantic handling (e.g. {block:true} for PreToolUse) is future work.
+func execJsHook(ctx context.Context, jr JsHookRunner, hook HookConfig, input *HookInput, timeout time.Duration) HookResult {
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return HookResult{Outcome: HookOutcomeNonBlockingError, Stderr: fmt.Sprintf("hooks: marshal input: %v", err)}
+	}
+	result, err := jr.RunHook(ctx, hook.Code, inputJSON, timeout)
+	if err != nil {
+		// Logged here because result consumers discard Stderr — a failed hook
+		// would otherwise vanish (the ErrNoSession doc relies on this warn).
+		slog.Warn("hooks: js hook failed", "event", input.HookEventName, "error", err)
+		return HookResult{Outcome: HookOutcomeNonBlockingError, Stderr: err.Error()}
+	}
+	return HookResult{Outcome: HookOutcomeSuccess, Stdout: result}
 }
 
 // ---------------------------------------------------------------------------

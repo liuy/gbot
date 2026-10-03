@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
 	"github.com/dop251/goja_nodejs/require"
+	"github.com/liuy/gbot/pkg/hooks"
 	// Node-compatible builtin modules — import for side effects (init registers them).
 	_ "github.com/dop251/goja_nodejs/buffer"
 	_ "github.com/dop251/goja_nodejs/process"
@@ -361,6 +363,227 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn T
 	return output, evidence, nil
 }
 
+// RunHook evaluates a js hook function expression and returns the hook's
+// return value JSON-encoded. Separate from Execute: the hook's return value
+// must travel back to Go (Execute only captures console output) and script
+// exceptions propagate to the caller instead of being reported into the
+// output buffer. The event payload reaches the hook as its function argument,
+// never through a global binding. The hooks session carries the real tool
+// face (toolFn + toolLister, same install path as Execute): a Stop hook may
+// close browser tabs via tools.*. Every tools.* call goes out with the
+// hook-origin ctx marker, so js hook dispatch skips re-entrant js hooks
+// instead of deadlocking on the session mutex this function holds for the
+// whole run — which is why plain Lock (Execute's serial semantics) is safe.
+func (s *Session) RunHook(ctx context.Context, source string, input json.RawMessage, timeout time.Duration, toolFn ToolCallFn, toolLister func() []ToolMeta) (result string, err error) {
+	// Goja panics kill the VM permanently — mirror Execute and mark the
+	// session unusable instead of unwinding the hooks dispatch.
+	defer func() {
+		if r := recover(); r != nil {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			result, err = "", fmt.Errorf("js hook: fatal: %v", r)
+		}
+	}()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return "", ErrNoSession
+	}
+
+	s.vm.ClearInterrupt()
+
+	if timeout <= 0 {
+		// defaultTimeout counts milliseconds (shared with Execute's int64
+		// path); RunHook's time.Duration needs the explicit unit conversion —
+		// the bare constant would mean 120µs.
+		timeout = defaultTimeout * time.Millisecond
+	}
+	// Derived from the dispatch ctx so a query cancellation interrupts the
+	// hook instead of letting it run out its own deadline.
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Interrupt goroutine — same shape as Execute: the WaitGroup prevents the
+	// deferred cancel from racing the goroutine into poisoning the VM.
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	rebuild := false
+	wg.Go(func() {
+		select {
+		case <-timeoutCtx.Done():
+			s.vm.Interrupt(timeoutCtx.Err().Error())
+			// vm.Interrupt alone cannot stop the loop: eventloop jobs
+			// (timers, intervals) survive interrupts and keep run() pumping,
+			// so a setInterval hook would hang RunHook past its deadline.
+			// Stop() forces the run loop to exit and reports the stranded
+			// job count; anything above zero is a timer/interval that must
+			// not fire into a later hook, so Terminate cancels them all.
+			// Must run on this goroutine — Stop called from RunHook's own
+			// goroutine would deadlock on stopCond while it is parked
+			// inside loop.Run.
+			if s.loop.Stop() > 0 {
+				s.loop.Terminate()
+				rebuild = true
+			}
+		case <-done:
+		}
+	})
+
+	s.ctx = timeoutCtx
+	// Same per-run state handoff as Execute. The toolFn is marker-wrapped:
+	// every tools.* call leaving hook JS carries the hook-origin ctx so a
+	// re-entrant PreToolUse dispatch skips js hooks instead of blocking here
+	// on the mutex this run holds.
+	if toolFn != nil {
+		s.toolFn = func(ctx context.Context, name, argsJSON string) (string, error) {
+			return toolFn(hooks.WithHookOrigin(ctx), name, argsJSON)
+		}
+	}
+	s.toolLister = toolLister
+	buf := new(bytes.Buffer)
+	s.currentBuf = buf
+	s.currentEvidence = nil
+
+	var (
+		settled   bool
+		runErr    error
+		resultRaw string
+	)
+	settle := func(errMsg string, value goja.Value) {
+		if settled {
+			return
+		}
+		settled = true
+		if errMsg != "" {
+			runErr = fmt.Errorf("js hook: %s", errMsg)
+			return
+		}
+		encoded, encErr := json.Marshal(value.Export())
+		if encErr != nil {
+			runErr = fmt.Errorf("js hook: encode result: %w", encErr)
+			return
+		}
+		resultRaw = string(encoded)
+	}
+
+	s.loop.Run(func(vm *goja.Runtime) {
+		// Fresh tools inventory per run, same as Execute — the lister is
+		// live and MCP tools connect/disconnect between hook events.
+		s.installToolsGlobals(vm)
+
+		fnVal, evalErr := vm.RunString("(" + source + ")")
+		if evalErr != nil {
+			runErr = fmt.Errorf("js hook: evaluate: %w", evalErr)
+			settled = true
+			return
+		}
+		fn, isFn := goja.AssertFunction(fnVal)
+		if !isFn {
+			runErr = fmt.Errorf("js hook: source evaluated to %s, expected a function expression like \"async (input) => { ... }\"", fnVal.String())
+			settled = true
+			return
+		}
+
+		var payload any
+		if len(input) > 0 {
+			if parseErr := json.Unmarshal(input, &payload); parseErr != nil {
+				runErr = fmt.Errorf("js hook: parse input: %w", parseErr)
+				settled = true
+				return
+			}
+		}
+
+		resVal, callErr := fn(goja.Undefined(), vm.ToValue(payload))
+		if callErr != nil {
+			// Interrupt leaves the hook unsettled; the post-loop block maps a
+			// deadline to the timeout error (mirrors Execute).
+			if _, interrupted := callErr.(*goja.InterruptedError); !interrupted {
+				runErr = fmt.Errorf("js hook: %s", callErr.Error())
+				settled = true
+			}
+			return
+		}
+
+		// Async hooks return a Promise: settle through then() handlers. Goja
+		// drains its promise job queue when a top-level call returns, so an
+		// already-resolved promise fires the handlers immediately; eventloop
+		// timers (setTimeout inside the hook) advance before Run returns.
+		if _, isPromise := resVal.Export().(*goja.Promise); isPromise {
+			thenFn, thenable := goja.AssertFunction(resVal.ToObject(vm).Get("then"))
+			if !thenable {
+				settle("", resVal)
+				return
+			}
+			_, thenErr := thenFn(resVal,
+				vm.ToValue(func(call goja.FunctionCall) goja.Value {
+					settle("", call.Argument(0))
+					return goja.Undefined()
+				}),
+				vm.ToValue(func(call goja.FunctionCall) goja.Value {
+					settle(thrownMessage(call.Argument(0)), nil)
+					return goja.Undefined()
+				}),
+			)
+			if thenErr != nil && !settled {
+				runErr = fmt.Errorf("js hook: await: %w", thenErr)
+				settled = true
+			}
+			return
+		}
+		settle("", resVal)
+	})
+
+	close(done)
+	wg.Wait()
+
+	if rebuild {
+		s.rebuildLoop()
+	}
+
+	if !settled {
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("js hook: execution timed out after %s", timeout)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("js hook: cancelled: %w", ctxErr)
+		}
+		return "", errors.New("js hook: promise never settled (hook never resolves or session closed mid-run)")
+	}
+	return resultRaw, runErr
+}
+
+// rebuildLoop replaces the loop and VM after Terminate. A terminated loop
+// cannot serve another Run: Terminate leaves its jobCount stranded above zero
+// (its cancel path never decrements), so the next Run parks forever, and the
+// documented restart path (Start) cannot be mixed with the Run-based API —
+// the background loop keeps running set and the next Run panics. Rebuilding
+// forfeits hook globalThis state; accepted because a timed-out hook abandoned
+// the loop mid-flight and the alternative is a hooks session dead after its
+// first timeout.
+func (s *Session) rebuildLoop() {
+	s.loop = eventloop.NewEventLoop(eventloop.EnableConsole(false))
+	var regErr error
+	s.loop.Run(func(vm *goja.Runtime) {
+		s.vm = vm
+		regErr = s.registerGlobals(vm)
+	})
+	if regErr != nil {
+		s.closed = true
+	}
+}
+
+// thrownMessage renders a rejected/thrown JS value as the hook error message.
+// Error objects stringify via Error.prototype.toString ("Error: msg").
+func thrownMessage(v goja.Value) string {
+	if goja.IsUndefined(v) || goja.IsNull(v) {
+		return "hook rejected with " + v.String()
+	}
+	return v.String()
+}
+
 // Reset clears the session by creating a new event loop and VM.
 func (s *Session) Reset() error {
 	s.mu.Lock()
@@ -405,6 +628,14 @@ func (s *Session) Interrupt() {
 	if s.vm != nil {
 		s.vm.Interrupt("interrupted")
 	}
+}
+
+// isClosed lets REPLTool.RunHook decide when the hooks session needs
+// rebuilding without reaching into the session's lock from outside.
+func (s *Session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // jsValueToString converts a goja Value to a human-readable string.

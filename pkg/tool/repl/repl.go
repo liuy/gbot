@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/fileread"
@@ -146,6 +148,13 @@ func (t *REPLTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.T
 	}
 	if sessionID == "" {
 		sessionID = generateSessionID()
+	}
+	// The hooks key is reserved: the hooks session owns hook globalThis state
+	// and its marker-wrapped tool wiring — a user-driven Execute/reset into
+	// it would run arbitrary code against hook state and swap per-run state
+	// (buf, toolFn) underneath a hook dispatch in flight.
+	if sessionID == hookSessionID {
+		return nil, fmt.Errorf("repl: session_id %q is reserved for hook evaluation", hookSessionID)
 	}
 
 	// Reset action
@@ -348,6 +357,65 @@ func (t *REPLTool) CleanSession(sessionID string) {
 	if v, ok := t.sessions.LoadAndDelete(sessionID); ok {
 		v.(*Session).Close()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// RunHook — js hook evaluation entry (implements hooks.JsHookRunner)
+// ---------------------------------------------------------------------------
+
+// hookSessionID is the fixed session key holding the hook evaluation session.
+// It lives in the same session map as conversation sessions so hook JS state
+// (globalThis) persists across events, while never colliding with engine
+// session IDs (16-byte hex). The key is not reachable through Call — hook
+// state can only be read back by another hook.
+const hookSessionID = "hooks"
+
+// ErrNoSession reports hook execution against a session that no longer exists
+// (closed before the hook ran). Hook dispatch maps every runner error — this
+// one included — to a non_blocking_error outcome: the failure is recorded as a
+// warning and dispatch continues; it never blocks the engine.
+var ErrNoSession = errors.New("repl: no live session for hook execution")
+
+// RunHook evaluates a js hook's function expression in a dedicated session.
+// The session is created lazily on first hook and persists across events so
+// hook code can accumulate state in globalThis without touching conversation
+// sessions. A closed/missing session is rebuilt on demand — hooks must keep
+// working after a Goja panic killed the previous instance, and a hooks
+// session holds no conversation state worth failing over.
+// Like every new session it evaluates the replScripts plugin suite, so plugin
+// side effects run once per created instance (a hooks + conversation pair
+// evaluates them twice).
+// The hooks session gets the same tool face as conversation Executes (the
+// engine-injected executor + live lister): hooks may call tools.* — a Stop
+// hook closing browser tabs is the flagship case — and those calls carry the
+// hook-origin ctx marker so js hook dispatch never re-enters this session.
+func (t *REPLTool) RunHook(ctx context.Context, source string, input json.RawMessage, timeout time.Duration) (string, error) {
+	// Same executor adapter as handleExecute: errors propagate to JS as
+	// throws, no string prefix.
+	var toolFn ToolCallFn
+	if t.toolExecutor != nil {
+		toolFn = func(ctx context.Context, name, argsJSON string) (string, error) {
+			return t.toolExecutor(ctx, name, json.RawMessage(argsJSON))
+		}
+	}
+	if v, ok := t.sessions.Load(hookSessionID); ok {
+		if !v.(*Session).isClosed() {
+			return v.(*Session).RunHook(ctx, source, input, timeout, toolFn, t.toolLister)
+		}
+		// CompareAndDelete, not Delete: a concurrent healer may have stored
+		// a fresh session between our Load and here — only the dead instance
+		// we inspected may be removed.
+		t.sessions.CompareAndDelete(hookSessionID, v)
+	}
+	sess, err := NewSession()
+	if err != nil {
+		return "", fmt.Errorf("repl: create hook session: %w", err)
+	}
+	v, loaded := t.sessions.LoadOrStore(hookSessionID, sess)
+	if loaded {
+		sess.Close() // lost the create race; the stored session wins
+	}
+	return v.(*Session).RunHook(ctx, source, input, timeout, toolFn, t.toolLister)
 }
 
 // generateSessionID creates a cryptographically random session ID.

@@ -307,6 +307,13 @@ func Start(opts Options) (*Instance, error) {
 	mainTaskList := task.NewList("")
 	mainRefs := engine.CreateTools(deps, mainTaskList)
 
+	// js hooks evaluate through the REPL VM. The hooks system is process-global
+	// while REPL tools are per-CreateTools, so dispatch is pinned to the main
+	// instance: hook JS state (globalThis) stays stable across events, and
+	// hooks still fire from contexts that own no engine (wechat/dream/wui).
+	// Created before the first dispatch point (SessionStart below, connectors).
+	hookSystem.SetJsHookRunner(mainRefs.REPL)
+
 	modelThinking := buildModelThinking(cfg)
 
 	skillListing := skilltool.BuildSkillListing(skillReg.GetSkillToolSkills(), contextWindow)

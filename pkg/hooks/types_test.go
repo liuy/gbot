@@ -53,6 +53,7 @@ func TestHookTypeValues(t *testing.T) {
 		HookTypeCommand: "command",
 		HookTypePrompt:  "prompt",
 		HookTypeAgent:   "agent",
+		HookTypeJS:      "js",
 	}
 	for typ, want := range got {
 		if string(typ) != want {
@@ -153,6 +154,33 @@ func TestHookConfigAgentJSON(t *testing.T) {
 	}
 	if got.Prompt != "Verify tests pass" {
 		t.Errorf("Prompt = %q, want preserved", got.Prompt)
+	}
+}
+
+func TestHookConfigJsJSON(t *testing.T) {
+	cfg := HookConfig{
+		Type: HookTypeJS,
+		Code: "async (input) => input",
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(data) != `{"type":"js","code":"async (input) =\u003e input"}` {
+		t.Errorf("json = %s, want type+code only (other fields omitted, > HTML-escaped by encoding/json)", data)
+	}
+	var got HookConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != HookTypeJS {
+		t.Errorf("Type = %q, want %q", got.Type, HookTypeJS)
+	}
+	if got.Code != "async (input) => input" {
+		t.Errorf("Code = %q, want preserved", got.Code)
+	}
+	if got.Command != "" || got.Prompt != "" {
+		t.Errorf("Command = %q, Prompt = %q, want empty for js hook", got.Command, got.Prompt)
 	}
 }
 
@@ -540,6 +568,9 @@ func TestTimeoutConstants(t *testing.T) {
 	}
 	if DefaultAgentMaxTurns != 50 {
 		t.Errorf("DefaultAgentMaxTurns = %d, want 50", DefaultAgentMaxTurns)
+	}
+	if DefaultJsHookTimeout != 10*time.Second {
+		t.Errorf("DefaultJsHookTimeout = %v, want 10s", DefaultJsHookTimeout)
 	}
 }
 
