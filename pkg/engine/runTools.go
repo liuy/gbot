@@ -135,6 +135,11 @@ type StreamingToolExecutor struct {
 	hooks     *hooks.Hooks
 	sessionID string // session ID for hook input construction
 
+	// jsRunner is the owning engine's REPL for js hook dispatches from tool
+	// execution (Engine.jsHookCtx's counterpart). Nil on standalone
+	// executors — dispatch then falls back to the process-global default.
+	jsRunner hooks.JsHookRunner
+
 	// permChecker is the permission rules checker. Nil = default allow.
 	// Set by engine before tool execution. Inherited by sub-engines.
 	permChecker permission.PermissionChecker
@@ -226,6 +231,22 @@ func (e *StreamingToolExecutor) StartedToolIDs() map[string]bool {
 func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
 	e.hooks = h
 	e.sessionID = sessionID
+}
+
+// SetJsRunner injects the owning engine's REPL so js hooks dispatched from
+// tool execution evaluate in that engine's hook session.
+func (e *StreamingToolExecutor) SetJsRunner(jr hooks.JsHookRunner) {
+	e.jsRunner = jr
+}
+
+// hookDispatchCtx attaches the per-engine js runner to a tool-lifecycle
+// dispatch ctx. Nil runner leaves the ctx bare for the global-default
+// fallback in dispatch.
+func (e *StreamingToolExecutor) hookDispatchCtx(ctx context.Context) context.Context {
+	if e.jsRunner == nil {
+		return ctx
+	}
+	return hooks.WithJsRunner(ctx, e.jsRunner)
 }
 
 // SetPermissionChecker injects the permission checker into the executor.
@@ -824,7 +845,14 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					HookEventName: "PermissionRequest",
 					ToolName:      tt.Name,
 				}
-				for _, r := range e.hooks.PermissionRequest(context.Background(), hookInput) {
+				// Dispatch on siblingCtx, not Background: the ctx chain down
+				// from a hook-origin tool call (hook → tools.Agent → this
+				// sub-engine) still carries the hook-origin marker, letting
+				// dispatch skip the js hook that would otherwise block on
+				// the hook session mutex the outer hook holds. siblingCtx
+				// also keeps the WithCancelCause chain so the hook dies with
+				// the query instead of outliving it.
+				for _, r := range e.hooks.PermissionRequest(e.hookDispatchCtx(e.siblingCtx), hookInput) {
 					if r.Output != nil && r.Output.Decision == "allow" {
 						continue // hook approved, skip askUser — fall through to Phase 3
 					}
@@ -917,7 +945,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			ToolInput:     tt.Input,
 			ToolUseID:     tt.ID,
 		}
-		decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
+		decision, _ := e.hooks.PreToolUse(e.hookDispatchCtx(e.siblingCtx), hookInput)
 		if decision == hooks.HookDecisionBlock {
 			errMsg := fmt.Sprintf("Execution stopped by PreToolUse hook for tool %s", tt.Name)
 			errBlock := CreateToolErrorBlock(tt.ID, errMsg)
@@ -1175,10 +1203,10 @@ func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError boo
 	}
 	if isError {
 		hookInput.HookEventName = string(hooks.HookPostToolUseFailure)
-		e.hooks.PostToolUseFailure(e.siblingCtx, hookInput)
+		e.hooks.PostToolUseFailure(e.hookDispatchCtx(e.siblingCtx), hookInput)
 	} else {
 		hookInput.HookEventName = string(hooks.HookPostToolUse)
-		e.hooks.PostToolUse(e.siblingCtx, hookInput)
+		e.hooks.PostToolUse(e.hookDispatchCtx(e.siblingCtx), hookInput)
 	}
 }
 func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseContext {

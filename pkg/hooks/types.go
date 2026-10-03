@@ -272,6 +272,31 @@ type JsHookRunner interface {
 }
 
 // ---------------------------------------------------------------------------
+// Per-dispatch js runner — ctx carrier for per-engine hook sessions
+// ---------------------------------------------------------------------------
+
+// jsRunnerKey keys the per-dispatch js hook runner. Engine-side dispatch
+// sites attach their own REPL; the interface value on the ctx keeps
+// pkg/hooks decoupled from pkg/engine (same direction as hookOriginKey).
+type jsRunnerKey struct{}
+
+// WithJsRunner attaches a per-dispatch js hook runner to ctx. Dispatch uses
+// it in preference to the SetJsHookRunner default, giving each engine's
+// hooks their own REPL hook session (isolated globalThis state, tools.*
+// wired to that engine's executor).
+func WithJsRunner(ctx context.Context, runner JsHookRunner) context.Context {
+	return context.WithValue(ctx, jsRunnerKey{}, runner)
+}
+
+// JsRunnerFrom returns the per-dispatch runner attached with WithJsRunner,
+// or nil when the ctx carries none (dispatch then falls back to the
+// process-global default).
+func JsRunnerFrom(ctx context.Context) JsHookRunner {
+	jr, _ := ctx.Value(jsRunnerKey{}).(JsHookRunner)
+	return jr
+}
+
+// ---------------------------------------------------------------------------
 // Hook-origin ctx marker — js hook re-entrancy guard
 // ---------------------------------------------------------------------------
 

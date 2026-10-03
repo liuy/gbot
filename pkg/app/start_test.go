@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -12,15 +11,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
-	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/tui"
 	"github.com/liuy/gbot/pkg/types"
@@ -641,53 +639,6 @@ func TestRestoreEngines_StripsProviderPrefix(t *testing.T) {
 	}
 }
 
-// TestMainReplToolExecutorAndLister pins the dynamic wiring of the
-// process-global js hook runner's REPL (mainRefs.REPL): nil engine yields an
-// explicit error and an empty inventory; the latest session engine gets
-// transparent passthrough to ExecuteTool/AllTools. The live daemon regressed
-// here with "Object has no member 'mcp__...'" because mainRefs.REPL was
-// never wired with any executor/lister at all.
-func TestMainReplToolExecutorAndLister(t *testing.T) {
-	var latest atomic.Pointer[engine.Engine]
-	exec := mainReplToolExecutor(&latest)
-	list := mainReplToolLister(&latest)
-
-	if _, err := exec(context.Background(), "Repl", json.RawMessage(`{}`)); err == nil || err.Error() != "no engine ready" {
-		t.Errorf("nil-engine executor error = %v, want %q", err, "no engine ready")
-	}
-	if got := list(); len(got) != 0 {
-		t.Errorf("nil-engine lister = %v, want no entries", got)
-	}
-
-	demo := tool.BuildTool(tool.ToolDef{
-		Name_: "demo",
-		InputSchema_: func() json.RawMessage {
-			return json.RawMessage(`{"type":"object","properties":{}}`)
-		},
-		Description_: func(json.RawMessage) (string, error) { return "demo description", nil },
-		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return &tool.ToolResult{Data: "demo ran"}, nil
-		},
-	})
-	eng := engine.New(&engine.Params{
-		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{"demo": demo} },
-	})
-	t.Cleanup(eng.Close)
-	latest.Store(eng)
-
-	out, err := exec(context.Background(), "demo", json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("executor with engine: %v", err)
-	}
-	if out != `"demo ran"` {
-		t.Errorf("executor output = %q, want %q (ExecuteTool's default RenderResult JSON-encodes)", out, `"demo ran"`)
-	}
-	want := []repl.ToolMeta{{Name: "demo", Description: "demo description"}}
-	if got := list(); !slices.Equal(got, want) {
-		t.Errorf("lister = %v, want %v", got, want)
-	}
-}
-
 // TestRestoreEngines_StripsOpenRouterNestedPrefix verifies the strip works
 // for providers whose model name itself contains a slash. OpenRouter's
 // models are registered as "openrouter/owl-alpha" — when stored in meta.json
@@ -892,5 +843,74 @@ func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 		if em.ID == "e3" && em.ActiveSessionID != sid {
 			t.Fatalf("meta.json still points at %q, want %q", em.ActiveSessionID, sid)
 		}
+	}
+}
+
+// TestBootSessionStartCtx_RoutesToOwningEngine pins the boot SessionStart
+// routing: the dispatch ctx carries the session-owning engine's REPL, so
+// the js hook evaluates in that engine's hook session rather than the
+// process-global default; a session with no engine keeps the ctx bare and
+// the default runner serves it.
+func TestBootSessionStartCtx_RoutesToOwningEngine(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	mgr := engine.NewEngineManager()
+	newBootEngine := func(id string) (*engine.Engine, *repl.REPLTool) {
+		t.Helper()
+		eng := engine.New(&engine.Params{EngineID: id, Logger: slog.Default()})
+		t.Cleanup(func() { eng.Close() })
+		eng.SetStore(store, dir)
+		if err := eng.NewSession(dir, ""); err != nil {
+			t.Fatalf("%s NewSession: %v", id, err)
+		}
+		replTool := repl.New()
+		t.Cleanup(replTool.Close)
+		eng.SetToolRefs(engine.ToolRefs{REPL: replTool})
+		mgr.Add(&engine.EngineViewState{Engine: eng, ID: id, Name: id})
+		return eng, replTool
+	}
+	engA, replA := newBootEngine("main")
+	_, replB := newBootEngine("e2")
+
+	defaultRepl := repl.New()
+	t.Cleanup(defaultRepl.Close)
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"SessionStart": []hooks.HookMatcher{
+			{Hooks: []hooks.HookConfig{{Type: hooks.HookTypeJS, Code: `async () => { globalThis.__boot = "ran"; return "ok" }`}}},
+		},
+	}, &hooks.CommandExecutor{})
+	hookSystem.SetJsHookRunner(defaultRepl)
+
+	sessionID := engA.SessionID()
+	hookSystem.SessionStart(bootSessionStartCtx(context.Background(), mgr, sessionID),
+		&hooks.HookInput{HookEventName: string(hooks.HookSessionStart), SessionID: sessionID, Source: "startup"})
+
+	bootState := func(rt *repl.REPLTool) string {
+		t.Helper()
+		out, err := rt.RunHook(context.Background(), `() => globalThis.__boot`, nil, 5*time.Second)
+		if err != nil {
+			t.Fatalf("readback RunHook: %v", err)
+		}
+		return out
+	}
+	if got := bootState(replA); got != `"ran"` {
+		t.Errorf("engine A boot marker = %s, want \"ran\" (dispatch must use A's REPL)", got)
+	}
+	if got := bootState(replB); got != "null" {
+		t.Errorf("engine B boot marker = %s, want null (B's session untouched)", got)
+	}
+	if got := bootState(defaultRepl); got != "null" {
+		t.Errorf("default runner boot marker = %s, want null (ctx runner must shadow the default)", got)
+	}
+
+	hookSystem.SessionStart(bootSessionStartCtx(context.Background(), mgr, "ghost-session"),
+		&hooks.HookInput{HookEventName: string(hooks.HookSessionStart), SessionID: "ghost-session", Source: "startup"})
+	if got := bootState(defaultRepl); got != `"ran"` {
+		t.Errorf("default runner marker after ghost dispatch = %s, want \"ran\" (no engine → global default)", got)
 	}
 }

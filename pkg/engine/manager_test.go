@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +127,52 @@ func TestEngineManager_NewEngineName_AvoidsCollision(t *testing.T) {
 	got2 := m.NewEngineName()
 	if got2 != "agent-4" {
 		t.Errorf("NewEngineName after second collision = %q, want agent-4", got2)
+	}
+}
+
+// TestEngineManager_EngineBySession pins the live-session lookup the boot
+// SessionStart dispatch uses to route js hooks into the owning engine's
+// REPL: exact live SessionID match, nil on miss/empty, and lazy view states
+// (nil Engine) neither match nor panic.
+func TestEngineManager_EngineBySession(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	m := NewEngineManager()
+	newEngine := func(id string) *Engine {
+		t.Helper()
+		eng := New(&Params{EngineID: id, Logger: slog.Default()})
+		t.Cleanup(func() { eng.Close() })
+		eng.SetStore(store, dir)
+		if err := eng.NewSession(dir, ""); err != nil {
+			t.Fatalf("%s NewSession: %v", id, err)
+		}
+		m.Add(&EngineViewState{Engine: eng, ID: id, Name: id})
+		return eng
+	}
+	engA := newEngine("main")
+	engB := newEngine("e2")
+
+	if got := m.EngineBySession(engA.SessionID()); got != engA {
+		t.Errorf("EngineBySession(A) = %v, want engine main", got)
+	}
+	if got := m.EngineBySession(engB.SessionID()); got != engB {
+		t.Errorf("EngineBySession(B) = %v, want engine e2", got)
+	}
+	if got := m.EngineBySession("no-such-session"); got != nil {
+		t.Errorf("EngineBySession(unknown) = %v, want nil", got)
+	}
+	if got := m.EngineBySession(""); got != nil {
+		t.Errorf("EngineBySession(\"\") = %v, want nil", got)
+	}
+
+	m.Add(&EngineViewState{ID: "lazy", Name: "lazy"}) // nil Engine (lazy state)
+	if got := m.EngineBySession(engA.SessionID()); got != engA {
+		t.Errorf("EngineBySession(A) with lazy state = %v, want engine main (nil-Engine entries must be skipped)", got)
 	}
 }
 

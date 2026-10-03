@@ -364,10 +364,11 @@ func (t *REPLTool) CleanSession(sessionID string) {
 // ---------------------------------------------------------------------------
 
 // hookSessionID is the fixed session key holding the hook evaluation session.
-// It lives in the same session map as conversation sessions so hook JS state
-// (globalThis) persists across events, while never colliding with engine
-// session IDs (16-byte hex). The key is not reachable through Call — hook
-// state can only be read back by another hook.
+// One per REPLTool instance (= per engine: engine-side dispatch pins its own
+// REPL via hooks.WithJsRunner), so hook JS state (globalThis) is scoped to
+// the engine whose event fired while never colliding with engine session IDs
+// (16-byte hex). The key is not reachable through Call — hook state can only
+// be read back by another hook in the same REPL.
 const hookSessionID = "hooks"
 
 // ErrNoSession reports hook execution against a session that no longer exists

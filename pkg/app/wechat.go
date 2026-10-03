@@ -46,10 +46,6 @@ type startWeChatDeps struct {
 	toolPrompts        []string
 	skillListing       string
 	lspReg             *lsp.Registry
-	// registerHookEngine feeds the fresh-build engine into the process-global
-	// js hook runner's dynamic executor/lister (start.go's latestSessionEngine);
-	// nil in tests. Restored engines register via engineFactory instead.
-	registerHookEngine func(*engine.Engine)
 }
 
 // startWeChatConnector wires one WeChat account: builds (or adopts a restored)
@@ -94,9 +90,6 @@ func startWeChatConnector(d startWeChatDeps) error {
 			ToolsProvider:     refs.Reg.ToolMapFn(),
 		})
 		engine.WireEngine(wcEng, refs, d.deps)
-		if d.registerHookEngine != nil {
-			d.registerHookEngine(wcEng)
-		}
 		wcEng.SetToolRefs(refs)
 		wcEng.SetStore(d.store, d.projectDir)
 

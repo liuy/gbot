@@ -155,6 +155,25 @@ func (m *EngineManager) Get(id string) *EngineViewState {
 	return m.engines[id]
 }
 
+// EngineBySession returns the engine whose live session matches sessionID,
+// or nil. Boot-time SessionStart uses it to route js hooks into the owning
+// engine's REPL. Matches Engine.SessionID() (live), not ActiveSessionID —
+// the view-state copy goes stale when engines switch sessions. Lazy view
+// states (nil Engine) are skipped.
+func (m *EngineManager) EngineBySession(sessionID string) *Engine {
+	if sessionID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, vs := range m.engines {
+		if vs.Engine != nil && vs.Engine.SessionID() == sessionID {
+			return vs.Engine
+		}
+	}
+	return nil
+}
+
 // SetActiveModel updates the active engine's Model field. Per-engine model
 // is authoritative at runtime; settings.json is only the default for
 // newly-created engines.

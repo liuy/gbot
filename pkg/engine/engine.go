@@ -796,7 +796,10 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 			AgentID:       subEng.SessionID(),
 			AgentType:     agentType,
 		}
-		for _, r := range e.sharedDeps.Hooks.SubagentStart(ctx, hookInput) {
+		// RunAgent executes on the parent engine, so the dispatch pins the
+		// parent's REPL — the sub-agent's lifecycle hooks share the parent
+		// engine's hook session.
+		for _, r := range e.sharedDeps.Hooks.SubagentStart(e.jsHookCtx(ctx), hookInput) {
 			if r.AdditionalContext != "" {
 				userCtxMsgs = append(userCtxMsgs, types.NewUserMessage(
 					[]types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
@@ -1718,7 +1721,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 							e.logger.Error("StopFailure hook panic", "panic", r)
 						}
 					}()
-					e.hooks.StopFailure(context.Background(), input)
+					e.hooks.StopFailure(e.jsHookCtx(context.Background()), input)
 				}()
 			}
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
@@ -2062,6 +2065,19 @@ func (e *Engine) snapshotTurnToolNames() []string {
 	return names
 }
 
+// jsHookCtx pins this engine's REPL as the js hook runner for a dispatch, so
+// js hooks evaluate in this engine's hook session: globalThis state stays
+// per-engine and tools.* resolve through this engine's executor (WireEngine
+// wiring). Engines never given SetToolRefs (lazy views, hand-built test
+// engines) keep the ctx bare and dispatch falls back to the process-global
+// default runner.
+func (e *Engine) jsHookCtx(ctx context.Context) context.Context {
+	if e.toolRefs.REPL == nil {
+		return ctx
+	}
+	return hooks.WithJsRunner(ctx, e.toolRefs.REPL)
+}
+
 // runStopHook calls the Stop or SubagentStop hook.
 // Returns non-nil if any hook blocks (exit 2), giving the LLM another turn.
 // Source: stopHooks.ts — handleStopHooks.
@@ -2077,9 +2093,9 @@ func (e *Engine) runStopHook(ctx context.Context) *hooks.HookResult {
 	if e.isSubagent {
 		input.HookEventName = string(hooks.HookSubagentStop)
 		input.AgentType = e.agentType
-		return e.hooks.SubagentStop(ctx, input)
+		return e.hooks.SubagentStop(e.jsHookCtx(ctx), input)
 	}
-	return e.hooks.Stop(ctx, input)
+	return e.hooks.Stop(e.jsHookCtx(ctx), input)
 }
 
 // callLLM sends the messages to the LLM and collects the full response.
@@ -2098,10 +2114,10 @@ func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase str
 	switch phase {
 	case "pre":
 		input.HookEventName = string(hooks.HookPreCompact)
-		e.hooks.PreCompact(ctx, input)
+		e.hooks.PreCompact(e.jsHookCtx(ctx), input)
 	case "post":
 		input.HookEventName = string(hooks.HookPostCompact)
-		e.hooks.PostCompact(ctx, input)
+		e.hooks.PostCompact(e.jsHookCtx(ctx), input)
 	}
 }
 
@@ -2673,6 +2689,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						streamingExecutor.SetMessages(streamMsgs)
 						streamingExecutor.SetMemoryDir(e.memoryDir)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
+						streamingExecutor.SetJsRunner(e.toolRefs.REPL)
 						streamingExecutor.SetToolNameRecorder(e.recordTurnTool)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
 						streamingExecutor.SetFileHistory(e.fileHistory)
@@ -3742,7 +3759,7 @@ func (e *Engine) Close() {
 	}
 
 	if e.hooks != nil {
-		_ = e.hooks.SessionEnd(context.Background(), &hooks.HookInput{
+		_ = e.hooks.SessionEnd(e.jsHookCtx(context.Background()), &hooks.HookInput{
 			HookEventName: string(hooks.HookSessionEnd),
 			SessionID:     e.sessionID,
 		})
@@ -4567,7 +4584,15 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the
 		// grandchild never runs — e.g. Planner (a sub-agent) trying to
 		// dispatch parallel explore agents fails on every call.
-		sharedDeps:              e.sharedDeps,
+		sharedDeps: e.sharedDeps,
+		// toolRefs rides along so the sub-engine's dispatches land in the
+		// parent engine's hook session. The sub-engine's TOOLS are fresh
+		// CreateTools instances (RunAgent builds subRefs per sub-agent —
+		// see bootstrap.go), but its lifecycle events (SubagentStop) are
+		// parent-engine events: js hooks must resolve the parent's REPL or
+		// they fall back to the process-global default and lose the engine
+		// binding.
+		toolRefs:                e.toolRefs,
 		compactor:               e.compactor,
 		autoCompactConfig:       e.autoCompactConfig,
 		mcpRegistry:             e.mcpRegistry,

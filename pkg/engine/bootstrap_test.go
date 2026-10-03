@@ -314,7 +314,7 @@ func TestWireEngine_NilHooks_NoPanic(t *testing.T) {
 	})
 	defer eng.Close()
 
-	// Should not panic with nil Hooks (WireEngine calls deps.Hooks.SubagentStart)
+	// Should not panic with nil Hooks (RunAgent fires SubagentStart)
 	WireEngine(eng, refs, deps)
 }
 

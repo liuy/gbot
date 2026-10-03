@@ -230,6 +230,52 @@ func TestDispatch_JS_HookOriginCtxSkipsJsButNotCommandHooks(t *testing.T) {
 	}
 }
 
+// TestDispatch_JS_CtxRunnerWinsOverDefault pins the runner hierarchy: a
+// per-dispatch runner attached with WithJsRunner (engine-side dispatch sites
+// pin their own REPL) beats the SetJsHookRunner process-global default; a
+// bare ctx still falls back to the default.
+func TestDispatch_JS_CtxRunnerWinsOverDefault(t *testing.T) {
+	def := &jsRunnerRecorder{ret: `"default-runner"`}
+	perEng := &jsRunnerRecorder{ret: `"ctx-runner"`}
+	h := NewHooks(HooksConfig{
+		"Stop": []HookMatcher{
+			{Hooks: []HookConfig{{Type: HookTypeJS, Code: "async () => 1"}}},
+		},
+	}, &HookRecorder{})
+	h.SetJsHookRunner(def)
+
+	results := h.dispatch(WithJsRunner(context.Background(), perEng), HookStop, &HookInput{})
+	if len(results) != 1 || results[0].Stdout != `"ctx-runner"` {
+		t.Fatalf("ctx-runner dispatch results = %+v, want the ctx runner's return", results)
+	}
+	if def.CallCount() != 0 {
+		t.Errorf("default runner calls = %d, want 0 (ctx runner must shadow it)", def.CallCount())
+	}
+	if perEng.CallCount() != 1 {
+		t.Errorf("ctx runner calls = %d, want 1", perEng.CallCount())
+	}
+
+	results = h.dispatch(context.Background(), HookStop, &HookInput{})
+	if len(results) != 1 || results[0].Stdout != `"default-runner"` {
+		t.Fatalf("fallback dispatch results = %+v, want the default runner's return", results)
+	}
+	if def.CallCount() != 1 {
+		t.Errorf("default runner calls after fallback = %d, want 1", def.CallCount())
+	}
+}
+
+// TestJsRunnerFrom_RoundTrip verifies the ctx accessor pair in isolation:
+// absent key yields nil, attached runner round-trips.
+func TestJsRunnerFrom_RoundTrip(t *testing.T) {
+	if got := JsRunnerFrom(context.Background()); got != nil {
+		t.Errorf("JsRunnerFrom(bare ctx) = %v, want nil", got)
+	}
+	rec := &jsRunnerRecorder{}
+	if got := JsRunnerFrom(WithJsRunner(context.Background(), rec)); got != rec {
+		t.Errorf("JsRunnerFrom(attached ctx) = %v, want the attached runner", got)
+	}
+}
+
 func TestDispatch_JS_OnceKeyDistinguishesCode(t *testing.T) {
 	rec := &jsRunnerRecorder{}
 	h := NewHooks(HooksConfig{

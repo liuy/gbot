@@ -80,8 +80,11 @@ func (h *Hooks) SetAgentExecutor(ae AgentExecutor) {
 	h.agentExecutor = ae
 }
 
-// SetJsHookRunner injects the js hook runner.
-// Breaks circular import: pkg/hooks/ cannot import pkg/tool/repl/.
+// SetJsHookRunner injects the process-global default js hook runner.
+// Dispatch prefers a per-dispatch runner attached via WithJsRunner —
+// engine-side dispatch sites pin their own REPL, so js hooks evaluate in
+// the dispatching engine's hook session. This default serves dispatches
+// that carry no runner: engine-less contexts (tests, boot fallback).
 func (h *Hooks) SetJsHookRunner(jr JsHookRunner) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -245,6 +248,13 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 	jr := h.jsRunner
 	h.mu.RUnlock()
 
+	// Per-dispatch runner (WithJsRunner) shadows the injected default:
+	// engine-side dispatch sites pin their own REPL so js hooks evaluate
+	// in the dispatching engine's hook session, not the global one.
+	if jrFromCtx := JsRunnerFrom(ctx); jrFromCtx != nil {
+		jr = jrFromCtx
+	}
+
 	if !trusted {
 		return nil
 	}
@@ -373,6 +383,10 @@ func matcherAllows(matchFn func(string) bool, input *HookInput) bool {
 
 // onceKey builds a unique key for once-fired hook tracking.
 // Source: hooks.ts:1733+ — dedup key includes event + matcher + hook command.
+// once:true stays PROCESS-level even under per-engine hook sessions (TS
+// semantics: once fires once per process). Only the first engine's dispatch
+// builds the hook's state in its own session; later engines skip it. That
+// cross-engine skip is TS-aligned behavior, not a routing bug.
 func onceKey(event HookEventName, matcher string, cfg HookConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s|%s|%s", event, matcher, cfg.Type)
