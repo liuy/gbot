@@ -204,7 +204,7 @@ func TestJob_PollCompleted(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	input := json.RawMessage(`{"poll":"bg-1"}`)
+	input := json.RawMessage(`{"action":"poll","job_id":"bg-1"}`)
 	result, err := tl.Call(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -235,7 +235,7 @@ func TestJob_PollNotFound(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"poll":"nonexistent"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"poll","job_id":"nonexistent"}`), nil)
 	if err == nil {
 		t.Error("expected error for nonexistent job")
 	}
@@ -264,7 +264,7 @@ func TestJob_PollBlockWait(t *testing.T) {
 	}()
 
 	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{Poll: "bg-2", Block: new(true), Timeout: 5000})
+	input, _ := json.Marshal(JobInput{Action: "poll", JobID: "bg-2", Block: new(true), Timeout: 5000})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -298,7 +298,7 @@ func TestJob_PollBlockTimeout(t *testing.T) {
 	defer func() { timeAfter = saved }()
 
 	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{Poll: "bg-3", Block: new(true), Timeout: 1})
+	input, _ := json.Marshal(JobInput{Action: "poll", JobID: "bg-3", Block: new(true), Timeout: 1})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -321,7 +321,7 @@ func TestJob_PollNotReady(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{Poll: "bg-4", Block: new(false)})
+	input, _ := json.Marshal(JobInput{Action: "poll", JobID: "bg-4", Block: new(false)})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -347,7 +347,7 @@ func TestJob_StopSuccess(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"bg-10"}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-10"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestJob_StopNotFound(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"nonexistent"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"nonexistent"}`), nil)
 	if err == nil {
 		t.Error("expected error for nonexistent job")
 	}
@@ -397,7 +397,7 @@ func TestJob_StopNotRunning(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"bg-11"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-11"}`), nil)
 	if err == nil {
 		t.Error("expected error for non-running job")
 	}
@@ -418,7 +418,7 @@ func TestJob_StopKillError(t *testing.T) {
 	reg := &killErrorRegistry{mockRegistry: base}
 
 	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"bg-20"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-20"}`), nil)
 	if err == nil {
 		t.Fatal("expected error when Kill fails")
 	}
@@ -427,7 +427,7 @@ func TestJob_StopKillError(t *testing.T) {
 	}
 }
 
-func TestJob_CombinedPollStop(t *testing.T) {
+func TestJob_PollThenStopSequentialCalls(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
@@ -446,88 +446,119 @@ func TestJob_CombinedPollStop(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{Poll: "bg-1", Stop: "bg-10"})
-	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
+	pollResult, err := tl.Call(context.Background(), json.RawMessage(`{"action":"poll","job_id":"bg-1"}`), nil)
 	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+		t.Fatalf("poll Call() error: %v", err)
+	}
+	stopResult, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-10"}`), nil)
+	if err != nil {
+		t.Fatalf("stop Call() error: %v", err)
 	}
 
-	out := result.Data.(*JobOutput)
-	if out.Poll == nil {
+	poll := pollResult.Data.(*JobOutput)
+	if poll.Poll == nil {
 		t.Error("Poll result should not be nil")
-	} else if out.Poll.RetrievalStatus != "success" {
-		t.Errorf("Poll RetrievalStatus = %q, want success", out.Poll.RetrievalStatus)
+	} else if poll.Poll.RetrievalStatus != "success" {
+		t.Errorf("Poll RetrievalStatus = %q, want success", poll.Poll.RetrievalStatus)
 	}
-	if out.Stop == nil {
+	if poll.Stop != nil {
+		t.Error("Poll-only call should not populate Stop")
+	}
+	if poll.List != nil {
+		t.Error("Poll-only call should not populate List")
+	}
+
+	stop := stopResult.Data.(*JobOutput)
+	if stop.Stop == nil {
 		t.Error("Stop result should not be nil")
-	} else if out.Stop.Status != "killed" {
-		t.Errorf("Stop Status = %q, want killed", out.Stop.Status)
+	} else if stop.Stop.Status != "killed" {
+		t.Errorf("Stop Status = %q, want killed", stop.Stop.Status)
+	}
+	if stop.Poll != nil {
+		t.Error("Stop-only call should not populate Poll")
+	}
+	if stop.List != nil {
+		t.Error("Stop-only call should not populate List")
 	}
 }
 
-func TestJob_CombinedPollFailsStopNotExecuted(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	reg.add(&JobInfo{
-		ID:      "bg-10",
-		Type:    "local_bash",
-		Status:  "running",
-		Command: "sleep 60",
-	})
-
-	// Poll a nonexistent job should fail before stop executes
-	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"poll":"nonexistent","stop":"bg-10"}`), nil)
-	if err == nil {
-		t.Error("expected error from failed poll")
-	}
-	if !strings.Contains(err.Error(), "no job found") {
-		t.Errorf("error = %q, want containing 'no job found'", err.Error())
-	}
-
-	// Verify stop was NOT executed (bg-10 should still be running)
-	info, _ := reg.Get("bg-10")
-	if info.Status != "running" {
-		t.Errorf("Stop was executed despite poll failure, status = %q", info.Status)
-	}
-}
-
-func TestJob_NeitherPollNorStop(t *testing.T) {
+func TestJob_MissingAction(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
-		t.Error("expected error when neither poll nor stop provided")
+		t.Fatal("expected error when action is missing")
 	}
-	if !strings.Contains(err.Error(), "at least one of 'poll', 'stop', or 'list'") {
-		t.Errorf("error = %q, want containing 'at least one'", err.Error())
-	}
-}
-
-func TestJob_PollEmptyJobID(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"poll":""}`), nil)
-	if err == nil {
-		t.Error("expected error for empty poll")
-	}
-	if !strings.Contains(err.Error(), "at least one of 'poll', 'stop', or 'list'") {
-		t.Errorf("error = %q, want containing 'at least one'", err.Error())
+	for _, want := range []string{"list", "poll", "stop"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want containing %q", err.Error(), want)
+		}
 	}
 }
 
-func TestJob_StopEmptyJobID(t *testing.T) {
+func TestJob_UnknownAction(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"stop":""}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"restart"}`), nil)
 	if err == nil {
-		t.Error("expected error for empty stop")
+		t.Fatal("expected error for unknown action")
 	}
-	if !strings.Contains(err.Error(), "at least one of 'poll', 'stop', or 'list'") {
-		t.Errorf("error = %q, want containing 'at least one'", err.Error())
+	if !strings.Contains(err.Error(), "unknown action") {
+		t.Errorf("error = %q, want containing 'unknown action'", err.Error())
+	}
+	for _, want := range []string{"list", "poll", "stop"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want containing valid action %q", err.Error(), want)
+		}
+	}
+}
+
+func TestJob_PollMissingJobID(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	tl := NewJob(reg)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"poll"}`), nil)
+	if err == nil {
+		t.Fatal("expected error when poll has no job_id")
+	}
+	if !strings.Contains(err.Error(), "job_id") {
+		t.Errorf("error = %q, want containing 'job_id'", err.Error())
+	}
+	if !strings.Contains(err.Error(), `{"action":"list"}`) {
+		t.Errorf("error = %q, want guidance to run list", err.Error())
+	}
+}
+
+func TestJob_StopMissingJobID(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	tl := NewJob(reg)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop"}`), nil)
+	if err == nil {
+		t.Fatal("expected error when stop has no job_id")
+	}
+	if !strings.Contains(err.Error(), "job_id") {
+		t.Errorf("error = %q, want containing 'job_id'", err.Error())
+	}
+	if !strings.Contains(err.Error(), `{"action":"list"}`) {
+		t.Errorf("error = %q, want guidance to run list", err.Error())
+	}
+}
+
+// A job_id that looks like a boolean literal is not special-cased: it goes
+// through the normal not-found path, which echoes the ID back.
+func TestJob_PollWeirdJobIDNotSpecialCased(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	tl := NewJob(reg)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"action":"poll","job_id":"true"}`), nil)
+	if err == nil {
+		t.Fatal("expected error for nonexistent job")
+	}
+	if !strings.Contains(err.Error(), "no job found with ID: true") {
+		t.Errorf("error = %q, want containing 'no job found with ID: true'", err.Error())
 	}
 }
 
@@ -557,7 +588,7 @@ func TestJob_ContextCancelled(t *testing.T) {
 	cancel()
 
 	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{Poll: "bg-30", Block: new(true), Timeout: 5000})
+	input, _ := json.Marshal(JobInput{Action: "poll", JobID: "bg-30", Block: new(true), Timeout: 5000})
 	_, err := tl.Call(ctx, json.RawMessage(input), nil)
 	if err == nil {
 		t.Error("expected error from cancelled context")
@@ -596,7 +627,7 @@ func TestJob_DescriptionPoll(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"poll":"bg-1"}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"poll","job_id":"bg-1"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
@@ -609,7 +640,7 @@ func TestJob_DescriptionStop(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"stop":"bg-2"}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"stop","job_id":"bg-2"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
@@ -618,16 +649,16 @@ func TestJob_DescriptionStop(t *testing.T) {
 	}
 }
 
-func TestJob_DescriptionBoth(t *testing.T) {
+func TestJob_DescriptionListAction(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"poll":"bg-1","stop":"bg-2"}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"list"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "Poll bg-1, Stop bg-2" {
-		t.Errorf("Description = %q, want 'Poll bg-1, Stop bg-2'", desc)
+	if desc != "List" {
+		t.Errorf("Description = %q, want 'List'", desc)
 	}
 }
 
@@ -673,10 +704,35 @@ func TestJob_InputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("InputSchema missing 'properties' object")
 	}
-	for _, key := range []string{"poll", "stop", "block", "timeout"} {
+	for _, key := range []string{"action", "job_id", "block", "timeout"} {
 		if _, exists := props[key]; !exists {
 			t.Errorf("InputSchema properties missing '%s'", key)
 		}
+	}
+	action, ok := props["action"].(map[string]any)
+	if !ok {
+		t.Fatal("InputSchema missing 'action' property object")
+	}
+	enum, ok := action["enum"].([]any)
+	if !ok {
+		t.Fatal("InputSchema 'action' missing enum")
+	}
+	got := make(map[string]bool, len(enum))
+	for _, v := range enum {
+		s, _ := v.(string)
+		got[s] = true
+	}
+	for _, want := range []string{"list", "poll", "stop"} {
+		if !got[want] {
+			t.Errorf("InputSchema action enum missing %q, got: %v", want, enum)
+		}
+	}
+	required, ok := obj["required"].([]any)
+	if !ok {
+		t.Fatal("InputSchema missing 'required' array")
+	}
+	if len(required) != 1 || required[0] != "action" {
+		t.Errorf("InputSchema required = %v, want [action]", required)
 	}
 }
 
@@ -684,7 +740,7 @@ func TestJob_ReadOnlyPollOnly(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	if !tl.IsReadOnly(json.RawMessage(`{"poll":"bg-1"}`)) {
+	if !tl.IsReadOnly(json.RawMessage(`{"action":"poll","job_id":"bg-1"}`)) {
 		t.Error("Poll-only should be read-only")
 	}
 }
@@ -693,17 +749,17 @@ func TestJob_NotReadOnlyWithStop(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	if tl.IsReadOnly(json.RawMessage(`{"stop":"bg-1"}`)) {
+	if tl.IsReadOnly(json.RawMessage(`{"action":"stop","job_id":"bg-1"}`)) {
 		t.Error("With stop should not be read-only")
 	}
 }
 
-func TestJob_NotReadOnlyBoth(t *testing.T) {
+func TestJob_NotReadOnlyUnknownAction(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	if tl.IsReadOnly(json.RawMessage(`{"poll":"bg-1","stop":"bg-10"}`)) {
-		t.Error("Combined poll+stop should not be read-only")
+	if tl.IsReadOnly(json.RawMessage(`{"action":"restart"}`)) {
+		t.Error("Unknown action should not be read-only")
 	}
 }
 
@@ -845,7 +901,7 @@ func TestJob_StopEmptyCommandUsesDescription(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"bg-21"}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-21"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -868,7 +924,7 @@ func TestJob_StopEmptyJobAndEmptyCommandUsesJobID(t *testing.T) {
 	})
 
 	tl := NewJob(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"stop":"bg-22"}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"bg-22"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -951,7 +1007,7 @@ func TestJob_ListSuccess(t *testing.T) {
 	reg.add(&JobInfo{ID: "bg-2", Type: "local_bash", Status: "completed", Command: "echo hi", ExitCode: 0})
 
 	tl := NewJob(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"list"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -977,7 +1033,7 @@ func TestJob_ListEmpty(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"list"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -995,104 +1051,8 @@ func TestJob_ListIsReadOnly(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
-	if !tl.IsReadOnly(json.RawMessage(`{"list":true}`)) {
+	if !tl.IsReadOnly(json.RawMessage(`{"action":"list"}`)) {
 		t.Error("List-only should be read-only")
-	}
-}
-
-func TestJob_ListWithStopIsNotReadOnly(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	if tl.IsReadOnly(json.RawMessage(`{"list":true,"stop":"bg-1"}`)) {
-		t.Error("List+Stop should not be read-only")
-	}
-}
-
-func TestJob_ListWithPollAndStop(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "completed", Command: "echo hi", Output: "hi\n", ExitCode: 0})
-	reg.add(&JobInfo{ID: "bg-2", Type: "local_bash", Status: "running", Command: "sleep 60"})
-
-	tl := NewJob(reg)
-	input, _ := json.Marshal(JobInput{List: true, Poll: "bg-1", Stop: "bg-2"})
-	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
-	}
-
-	out := result.Data.(*JobOutput)
-	if out.List == nil {
-		t.Error("List result should not be nil")
-	}
-	if out.Poll == nil {
-		t.Error("Poll result should not be nil")
-	}
-	if out.Stop == nil {
-		t.Error("Stop result should not be nil")
-	}
-	if len(out.List.Jobs) != 2 {
-		t.Errorf("List.Jobs count = %d, want 2", len(out.List.Jobs))
-	}
-}
-
-func TestJob_DescriptionList(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"list":true}`))
-	if err != nil {
-		t.Fatalf("Description() error: %v", err)
-	}
-	if desc != "List jobs" {
-		t.Errorf("Description = %q, want 'List jobs'", desc)
-	}
-}
-
-func TestJob_DescriptionListWithPoll(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"list":true,"poll":"bg-1"}`))
-	if err != nil {
-		t.Fatalf("Description() error: %v", err)
-	}
-	if desc != "List jobs, Poll bg-1" {
-		t.Errorf("Description = %q, want 'List jobs, Poll bg-1'", desc)
-	}
-}
-
-func TestJob_DescriptionListWithStop(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	desc, err := tl.Description(json.RawMessage(`{"list":true,"stop":"bg-2"}`))
-	if err != nil {
-		t.Fatalf("Description() error: %v", err)
-	}
-	if desc != "List jobs, Stop bg-2" {
-		t.Errorf("Description = %q, want 'List jobs, Stop bg-2'", desc)
-	}
-}
-
-func TestJob_InputSchemaIncludesList(t *testing.T) {
-	t.Parallel()
-	reg := newMockRegistry()
-	tl := NewJob(reg)
-	schema := tl.InputSchema()
-	var obj map[string]any
-	if err := json.Unmarshal(schema, &obj); err != nil {
-		t.Fatalf("InputSchema is not valid JSON: %v", err)
-	}
-	props, ok := obj["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("InputSchema missing 'properties' object")
-	}
-	for _, key := range []string{"poll", "stop", "list", "block", "timeout"} {
-		if _, exists := props[key]; !exists {
-			t.Errorf("InputSchema properties missing '%s'", key)
-		}
 	}
 }
 
@@ -1120,11 +1080,11 @@ func TestJob_RenderResultListWithJobs(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, "bg-1 [running] sleep 10") {
-		t.Errorf("RenderResult = %q, want containing 'bg-1 [running] sleep 10'", result)
+	if !strings.Contains(result, `job_id=bg-1 status=running command="sleep 10"`) {
+		t.Errorf("RenderResult = %q, want containing new format", result)
 	}
-	if !strings.Contains(result, "bg-2 [completed] echo hi") {
-		t.Errorf("RenderResult = %q, want containing 'bg-2 [completed] echo hi'", result)
+	if !strings.Contains(result, `job_id=bg-2 status=completed command="echo hi"`) {
+		t.Errorf("RenderResult = %q, want containing new format", result)
 	}
 }
 
@@ -1139,8 +1099,8 @@ func TestJob_RenderResultListFallsBackToDescription(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, "bg-5 [running] my agent task") {
-		t.Errorf("RenderResult = %q, want containing 'bg-5 [running] my agent task'", result)
+	if !strings.Contains(result, `job_id=bg-5 status=running command="my agent task"`) {
+		t.Errorf("RenderResult = %q, want containing new format", result)
 	}
 }
 
@@ -1155,8 +1115,8 @@ func TestJob_RenderResultListFallsBackToID(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, "bg-6 [running] bg-6") {
-		t.Errorf("RenderResult = %q, want containing 'bg-6 [running] bg-6'", result)
+	if !strings.Contains(result, `job_id=bg-6 status=running command="bg-6"`) {
+		t.Errorf("RenderResult = %q, want containing new format", result)
 	}
 }
 
@@ -1188,5 +1148,29 @@ func TestJob_DecodeResult_RejectsBareStruct(t *testing.T) {
 	_, err := tl.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"poll":{"task":{"job_id":"bg-1"}}}`))
 	if err == nil {
 		t.Error("DecodeResult must reject bare struct form")
+	}
+}
+
+func TestJob_LegacyInputShapeRejected(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	reg.add(&JobInfo{
+		ID:       "bg-1",
+		Type:     "local_bash",
+		Status:   "completed",
+		Command:  "echo hello",
+		Output:   "hello\n",
+		ExitCode: 0,
+	})
+	tl := NewJob(reg)
+	for _, legacy := range []string{`{"poll":"true"}`, `{"stop":"bg-1"}`, `{"list":true}`} {
+		_, err := tl.Call(context.Background(), json.RawMessage(legacy), nil)
+		if err == nil {
+			t.Errorf("legacy input %s accepted, want rejection", legacy)
+			continue
+		}
+		if !strings.Contains(err.Error(), `"list", "poll", "stop"`) {
+			t.Errorf("legacy input %s error = %q, want valid-actions list", legacy, err)
+		}
 	}
 }

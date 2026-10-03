@@ -1,8 +1,12 @@
 // Package job provides tools for managing background jobs.
 //
 // TS divergence: the TypeScript source keeps JobOutput and JobStop as separate tools.
-// gbot merges them into a single unified Job tool following the same pattern as the Task tool,
-// allowing both poll and stop in a single invocation. This is a user-approved change.
+// gbot merges them into a single unified Job tool driven by an action enum
+// (list/poll/stop), following the same pattern as browser_tabs-style action tools.
+// The earlier three-mutually-exclusive-params form let sub-agents pass values like
+// {"poll":"true"} (a boolean literal harvested from prompt text as a job ID), so
+// the dispatch now validates a single action plus an explicit job_id. These are
+// user-approved changes.
 package job
 
 import (
@@ -63,12 +67,10 @@ type Prefixer interface {
 	Prefix() string
 }
 
-// JobInput is the unified input schema for the Job tool.
-// Poll, Stop, and List can be combined in a single call.
+// JobInput is the input schema for the Job tool. Exactly one action per call.
 type JobInput struct {
-	Poll    string `json:"poll,omitempty"`    // job ID to poll output from
-	Stop    string `json:"stop,omitempty"`    // job ID to stop
-	List    bool   `json:"list,omitempty"`    // list all jobs
+	Action  string `json:"action"`            // list, poll, stop
+	JobID   string `json:"job_id,omitempty"`  // target job (required for poll and stop)
 	Block   *bool  `json:"block,omitempty"`   // default true (only meaningful with poll)
 	Timeout int    `json:"timeout,omitempty"` // default 30000ms (only meaningful with poll)
 }
@@ -107,17 +109,14 @@ type ListResult struct {
 var jobToolSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "poll": {
+    "action": {
       "type": "string",
-      "description": "The job ID to get output from"
+      "enum": ["list", "poll", "stop"],
+      "description": "Operation to perform"
     },
-    "stop": {
+    "job_id": {
       "type": "string",
-      "description": "The job ID to stop"
-    },
-    "list": {
-      "type": "boolean",
-      "description": "List all background jobs"
+      "description": "Job ID — the job_id value from Job list output, e.g. \"bg-1\" (required for poll and stop)"
     },
     "block": {
       "type": "boolean",
@@ -129,7 +128,8 @@ var jobToolSchema = json.RawMessage(`{
       "default": 30000,
       "description": "Max wait time in ms (only used with poll)"
     }
-  }
+  },
+  "required": ["action"]
 }`)
 
 // NewJob creates the unified Job tool.
@@ -143,20 +143,16 @@ func NewJob(reg Registry) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Manage job", nil
 			}
-			parts := make([]string, 0, 3)
-			if in.List {
-				parts = append(parts, "List jobs")
-			}
-			if in.Poll != "" {
-				parts = append(parts, "Poll "+in.Poll)
-			}
-			if in.Stop != "" {
-				parts = append(parts, "Stop "+in.Stop)
-			}
-			if len(parts) == 0 {
+			switch in.Action {
+			case "list":
+				return "List", nil
+			case "poll":
+				return "Poll " + strings.TrimSpace(in.JobID), nil
+			case "stop":
+				return "Stop " + strings.TrimSpace(in.JobID), nil
+			default:
 				return "Manage job", nil
 			}
-			return strings.Join(parts, ", "), nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeJobCall(ctx, reg, input)
@@ -166,7 +162,9 @@ func NewJob(reg Registry) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return false
 			}
-			return in.Stop == ""
+			// Unknown actions default to not read-only: they will fail at
+			// dispatch anyway, and treating them as mutating is the safe side.
+			return in.Action == "list" || in.Action == "poll"
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
@@ -208,42 +206,48 @@ func NewJob(reg Registry) tool.Tool {
 // Execution
 // ---------------------------------------------------------------------------
 
-// executeJobCall routes to poll and/or stop based on input.
-// Execution order: Poll first, Stop second.
-// If Poll fails, Stop is not executed.
+// executeJobCall dispatches on the action enum. Exactly one operation runs
+// per call; poll and stop require a job_id, which must come from list output
+// (the error text points there because sub-agents previously invented IDs
+// like "true" from prompt prose and retried in a loop).
 func executeJobCall(ctx context.Context, reg Registry, input json.RawMessage) (*tool.ToolResult, error) {
 	var in JobInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
 	}
 
-	if in.Poll == "" && in.Stop == "" && !in.List {
-		return nil, fmt.Errorf("at least one of 'poll', 'stop', or 'list' is required")
-	}
+	switch in.Action {
+	case "list":
+		return &tool.ToolResult{Data: &JobOutput{List: executeList(reg)}}, nil
 
-	var out JobOutput
-
-	if in.List {
-		out.List = executeList(reg)
-	}
-
-	if in.Poll != "" {
-		result, err := executePoll(ctx, reg, in.Poll, in.Block, in.Timeout)
+	case "poll":
+		if in.JobID == "" {
+			return nil, fmt.Errorf(`action "poll" requires job_id — run {"action":"list"} to see job IDs`)
+		}
+		result, err := executePoll(ctx, reg, in.JobID, in.Block, in.Timeout)
 		if err != nil {
 			return nil, err
 		}
-		out.Poll = result
-	}
+		return &tool.ToolResult{Data: &JobOutput{Poll: result}}, nil
 
-	if in.Stop != "" {
-		result, err := executeStop(reg, in.Stop)
+	case "stop":
+		if in.JobID == "" {
+			return nil, fmt.Errorf(`action "stop" requires job_id — run {"action":"list"} to see job IDs`)
+		}
+		result, err := executeStop(reg, in.JobID)
 		if err != nil {
 			return nil, err
 		}
-		out.Stop = result
-	}
+		return &tool.ToolResult{Data: &JobOutput{Stop: result}}, nil
 
-	return &tool.ToolResult{Data: &out}, nil
+	default:
+		if in.Action == "" {
+			// json.Unmarshal silently drops legacy keys like {"stop":"bg-1"} —
+			// point the caller at the enum instead of echoing an empty action.
+			return nil, fmt.Errorf(`action is required — valid actions are "list", "poll", "stop" (run {"action":"list"} to see jobs)`)
+		}
+		return nil, fmt.Errorf(`unknown action %q — valid actions are "list", "poll", "stop"`, in.Action)
+	}
 }
 
 // executePoll polls a job for output.
@@ -413,7 +417,7 @@ func wireListText(l *ListResult) string {
 		if cmd == "" {
 			cmd = j.ID
 		}
-		lines = append(lines, fmt.Sprintf("%s [%s] %s", j.ID, j.Status, cmd))
+		lines = append(lines, fmt.Sprintf("job_id=%s status=%s command=%q", j.ID, j.Status, cmd))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -485,7 +489,7 @@ func renderListResult(l *ListResult) string {
 		if cmd == "" {
 			cmd = j.ID
 		}
-		fmt.Fprintf(&sb, "%s [%s] %s", j.ID, j.Status, cmd)
+		fmt.Fprintf(&sb, "job_id=%s status=%s command=%q", j.ID, j.Status, cmd)
 	}
 	return sb.String()
 }

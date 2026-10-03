@@ -118,7 +118,7 @@ func TestJobWire_ListMultipleWithFallbacks(t *testing.T) {
 		{ID: "bg-2", Status: "completed", Description: "agent: fix bug"},
 		{ID: "bg-3", Status: "killed"},
 	}}})
-	want := "bg-1 [running] go test ./...\nbg-2 [completed] agent: fix bug\nbg-3 [killed] bg-3"
+	want := "job_id=bg-1 status=running command=\"go test ./...\"\njob_id=bg-2 status=completed command=\"agent: fix bug\"\njob_id=bg-3 status=killed command=\"bg-3\""
 	if got != want {
 		t.Errorf("wire text = %q, want %q", got, want)
 	}
@@ -132,7 +132,7 @@ func TestJobWire_CombinedSegments(t *testing.T) {
 		Poll: &PollResult{RetrievalStatus: "timeout"},
 		Stop: &StopResult{JobID: "bg-1", JobType: "local_bash", Command: "x"},
 	})
-	want := "bg-1 [running] x\n\n<retrieval_status>timeout</retrieval_status>\n\n" +
+	want := "job_id=bg-1 status=running command=\"x\"\n\n<retrieval_status>timeout</retrieval_status>\n\n" +
 		"Successfully stopped job bg-1 (local_bash): x"
 	if got != want {
 		t.Errorf("wire text = %q, want %q", got, want)
