@@ -1084,7 +1084,7 @@ func TestEnhanceSystemPrompt_UsesCustomPrompt(t *testing.T) {
 
 func TestEnhanceSystemPrompt_ContainsNotes(t *testing.T) {
 	result := EnhanceSystemPrompt("test", nil, "/tmp", false, "")
-	if !strings.Contains(result, "absolute file paths") {
+	if !strings.Contains(result, "always absolute, never relative") {
 		t.Error("expected notes about absolute paths")
 	}
 	if !strings.Contains(result, "avoid using emojis") {
