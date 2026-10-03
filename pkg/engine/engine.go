@@ -2029,9 +2029,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 }
 
 // recordTurnTool adds a tool name to the current query's collection.
-// Called from parallel tool-execution goroutines.
+// Called from parallel tool-execution goroutines. Lazy map init: engines
+// that never ran a query (ExecuteTool on a literal-built Engine) would
+// otherwise panic on the nil-map write.
 func (e *Engine) recordTurnTool(name string) {
 	e.turnToolMu.Lock()
+	if e.turnToolNames == nil {
+		e.turnToolNames = make(map[string]struct{})
+	}
 	e.turnToolNames[name] = struct{}{}
 	e.turnToolMu.Unlock()
 }

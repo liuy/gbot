@@ -8578,6 +8578,35 @@ func TestEngineExecuteTool_ToolError(t *testing.T) {
 	}
 }
 
+// TestEngineExecuteTool_RecordTurnTool_PlainCtxRecords_HookOriginSkips pins
+// the two recording branches on the ExecuteTool path: a plain-ctx call (repl
+// model-driven tools.*) feeds the Stop-matcher collection; a hook-origin call
+// (hook session tools.*) must not — it runs after the Stop snapshot and would
+// poison the next Stop attempt's matcher gate after a blocking Stop retry.
+// Also proves recording is safe before any query ran (nil collection).
+func TestEngineExecuteTool_RecordTurnTool_PlainCtxRecords_HookOriginSkips(t *testing.T) {
+	eng := &Engine{logger: slog.Default()}
+	eng.tools = map[string]tool.Tool{
+		"tabs":  &namedTool{name: "tabs"},
+		"other": &namedTool{name: "other"},
+	}
+
+	if _, err := eng.ExecuteTool(context.Background(), "tabs", json.RawMessage(`{}`), nil, nil); err != nil {
+		t.Fatalf("plain-ctx ExecuteTool: %v", err)
+	}
+	if got := eng.snapshotTurnToolNames(); !slices.Equal(got, []string{"tabs"}) {
+		t.Errorf("after plain-ctx call, tool names = %v, want [tabs]", got)
+	}
+
+	hookCtx := hooks.WithHookOrigin(context.Background())
+	if _, err := eng.ExecuteTool(hookCtx, "other", json.RawMessage(`{}`), nil, nil); err != nil {
+		t.Fatalf("hook-origin ExecuteTool: %v", err)
+	}
+	if got := eng.snapshotTurnToolNames(); !slices.Equal(got, []string{"tabs"}) {
+		t.Errorf("after hook-origin call, tool names = %v, want [tabs] (hook-origin must not record)", got)
+	}
+}
+
 func TestEngineExecuteTool_AskPermission_UserAllows(t *testing.T) {
 	ch := make(chan types.QueryEvent, 1)
 	eng := &Engine{

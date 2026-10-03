@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -312,6 +313,17 @@ func Start(opts Options) (*Instance, error) {
 	// instance: hook JS state (globalThis) stays stable across events, and
 	// hooks still fire from contexts that own no engine (wechat/dream/wui).
 	// Created before the first dispatch point (SessionStart below, connectors).
+	//
+	// mainRefs has no companion engine (session engines are built one by one
+	// inside engineFactory below), so its REPL resolves tools dynamically
+	// against the newest session engine. mcpRegistry is process-shared via
+	// SharedDeps, making any engine's inventory and execution equivalent.
+	// Hook-session tool calls arrive with the hook-origin ctx marker
+	// (Session.RunHook wraps the toolFn), so eng.ExecuteTool's re-entrancy
+	// and recording guards keep working through this indirection.
+	var latestSessionEngine atomic.Pointer[engine.Engine]
+	mainRefs.REPL.SetToolExecutor(mainReplToolExecutor(&latestSessionEngine))
+	mainRefs.REPL.SetToolLister(mainReplToolLister(&latestSessionEngine))
 	hookSystem.SetJsHookRunner(mainRefs.REPL)
 
 	modelThinking := buildModelThinking(cfg)
@@ -394,6 +406,13 @@ func Start(opts Options) (*Instance, error) {
 			refs.REPL.CleanSession(sessionID)
 		})
 		engine.WireEngine(newEng, refs, deps)
+		// Latest-wins registration for the process-global js hook runner's
+		// dynamic executor/lister: hooks may fire from engine-less contexts
+		// (wechat/dream/wui) at any moment after this point. Every engine
+		// creation path lands here — WeChat's fresh-build registers via the
+		// startWeChatDeps callback — so the pointer never goes stale while
+		// any engine lives.
+		latestSessionEngine.Store(newEng)
 		newEng.SetSystemPrompt(systemPrompt)
 		newEng.SetSkillListing(skillListing)
 		newEng.SetAgentDefs(agent.ListAgentDefinitions())
@@ -536,6 +555,7 @@ func Start(opts Options) (*Instance, error) {
 			toolPrompts:        toolPrompts,
 			skillListing:       skillListing,
 			lspReg:             lspReg,
+			registerHookEngine: latestSessionEngine.Store,
 		}); err != nil {
 			slog.Warn("wechat: start connector failed", "account_id", state.AccountID, "error", err)
 			continue
@@ -691,6 +711,52 @@ func Start(opts Options) (*Instance, error) {
 		Logger:             logger,
 		PIDCleanup:         pidCleanup,
 	}, nil
+}
+
+// mainReplToolExecutor builds the executor for the process-global js hook
+// runner's REPL (mainRefs.REPL): resolve the newest session engine at call
+// time, or fail explicitly — a silent empty success would let hook code
+// believe a tool ran. askMu/sessionAllowed are executor-owned (one REPL
+// instance per process), mirroring WireEngine's per-engine block.
+func mainReplToolExecutor(latest *atomic.Pointer[engine.Engine]) func(context.Context, string, json.RawMessage) (string, error) {
+	var askMu sync.Mutex
+	sessionAllowed := make(map[string]bool)
+	return func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
+		eng := latest.Load()
+		if eng == nil {
+			return "", fmt.Errorf("no engine ready")
+		}
+		return eng.ExecuteTool(toolCtx, name, args, sessionAllowed, &askMu)
+	}
+}
+
+// mainReplToolLister builds the lister for the process-global js hook
+// runner's REPL: nil engine means no session engine exists yet, so hook JS
+// gets an empty tools object (a visible "Object has no member" instead of a
+// nil dereference). With an engine it mirrors WireEngine's lister form
+// (bootstrap.go): live AllTools() snapshot, sorted for stable order.
+func mainReplToolLister(latest *atomic.Pointer[engine.Engine]) func() []repl.ToolMeta {
+	return func() []repl.ToolMeta {
+		eng := latest.Load()
+		if eng == nil {
+			return nil
+		}
+		all := eng.AllTools()
+		names := make([]string, 0, len(all))
+		for name := range all {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		metas := make([]repl.ToolMeta, 0, len(names))
+		for _, name := range names {
+			desc, err := all[name].Description(nil)
+			if err != nil {
+				desc = ""
+			}
+			metas = append(metas, repl.ToolMeta{Name: name, Description: desc})
+		}
+		return metas
+	}
 }
 
 // dreamEngineDeps holds the dependencies for building the persistent dream engine.

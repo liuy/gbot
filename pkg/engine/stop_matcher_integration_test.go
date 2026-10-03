@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -109,6 +111,96 @@ func TestIntegration_StopMatcher_ToolUsed_JsHookRuns(t *testing.T) {
 	}
 	if state != `[1,["mcp__plugin_browser_playwright__browser_tabs"]]` {
 		t.Errorf("hook session state = %q, want one Stop run seeing exactly the executed tool name", state)
+	}
+}
+
+// TestIntegration_StopMatcher_ReplInnerCall_Collected drives the browser
+// plugin's designed workflow: the model drives browser.* from inside a Repl
+// tool call, where the inner tools.* invocation bypasses the streaming
+// executor (toolFn → eng.ExecuteTool). Unless ExecuteTool feeds the same
+// Stop-matcher collection, the browser tool never enters ToolNames and the
+// matcher-gated js hook is skipped — tab cleanup silently never runs.
+func TestIntegration_StopMatcher_ReplInnerCall_Collected(t *testing.T) {
+	t.Parallel()
+
+	counter := &countingJsRunner{}
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"Stop": []hooks.HookMatcher{{
+			Matcher: "mcp__plugin_browser_playwright__.*",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeJS, Code: `async () => "ok"`}},
+		}},
+	}, &integrationHookRecorder{})
+	hookSystem.SetJsHookRunner(counter)
+
+	tabsRan := false
+	tabsTool := &mockTool{
+		name:    "mcp__plugin_browser_playwright__browser_tabs",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			tabsRan = true
+			return &tool.ToolResult{Data: "tabs ok"}, nil
+		},
+	}
+	replTool := repl.New()
+	t.Cleanup(replTool.Close)
+
+	replInput := fmt.Sprintf(`{"code":%q}`, `tools.mcp__plugin_browser_playwright__browser_tabs({}); "ok"`)
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "Repl", replInput), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+		Hooks:    hookSystem,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				replTool.Name(): replTool,
+				tabsTool.Name(): tabsTool,
+			}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	// Production wiring, same as bootstrap.go:190/199 — the Repl toolFn
+	// delegates to the engine's ExecuteTool, not the streaming executor.
+	var replAskMu sync.Mutex
+	replSessionAllowed := make(map[string]bool)
+	replTool.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
+		return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
+	})
+	replTool.SetToolLister(func() []repl.ToolMeta {
+		all := eng.AllTools()
+		names := make([]string, 0, len(all))
+		for name := range all {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		metas := make([]repl.ToolMeta, 0, len(names))
+		for _, name := range names {
+			desc, err := all[name].Description(nil)
+			if err != nil {
+				desc = ""
+			}
+			metas = append(metas, repl.ToolMeta{Name: name, Description: desc})
+		}
+		return metas
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := eng.QuerySync(ctx, "drive the browser from repl", "")
+	if result.Error != nil {
+		t.Fatalf("QuerySync: %v", result.Error)
+	}
+
+	if !tabsRan {
+		t.Fatal("inner browser_tabs call never ran — the js runner count below would be red for the wrong reason")
+	}
+	if got, want := counter.count(), 1; got != want {
+		t.Errorf("js runner calls = %d, want %d (the repl-inner browser_tabs call must gate the Stop hook in)", got, want)
 	}
 }
 

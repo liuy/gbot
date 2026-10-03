@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/tui"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -634,6 +638,53 @@ func TestRestoreEngines_StripsProviderPrefix(t *testing.T) {
 	if gotModel != "glm-5.2" {
 		t.Errorf("factory received model = %q, want %q (provider prefix stripped)",
 			gotModel, "glm-5.2")
+	}
+}
+
+// TestMainReplToolExecutorAndLister pins the dynamic wiring of the
+// process-global js hook runner's REPL (mainRefs.REPL): nil engine yields an
+// explicit error and an empty inventory; the latest session engine gets
+// transparent passthrough to ExecuteTool/AllTools. The live daemon regressed
+// here with "Object has no member 'mcp__...'" because mainRefs.REPL was
+// never wired with any executor/lister at all.
+func TestMainReplToolExecutorAndLister(t *testing.T) {
+	var latest atomic.Pointer[engine.Engine]
+	exec := mainReplToolExecutor(&latest)
+	list := mainReplToolLister(&latest)
+
+	if _, err := exec(context.Background(), "Repl", json.RawMessage(`{}`)); err == nil || err.Error() != "no engine ready" {
+		t.Errorf("nil-engine executor error = %v, want %q", err, "no engine ready")
+	}
+	if got := list(); len(got) != 0 {
+		t.Errorf("nil-engine lister = %v, want no entries", got)
+	}
+
+	demo := tool.BuildTool(tool.ToolDef{
+		Name_: "demo",
+		InputSchema_: func() json.RawMessage {
+			return json.RawMessage(`{"type":"object","properties":{}}`)
+		},
+		Description_: func(json.RawMessage) (string, error) { return "demo description", nil },
+		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "demo ran"}, nil
+		},
+	})
+	eng := engine.New(&engine.Params{
+		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{"demo": demo} },
+	})
+	t.Cleanup(eng.Close)
+	latest.Store(eng)
+
+	out, err := exec(context.Background(), "demo", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("executor with engine: %v", err)
+	}
+	if out != `"demo ran"` {
+		t.Errorf("executor output = %q, want %q (ExecuteTool's default RenderResult JSON-encodes)", out, `"demo ran"`)
+	}
+	want := []repl.ToolMeta{{Name: "demo", Description: "demo description"}}
+	if got := list(); !slices.Equal(got, want) {
+		t.Errorf("lister = %v, want %v", got, want)
 	}
 }
 

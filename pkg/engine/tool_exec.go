@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -61,6 +62,16 @@ func (e *Engine) ExecuteTool(ctx context.Context, name string, args json.RawMess
 		WorkingDir:         e.getWorkingDir(),
 		OriginalWorkingDir: e.originalWorkingDir,
 		SetWorkingDir:      e.setWorkingDir,
+	}
+
+	// Same recording contract as the streaming executor's invocation choke
+	// point (runTools.go): only tools that actually run enter the Stop
+	// matcher's collection. This path carries repl-inner tools.* calls
+	// (Repl toolFn → ExecuteTool), which otherwise never reach the recorder.
+	// Hook-origin calls are excluded: they run after the Stop snapshot and
+	// are not model tool use.
+	if !hooks.FromHookOrigin(ctx) {
+		e.recordTurnTool(name)
 	}
 
 	result, err := t.Call(ctx, args, tctx)
