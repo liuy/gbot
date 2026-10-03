@@ -161,7 +161,7 @@ install: build
 			echo "Installed skill: $$skill_name"; \
 		fi; \
 	done
-	@echo "Done. Run 'gbot' to use /plan, /execute, /review, /goal."
+	@echo "Done. Run 'gbot'."
 
 # Android app checks (lint + test)
 app-check:
