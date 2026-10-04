@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Token estimation calibrated against real tokenizer APIs.
@@ -75,6 +76,69 @@ func isCJKRune(r rune) bool {
 		(r >= 0x3130 && r <= 0x318F) ||
 		(r >= 0xA960 && r <= 0xA97F) ||
 		(r >= 0xD7B0 && r <= 0xD7FF)
+}
+
+// TokenFeatures is a 6-feature characterization of a text used by the
+// engine's calibrated token estimator (pkg/engine/token_calibration.go).
+//
+// The char counts form a disjoint partition: every rune of the input is
+// counted by exactly one of CJK, Struct, Digit, Indent, Other. Indent holds
+// only leading (per-line) space/tab chars; mid-line whitespace and newlines
+// fall into Other because they belong to no char class. Words is an
+// independent feature (whitespace-separated tokens) and deliberately may
+// overlap the char classes.
+type TokenFeatures struct {
+	CJK    int // chars in the isCJKRune ranges
+	Struct int // chars in isStructRune (punctuation-heavy code/JSON chars)
+	Digit  int // chars '0'-'9'
+	Indent int // leading whitespace (spaces+tabs) per line, summed
+	Words  int // whitespace-separated tokens (len(strings.Fields(s)))
+	Other  int // total chars - CJK - Struct - Digit - Indent
+}
+
+// CountTokenFeatures extracts the 6-feature vector from s.
+func CountTokenFeatures(s string) TokenFeatures {
+	var f TokenFeatures
+	atLineStart := true
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			// Newline belongs to no char class → Other; it also opens the
+			// next line's indent run.
+			atLineStart = true
+			f.Other++
+		case atLineStart && (r == ' ' || r == '\t'):
+			f.Indent++
+		default:
+			// Any non-indent char (including mid-line whitespace) ends the
+			// line's leading run.
+			atLineStart = false
+			switch {
+			case isCJKRune(r):
+				f.CJK++
+			case isStructRune(r):
+				f.Struct++
+			case r >= '0' && r <= '9':
+				f.Digit++
+			default:
+				f.Other++
+			}
+		}
+	}
+	f.Words = len(strings.Fields(s))
+	return f
+}
+
+// isStructRune reports whether r is a punctuation char typical of code and
+// JSON — the text that dominates agent tool output and is worst-served by a
+// plain chars-per-token heuristic.
+func isStructRune(r rune) bool {
+	switch r {
+	case '{', '}', '[', ']', '(', ')', '<', '>', '=', ';', ':', '"', '\'',
+		'+', '/', '&', '|', '@', '#', '$', '`', '~', '^', '\\':
+		return true
+	}
+	return false
 }
 
 // FormatTokenCount formats a token count with K/M/G suffixes.

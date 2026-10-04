@@ -524,7 +524,7 @@ func TestTrySMCompact_OversizedNewestMessage_Proceeds(t *testing.T) {
 	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 	msgs := makeLargeMessages(9, 100)
 	msgs = append(msgs, types.Message{
-		Role: types.RoleAssistant,
+		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 	})
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -562,7 +562,7 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 	ac := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-sm-cjk", contextWindow: 262144, provider: nil})
 	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
 	msgs := make([]types.Message, 0, 41)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		role := types.RoleUser
 		if i%2 == 1 {
 			role = types.RoleAssistant
@@ -573,8 +573,8 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock("done")},
 		Usage: &types.Usage{
-			InputTokens:      99000,
-			OutputTokens:     1000,
+			InputTokens:          99000,
+			OutputTokens:         1000,
 			CacheReadInputTokens: 39,
 		},
 	})

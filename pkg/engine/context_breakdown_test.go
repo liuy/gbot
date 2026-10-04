@@ -714,12 +714,13 @@ func TestLastAPIUsage_NoAssistantMessages(t *testing.T) {
 
 func TestTokenCountForBlock_Document(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	// est wins over the size-based fallback and over the tiny JSON branch.
-	est := tokenCountForBlock(types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 2<<20, 5000))
+	est := e.tokenCountForBlock(types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 2<<20, 5000))
 	if est != 5000 {
 		t.Errorf("document est-tokens branch = %d, want 5000", est)
 	}
-	fallback := tokenCountForBlock(types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 400, 0))
+	fallback := e.tokenCountForBlock(types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 400, 0))
 	if fallback != 100 {
 		t.Errorf("document size/4 fallback = %d, want 100", fallback)
 	}
@@ -727,10 +728,12 @@ func TestTokenCountForBlock_Document(t *testing.T) {
 
 func TestTokenCountForBlock_Thinking(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	block := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "I need to think about this carefully"}
-	got := tokenCountForBlock(block)
-	// Thinking text "I need to think about this carefully" — 35 runes
-	// at 0.20 tokens/char.
+	got := e.tokenCountForBlock(block)
+	// Seed-ratio 6-feature estimate for "I need to think about this carefully":
+	// 36 runes → Other 36, Words 7 (no CJK/struct/digit/indent);
+	// 7×0.48 + 36×0.11 = 7.32 → 7.
 	if got != 7 {
 		t.Errorf("thinking block token count = %d, want 7", got)
 	}
@@ -738,12 +741,15 @@ func TestTokenCountForBlock_Thinking(t *testing.T) {
 
 func TestTokenCountForBlock_UnknownType(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	block := types.ContentBlock{Type: "image", Text: "an image block"}
-	got := tokenCountForBlock(block)
-	// Marshal yields {"type":"image","text":"an image block"} — 40 runes
-	// at 0.20 tokens/char.
-	if got != 8 {
-		t.Errorf("unknown-type token count = %d, want 8", got)
+	got := e.tokenCountForBlock(block)
+	// Marshal yields {"type":"image","text":"an image block"} — 40 runes:
+	// Struct 12 (quotes/braces/colons; ',' is not a struct char), Other 28
+	// (25 letters + 2 spaces + comma), Words 3.
+	// 12×1.38 + 3×0.48 + 28×0.11 = 21.08 → 21.
+	if got != 21 {
+		t.Errorf("unknown-type token count = %d, want 21", got)
 	}
 }
 
@@ -849,16 +855,17 @@ func TestContextBreakdown_AttachmentInMessages(t *testing.T) {
 
 func TestEstimateSystemTools_DeferredDiscovered(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	ts := newToolSearchState()
 	ts.DiscoverTools([]string{"ToolSearch"})
 	tools := map[string]tool.Tool{
 		"ToolSearch": deferredStubTool("ToolSearch"),
 		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
 	}
-	got := estimateSystemTools(tools, ts, nil)
+	got := e.estimateSystemTools(tools, ts, nil)
 	// Both tools: ToolSearch is deferred but discovered → included.
-	bashTokens := estimateSingleTool(tools["Bash"])
-	toolSearchTokens := estimateSingleTool(tools["ToolSearch"])
+	bashTokens := e.estimateSingleTool(tools["Bash"])
+	toolSearchTokens := e.estimateSingleTool(tools["ToolSearch"])
 	wantTotal := bashTokens + toolSearchTokens
 	if got != wantTotal {
 		t.Errorf("expected Bash+ToolSearch tokens (%d), got %d", wantTotal, got)
@@ -867,30 +874,32 @@ func TestEstimateSystemTools_DeferredDiscovered(t *testing.T) {
 
 func TestEstimateSystemTools_DeferredNotDiscovered(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	ts := newToolSearchState()
 	tools := map[string]tool.Tool{
 		"ToolSearch": deferredStubTool("ToolSearch"),
 		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
 	}
-	got := estimateSystemTools(tools, ts, nil)
+	got := e.estimateSystemTools(tools, ts, nil)
 	// ToolSearch is deferred+not discovered → skipped. Bash alone: ~1 token.
 	// Verify by name: only Bash should be in the count.
-	if got != estimateSingleTool(tools["Bash"]) {
+	if got != e.estimateSingleTool(tools["Bash"]) {
 		t.Errorf("expected only Bash tokens (%d), got %d (ToolSearch not skipped?)",
-			estimateSingleTool(tools["Bash"]), got)
+			e.estimateSingleTool(tools["Bash"]), got)
 	}
 }
 
 func TestEstimateSystemTools_NilToolSearch(t *testing.T) {
 	t.Parallel()
+	e := &Engine{}
 	tools := map[string]tool.Tool{
 		"ToolSearch": deferredStubTool("ToolSearch"),
 		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
 	}
-	got := estimateSystemTools(tools, nil, nil)
+	got := e.estimateSystemTools(tools, nil, nil)
 	// With nil toolSearch, deferred ToolSearch is included.
-	bashTokens := estimateSingleTool(tools["Bash"])
-	toolSearchTokens := estimateSingleTool(tools["ToolSearch"])
+	bashTokens := e.estimateSingleTool(tools["Bash"])
+	toolSearchTokens := e.estimateSingleTool(tools["ToolSearch"])
 	wantTotal := bashTokens + toolSearchTokens
 	if got != wantTotal {
 		t.Errorf("expected Bash+ToolSearch tokens (%d), got %d", wantTotal, got)
@@ -996,7 +1005,7 @@ func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	raw := strings.Repeat("word ", 500) // ~500 tokens
-	sections := estimateSystemPromptSections(raw, tmpDir, "", nil, "")
+	sections := (&Engine{}).estimateSystemPromptSections(raw, tmpDir, "", nil, "")
 	if sections.base < 400 {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}

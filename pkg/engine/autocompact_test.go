@@ -1833,9 +1833,11 @@ func TestAutoCompactor_Compact_RealContextGate_CJKUnderestimate(t *testing.T) {
 	// 20 CJK messages × 2200 chars ≈ 44k chars → char estimate 44k×0.65 ≈ 28.6k
 	// tokens < 52428 budget, but the last assistant turn carries a usage block
 	// anchoring the real context at 100039 tokens (what the API actually bills).
-	mkText := func() string { return strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100) }
+	mkText := func() string {
+		return strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
+	}
 	msgs := make([]types.Message, 0, 20)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		role := types.RoleUser
 		if i%2 == 1 {
 			role = types.RoleAssistant
@@ -1848,8 +1850,8 @@ func TestAutoCompactor_Compact_RealContextGate_CJKUnderestimate(t *testing.T) {
 		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock("done")},
 		Usage: &types.Usage{
-			InputTokens:      99000,
-			OutputTokens:     1000,
+			InputTokens:          99000,
+			OutputTokens:         1000,
 			CacheReadInputTokens: 39,
 		},
 	})
@@ -1897,7 +1899,7 @@ func TestAutoCompactor_Compact_RescaleWhenEstimateAlreadyOverBudget(t *testing.T
 	// estimate-space → roughly 21 messages kept, not ~36.
 	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
 	msgs := make([]types.Message, 0, 41)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		role := types.RoleUser
 		if i%2 == 1 {
 			role = types.RoleAssistant
@@ -1908,8 +1910,8 @@ func TestAutoCompactor_Compact_RescaleWhenEstimateAlreadyOverBudget(t *testing.T
 		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock("done")},
 		Usage: &types.Usage{
-			InputTokens:      99000,
-			OutputTokens:     1000,
+			InputTokens:          99000,
+			OutputTokens:         1000,
 			CacheReadInputTokens: 39,
 		},
 	})

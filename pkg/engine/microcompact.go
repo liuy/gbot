@@ -197,6 +197,14 @@ func calculateToolResultTokens(content json.RawMessage) int {
 }
 
 func calculateToolResultTokensForProvider(content json.RawMessage, provider string) int {
+	return calculateToolResultTokensWith(content, func(s string) int {
+		return utils.EstimateTokensForProvider(s, provider)
+	})
+}
+
+// calculateToolResultTokensWith is the estimator-parameterized core shared by
+// the provider-aware free function and the engine's calibrated path.
+func calculateToolResultTokensWith(content json.RawMessage, est func(string) int) int {
 	if len(content) == 0 {
 		return 0
 	}
@@ -204,7 +212,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 	// Try to parse as string first (TS: typeof content === 'string')
 	var str string
 	if err := json.Unmarshal(content, &str); err == nil {
-		return utils.EstimateTokensForProvider(str, provider)
+		return est(str)
 	}
 
 	// Try to parse as array of blocks (TS: Array<TextBlock | ImageBlock | DocumentBlock>)
@@ -219,7 +227,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 			case "text":
 				var text string
 				if err := json.Unmarshal(block["text"], &text); err == nil {
-					total += utils.EstimateTokensForProvider(text, provider)
+					total += est(text)
 				}
 			case "image", "document":
 				// Images/documents ≈ 2000 tokens regardless of format.
@@ -231,7 +239,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 	}
 
 	// Fallback: estimate from raw bytes
-	return utils.EstimateTokensForProvider(string(content), provider)
+	return est(string(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +300,14 @@ func EstimateMessagesTokens(messages []types.Message) int {
 }
 
 func EstimateMessagesTokensForProvider(messages []types.Message, provider string) int {
+	return estimateMessagesTokensWith(messages, messageEnvelopeTokens(provider), func(s string) int {
+		return utils.EstimateTokensForProvider(s, provider)
+	})
+}
+
+// estimateMessagesTokensWith is the estimator-parameterized core shared by
+// the provider-aware free function and the engine's calibrated path.
+func estimateMessagesTokensWith(messages []types.Message, envelope int, est func(string) int) int {
 	totalTokens := 0
 	msgCount := 0
 
@@ -304,19 +320,19 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 		for _, block := range messages[i].Content {
 			switch block.Type {
 			case types.ContentTypeText:
-				totalTokens += utils.EstimateTokensForProvider(block.Text, provider)
+				totalTokens += est(block.Text)
 
 			case types.ContentTypeToolResult:
-				totalTokens += calculateToolResultTokensForProvider(block.Content, provider)
+				totalTokens += calculateToolResultTokensWith(block.Content, est)
 
 			case types.ContentTypeThinking:
-				totalTokens += utils.EstimateTokensForProvider(block.Thinking, provider)
+				totalTokens += est(block.Thinking)
 
 			case types.ContentTypeRedacted:
-				totalTokens += utils.EstimateTokensForProvider(block.Data, provider)
+				totalTokens += est(block.Data)
 
 			case types.ContentTypeToolUse:
-				totalTokens += utils.EstimateTokensForProvider(block.Name+string(block.Input), provider)
+				totalTokens += est(block.Name + string(block.Input))
 
 			case types.ContentTypeImage:
 				totalTokens += ImageMaxTokenSize
@@ -331,12 +347,12 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 
 			default:
 				raw, _ := json.Marshal(block)
-				totalTokens += utils.EstimateTokensForProvider(string(raw), provider)
+				totalTokens += est(string(raw))
 			}
 		}
 	}
 
-	totalTokens += msgCount * messageEnvelopeTokens(provider)
+	totalTokens += msgCount * envelope
 	return totalTokens
 }
 
@@ -349,6 +365,12 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 // precise base, then estimating tokens for messages after it.
 // Source: TS tokens.ts:226-261 — tokenCountWithEstimation.
 func TokenCountWithEstimation(messages []types.Message) int {
+	return tokenCountWithEstimationCore(messages, defaultMessageEnvelopeTokens, utils.EstimateTokens)
+}
+
+// tokenCountWithEstimationCore is the estimator-parameterized core shared by
+// the free function and the engine's calibrated path.
+func tokenCountWithEstimationCore(messages []types.Message, envelope int, est func(string) int) int {
 	for i, msg := range slices.Backward(messages) {
 
 		if msg.Role != types.RoleAssistant || msg.Usage == nil {
@@ -363,12 +385,50 @@ func TokenCountWithEstimation(messages []types.Message) int {
 		if base == 0 {
 			continue
 		}
-		delta := EstimateMessagesTokens(messages[i+1:])
+		delta := estimateMessagesTokensWith(messages[i+1:], envelope, est)
 		return base + delta
 	}
 	// No message has usage data — fall back to full estimation.
 	// Source: TS tokens.ts:260.
-	return EstimateMessagesTokens(messages)
+	return estimateMessagesTokensWith(messages, envelope, est)
+}
+
+// ---------------------------------------------------------------------------
+// Calibrated engine wrappers (see token_calibration.go)
+// ---------------------------------------------------------------------------
+
+// envelopeTokens returns the per-message envelope overhead for the current
+// provider. Takes e.mu.RLock — callers must not already hold e.mu.
+func (e *Engine) envelopeTokens() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.provider == nil {
+		return defaultMessageEnvelopeTokens
+	}
+	return messageEnvelopeTokens(e.provider.Name())
+}
+
+// tokenCountWithEstimation is TokenCountWithEstimation with the calibrated
+// estimator improving the delta/fallback estimates. The usage-anchored fast
+// path is unchanged: a real base + calibrated delta still wins.
+// Must not be called while holding e.mu.
+func (e *Engine) tokenCountWithEstimation(messages []types.Message) int {
+	return tokenCountWithEstimationCore(messages, e.envelopeTokens(), e.calibratedEstimator())
+}
+
+// tokenCountWithEstimationLocked is tokenCountWithEstimation for callers
+// already holding e.mu in write mode (RewindToScoped): provider/model are
+// read directly instead of re-acquiring the lock.
+func (e *Engine) tokenCountWithEstimationLocked(messages []types.Message) int {
+	envelope := defaultMessageEnvelopeTokens
+	if e.provider != nil {
+		envelope = messageEnvelopeTokens(e.provider.Name())
+	}
+	R := e.ratiosFor(calibrationKey(e.provider, e.model))
+	est := func(s string) int {
+		return estimateWithFeatures(utils.CountTokenFeatures(s), R)
+	}
+	return tokenCountWithEstimationCore(messages, envelope, est)
 }
 
 // ---------------------------------------------------------------------------

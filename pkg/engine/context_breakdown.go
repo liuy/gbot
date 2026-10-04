@@ -19,7 +19,6 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
-	"github.com/liuy/gbot/pkg/utils"
 )
 
 // -----------------------------------------------------------------------
@@ -239,7 +238,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	reserved := min(computeReservedTokens(contextWindow, maxTokens), max(freeTokens, 0))
 
 	// Compute expensive data once, shared by estimates and details.
-	sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, e.memoryDir)
+	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, e.memoryDir)
 	memFiles := context.LoadMemoryFiles(workingDir, e.memoryDir)
 
 	estimates := e.estimateComponents(
@@ -329,17 +328,17 @@ func (e *Engine) estimateComponents(
 	}
 
 	for _, f := range memFiles {
-		est.MemoryFiles += utils.EstimateTokens(f.Content)
+		est.MemoryFiles += e.EstimateTokensCalibrated(f.Content)
 	}
 
 	// 3. System tools (built-in, non-deferred, non-MCP).
-	est.SystemTools = estimateSystemTools(toolsSnapshot, toolSearchSnap, mcpReg)
+	est.SystemTools = e.estimateSystemTools(toolsSnapshot, toolSearchSnap, mcpReg)
 
 	// 4. MCP loaded tools.
-	est.MCPLoaded = estimateMCPLoadedTools(mcpReg)
+	est.MCPLoaded = e.estimateMCPLoadedTools(mcpReg)
 
 	// 5. Custom agents.
-	est.Agents = estimateAgents(agentDefs)
+	est.Agents = e.estimateAgents(agentDefs)
 
 	// 6. Messages (breakdown + total).
 	total := 0
@@ -349,13 +348,13 @@ func (e *Engine) estimateComponents(
 		}
 		// Attachments: count prompt + meta info as attachment tokens.
 		if messages[i].Attachment != nil {
-			attTokens := utils.EstimateTokens(messages[i].Attachment.Prompt)
+			attTokens := e.EstimateTokensCalibrated(messages[i].Attachment.Prompt)
 			total += attTokens
 			est.MessagesByCategory.AttachmentTokens += attTokens
 			est.MessagesByCategory.upsertAttachment("file", attTokens)
 		}
 		for _, block := range messages[i].Content {
-			t := tokenCountForBlock(block)
+			t := e.tokenCountForBlock(block)
 			total += t
 			classifyMessageBlock(messages[i], block, t, est.MessagesByCategory)
 		}
@@ -368,7 +367,7 @@ func (e *Engine) estimateComponents(
 
 // estimateSystemPromptSections returns per-section token estimates.
 // Source: analyzeContext.ts:289-298 — countSystemPromptSections
-func estimateSystemPromptSections(
+func (e *Engine) estimateSystemPromptSections(
 	systemPromptRaw string,
 	workingDir string,
 	skillListing string,
@@ -391,16 +390,16 @@ func estimateSystemPromptSections(
 	// Estimate base from the actual system prompt content. Using a fresh
 	// Builder here would miss runtime additions (SOUL.md, skills, agents,
 	// memory index, etc.), severely underestimating the base section.
-	base := utils.EstimateTokens(systemPromptRaw)
+	base := e.EstimateTokensCalibrated(systemPromptRaw)
 
 	platformStr := builder.RuntimeInfo()
-	platform := utils.EstimateTokens(platformStr)
+	platform := e.EstimateTokensCalibrated(platformStr)
 
 	gitStr := ""
 	if builder.GitStatus != nil {
 		gitStr = builder.GitStatusSection()
 	}
-	git := utils.EstimateTokens(gitStr)
+	git := e.EstimateTokensCalibrated(gitStr)
 
 	// Tool prompts: sum each tool's Prompt() contribution.
 	toolPromptsTotal := 0
@@ -410,21 +409,21 @@ func estimateSystemPromptSections(
 		}
 		prompt := t.Prompt()
 		if prompt != "" {
-			toolPromptsTotal += utils.EstimateTokens(prompt)
+			toolPromptsTotal += e.EstimateTokensCalibrated(prompt)
 		}
 	}
 	toolPrompts := toolPromptsTotal
 
 	skill := 0
 	if skillListing != "" {
-		skill = utils.EstimateTokens(skillListing)
+		skill = e.EstimateTokensCalibrated(skillListing)
 	}
 
 	return sysPromptSections{base: base, platform: platform, git: git, toolPrompts: toolPrompts, skill: skill}
 }
 
 // excluding deferred tools and MCP tools.
-func estimateSystemTools(
+func (e *Engine) estimateSystemTools(
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
 	mcpReg *mcp.Registry,
@@ -440,12 +439,12 @@ func estimateSystemTools(
 		if tool.IsDeferred(t) && toolSearchSnap != nil && !toolSearchSnap.IsDiscovered(name) {
 			continue
 		}
-		total += estimateSingleTool(t)
+		total += e.estimateSingleTool(t)
 	}
 	return total
 }
 
-func estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
+func (e *Engine) estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
 	if mcpReg == nil {
 		return 0
 	}
@@ -453,24 +452,24 @@ func estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
 	total := 0
 	for _, t := range tools {
 		if t.AlwaysLoad {
-			total += estimateMCPSchema(t.Description, t.InputSchema)
+			total += e.estimateMCPSchema(t.Description, t.InputSchema)
 		}
 	}
 	return total
 }
 
 // name + description + input schema JSON.
-func estimateSingleTool(t tool.Tool) int {
+func (e *Engine) estimateSingleTool(t tool.Tool) int {
 	desc, _ := t.Description(nil)
 	name := t.Name()
-	return utils.EstimateTokens(name+desc) + utils.EstimateTokens(string(t.InputSchema()))
+	return e.EstimateTokensCalibrated(name+desc) + e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
-func estimateMCPSchema(desc string, schema json.RawMessage) int {
-	return utils.EstimateTokens(desc) + utils.EstimateTokens(string(schema))
+func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
+	return e.EstimateTokensCalibrated(desc) + e.EstimateTokensCalibrated(string(schema))
 }
 
-func estimateAgents(defs []*types.AgentDefinition) int {
+func (e *Engine) estimateAgents(defs []*types.AgentDefinition) int {
 	if len(defs) == 0 {
 		return 0
 	}
@@ -480,21 +479,21 @@ func estimateAgents(defs []*types.AgentDefinition) int {
 		if d.SystemPrompt != nil {
 			text += " " + d.SystemPrompt()
 		}
-		total += utils.EstimateTokens(text)
+		total += e.EstimateTokensCalibrated(text)
 	}
 	return total
 }
 
-func tokenCountForBlock(block types.ContentBlock) int {
+func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
 	switch block.Type {
 	case types.ContentTypeText:
-		return utils.EstimateTokens(block.Text)
+		return e.EstimateTokensCalibrated(block.Text)
 	case types.ContentTypeToolResult:
-		return utils.EstimateTokens(string(block.Content))
+		return e.EstimateTokensCalibrated(string(block.Content))
 	case types.ContentTypeThinking:
-		return utils.EstimateTokens(block.Thinking)
+		return e.EstimateTokensCalibrated(block.Thinking)
 	case types.ContentTypeToolUse:
-		return utils.EstimateTokens(block.Name + string(block.Input))
+		return e.EstimateTokensCalibrated(block.Name + string(block.Input))
 	case types.ContentTypeDocument:
 		// Mirrors the estimator's document case; the default JSON branch
 		// would show a 50k-token document as ~20.
@@ -504,7 +503,7 @@ func tokenCountForBlock(block types.ContentBlock) int {
 		return int(block.Size) / 4
 	default:
 		raw, _ := json.Marshal(block)
-		return utils.EstimateTokens(string(raw))
+		return e.EstimateTokensCalibrated(string(raw))
 	}
 }
 
@@ -933,7 +932,7 @@ func (e *Engine) buildDetails(
 	for _, f := range memFiles {
 		ds.memoryFiles = append(ds.memoryFiles, MemoryFileDetail{
 			Path:   f.Path,
-			Tokens: utils.EstimateTokens(f.Content),
+			Tokens: e.EstimateTokensCalibrated(f.Content),
 		})
 	}
 
@@ -951,7 +950,7 @@ func (e *Engine) buildDetails(
 				if !seenDeferred[name] {
 					ds.deferredBuiltin = append(ds.deferredBuiltin, SystemToolDetail{
 						Name:   name,
-						Tokens: estimateSingleTool(t),
+						Tokens: e.estimateSingleTool(t),
 					})
 					seenDeferred[name] = true
 				}
@@ -960,7 +959,7 @@ func (e *Engine) buildDetails(
 		}
 		ds.systemTools = append(ds.systemTools, SystemToolDetail{
 			Name:   name,
-			Tokens: estimateSingleTool(t),
+			Tokens: e.estimateSingleTool(t),
 		})
 	}
 
@@ -970,7 +969,7 @@ func (e *Engine) buildDetails(
 			detail := MCPToolDetail{
 				Name:       t.OriginalName,
 				ServerName: t.ServerName,
-				Tokens:     estimateMCPSchema(t.Description, t.InputSchema),
+				Tokens:     e.estimateMCPSchema(t.Description, t.InputSchema),
 			}
 			// An MCP tool is "loaded" iff it's in the engine's tools map.
 			if _, ok := toolsSnapshot[BuildMcpName(t.ServerName, t.OriginalName)]; ok {
@@ -990,7 +989,7 @@ func (e *Engine) buildDetails(
 		ds.agents = append(ds.agents, AgentDetail{
 			AgentType: d.AgentType,
 			Source:    "built-in",
-			Tokens:    utils.EstimateTokens(d.AgentType + " " + d.WhenToUse),
+			Tokens:    e.EstimateTokensCalibrated(d.AgentType + " " + d.WhenToUse),
 		})
 	}
 
@@ -1004,7 +1003,7 @@ func (e *Engine) buildDetails(
 			ds.skills = append(ds.skills, SkillDetail{
 				Name:   line,
 				Source: "plugin",
-				Tokens: utils.EstimateTokens(line),
+				Tokens: e.EstimateTokensCalibrated(line),
 			})
 		}
 	}
@@ -1015,12 +1014,12 @@ func (e *Engine) buildDetails(
 			continue
 		}
 		if messages[i].Attachment != nil {
-			attTokens := utils.EstimateTokens(messages[i].Attachment.Prompt)
+			attTokens := e.EstimateTokensCalibrated(messages[i].Attachment.Prompt)
 			ds.messageBreakdown.AttachmentTokens += attTokens
 			ds.messageBreakdown.upsertAttachment("file", attTokens)
 		}
 		for _, block := range messages[i].Content {
-			t := tokenCountForBlock(block)
+			t := e.tokenCountForBlock(block)
 			classifyMessageBlock(messages[i], block, t, ds.messageBreakdown)
 		}
 	}

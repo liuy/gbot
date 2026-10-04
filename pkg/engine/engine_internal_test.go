@@ -3070,7 +3070,7 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3148,7 +3148,7 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3236,11 +3236,13 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	// With ContextWindow=50000, MaxTokens=16000:
 	//   effectiveWindow = 50000 - 16000 = 34000
 	//   autoCompactThreshold = 34000 - max(34000*7/100, 3000) = 34000 - 3000 = 31000
-	// Setting ContextTokens=35000 triggers auto-compact.
+	// shouldAutoCompact re-estimates from messages: at seed ratios each
+	// 40000-char single-word blob prices at 40000×0.11 + 0.48 = 4400 tokens,
+	// so 8 messages ≈ 35240 > 31000 → auto-compact triggers.
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3310,7 +3312,7 @@ func TestQuery_PreTurnCompact_CompactFails_APIProceeds(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3412,7 +3414,7 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3527,7 +3529,7 @@ func TestQuery_PreTurnCompact_NoOp_APIProceeds(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3616,7 +3618,7 @@ func TestCurrentInputTokens_ZeroContextTokens_Fallback(t *testing.T) {
 	t.Parallel()
 	// ContextTokens == 0: abnormal state. Should log error and fall back
 	// to full message estimation.
-	text := strings.Repeat("x", 4000) // ~1000 tokens
+	text := strings.Repeat("x", 4000) // 440 tokens at seed ratios (0.11/char + 1 word)
 	eng := &Engine{
 		ContextTokens: 0,
 		messages: []types.Message{
@@ -3628,10 +3630,11 @@ func TestCurrentInputTokens_ZeroContextTokens_Fallback(t *testing.T) {
 	}
 
 	got := eng.currentInputTokens()
-	// Should be roughly 3000 tokens (3 messages × ~1000 each).
-	// Range check also catches got <= 0.
-	if got < 2000 || got > 6000 {
-		t.Errorf("currentInputTokens() = %d, want ~3000 (full message estimation fallback)", got)
+	// Calibrated 6-feature estimate (seed ratios): each 4000-char blob
+	// prices at 4000×0.11 + 1×0.48 = 440 tokens; 3 messages + 3 envelopes
+	// (5 each) = 1335. Exact check also catches got <= 0.
+	if got != 1335 {
+		t.Errorf("currentInputTokens() = %d, want 1335 (full message estimation fallback)", got)
 	}
 }
 
@@ -3648,9 +3651,11 @@ func TestCurrentInputTokens_NoAssistantMessage_Fallback(t *testing.T) {
 	}
 
 	got := eng.currentInputTokens()
-	// Should be ~8000 tokens (2 messages × 4000 chars / 4 chars per token × 4/3 padding).
-	if got < 4000 || got > 16000 {
-		t.Errorf("currentInputTokens() = %d, want ~8000 (full estimation fallback, no Usage)", got)
+	// Calibrated 6-feature estimate (seed ratios): each 16000-char single-word
+	// blob prices at 16000×0.11 + 1×0.48 = 1760 tokens; 2 messages + 2
+	// envelopes (5 each) = 3530.
+	if got != 3530 {
+		t.Errorf("currentInputTokens() = %d, want 3530 (full estimation fallback, no Usage)", got)
 	}
 }
 

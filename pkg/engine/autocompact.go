@@ -47,14 +47,26 @@ type AutoCompactor struct {
 	store  *short.Store
 	engine EngineCompactorMeta // live engine state (model/provider/sessionID may change)
 	logger *slog.Logger
+
+	// estimator prices store-transcript text. Injected from the engine's
+	// calibrated estimator when available (token_calibration.go); test metas
+	// without it keep the plain char heuristic.
+	estimator func(text string) int
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
 func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompactor {
+	est := func(text string) int { return utils.EstimateTokens(text) }
+	if cal, ok := engine.(interface {
+		EstimateTokensCalibrated(string) int
+	}); ok {
+		est = cal.EstimateTokensCalibrated
+	}
 	return &AutoCompactor{
-		store:  store,
-		engine: engine,
-		logger: slog.Default(),
+		store:     store,
+		engine:    engine,
+		logger:    slog.Default(),
+		estimator: est,
 	}
 }
 
@@ -158,9 +170,9 @@ func (c *AutoCompactor) keepBudget() int {
 func (c *AutoCompactor) findKeepFromBudget(messages []*short.TranscriptMessage, budget int) int {
 	// The newest message is always kept — compact must never drop it, and
 	// returning len is reserved for the "everything fits" sentinel above.
-	totalTokens := utils.EstimateTokens(messages[len(messages)-1].Content)
+	totalTokens := c.estimator(messages[len(messages)-1].Content)
 	for i := len(messages) - 2; i >= 0; i-- {
-		tokens := utils.EstimateTokens(messages[i].Content)
+		tokens := c.estimator(messages[i].Content)
 		if totalTokens+tokens > budget {
 			return i + 1
 		}
@@ -170,11 +182,11 @@ func (c *AutoCompactor) findKeepFromBudget(messages []*short.TranscriptMessage, 
 	return len(messages)
 }
 
-// estimateStoreTokens sums the char-estimated token count of a store transcript.
-func estimateStoreTokens(messages []*short.TranscriptMessage) int {
+// estimateStoreTokens sums the estimated token count of a store transcript.
+func (c *AutoCompactor) estimateStoreTokens(messages []*short.TranscriptMessage) int {
 	total := 0
 	for _, m := range messages {
-		total += utils.EstimateTokens(m.Content)
+		total += c.estimator(m.Content)
 	}
 	return total
 }
@@ -196,7 +208,7 @@ func (c *AutoCompactor) rescaledKeepFrom(shortMsgs []*short.TranscriptMessage, b
 	keepFrom := c.findKeepFrom(shortMsgs)
 	keepBudget := c.keepBudget()
 	if beforeTokens > keepBudget {
-		estTotal := estimateStoreTokens(shortMsgs)
+		estTotal := c.estimateStoreTokens(shortMsgs)
 		if estTotal > 0 {
 			// int64: keepBudget*estTotal can exceed int32 on 32-bit builds.
 			keepFrom = c.findKeepFromBudget(shortMsgs, int(int64(keepBudget)*int64(estTotal)/int64(beforeTokens)))

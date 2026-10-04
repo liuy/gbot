@@ -308,6 +308,14 @@ type Engine struct {
 	// Empty for engines never given a FileSender (TUI main engine, sub-engines).
 	senders   map[string]send.FileSender
 	sendersMu sync.RWMutex
+
+	// calibrations holds per-model token-estimation calibration state
+	// (token_calibration.go), keyed by providerName/model. Engine-local by
+	// design: no global mutable state, sub-engines calibrate independently.
+	// calibMu is a dedicated lock so estimation never competes with e.mu;
+	// global order is e.mu → calibMu, never reversed.
+	calibrations map[string]*tokenCalibration
+	calibMu      sync.Mutex
 }
 
 // getWorkingDir returns the engine's current working directory.
@@ -466,6 +474,7 @@ func New(p *Params) *Engine {
 		modelThinking:           p.ModelThinking,
 		engineID:                engineID,
 		senders:                 make(map[string]send.FileSender),
+		calibrations:            make(map[string]*tokenCalibration),
 	}
 
 	// Auto-create compactor from provider if not set. Compactor reads live
@@ -1751,6 +1760,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 
 		// Add assistant message to history
 		e.appendMessage(*resp)
+		// Calibration observation: the usage just landed on a message that is
+		// now in history — exactly the anchor point the differential
+		// observation needs (token_calibration.go).
+		e.recordCalibrationObservation(resp)
 
 		// Populate conversation history on the executor so tools
 		// (e.g. Agent tool) can access the full parent conversation.
@@ -2919,7 +2932,7 @@ func (e *Engine) currentInputTokens() int {
 	e.mu.RLock()
 	msgs := e.messages
 	e.mu.RUnlock()
-	return TokenCountWithEstimation(msgs)
+	return e.tokenCountWithEstimation(msgs)
 }
 
 // maybeTokenPrune attempts token-based tool result pruning when the context
@@ -4189,7 +4202,8 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 		// TS align: tokenCountWithEstimation is lazy/derived from messages,
 		// so after rewind it naturally returns the correct count. gbot stores
 		// ContextTokens, so recalculate from remaining messages with usage.
-		e.ContextTokens = TokenCountWithEstimation(e.messages)
+		// Locked variant: RewindToScoped holds e.mu in write mode.
+		e.ContextTokens = e.tokenCountWithEstimationLocked(e.messages)
 		e.persistContextTokensLocked()
 	}
 
