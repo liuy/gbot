@@ -43,8 +43,12 @@ export class TokenRate {
     if (this.samples.length === 0) return 0
     let total = 0
     for (const s of this.samples) total += s.tokens
-    let elapsedMs = this.samples[this.samples.length - 1].ts - this.samples[0].ts
-    if (elapsedMs <= 0) elapsedMs = 1
+    // The samples' own span (last - first). A zero span — burst jitter
+    // delivering several deltas in the same millisecond — returns 0 instead
+    // of the old 1ms floor, which displayed thousands of t/s; a later
+    // sample or the next window restores the value.
+    const elapsedMs = this.samples[this.samples.length - 1].ts - this.samples[0].ts
+    if (elapsedMs <= 0) return 0
     return total / (elapsedMs / 1000)
   }
 

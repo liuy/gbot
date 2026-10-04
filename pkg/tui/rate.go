@@ -58,9 +58,10 @@ func (r *TokenRate) Add(text string) {
 	r.lastSampleTs = now
 }
 
-// Rate returns tokens/second based on actual streaming elapsed time.
-// Uses the earliest sample's timestamp as the start, clamped to the
-// window size to avoid infinite decay.
+// Rate returns tokens/second over the samples' own span (last - first).
+// A zero span — burst jitter delivering several deltas in the same
+// millisecond — returns 0 instead of the old 1ms floor, which displayed
+// thousands of t/s; the next tick or a later sample restores the value.
 func (r *TokenRate) Rate() float64 {
 	if r == nil {
 		return 0
@@ -77,7 +78,7 @@ func (r *TokenRate) Rate() float64 {
 	}
 	elapsed := r.samples[len(r.samples)-1].ts.Sub(r.samples[0].ts)
 	if elapsed <= 0 {
-		elapsed = time.Millisecond
+		return 0
 	}
 	return float64(total) / elapsed.Seconds()
 }

@@ -136,3 +136,43 @@ func TestTokenRate_EvictCompactsBackingArray(t *testing.T) {
 		}
 	})
 }
+
+func TestTokenRate_Rate_BurstPackedSamples(t *testing.T) {
+	// Network jitter delivers several deltas in the same millisecond: the
+	// samples' own span is 0. The old 1ms floor displayed thousands of t/s
+	// (9 tokens / 1ms = 9000); a later sample restores a real value.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		now := time.Now()
+		for range 3 {
+			r.mu.Lock()
+			r.samples = append(r.samples, rateSample{ts: now, tokens: 3})
+			r.mu.Unlock()
+		}
+		if got := r.Rate(); got != 0.0 {
+			t.Errorf("Rate() with same-ms samples = %v, want 0 (span not computable)", got)
+		}
+		// A delta 500ms later opens the span: 12 tokens / 500ms. Sleep first
+		// so evict's clock moves with the samples.
+		time.Sleep(500 * time.Millisecond)
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: now.Add(500 * time.Millisecond), tokens: 3})
+		r.mu.Unlock()
+		if got := r.Rate(); got != 24.0 {
+			t.Errorf("Rate() after a later sample = %.1f, want 24.0 (12 tokens over 500ms)", got)
+		}
+	})
+}
+
+func TestTokenRate_Rate_SingleSample(t *testing.T) {
+	// One sample has no span; the old floor turned it into tokens*1000.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: time.Now(), tokens: 3})
+		r.mu.Unlock()
+		if got := r.Rate(); got != 0.0 {
+			t.Errorf("Rate() with a single sample = %v, want 0 (no span)", got)
+		}
+	})
+}
