@@ -739,8 +739,8 @@ func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usag
 	}
 	elapsedStr := utils.FormatDuration(time.Since(streamStart))
 	tokensStr := fmt.Sprintf("↑%s ↓%s tokens",
-		types.FormatTokenCount(queryUsage.TotalInputTokens()),
-		types.FormatTokenCount(queryUsage.OutputTokens))
+		utils.FormatTokenCount(queryUsage.TotalInputTokens()),
+		utils.FormatTokenCount(queryUsage.OutputTokens))
 
 	var cachePart string
 	if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
@@ -752,7 +752,7 @@ func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usag
 				pct = math.Floor(pct*10) / 10
 				cachePart = fmt.Sprintf(" · %.1f%% cached", pct)
 			} else {
-				cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
+				cachePart = fmt.Sprintf(" · %s warmed", utils.FormatTokenCount(queryUsage.CacheCreationInputTokens))
 			}
 		}
 	} else {
@@ -1538,7 +1538,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		a.status.SetUsage(types.Usage{})
 		a.repl.displayedInputTokens = 0
 		a.repl.displayedOutputTokens = 0
-		a.repl.inputTokenTarget = types.EstimateTokens(a.systemPrompt) + types.EstimateTokens(displayText)
+		a.repl.inputTokenTarget = utils.EstimateTokens(a.systemPrompt) + utils.EstimateTokens(displayText)
 		return tea.Batch(
 			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
@@ -1582,9 +1582,9 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// Falls back to system prompt estimation on the first turn (cold start).
 	base := a.engine.GetContextTokens()
 	if base == 0 {
-		base = types.EstimateTokens(a.systemPrompt)
+		base = utils.EstimateTokens(a.systemPrompt)
 	}
-	a.repl.inputTokenTarget = base + types.EstimateTokens(text)
+	a.repl.inputTokenTarget = base + utils.EstimateTokens(text)
 
 	return tea.Batch(
 		commitCmd,

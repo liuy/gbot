@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // TokenRate tracks streaming token arrivals in a sliding window for real-time
@@ -36,7 +36,7 @@ func (r *TokenRate) Add(text string) {
 	if r == nil || text == "" {
 		return
 	}
-	tokens := types.EstimateTokens(text)
+	tokens := utils.EstimateTokens(text)
 	if tokens == 0 {
 		return
 	}

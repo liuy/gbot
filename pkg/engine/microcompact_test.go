@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ func TestEstimateTokens(t *testing.T) {
 		{"abc你好def", 2},
 	}
 	for _, tt := range tests {
-		got := types.EstimateTokens(tt.input)
+		got := utils.EstimateTokens(tt.input)
 		if got != tt.want {
 			t.Errorf("EstimateTokens(%q) = %d, want %d", tt.input, got, tt.want)
 		}
@@ -127,7 +128,7 @@ func TestCalculateToolResultTokens_StringContent(t *testing.T) {
 	text := "Hello, this is a tool result with some content"
 	content := json.RawMessage(`"` + text + `"`)
 	got := calculateToolResultTokens(content)
-	want := types.EstimateTokens(text)
+	want := utils.EstimateTokens(text)
 	if got != want {
 		t.Errorf("calculateToolResultTokens(string) = %d, want %d", got, want)
 	}
@@ -146,7 +147,7 @@ func TestCalculateToolResultTokens_MixedArray(t *testing.T) {
 	// Array with text + image blocks
 	content := json.RawMessage(`[{"type":"text","text":"Hello world"},{"type":"image","source":{"type":"base64","data":"..."}}]`)
 	got := calculateToolResultTokens(content)
-	wantText := types.EstimateTokens("Hello world")
+	wantText := utils.EstimateTokens("Hello world")
 	want := wantText + ImageMaxTokenSize
 	if got != want {
 		t.Errorf("calculateToolResultTokens(mixed) = %d, want %d", got, want)
@@ -271,7 +272,7 @@ func TestEstimateMessagesTokens_Basic(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := types.EstimateTokens(text)
+	raw := utils.EstimateTokens(text)
 	want := raw + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(basic) = %d, want %d", got, want)
@@ -286,7 +287,7 @@ func TestEstimateMessagesTokens_ToolResult(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(text) + defaultMessageEnvelopeTokens
+	want := utils.EstimateTokens(text) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_result) = %d, want %d", got, want)
 	}
@@ -300,7 +301,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(thinkingText) + defaultMessageEnvelopeTokens
+	want := utils.EstimateTokens(thinkingText) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(thinking) = %d, want %d", got, want)
 	}
@@ -314,7 +315,7 @@ func TestEstimateMessagesTokens_RedactedThinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(data) + defaultMessageEnvelopeTokens
+	want := utils.EstimateTokens(data) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(redacted_thinking) = %d, want %d", got, want)
 	}
@@ -329,7 +330,7 @@ func TestEstimateMessagesTokens_ToolUse(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	combined := "Read" + string(input)
-	want := types.EstimateTokens(combined) + defaultMessageEnvelopeTokens
+	want := utils.EstimateTokens(combined) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_use) = %d, want %d", got, want)
 	}
@@ -344,7 +345,7 @@ func TestEstimateMessagesTokens_UnknownBlockType(t *testing.T) {
 	got := EstimateMessagesTokens(messages)
 	// Compute expected the same way the function does: JSON marshal → EstimateTokens → envelope
 	raw, _ := json.Marshal(block)
-	want := types.EstimateTokens(string(raw)) + defaultMessageEnvelopeTokens
+	want := utils.EstimateTokens(string(raw)) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(unknown block) = %d, want %d", got, want)
 	}
@@ -373,7 +374,7 @@ func TestEstimateMessagesTokens_Padding(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := types.EstimateTokens(text) // "short" = 5 non-CJK chars * 0.20 = 1
+	raw := utils.EstimateTokens(text) // "short" = 5 non-CJK chars * 0.20 = 1
 	want := raw + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("envelope: got %d, want %d (raw=%d + envelope=%d)", got, want, raw, defaultMessageEnvelopeTokens)
@@ -758,11 +759,11 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 	// Compute expected from all block types:
 	// text "user text" + tool_result "tool output" + thinking "thinking text" +
 	// text "assistant text" + tool_use name+input "Read" + `{"path":"/x"}`
-	raw := types.EstimateTokens("user text") +
-		types.EstimateTokens("tool output") +
-		types.EstimateTokens("thinking text") +
-		types.EstimateTokens("assistant text") +
-		types.EstimateTokens("Read"+`{"path":"/x"}`)
+	raw := utils.EstimateTokens("user text") +
+		utils.EstimateTokens("tool output") +
+		utils.EstimateTokens("thinking text") +
+		utils.EstimateTokens("assistant text") +
+		utils.EstimateTokens("Read"+`{"path":"/x"}`)
 	want := raw + 2*defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(multiple) = %d, want %d", got, want)
@@ -1192,7 +1193,7 @@ func TestEstimateMessagesTokensForProvider_ImageBlock(t *testing.T) {
 
 	got := EstimateMessagesTokensForProvider(msgs, "anthropic")
 	// "cat" tokens + ImageMaxTokenSize + one message envelope.
-	catTokens := types.EstimateTokensForProvider("cat", "anthropic")
+	catTokens := utils.EstimateTokensForProvider("cat", "anthropic")
 	want := catTokens + ImageMaxTokenSize + messageEnvelopeTokens("anthropic")
 	if got != want {
 		t.Errorf("EstimateMessagesTokensForProvider = %d, want %d (cat %d + image %d + envelope %d)",

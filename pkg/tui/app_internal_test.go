@@ -560,7 +560,7 @@ func TestRenderAgentLogs_StatsWithContextSize(t *testing.T) {
 		ContextWindow: 200000,
 	}
 	out := stripANSI(renderAgentLogs(tcv, 80))
-	// formatContextSize uses types.FormatTokenCount (estimation-based)
+	// formatContextSize uses utils.FormatTokenCount (estimation-based)
 	if !strings.Contains(out, "/") {
 		t.Errorf("stats should show context size as used/total, got %q", out)
 	}

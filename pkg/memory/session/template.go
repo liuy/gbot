@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // DefaultTemplate is the 10-section session memory template.
@@ -100,7 +100,7 @@ func analyzeSectionSizes(content string) []SectionSizes {
 				text := strings.Join(currentLines, "\n")
 				sizes = append(sizes, SectionSizes{
 					Header: currentHeader,
-					Tokens: types.EstimateTokens(text),
+					Tokens: utils.EstimateTokens(text),
 				})
 			}
 			currentHeader = strings.TrimPrefix(line, "## ")
@@ -114,7 +114,7 @@ func analyzeSectionSizes(content string) []SectionSizes {
 		text := strings.Join(currentLines, "\n")
 		sizes = append(sizes, SectionSizes{
 			Header: currentHeader,
-			Tokens: types.EstimateTokens(text),
+			Tokens: utils.EstimateTokens(text),
 		})
 	}
 

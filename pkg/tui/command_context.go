@@ -14,6 +14,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // -----------------------------------------------------------------------
@@ -252,8 +253,8 @@ func renderGrid(bd *engine.ContextBreakdown) []string {
 }
 
 func renderCategories(bd *engine.ContextBreakdown) string {
-	used := types.FormatTokenCount(bd.TotalTokens)
-	window := types.FormatTokenCount(bd.ContextWindow)
+	used := utils.FormatTokenCount(bd.TotalTokens)
+	window := utils.FormatTokenCount(bd.ContextWindow)
 
 	var sb strings.Builder
 	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
@@ -282,7 +283,7 @@ func renderCategories(bd *engine.ContextBreakdown) string {
 		}
 		padded := name + strings.Repeat(" ", max(nameWidth-len(name), 0))
 		sb.WriteString(style.Render(fmt.Sprintf("%s %s %s (%4.1f%%)",
-			sym, padded, types.FormatTokenCount(c.Tokens), c.Percentage)))
+			sym, padded, utils.FormatTokenCount(c.Tokens), c.Percentage)))
 		sb.WriteString("\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -310,7 +311,7 @@ func renderMCPSection(bd *engine.ContextBreakdown) string {
 			sb.WriteString("    └ ")
 			sb.WriteString(t.Name)
 			sb.WriteString(": ")
-			sb.WriteString(types.FormatTokenCount(t.Tokens))
+			sb.WriteString(utils.FormatTokenCount(t.Tokens))
 			sb.WriteString(" tokens\n")
 		}
 	}
@@ -337,7 +338,7 @@ func renderAgentsSection(bd *engine.ContextBreakdown) string {
 		sb.WriteString("  └ ")
 		sb.WriteString(a.AgentType)
 		sb.WriteString(": ")
-		sb.WriteString(types.FormatTokenCount(a.Tokens))
+		sb.WriteString(utils.FormatTokenCount(a.Tokens))
 		sb.WriteString(" tokens\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -354,7 +355,7 @@ func renderMemorySection(bd *engine.ContextBreakdown) string {
 		sb.WriteString("  └ ")
 		sb.WriteString(shortenPath(f.Path))
 		sb.WriteString(": ")
-		sb.WriteString(types.FormatTokenCount(f.Tokens))
+		sb.WriteString(utils.FormatTokenCount(f.Tokens))
 		sb.WriteString(" tokens\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -372,7 +373,7 @@ func renderSkillsSection(bd *engine.ContextBreakdown) string {
 		sb.WriteString(s.Name)
 		if s.Tokens > 0 {
 			sb.WriteString(": ")
-			sb.WriteString(types.FormatTokenCount(s.Tokens))
+			sb.WriteString(utils.FormatTokenCount(s.Tokens))
 			sb.WriteString(" tokens")
 		}
 		sb.WriteString("\n")
@@ -395,27 +396,27 @@ func renderMessageBreakdownSection(bd *engine.ContextBreakdown) string {
 	sb.WriteString("\n")
 	if mb.ToolCallTokens > 0 {
 		sb.WriteString("  Tool calls: ")
-		sb.WriteString(types.FormatTokenCount(mb.ToolCallTokens))
+		sb.WriteString(utils.FormatTokenCount(mb.ToolCallTokens))
 		sb.WriteString("\n")
 	}
 	if mb.ToolResultTokens > 0 {
 		sb.WriteString("  Tool results: ")
-		sb.WriteString(types.FormatTokenCount(mb.ToolResultTokens))
+		sb.WriteString(utils.FormatTokenCount(mb.ToolResultTokens))
 		sb.WriteString("\n")
 	}
 	if mb.AttachmentTokens > 0 {
 		sb.WriteString("  Attachments: ")
-		sb.WriteString(types.FormatTokenCount(mb.AttachmentTokens))
+		sb.WriteString(utils.FormatTokenCount(mb.AttachmentTokens))
 		sb.WriteString("\n")
 	}
 	if mb.AssistantTextTokens > 0 {
 		sb.WriteString("  Assistant text: ")
-		sb.WriteString(types.FormatTokenCount(mb.AssistantTextTokens))
+		sb.WriteString(utils.FormatTokenCount(mb.AssistantTextTokens))
 		sb.WriteString("\n")
 	}
 	if mb.UserTextTokens > 0 {
 		sb.WriteString("  User text: ")
-		sb.WriteString(types.FormatTokenCount(mb.UserTextTokens))
+		sb.WriteString(utils.FormatTokenCount(mb.UserTextTokens))
 		sb.WriteString("\n")
 	}
 	if len(mb.ToolCallsByType) > 0 {
@@ -424,10 +425,10 @@ func renderMessageBreakdownSection(bd *engine.ContextBreakdown) string {
 			sb.WriteString("    └ ")
 			sb.WriteString(t.Name)
 			sb.WriteString(": calls ")
-			sb.WriteString(types.FormatTokenCount(t.CallTokens))
+			sb.WriteString(utils.FormatTokenCount(t.CallTokens))
 			if t.ResultTokens > 0 {
 				sb.WriteString(", results ")
-				sb.WriteString(types.FormatTokenCount(t.ResultTokens))
+				sb.WriteString(utils.FormatTokenCount(t.ResultTokens))
 			}
 			sb.WriteString("\n")
 		}
@@ -465,7 +466,7 @@ func generateSuggestions(bd *engine.ContextBreakdown) []contextSuggestion {
 				Title:    "Tool results dominate",
 				Detail: fmt.Sprintf(
 					"Tool results: %s (%.1f%%). Older tool results will be auto-cleared at high context.",
-					types.FormatTokenCount(mb.ToolResultTokens), toolResultPct),
+					utils.FormatTokenCount(mb.ToolResultTokens), toolResultPct),
 			})
 		}
 
@@ -479,7 +480,7 @@ func generateSuggestions(bd *engine.ContextBreakdown) []contextSuggestion {
 						Title:    "Read tool results accumulate",
 						Detail: fmt.Sprintf(
 							"Read tool: %s (%.1f%%). Consider summarizing file contents.",
-							types.FormatTokenCount(t.ResultTokens), readPct),
+							utils.FormatTokenCount(t.ResultTokens), readPct),
 					})
 				}
 			}
@@ -502,7 +503,7 @@ func generateSuggestions(bd *engine.ContextBreakdown) []contextSuggestion {
 				Title:    "Memory files are large",
 				Detail: fmt.Sprintf(
 					"Memory files: %s (%.1f%%). Consider trimming.",
-					types.FormatTokenCount(memTokens), memPct),
+					utils.FormatTokenCount(memTokens), memPct),
 			})
 		}
 	}

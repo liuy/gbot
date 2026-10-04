@@ -10,7 +10,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // RunTUI creates and runs the bubbletea TUI program. Returns the error
@@ -35,10 +35,10 @@ func (inst *Instance) RunTUI() error {
 	app.SetStore(inst.Store, inst.SessionID, inst.ProjectDir)
 	app.SetEngineFactory(inst.EngineFactory)
 
-	initialTokens := types.EstimateTokens(inst.SystemPrompt)
+	initialTokens := utils.EstimateTokens(inst.SystemPrompt)
 	for _, t := range inst.MainRefs.Reg.EnabledTools() {
 		if b, err := json.Marshal(t.InputSchema()); err == nil {
-			initialTokens += types.EstimateTokens(string(b))
+			initialTokens += utils.EstimateTokens(string(b))
 		}
 	}
 	if ct := app.Engine().GetContextTokens(); ct > 0 {

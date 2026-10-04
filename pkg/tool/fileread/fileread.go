@@ -516,7 +516,7 @@ func boundTextOutput(result *tool.ToolResult, tctx *tool.ToolUseContext) (*tool.
 	if !ok {
 		return result, nil
 	}
-	tokens := types.EstimateTokens(textOut.Content)
+	tokens := utils.EstimateTokens(textOut.Content)
 	if tokens > MaxFileReadTokens {
 		return nil, fmt.Errorf("file content (~%d tokens) exceeds maximum allowed tokens (%d). Use offset and limit parameters to read specific portions of the file",
 			tokens, MaxFileReadTokens)
@@ -746,7 +746,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 
 	// Post-read token check: refuse content that exceeds MaxFileReadTokens.
 	// TS align: validateContentTokens MaxFileReadTokenExceededError.
-	if tokens := types.EstimateTokens(content); tokens > MaxFileReadTokens && (tctx == nil || !tctx.UncappedOutput) {
+	if tokens := utils.EstimateTokens(content); tokens > MaxFileReadTokens && (tctx == nil || !tctx.UncappedOutput) {
 		return nil, fmt.Errorf("file content (~%d tokens) exceeds maximum allowed tokens (%d). Use offset and limit parameters to read specific portions of the file",
 			tokens, MaxFileReadTokens)
 	}

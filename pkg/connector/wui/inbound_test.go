@@ -10,6 +10,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // setupInboundConnector returns a connector with a real media store containing
@@ -125,7 +126,7 @@ func TestHandleMessageInbound_DocumentContent_ConvertedToDocumentBlock(t *testin
 	// Send-time wiring: the parse happened at commit, so est must be the
 	// estimate over the parsed body (not the Size/4 fallback of a skipped
 	// parse).
-	if want := types.EstimateTokens("plain text body"); b.EstTokens != want {
+	if want := utils.EstimateTokens("plain text body"); b.EstTokens != want {
 		t.Errorf("document block est = %d, want %d (estimate over parsed body)",
 			b.EstTokens, want)
 	}

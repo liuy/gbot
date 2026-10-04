@@ -14,6 +14,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // FormatCompactOutput builds the display text for a successful compact result.
@@ -26,7 +27,7 @@ func FormatCompactOutput(result *short.CompactResult) string {
 func CompactSummaryLine(result *short.CompactResult) string {
 	return fmt.Sprintf("Conversation compacted [msg: %d → %d, token: %s → %s]",
 		result.BeforeMessages, len(result.Messages),
-		types.FormatTokenCount(result.BeforeTokens), types.FormatTokenCount(result.AfterTokens))
+		utils.FormatTokenCount(result.BeforeTokens), utils.FormatTokenCount(result.AfterTokens))
 }
 
 // EngineCompactorMeta is the interface AutoCompactor needs from Engine to
@@ -157,9 +158,9 @@ func (c *AutoCompactor) keepBudget() int {
 func (c *AutoCompactor) findKeepFromBudget(messages []*short.TranscriptMessage, budget int) int {
 	// The newest message is always kept — compact must never drop it, and
 	// returning len is reserved for the "everything fits" sentinel above.
-	totalTokens := types.EstimateTokens(messages[len(messages)-1].Content)
+	totalTokens := utils.EstimateTokens(messages[len(messages)-1].Content)
 	for i := len(messages) - 2; i >= 0; i-- {
-		tokens := types.EstimateTokens(messages[i].Content)
+		tokens := utils.EstimateTokens(messages[i].Content)
 		if totalTokens+tokens > budget {
 			return i + 1
 		}
@@ -173,7 +174,7 @@ func (c *AutoCompactor) findKeepFromBudget(messages []*short.TranscriptMessage, 
 func estimateStoreTokens(messages []*short.TranscriptMessage) int {
 	total := 0
 	for _, m := range messages {
-		total += types.EstimateTokens(m.Content)
+		total += utils.EstimateTokens(m.Content)
 	}
 	return total
 }

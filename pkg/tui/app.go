@@ -1340,7 +1340,7 @@ func (a *App) View() string {
 		} else {
 			spinnerFrame := a.spinner.View()
 			elapsedStr := utils.FormatDuration(time.Since(a.repl.StreamingStart()))
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.repl.displayedInputTokens), types.FormatTokenCount(a.repl.displayedOutputTokens))
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", utils.FormatTokenCount(a.repl.displayedInputTokens), utils.FormatTokenCount(a.repl.displayedOutputTokens))
 			var thinkingStr string
 			if a.repl.IsThinking() {
 				thinkingStr = " · thinking"

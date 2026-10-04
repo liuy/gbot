@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
@@ -814,21 +815,21 @@ func TestEstimateTokens_Message(t *testing.T) {
 	// GLM-calibrated: non-CJK ~0.20 tokens/char, CJK ~0.85 tokens/char.
 	// 10 non-CJK chars → 2 tokens
 	msg := &TranscriptMessage{Content: "1234567890"}
-	count := types.EstimateTokens(msg.Content)
+	count := utils.EstimateTokens(msg.Content)
 	if count != 2 {
 		t.Errorf("EstimateTokens(1234567890) = %d, want 2", count)
 	}
 
 	// 4 CJK chars → int(4*0.65) = 2 tokens (default provider)
 	cjkMsg := &TranscriptMessage{Content: "你好世界"}
-	got := types.EstimateTokens(cjkMsg.Content)
+	got := utils.EstimateTokens(cjkMsg.Content)
 	if got != 2 {
 		t.Errorf("EstimateTokens(CJK 你好世界) = %d, want 2", got)
 	}
 
 	// Mixed: "Hello " (6 non-CJK) → int(1.2)=1 + "你好" (2 CJK) → int(1.3)=1 = 2 tokens
 	mixedMsg := &TranscriptMessage{Content: "Hello 你好"}
-	got = types.EstimateTokens(mixedMsg.Content)
+	got = utils.EstimateTokens(mixedMsg.Content)
 	if got != 2 {
 		t.Errorf("EstimateTokens(mixed) = %d, want 2", got)
 	}

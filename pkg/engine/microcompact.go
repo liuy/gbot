@@ -26,6 +26,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -182,7 +183,7 @@ func suppressCompactWarning() { compactWarningSuppressed.Store(true) }
 func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 
 // ---------------------------------------------------------------------------
-// Token estimation uses types.EstimateTokens (see pkg/types/text.go).
+// Token estimation uses utils.EstimateTokens (see pkg/utils/token.go).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 	// Try to parse as string first (TS: typeof content === 'string')
 	var str string
 	if err := json.Unmarshal(content, &str); err == nil {
-		return types.EstimateTokensForProvider(str, provider)
+		return utils.EstimateTokensForProvider(str, provider)
 	}
 
 	// Try to parse as array of blocks (TS: Array<TextBlock | ImageBlock | DocumentBlock>)
@@ -218,7 +219,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 			case "text":
 				var text string
 				if err := json.Unmarshal(block["text"], &text); err == nil {
-					total += types.EstimateTokensForProvider(text, provider)
+					total += utils.EstimateTokensForProvider(text, provider)
 				}
 			case "image", "document":
 				// Images/documents ≈ 2000 tokens regardless of format.
@@ -230,7 +231,7 @@ func calculateToolResultTokensForProvider(content json.RawMessage, provider stri
 	}
 
 	// Fallback: estimate from raw bytes
-	return types.EstimateTokensForProvider(string(content), provider)
+	return utils.EstimateTokensForProvider(string(content), provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,19 +304,19 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 		for _, block := range messages[i].Content {
 			switch block.Type {
 			case types.ContentTypeText:
-				totalTokens += types.EstimateTokensForProvider(block.Text, provider)
+				totalTokens += utils.EstimateTokensForProvider(block.Text, provider)
 
 			case types.ContentTypeToolResult:
 				totalTokens += calculateToolResultTokensForProvider(block.Content, provider)
 
 			case types.ContentTypeThinking:
-				totalTokens += types.EstimateTokensForProvider(block.Thinking, provider)
+				totalTokens += utils.EstimateTokensForProvider(block.Thinking, provider)
 
 			case types.ContentTypeRedacted:
-				totalTokens += types.EstimateTokensForProvider(block.Data, provider)
+				totalTokens += utils.EstimateTokensForProvider(block.Data, provider)
 
 			case types.ContentTypeToolUse:
-				totalTokens += types.EstimateTokensForProvider(block.Name+string(block.Input), provider)
+				totalTokens += utils.EstimateTokensForProvider(block.Name+string(block.Input), provider)
 
 			case types.ContentTypeImage:
 				totalTokens += ImageMaxTokenSize
@@ -330,7 +331,7 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 
 			default:
 				raw, _ := json.Marshal(block)
-				totalTokens += types.EstimateTokensForProvider(string(raw), provider)
+				totalTokens += utils.EstimateTokensForProvider(string(raw), provider)
 			}
 		}
 	}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // --- IsSessionMemoryEmpty ---
@@ -189,7 +189,7 @@ func TestAnalyzeSectionSizes_EstimatesTokens(t *testing.T) {
 	if len(sizes) != 1 {
 		t.Fatalf("expected 1 section, got %d", len(sizes))
 	}
-	// Verify it called types.EstimateTokens (result should be ~100)
+	// Verify it called utils.EstimateTokens (result should be ~100)
 	if sizes[0].Tokens <= 0 {
 		t.Errorf("expected positive token estimate, got %d", sizes[0].Tokens)
 	}
@@ -289,9 +289,9 @@ func TestDefaultConfig_ReasonableDefaults(t *testing.T) {
 // EstimateTokens must be callable from this package (not importing engine).
 func TestEstimateTokensAccessible(t *testing.T) {
 	t.Parallel()
-	// This tests that the package can call types.EstimateTokens without
+	// This tests that the package can call utils.EstimateTokens without
 	// importing engine (avoiding circular dependency).
-	tokens := types.EstimateTokens("hello world")
+	tokens := utils.EstimateTokens("hello world")
 	if tokens <= 0 {
 		t.Errorf("EstimateTokens should return positive value, got %d", tokens)
 	}

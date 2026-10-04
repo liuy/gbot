@@ -51,7 +51,7 @@ export function formatDuration(seconds: number): string {
   return h + 'h ' + m + 'm ' + sec + 's'
 }
 
-// Mirrors pkg/types/text.go:84. Base 1024.
+// Mirrors pkg/utils/token.go FormatTokenCount. Base 1024.
 // <1000: raw, >=1k: "1.2k", >=1M: "2.3M", >=1G: "4.5G".
 export function formatTokenCount(n: number): string {
   if (n < 1000) {

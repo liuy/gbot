@@ -18,6 +18,7 @@ import (
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 var chatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -464,7 +465,7 @@ func (c *WUIConnector) assembleContentBlocks(ctx context.Context, text string, c
 			// reference. Parse failure leaves estTokens 0 → Size/4 fallback.
 			est := 0
 			if md, ok := media.ParseDocument(ctx, item.Source.Path); ok {
-				est = types.EstimateTokens(md)
+				est = utils.EstimateTokens(md)
 			}
 			blocks = append(blocks, types.NewDocumentBlock(name, item.Source.Path, item.Source.Mime, item.Source.Size, est))
 		default:

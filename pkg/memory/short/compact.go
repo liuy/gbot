@@ -10,6 +10,7 @@ import (
 	"uuid"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // PreservedSegment describes a tail portion of conversation that was preserved
@@ -448,7 +449,7 @@ func TruncateToTokens(messages []*TranscriptMessage, maxTokens int) []*Transcrip
 	totalTokens := 0
 	// Count from tail backwards
 	for i, message := range slices.Backward(messages) {
-		msgTokens := types.EstimateTokens(message.Content)
+		msgTokens := utils.EstimateTokens(message.Content)
 		if totalTokens+msgTokens > maxTokens {
 			// Include this message if we'd otherwise have nothing
 			if i == len(messages)-1 {
@@ -1022,7 +1023,7 @@ func (s *Store) indexMessageFTS(db dbExec, seq int64, content string) {
 func roughTokenCount(messages []*TranscriptMessage) int {
 	count := 0
 	for _, msg := range messages {
-		count += types.EstimateTokens(msg.Content)
+		count += utils.EstimateTokens(msg.Content)
 	}
 	return count
 }

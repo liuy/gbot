@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -1629,7 +1630,7 @@ func TestExecute_DocumentOutputBounded(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
 	}
-	tokens := types.EstimateTokens(output.Content)
+	tokens := utils.EstimateTokens(output.Content)
 	if tokens > fileread.MaxFileReadTokens {
 		t.Errorf("converted document output ~%d tokens exceeds MaxFileReadTokens %d (%d chars) — "+
 			"executeDocument must bound its output like executeTextFile does",

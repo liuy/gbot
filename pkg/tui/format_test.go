@@ -106,7 +106,7 @@ func TestFormatElapsed_Milliseconds(t *testing.T) {
 
 func TestFormatTokenCount_Under1000(t *testing.T) {
 	t.Parallel()
-	v := types.FormatTokenCount(42)
+	v := utils.FormatTokenCount(42)
 	if v != "42" {
 		t.Errorf("FormatTokenCount(42) = %q, want %q", v, "42")
 	}
@@ -115,7 +115,7 @@ func TestFormatTokenCount_Under1000(t *testing.T) {
 func TestFormatTokenCount_Over1000(t *testing.T) {
 	t.Parallel()
 	// 1500 / 1024 ≈ 1.465 → "1.5k"
-	v := types.FormatTokenCount(1500)
+	v := utils.FormatTokenCount(1500)
 	if v != "1.5k" {
 		t.Errorf("FormatTokenCount(1500) = %q, want %q", v, "1.5k")
 	}
@@ -124,7 +124,7 @@ func TestFormatTokenCount_Over1000(t *testing.T) {
 func TestFormatTokenCount_Exactly1024(t *testing.T) {
 	t.Parallel()
 	// 1024 / 1024 = 1.0k
-	v := types.FormatTokenCount(1024)
+	v := utils.FormatTokenCount(1024)
 	if v != "1.0k" {
 		t.Errorf("FormatTokenCount(1024) = %q, want %q", v, "1.0k")
 	}
