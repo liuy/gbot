@@ -499,3 +499,104 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 		t.Error("should return nil with empty messages")
 	}
 }
+
+func TestTrySMCompact_OversizedNewestMessage_Proceeds(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	store, err := short.NewStore(t.TempDir() + "/test3.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\noversized-tail test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// contextWindow=40K → keep budget 8K. The newest message alone (~10K
+	// tokens) exceeds it. Pre-fix, findKeepFrom returned len on the first
+	// loop iteration and the keepFrom >= len guard made TrySMCompact fall
+	// back (nil). Now the newest survives unconditionally (keepFrom = len-1),
+	// so SM-compact proceeds with the notes summary.
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	msgs := makeLargeMessages(9, 100)
+	msgs = append(msgs, types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
+	})
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("should proceed (non-nil) when only the oversized newest message exceeds the keep budget")
+	}
+	if len(result.Messages) >= len(msgs) {
+		t.Errorf("result has %d messages, should be fewer than original %d", len(result.Messages), len(msgs))
+	}
+}
+
+func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	store, err := short.NewStore(t.TempDir() + "/test4.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\ncjk rescale mirror test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// contextWindow=262144 → keep budget 52428. Char estimate ≈ 57.2k is
+	// already over budget while the usage anchor says 100039: without the
+	// rescale the SM path kept a tail of ≈36 messages (~2.5x the real
+	// budget); rescaled it keeps ≈21.
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-sm-cjk", contextWindow: 262144, provider: nil})
+	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
+	msgs := make([]types.Message, 0, 41)
+	for i := 0; i < 40; i++ {
+		role := types.RoleUser
+		if i%2 == 1 {
+			role = types.RoleAssistant
+		}
+		msgs = append(msgs, types.Message{Role: role, Content: []types.ContentBlock{types.NewTextBlock(fixture)}})
+	}
+	msgs = append(msgs, types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("done")},
+		Usage: &types.Usage{
+			InputTokens:      99000,
+			OutputTokens:     1000,
+			CacheReadInputTokens: 39,
+		},
+	})
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("should return non-nil result with real notes content")
+	}
+	kept := 0
+	for _, m := range result.Messages {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "用于校准压缩预算口径") {
+				kept++
+			}
+		}
+	}
+	if kept > 23 {
+		t.Errorf("kept %d fixture messages: SM tail not rescaled (expected 21, old behavior ≈36)", kept)
+	}
+	if kept < 19 {
+		t.Errorf("kept only %d fixture messages: rescale overshot (expected 21)", kept)
+	}
+}

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -90,11 +89,9 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 		return nil, fmt.Errorf("convert messages: %w", err)
 	}
 
-	// Determine how many recent messages to keep.
-	// Walk backwards from tail, keep adding until token budget exceeded.
-	// keepFrom = len: compact everything (tail=0).
-	// keepFrom < len: compact head, keep tail.
-	keepFrom := c.findKeepFrom(shortMsgs)
+	// Determine how many recent messages to keep. See rescaledKeepFrom for
+	// why the split is cut on a rescaled budget.
+	keepFrom := c.rescaledKeepFrom(shortMsgs, beforeTokens)
 
 	if keepFrom == len(shortMsgs) {
 		// All messages fit in the tail budget — nothing to compact.
@@ -114,63 +111,97 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 		return nil, fmt.Errorf("summarize failed: %w", err)
 	}
 
-	if keepFrom < len(shortMsgs) {
-		// Normal compact: call PartialCompact to split head/tail.
-		pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom, trigger)
-		if err != nil {
-			c.logger.Error("PartialCompact failed", "error", err)
-			return nil, err
-		}
-
-		built := c.buildResultMessages(pcr, summaryText)
-		pcr.Summary = summaryText
-		pcr.BeforeTokens = beforeTokens
-		pcr.BeforeMessages = len(messages)
-		pcr.AfterTokens = EstimateMessagesTokens(built)
-		pcr.Messages = built
-		return pcr, nil
+	// Normal compact: call PartialCompact to split head/tail. keepFrom is
+	// always < len here (the == len case returned as noop above).
+	pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom, trigger)
+	if err != nil {
+		c.logger.Error("PartialCompact failed", "error", err)
+		return nil, err
 	}
 
-	// keepFrom == len: compact everything (tail=0).
-	// Build [boundary, summary] directly — no PartialCompact needed.
-	built := c.buildCompactAllResult(summaryText, trigger, beforeTokens)
-	boundary := short.CreateCompactBoundaryMessage(trigger, beforeTokens, "")
-	return &short.CompactResult{
-		BoundaryMarker: boundary,
-		Summary:        summaryText,
-		BeforeTokens:   beforeTokens,
-		BeforeMessages: len(messages),
-		AfterTokens:    EstimateMessagesTokens(built),
-		Messages:       built,
-	}, nil
+	built := c.buildResultMessages(pcr, summaryText)
+	pcr.Summary = summaryText
+	pcr.BeforeTokens = beforeTokens
+	pcr.BeforeMessages = len(messages)
+	pcr.AfterTokens = EstimateMessagesTokens(built)
+	pcr.Messages = built
+	return pcr, nil
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).
 // Pure token-based: walk backwards from tail, keep adding messages until the
 // token budget (contextWindow/5, clamped to [2K, 60K]) is exceeded.
 //
-// Tail range: [0, targetKeepTokens].
-//   - tail=0: nothing fits in budget, compact everything into summary
-//   - tail=K: K tokens of recent messages kept verbatim
-//
-// Returns the split index keepFrom. head = messages[:keepFrom], tail = messages[keepFrom:].
+// The tail is whatever fits the budget, with the newest message kept
+// unconditionally. keepFrom == len means "everything fits" (compact() treats
+// it as a no-op); keepFrom < len means head = messages[:keepFrom] is
+// summarized, tail = messages[keepFrom:] is kept verbatim.
 func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 	if len(messages) == 0 {
 		return 0
 	}
+	return c.findKeepFromBudget(messages, c.keepBudget())
+}
 
-	targetKeepTokens := max(min(c.engine.ContextWindow()/5, 60000), 2000)
+// keepBudget returns the tail-keep token budget: contextWindow/5 clamped to [2K, 60K].
+func (c *AutoCompactor) keepBudget() int {
+	return max(min(c.engine.ContextWindow()/5, 60000), 2000)
+}
 
-	totalTokens := 0
-	for i, message := range slices.Backward(messages) {
-		tokens := types.EstimateTokens(message.Content)
-		if totalTokens+tokens > targetKeepTokens {
+// findKeepFromBudget is findKeepFrom with an explicit budget, so the CJK
+// rescan in rescaledKeepFrom can shrink it into estimate-space.
+// keepFrom == len only ever means "everything fits": the newest message is
+// kept unconditionally, so an oversized tail message can no longer return len
+// on the first loop iteration (sentinel collision that made compact() noop —
+// 2026-10-04 incident). Callers must pass a non-empty transcript.
+func (c *AutoCompactor) findKeepFromBudget(messages []*short.TranscriptMessage, budget int) int {
+	// The newest message is always kept — compact must never drop it, and
+	// returning len is reserved for the "everything fits" sentinel above.
+	totalTokens := types.EstimateTokens(messages[len(messages)-1].Content)
+	for i := len(messages) - 2; i >= 0; i-- {
+		tokens := types.EstimateTokens(messages[i].Content)
+		if totalTokens+tokens > budget {
 			return i + 1
 		}
 		totalTokens += tokens
 	}
 	// All messages fit in budget — nothing to compact.
 	return len(messages)
+}
+
+// estimateStoreTokens sums the char-estimated token count of a store transcript.
+func estimateStoreTokens(messages []*short.TranscriptMessage) int {
+	total := 0
+	for _, m := range messages {
+		total += types.EstimateTokens(m.Content)
+	}
+	return total
+}
+
+// rescaledKeepFrom returns the tail split index for compact paths.
+// beforeTokens is the measured context (usage-anchored when a Usage block
+// exists, the same number the UI shows: system prompt + tool schemas + the
+// real tokenizer's CJK cost; a full estimate when no anchor exists), while
+// the split scan runs on the char heuristic — which under-counts CJK by a
+// roughly uniform factor (2026-10-04 incident: a 97.7k context noop'd
+// because the estimate said 40k; an estimate already over budget kept a
+// tail ~2.5x the real budget). Whenever the measured context exceeds the
+// keep budget, the split is cut on a budget rescaled into estimate-space.
+// Math guarantee (len >= 2): keepBudget < beforeTokens makes the effective
+// budget strictly smaller than the estimate total, so the rescan always
+// stops before the head — no sentinel collision. estTotal == 0 (all store
+// contents empty) skips the rescale and keeps the plain scan's verdict.
+func (c *AutoCompactor) rescaledKeepFrom(shortMsgs []*short.TranscriptMessage, beforeTokens int) int {
+	keepFrom := c.findKeepFrom(shortMsgs)
+	keepBudget := c.keepBudget()
+	if beforeTokens > keepBudget {
+		estTotal := estimateStoreTokens(shortMsgs)
+		if estTotal > 0 {
+			// int64: keepBudget*estTotal can exceed int32 on 32-bit builds.
+			keepFrom = c.findKeepFromBudget(shortMsgs, int(int64(keepBudget)*int64(estTotal)/int64(beforeTokens)))
+		}
+	}
+	return keepFrom
 }
 
 // summarizeMessages calls the LLM to generate a summary of the given messages.
@@ -330,35 +361,6 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	// Remove orphaned tool_results: tool_result blocks whose tool_use was in
 	// the removed head. The API rejects tool_results without matching tool_use.
 	msgs = removeOrphanedToolResults(msgs)
-
-	return msgs
-}
-
-// buildCompactAllResult builds the post-compact message array when tail=0
-// (compact everything). Returns [boundary_msg, summary_msg].
-func (c *AutoCompactor) buildCompactAllResult(summaryText string, trigger string, preTokens int) []types.Message {
-	msgs := make([]types.Message, 0, 2)
-
-	// Boundary message using compact_boundary format (same as PartialCompact).
-	contentMap := map[string]any{
-		"type":            "system",
-		"subtype":         "compact_boundary",
-		"content":         "Conversation compacted",
-		"isMeta":          false,
-		"compactMetadata": map[string]any{"trigger": trigger, "preTokens": preTokens},
-	}
-	boundaryBytes, _ := json.Marshal(contentMap)
-	boundaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(string(boundaryBytes))})
-	boundaryMsg.Flags = types.FlagCompactSummary
-	msgs = append(msgs, boundaryMsg)
-
-	// Summary message
-	if summaryText != "" {
-		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "entire conversation was compacted")
-		summaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(summaryContent)})
-		summaryMsg.Flags = types.FlagCompactSummary
-		msgs = append(msgs, summaryMsg)
-	}
 
 	return msgs
 }

@@ -56,7 +56,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 	if err != nil {
 		return nil, fmt.Errorf("convert messages: %w", err)
 	}
-	keepFrom := c.findKeepFrom(shortMsgs)
+	keepFrom := c.rescaledKeepFrom(shortMsgs, beforeTokens)
 	if keepFrom >= len(shortMsgs) || keepFrom <= 1 {
 		return nil, nil
 	}
