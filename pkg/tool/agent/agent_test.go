@@ -1057,7 +1057,8 @@ func TestCall_SkillPreloading_EmptySkills(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// UserContextMessages should be exactly 1 (currentDate only, no claudeMd set)
+	// UserContextMessages is empty in production unless the caller injects
+	// context; the loop only guards against skill messages leaking in.
 	for _, msg := range capturedOpts.UserContextMessages {
 		if strings.Contains(msg.Content[0].Text, "<command-message>") {
 			t.Error("no skill messages expected when agent has no Skills defined")

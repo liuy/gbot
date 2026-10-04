@@ -739,7 +739,6 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	userCtxMsgs := opts.UserContextMessages
 	workingDir := e.sharedDeps.WorkingDir
 	ctxMap := ctxbuild.LoadContextFiles(workingDir)
-	ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
 	if agentDef.OmitClaudeMd {
 		delete(ctxMap, ctxbuild.KeyClaudeMd)
 		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
@@ -2363,16 +2362,17 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// Marshal messages for the API request
 	apiMessages := e.prepareAPIMessages(ctx)
 
-	// Prepend user context (AGENTS.md/CLAUDE.md/currentDate).
+	// Prepend user context (AGENTS.md/CLAUDE.md).
 	// Source: query.ts:660 — prependUserContext(messages, userContext).
 	// TS injects for all agents (main + subagent); runAgent.ts:381 resolves
 	// userContext from getUserContext() which includes claudeMd for every
 	// agent type. Explore/Plan can opt out via omitClaudeMd (not yet ported).
 	// Placed before ToolSearch prepend so final order matches TS:
-	// [deferred-tools, claudeMd+currentDate, ...conversation]
+	// [deferred-tools, claudeMd, ...conversation]
+	// No currentDate: it changes at midnight and breaks the cache prefix;
+	// message timestamps already carry the date.
 	ctxMap := ctxbuild.LoadContextFiles(e.getWorkingDir())
 	if len(ctxMap) > 0 {
-		ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
 		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
 		if ctxText != "" {
 			ctxMsg := types.Message{
@@ -3586,11 +3586,11 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	apiMessages = EnsureToolResultPairing(apiMessages)
 	// Intentionally skip applyBudget — it has a write side effect.
 
-	// Prepend user context (CLAUDE.md/AGENTS.md/currentDate).
+	// Prepend user context (CLAUDE.md/AGENTS.md); no currentDate — see the
+	// matching callLLM site for why the date is not injected.
 	if !isSubagent {
 		ctxMap := ctxbuild.LoadContextFiles(workingDir)
 		if len(ctxMap) > 0 {
-			ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
 			ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
 			if ctxText != "" {
 				ctxMsg := types.Message{

@@ -11,7 +11,6 @@ import (
 const (
 	KeyClaudeMd        = "claudeMd"
 	KeyProjectClaudeMd = "projectClaudeMd"
-	KeyCurrentDate     = "currentDate"
 )
 
 func LoadSoulFile() (string, error) {
@@ -125,8 +124,8 @@ func BuildPrependUserContext(contextMap map[string]string) string {
 	}
 
 	var sections []string
-	// Fixed key order: claudeMd, projectClaudeMd, currentDate
-	for _, key := range []string{KeyClaudeMd, KeyProjectClaudeMd, KeyCurrentDate} {
+	// Fixed key order: claudeMd, projectClaudeMd
+	for _, key := range []string{KeyClaudeMd, KeyProjectClaudeMd} {
 		if value, ok := contextMap[key]; ok {
 			sections = append(sections, fmt.Sprintf("# %s\n%s", key, value))
 		}

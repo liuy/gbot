@@ -208,16 +208,16 @@ func TestBuildPrependUserContext_Empty(t *testing.T) {
 
 func TestBuildPrependUserContext_SingleKey(t *testing.T) {
 	result := context.BuildPrependUserContext(map[string]string{
-		context.KeyCurrentDate: "Today's date is 2026/01/01.",
+		context.KeyClaudeMd: "Global rules.",
 	})
 	if !strings.Contains(result, "<system-reminder>") {
 		t.Error("expected <system-reminder> wrapper")
 	}
-	if !strings.Contains(result, "# currentDate") {
-		t.Error("expected # currentDate header")
+	if !strings.Contains(result, "# claudeMd") {
+		t.Error("expected # claudeMd header")
 	}
-	if !strings.Contains(result, "Today's date is 2026/01/01.") {
-		t.Error("expected currentDate value")
+	if !strings.Contains(result, "Global rules.") {
+		t.Error("expected claudeMd value")
 	}
 	if !strings.Contains(result, "IMPORTANT: this context may or may not be relevant") {
 		t.Error("expected IMPORTANT footer")
@@ -231,16 +231,12 @@ func TestBuildPrependUserContext_MultipleKeys(t *testing.T) {
 	result := context.BuildPrependUserContext(map[string]string{
 		context.KeyClaudeMd:        "Global rules.",
 		context.KeyProjectClaudeMd: "Project rules.",
-		context.KeyCurrentDate:     "Today's date is 2026/05/14.",
 	})
 	if !strings.Contains(result, "# claudeMd") {
 		t.Error("expected # claudeMd header")
 	}
 	if !strings.Contains(result, "# projectClaudeMd") {
 		t.Error("expected # projectClaudeMd header")
-	}
-	if !strings.Contains(result, "# currentDate") {
-		t.Error("expected # currentDate header")
 	}
 	if !strings.Contains(result, "Global rules.") {
 		t.Error("expected global content")
@@ -249,26 +245,24 @@ func TestBuildPrependUserContext_MultipleKeys(t *testing.T) {
 		t.Error("expected project content")
 	}
 
-	// Key ordering: claudeMd before projectClaudeMd before currentDate
+	// Key ordering: claudeMd before projectClaudeMd
 	claudeIdx := strings.Index(result, "# claudeMd")
 	projectIdx := strings.Index(result, "# projectClaudeMd")
-	dateIdx := strings.Index(result, "# currentDate")
 	if claudeIdx >= projectIdx {
 		t.Error("claudeMd should appear before projectClaudeMd")
 	}
-	if projectIdx >= dateIdx {
-		t.Error("projectClaudeMd should appear before currentDate")
-	}
 }
 
-func TestBuildPrependUserContext_FormatMatchesTS(t *testing.T) {
+func TestBuildPrependUserContext_FormatExact(t *testing.T) {
+	// Deliberate divergence from TS's prependUserContext (which also emits a
+	// currentDate section): the date changes at midnight and would break the
+	// cache prefix, and message timestamps already carry the date.
 	m := map[string]string{
-		context.KeyClaudeMd:    "User global content.",
-		context.KeyCurrentDate: "Today's date is 2026/05/14.",
+		context.KeyClaudeMd: "User global content.",
 	}
 	result := context.BuildPrependUserContext(m)
 
-	expected := "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# claudeMd\nUser global content.\n# currentDate\nToday's date is 2026/05/14.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>"
+	expected := "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# claudeMd\nUser global content.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>"
 
 	if result != expected {
 		t.Errorf("output does not match TS format.\ngot:\n%s\n\nwant:\n%s", result, expected)

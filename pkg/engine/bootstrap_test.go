@@ -716,7 +716,7 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 	WireEngine(eng, refs, deps)
 
 	// The user_context_messages path is triggered when the agent has context
-	// injected (e.g., currentDate, claudeMd). We verify it via the fork path
+	// injected (e.g., claudeMd). We verify it via the fork path
 	// which includes UserContextMessages.
 	agentInput, _ := json.Marshal(map[string]any{
 		"prompt":        "with context",
