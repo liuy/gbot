@@ -107,6 +107,11 @@ type CompactionInfo struct {
 type TimeBasedTriggerResult struct {
 	GapMinutes float64
 	Config     TimeBasedMCConfig
+	// Evidence for the trigger: which message anchored the gap. A restored
+	// or round-tripped message can carry a stale Timestamp while its DB
+	// created_at is fresh — these fields make that visible in the log.
+	LastAssistantID string
+	LastAssistantTS time.Time
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +429,10 @@ func EvaluateTimeBasedTrigger(messages []types.Message, querySource string) *Tim
 	}
 
 	return &TimeBasedTriggerResult{
-		GapMinutes: gapMinutes,
-		Config:     config,
+		GapMinutes:      gapMinutes,
+		Config:          config,
+		LastAssistantID: lastAssistant.ID,
+		LastAssistantTS: lastAssistant.Timestamp,
 	}
 }
 
@@ -511,6 +518,8 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 		logger.Info("engine:time_based_mc",
 			"gap_min", int(trigger.GapMinutes),
 			"threshold_min", trigger.Config.GapThresholdMinutes,
+			"last_assistant_id", trigger.LastAssistantID,
+			"last_assistant_ts", trigger.LastAssistantTS.Format(time.RFC3339),
 			"cleared", len(clearSet),
 			"kept", len(keepSet),
 			"tokens_saved", tokensSaved,
