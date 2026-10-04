@@ -152,6 +152,12 @@ type Engine struct {
 	// RunAgent's message seeding, so the injector is the one that has to know.
 	omitClaudeMd bool
 
+	// userContextMap is the claudeMd/projectMd context, read once from the
+	// construction-time working dir and frozen for the engine's lifetime.
+	// Per-call re-reading followed bash `cd` and flipped the prepend on/off,
+	// breaking the prompt-cache prefix on every flip.
+	userContextMap map[string]string
+
 	// agentType is the sub-agent type (e.g. "General", "Explore", "Planner").
 	// Empty for the main engine. Set by NewSubEngine from SubEngineOptions.AgentType.
 	agentType string
@@ -453,26 +459,31 @@ func New(p *Params) *Engine {
 	}
 
 	e := &Engine{
-		provider:                p.Provider,
-		tools:                   toolMap,
-		toolOrder:               toolOrder,
-		toolsProvider:           toolsProvider,
-		model:                   p.Model,
-		inputModalities:         inputModalities,
-		maxTokens:               p.MaxTokens,
-		logger:                  p.Logger,
-		tokenBudget:             p.TokenBudget,
-		dispatcher:              p.Dispatcher,
-		attachments:             &attachment.Queue{},
-		reminderEngine:          attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
-		maxTurns:                p.MaxTurns,
-		compactor:               p.Compactor,
-		autoCompactConfig:       p.AutoCompact,
-		mcpRegistry:             p.MCPRegistry,
-		hooks:                   p.Hooks,
-		permissionChecker:       p.PermissionChecker,
-		workingDir:              p.WorkingDir,
-		originalWorkingDir:      originalWorkingDir,
+		provider:           p.Provider,
+		tools:              toolMap,
+		toolOrder:          toolOrder,
+		toolsProvider:      toolsProvider,
+		model:              p.Model,
+		inputModalities:    inputModalities,
+		maxTokens:          p.MaxTokens,
+		logger:             p.Logger,
+		tokenBudget:        p.TokenBudget,
+		dispatcher:         p.Dispatcher,
+		attachments:        &attachment.Queue{},
+		reminderEngine:     attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
+		maxTurns:           p.MaxTurns,
+		compactor:          p.Compactor,
+		autoCompactConfig:  p.AutoCompact,
+		mcpRegistry:        p.MCPRegistry,
+		hooks:              p.Hooks,
+		permissionChecker:  p.PermissionChecker,
+		workingDir:         p.WorkingDir,
+		originalWorkingDir: originalWorkingDir,
+		// p.WorkingDir only, not the os.Getwd() fallback: that fallback
+		// serves bash-cwd recovery, and letting it drive the context read
+		// injects the test-runner's repo CLAUDE.md into engines built
+		// without an explicit dir.
+		userContextMap:          ctxbuild.LoadContextFiles(p.WorkingDir),
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:          0,
 		toolSearch:              newToolSearchState(),
@@ -2372,10 +2383,21 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// [deferred-tools, claudeMd, ...conversation]
 	// No currentDate: it changes at midnight and breaks the cache prefix;
 	// message timestamps already carry the date.
-	ctxMap := ctxbuild.LoadContextFiles(e.getWorkingDir())
+	//
+	// The context map is frozen at construction (userContextMap): a bash `cd`
+	// changes the working dir mid-session, and re-reading CLAUDE.md per call
+	// made the prepend appear/disappear with the dir — each flip broke the
+	// whole prompt-cache prefix. TS memoizes getUserContext for the same
+	// effect; a frozen field is the plain-Go form.
+	ctxMap := e.userContextMap
 	if e.omitClaudeMd {
-		delete(ctxMap, ctxbuild.KeyClaudeMd)
-		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+		filtered := make(map[string]string, len(ctxMap))
+		for k, v := range ctxMap {
+			if k != ctxbuild.KeyClaudeMd && k != ctxbuild.KeyProjectClaudeMd {
+				filtered[k] = v
+			}
+		}
+		ctxMap = filtered
 	}
 	if len(ctxMap) > 0 {
 		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
@@ -3595,10 +3617,15 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	// Prepend user context (CLAUDE.md/AGENTS.md); no currentDate — see the
 	// matching callLLM site for why the date is not injected. Sub-agents are
 	// not skipped: the dump has to mirror the request callLLM actually sends.
-	ctxMap := ctxbuild.LoadContextFiles(workingDir)
+	ctxMap := e.userContextMap
 	if omitClaudeMd {
-		delete(ctxMap, ctxbuild.KeyClaudeMd)
-		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+		filtered := make(map[string]string, len(ctxMap))
+		for k, v := range ctxMap {
+			if k != ctxbuild.KeyClaudeMd && k != ctxbuild.KeyProjectClaudeMd {
+				filtered[k] = v
+			}
+		}
+		ctxMap = filtered
 	}
 	if len(ctxMap) > 0 {
 		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
@@ -4601,6 +4628,10 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		agentMetaDepth:  e.agentMetaDepth + 1,
 		agentType:       opts.AgentType,
 		maxTurns:        subMaxTurns(opts.MaxTurns),
+		// Share the parent's frozen context map (read-only; omitClaudeMd
+		// filtering copies) — a sub-agent must inject the same CLAUDE.md the
+		// parent would, from the same construction-time dir.
+		userContextMap: e.userContextMap,
 		// sharedDeps propagates so sub-agents can themselves spawn
 		// sub-agents (grandchildren). Without this, AgentTool.Call inside
 		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the

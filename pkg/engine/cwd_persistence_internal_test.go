@@ -336,3 +336,77 @@ func TestNewSubEngine_WorkingDirInheritance(t *testing.T) {
 		t.Errorf("parent workingDir after sub-agent cd = %q, want unchanged %q", got, realSub)
 	}
 }
+
+// TestUserContextFrozenAcrossCWD pins the cache-prefix stability property:
+// the injected CLAUDE.md comes from the construction-time dir and survives a
+// bash `cd` (setWorkingDir). A per-call re-read flipped the prepend on/off
+// with the dir and broke the whole prompt-cache prefix on every flip.
+func TestUserContextFrozenAcrossCWD(t *testing.T) {
+	t.Parallel()
+	dirA, dirB := t.TempDir(), t.TempDir()
+	const sentinelA, sentinelB = "CTX-FROZEN-A-7c2d", "CTX-FROZEN-B-19ef"
+	if err := os.WriteFile(filepath.Join(dirA, "CLAUDE.md"), []byte("# A\n"+sentinelA), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "CLAUDE.md"), []byte("# B\n"+sentinelB), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var reqTexts []string
+	mp := &testProvider{onStream: func(req *llm.Request) {
+		var b strings.Builder
+		for _, m := range req.Messages {
+			for _, cb := range m.Content {
+				b.WriteString(cb.Text)
+			}
+		}
+		reqTexts = append(reqTexts, b.String())
+	}}
+	mp.responses = []testResponse{{events: subTextEvents("t", "ok")}}
+	eng := New(&Params{Provider: mp, Model: "test", WorkingDir: dirA})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.setWorkingDir(dirB) // a bash `cd` after construction
+	if r := eng.QuerySync(context.Background(), "do it", ""); r.Error != nil {
+		t.Fatalf("QuerySync: %v", r.Error)
+	}
+	if len(reqTexts) == 0 {
+		t.Fatal("no request captured")
+	}
+	if got := strings.Count(reqTexts[0], sentinelA); got != 1 {
+		t.Errorf("construction dir's CLAUDE.md sentinel count = %d, want 1 (injection must survive cd)", got)
+	}
+	if got := strings.Count(reqTexts[0], sentinelB); got != 0 {
+		t.Errorf("post-cd dir's CLAUDE.md sentinel count = %d, want 0 (must not pick up the new dir)", got)
+	}
+}
+
+// TestUserContextMapNotMutatedBySubAgent guards the shared-map immutability:
+// a sub-engine's omitClaudeMd filtering must copy, never delete from the
+// frozen map — otherwise the parent (and sibling sub-agents) silently lose
+// their CLAUDE.md injection.
+func TestUserContextMapNotMutatedBySubAgent(t *testing.T) {
+	t.Parallel()
+	dirA := t.TempDir()
+	const sentinelA = "CTX-SHARED-A-31ab"
+	if err := os.WriteFile(filepath.Join(dirA, "CLAUDE.md"), []byte("# A\n"+sentinelA), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", WorkingDir: dirA})
+	t.Cleanup(func() { eng.Close() })
+
+	sub := eng.NewSubEngine(SubEngineOptions{})
+	sub.omitClaudeMd = true
+	_ = sub.DumpAPIRequest() // omit path runs its filter
+
+	dump := eng.DumpAPIRequest()
+	var all strings.Builder
+	for _, m := range dump.Messages {
+		for _, cb := range m.Content {
+			all.WriteString(cb.Text)
+		}
+	}
+	if got := strings.Count(all.String(), sentinelA); got != 1 {
+		t.Errorf("parent's CLAUDE.md sentinel after a sub-agent omit = %d, want 1 (shared map was mutated)", got)
+	}
+}
