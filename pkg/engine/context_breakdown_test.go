@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -1084,4 +1085,54 @@ func TestMessageBreakdown_CompactSummaryNotUserText(t *testing.T) {
 	if bd.MessageBreakdown.ToolResultTokens == 0 {
 		t.Errorf("ToolResultTokens = 0, want > 0 (FlagMeta image should count as tool result)")
 	}
+}
+
+// With a MEMORY.md index the system prompt injects the typed-memory prompt,
+// not each memory file's contents — the breakdown must estimate what is
+// actually injected.
+func TestContextBreakdown_MemoryEstimatesActualInjection(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("You are a test assistant.")
+	memDir := t.TempDir()
+	// Two real memory files behind the index, each with substantial content.
+	const filler = " substantial memory body content "
+	for _, name := range []string{"mem_alpha.md", "mem_beta.md"} {
+		body := strings.Repeat(filler, 100) // ~3.4 KB each
+		if err := os.WriteFile(filepath.Join(memDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := "# Memory\n\n- [Alpha](mem_alpha.md) — hook a\n- [Beta](mem_beta.md) — hook b\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(idx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.memoryDir = memDir
+	e.ContextTokens = 50_000
+
+	bd := e.ContextBreakdown()
+
+	if len(bd.MemoryFiles) != 1 {
+		t.Fatalf("memory file details = %d, want 1 (the typed-memory prompt as one entry); paths: %v",
+			len(bd.MemoryFiles), memoryDetailPaths(bd.MemoryFiles))
+	}
+	want := e.EstimateTokensCalibrated(context.FormatMemoryPrompt(e.workingDir, memDir))
+	if got := bd.MemoryFiles[0].Tokens; got != want {
+		t.Errorf("memory entry tokens = %d, want %d (EstimateTokensCalibrated of the injected prompt)", got, want)
+	}
+	if p := bd.MemoryFiles[0].Path; p != filepath.Join(memDir, "MEMORY.md") {
+		t.Errorf("memory entry path = %q, want %q", p, filepath.Join(memDir, "MEMORY.md"))
+	}
+	for _, d := range bd.MemoryFiles {
+		if strings.Contains(d.Path, "mem_alpha") || strings.Contains(d.Path, "mem_beta") {
+			t.Errorf("memory detail lists full file %q — breakdown must not enumerate memory files that are not injected", d.Path)
+		}
+	}
+}
+
+func memoryDetailPaths(ds []MemoryFileDetail) []string {
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = d.Path
+	}
+	return out
 }

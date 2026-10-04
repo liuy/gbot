@@ -11,12 +11,14 @@ import (
 	"encoding/json"
 	"maps"
 	"math"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -213,6 +215,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	// Go's RWMutex forbids recursive RLock (a queued writer between the two
 	// acquisitions would deadlock).
 	workingDir := e.workingDir
+	memoryDir := e.memoryDir
 	skillListing := e.skillListing
 	agentDefs := agentDefsClone(e.agentDefs)
 	systemPromptRaw := e.systemPrompt
@@ -238,8 +241,24 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	reserved := min(computeReservedTokens(contextWindow, maxTokens), max(freeTokens, 0))
 
 	// Compute expensive data once, shared by estimates and details.
-	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, e.memoryDir)
-	memFiles := context.LoadMemoryFiles(workingDir, e.memoryDir)
+	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, memoryDir)
+	// The system prompt injects the typed-memory prompt (builder.go), not
+	// every memory file's contents — estimating the full file list here
+	// overstated this bucket ~4x and squeezed the message bucket. Only the
+	// legacy path (prompt empty) loads the files.
+	var memFiles []context.MemoryFile
+	if memPrompt := context.FormatMemoryPrompt(workingDir, memoryDir); memPrompt != "" {
+		memDir := memoryDir
+		if memDir == "" {
+			memDir = long.GetMemoryPath(workingDir)
+		}
+		memFiles = []context.MemoryFile{{
+			Path:    filepath.Join(memDir, long.EntrypointName),
+			Content: memPrompt,
+		}}
+	} else {
+		memFiles = context.LoadMemoryFiles(workingDir, memoryDir)
+	}
 
 	estimates := e.estimateComponents(
 		sections, memFiles, toolsSnapshot, toolSearchSnap,
