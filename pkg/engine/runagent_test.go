@@ -3,10 +3,13 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -492,5 +495,471 @@ func TestRunAgent_NoContentCancel_ReturnsInterrupted(t *testing.T) {
 	if result.Content != "(agent interrupted by user)" {
 		t.Errorf("Content = %q, want %q",
 			result.Content, "(agent interrupted by user)")
+	}
+}
+
+// flattenText joins every text block of a marshalled API request into one
+// string so occurrence counts are taken over what the provider actually saw.
+func flattenText(msgs []types.Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		for _, cb := range m.Content {
+			b.WriteString(cb.Text)
+		}
+	}
+	return b.String()
+}
+
+// TestEngine_RunAgent_ClaudeMdInjectedOnce pins the API-request boundary for
+// sub-agents: the CLAUDE.md block must reach the provider exactly once per
+// request. RunAgent used to seed it into the sub-engine's stored conversation
+// while callLLM also prepends it on every request, so each sub-agent turn
+// paid for the file twice.
+func TestEngine_RunAgent_ClaudeMdInjectedOnce(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	const sentinel = "CLAUDEMD-SENTINEL-7f31"
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"),
+		[]byte("# Test Project\n"+sentinel+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests [][]types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			requests = append(requests, append([]types.Message(nil), req.Messages...))
+		},
+	}
+	mp.addResponse(subTextEvents("test", "sub-agent done"), nil)
+
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:    "do the thing",
+		AgentType: "General",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	if got := strings.Count(flattenText(requests[0]), sentinel); got != 1 {
+		t.Errorf("CLAUDE.md occurrences in API request = %d, want 1\nrequest: %s",
+			got, truncate(flattenText(requests[0]), 1200))
+	}
+}
+
+// TestEngine_RunAgent_ExploreOmitsClaudeMd pins the other side of the flag:
+// Explore is the built-in with OmitClaudeMd set, so its request must carry no
+// CLAUDE.md at all. TS drops claudeMd from the resolved userContext for
+// read-only agents (runAgent.ts:390-398).
+func TestEngine_RunAgent_ExploreOmitsClaudeMd(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	const sentinel = "CLAUDEMD-SENTINEL-7f31"
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"),
+		[]byte("# Test Project\n"+sentinel+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests [][]types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			requests = append(requests, append([]types.Message(nil), req.Messages...))
+		},
+	}
+	mp.addResponse(subTextEvents("test", "explore done"), nil)
+
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:    "find the files",
+		AgentType: "Explore",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	want := 0
+	if got := strings.Count(flattenText(requests[0]), sentinel); got != want {
+		t.Errorf("CLAUDE.md occurrences in Explore request = %d, want %d\nrequest: %s",
+			got, want, truncate(flattenText(requests[0]), 1200))
+	}
+}
+
+// TestEngine_RunAgent_ExploreWithContextOmitsClaudeMd pins the omit flag on a
+// spawn that carries injected context: a SubagentStart hook adds a context
+// message on top of the prompt, so the sub-engine begins from a pre-built
+// message list rather than a bare prompt. callLLM is the only CLAUDE.md
+// injection point, so the flag has to hold however many messages it begins with.
+func TestEngine_RunAgent_ExploreWithContextOmitsClaudeMd(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	const sentinel = "CLAUDEMD-SENTINEL-7f31"
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"),
+		[]byte("# Test Project\n"+sentinel+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const hookSentinel = "HOOK-CTX-9d2a"
+	script := filepath.Join(t.TempDir(), "subagent_start.sh")
+	if err := os.WriteFile(script,
+		[]byte("#!/bin/sh\necho '{\"additionalContext\": \""+hookSentinel+"\"}'\n"), 0o755); err != nil {
+		t.Fatalf("write hook script: %v", err)
+	}
+
+	var requests [][]types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			requests = append(requests, append([]types.Message(nil), req.Messages...))
+		},
+	}
+	mp.addResponse(subTextEvents("test", "explore done"), nil)
+
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks: hooks.NewHooks(hooks.HooksConfig{
+			"SubagentStart": []hooks.HookMatcher{
+				{Hooks: []hooks.HookConfig{{Type: "command", Command: script}}},
+			},
+		}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:    "find the files",
+		AgentType: "Explore",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	flat := flattenText(requests[0])
+	// Without this the zero-CLAUDE.md check below could pass on a request that
+	// never received the hook context at all.
+	if got := strings.Count(flat, hookSentinel); got != 1 {
+		t.Errorf("hook context occurrences in Explore request = %d, want 1\nrequest: %s",
+			got, truncate(flat, 1200))
+	}
+	if got := strings.Count(flat, sentinel); got != 0 {
+		t.Errorf("CLAUDE.md occurrences in Explore request with hook context = %d, want 0\nrequest: %s",
+			got, truncate(flat, 1200))
+	}
+}
+
+// TestDumpAPIRequest_SubagentClaudeMdParity verifies the /context dump mirrors
+// the request callLLM actually sends for a sub-engine: CLAUDE.md present once,
+// and absent when the agent definition omits it. The dump used to skip the
+// prepend for sub-agents, so it described a request that never existed.
+func TestDumpAPIRequest_SubagentClaudeMdParity(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	const sentinel = "CLAUDEMD-SENTINEL-7f31"
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"),
+		[]byte("# Test Project\n"+sentinel+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := New(&Params{
+		Provider:   &testProvider{},
+		Model:      "test",
+		WorkingDir: tmpDir,
+	})
+	defer eng.Close()
+
+	subEng := eng.NewSubEngine(SubEngineOptions{AgentType: "General"})
+	subEng.addMessage(types.RoleUser, "hello")
+
+	dump := subEng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	if !dump.IsSubagent {
+		t.Errorf("dump.IsSubagent = false, want true — the dump must be taken from a sub-engine for this parity check to mean anything")
+	}
+	want := 1
+	if got := strings.Count(flattenText(dump.Messages), sentinel); got != want {
+		t.Errorf("CLAUDE.md occurrences in sub-engine dump = %d, want %d", got, want)
+	}
+
+	subEng.omitClaudeMd = true
+	dump = subEng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	want = 0
+	if got := strings.Count(flattenText(dump.Messages), sentinel); got != want {
+		t.Errorf("CLAUDE.md occurrences in omitClaudeMd sub-engine dump = %d, want %d", got, want)
+	}
+}
+
+// TestEngine_RunAgent_SubagentEmitsNoQueryStart pins which query entry point a
+// sub-engine uses. RunForkedQuery installs the assembled messages and emits
+// nothing; QuerySync goes through queryLoopWithContent, which emits
+// EventQueryStart. Sub-engine events bubble through the tagged dispatcher into
+// the parent's hub, and connectors treat EventQueryStart as the beginning of a
+// brand-new user query — WeChat resets its thinking/search/file/command/agent
+// counters on it, so one stray event blanks the parent query's stat line for
+// every sub-agent spawn.
+func TestEngine_RunAgent_SubagentEmitsNoQueryStart(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	md := &mockDispatcher{}
+	mp := &testProvider{}
+	mp.addResponse(subTextEvents("test", "sub-agent done"), nil)
+
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+		Dispatcher: md,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	// ParentToolUseID is what makes NewSubEngine wrap the parent dispatcher,
+	// so without it the bubbling path under test would not exist.
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:          "do the thing",
+		AgentType:       "General",
+		ParentToolUseID: "toolu_parent_1",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	var bubbled []string
+	queryStarts := 0
+	queryEnds := 0
+	for _, ev := range md.Events() {
+		if ev.Agent == nil {
+			continue
+		}
+		bubbled = append(bubbled, string(ev.Type))
+		switch ev.Type {
+		case types.EventQueryStart:
+			queryStarts++
+		case types.EventQueryEnd:
+			queryEnds++
+		}
+	}
+	// Guards against a vacuous pass: if the sub-engine dispatched nothing at
+	// all, a zero-EventQueryStart assertion would mean nothing.
+	if queryEnds != 1 {
+		t.Fatalf("sub-engine EventQueryEnd bubbled = %d, want 1; events: %v", queryEnds, bubbled)
+	}
+	if queryStarts != 0 {
+		t.Errorf("sub-engine EventQueryStart bubbled = %d, want 0; events: %v", queryStarts, bubbled)
+	}
+}
+
+// TestEngine_RunAgent_EmptyPromptHookContext_UsesForkedQuery covers the
+// empty-prompt spawn that still carries context: an Agent tool call with
+// prompt:"" is schema-legal (required only means present), so a SubagentStart
+// hook's additionalContext can be the only message the sub-engine begins with.
+// The routing decision is made on the assembled slice, not on the prompt, so
+// this is the case where the slice is non-empty for a reason other than the
+// prompt — and the hook text has to survive into the request for the spawn to
+// mean anything.
+func TestEngine_RunAgent_EmptyPromptHookContext_UsesForkedQuery(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	const hookSentinel = "HOOK-CTX-4c81"
+	script := filepath.Join(t.TempDir(), "subagent_start.sh")
+	if err := os.WriteFile(script,
+		[]byte("#!/bin/sh\necho '{\"additionalContext\": \""+hookSentinel+"\"}'\n"), 0o755); err != nil {
+		t.Fatalf("write hook script: %v", err)
+	}
+
+	var requests [][]types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			requests = append(requests, append([]types.Message(nil), req.Messages...))
+		},
+	}
+	mp.addResponse(subTextEvents("test", "sub-agent done"), nil)
+
+	md := &mockDispatcher{}
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks: hooks.NewHooks(hooks.HooksConfig{
+			"SubagentStart": []hooks.HookMatcher{
+				{Hooks: []hooks.HookConfig{{Type: "command", Command: script}}},
+			},
+		}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+		Dispatcher: md,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:          "",
+		AgentType:       "General",
+		ParentToolUseID: "toolu_parent_hook",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	if got := strings.Count(flattenText(requests[0]), hookSentinel); got != 1 {
+		t.Errorf("hook context occurrences in request = %d, want 1\nrequest: %s",
+			got, truncate(flattenText(requests[0]), 1200))
+	}
+
+	var queryStarts, queryEnds int
+	var bubbled []string
+	for _, ev := range md.Events() {
+		if ev.Agent == nil {
+			continue
+		}
+		bubbled = append(bubbled, string(ev.Type))
+		switch ev.Type {
+		case types.EventQueryStart:
+			queryStarts++
+		case types.EventQueryEnd:
+			queryEnds++
+		}
+	}
+	if queryEnds != 1 {
+		t.Fatalf("sub-engine EventQueryEnd bubbled = %d, want 1; events: %v", queryEnds, bubbled)
+	}
+	if queryStarts != 0 {
+		t.Errorf("sub-engine EventQueryStart bubbled = %d, want 0 — an empty prompt with context must still route through RunForkedQuery; events: %v", queryStarts, bubbled)
+	}
+}
+
+// TestEngine_RunAgent_EmptyPromptNoContext_UsesForkedQuery covers the fully
+// empty spawn: prompt:"" and no hook, skill or fork context, so the assembled
+// slice is empty. This is the only input that reaches the routing decision with
+// nothing to install, and the fallback entry point it selects is observable
+// from the parent: QuerySync emits EventQueryStart, which the tagged
+// dispatcher hands to the parent hub and which connectors treat as a new user
+// query. RunForkedQuery installs the (empty) slice and emits nothing.
+func TestEngine_RunAgent_EmptyPromptNoContext_UsesForkedQuery(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	var requests [][]types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			requests = append(requests, append([]types.Message(nil), req.Messages...))
+		},
+	}
+	mp.addResponse(subTextEvents("test", "sub-agent done"), nil)
+
+	md := &mockDispatcher{}
+	deps := SharedDeps{
+		WorkingDir: tmpDir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+		Dispatcher: md,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:          "",
+		AgentType:       "General",
+		ParentToolUseID: "toolu_parent_empty",
+	}); err != nil {
+		t.Fatalf("RunAgent returned error: %v", err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+
+	var queryStarts, queryEnds int
+	var bubbled []string
+	for _, ev := range md.Events() {
+		if ev.Agent == nil {
+			continue
+		}
+		bubbled = append(bubbled, string(ev.Type))
+		switch ev.Type {
+		case types.EventQueryStart:
+			queryStarts++
+		case types.EventQueryEnd:
+			queryEnds++
+		}
+	}
+	if queryEnds != 1 {
+		t.Fatalf("sub-engine EventQueryEnd bubbled = %d, want 1; events: %v", queryEnds, bubbled)
+	}
+	if queryStarts != 0 {
+		t.Errorf("sub-engine EventQueryStart bubbled = %d, want 0 — an empty prompt must not fall back to QuerySync, which resets connector stat counters for the parent query; events: %v", queryStarts, bubbled)
+	}
+
+	// The CLAUDE.md prepend is flagged meta; a prompt message injected by the
+	// fallback path is not. Counting non-meta user messages keeps this check
+	// independent of whether the machine has a global ~/.gbot/CLAUDE.md.
+	nonMetaUsers := 0
+	for _, m := range requests[0] {
+		if m.Role == types.RoleUser && m.Flags != types.FlagMeta {
+			nonMetaUsers++
+		}
+	}
+	if nonMetaUsers != 0 {
+		t.Errorf("non-meta user messages in request = %d, want 0\nrequest: %s",
+			nonMetaUsers, truncate(flattenText(requests[0]), 1200))
 	}
 }

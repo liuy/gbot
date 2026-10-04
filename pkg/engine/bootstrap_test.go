@@ -691,7 +691,7 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 	}
 }
 
-func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
+func TestWireEngine_AgentFactory_GeneralSpawn(t *testing.T) {
 	t.Parallel()
 	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
@@ -715,15 +715,15 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 
 	WireEngine(eng, refs, deps)
 
-	// The user_context_messages path is triggered when the agent has context
-	// injected (e.g., claudeMd). We verify it via the fork path
-	// which includes UserContextMessages.
+	// Plain spawn through the wired Agent tool: no fork messages, no caller
+	// context messages and no skills, so RunAgent assembles only the prompt
+	// message and hands it to RunForkedQuery.
+	const promptSentinel = "spawn-prompt-6b48"
 	agentInput, _ := json.Marshal(map[string]any{
-		"prompt":        "with context",
+		"prompt":        promptSentinel,
 		"agent_type":    "General",
 		"system_prompt": "test",
 	})
-	// Run with context that has extra messages
 	result, err := refs.Agent.Call(context.Background(), agentInput, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{
 			SessionID: "test-ctx-session",
@@ -735,9 +735,32 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 	if result == nil {
 		t.Fatal("result should not be nil")
 	}
-	// Check the provider was called
-	if mp.callCount() < 1 {
-		t.Errorf("expected at least 1 provider call, got %d", mp.callCount())
+	// Exactly one provider call: a spawn that never reached the LLM and one
+	// that looped twice are both wrong, and a "< 1" check cannot tell them
+	// apart from the correct path.
+	if got := mp.callCount(); got != 1 {
+		t.Errorf("provider call count = %d, want 1", got)
+	}
+	// The request must carry the prompt message and nothing else in the user
+	// role. marshalMessages prefixes each user message with its timestamp, so
+	// the suffix is the tightest exact match available; the count is what
+	// rules out an extra injected user message (a seeded CLAUDE.md or a
+	// fallback-path prompt duplicate). CLAUDE.md itself is flagged meta.
+	var userTexts []string
+	for _, m := range mp.lastRequestMessages() {
+		if m.Role == types.RoleUser && m.Flags != types.FlagMeta {
+			var b strings.Builder
+			for _, cb := range m.Content {
+				b.WriteString(cb.Text)
+			}
+			userTexts = append(userTexts, b.String())
+		}
+	}
+	if len(userTexts) != 1 {
+		t.Fatalf("non-meta user messages in request = %d, want 1; texts: %q", len(userTexts), userTexts)
+	}
+	if !strings.HasSuffix(userTexts[0], promptSentinel) {
+		t.Errorf("user message = %q, want it to end with %q", userTexts[0], promptSentinel)
 	}
 }
 

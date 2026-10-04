@@ -61,7 +61,7 @@ type AgentOpts struct {
 	AgentType           string                  // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string                  // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message         // non-nil: use pre-built fork messages instead of Prompt
-	UserContextMessages []types.Message         // [claudeMd?, skill?...] injected before userPrompt
+	UserContextMessages []types.Message         // caller-supplied extras before userPrompt; no production caller sets it, RunAgent appends skill messages itself
 	GitStatus           *ctxbuild.GitStatusInfo // git status for system prompt injection (nil = no git info)
 	ResolveTierFn       func(string) string     // model tier resolver (nil = identity)
 	McpConnect          McpConnectFunc          // agent-specific MCP server connector (nil = skip)

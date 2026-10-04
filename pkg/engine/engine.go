@@ -146,6 +146,12 @@ type Engine struct {
 	// Source: tokenBudget.ts:45-53 — checkTokenBudget skips when agentId is set.
 	isSubagent bool
 
+	// omitClaudeMd mirrors TS agentDefinition.omitClaudeMd: read-only agents
+	// (Explore) drop CLAUDE.md from their user context. It lives on the engine
+	// because the injection point is callLLM's per-request prepend rather than
+	// RunAgent's message seeding, so the injector is the one that has to know.
+	omitClaudeMd bool
+
 	// agentType is the sub-agent type (e.g. "General", "Explore", "Planner").
 	// Empty for the main engine. Set by NewSubEngine from SubEngineOptions.AgentType.
 	agentType string
@@ -737,18 +743,6 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	// Build user context messages
 	userCtxMsgs := opts.UserContextMessages
-	workingDir := e.sharedDeps.WorkingDir
-	ctxMap := ctxbuild.LoadContextFiles(workingDir)
-	if agentDef.OmitClaudeMd {
-		delete(ctxMap, ctxbuild.KeyClaudeMd)
-		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
-	}
-	ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
-	if ctxText != "" {
-		ctxMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(ctxText)})
-		ctxMsg.Flags = types.FlagMeta
-		userCtxMsgs = append(userCtxMsgs, ctxMsg)
-	}
 
 	// Skill preloading
 	if len(agentDef.Skills) > 0 && e.sharedDeps.SkillReg != nil {
@@ -795,6 +789,11 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		AgentType:       agentType,
 	})
 
+	// Stamped after construction because only RunAgent has the agent definition
+	// in hand; callLLM reads it to decide whether CLAUDE.md belongs in the
+	// request's user context.
+	subEng.omitClaudeMd = agentDef.OmitClaudeMd
+
 	WireEngine(subEng, subRefs, *e.sharedDeps)
 
 	// Fire SubagentStart hook
@@ -827,13 +826,13 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		messages = append(opts.ForkMessages, messages...)
 	}
 
-	// Execute
-	var result QueryResult
-	if len(opts.ForkMessages) > 0 || len(userCtxMsgs) > 0 {
-		result = subEng.RunForkedQuery(ctx, messages, systemPrompt)
-	} else {
-		result = subEng.QuerySync(ctx, opts.Prompt, systemPrompt)
-	}
+	// Execute. TS has one sub-agent entry point: runAgent.ts:373 builds
+	// initialMessages and runAgent.ts:748 always calls query({messages:
+	// initialMessages}). The QuerySync fallback was Go-only, and it is the only
+	// remaining route by which a sub-engine emits EventQueryStart into the
+	// parent hub — the WeChat connector resets its per-query stat counters on
+	// that event, so a sub-agent spawn blanks the parent's stat line.
+	result := subEng.RunForkedQuery(ctx, messages, systemPrompt)
 
 	if result.Error != nil {
 		if ctx.Err() != nil {
@@ -2364,14 +2363,20 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 
 	// Prepend user context (AGENTS.md/CLAUDE.md).
 	// Source: query.ts:660 — prependUserContext(messages, userContext).
-	// TS injects for all agents (main + subagent); runAgent.ts:381 resolves
-	// userContext from getUserContext() which includes claudeMd for every
-	// agent type. Explore/Plan can opt out via omitClaudeMd (not yet ported).
+	// TS injects for all agents (main + subagent); runAgent.ts:380-383 resolves
+	// userContext from getUserContext() and runAgent.ts:390-398 strips claudeMd
+	// for agents flagged omitClaudeMd. This is the single injection point for
+	// every agent type — nothing is seeded into the stored conversation, so
+	// each request regenerates it and the transcript stays free of CLAUDE.md.
 	// Placed before ToolSearch prepend so final order matches TS:
 	// [deferred-tools, claudeMd, ...conversation]
 	// No currentDate: it changes at midnight and breaks the cache prefix;
 	// message timestamps already carry the date.
 	ctxMap := ctxbuild.LoadContextFiles(e.getWorkingDir())
+	if e.omitClaudeMd {
+		delete(ctxMap, ctxbuild.KeyClaudeMd)
+		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+	}
 	if len(ctxMap) > 0 {
 		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
 		if ctxText != "" {
@@ -3550,6 +3555,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	systemPromptRaw := e.systemPrompt
 	workingDir := e.workingDir
 	isSubagent := e.isSubagent
+	omitClaudeMd := e.omitClaudeMd
 	model := e.model
 	maxTokens := e.maxTokens
 	contextWindow := e.autoCompactConfig.ContextWindow
@@ -3587,21 +3593,23 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	// Intentionally skip applyBudget — it has a write side effect.
 
 	// Prepend user context (CLAUDE.md/AGENTS.md); no currentDate — see the
-	// matching callLLM site for why the date is not injected.
-	if !isSubagent {
-		ctxMap := ctxbuild.LoadContextFiles(workingDir)
-		if len(ctxMap) > 0 {
-			ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
-			if ctxText != "" {
-				ctxMsg := types.Message{
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
-					Flags:   types.FlagMeta,
-				}
-				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
+	// matching callLLM site for why the date is not injected. Sub-agents are
+	// not skipped: the dump has to mirror the request callLLM actually sends.
+	ctxMap := ctxbuild.LoadContextFiles(workingDir)
+	if omitClaudeMd {
+		delete(ctxMap, ctxbuild.KeyClaudeMd)
+		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+	}
+	if len(ctxMap) > 0 {
+		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+		if ctxText != "" {
+			ctxMsg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+				Flags:   types.FlagMeta,
 			}
+			apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
 		}
-
 	}
 
 	// Prepend deferred tools announcement.

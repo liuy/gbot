@@ -2506,16 +2506,19 @@ func TestRunForkedQuery(t *testing.T) {
 	}
 }
 
-// TestRunTurns_DrainsNotificationsAtStage20 verifies that when runTurns hits the
-
 // TestRunForkedQuery_IncludesClaudeMd verifies that fork agents receive the
 // CLAUDE.md context injection, matching TS behavior where runForkedAgent
 // passes userContext (containing claudeMd) to query() → prependUserContext().
+// The count is pinned at exactly 1 rather than mere presence: a second
+// injection point (a seeded copy in the conversation alongside callLLM's
+// per-request prepend) is the exact defect this guards, and a presence check
+// cannot see it.
 func TestRunForkedQuery_IncludesClaudeMd(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	claudeMdContent := "# Test Project\nFollow TDD for all changes."
+	const sentinel = "CLAUDEMD-SENTINEL-7f31"
+	claudeMdContent := "# Test Project\n" + sentinel + " Follow TDD for all changes."
 	if err := os.WriteFile(tmpDir+"/CLAUDE.md", []byte(claudeMdContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -2554,6 +2557,10 @@ func TestRunForkedQuery_IncludesClaudeMd(t *testing.T) {
 	first := capturedMessages[0]
 	if !strings.Contains(first.Content[0].Text, "Test Project") {
 		t.Errorf("first message should contain CLAUDE.md content, got: %q", truncate(first.Content[0].Text, 200))
+	}
+	if got := strings.Count(flattenText(capturedMessages), sentinel); got != 1 {
+		t.Errorf("CLAUDE.md occurrences in fork request = %d, want 1\nrequest: %s",
+			got, truncate(flattenText(capturedMessages), 1200))
 	}
 }
 
