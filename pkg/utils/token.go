@@ -5,60 +5,34 @@ import (
 	"strings"
 )
 
-// Token estimation calibrated against real tokenizer APIs.
-//
-// CJK ratio differs by provider (calibrated via /paas/v4/tokenizer for GLM,
-// and via prompt_tokens for DeepSeek/MiMo):
-//
-//	GLM (zhipu):   CJK 0.85 tokens/char
-//	DeepSeek:      CJK 0.50 tokens/char
-//	MiMo (xiaomi): CJK 0.50 tokens/char
-//
-// non-CJK is stable at ~0.20 across all providers.
-// Average error: <10% per provider when using the correct ratio.
+// Token estimation via a 6-feature linear model (TokenFeatures below).
+// Display-side call sites apply the shared seed ratios (SeedTokenRatios)
+// directly; pkg/engine's calibration layer starts from the same seeds and
+// refits them online per model from real API usage.
 
-const (
-	defaultCJKTokensPerChar    = 0.65 // fallback for unknown providers
-	defaultNonCJKTokensPerChar = 0.20
-)
+// SeedTokenRatios holds the seed ratios of the 6-feature linear model in
+// the feature order [CJK, Struct, Digit, Indent, Words, Other] — the field
+// order of TokenFeatures.
+//
+// Measured 2026-10-04 against three tokenizers (qwen/Strata, zhipu glm,
+// deepseek) by least-squares fit over live prompts: the 6-feature model
+// lands 5-10% median error on held-out samples where the 2-feature heuristic
+// is off 25-29%. The fitted ratios were stable across the three models, so
+// one seed table serves every provider until per-model observations
+// accumulate.
+var SeedTokenRatios = [6]float64{0.72, 1.38, 1.34, -0.04, 0.48, 0.11}
 
-// CJKTokensPerChar returns the CJK token ratio for a given provider.
-// Calibrated against real tokenizer APIs. Returns a conservative default
-// for unknown providers.
-func CJKTokensPerChar(provider string) float64 {
-	switch provider {
-	case "zhipu":
-		return 0.85
-	case "deepseek":
-		return 0.50
-	case "xiaomi":
-		return 0.50
-	default:
-		return defaultCJKTokensPerChar
-	}
-}
-
-// EstimateTokens returns a heuristic token count using the default CJK ratio.
-// Prefer EstimateTokensForProvider when the provider is known.
+// EstimateTokens returns the seed-model token estimate for text. The sum can
+// go negative (Indent's ratio is negative), so the result is floored at 0.
 func EstimateTokens(text string) int {
-	return EstimateTokensForProvider(text, "")
-}
-
-// EstimateTokensForProvider returns a heuristic token count calibrated for
-// the given provider's tokenizer.
-func EstimateTokensForProvider(text string, provider string) int {
-	if text == "" {
-		return 0
-	}
-	cjkRatio := CJKTokensPerChar(provider)
-	cjk := 0
-	for _, r := range text {
-		if isCJKRune(r) {
-			cjk++
-		}
-	}
-	nonCJK := len([]rune(text)) - cjk
-	return int(float64(cjk)*cjkRatio + float64(nonCJK)*defaultNonCJKTokensPerChar)
+	f := CountTokenFeatures(text)
+	v := float64(f.CJK)*SeedTokenRatios[0] +
+		float64(f.Struct)*SeedTokenRatios[1] +
+		float64(f.Digit)*SeedTokenRatios[2] +
+		float64(f.Indent)*SeedTokenRatios[3] +
+		float64(f.Words)*SeedTokenRatios[4] +
+		float64(f.Other)*SeedTokenRatios[5]
+	return max(int(v), 0)
 }
 
 func isCJKRune(r rune) bool {
@@ -78,8 +52,9 @@ func isCJKRune(r rune) bool {
 		(r >= 0xD7B0 && r <= 0xD7FF)
 }
 
-// TokenFeatures is a 6-feature characterization of a text used by the
-// engine's calibrated token estimator (pkg/engine/token_calibration.go).
+// TokenFeatures is a 6-feature characterization of a text consumed by
+// EstimateTokens below and by the engine's calibrated estimator
+// (pkg/engine/token_calibration.go).
 //
 // The char counts form a disjoint partition: every rune of the input is
 // counted by exactly one of CJK, Struct, Digit, Indent, Other. Indent holds

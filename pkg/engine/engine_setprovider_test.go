@@ -68,8 +68,9 @@ func TestCompact_UsesLiveProviderAndModel(t *testing.T) {
 
 	// Seed enough messages to trigger compact. Engine ContextWindow is 1000
 	// (from AutoCompactConfig above) → findKeepFrom tail budget = 2000 tokens.
-	// makeLargeMessages(20, 600) ≈ 2500 tokens > 2000, so compact runs.
-	msgs := makeLargeMessages(20, 600)
+	// makeLargeMessages(20, 750) ≈ 2060 store-estimated tokens > 2000, so
+	// compact runs.
+	msgs := makeLargeMessages(20, 750)
 	eng.SetMessages(msgs)
 
 	// Trigger compact directly via the compactor.

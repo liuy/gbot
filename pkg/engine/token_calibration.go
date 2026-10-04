@@ -2,12 +2,12 @@ package engine
 
 // token_calibration.go implements dynamic token-estimation calibration.
 //
-// The 2-feature char heuristic (utils.EstimateTokens) measures 25-29% median
-// error against real tokenizers, worst on code/JSON — which dominates agent
-// context (tool output). The replacement is a 6-feature linear model
-// (utils.CountTokenFeatures) whose per-model ratios start from cross-model
-// seed values and are refit online by least squares from real API usage
-// deltas observed between consecutive turns.
+// The 2-feature chars-per-token heuristic this system replaced measured
+// 25-29% median error against real tokenizers, worst on code/JSON — which
+// dominates agent context (tool output). The 6-feature linear model
+// (utils.CountTokenFeatures, seed ratios in utils.SeedTokenRatios) starts
+// from cross-model seed values and is refit online by least squares from
+// real API usage deltas observed between consecutive turns.
 
 import (
 	"encoding/json"
@@ -29,15 +29,8 @@ const (
 	calibFeatOther  = 5
 )
 
-// Seed ratios for the 6-feature linear model.
-//
-// Measured 2026-10-04 against three tokenizers (qwen/Strata, zhipu glm,
-// deepseek) by least-squares fit over live prompts: the 6-feature model
-// lands 5-10% median error on held-out samples where the 2-feature heuristic
-// is off 25-29%. The fitted ratios were stable across the three models, so
-// one seed table serves every provider until per-model observations
-// accumulate.
-var calibrationSeedRatios = [6]float64{0.72, 1.38, 1.34, -0.04, 0.48, 0.11}
+// Seed ratios live in utils.SeedTokenRatios so display-side estimates
+// (utils.EstimateTokens) and this calibration layer share one table.
 
 // Post-fit clamps per feature. Least squares over a small sliding window of
 // live traffic can produce wild coefficients when features are collinear
@@ -91,7 +84,7 @@ type tokenCalibration struct {
 // ratios returns the ratios currently in effect.
 func (c *tokenCalibration) ratios() [6]float64 {
 	if !c.fitted || len(c.obs) < calibrationMinObs {
-		return calibrationSeedRatios
+		return utils.SeedTokenRatios
 	}
 	return c.R
 }

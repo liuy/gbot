@@ -355,7 +355,9 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgs := makeLargeMessages(25, 500)
+	// 25 × ~87 store-estimated tokens ≈ 2175 > 2000-token keep budget, so
+	// SM-compact splits head/tail instead of no-oping.
+	msgs := makeLargeMessages(25, 600)
 
 	// SM-compact round 1: uses initial content
 	result1, err := compactor.TrySMCompact(msgs, sm)
@@ -376,7 +378,7 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 	}
 
 	// SM-compact round 2: uses updated content
-	msgs2 := makeLargeMessages(25, 500)
+	msgs2 := makeLargeMessages(25, 600)
 	result2, err := compactor.TrySMCompact(msgs2, sm)
 	if err != nil {
 		t.Fatalf("second TrySMCompact failed: %v", err)
@@ -574,8 +576,11 @@ func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	// Persist messages so PartialCompact has real data to split
-	msgs := makeLargeMessages(20, 600)
+	// Persist messages so PartialCompact has real data to split.
+	// 20 × ~109 store-estimated tokens ≈ 2180 > 2000-token keep budget, and
+	// the split lands at keepFrom=2 (18 fit, 19 overflow) so the SM path
+	// takes it instead of falling back to the un-stubbed LLM.
+	msgs := makeLargeMessages(20, 800)
 	storeMsgs, err := short.EngineMessagesToStore(msgs)
 	if err != nil {
 		t.Fatalf("convert messages: %v", err)

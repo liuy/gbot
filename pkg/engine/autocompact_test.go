@@ -140,17 +140,15 @@ func extractTextFromBlocks(blocks []types.ContentBlock) string {
 	return sb.String()
 }
 
-// makeLargeMessages creates n messages whose post-EngineMessagesToStore
-// JSON-wrap token estimate is ~tokensPerMsg.
+// makeLargeMessages creates n messages of charsPerMsg 'x' chars each.
 //
 // findKeepFrom operates on TranscriptMessage.Content (the JSON-marshalled
-// block array). The JSON wrapper makes the inner text fall into the
-// "other" branch of EstimateTokens (1 token per char) because the
-// surrounding quotes are non-alphanumeric. So a chars-only string here
-// yields ~1 token per char; we use tokensPerMsg raw chars to hit
-// ~tokensPerMsg tokens after wrapping.
-func makeLargeMessages(n, tokensPerMsg int) []types.Message {
-	text := strings.Repeat("x", tokensPerMsg)
+// block array). With the 6-feature seed model the store form
+// `[{"type":"text","text":"<C x's>"}]` prices at 0.11·C + 21.23 tokens
+// (Struct 14×1.38 + Other (C+13)×0.11 + Words 1×0.48) — the parameter is
+// raw chars, not target tokens. Call-site comments carry the arithmetic.
+func makeLargeMessages(n, charsPerMsg int) []types.Message {
+	text := strings.Repeat("x", charsPerMsg)
 	msgs := make([]types.Message, n)
 	for i := range msgs {
 		role := types.RoleUser
@@ -578,7 +576,9 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	mp := &compactMockProvider{}
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: mp})
 
-	msgs := makeMessages(10, 5000)
+	// 9 large + 1 "recent" message; cw=40K → budget 8K. 9×1121 ≈ 10.1K
+	// store-estimated tokens > 8K, so the head is summarized.
+	msgs := makeMessages(10, 10000)
 
 	result, err := sc.Compact(context.Background(), msgs)
 	if err != nil {
@@ -1245,7 +1245,7 @@ func TestFindKeepFrom_LastMessageHuge_KeepsNewest(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("msg 7")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 8")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("x", 40000)), // ~10K tokens > 8K
+			types.NewTextBlock(strings.Repeat("x", 73000)), // ~8.1K tokens > 8K budget
 		}},
 	}
 	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
@@ -1259,10 +1259,10 @@ func TestFindKeepFrom_LastMessageHuge_KeepsNewest(t *testing.T) {
 
 func TestFindKeepFrom_AllHuge_CompactEverything(t *testing.T) {
 	t.Parallel()
-	// 8 messages, each ~5K tokens. contextWindow=40K → target=8K.
-	// Each message alone (5K) fits, but two (10K) > 8K budget.
+	// 8 messages, each ~4.4K store-estimated tokens. contextWindow=40K →
+	// target=8K. Each message alone (4.4K) fits, but two (8.8K) > 8K budget.
 	// So tail = 1 message, keepFrom = len - 1 = 7.
-	msgs := makeLargeMessages(8, 30000)
+	msgs := makeLargeMessages(8, 40000)
 	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
 	tail := len(msgs) - keepFrom
 	if tail != 1 {
@@ -1291,17 +1291,17 @@ func TestFindKeepFrom_Mixed_StopsAtTokenBudget(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 3")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old 4")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 5")}},
-		// Last 3 messages: each ~3K tokens (3000 chars, see makeLargeMessages
-		// comment for why ~1 char/token in the JSON-wrapped representation).
-		// Total ~9K > 8K budget.
+		// Last 3 messages: each ~3.3K store-estimated tokens (30000 chars in
+		// the JSON-wrapped representation). Last 2 = 6.6K ≤ 8K; adding the
+		// 3rd = 9.9K > 8K budget.
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("a", 18000)),
+			types.NewTextBlock(strings.Repeat("a", 30000)),
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("b", 18000)),
+			types.NewTextBlock(strings.Repeat("b", 30000)),
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("c", 18000)),
+			types.NewTextBlock(strings.Repeat("c", 30000)),
 		}},
 	}
 	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
@@ -1645,7 +1645,9 @@ func TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker(t *tes
 	})
 
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello ", 1700))}},
+		// ~2.1K store-estimated tokens alone; with the "hi" message the tail
+		// scan exceeds the 2000-token budget, so compact runs.
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello ", 1800))}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
 
@@ -1687,14 +1689,14 @@ func TestCompactor_PartialCompact_BoundaryMetadata(t *testing.T) {
 
 	// Messages exceed the tail budget → goes through PartialCompact.
 	// tail budget = min(200000/5, 60000) = 40000 tokens.
-	// 5 messages × ~12K tokens each = ~60K > 40K budget → tail keeps the newest
-	// messages under budget, head is compacted.
+	// 5 messages × ~13.4K store-estimated tokens each ≈ 67K > 40K budget →
+	// tail keeps the newest messages under budget, head is compacted.
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 60000))}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("b", 60000))}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("c", 60000))}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("d", 60000))}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("e", 60000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 122000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("b", 122000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("c", 122000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("d", 122000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("e", 122000))}},
 	}
 
 	t.Run("auto_compact_trigger", func(t *testing.T) {

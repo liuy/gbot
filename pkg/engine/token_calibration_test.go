@@ -150,7 +150,7 @@ func TestTokenCalibration_SingularSystemKeepsPreviousRatios(t *testing.T) {
 	if cal.fitted {
 		t.Error("fit reported success on a singular system")
 	}
-	if cal.ratios() != calibrationSeedRatios {
+	if cal.ratios() != utils.SeedTokenRatios {
 		t.Error("ratios changed on singular system; seeds must be kept")
 	}
 }
@@ -459,7 +459,7 @@ func TestCalibration_ModelKeyIsolation(t *testing.T) {
 		t.Errorf("m2 anchor = (total %d, idx %d, anchored %v), want (5000, 3, true)",
 			m2.anchorTotal, m2.anchorMsgIdx, m2.anchored)
 	}
-	if m2.ratios() != calibrationSeedRatios {
+	if m2.ratios() != utils.SeedTokenRatios {
 		t.Error("m2 ratios must be seeds — m1 observations must not leak across keys")
 	}
 	if len(m1.obs) != 10 {

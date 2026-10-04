@@ -44,7 +44,7 @@ func (inst *Instance) RunTUI() error {
 	if ct := app.Engine().GetContextTokens(); ct > 0 {
 		initialTokens = ct
 	} else {
-		initialTokens += engine.EstimateMessagesTokensForProvider(app.Engine().Messages(), app.CurrentProvider())
+		initialTokens += engine.EstimateMessagesTokens(app.Engine().Messages())
 	}
 	app.SetContextUsed(initialTokens)
 

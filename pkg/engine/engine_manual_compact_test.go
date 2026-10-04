@@ -289,8 +289,9 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 	})
 	eng.SetStore(store, tmpDir)
 	eng.SetSessionID(sess.SessionID)
-	// Exceed findKeepFrom tail budget (2000 tokens) so compact actually runs.
-	eng.SetMessages(makeLargeMessages(20, 600))
+	// Exceed findKeepFrom tail budget (2000 tokens; 20 × ~120 store-estimated)
+	// so compact actually runs.
+	eng.SetMessages(makeLargeMessages(20, 900))
 
 	if _, err := eng.ManualCompact(context.Background(), compactUserMsg(), custom); err != nil {
 		t.Fatalf("ManualCompact error: %v", err)

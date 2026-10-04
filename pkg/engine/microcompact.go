@@ -193,17 +193,11 @@ func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 // calculateToolResultTokens estimates tokens in a tool_result content block.
 // Content is json.RawMessage which can be a JSON string ("...") or array ([...]).
 func calculateToolResultTokens(content json.RawMessage) int {
-	return calculateToolResultTokensForProvider(content, "")
-}
-
-func calculateToolResultTokensForProvider(content json.RawMessage, provider string) int {
-	return calculateToolResultTokensWith(content, func(s string) int {
-		return utils.EstimateTokensForProvider(s, provider)
-	})
+	return calculateToolResultTokensWith(content, utils.EstimateTokens)
 }
 
 // calculateToolResultTokensWith is the estimator-parameterized core shared by
-// the provider-aware free function and the engine's calibrated path.
+// the free function and the engine's calibrated path.
 func calculateToolResultTokensWith(content json.RawMessage, est func(string) int) int {
 	if len(content) == 0 {
 		return 0
@@ -278,35 +272,17 @@ func isMainThreadSource(querySource string) bool {
 // EstimateMessagesTokens — source: microCompact.ts:164-205
 // ---------------------------------------------------------------------------
 
-// EstimateMessagesTokens estimates token count for messages.
-// Per-message envelope overhead varies by provider (calibrated via real APIs).
+// Per-message envelope overhead (role framing around each message's
+// content). Measured per-provider variance is <5% of estimate totals, so a
+// single constant serves every provider and is not worth calibrating.
 const defaultMessageEnvelopeTokens = 5
 
-func messageEnvelopeTokens(provider string) int {
-	switch provider {
-	case "zhipu":
-		return 12
-	case "deepseek":
-		return 4
-	case "xiaomi":
-		return 4
-	default:
-		return defaultMessageEnvelopeTokens
-	}
-}
-
 func EstimateMessagesTokens(messages []types.Message) int {
-	return EstimateMessagesTokensForProvider(messages, "")
-}
-
-func EstimateMessagesTokensForProvider(messages []types.Message, provider string) int {
-	return estimateMessagesTokensWith(messages, messageEnvelopeTokens(provider), func(s string) int {
-		return utils.EstimateTokensForProvider(s, provider)
-	})
+	return estimateMessagesTokensWith(messages, defaultMessageEnvelopeTokens, utils.EstimateTokens)
 }
 
 // estimateMessagesTokensWith is the estimator-parameterized core shared by
-// the provider-aware free function and the engine's calibrated path.
+// the free function and the engine's calibrated path.
 func estimateMessagesTokensWith(messages []types.Message, envelope int, est func(string) int) int {
 	totalTokens := 0
 	msgCount := 0
@@ -397,38 +373,23 @@ func tokenCountWithEstimationCore(messages []types.Message, envelope int, est fu
 // Calibrated engine wrappers (see token_calibration.go)
 // ---------------------------------------------------------------------------
 
-// envelopeTokens returns the per-message envelope overhead for the current
-// provider. Takes e.mu.RLock — callers must not already hold e.mu.
-func (e *Engine) envelopeTokens() int {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.provider == nil {
-		return defaultMessageEnvelopeTokens
-	}
-	return messageEnvelopeTokens(e.provider.Name())
-}
-
 // tokenCountWithEstimation is TokenCountWithEstimation with the calibrated
 // estimator improving the delta/fallback estimates. The usage-anchored fast
 // path is unchanged: a real base + calibrated delta still wins.
 // Must not be called while holding e.mu.
 func (e *Engine) tokenCountWithEstimation(messages []types.Message) int {
-	return tokenCountWithEstimationCore(messages, e.envelopeTokens(), e.calibratedEstimator())
+	return tokenCountWithEstimationCore(messages, defaultMessageEnvelopeTokens, e.calibratedEstimator())
 }
 
 // tokenCountWithEstimationLocked is tokenCountWithEstimation for callers
 // already holding e.mu in write mode (RewindToScoped): provider/model are
 // read directly instead of re-acquiring the lock.
 func (e *Engine) tokenCountWithEstimationLocked(messages []types.Message) int {
-	envelope := defaultMessageEnvelopeTokens
-	if e.provider != nil {
-		envelope = messageEnvelopeTokens(e.provider.Name())
-	}
 	R := e.ratiosFor(calibrationKey(e.provider, e.model))
 	est := func(s string) int {
 		return estimateWithFeatures(utils.CountTokenFeatures(s), R)
 	}
-	return tokenCountWithEstimationCore(messages, envelope, est)
+	return tokenCountWithEstimationCore(messages, defaultMessageEnvelopeTokens, est)
 }
 
 // ---------------------------------------------------------------------------

@@ -125,7 +125,8 @@ smcompact_test.go — test file
 
 	// Create enough messages for PartialCompact to work
 	// Need at least keepFrom > 1 and keepFrom < len(messages)
-	msgs := makeLargeMessages(25, 500)
+	// 25 × ~87 store-estimated tokens ≈ 2175 > 2000-token keep budget.
+	msgs := makeLargeMessages(25, 600)
 
 	result, err := ac.TrySMCompact(msgs, sm)
 	if err != nil {
@@ -516,16 +517,18 @@ func TestTrySMCompact_OversizedNewestMessage_Proceeds(t *testing.T) {
 	if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\noversized-tail test\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// contextWindow=40K → keep budget 8K. The newest message alone (~10K
-	// tokens) exceeds it. Pre-fix, findKeepFrom returned len on the first
-	// loop iteration and the keepFrom >= len guard made TrySMCompact fall
-	// back (nil). Now the newest survives unconditionally (keepFrom = len-1),
-	// so SM-compact proceeds with the notes summary.
+	// contextWindow=40K → keep budget 8K. The newest message alone (~8.1K
+	// store-estimated tokens) exceeds it, and the measured context exceeds
+	// the budget too, so the rescaled tail scan keeps only a few newest
+	// messages (keepFrom well inside (1, len)). Pre-fix, findKeepFrom
+	// returned len on the first loop iteration and the keepFrom >= len guard
+	// made TrySMCompact fall back (nil). Now SM-compact proceeds with the
+	// notes summary.
 	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 	msgs := makeLargeMessages(9, 100)
 	msgs = append(msgs, types.Message{
 		Role:    types.RoleAssistant,
-		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 40000))},
+		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 73000))},
 	})
 	result, err := ac.TrySMCompact(msgs, sm)
 	if err != nil {

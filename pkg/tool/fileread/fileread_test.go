@@ -1379,8 +1379,10 @@ func TestExecute_MaxTokens_Exceeded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "dense.txt")
-	// 200KB of text, under 256KB byte limit, but > 25K tokens at 6 chars/token.
-	denseContent := strings.Repeat("a", 200*1024)
+	// ~225KB of text, under the 256KB byte limit, but > 25K tokens: plain
+	// letters price at ~0.11 tokens/char under the 6-feature model
+	// (230000 × 0.11 ≈ 25300).
+	denseContent := strings.Repeat("a", 230000)
 	if err := os.WriteFile(fp, []byte(denseContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1832,11 +1834,11 @@ func TestRead_LargeTextOutputPersisted(t *testing.T) {
 	// 10500 lines x 11 chars = 115500 raw chars. The line-numbered wire form
 	// (~167K chars) stays above Read's 100000-char persistence threshold
 	// while the file itself stays under the 256KB pre-read cap and the
-	// 115500 x 0.2 = 23100 token estimate under the 25000-token post-read
-	// cap, so Execute succeeds.
+	// 17745-token estimate (letters: 115500×0.11 + 10500 words×0.48) under
+	// the 25000-token post-read cap, so Execute succeeds.
 	var sb strings.Builder
 	for range 10500 {
-		sb.WriteString("0123456789\n")
+		sb.WriteString("abcdefghij\n")
 	}
 	content := sb.String()
 	fp := filepath.Join(dir, "large.txt")
@@ -1895,11 +1897,11 @@ func TestRead_LargeTextOutputPersisted(t *testing.T) {
 	if len(lines) != 10501 {
 		t.Fatalf("persisted wire = %d lines, want 10501 (10500 numbered lines + numbered trailing empty element)", len(lines))
 	}
-	if lines[0] != "1\t0123456789" {
-		t.Errorf("first line = %q, want %q", lines[0], "1\t0123456789")
+	if lines[0] != "1\tabcdefghij" {
+		t.Errorf("first line = %q, want %q", lines[0], "1\tabcdefghij")
 	}
-	if lines[10499] != "10500\t0123456789" {
-		t.Errorf("line 10500 = %q, want %q", lines[10499], "10500\t0123456789")
+	if lines[10499] != "10500\tabcdefghij" {
+		t.Errorf("line 10500 = %q, want %q", lines[10499], "10500\tabcdefghij")
 	}
 	// TS split semantics: the empty element the final newline produces gets
 	// numbered too, so the wire ends with "10501\t" and no trailing newline.

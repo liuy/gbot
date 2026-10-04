@@ -39,7 +39,7 @@ func TestEstimateMessagesTokens_DocumentBlock(t *testing.T) {
 		types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 2<<20, 12345),
 	}})
 	got := EstimateMessagesTokens(withEst) - baseTokens
-	if want := 12345 + messageEnvelopeTokens(""); got != want {
+	if want := 12345 + defaultMessageEnvelopeTokens; got != want {
 		t.Errorf("document with estTokens estimated at %d, want %d (est+envelope)", got, want)
 	}
 	// estTokens 0 (parse failed at send) falls back to size/4.
@@ -47,7 +47,7 @@ func TestEstimateMessagesTokens_DocumentBlock(t *testing.T) {
 		types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 400, 0),
 	}})
 	got = EstimateMessagesTokens(fallback) - baseTokens
-	if want := 100 + messageEnvelopeTokens(""); got != want {
+	if want := 100 + defaultMessageEnvelopeTokens; got != want {
 		t.Errorf("document fallback estimated at %d, want %d (size/4+envelope)", got, want)
 	}
 }
@@ -89,27 +89,30 @@ func TestCompactableTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEstimateTokens(t *testing.T) {
-	// Default provider (unknown): CJK=0.65, non-CJK=0.20
+	// Seed model: CJK*0.72 + Struct*1.38 + Digit*1.34 + Indent*(-0.04) +
+	// Words*0.48 + Other*0.11, truncated and floored at 0. Expectations
+	// hand-computed; old 2-feature values (CJK*0.65/nonCJK*0.20) noted where
+	// they differed.
 	tests := []struct {
 		input string
 		want  int
 	}{
 		{"", 0},
-		{"a", 0},          // 1 non-CJK * 0.20 = 0.2 → 0
-		{"abcd", 0},       // 4 * 0.20 = 0.8 → 0
-		{"abcdefgh", 1},   // 8 * 0.20 = 1.6 → 1
-		{"abcdefghij", 2}, // 10 * 0.20 = 2.0 → 2
-		// CJK (default 0.65): 2 * 0.65 = 1.3 → 1
+		{"a", 0},          // Other 1, Words 1 → 0.11+0.48 = 0.59 → 0
+		{"abcd", 0},       // Other 4, Words 1 → 0.44+0.48 = 0.92 → 0
+		{"abcdefgh", 1},   // Other 8, Words 1 → 0.88+0.48 = 1.36 → 1
+		{"abcdefghij", 1}, // Other 10, Words 1 → 1.10+0.48 = 1.58 → 1 (old: 2)
+		// CJK: 2*0.72 + 0.48 = 1.92 → 1
 		{"你好", 1},
-		// 4 * 0.65 = 2.6 → 2
-		{"你好世界", 2},
-		// Mixed: 6 non-CJK * 0.20 + 2 CJK * 0.65 = 1.2 + 1.3 = 2.5 → 2
-		{"Hello 你好", 2},
-		// hiragana NOT in isCJKRune → 5 non-CJK * 0.20 = 1.0 → 1
+		// 4*0.72 + 0.48 = 3.36 → 3 (old: 2)
+		{"你好世界", 3},
+		// Mixed: Other 6 (incl. space) + CJK 2, Words 2 → 0.66+1.44+0.96 = 3.06 → 3 (old: 2)
+		{"Hello 你好", 3},
+		// hiragana NOT in isCJKRune → Other 5, Words 1 → 0.55+0.48 = 1.03 → 1
 		{"こんにちは", 1},
-		// hangul IS CJK: 5 * 0.65 = 3.25 → 3
-		{"안녕하세요", 3},
-		// 6 * 0.20 + 2 * 0.65 = 1.2 + 1.3 = 2.5 → 2
+		// hangul IS CJK: 5*0.72 + 0.48 = 4.08 → 4 (old: 3)
+		{"안녕하세요", 4},
+		// Other 6, CJK 2, Words 1 → 0.66+1.44+0.48 = 2.58 → 2
 		{"abc你好def", 2},
 	}
 	for _, tt := range tests {
@@ -374,7 +377,7 @@ func TestEstimateMessagesTokens_Padding(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := utils.EstimateTokens(text) // "short" = 5 non-CJK chars * 0.20 = 1
+	raw := utils.EstimateTokens(text) // "short": Other 5, Words 1 → 0.55+0.48 = 1.03 → 1
 	want := raw + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("envelope: got %d, want %d (raw=%d + envelope=%d)", got, want, raw, defaultMessageEnvelopeTokens)
@@ -1182,7 +1185,7 @@ func TestTokenCountWithEstimation_ZeroUsageThenRealUsage(t *testing.T) {
 	}
 }
 
-func TestEstimateMessagesTokensForProvider_ImageBlock(t *testing.T) {
+func TestEstimateMessagesTokens_ImageBlock(t *testing.T) {
 	msgs := []types.Message{{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
@@ -1191,23 +1194,27 @@ func TestEstimateMessagesTokensForProvider_ImageBlock(t *testing.T) {
 		},
 	}}
 
-	got := EstimateMessagesTokensForProvider(msgs, "anthropic")
-	// "cat" tokens + ImageMaxTokenSize + one message envelope.
-	catTokens := utils.EstimateTokensForProvider("cat", "anthropic")
-	want := catTokens + ImageMaxTokenSize + messageEnvelopeTokens("anthropic")
+	got := EstimateMessagesTokens(msgs)
+	// "cat" under the seed model: Other 3, Words 1 → 0.33+0.48 = 0.81 → 0.
+	// want = 0 + ImageMaxTokenSize + one message envelope.
+	catTokens := utils.EstimateTokens("cat")
+	if catTokens != 0 {
+		t.Fatalf("EstimateTokens(\"cat\") = %d, want 0 (Other 3, Words 1 → 0.81)", catTokens)
+	}
+	want := catTokens + ImageMaxTokenSize + defaultMessageEnvelopeTokens
 	if got != want {
-		t.Errorf("EstimateMessagesTokensForProvider = %d, want %d (cat %d + image %d + envelope %d)",
-			got, want, catTokens, ImageMaxTokenSize, messageEnvelopeTokens("anthropic"))
+		t.Errorf("EstimateMessagesTokens = %d, want %d (cat %d + image %d + envelope %d)",
+			got, want, catTokens, ImageMaxTokenSize, defaultMessageEnvelopeTokens)
 	}
 	// Sanity: image must contribute exactly ImageMaxTokenSize, not raw JSON size.
-	rawJSONOnly := EstimateMessagesTokensForProvider([]types.Message{{
+	rawJSONOnly := EstimateMessagesTokens([]types.Message{{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
 			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
 		},
-	}}, "anthropic")
-	if rawJSONOnly != ImageMaxTokenSize+messageEnvelopeTokens("anthropic") {
+	}})
+	if rawJSONOnly != ImageMaxTokenSize+defaultMessageEnvelopeTokens {
 		t.Errorf("image-only estimate = %d, want %d (ImageMaxTokenSize + envelope), not raw-JSON overcount",
-			rawJSONOnly, ImageMaxTokenSize+messageEnvelopeTokens("anthropic"))
+			rawJSONOnly, ImageMaxTokenSize+defaultMessageEnvelopeTokens)
 	}
 }

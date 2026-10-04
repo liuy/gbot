@@ -11,7 +11,7 @@ interface Sample {
 }
 
 function estimateTokens(text: string): number {
-  // Rough estimate: 4 chars per token (matches utils.EstimateTokens heuristic).
+  // Rough estimate: 4 chars per token (the Go side uses a richer 6-feature model).
   return Math.ceil(text.length / 4)
 }
 

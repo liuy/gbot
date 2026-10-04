@@ -1,41 +1,29 @@
 package utils
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// Tests calibrated against real tokenizer APIs.
-// Default provider (unknown) uses CJK=0.65. Provider-specific tests use
-// EstimateTokensForProvider with the correct ratio.
+// Expectations hand-computed from the 6-feature model:
+// CJK*0.72 + Struct*1.38 + Digit*1.34 + Indent*(-0.04) + Words*0.48 + Other*0.11,
+// truncated toward zero and floored at 0. The pre-2026-10-04 2-feature
+// heuristic (CJK*0.65 + nonCJK*0.20) encoded outdated calibration data; its
+// values are noted where a case replaced one.
 
 func TestEstimateTokens_Empty(t *testing.T) {
 	t.Parallel()
-	// Empty input has zero runes, so the estimate is exactly 0.
+	// Empty input has zero features, so the estimate is exactly 0.
 	want := 0
 	if got := EstimateTokens(""); got != want {
 		t.Errorf("EstimateTokens(\"\") = %d, want %d", got, want)
 	}
 }
 
-func TestEstimateTokens_CJK_GLM(t *testing.T) {
-	t.Parallel()
-	// GLM: 你好世界 = 4 CJK * 0.85 = 3.4 → 3
-	got := EstimateTokensForProvider("你好世界", "zhipu")
-	if got != 3 {
-		t.Errorf("EstimateTokensForProvider(\"你好世界\", zhipu) = %d, want 3", got)
-	}
-}
-
-func TestEstimateTokens_CJK_DeepSeek(t *testing.T) {
-	t.Parallel()
-	// DeepSeek: 你好世界 = 4 CJK * 0.50 = 2.0 → 2
-	got := EstimateTokensForProvider("你好世界", "deepseek")
-	if got != 2 {
-		t.Errorf("EstimateTokensForProvider(\"你好世界\", deepseek) = %d, want 2", got)
-	}
-}
-
 func TestEstimateTokens_English(t *testing.T) {
 	t.Parallel()
-	// English is provider-independent: 11 non-CJK * 0.20 = 2.2 → 2
+	// "hello world": Other 11 (incl. the space), Words 2 →
+	// 11*0.11 + 2*0.48 = 1.21 + 0.96 = 2.17 → 2. (Old heuristic: 2.)
 	got := EstimateTokens("hello world")
 	if got != 2 {
 		t.Errorf("EstimateTokens(\"hello world\") = %d, want 2", got)
@@ -44,6 +32,9 @@ func TestEstimateTokens_English(t *testing.T) {
 
 func TestEstimateTokens_LongEnglish(t *testing.T) {
 	t.Parallel()
+	// 129 chars, all Other ('.' and ',' are not struct runes), Words 23 →
+	// 129*0.11 + 23*0.48 = 14.19 + 11.04 = 25.23 → 25.
+	// (Old heuristic: 129*0.20 = 25.8 → 25 — same answer by coincidence.)
 	const text = "You are a creature hosted inside gbot. This is your body, treat it that way. You help your human with software engineering tasks."
 	got := EstimateTokens(text)
 	if got != 25 {
@@ -53,46 +44,74 @@ func TestEstimateTokens_LongEnglish(t *testing.T) {
 
 func TestEstimateTokens_Code(t *testing.T) {
 	t.Parallel()
+	// 61 chars: Struct 4 (two '(' + two ')'; '*' is NOT a struct rune),
+	// Other 57, Words 6 → 4*1.38 + 57*0.11 + 6*0.48 = 5.52 + 6.27 + 2.88 = 14.67 → 14.
 	const text = `func (e *Engine) setTaskDirForSession(sessionID string) error`
-	cjk := 0
-	for _, r := range text {
-		if isCJKRune(r) {
-			cjk++
-		}
-	}
-	want := int(float64(len([]rune(text))-cjk)*defaultNonCJKTokensPerChar + float64(cjk)*defaultCJKTokensPerChar)
 	got := EstimateTokens(text)
-	if got != want {
-		t.Errorf("EstimateTokens(code) = %d, want %d (cjk=%d, len=%d)", got, want, cjk, len([]rune(text)))
+	if got != 14 {
+		t.Errorf("EstimateTokens(code) = %d, want 14", got)
 	}
 }
 
 func TestEstimateTokens_JSON(t *testing.T) {
 	t.Parallel()
-	// 40 non-CJK chars * 0.20 = 8
+	// 44 chars: Struct 17 (4 braces + 10 quotes + 3 colons; the comma is
+	// Other), Other 27, Words 2 → 17*1.38 + 27*0.11 + 2*0.48 = 23.46 + 2.97 + 0.96 = 27.39 → 27.
+	// (Old heuristic: 8 — the 6-feature model prices structure-heavy text
+	// far higher, matching real tokenizers.)
 	got := EstimateTokens(`{"name":"Bash","input":{"command":"ls -la"}}`)
-	if got != 8 {
-		t.Errorf("EstimateTokens(json) = %d, want 8", got)
+	if got != 27 {
+		t.Errorf("EstimateTokens(json) = %d, want 27", got)
 	}
 }
 
-func TestCJKTokensPerChar(t *testing.T) {
+func TestEstimateTokens_CJK(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		provider string
-		want     float64
-	}{
-		{"zhipu", 0.85},
-		{"deepseek", 0.50},
-		{"xiaomi", 0.50},
-		{"unknown", 0.65},
-		{"", 0.65},
+	// 你好世界: CJK 4, Words 1 → 4*0.72 + 1*0.48 = 2.88 + 0.48 = 3.36 → 3.
+	// (Old default-provider heuristic: 4*0.65 = 2.6 → 2.)
+	got := EstimateTokens("你好世界")
+	if got != 3 {
+		t.Errorf("EstimateTokens(\"你好世界\") = %d, want 3", got)
 	}
-	for _, c := range cases {
-		got := CJKTokensPerChar(c.provider)
-		if got != c.want {
-			t.Errorf("CJKTokensPerChar(%q) = %v, want %v", c.provider, got, c.want)
-		}
+}
+
+func TestEstimateTokens_Digits(t *testing.T) {
+	t.Parallel()
+	// "12345": Digit 5, Words 1 → 5*1.34 + 0.48 = 6.70 + 0.48 = 7.18 → 7.
+	// (Old heuristic: 5*0.20 = 1.)
+	got := EstimateTokens("12345")
+	if got != 7 {
+		t.Errorf("EstimateTokens(\"12345\") = %d, want 7", got)
+	}
+}
+
+func TestEstimateTokens_FlooredAtZero(t *testing.T) {
+	t.Parallel()
+	// 100 tabs: Indent 100, everything else 0 → 100*(-0.04) = -4 → floored 0.
+	want := 0
+	got := EstimateTokens(strings.Repeat("\t", 100))
+	if got != want {
+		t.Errorf("EstimateTokens(100 tabs) = %d, want %d (negative model output floored)", got, want)
+	}
+}
+
+func TestSeedTokenRatios_Application(t *testing.T) {
+	t.Parallel()
+	// Direct application check: EstimateTokens must be exactly the seed
+	// ratios applied to the counted features, not some other table.
+	// 你好世界 → CJK 4, Words 1.
+	want := int(float64(4)*SeedTokenRatios[0] + float64(1)*SeedTokenRatios[4])
+	if got := EstimateTokens("你好世界"); got != want {
+		t.Errorf("EstimateTokens(CJK) = %d, want %d (features × SeedTokenRatios)", got, want)
+	}
+	// "12345" → Digit 5, Words 1.
+	want = int(float64(5)*SeedTokenRatios[2] + float64(1)*SeedTokenRatios[4])
+	if got := EstimateTokens("12345"); got != want {
+		t.Errorf("EstimateTokens(digits) = %d, want %d (features × SeedTokenRatios)", got, want)
+	}
+	// The seed table itself is the 2026-10-04 measurement.
+	if SeedTokenRatios != [6]float64{0.72, 1.38, 1.34, -0.04, 0.48, 0.11} {
+		t.Errorf("SeedTokenRatios = %v, want the 2026-10-04 measured {0.72 1.38 1.34 -0.04 0.48 0.11}", SeedTokenRatios)
 	}
 }
 

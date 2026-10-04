@@ -120,8 +120,9 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 		Logger: slog.Default(),
 	})
 
-	// 10 messages × ~225 tokens each ≈ 2250 tokens > findKeepFrom tail budget (2000).
-	eng.SetMessages(makeLargeMessages(10, 1100))
+	// 10 messages × ~241 store-estimated tokens each ≈ 2410 tokens >
+	// findKeepFrom tail budget (2000).
+	eng.SetMessages(makeLargeMessages(10, 2000))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -267,8 +268,8 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 		Model:        "test-model",
 	})
 
-	// Compact the sub-engine directly. 20 × ~125 tokens ≈ 2500 > tail budget (2000).
-	subMsgs := makeLargeMessages(20, 600)
+	// Compact the sub-engine directly. 20 × ~120 store-estimated tokens ≈ 2400 > tail budget (2000).
+	subMsgs := makeLargeMessages(20, 900)
 	subEng.SetMessages(subMsgs)
 
 	compacted, compactErr := compactor.Compact(context.Background(), subEng.Messages())
