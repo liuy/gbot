@@ -936,7 +936,6 @@ func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
 // (sibling Bash error kills sibling tools) sets DisplayOutput on the synthetic error event.
 func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 	t.Parallel()
-	started := make(chan struct{})
 	tools := map[string]tool.Tool{
 		"Bash": &concurrentTool{
 			name: "Bash", isSafe: false,
@@ -947,7 +946,6 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 		"slow": &concurrentTool{
 			name: "slow", isSafe: false,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-				close(started)
 				time.Sleep(5 * time.Second) // REAL-TIME: long sleep to test abort path (context cancelled before completion)
 				return &tool.ToolResult{Data: "should not reach"}, nil
 			},

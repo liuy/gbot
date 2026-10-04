@@ -8889,6 +8889,26 @@ func TestExtractFilePathFromInput_InvalidJSON(t *testing.T) {
 // OpenAI-compatible APIs require valid JSON in tool_use arguments.
 // When streaming is interrupted mid-tool-call, the accumulated input
 // may be incomplete JSON. These tests verify all interrupt paths.
+//
+// Every test below follows the same two handshake rules.
+//
+// 1. Cancel only after an engine-emitted event, never after a completed
+//    send on the unbuffered stream channel: a completed send proves the
+//    event was delivered, not that the engine finished processing it.
+//    Delta events are not usable edges either — emitEvent buffers them in
+//    its coalesce buffers and dispatches them only when a later non-delta
+//    event arrives, which never happens for a block left deliberately open.
+//
+// 2. Abort the engine before cancelling the test context. QuerySync wraps
+//    the test context in a child context and registers the child's cancel
+//    as the engine's active cancel; that child is the one callLLM inspects
+//    after the stream ends. Go closes the parent's done channel before it
+//    propagates cancellation to its children, so the provider goroutine can
+//    close the stream and the post-loop path can read ctx.Err() == nil on
+//    the child — that is the genuine-stream-failure branch, which appends
+//    no assistant message. Engine.Abort cancels the child synchronously and
+//    closes the gap; the cancel() that follows only releases the provider
+//    goroutine so the channel closes.
 // ---------------------------------------------------------------------------
 
 // assertToolUseAfterNormalize runs NormalizeMessagesForAPI on engine messages
@@ -8916,6 +8936,47 @@ func assertToolUseAfterNormalize(t *testing.T, eng *Engine, toolID, wantInput st
 	t.Errorf("no assistant message with tool_use %s found in %d messages", toolID, len(normalized))
 }
 
+// TestNormalize_MalformedToolUseInput_FromStoppedBlock covers the sanitization
+// branch itself, which the interrupt tests below never reach: cb.Input is only
+// written at content_block_stop, so a block left open contributes an empty
+// Input and the partial JSON never survives to normalization. Stopping the
+// block writes the accumulated bytes verbatim, which is the only way malformed
+// JSON can actually land on the wire as function arguments.
+func TestNormalize_MalformedToolUseInput_FromStoppedBlock(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_malformed", Name: "Read"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}, nil)
+	// The tool_use turn makes the loop continue, so a second stream is needed
+	// for the query to terminate; text-only ends it.
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 4}},
+		{Type: "message_stop"},
+	}, nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	result := eng.QuerySync(context.Background(), "test", "")
+	if result.Error != nil {
+		t.Fatalf("expected a clean two-turn query, got %v", result.Error)
+	}
+
+	assertToolUseAfterNormalize(t, eng, "call_malformed", "{}")
+}
+
 // TestStreamInterrupt_PartialToolInput_InLoopSelect tests the ctx.Done() path
 // inside the for-range streaming loop (select guard).
 func TestStreamInterrupt_PartialToolInput_InLoopSelect(t *testing.T) {
@@ -8930,24 +8991,30 @@ func TestStreamInterrupt_PartialToolInput_InLoopSelect(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
 
 	go func() {
 		defer close(slowCh)
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_1", Name: "Agent"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"desc":"partial`}}
-		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: ` more`}}
 	}()
 
+	// Edge: tool_start is dispatched while content_block_start is being
+	// processed, so it proves the tool_use block is already in the partial
+	// message the interrupt path appends.
+	var blockOpen atomic.Bool
 	go func() {
-		<-started
+		blockOpen.Store(tc.WaitForEventCount(types.EventToolStart, 1, 5*time.Second)) // REAL-TIME
+		eng.Abort()
 		cancel()
 	}()
 
 	result := eng.QuerySync(ctx, "test", "")
+	if !blockOpen.Load() {
+		t.Fatal("timed out waiting for tool_start before cancelling the stream")
+	}
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -8970,31 +9037,31 @@ func TestStreamInterrupt_PartialToolInput_PostLoop(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
 
 	go func() {
 		defer close(slowCh)
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_post", Name: "Bash"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"command":"sleep`}}
-		// Sentinel: the unbuffered send below returns only when the engine
-		// RECEIVED it — and the engine processes stream events sequentially,
-		// so receipt of the sentinel proves every earlier event was fully
-		// processed. Cancelling after close(started) is then race-free even
-		// under parallel-test load.
-		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `1`}}
-		close(started)
 		<-ctx.Done()
-		// Don't send more events — channel closes via defer.
-		// for-range exits naturally, triggering the post-loop path.
+		// No further events: closing slowCh makes for-range exit naturally,
+		// which is the post-loop path this test targets.
 	}()
 
+	// Edge: tool_start is dispatched while content_block_start is being
+	// processed, so it proves the tool_use block is already in the partial
+	// message the interrupt path appends.
+	var blockOpen atomic.Bool
 	go func() {
-		<-started
+		blockOpen.Store(tc.WaitForEventCount(types.EventToolStart, 1, 5*time.Second)) // REAL-TIME
+		eng.Abort()
 		cancel()
 	}()
 
 	result := eng.QuerySync(ctx, "test", "")
+	if !blockOpen.Load() {
+		t.Fatal("timed out waiting for tool_start before cancelling the stream")
+	}
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -9016,7 +9083,6 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
 
 	go func() {
 		defer close(slowCh)
@@ -9028,28 +9094,29 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 		// Block 1: incomplete tool_use
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_partial", Name: "Agent"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"prompt":"do someth`}}
-		// Sentinel (see PartialToolInput_PostLoop): receipt of this send
-		// proves the complete call_complete block and the first partial
-		// delta were processed before cancel can fire.
-		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `x`}}
-		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `ing`}}
 	}()
 
+	// Edge: tool_run is dispatched by content_block_stop only after the
+	// block's accumulated input has been written into it, and the second
+	// tool_start proves block 1 is in the message as well.
+	var blocksPrepared atomic.Bool
 	go func() {
-		<-started
+		completeOK := tc.WaitForEventCount(types.EventToolRun, 1, 5*time.Second)  // REAL-TIME
+		partialOK := tc.WaitForEventCount(types.EventToolStart, 2, 5*time.Second) // REAL-TIME
+		blocksPrepared.Store(completeOK && partialOK)
+		eng.Abort()
 		cancel()
 	}()
 
 	result := eng.QuerySync(ctx, "test", "")
+	if !blocksPrepared.Load() {
+		t.Fatal("timed out waiting for tool_run and tool_start before cancelling the stream")
+	}
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
-
-	// Yield so the <-started/cancel goroutine and the <-ctx.Done() goroutine
-	// have a chance to fully exit before goleak checks.
-	runtime.Gosched()
 
 	// Complete tool_use should be preserved as-is
 	assertToolUseAfterNormalize(t, eng, "call_complete", `{"path":"/tmp/file.txt"}`)
@@ -9071,7 +9138,6 @@ func TestStreamInterrupt_ValidToolInput_NotModified(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
 
 	go func() {
 		defer close(slowCh)
@@ -9079,22 +9145,27 @@ func TestStreamInterrupt_ValidToolInput_NotModified(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "call_valid", Name: "Grep"}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"pattern":"TODO"}`}}
 		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-		// Extra event ensures content_block_stop is fully processed before
-		// close(started) can fire. Without this, Go's scheduler may run the
-		// cancel goroutine between receiving content_block_stop and the select
-		// check, causing the interrupt handler to skip content_block_stop processing.
-		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}}
-		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 	}()
 
+	// Edge: tool_run is dispatched by content_block_stop only after the
+	// block's accumulated input has been written into it, so it proves the
+	// completed tool_use is already in the message the interrupt path appends.
+	var toolRunSeen atomic.Bool
 	go func() {
-		<-started
+		toolRunSeen.Store(tc.WaitForEventCount(types.EventToolRun, 1, 5*time.Second)) // REAL-TIME
+		eng.Abort()
 		cancel()
 	}()
 
-	eng.QuerySync(ctx, "test", "")
+	result := eng.QuerySync(ctx, "test", "")
+	if !toolRunSeen.Load() {
+		t.Fatal("timed out waiting for tool_run before cancelling the stream")
+	}
+	if result.Error == nil {
+		t.Fatal("stream cancellation should produce an error")
+	}
 
 	assertToolUseAfterNormalize(t, eng, "call_valid", `{"pattern":"TODO"}`)
 }
@@ -9113,27 +9184,31 @@ func TestStreamInterrupt_TextOnly_NoPanic(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
 
 	go func() {
 		defer close(slowCh)
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "I was thinking"}}
-		// Sentinel (see PartialToolInput_PostLoop): receipt proves the first
-		// text delta was processed before cancel can fire.
-		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: " "}}
-		close(started)
 		<-ctx.Done()
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "..."}}
 	}()
 
+	// Edge: text_start is dispatched while content_block_start is being
+	// processed, so it proves the interrupt lands on a turn whose content
+	// blocks are non-empty — the condition for appending the partial
+	// assistant message.
+	var blockOpen atomic.Bool
 	go func() {
-		<-started
+		blockOpen.Store(tc.WaitForEventCount(types.EventTextStart, 1, 5*time.Second)) // REAL-TIME
+		eng.Abort()
 		cancel()
 	}()
 
 	result := eng.QuerySync(ctx, "test", "")
+	if !blockOpen.Load() {
+		t.Fatal("timed out waiting for text_start before cancelling the stream")
+	}
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
