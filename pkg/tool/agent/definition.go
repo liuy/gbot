@@ -94,16 +94,24 @@ func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 // If a global loader is initialized, includes custom agents.
 // Otherwise returns built-in agents only.
 func ListAgentDefinitions() []*types.AgentDefinition {
+	// The Agent tool's prompt embeds this list, so the order must be stable
+	// across process runs: RegisterPluginAgents appends in maps.Values order
+	// (randomized per process), which shifts the list between restarts and
+	// breaks the prompt-cache prefix from the very first token of the tools
+	// section.
+	sortByAgentType := func(defs []*types.AgentDefinition) []*types.AgentDefinition {
+		slices.SortFunc(defs, func(a, b *types.AgentDefinition) int { return cmp.Compare(a.AgentType, b.AgentType) })
+		return defs
+	}
 	if globalLoader != nil {
-		return globalLoader.ListAll()
+		return sortByAgentType(globalLoader.ListAll())
 	}
 
 	defs := make([]*types.AgentDefinition, 0, len(builtInAgents))
 	for _, def := range builtInAgents {
 		defs = append(defs, def)
 	}
-	slices.SortFunc(defs, func(a, b *types.AgentDefinition) int { return cmp.Compare(a.AgentType, b.AgentType) })
-	return defs
+	return sortByAgentType(defs)
 }
 
 // ---------------------------------------------------------------------------

@@ -1496,3 +1496,37 @@ USER_PLANNER_MARKER`
 		t.Errorf("Planner prompt = %q, want user override marker", def.SystemPrompt())
 	}
 }
+
+func TestRegisterPluginAgents_SortedAfterRegistration(t *testing.T) {
+	// getActiveAgentsFromList returns maps.Values order (per-process
+	// random); the register path must re-sort so ListAll's documented
+	// "sorted by name" holds and the Agent prompt stays stable across
+	// restarts (prompt-cache prefix breaks from token ~128 otherwise).
+	loader := NewLoader(t.TempDir())
+	loader.Load()
+	loader.RegisterPluginAgents([]types.AgentDefinition{
+		{AgentType: "Zeta", Source: types.AgentSourcePlugin},
+		{AgentType: "Alpha", Source: types.AgentSourcePlugin},
+		{AgentType: "Mid", Source: types.AgentSourcePlugin},
+	})
+	all := loader.ListAll()
+	// Presence-set, not exact list: user-dir agents (video-critic etc.) may
+	// also be present, so only assert the three registered ones survived.
+	seen := map[string]bool{}
+	for _, d := range all {
+		seen[d.AgentType] = true
+	}
+	for _, name := range []string{"Zeta", "Alpha", "Mid"} {
+		if !seen[name] {
+			t.Errorf("registered plugin agent %q missing from ListAll()", name)
+		}
+	}
+	if len(all) < 3 {
+		t.Fatalf("ListAll() = %d agents, want >= 3", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i-1].AgentType > all[i].AgentType {
+			t.Errorf("ListAll() not sorted: [%d]=%q > [%d]=%q", i-1, all[i-1].AgentType, i, all[i].AgentType)
+		}
+	}
+}

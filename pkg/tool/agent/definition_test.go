@@ -183,3 +183,35 @@ func TestBuiltInAgentsHaveSourceField(t *testing.T) {
 		}
 	}
 }
+
+func TestListAgentDefinitions_LoaderPathSorted(t *testing.T) {
+	// The Agent tool's prompt embeds this list; an unstable order changes the
+	// system prompt between process runs and breaks the engine's prompt-cache
+	// prefix on every restart. The fallback path sorts; the loader path must
+	// too (its cached order is filesystem load order).
+	l := NewLoader(t.TempDir())
+	l.cached = []*types.AgentDefinition{
+		{AgentType: "Zeta", WhenToUse: "z"},
+		{AgentType: "Alpha", WhenToUse: "a"},
+		{AgentType: "Mid", WhenToUse: "m"},
+	}
+	l.once.Do(func() {}) // mark loaded: keep the hand-seeded order
+	prev := globalLoader
+	globalLoader = l
+	t.Cleanup(func() { globalLoader = prev })
+
+	defs := ListAgentDefinitions()
+	var got []string
+	for _, d := range defs {
+		got = append(got, d.AgentType)
+	}
+	want := []string{"Alpha", "Mid", "Zeta"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("definitions[%d] = %q, want %q (loader path must be sorted)", i, got[i], want[i])
+		}
+	}
+}

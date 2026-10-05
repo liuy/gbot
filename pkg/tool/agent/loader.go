@@ -893,4 +893,7 @@ func (l *Loader) RegisterPluginAgents(agents []types.AgentDefinition) {
 		l.cached = append(l.cached, &agents[i])
 	}
 	l.cached = getActiveAgentsFromList(l.cached)
+	// Restore ListAll's documented "sorted by name" invariant:
+	// getActiveAgentsFromList returns maps.Values order (per-process random).
+	slices.SortFunc(l.cached, func(a, b *types.AgentDefinition) int { return cmp.Compare(a.AgentType, b.AgentType) })
 }
