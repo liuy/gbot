@@ -43,13 +43,26 @@ func echoTool(output string) tool.Tool {
 // (CreateTools + WireEngine + SetToolRefs) sharing the given hooks system,
 // and registers an Echo tool returning tag. Returns the engine and its own
 // REPL instance. Optional responses replace the default single text reply.
+//
+// The Close cleanups are part of the contract: tests that can leak a goroutine
+// holding the hook session mutex must use buildPerEngineHarness instead.
 func newPerEngineHarness(t *testing.T, hookSystem *hooks.Hooks, tag string, responses ...mockResponse) (*Engine, *repl.REPLTool) {
+	t.Helper()
+	eng, replTool := buildPerEngineHarness(t, hookSystem, tag, responses...)
+	t.Cleanup(func() { replTool.Close() })
+	t.Cleanup(func() { eng.Close() })
+	return eng, replTool
+}
+
+// buildPerEngineHarness omits the Close cleanups because replTool.Close()
+// takes the REPL session mutex: a leaked goroutine holding it makes Close
+// block the test binary instead of letting the test fail.
+func buildPerEngineHarness(t *testing.T, hookSystem *hooks.Hooks, tag string, responses ...mockResponse) (*Engine, *repl.REPLTool) {
 	t.Helper()
 	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{WorkingDir: t.TempDir(), Hooks: hookSystem}
 	refs := CreateTools(deps, tl)
 	refs.Reg.MustRegister(echoTool(tag))
-	t.Cleanup(func() { refs.REPL.Close() })
 
 	mp := &mockProvider{}
 	if responses == nil {
@@ -65,7 +78,6 @@ func newPerEngineHarness(t *testing.T, hookSystem *hooks.Hooks, tag string, resp
 		Logger:        slog.Default(),
 		Hooks:         hookSystem,
 	})
-	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
 	WireEngine(eng, refs, deps)
 	eng.SetToolRefs(refs)
@@ -309,6 +321,133 @@ func TestIntegration_PerEngine_ToolExecutorDispatchUsesEngineRepl(t *testing.T) 
 	}
 	if n := globalRunner.count(); n != 0 {
 		t.Errorf("global default runner dispatched %d times, want 0 (engine-side dispatch must shadow the global default)", n)
+	}
+}
+
+// TestIntegration_PerEngine_TaskHooksFromToolCallUseEngineRepl: the Task tool
+// dispatches TaskCreated/TaskCompleted from inside its own Call, on the ctx it
+// was handed. That ctx must carry the owning engine's REPL — an unpinned one
+// makes the dispatch fall back to the process-global default runner, which is
+// a different JS session, so the hook's globalThis and its tools.* both
+// resolve somewhere else.
+func TestIntegration_PerEngine_TaskHooksFromToolCallUseEngineRepl(t *testing.T) {
+	t.Parallel()
+
+	globalRunner := &countingJsRunner{}
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"TaskCreated": []hooks.HookMatcher{
+			{Hooks: []hooks.HookConfig{{
+				Type:    hooks.HookTypeJS,
+				Code:    `async (input) => { globalThis.__created = await tools.Echo({}); return "ok" }`,
+				Timeout: 5,
+			}}},
+		},
+		"TaskCompleted": []hooks.HookMatcher{
+			{Hooks: []hooks.HookConfig{{
+				Type:    hooks.HookTypeJS,
+				Code:    `async (input) => { globalThis.__completed = await tools.Echo({}); return "ok" }`,
+				Timeout: 5,
+			}}},
+		},
+	}, &integrationHookRecorder{})
+	hookSystem.SetJsHookRunner(globalRunner)
+
+	// Each engine gets its own task list, so both drive the same input.
+	taskUse := func(id, input string) mockResponse {
+		return mockResponse{events: toolUseStreamEvents("test-model", id, "Task", input)}
+	}
+	engA, replA := newPerEngineHarness(t, hookSystem, "engineA",
+		taskUse("tu_create_a", `{"creates":[{"subject":"alpha","description":"first task"}]}`),
+		taskUse("tu_complete_a", `{"updates":[{"taskId":"1","status":"completed"}]}`),
+		mockResponse{events: textStreamEvents("test-model", "done")},
+	)
+	engB, replB := newPerEngineHarness(t, hookSystem, "engineB",
+		taskUse("tu_create_b", `{"creates":[{"subject":"alpha","description":"first task"}]}`),
+		taskUse("tu_complete_b", `{"updates":[{"taskId":"1","status":"completed"}]}`),
+		mockResponse{events: textStreamEvents("test-model", "done")},
+	)
+
+	probes := []string{"__created", "__completed"}
+
+	runQuery(t, engA)
+	for _, probe := range probes {
+		if got := readHookState(t, replA, `() => globalThis.`+probe); got != `"engineA"` {
+			t.Errorf("engine A hook session %s = %s, want \"engineA\" (the Task tool's own dispatch must run in the dispatching engine's REPL)", probe, got)
+		}
+		if got := readHookState(t, replB, `() => typeof globalThis.`+probe); got != `"undefined"` {
+			t.Errorf("engine B hook session saw A's %s: typeof = %s, want \"undefined\"", probe, got)
+		}
+	}
+
+	runQuery(t, engB)
+	for _, probe := range probes {
+		if got := readHookState(t, replB, `() => globalThis.`+probe); got != `"engineB"` {
+			t.Errorf("engine B hook session %s = %s, want \"engineB\" (B's dispatch must run in B's REPL)", probe, got)
+		}
+		if got := readHookState(t, replA, `() => globalThis.`+probe); got != `"engineA"` {
+			t.Errorf("engine A hook session %s after B = %s, want \"engineA\" (B's dispatch must not touch A's session)", probe, got)
+		}
+	}
+
+	if n := globalRunner.count(); n != 0 {
+		t.Errorf("global default runner dispatched %d times, want 0 (a tool-call dispatch must shadow the process-global runner)", n)
+	}
+}
+
+// TestIntegration_PerEngine_TaskHookReentrantToolCallSkipsInnerJsHook: a js
+// TaskCreated hook calls tools.Task, which re-enters the tool through the hook
+// session's toolFn → the engine's ExecuteTool. The ctx that hop carries has
+// both the runner — it rides in from the hook dispatch — and the hook-origin
+// marker the hook session stamped on it. The marker is what the test is really
+// holding: without it the inner js hook runs and re-enters the session mutex
+// the outer hook is holding, and the query never returns.
+//
+// No engine/REPL Close cleanup here on purpose: in the re-entrant form the
+// leaked goroutine holds the REPL session mutex forever, and replTool.Close()
+// would block the test binary instead of just failing the test.
+func TestIntegration_PerEngine_TaskHookReentrantToolCallSkipsInnerJsHook(t *testing.T) {
+	t.Parallel()
+
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"TaskCreated": []hooks.HookMatcher{
+			{Hooks: []hooks.HookConfig{{
+				Type: hooks.HookTypeJS,
+				Code: `async (input) => {
+					globalThis.__outer = input.task_id
+					globalThis.__inner = await tools.Task({creates: [{subject: "inner", description: "created by the hook"}]})
+					return "ok"
+				}`,
+				Timeout: 5,
+			}}},
+		},
+	}, &integrationHookRecorder{})
+
+	eng, replTool := buildPerEngineHarness(t, hookSystem, "engineA",
+		mockResponse{events: toolUseStreamEvents("test-model", "tu_task_re", "Task", `{"creates":[{"subject":"outer","description":"created by the model"}]}`)},
+		mockResponse{events: textStreamEvents("test-model", "done")},
+	)
+
+	done := make(chan QueryResult, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		done <- eng.QuerySync(ctx, "start", "")
+	}()
+
+	select {
+	case result := <-done:
+		if result.Error != nil {
+			t.Fatalf("QuerySync: %v", result.Error)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("query never completed: the re-entrant TaskCreated dispatch re-entered the hook session")
+	}
+
+	if got := readHookState(t, replTool, `() => globalThis.__outer`); got != `"1"` {
+		t.Errorf("hook session __outer = %s, want \"1\" (only the outer hook may run; an inner one would overwrite it with the hook-created task's id)", got)
+	}
+	if got := readHookState(t, replTool, `() => globalThis.__inner`); got != `"Created: #2 inner"` {
+		t.Errorf("hook session __inner = %s, want \"Created: #2 inner\" (the tool call must still run even though its js hook is skipped)", got)
 	}
 }
 

@@ -1028,7 +1028,13 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		e.toolNameRecorder(tt.Name)
 	}
 
-	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
+	// The pin travels with the ctx because a tool's own hook dispatches
+	// (TaskCreated/TaskCompleted) run on exactly the ctx they were handed:
+	// unpin it and they fall back to the process-global js runner, losing
+	// this engine's hook session. Safe to pin — a call issued from js hook
+	// code reaches here carrying the hook-origin marker, and dispatch skips
+	// js hooks for those ctxs rather than re-entering the held session.
+	result, err := t.Call(e.hookDispatchCtx(e.siblingCtx), tt.Input, toolCtx)
 	elapsed := time.Since(start)
 	tt.Duration = elapsed
 

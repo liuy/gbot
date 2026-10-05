@@ -1880,8 +1880,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			if blockResult := e.runStopHook(ctx); blockResult != nil {
 				e.logger.Info("stop hook blocked, continuing turn")
 				hookMsg := types.NewUserMessage([]types.ContentBlock{
-					types.NewTextBlock("[hook] " + blockResult.Stderr),
+					types.NewTextBlock(hooks.StopHookMessage(*blockResult)),
 				})
+				// FlagMeta: the feedback is a nudge for the model, not something
+				// the user said. Without it the message renders as a user bubble,
+				// becomes a rewind candidate, counts as user text in the context
+				// breakdown, and gets a timestamp prefix from injectTimestamp.
+				// Source: stopHooks.ts:258-261 — createUserMessage({isMeta: true}).
+				hookMsg.Flags = types.FlagMeta
 				e.appendMessage(hookMsg)
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.mu.Lock()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -394,6 +396,168 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 	// LLM should have been called twice (first turn blocked, second turn completed)
 	if mp.index < 2 {
 		t.Errorf("expected at least 2 LLM calls (stop hook rewake), got %d", mp.index)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stop hook: the blocking feedback text handed to the model
+// ---------------------------------------------------------------------------
+
+// stopHookFeedback runs a query whose Stop hook blocks once, and returns the
+// user message the engine injected as feedback together with the text of that
+// same message in the API-bound copy. Exactly one such message must exist —
+// the engine either injects the feedback or it doesn't.
+//
+// The API-bound text is a separate observable: injectTimestamp rewrites the
+// copy it sends to the model, so assertions on the stored message alone cannot
+// see what the model was actually given.
+func stopHookFeedback(t *testing.T, blockResult hooks.HookResult) stopHookFeedbackResult {
+	t.Helper()
+
+	rec := &integrationHookRecorder{
+		results: []hooks.HookResult{
+			blockResult,
+			{Outcome: hooks.HookOutcomeSuccess, HookName: blockResult.HookName},
+		},
+	}
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"Stop": []hooks.HookMatcher{
+			{Matcher: "", Hooks: []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: blockResult.HookName}}},
+		},
+	}, rec)
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "I'm done"), nil)
+	mp.addResponse(textStreamEvents("test-model", "more work done"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+		Hooks:    hookSystem,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "Do something", "")
+	if result.Error != nil {
+		t.Fatalf("QuerySync: %v", result.Error)
+	}
+
+	var feedbacks []types.Message
+	var others []string
+	for _, m := range result.Messages {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type != types.ContentTypeText {
+				continue
+			}
+			if strings.HasPrefix(b.Text, "Stop hook feedback:") {
+				feedbacks = append(feedbacks, m)
+			} else {
+				others = append(others, b.Text)
+			}
+		}
+	}
+	if len(feedbacks) != 1 {
+		t.Fatalf("Stop feedback text blocks = %d, want exactly 1; other user text: %q", len(feedbacks), others)
+	}
+	msg := feedbacks[0]
+	return stopHookFeedbackResult{
+		message: msg,
+		apiText: apiTextForMessage(t, eng, msg.ID),
+	}
+}
+
+type stopHookFeedbackResult struct {
+	message types.Message
+	apiText string
+}
+
+// apiTextForMessage returns the first text block of msgID as marshalMessages
+// hands it to the model — the copy injectTimestamp has already rewritten.
+func apiTextForMessage(t *testing.T, eng *Engine, msgID string) (text string) {
+	t.Helper()
+	for _, m := range eng.marshalMessages() {
+		if m.ID != msgID {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText {
+				return b.Text
+			}
+		}
+	}
+	t.Fatalf("message %s has no text block in the API-bound copy", msgID)
+	return
+}
+
+// assertStopHookFeedbackMeta checks the two halves of TS's isMeta marking
+// (stopHooks.ts:258-261): the flag on the stored message, and the model-facing
+// copy staying byte-identical to it instead of gaining a timestamp prefix.
+func assertStopHookFeedbackMeta(t *testing.T, r stopHookFeedbackResult) {
+	t.Helper()
+	if r.message.Flags&types.FlagMeta == 0 {
+		t.Errorf("feedback Flags = %d, want the FlagMeta bit %d set", r.message.Flags, types.FlagMeta)
+	}
+	stored := r.message.Content[0].Text
+	if r.apiText != stored {
+		t.Errorf("model-facing text = %q, want %q verbatim (injectTimestamp prefixed a message it must skip)", r.apiText, stored)
+	}
+}
+
+// A hook that blocks through JSON output carries its reason in stdout and
+// leaves stderr empty, so a formatter keyed on stderr discards the reason and
+// hands the model a bare header.
+func TestIntegration_Stop_BlockingJsonDecisionSurfacesReason(t *testing.T) {
+	t.Parallel()
+
+	r := stopHookFeedback(t, hooks.HookResult{
+		Outcome:  hooks.HookOutcomeBlocking,
+		HookName: "json-stop",
+		Output:   &hooks.HookOutput{Decision: "block", Reason: "run the tests before finishing"},
+	})
+	want := "Stop hook feedback:\nrun the tests before finishing"
+	if r.message.Content[0].Text != want {
+		t.Errorf("Stop feedback = %q, want %q", r.message.Content[0].Text, want)
+	}
+	assertStopHookFeedbackMeta(t, r)
+}
+
+// The exit-2 path names the hook and quotes its stderr.
+func TestIntegration_Stop_BlockingExit2QuotesHookAndStderr(t *testing.T) {
+	t.Parallel()
+
+	r := stopHookFeedback(t, hooks.HookResult{
+		Outcome:  hooks.HookOutcomeBlocking,
+		HookName: "stop-hook",
+		Stderr:   "keep working",
+	})
+	want := "Stop hook feedback:\n[stop-hook]: keep working"
+	if r.message.Content[0].Text != want {
+		t.Errorf("Stop feedback = %q, want %q", r.message.Content[0].Text, want)
+	}
+	assertStopHookFeedbackMeta(t, r)
+}
+
+// The stored message and the model-facing copy diverge on their own: an
+// unmarked user message gains a wall-clock prefix here, and no assertion on
+// the stored text can catch it.
+func TestIntegration_Stop_HookFeedbackReachesModelWithoutTimestamp(t *testing.T) {
+	t.Parallel()
+
+	r := stopHookFeedback(t, hooks.HookResult{
+		Outcome:  hooks.HookOutcomeBlocking,
+		HookName: "stop-hook",
+		Stderr:   "keep working",
+	})
+	want := "Stop hook feedback:\n[stop-hook]: keep working"
+	if r.apiText != want {
+		t.Errorf("model-facing Stop feedback = %q, want %q with no prefix", r.apiText, want)
 	}
 }
 
