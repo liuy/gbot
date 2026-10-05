@@ -652,9 +652,18 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 				}
 				mv := MessageView{Role: "user"}
 				for _, block := range msg.Content {
-					if block.Type == types.ContentTypeText && strings.TrimSpace(block.Text) != "" {
-						mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
+					if block.Type != types.ContentTypeText || strings.TrimSpace(block.Text) == "" {
+						continue
 					}
+					// Persisted mid-turn queued messages carry the reminder
+					// envelope; history replay unwraps them to the original
+					// text and renders them as gray echo blocks (BlockUser),
+					// matching the live drain rendering.
+					if original, ok := utils.UnwrapQueuedReminder(block.Text); ok {
+						mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockUser, Text: original})
+						continue
+					}
+					mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
 				}
 				if len(mv.Blocks) > 0 {
 					views = append(views, mv)

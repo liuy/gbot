@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestBlockUserStreamingAppendsToAssistant verifies that mid-turn attachment drain
@@ -113,4 +116,43 @@ func TestBlockUserNotCreatedAfterStreaming(t *testing.T) {
 			t.Error("processAttachments path should NOT create BlockUser")
 		}
 	}
+}
+
+// The mid-turn queued message echo renders persistently gray (the model sees it
+// as a special reminder forever, so the UI matches): the BlockUser text must
+// carry styleDim's ANSI color (256-color 246), not plain terminal text.
+// lipgloss strips colors under the test env's Ascii profile, so the profile
+// is forced for this test.
+func TestBlockUserRendering_DimGray(t *testing.T) {
+	forceColorProfile(t)
+
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery()
+	app.status.SetStreaming(true)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("LLM text")
+
+	_, _ = app.updateRepl(attachmentMsg{
+		UserText:   "gray forever",
+		SourceUUID: "uuid-gray",
+	})
+
+	v := app.View()
+	if !strings.Contains(v, "gray forever") {
+		t.Fatalf("View should contain the queued message text, got:\n%s", v)
+	}
+	if !strings.Contains(v, "\x1b[38;5;246mgray forever") {
+		t.Errorf("queued message text must be wrapped in styleDim (gray), got:\n%q", v)
+	}
+}
+
+// forceColorProfile makes lipgloss emit ANSI colors under `go test` (no TTY),
+// restored via t.Cleanup.
+func forceColorProfile(t *testing.T) {
+	t.Helper()
+	backup := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(backup) })
 }

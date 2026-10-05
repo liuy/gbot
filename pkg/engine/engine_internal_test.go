@@ -6865,11 +6865,14 @@ func (p *attachmentGateProvider) Stream(ctx context.Context, req *llm.Request) (
 	return ch, nil
 }
 
-// Regression: ESC aborts query mid-tool, attachment queued during tool execution.
-// Turn loop drained the attachment (DrainByPriority) before ShouldAbort check,
-// so processAttachments found empty queue and the attachment was lost.
-// Expected: attachment survives abort and gets processed by processAttachments.
-func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) {
+// Regression: ESC aborts query mid-tool, user queued message sent during tool
+// execution. Original bug (queue era): the turn loop drained the queued item
+// before the ShouldAbort check, processAttachments found an empty queue, and
+// the message was lost. Persist-in-final-form era: the queued message is
+// appended to history the moment it is sent, so an abort can no longer lose
+// it — but it must also not run a surprise follow-up turn after the user
+// pressed ESC, and no duplicate plain copy may appear later.
+func TestAbort_DuringTool_QueuedMessageSurvivesInHistory(t *testing.T) {
 	eventCh := make(chan types.QueryEvent, 30)
 	dispatcher := &chanDispatcher{ch: eventCh}
 
@@ -6898,13 +6901,6 @@ func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) 
 		{Type: "message_stop"},
 	}, nil)
 
-	// Second response: for processAttachments turn (LLM responds to the attachment)
-	mp.addResponse([]llm.StreamEvent{
-		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
-		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "processed attachment"}},
-		{Type: "message_stop"},
-	}, nil)
-
 	eng := New(&Params{
 		Provider: mp,
 		ToolsProvider: func() map[string]tool.Tool {
@@ -6926,7 +6922,7 @@ func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) 
 		t.Fatal("timed out waiting for tool to start")
 	}
 
-	// While tool is running, queue an attachment (simulates user typing during tool execution)
+	// While tool is running, the user sends a queued message (mid-tool-execution)
 	eng.EnqueueAttachment(types.QueuedItem{
 		Value:    "user input during bash",
 		Mode:     types.ItemModePrompt,
@@ -6943,22 +6939,49 @@ func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) 
 		t.Fatal("timed out waiting for tool cancellation")
 	}
 
-	// Now: query ended, processAttachments should process the attachment.
-	// We expect to see a second turnStart (from processAttachments).
-	var gotFirstTurnEnd, gotSecondTurnStart bool
-	timeout := time.After(5 * time.Second)
-	for !gotSecondTurnStart {
+	// The queued message must survive the abort as a history message in final
+	// (reminder-wrapped) form — never lost, never duplicated.
+	waitForEnvelope := func(n int) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			count := 0
+			for _, m := range eng.Messages() {
+				if m.Role == types.RoleUser && len(m.Content) > 0 && m.Content[0].Type == types.ContentTypeText &&
+					strings.Contains(m.Content[0].Text, "user input during bash") {
+					count++
+				}
+			}
+			if count == n {
+				return
+			}
+			select {
+			case <-eventCh:
+			case <-deadline:
+				t.Fatalf("queued message occurrence count = %d, want %d after abort", count, n)
+			}
+		}
+	}
+	waitForEnvelope(1)
+
+	// ESC'd queries must not spawn a follow-up turn for the queued message:
+	// no second TurnStart may fire after the query's TurnEnd.
+	var gotFirstTurnEnd bool
+	deadline := time.After(1 * time.Second)
+	for {
 		select {
 		case evt := <-eventCh:
 			if evt.Type == types.EventTurnEnd && !gotFirstTurnEnd {
 				gotFirstTurnEnd = true
 			}
 			if evt.Type == types.EventTurnStart && gotFirstTurnEnd {
-				gotSecondTurnStart = true
+				t.Fatal("follow-up turn ran after ESC abort — the queued message should stay in history, not auto-run")
 			}
-		case <-timeout:
-			t.Fatalf("timed out: attachment not processed after abort. "+
-				"firstTurnEnd=%v secondTurnStart=%v", gotFirstTurnEnd, gotSecondTurnStart)
+			if evt.Type == types.EventQueryEnd && gotFirstTurnEnd {
+				return
+			}
+		case <-deadline:
+			return // quiet after abort — expected
 		}
 	}
 }

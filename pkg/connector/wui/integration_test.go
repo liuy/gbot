@@ -1187,3 +1187,35 @@ func TestBuildSessionList_EmptySessions(t *testing.T) {
 		t.Errorf("buildSessionList() = %v, want nil when no sessions", payload)
 	}
 }
+
+// updateStreamState must unwrap queued message events: the persisted message
+// carries the reminder envelope in content, but the takeover snapshot echo
+// shows the original user text (att.Prompt), matching what the live client
+// rendered.
+func TestUpdateStreamState_QueuedMessageEchoUsesOriginalText(t *testing.T) {
+	envelope := "<system-reminder>\nThe user sent a new message while you were working:\ncheck the logs" +
+		"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>"
+	ss := streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(envelope)},
+			Attachment: &types.Attachment{
+				Type:       types.AttachmentTypeQueued,
+				Prompt:     "check the logs",
+				SourceUUID: "u-1",
+				Mode:       types.ItemModePrompt,
+			},
+		},
+	})
+	if len(ss.blocks) != 1 {
+		t.Fatalf("streamState blocks = %d, want 1", len(ss.blocks))
+	}
+	if ss.blocks[0].Kind != "user" {
+		t.Errorf("block kind = %q, want user", ss.blocks[0].Kind)
+	}
+	if ss.blocks[0].Text != "check the logs" {
+		t.Errorf("echo text = %q, want unwrapped %q", ss.blocks[0].Text, "check the logs")
+	}
+}

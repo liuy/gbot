@@ -435,19 +435,18 @@ func TestStash_WithPendingQueue(t *testing.T) {
 	app.input.SetValue("stashed text")
 	app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 
-	// Enqueue a message
+	// Enqueue a message (engine takes it; pendingQueue stays empty)
 	app.input.SetValue("queued msg")
 	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
-	// Both should coexist: stash restored, pendingQueue has the message
 	if app.stashed != nil {
 		t.Error("stash should be cleared after restore")
 	}
-	if len(app.repl.pendingQueue) == 0 {
-		t.Error("pendingQueue should have the enqueued message")
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should stay empty (engine owns the message), got %d", len(app.repl.pendingQueue))
 	}
-	if app.repl.pendingQueue[0].Text != "queued msg" {
-		t.Errorf("expected queued msg text 'queued msg', got %q", app.repl.pendingQueue[0].Text)
+	if got := app.engine.AttachmentsLen(); got != 1 {
+		t.Errorf("engine queue len = %d, want 1 (message forwarded while stashed text restored)", got)
 	}
 	// Input should have the stashed text restored
 	if app.input.Value() != "stashed text" {

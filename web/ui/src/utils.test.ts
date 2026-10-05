@@ -7,6 +7,7 @@ import {
   isCollapsibleBlock,
   bindLongPress,
   createPopupHost,
+  unwrapQueuedReminder,
 } from './utils'
 import type { Block } from './model'
 
@@ -623,4 +624,26 @@ describe('createPopupHost', () => {
 		expect(host.isOpen()).toBe(true)
 		expect(openOrder).toBe('onOpen')
 	})
+})
+
+describe('unwrapQueuedReminder', () => {
+  const raw = 'wait, also run the tests'
+  const envelope =
+    '<system-reminder>\nThe user sent a new message while you were working:\n' + raw +
+    '\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
+
+  it('unwraps the queued-message envelope', () => {
+    expect(unwrapQueuedReminder(envelope)).toBe(raw)
+  })
+
+  it('rejects non-envelope text', () => {
+    expect(unwrapQueuedReminder('')).toBeNull()
+    expect(unwrapQueuedReminder('plain text')).toBeNull()
+    expect(unwrapQueuedReminder(
+      '<system-reminder>\nA background agent completed a job:\ndone\n</system-reminder>',
+    )).toBeNull()
+    expect(unwrapQueuedReminder(
+      '[2026-10-05 11:00:00 CST] ' + envelope,
+    )).toBeNull()
+  })
 })

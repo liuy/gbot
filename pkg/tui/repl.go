@@ -1595,7 +1595,10 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	)
 }
 
-// handleEnqueueMessage queues user input during streaming instead of discarding.
+// handleEnqueueMessage commits user input sent while streaming. The engine
+// persists it immediately as a reminder-wrapped history message (mid-turn
+// queued message), so there is no pending queue to populate — the echo arrives
+// via attachmentMsg (EventAttachment) and renders gray in the stream.
 func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -1603,16 +1606,14 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	if _, ok := a.commands.LookupSlashCommand(text); ok {
 		return nil
 	}
-	id := uuid.New().String()
 	a.engine.EnqueueAttachment(types.QueuedItem{
 		Value:     text,
 		Mode:      types.ItemModePrompt,
-		UUID:      id,
+		UUID:      uuid.New().String(),
 		Priority:  types.PriorityNext,
 		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 		Timestamp: time.Now(),
 	})
-	a.repl.pendingQueue = append(a.repl.pendingQueue, pendingQueueItem{ID: id, Text: text})
 	a.input.Reset()
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1

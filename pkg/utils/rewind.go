@@ -69,6 +69,12 @@ func IsSelectableUserMessage(msg types.Message) bool {
 		return false
 	}
 	text := FirstTextBlockContent(msg)
+	// Mid-turn queued messages are persisted user input, but they ride the
+	// reminder envelope; rewinding to one would resurrect it into the input
+	// box on abort (auto-rewind) instead of leaving it as history.
+	if IsQueuedEnvelope(text) {
+		return false
+	}
 	nonUserTags := []string{
 		"<local-command-stdout>", "<local-command-stderr>",
 		"<bash-stdout>", "<bash-stderr>",

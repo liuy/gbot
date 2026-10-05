@@ -409,3 +409,23 @@ export function timeDividerLabel(
 	if (later - earlier >= 15 * 60 * 1000) return dateTimeLabel(curr, locale)
 	return null
 }
+
+// Queued-message reminder envelope — mirrors pkg/utils/queued_message.go. The
+// engine persists mid-turn user queued messages in this exact wire form; the UI
+// unwraps it for display and styles the original text gray (the model sees it
+// as a special reminder forever, so the UI marks it forever too).
+const QUEUED_REMINDER_PREFIX =
+  '<system-reminder>\nThe user sent a new message while you were working:\n'
+const QUEUED_REMINDER_SUFFIX =
+  '\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
+
+// Returns the original user text when text is exactly the queued message
+// envelope, null otherwise (other system-reminder content never matches).
+export function unwrapQueuedReminder(text: string): string | null {
+  if (!text.startsWith(QUEUED_REMINDER_PREFIX)) return null
+  if (!text.endsWith(QUEUED_REMINDER_SUFFIX)) return null
+  return text.slice(
+    QUEUED_REMINDER_PREFIX.length,
+    text.length - QUEUED_REMINDER_SUFFIX.length,
+  )
+}

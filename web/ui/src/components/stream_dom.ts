@@ -22,6 +22,8 @@ import {
   textBlock,
   userEchoBlock,
   userTextSpan,
+  queuedEchoBlock,
+  queuedTextSpan,
   thinkingText,
   toolName,
   toolSummary,
@@ -37,6 +39,12 @@ import { createElement, createNode } from '../dom'
 
 export function createUserTextSpan(text: string): HTMLSpanElement {
   return createNode('span', { className: userTextSpan(), text })
+}
+
+// Queued-message echo: same structure as the user echo, muted gray. The text is
+// the ALREADY-unwrapped original (unwrapQueuedReminder ran upstream).
+export function createQueuedMessageTextSpan(text: string): HTMLSpanElement {
+  return createNode('span', { className: queuedTextSpan(), text })
 }
 
 interface ToolHeaderHandles {
@@ -158,6 +166,16 @@ export function appendUserBlock(parent: HTMLElement, text: string, before?: Node
   // createUserTextSpan so all user-text paths share the same source of truth.
   const div = createElement('div', userEchoBlock())
   div.appendChild(createUserTextSpan(text))
+  insertBefore(parent, div, before ?? null)
+  return div
+}
+
+// Streaming queued message echo — user echo shape, gray. All 'user' stream
+// blocks are queued messages (persist-in-final-form era); the text is the
+// already-unwrapped original.
+export function appendQueuedMessageBlock(parent: HTMLElement, text: string, before?: Node | null): HTMLDivElement {
+  const div = createElement('div', queuedEchoBlock())
+  div.appendChild(createQueuedMessageTextSpan(text))
   insertBefore(parent, div, before ?? null)
   return div
 }

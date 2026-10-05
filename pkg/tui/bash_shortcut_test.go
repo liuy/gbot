@@ -160,8 +160,18 @@ func TestHandleSubmitRepl_BangShortcut_DuringStreaming_Enqueues(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("handleSubmitRepl during streaming should return nil (enqueued), got %v", cmd)
 	}
-	if len(app.repl.pendingQueue) != 1 {
-		t.Errorf("pendingQueue = %d, want 1 (should have been enqueued)", len(app.repl.pendingQueue))
+	// The message is forwarded to the engine, never executed as a bash tool.
+	// Engine is idle here, so it lands in the engine's attachment queue; the
+	// TUI pendingQueue is no longer populated from user input.
+	if got := app.engine.AttachmentsLen(); got != 1 {
+		t.Errorf("engine queue len = %d, want 1 (bang command enqueued, not executed)", got)
+	}
+	for _, m := range app.repl.messages {
+		for _, b := range m.Blocks {
+			if b.Type == BlockTool && b.ToolCall.Name == "Bash" {
+				t.Error("bash tool must not execute during streaming — the command should be enqueued")
+			}
+		}
 	}
 }
 

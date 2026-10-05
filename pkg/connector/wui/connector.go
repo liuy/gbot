@@ -979,23 +979,31 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		}
 
 	case types.EventAttachment:
-		// Queued message drained mid-query at a turn boundary. Append a user
-		// echo block so takeover snapshot includes it.
+		// Queued message drained mid-query at a turn boundary (or a
+		// mid-turn queued message persisted immediately). Append a user echo
+		// block so takeover snapshot includes it. Prompt-mode attachments
+		// carry the original text in attachment.prompt; queued message events
+		// carry the reminder ENVELOPE in content, so prefer the prompt to
+		// keep the snapshot echo unwrapped.
 		if event.Message == nil {
 			return
 		}
-		var text strings.Builder
-		for _, cb := range event.Message.Content {
-			if cb.Type == types.ContentTypeText {
-				text.WriteString(cb.Text)
+		var text string
+		if att := event.Message.Attachment; att != nil && att.Mode == types.ItemModePrompt && att.Prompt != "" {
+			text = att.Prompt
+		} else {
+			for _, cb := range event.Message.Content {
+				if cb.Type == types.ContentTypeText {
+					text += cb.Text
+				}
 			}
 		}
-		if text.String() == "" {
+		if text == "" {
 			return
 		}
 		ss.blocks = append(ss.blocks, streamBlock{
 			Kind: "user",
-			Text: text.String(),
+			Text: text,
 		})
 
 	case types.EventToolEnd:

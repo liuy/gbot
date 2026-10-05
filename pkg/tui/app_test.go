@@ -7929,6 +7929,10 @@ func TestAttachmentMsg_UserPrompt_UUIDMismatch(t *testing.T) {
 // handleEnqueueMessage tests
 // ---------------------------------------------------------------------------
 
+// Persist-in-final-form era: handleEnqueueMessage forwards the message to the
+// engine only. Mid-turn the engine appends it to history immediately (echoed
+// via attachmentMsg); the TUI pendingQueue is no longer populated from user
+// input, so the input is cleared and the item reaches the engine.
 func TestHandleEnqueueMessage_PlainText(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
@@ -7939,17 +7943,20 @@ func TestHandleEnqueueMessage_PlainText(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("handleEnqueueMessage should return nil, got %T", cmd)
 	}
-	if len(app.repl.pendingQueue) != 1 {
-		t.Fatalf("pendingQueue should have 1 entry, got %d", len(app.repl.pendingQueue))
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should stay empty (engine owns the message), got %d", len(app.repl.pendingQueue))
 	}
-	if app.repl.pendingQueue[0].Text != "test message" {
-		t.Errorf("pendingQueue[0].Text = %q, want %q", app.repl.pendingQueue[0].Text, "test message")
-	}
-	if app.repl.pendingQueue[0].ID == "" {
-		t.Error("pendingQueue[0].ID should not be empty")
+	// Engine is idle here (no query running), so the item takes the legacy
+	// queue path — the immediate-append path is covered by pkg/engine tests.
+	if got := app.engine.AttachmentsLen(); got != 1 {
+		t.Errorf("engine queue len = %d, want 1 (idle enqueue)", got)
 	}
 	if app.input.Value() != "" {
 		t.Errorf("input should be reset after handleEnqueueMessage, got %q", app.input.Value())
+	}
+	// The typed text must be reachable via history navigation.
+	if got := app.history.Up("").Text; got != "test message" {
+		t.Errorf("history Up = %q, want %q", got, "test message")
 	}
 }
 
@@ -8125,12 +8132,11 @@ func TestKeyUp_PopsQueueBeforeHistory(t *testing.T) {
 // Call chain tests — enqueue → drain → render full path
 // ---------------------------------------------------------------------------
 
-// TestQueueMessage_CallChain_EnqueueDrainRender verifies the full path:
-// 1. User types text while streaming → handleEnqueueMessage
-// 2. pendingQueue gains entry + queue box renders it
-// 3. Engine drains → attachmentMsg with UUID match
-// 4. pendingQueue entry removed + message inserted into conversation
-// 5. Queue box disappears
+// TestQueueMessage_CallChain_EnqueueDrainRender verifies the drain→render
+// path: pendingQueue entries (however populated) are removed by matching
+// attachmentMsg UUIDs, the text lands in the conversation, and the queue box
+// shrinks accordingly. User input no longer populates pendingQueue (the
+// engine persists queued messages directly), so the queue is seeded explicitly.
 func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
@@ -8138,9 +8144,10 @@ func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	app.repl.StartQuery()
 	app.status.SetStreaming(true)
 
-	// Step 1: enqueue two messages while streaming
-	app.handleEnqueueMessage("first queued msg")
-	app.handleEnqueueMessage("second queued msg")
+	app.repl.pendingQueue = []pendingQueueItem{
+		{ID: "u-1", Text: "first queued msg"},
+		{ID: "u-2", Text: "second queued msg"},
+	}
 
 	// Query ends — processAttachments path (streaming=false)
 	app.repl.FinishStream(nil)
@@ -8237,11 +8244,9 @@ func TestQueueMessage_CallChain_ResetOnQueryEnd(t *testing.T) {
 	app.repl.StartQuery()
 	app.spinner.Start()
 
-	// Enqueue messages
-	app.handleEnqueueMessage("stale msg 1")
-	app.handleEnqueueMessage("stale msg 2")
-	if len(app.repl.pendingQueue) != 2 {
-		t.Fatalf("setup: pendingQueue should have 2, got %d", len(app.repl.pendingQueue))
+	app.repl.pendingQueue = []pendingQueueItem{
+		{ID: "u-1", Text: "stale msg 1"},
+		{ID: "u-2", Text: "stale msg 2"},
 	}
 
 	// Simulate session reset
@@ -8266,10 +8271,7 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 	app.repl.StartQuery()
 	app.status.SetStreaming(true)
 
-	app.handleEnqueueMessage("my message")
-	if len(app.repl.pendingQueue) != 1 {
-		t.Fatalf("setup: pendingQueue should have 1, got %d", len(app.repl.pendingQueue))
-	}
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "u-1", Text: "my message"}}
 
 	// Query ends — processAttachments path (streaming=false)
 	app.repl.FinishStream(nil)

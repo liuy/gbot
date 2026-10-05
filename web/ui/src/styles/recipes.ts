@@ -41,6 +41,10 @@ export const thinkingLabel = tv({ base: 'text-amber text-sm' })
 export const textBlock = tv({ base: 'md-body md-text text-t1 text-[15px] break-words' })
 export const userEchoBlock = tv({ base: 'text-[13px] text-t2 italic ml-2 my-1' })
 export const userTextSpan = tv({ base: 'whitespace-pre-wrap break-words' })
+// Mid-turn queued messages render gray forever (the model sees them as special
+// reminders permanently, so the UI matches) — echo block + history variants.
+export const queuedEchoBlock = tv({ base: 'text-[13px] text-t3 italic ml-2 my-1' })
+export const queuedTextSpan = tv({ base: 'whitespace-pre-wrap break-words text-t3 italic' })
 export const thinkingText = tv({ base: 'md-body md-text ml-6 text-t2 text-sm break-words' })
 
 export const toolName = tv({ base: 'font-mono text-sm text-blue' })

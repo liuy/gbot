@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -29,9 +29,11 @@ import {
   type ToolDomHandles,
   type ProgressDomHandles,
   createUserTextSpan,
+  createQueuedMessageTextSpan,
   appendTextBlock,
   appendThinkingBlock,
   appendUserBlock,
+  appendQueuedMessageBlock,
   appendToolBlock,
   appendToolChildrenContainer,
   appendProgressBar,
@@ -380,6 +382,9 @@ function renderCommittedMessageDOM(
           if (rest) {
             content.appendChild(createUserTextSpan(rest))
           }
+        } else if (unwrapQueuedReminder(text) !== null) {
+          // Persisted mid-turn queued message: show the original text, gray.
+          content.appendChild(createQueuedMessageTextSpan(unwrapQueuedReminder(text)!))
         } else {
           content.appendChild(createUserTextSpan(text))
         }
@@ -1192,7 +1197,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   ) {
     if (block.kind === 'user') {
       if (!block.text) return
-      appendUserBlock(parent, block.text, before)
+      // 'user' stream blocks are mid-turn queued message echoes (the engine
+      // persists them immediately in reminder form; text is already
+      // unwrapped) — rendered gray, matching history replay.
+      appendQueuedMessageBlock(parent, block.text, before)
     } else if (block.kind === 'image') {
       appendUserAttachment(parent, createAttachmentImage(block.src), before)
     } else if (block.kind === 'document') {
@@ -1709,11 +1717,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           text = att.prompt ?? ''
         }
         if (!text && imageSrcs.length === 0 && docs.length === 0) return
+        // Queued-message events carry the reminder envelope in content; unwrap
+        // to the original text and render the echo gray.
+        const unwrapped = unwrapQueuedReminder(text)
+        const echoText = unwrapped ?? text
         if (streaming) {
-          if (text) {
-            pendingBlocks.push({ kind: 'user', id: '', text })
+          if (echoText) {
+            pendingBlocks.push({ kind: 'user', id: '', text: echoText })
             if (streamContainer) {
-              appendUserBlock(streamContainer, text, progressAnchor())
+              appendQueuedMessageBlock(streamContainer, echoText, progressAnchor())
             }
           }
           for (const src of imageSrcs) {
@@ -1731,9 +1743,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         } else {
           const { outer, content } = buildShell('user')
           const blocks: Block[] = []
-          if (text) {
-            content.appendChild(createUserTextSpan(text))
-            blocks.push({ kind: 'text', id: '', text })
+          if (echoText) {
+            content.appendChild(unwrapped !== null ? createQueuedMessageTextSpan(echoText) : createUserTextSpan(echoText))
+            blocks.push({ kind: 'text', id: '', text: echoText })
           }
           for (const src of imageSrcs) {
             content.appendChild(createAttachmentImage(src))
@@ -1828,8 +1840,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (fullText.trim() === '' && pastes.length === 0) return
       inputHistory.add(fullText)
       if (streaming) {
-        queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
-        inputBar.setQueuedMsgs(queuedMsgs)
+        // Mid-turn queued message: the engine persists it immediately and the
+        // attachment event echoes it in the stream (gray) — no queue chip.
         conn.send({ type: 'message', text: fullText })
         inputBar.removeAttachments(all)
         return
@@ -1877,23 +1889,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     })
     inputBar.removeAttachments(all)
     if (streaming) {
-      queuedMsgs = [...queuedMsgs, {
-        uuid: '',
-        text: fullText,
-        // Keep each image's blob URL and every meta alive on the bubble:
-        // removeAttachments never revokes blobs, so a cancel-restore can
-        // rebuild the chip thumbnail and original filename locally.
-        attachments: metas.map((a, i) => {
-          const ref = files[i]
-          return {
-            name: a.name,
-            mime: a.mime,
-            size: a.size,
-            previewURL: ref && ref.kind === 'image' ? ref.previewURL : undefined,
-          }
-        }),
-      }]
-      inputBar.setQueuedMsgs(queuedMsgs)
+      // Same as the text-only branch: no queue chip — the queued message
+      // echoes into the stream when the engine persists it.
       return
     }
     renderUserMessage(fullText, files)

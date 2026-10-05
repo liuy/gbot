@@ -52,15 +52,26 @@ function pressEnter() {
   ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
 }
 
-// Enter streaming turn, then enqueue messages (each gets stamped on 'queued').
+// Enter streaming turn, then seed queued chips through the metadata frame's
+// takeover restore — the remaining real producer of queue chips now that
+// user queued messages persist immediately (no chip on send). Pass '' uuids to
+// mimic unstamped items; each caller stamps via 'queued' where relevant.
 function startStreamAndEnqueue(texts: string[]): Record<string, string> {
   setTextarea('initial')
   pressEnter()
   events([{ type: 'query_start' }])
   const uuids: Record<string, string> = {}
+  dispatch({
+    type: 'metadata',
+    connect: { connected: true },
+    config: { models: [], current: { provider: 'p', model: 'm' }, thinking: 'auto' },
+    engines: { engines: [], activeID: '' },
+    history: { messages: [], nextCursor: '', hasMore: false },
+    stats: {},
+    snapshot: { blocks: [{ kind: 'text', id: 't0', text: 'streaming…' }] },
+    queuedMsgs: texts.map((t) => ({ uuid: '', text: t })),
+  })
   for (const t of texts) {
-    setTextarea(t)
-    pressEnter()
     const stamp = `uuid-${t}`
     dispatch({ type: 'queued', uuid: stamp })
     uuids[t] = stamp
@@ -144,9 +155,18 @@ describe('cancel_result: queued message restore', () => {
     setTextarea('initial')
     pressEnter()
     events([{ type: 'query_start' }])
-    setTextarea('optimistic msg')
-    pressEnter()
-    // No 'queued' event dispatched — uuids all empty.
+    // Seed an unstamped chip via the takeover restore; no 'queued' event
+    // dispatched — uuids all empty.
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' }, thinking: 'auto' },
+      engines: { engines: [], activeID: '' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      stats: {},
+      snapshot: { blocks: [{ kind: 'text', id: 't0', text: 'streaming…' }] },
+      queuedMsgs: [{ uuid: '', text: 'optimistic msg' }],
+    })
 
     const ta = document.querySelector('textarea') as HTMLTextAreaElement
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
@@ -171,8 +191,16 @@ describe('cancel_result: queued message restore', () => {
     setTextarea('initial')
     pressEnter()
     events([{ type: 'query_start' }])
-    setTextarea('with pic')
-    pressEnter()
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' }, thinking: 'auto' },
+      engines: { engines: [], activeID: '' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      stats: {},
+      snapshot: { blocks: [{ kind: 'text', id: 't0', text: 'streaming…' }] },
+      queuedMsgs: [{ uuid: '', text: 'with pic' }],
+    })
     dispatch({ type: 'queued', uuid: 'u1' })
 
     const ta = document.querySelector('textarea') as HTMLTextAreaElement

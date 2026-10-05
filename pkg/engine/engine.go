@@ -128,6 +128,14 @@ type Engine struct {
 	queryActive        atomic.Int32             // atomic: 1 = query/turn loop running, 0 = idle
 	queryStartMsgIdx   int
 
+	// Queued-message watermarks, guarded by mu. queuedMsgSeq counts reminder-
+	// form user messages appended mid-turn; runTurns snapshots it into
+	// queuedMsgSeen before each LLM call. seq != seen at the terminal exit
+	// means a queued message arrived that no LLM call has observed yet, so the
+	// loop must run one more turn to address it.
+	queuedMsgSeq  uint64
+	queuedMsgSeen uint64
+
 	// activeCancel is the cancel function for the currently running query
 	// or attachment processing. Protected by activeCancelMu.
 	// Exposed via Abort() so TUI can cancel any active engine operation.
@@ -506,7 +514,22 @@ func New(p *Params) *Engine {
 
 // EnqueueAttachment adds an item to the attachment queue.
 // Thread-safe: may be called from any goroutine.
+// Exception — mid-turn queued user messages: when a query is active and the
+// item is a prompt hitting wrapOriginText's default branch (the user sent a
+// message while the agent was working), the message is appended to history
+// immediately in its final reminder-wrapped wire form and persisted, so the
+// prompt prefix is byte-identical before and after a restart. Queueing it
+// instead used to persist the bare text, which diverged from the assembled
+// request and broke the provider's exact-prefix cache at the queued message.
+// Job/coordinator/channel origins keep the queue path (follow-up: giving them
+// the same persist-in-final-form treatment would fix their restart stability
+// the same way, but their envelope wraps carry instructions the turn loop
+// does not need to re-run turns for, so they are left unchanged here).
 func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
+	if item.Mode == types.ItemModePrompt && isUserQueuedOrigin(item.Origin) && e.queryActive.Load() != 0 {
+		e.appendQueuedUserMessage(item)
+		return
+	}
 	if item.Priority == "" {
 		if item.Mode == types.ItemModePrompt {
 			item.Priority = types.PriorityNext
@@ -523,6 +546,107 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 	// Auto-process when idle: engine takes responsibility for draining
 	// and running turns. TUI renders notifications when attachments are drained.
 	e.startProcessAttachmentsIfIdle()
+}
+
+// isUserQueuedOrigin mirrors wrapOriginText's default branch: any
+// origin other than job/coordinator/channel (including nil) wraps with the
+// "user sent a new message" text, so exactly that set persists immediately.
+func isUserQueuedOrigin(origin *types.MessageOrigin) bool {
+	if origin == nil {
+		return true
+	}
+	switch origin.Kind {
+	case types.OriginJob, types.OriginCoordinator, types.OriginChannel:
+		return false
+	}
+	return true
+}
+
+// appendQueuedUserMessage appends the reminder-wrapped user message to history
+// (pairing-safe position), persists it, and emits EventAttachment so UIs echo
+// it. Content is byte-identical to what normalizeAttachmentForAPI built at
+// request time for queued items — the cross-version prefix pin.
+func (e *Engine) appendQueuedUserMessage(item types.QueuedItem) {
+	content := item.Content
+	if len(content) == 0 {
+		content = []types.ContentBlock{types.NewTextBlock(item.Value)}
+	}
+	var textParts []string
+	for _, b := range content {
+		if b.Type == types.ContentTypeText {
+			textParts = append(textParts, b.Text)
+		}
+	}
+	msg := types.Message{
+		ID:        item.UUID,
+		Role:      types.RoleUser,
+		Content:   buildReminderContent(content, item.Origin),
+		Timestamp: item.Timestamp,
+	}
+	// A zero Timestamp marshals as a zero-year prefix in memory while the
+	// store replaces it with time.Now() — the reloaded form would differ.
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now()
+	}
+
+	e.mu.Lock()
+	// Clamp to the persist cursor: a crash-recovered session can carry an
+	// unpaired trailing assistant from BEFORE the cursor (markAllPersisted
+	// set it to len on load); an index below the cursor would drop the
+	// queued message from the uncommitted slice and it would never persist.
+	idx := max(queuedInsertIndex(e.messages), e.lastPersistedIdx)
+	e.messages = slices.Insert(e.messages, idx, msg)
+	e.queuedMsgSeq++
+	e.mu.Unlock()
+
+	e.PersistNewMessages()
+
+	// The stored message must be an ordinary history message (no Attachment),
+	// but the event copy carries the stub so existing TUI/WUI attachment
+	// handlers render the original text instead of the envelope.
+	eventMsg := msg
+	eventMsg.Attachment = &types.Attachment{
+		Type:       types.AttachmentTypeQueued,
+		Prompt:     strings.Join(textParts, "\n"),
+		SourceUUID: item.UUID,
+		Mode:       types.ItemModePrompt,
+		Origin:     item.Origin,
+	}
+	e.emitEvent(types.QueryEvent{Type: types.EventAttachment, Message: &eventMsg})
+}
+
+// queuedInsertIndex returns the history index at which an queued message
+// may be inserted without breaking tool_use/tool_result adjacency: before the
+// last assistant message holding tool_use blocks that have no tool_result
+// yet (a tool is executing — its result will be appended at the end and must
+// directly follow that assistant). len(messages) otherwise (plain append).
+// Must be called with e.mu held.
+func queuedInsertIndex(messages []types.Message) int {
+	paired := make(map[string]bool)
+	for _, m := range messages {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeToolResult {
+				paired[b.ToolUseID] = true
+			}
+		}
+	}
+	for i, message := range slices.Backward(messages) {
+		if message.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range message.Content {
+			if b.Type == types.ContentTypeToolUse && !paired[b.ID] {
+				return i
+			}
+		}
+		// No unpaired tool_use in this assistant — keep scanning older ones,
+		// though an older unpaired assistant behind newer messages cannot
+		// exist in practice (results append before the next turn starts).
+	}
+	return len(messages)
 }
 
 // RemoveAttachment removes a queued attachment by UUID. No-op if uuid is empty
@@ -1118,6 +1242,32 @@ func wrapOriginText(raw string, origin *types.MessageOrigin) string {
 	}
 }
 
+// buildReminderContent produces the API content for a queued item: all text
+// blocks joined into one system-reminder-wrapped line, non-text blocks
+// (image, document) riding along verbatim so attachments queued mid-stream
+// survive the API hop. TS filters to image blocks only; gbot's queued items
+// can also carry document reference blocks, so every non-text block passes.
+// Value-only items reach here with Content=[text(Value)] (createAttachmentMessages
+// fallback / appendQueuedUserMessage fallback), which joins to the same wrapped
+// string the string-prompt branch produced. Shared by normalizeAttachmentForAPI
+// (assembly) and appendQueuedUserMessage (persist-in-final-form) — one builder so
+// both paths cannot drift apart.
+func buildReminderContent(content []types.ContentBlock, origin *types.MessageOrigin) []types.ContentBlock {
+	var textParts []string
+	var nonText []types.ContentBlock
+	for _, b := range content {
+		if b.Type == types.ContentTypeText {
+			textParts = append(textParts, b.Text)
+		} else {
+			nonText = append(nonText, b)
+		}
+	}
+	out := make([]types.ContentBlock, 0, len(nonText)+1)
+	out = append(out,
+		types.NewTextBlock("<system-reminder>\n"+wrapOriginText(strings.Join(textParts, "\n"), origin)+"\n</system-reminder>"))
+	return append(out, nonText...)
+}
+
 // normalizeAttachmentForAPI converts an attachment message to API format.
 // TS source: messages.ts:3739-3796 — normalizeAttachmentForAPI case 'queued_command'
 func normalizeAttachmentForAPI(msg types.Message) types.Message {
@@ -1132,31 +1282,9 @@ func normalizeAttachmentForAPI(msg types.Message) types.Message {
 	isMeta := origin != nil || att.IsMeta
 
 	result := types.Message{
-		ID:   att.SourceUUID,
-		Role: types.RoleUser,
-		Content: func() []types.ContentBlock {
-			// TS array-prompt branch (messages.ts:3758-3779): text blocks join
-			// into one wrapped line; non-text blocks (image, document) ride
-			// along verbatim so attachments queued mid-stream survive the API
-			// hop. TS filters to image blocks only; gbot's queued items can
-			// also carry document reference blocks, so every non-text block
-			// passes. Value-only items reach here with Content=[text(Value)]
-			// (createAttachmentMessages fallback), which joins to the same
-			// wrapped string the string-prompt branch produced.
-			var textParts []string
-			var nonText []types.ContentBlock
-			for _, b := range msg.Content {
-				if b.Type == types.ContentTypeText {
-					textParts = append(textParts, b.Text)
-				} else {
-					nonText = append(nonText, b)
-				}
-			}
-			content := make([]types.ContentBlock, 0, len(nonText)+1)
-			content = append(content,
-				types.NewTextBlock("<system-reminder>\n"+wrapOriginText(strings.Join(textParts, "\n"), origin)+"\n</system-reminder>"))
-			return append(content, nonText...)
-		}(),
+		ID:      att.SourceUUID,
+		Role:    types.RoleUser,
+		Content: buildReminderContent(msg.Content, origin),
 	}
 	if isMeta {
 		result.Flags |= types.FlagMeta
@@ -1609,6 +1737,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Stage 14-15: API call streaming loop
 		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
 
+		// Watermark: everything appended to history so far is about to be
+		// observed by this LLM call. An queued message arriving afterwards
+		// bumps seq past seen, which the terminal path reads to decide
+		// whether one more turn must run so the message is addressed.
+		e.mu.Lock()
+		e.queuedMsgSeen = e.queuedMsgSeq
+		e.mu.Unlock()
+
 		llmStart := time.Now()
 		resp, streamingExecutor, err := e.callLLMWithRetry(ctx, systemPrompt)
 		llmTotalMs += time.Since(llmStart).Milliseconds()
@@ -1889,6 +2025,24 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				// Source: stopHooks.ts:258-261 — createUserMessage({isMeta: true}).
 				hookMsg.Flags = types.FlagMeta
 				e.appendMessage(hookMsg)
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+				e.mu.Lock()
+				e.turnCount++
+				e.mu.Unlock()
+				e.firePostTurnHooks(ctx)
+				continue
+			}
+
+			// A user queued message landed after the last LLM call began (e.g.
+			// during this response's streaming): the model has never seen it.
+			// Run one more turn so it is addressed instead of silently sitting
+			// in history behind an answer that predates it.
+			e.mu.Lock()
+			unaddressed := e.queuedMsgSeq != e.queuedMsgSeen
+			seq := e.queuedMsgSeq
+			e.mu.Unlock()
+			if unaddressed {
+				e.logger.Info("engine:queued message_unaddressed", "seq", seq)
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.mu.Lock()
 				e.turnCount++

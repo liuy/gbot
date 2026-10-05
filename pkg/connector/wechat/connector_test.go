@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -2635,8 +2636,30 @@ func TestEnqueue_RealEngine_RaceDetector(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := eng.AttachmentsLen(); got != N {
-		t.Fatalf("AttachmentsLen() = %d, want %d", got, N)
+	// Persist-in-final-form era: mid-turn human messages append to history
+	// immediately as reminder envelopes instead of queueing.
+	msgs := eng.Messages()
+	envelopes := 0
+	seen := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			envelopes++
+			seen[original] = true
+		}
+	}
+	if envelopes != N {
+		t.Fatalf("history envelope messages = %d, want %d (no concurrent drops)", envelopes, N)
+	}
+	for i := range N {
+		if !seen[fmt.Sprintf("m%d", i)] {
+			t.Errorf("queued message %q missing from history", fmt.Sprintf("m%d", i))
+		}
+	}
+	if n := eng.AttachmentsLen(); n != 0 {
+		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
 	}
 
 	// inboundCh should be empty.
@@ -2764,8 +2787,9 @@ func TestEnqueue_FullChain_AttachmentResponseDelivered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEnqueue_MultipleRapidMessages_AllAttached verifies that 3+ messages
-// arriving during a single running query are all queued as attachments and
-// processed as separate turns after the query ends.
+// arriving during a single running query all persist immediately as
+// queued message history messages (reminder envelope) — none dropped, none
+// routed to the idle inboundCh.
 func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
 	t.Parallel()
 	eng := engine.New(&engine.Params{
@@ -2805,15 +2829,31 @@ func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
 	c.enqueue("userA", "msg2", nil)
 	c.enqueue("userA", "msg3", nil)
 
-	// All 3 should be in attachment queue
-	if got := eng.AttachmentsLen(); got != 3 {
-		t.Fatalf("AttachmentsLen() = %d, want 3", got)
+	// All 3 must be in history as queued message envelopes, queue empty
+	msgs := eng.Messages()
+	envelopes := 0
+	for _, m := range msgs {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			envelopes++
+			if !strings.HasPrefix(original, "msg") {
+				t.Errorf("unexpected queued message text %q", original)
+			}
+		}
+	}
+	if envelopes != 3 {
+		t.Fatalf("history envelope messages = %d, want 3", envelopes)
+	}
+	if n := eng.AttachmentsLen(); n != 0 {
+		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
 	}
 
 	// None should be in inboundCh
 	select {
 	case <-c.inboundCh:
-		t.Fatal("inboundCh should be empty — all messages should be attachments")
+		t.Fatal("inboundCh should be empty — all messages are queued messages")
 	default:
 	}
 
@@ -2906,9 +2946,10 @@ func TestEnqueue_AttachmentTurn_ErrorDelivered(t *testing.T) {
 // Queue overflow: attachment queue is unbounded
 // ---------------------------------------------------------------------------
 
-// TestEnqueue_AttachmentQueue_Unbounded verifies that the engine's attachment
-// queue accepts many items without dropping (it's an in-memory queue, not a
-// channel). This contrasts with inboundCh which drops when full.
+// TestEnqueue_AttachmentQueue_Unbounded verifies that rapid mid-turn messages
+// are all accepted without dropping (the persist-in-final-form path appends
+// to history, which is unbounded). This contrasts with inboundCh which drops
+// when full.
 func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
 	t.Parallel()
 	eng := engine.New(&engine.Params{
@@ -2948,8 +2989,20 @@ func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
 		c.enqueue("userA", fmt.Sprintf("msg%d", i), nil)
 	}
 
-	if got := eng.AttachmentsLen(); got != 50 {
-		t.Fatalf("AttachmentsLen() = %d, want 50 (no drops)", got)
+	envelopes := 0
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if _, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			envelopes++
+		}
+	}
+	if envelopes != 50 {
+		t.Fatalf("history envelope messages = %d, want 50 (no drops)", envelopes)
+	}
+	if n := eng.AttachmentsLen(); n != 0 {
+		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
 	}
 
 	// Clean up

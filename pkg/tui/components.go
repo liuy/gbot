@@ -883,7 +883,10 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 				sb.WriteString(blk.Text)
 				sb.WriteString("\n\n")
 			case BlockUser:
-				sb.WriteString(prefixUserLine(blk.Text))
+				// Queued messages render gray forever — the model sees them as
+				// special reminders permanently, so the UI marks them the same
+				// way in live echo and committed history.
+				sb.WriteString(prefixUserLine(styleDim.Render(blk.Text)))
 				sb.WriteString("\n\n")
 			}
 		}

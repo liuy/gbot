@@ -3123,3 +3123,74 @@ describe('abort rewind attachment restore', () => {
     expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Mid-turn queued message rendering (persist-in-final-form era)
+// ---------------------------------------------------------------------------
+
+const QUEUED_ENVELOPE =
+  '<system-reminder>\nThe user sent a new message while you were working:\ncheck on that' +
+  '\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
+
+describe('queued message history rendering', () => {
+  it('history queued message renders unwrapped original text in gray', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: QUEUED_ENVELOPE,
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'check on that',
+    )
+    expect(spans.length).toBe(1)
+    expect(spans[0].className).toContain('text-t3')
+    expect(document.body.textContent).not.toContain('<system-reminder>')
+  })
+
+  it('plain user history message is not gray', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'plain hello',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'plain hello',
+    )
+    expect(spans.length).toBe(1)
+    expect(spans[0].className).not.toContain('text-t3')
+  })
+
+  it('live attachment event with envelope renders unwrapped gray echo', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{
+      type: 'attachment',
+      message: {
+        content: [{ type: 'text', text: QUEUED_ENVELOPE }],
+        attachment: { prompt: 'check on that', source_uuid: 'u-9', mode: 'prompt' },
+      },
+    }])
+    const spans = Array.from(document.querySelectorAll('span')).filter(
+      s => s.textContent === 'check on that',
+    )
+    expect(spans.length).toBe(1)
+    expect(spans[0].className).toContain('text-t3')
+    expect(document.body.textContent).not.toContain('<system-reminder>')
+  })
+})
