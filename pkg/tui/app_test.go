@@ -9011,7 +9011,7 @@ func TestResume_BashEmptyOutput_NoRawJSON(t *testing.T) {
 // TestResume_TaskOutput_NotRawBytes verifies that Task tool output is
 // rendered as human-readable text, not raw byte arrays.
 func TestResume_TaskOutput_NotRawBytes(t *testing.T) {
-	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()))
+	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()), nil)
 	tools := map[string]tool.Tool{"Task": taskTool}
 
 	taskResult := `{"updated":[{"success":true,"taskId":"34","updatedFields":["status"],"statusChange":{"from":"in_progress","to":"completed"}}]}`
@@ -9071,7 +9071,7 @@ func TestResume_BashWithOutput_NoRawJSON(t *testing.T) {
 // is generated via the tool's Description function (e.g. "Create 3 tasks"),
 // not left empty.
 func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
-	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()))
+	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()), nil)
 	tools := map[string]tool.Tool{"Task": taskTool}
 
 	msgs := []types.Message{

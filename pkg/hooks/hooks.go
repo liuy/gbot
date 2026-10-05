@@ -230,6 +230,56 @@ func (h *Hooks) PostCompact(ctx context.Context, input *HookInput) []HookResult 
 	return h.dispatch(ctx, HookPostCompact, input)
 }
 
+// TaskCreated runs after the task file already exists, so the hook sees a real
+// task_id. A blocking result means the caller must delete the task it created.
+// Source: hooks.ts:3745-3773 — executeTaskCreatedHooks.
+func (h *Hooks) TaskCreated(ctx context.Context, input *HookInput) []HookResult {
+	return h.dispatch(ctx, HookTaskCreated, input)
+}
+
+// TaskCompleted runs before a completion is applied. A blocking result means
+// the caller must abort the update.
+// Source: hooks.ts:3789-3817 — executeTaskCompletedHooks.
+func (h *Hooks) TaskCompleted(ctx context.Context, input *HookInput) []HookResult {
+	return h.dispatch(ctx, HookTaskCompleted, input)
+}
+
+// StopHookMessage formats a blocking Stop/SubagentStop result for the model.
+// Source: hooks.ts:1894-1896 — getStopHookMessage.
+func StopHookMessage(r HookResult) string {
+	return "Stop hook feedback:\n" + blockingErrorText(r)
+}
+
+// TaskCreatedHookMessage formats a blocking TaskCreated result for the model.
+// Source: hooks.ts:1914-1918 — getTaskCreatedHookMessage.
+func TaskCreatedHookMessage(r HookResult) string {
+	return "TaskCreated hook feedback:\n" + blockingErrorText(r)
+}
+
+// TaskCompletedHookMessage formats a blocking TaskCompleted result for the model.
+// Source: hooks.ts:1925-1929 — getTaskCompletedHookMessage.
+func TaskCompletedHookMessage(r HookResult) string {
+	return "TaskCompleted hook feedback:\n" + blockingErrorText(r)
+}
+
+// blockingErrorText reproduces the two texts TS puts after the "hook feedback"
+// header. TS parses hook stdout as JSON first, so a hook that emits
+// {"decision":"block","reason":...} is reported by its reason
+// (hooks.ts:532-533) and never reaches the exit-2 fallback, which names the
+// hook and quotes its stderr (hooks.ts:2660-2661).
+func blockingErrorText(r HookResult) string {
+	if r.Output != nil && r.Output.Decision == "block" {
+		if r.Output.Reason != "" {
+			return r.Output.Reason
+		}
+		return "Blocked by hook"
+	}
+	if r.Stderr != "" {
+		return "[" + r.HookName + "]: " + r.Stderr
+	}
+	return "[" + r.HookName + "]: No stderr output"
+}
+
 // ---------------------------------------------------------------------------
 // dispatch — source: hooks.ts:1603-1848
 //
@@ -264,9 +314,10 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 	}
 
 	// 2. For each matcher, check pattern match
+	filterByPattern := eventHasMatchQuery(event)
 	var results []HookResult
 	for _, cm := range compiled {
-		if !matcherAllows(cm.matchFn, input) {
+		if filterByPattern && !matcherAllows(cm.matchFn, input) {
 			continue
 		}
 		for _, hookCfg := range cm.hooks {
@@ -361,6 +412,26 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 		}
 	}
 	return results
+}
+
+// eventHasMatchQuery reports whether the event derives a value to match
+// matcher patterns against. TS's switch in getMatchingHooks ends in
+// `default: break` (hooks.ts:1668-1669), so matchQuery stays undefined for
+// every event the switch does not name: TeammateIdle/TaskCreated/TaskCompleted
+// are listed only to break explicitly (hooks.ts:1649-1652), while Stop is not
+// listed at all — TS applies no matcher filtering to Stop either. With no
+// query TS skips filtering outright (hooks.ts:1681-1686): every matcher
+// configured under the event runs whatever its pattern says.
+// gbot follows TS only for the two task events; its Stop/SubagentStop
+// filtering is the ToolNames gate (matcherAllows), and TS filters SubagentStop
+// on agent_type and Stop not at all — so that gate is a gbot divergence rather
+// than TS semantics. TeammateIdle is not implemented.
+func eventHasMatchQuery(event HookEventName) bool {
+	switch event {
+	case HookTaskCreated, HookTaskCompleted:
+		return false
+	}
+	return true
 }
 
 // matcherAllows decides whether a compiled matcher's hooks run for input.

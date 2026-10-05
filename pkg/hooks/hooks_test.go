@@ -356,6 +356,62 @@ func TestSubagentStop_NonBlocking(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// StopHookMessage: the blocking result handed back to the model
+// Source: hooks.ts:1894-1896 — getStopHookMessage
+// ---------------------------------------------------------------------------
+
+// A JSON decision carries its reason on stdout, so stderr — even populated —
+// must not reach the message.
+func TestStopHookMessage_DecisionBlockUsesReason(t *testing.T) {
+	t.Parallel()
+	got := StopHookMessage(HookResult{
+		Outcome:  HookOutcomeBlocking,
+		HookName: "gate",
+		Stderr:   "ignored because JSON wins",
+		Output:   &HookOutput{Decision: "block", Reason: "tests are still failing"},
+	})
+	want := "Stop hook feedback:\ntests are still failing"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStopHookMessage_DecisionBlockWithoutReason(t *testing.T) {
+	t.Parallel()
+	got := StopHookMessage(HookResult{
+		Outcome:  HookOutcomeBlocking,
+		HookName: "gate",
+		Output:   &HookOutput{Decision: "block"},
+	})
+	want := "Stop hook feedback:\nBlocked by hook"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStopHookMessage_ExitTwoPath(t *testing.T) {
+	t.Parallel()
+	got := StopHookMessage(HookResult{
+		Outcome:  HookOutcomeBlocking,
+		Stderr:   "keep working",
+		HookName: "gate",
+	})
+	want := "Stop hook feedback:\n[gate]: keep working"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestStopHookMessage_ExitTwoNoStderr(t *testing.T) {
+	t.Parallel()
+	got := StopHookMessage(HookResult{Outcome: HookOutcomeBlocking, HookName: "gate"})
+	want := "Stop hook feedback:\n[gate]: No stderr output"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Other event methods (smoke tests)
 // ---------------------------------------------------------------------------
 

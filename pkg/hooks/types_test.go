@@ -12,7 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestHookEventNameValues(t *testing.T) {
-	// Verify all 11 implemented events match TS HOOK_EVENTS exactly.
+	// Verify all 15 implemented events match TS HOOK_EVENTS exactly.
 	// Source: coreTypes.ts:25-53
 	events := map[HookEventName]bool{
 		HookPreToolUse:         true,
@@ -28,9 +28,11 @@ func TestHookEventNameValues(t *testing.T) {
 		HookSessionEnd:         true,
 		HookPreCompact:         true,
 		HookPostCompact:        true,
+		HookTaskCreated:        true,
+		HookTaskCompleted:      true,
 	}
-	if len(events) != 13 {
-		t.Errorf("expected 13 hook events, got %d", len(events))
+	if len(events) != 15 {
+		t.Errorf("expected 15 hook events, got %d", len(events))
 	}
 	// Verify string values match TS exactly (PascalCase, no underscores)
 	for ev := range events {
@@ -377,6 +379,7 @@ func TestHookInputOmitEmpty(t *testing.T) {
 	for _, field := range []string{
 		"tool_name", "tool_input", "tool_use_id", "tool_response",
 		"agent_id", "agent_type", "source", "reason", "trigger",
+		"task_id", "task_subject", "task_description",
 	} {
 		if strings.Contains(s, `"`+field+`"`) {
 			t.Errorf("empty optional field %q should be omitted in: %s", field, s)

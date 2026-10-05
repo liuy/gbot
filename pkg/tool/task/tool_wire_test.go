@@ -12,7 +12,7 @@ import (
 // single text block) and returns the block text.
 func taskWireText(t *testing.T, data any) string {
 	t.Helper()
-	wb, ok := New(NewList("")).(tool.ToolWithWireBlocks)
+	wb, ok := New(NewList(""), nil).(tool.ToolWithWireBlocks)
 	if !ok {
 		t.Fatal("Task tool must implement ToolWithWireBlocks")
 	}
@@ -146,7 +146,7 @@ func TestTaskWire_NonOutputFallsBackToJSON(t *testing.T) {
 
 func TestTaskDecodeResult_LegacyJSONWire(t *testing.T) {
 	t.Parallel()
-	tt := New(NewList(""))
+	tt := New(NewList(""), nil)
 	raw := tool.WrapSingleBlock(`{"created":[{"id":"5","subject":"Fix bug"}]}`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestTaskDecodeResult_LegacyJSONWire(t *testing.T) {
 // instead of falling back to the wire text.
 func TestTaskDecodeResult_RejectsJSONObjectWire(t *testing.T) {
 	t.Parallel()
-	tt := New(NewList(""))
+	tt := New(NewList(""), nil)
 	raw := tool.WrapSingleBlock(`{"name":"gbot","version":"1.0"}`)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
@@ -179,7 +179,7 @@ func TestTaskDecodeResult_RejectsJSONObjectWire(t *testing.T) {
 
 func TestTaskDecodeResult_RejectsPlainTextWire(t *testing.T) {
 	t.Parallel()
-	tt := New(NewList(""))
+	tt := New(NewList(""), nil)
 	raw := tool.WrapSingleBlock("Task #5 created successfully: Fix bug")
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {

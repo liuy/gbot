@@ -20,7 +20,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // HookEventName identifies a hook lifecycle event.
-// TS defines 27 events; gbot implements the 11 core lifecycle events.
+// TS defines 27 events; gbot implements 15 of them.
 type HookEventName string
 
 const (
@@ -37,6 +37,8 @@ const (
 	HookSessionEnd         HookEventName = "SessionEnd"
 	HookPreCompact         HookEventName = "PreCompact"
 	HookPostCompact        HookEventName = "PostCompact"
+	HookTaskCreated        HookEventName = "TaskCreated"
+	HookTaskCompleted      HookEventName = "TaskCompleted"
 )
 
 // ---------------------------------------------------------------------------
@@ -125,7 +127,11 @@ type HookInput struct {
 	// ToolNames lists the tool names actually executed during the query
 	// (deduped). Filled by the engine for stop-class events (Stop,
 	// SubagentStop) so a matcher can gate on whether the query used a
-	// matching tool. gbot extension — TS stopHooks.ts has no matcher path.
+	// matching tool. This gate is a gbot divergence, not TS semantics: TS
+	// does have a matcher path for Stop — executeStopHooks (utils/hooks.ts:3639)
+	// yields into executeHooks, which calls getMatchingHooks (:2004) — but
+	// Stop is absent from getMatchingHooks' matchQuery switch, so TS runs
+	// every Stop matcher whatever its pattern says.
 	ToolNames []string `json:"tool_names,omitempty"`
 
 	// SessionStart-specific
@@ -136,6 +142,13 @@ type HookInput struct {
 
 	// PreCompact/PostCompact-specific
 	Trigger string `json:"trigger,omitempty"` // "manual" | "auto"
+
+	// TaskCreated/TaskCompleted-specific
+	// Source: coreSchemas.ts:601-625. TS also carries teammate_name and
+	// team_name; gbot has no team/teammate concept so both are omitted.
+	TaskID          string `json:"task_id,omitempty"`
+	TaskSubject     string `json:"task_subject,omitempty"`
+	TaskDescription string `json:"task_description,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

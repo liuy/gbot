@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -246,6 +248,7 @@ var tasksToolSchema = json.RawMessage(`{
           },
           "status": {
             "type": "string",
+            "enum": ["pending", "in_progress", "completed", "deleted"],
             "description": "New status. Use 'deleted' to permanently delete the task."
           },
           "addBlocks": {
@@ -286,9 +289,23 @@ var tasksToolSchema = json.RawMessage(`{
   }
 }`)
 
+// updateStatuses is the status set the update path acts on: the three stored
+// TaskStatus values plus "deleted", which is an action routed to DeleteTask
+// rather than a status that ever gets written. It mirrors the enum the input
+// schema declares, which is TS's TaskStatusSchema().or(z.literal('deleted'))
+// (TaskUpdateTool.ts:31-44).
+var updateStatuses = []string{string(StatusPending), string(StatusInProgress), string(StatusCompleted), "deleted"}
+
 // New creates the unified Tasks tool that merges TaskCreate, TaskUpdate,
 // TaskGet, and TaskList into a single batch-capable tool.
-func New(list *List) tool.Tool {
+//
+// hk gates the create and completion call sites; nil disables the gate. It is
+// captured at construction rather than stored on the List: a List is shared
+// between the main engine and its sub-engines (CreateTools runs for a
+// sub-engine while the main engine is mid-task), and the gate belongs to the
+// tool's call sites, not to task storage — the TUI and the WUI task panel
+// mutate the same List without any hook gate.
+func New(list *List, hk *hooks.Hooks) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        "Task",
 		InputSchema_: func() json.RawMessage { return tasksToolSchema },
@@ -296,7 +313,7 @@ func New(list *List) tool.Tool {
 			return tasksDescription(list, input)
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return tasksCall(list, input)
+			return tasksCall(ctx, list, hk, input, tctx)
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
 			var in TasksInput
@@ -501,7 +518,7 @@ func tasksDescription(list *List, input json.RawMessage) (string, error) {
 
 // Execution order: creates -> updates -> deletes -> get -> list.
 // A failure in one item does NOT stop subsequent items.
-func tasksCall(list *List, input json.RawMessage) (*tool.ToolResult, error) {
+func tasksCall(ctx context.Context, list *List, hk *hooks.Hooks, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in TasksInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -509,8 +526,8 @@ func tasksCall(list *List, input json.RawMessage) (*tool.ToolResult, error) {
 
 	var out TasksOutput
 
-	out.Created = tasksHandleCreates(list, in.Creates)
-	out.Updated = tasksHandleUpdates(list, in.Updates)
+	out.Created = tasksHandleCreates(ctx, list, hk, in.Creates, tctx)
+	out.Updated = tasksHandleUpdates(ctx, list, hk, in.Updates, tctx)
 	out.Deleted = tasksHandleDeletes(list, in.Deletes)
 
 	if in.Get != nil {
@@ -523,7 +540,7 @@ func tasksCall(list *List, input json.RawMessage) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: &out}, nil
 }
 
-func tasksHandleCreates(list *List, items []CreateItem) []CreateResult {
+func tasksHandleCreates(ctx context.Context, list *List, hk *hooks.Hooks, items []CreateItem, tctx *tool.ToolUseContext) []CreateResult {
 	if len(items) == 0 {
 		return nil
 	}
@@ -542,12 +559,27 @@ func tasksHandleCreates(list *List, items []CreateItem) []CreateResult {
 			results = append(results, CreateResult{Subject: item.Subject, Error: err.Error()})
 			continue
 		}
+
+		// The hook runs after the file is written so it receives a real
+		// task_id, and a blocking hook undoes the creation
+		// (TaskCreateTool.ts:81-113). TS throws, which fails the whole tool
+		// call; gbot's batch tool reports it on the affected entry so sibling
+		// operations in the same call still run.
+		if feedback := taskCreatedFeedback(ctx, hk, tctx, id, item.Subject, item.Description); feedback != "" {
+			if _, delErr := list.DeleteTask(id); delErr != nil {
+				results = append(results, CreateResult{Subject: item.Subject, Error: delErr.Error()})
+				continue
+			}
+			results = append(results, CreateResult{Subject: item.Subject, Error: feedback})
+			continue
+		}
+
 		results = append(results, CreateResult{ID: id, Subject: item.Subject})
 	}
 	return results
 }
 
-func tasksHandleUpdates(list *List, items []UpdateItem) []UpdateResult {
+func tasksHandleUpdates(ctx context.Context, list *List, hk *hooks.Hooks, items []UpdateItem, tctx *tool.ToolUseContext) []UpdateResult {
 	if len(items) == 0 {
 		return nil
 	}
@@ -555,6 +587,19 @@ func tasksHandleUpdates(list *List, items []UpdateItem) []UpdateResult {
 	for _, item := range items {
 		if item.TaskID == "" {
 			results = append(results, UpdateResult{Error: "taskId is required"})
+			continue
+		}
+
+		// TS rejects an unrecognised status at the input boundary (Zod parses
+		// the enum before the tool body runs). gbot has no schema-validation
+		// layer, so the check belongs here: a near-miss like "Complete" would
+		// otherwise slip past the TaskCompleted gate below, which compares
+		// against the literal "completed", and be written to the task file.
+		if item.Status != nil && !slices.Contains(updateStatuses, *item.Status) {
+			results = append(results, UpdateResult{
+				TaskID: item.TaskID,
+				Error:  fmt.Sprintf("invalid status %q: must be one of %s", *item.Status, strings.Join(updateStatuses, ", ")),
+			})
 			continue
 		}
 
@@ -593,6 +638,22 @@ func tasksHandleUpdates(list *List, items []UpdateItem) []UpdateResult {
 				})
 			}
 			continue
+		}
+
+		// TaskCompleted fires only on a real transition into completed
+		// (TaskUpdateTool.ts:230-232), and a blocking hook aborts the whole
+		// update before updateTask is called (:255-264) — field changes in the
+		// same call are dropped too, not just the status.
+		if item.Status != nil && *item.Status == string(StatusCompleted) && TaskStatus(*item.Status) != existingTask.Status {
+			if feedback := taskCompletedFeedback(ctx, hk, tctx, existingTask); feedback != "" {
+				results = append(results, UpdateResult{
+					Success:       false,
+					TaskID:        item.TaskID,
+					UpdatedFields: []string{},
+					Error:         feedback,
+				})
+				continue
+			}
 		}
 
 		u := TaskUpdates{
@@ -641,6 +702,72 @@ func tasksHandleUpdates(list *List, items []UpdateItem) []UpdateResult {
 		})
 	}
 	return results
+}
+
+// callContextFields carries the session id and working dir into the hook
+// input. The Tasks tool holds no engine reference (the List is shared between
+// the main engine and its sub-engines), so the per-call ToolUseContext is the
+// only carrier of which session and which directory the event belongs to. A
+// nil tctx means the caller built no context at all, and both stay empty.
+func callContextFields(tctx *tool.ToolUseContext) (sessionID, cwd string) {
+	if tctx == nil {
+		return "", ""
+	}
+	cwd = tctx.WorkingDir
+	if cwd == "" {
+		cwd = tctx.OriginalWorkingDir
+	}
+	return tctx.Options.SessionID, cwd
+}
+
+// taskCreatedFeedback returns the joined TaskCreated hook feedback TS throws
+// with, or "" when no hook blocks. A blocking hook means the caller must undo
+// the creation.
+// Source: TaskCreateTool.ts:92-113.
+func taskCreatedFeedback(ctx context.Context, hk *hooks.Hooks, tctx *tool.ToolUseContext, id, subject, description string) string {
+	if hk == nil {
+		return ""
+	}
+	sessionID, cwd := callContextFields(tctx)
+	var blocking []string
+	for _, r := range hk.TaskCreated(ctx, &hooks.HookInput{
+		HookEventName:   string(hooks.HookTaskCreated),
+		SessionID:       sessionID,
+		Cwd:             cwd,
+		TaskID:          id,
+		TaskSubject:     subject,
+		TaskDescription: description,
+	}) {
+		if r.Outcome == hooks.HookOutcomeBlocking {
+			blocking = append(blocking, hooks.TaskCreatedHookMessage(r))
+		}
+	}
+	return strings.Join(blocking, "\n")
+}
+
+// taskCompletedFeedback returns the joined TaskCompleted hook feedback, or ""
+// when no hook blocks. A blocking hook means the caller must abort the update.
+// The hook sees the pre-update subject/description, matching TS's use of
+// existingTask (TaskUpdateTool.ts:235-245).
+func taskCompletedFeedback(ctx context.Context, hk *hooks.Hooks, tctx *tool.ToolUseContext, t *Task) string {
+	if hk == nil {
+		return ""
+	}
+	sessionID, cwd := callContextFields(tctx)
+	var blocking []string
+	for _, r := range hk.TaskCompleted(ctx, &hooks.HookInput{
+		HookEventName:   string(hooks.HookTaskCompleted),
+		SessionID:       sessionID,
+		Cwd:             cwd,
+		TaskID:          t.ID,
+		TaskSubject:     t.Subject,
+		TaskDescription: t.Description,
+	}) {
+		if r.Outcome == hooks.HookOutcomeBlocking {
+			blocking = append(blocking, hooks.TaskCompletedHookMessage(r))
+		}
+	}
+	return strings.Join(blocking, "\n")
 }
 
 func tasksHandleDeletes(list *List, ids []string) []DeleteResult {

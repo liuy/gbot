@@ -23,7 +23,7 @@ func newTestListForTool(t *testing.T) *List {
 
 func callTasks(t *testing.T, list *List, input string) (*tool.ToolResult, *TasksOutput) {
 	t.Helper()
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(input), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
@@ -120,7 +120,7 @@ func TestTasks_Create_EmptyDescription(t *testing.T) {
 func TestTasks_Create_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{bad}`), &tool.ToolUseContext{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -717,7 +717,7 @@ func TestTasks_Mixed_CreateAndUpdate(t *testing.T) {
 func TestTasks_IsReadOnly(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	tests := []struct {
 		input string
@@ -741,7 +741,7 @@ func TestTasks_IsReadOnly(t *testing.T) {
 func TestTasks_InputSchema(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	schema := tl.InputSchema()
 	var s map[string]any
@@ -759,10 +759,51 @@ func TestTasks_InputSchema(t *testing.T) {
 	}
 }
 
+// The status enum is what the update path accepts, and the completion gate
+// only fires on the exact literal "completed" — an unconstrained status lets
+// a near-miss value past both.
+func TestTasksToolSchema_StatusEnum(t *testing.T) {
+	t.Parallel()
+	list := newTestListForTool(t)
+	schema := New(list, nil).InputSchema()
+
+	var s struct {
+		Properties struct {
+			Updates struct {
+				Items struct {
+					Properties struct {
+						Status struct {
+							Type string   `json:"type"`
+							Enum []string `json:"enum"`
+						} `json:"status"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"updates"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	status := s.Properties.Updates.Items.Properties.Status
+	if status.Type != "string" {
+		t.Errorf("status type = %q, want string", status.Type)
+	}
+	want := []string{"pending", "in_progress", "completed", "deleted"}
+	if len(status.Enum) != len(want) {
+		t.Fatalf("status enum = %v, want %v", status.Enum, want)
+	}
+	for i, w := range want {
+		if status.Enum[i] != w {
+			t.Errorf("status enum[%d] = %q, want %q", i, status.Enum[i], w)
+		}
+	}
+}
+
 func TestTasks_Name(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	if tl.Name() != "Task" {
 		t.Errorf("Name() = %q, want %q", tl.Name(), "Task")
 	}
@@ -775,7 +816,7 @@ func TestTasks_Name(t *testing.T) {
 func TestTasks_Description_Create(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"Fix auth","description":"a"}]}`))
 	if err != nil {
@@ -789,7 +830,7 @@ func TestTasks_Description_Create(t *testing.T) {
 func TestTasks_Description_List(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"list":true}`))
 	if err != nil {
@@ -803,7 +844,7 @@ func TestTasks_Description_List(t *testing.T) {
 func TestTasks_Description_MultipleCreates(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"A","description":"a"},{"subject":"B","description":"b"},{"subject":"C","description":"c"}]}`))
 	if err != nil {
@@ -817,7 +858,7 @@ func TestTasks_Description_MultipleCreates(t *testing.T) {
 func TestTasks_Description_EmptyInput(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{}`))
 	if err != nil {
@@ -832,7 +873,7 @@ func TestTasks_Description_UpdateExisting(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "My Task", "desc")
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"1"}]}`))
 	if err != nil {
@@ -847,7 +888,7 @@ func TestTasks_Description_GetExisting(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "Some Task", "desc")
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"get":"1"}`))
 	if err != nil {
@@ -861,7 +902,7 @@ func TestTasks_Description_GetExisting(t *testing.T) {
 func TestTasks_Description_MixedOps(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 
 	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"A","description":"a"}],"list":true}`))
 	if err != nil {
@@ -995,7 +1036,7 @@ func TestTasks_RenderResult_GetTask(t *testing.T) {
 func TestTasks_IsConcurrencySafe(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	if !tl.IsConcurrencySafe(json.RawMessage(`{}`)) {
 		t.Error("Tasks tool should always be concurrency safe")
 	}
@@ -1029,7 +1070,7 @@ func TestTasks_Create_StoreError(t *testing.T) {
 	t.Parallel()
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"creates":[{"subject":"A","description":"a"}]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1051,7 +1092,7 @@ func TestTasks_Update_StoreError(t *testing.T) {
 	t.Parallel()
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"1","status":"in_progress"}]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1070,7 +1111,7 @@ func TestTasks_Delete_StoreError(t *testing.T) {
 	t.Parallel()
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"deletes":["1"]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1096,7 +1137,7 @@ func TestTasks_List_NoDir(t *testing.T) {
 	// Don't call Init — the session dir doesn't exist
 	// Set a session-based dir that doesn't exist
 	_ = list.SetDir(filepath.Join(dir, "nonexistent"))
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1116,7 +1157,7 @@ func TestTasks_List_NoDir(t *testing.T) {
 func TestTasks_Description_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	desc, err := tl.Description(json.RawMessage(`{bad}`))
 	if err != nil {
 		t.Fatal(err)
@@ -1129,7 +1170,7 @@ func TestTasks_Description_InvalidJSON(t *testing.T) {
 func TestTasks_Description_UpdateNonExistent(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"999"}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -1142,7 +1183,7 @@ func TestTasks_Description_UpdateNonExistent(t *testing.T) {
 func TestTasks_Description_MultipleUpdates(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"1"},{"taskId":"2"}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -1155,7 +1196,7 @@ func TestTasks_Description_MultipleUpdates(t *testing.T) {
 func TestTasks_Description_Deletes(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	desc, err := tl.Description(json.RawMessage(`{"deletes":["1","2"]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -1168,7 +1209,7 @@ func TestTasks_Description_Deletes(t *testing.T) {
 func TestTasks_Description_GetNonExistent(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	desc, err := tl.Description(json.RawMessage(`{"get":"999"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -1185,7 +1226,7 @@ func TestTasks_Description_GetNonExistent(t *testing.T) {
 func TestTasks_IsReadOnly_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	tl := New(list)
+	tl := New(list, nil)
 	if tl.IsReadOnly(json.RawMessage(`{bad}`)) != false {
 		t.Error("IsReadOnly with invalid JSON should return false")
 	}
@@ -1295,7 +1336,7 @@ func TestTasks_Update_GetTaskIOError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(taskFile, 0644) }()
 
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"in_progress"}]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1326,7 +1367,7 @@ func TestTasks_Update_DeleteIOError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0755) }()
 
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"deleted"}]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1354,7 +1395,7 @@ func TestTasks_Update_DeleteAlreadyGone(t *testing.T) {
 	// Delete the file manually so DeleteTask returns (false, nil)
 	_ = os.Remove(filepath.Join(list.Dir(), id+".json"))
 
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"deleted"}]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1385,7 +1426,7 @@ func TestTasks_List_IOError(t *testing.T) {
 		_ = f.Close()
 	}
 
-	tl := New(list)
+	tl := New(list, nil)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
@@ -1546,7 +1587,7 @@ func TestTasksInput_UnmarshalJSON_GetAsStringOrNumber(t *testing.T) {
 func TestTask_DecodeResult_ArrayForm(t *testing.T) {
 	t.Parallel()
 
-	tt := New(NewList(""))
+	tt := New(NewList(""), nil)
 	inner := `{"list":{"tasks":[]}}`
 	textBytes, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
@@ -1566,7 +1607,7 @@ func TestTask_DecodeResult_ArrayForm(t *testing.T) {
 func TestTask_DecodeResult_RejectsBareStruct(t *testing.T) {
 	t.Parallel()
 
-	tt := New(NewList(""))
+	tt := New(NewList(""), nil)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"list":{"tasks":[]}}`))
 	if err == nil {
 		t.Error("DecodeResult must reject bare struct form")

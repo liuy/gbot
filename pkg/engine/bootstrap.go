@@ -97,7 +97,7 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
 	reg.MustRegister(job.NewJob(jobReg))
 
-	reg.MustRegister(task.New(taskList))
+	reg.MustRegister(task.New(taskList, deps.Hooks))
 
 	reg.MustRegister(skilltool.New(deps.SkillReg, at))
 
