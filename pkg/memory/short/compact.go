@@ -87,6 +87,31 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 	}
 }
 
+// CreateCompactSummaryMessage creates the persisted form of the compact
+// summary user message. TS align: compact.ts:614-622 — createUserMessage({
+// content: getCompactUserSummaryMessage(...), isCompactSummary: true,
+// isVisibleInTranscriptOnly: true }). isVisibleInTranscriptOnly is a UI-render
+// concept (chat UI hides it, transcript keeps it): the summary IS persisted,
+// reloaded, and sent to the API — resume does not amnesia.
+func CreateCompactSummaryMessage(content string) *TranscriptMessage {
+	blockBytes, _ := json.Marshal([]types.ContentBlock{types.NewTextBlock(content)})
+
+	// Metadata carries FlagCompactSummary so StoreMessageToEngine restores it
+	// on DB round-trip; without it a reloaded summary loses the flag that the
+	// next compact's stale-marker filter depends on.
+	tmp := types.Message{Flags: types.FlagCompactSummary}
+	metadata := tmp.MetadataToJSON()
+
+	return &TranscriptMessage{
+		UUID:       uuid.New().String(),
+		ParentUUID: "", // RecordCompact chains it after the boundary
+		Type:       "user",
+		Content:    string(blockBytes),
+		Metadata:   metadata,
+		CreatedAt:  time.Now(),
+	}
+}
+
 // BuildPostCompactMessages constructs the post-compact message array.
 // Order: [boundaryMarker, summaryMessages..., messagesToKeep..., attachments...]
 // TS align: compact.ts:330-338
@@ -113,6 +138,19 @@ func (s *Store) RecordCompact(sessionID string, result *CompactResult) error {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// The chain this function builds puts keep[0] right after the last
+	// summary message. PartialCompact annotated the preserved-segment anchor
+	// as the boundary UUID before the engine layer filled SummaryMessages, so
+	// re-point the anchor at what actually precedes keep[0] — otherwise the
+	// on-load relink (ApplyPreservedSegmentRelinks) splices the summary off
+	// the active chain and the summary stops reloading. TS align:
+	// compact.ts:1078-1080 anchors head-summarizing compacts at
+	// summaryMessages.at(-1).uuid.
+	if len(result.SummaryMessages) > 0 {
+		reanchorPreservedSegment(result.BoundaryMarker,
+			result.SummaryMessages[len(result.SummaryMessages)-1].UUID)
+	}
 
 	// Track last UUID for chaining
 	lastUUID := result.BoundaryMarker.UUID
@@ -901,6 +939,22 @@ func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID,
 	return nil
 }
 
+// reanchorPreservedSegment points the boundary's preserved-segment anchor at
+// the given UUID while keeping head/tail. No-op when the boundary carries no
+// preserved segment (whole-history compact keeps no tail) or its content is
+// unparseable — the relink pass treats both as "nothing to relink".
+func reanchorPreservedSegment(boundary *TranscriptMessage, anchorUUID string) {
+	meta, err := extractCompactMetadata(boundary)
+	if err != nil || meta.PreservedSegment == nil {
+		return
+	}
+	if err := annotateBoundaryWithPreservedSegment(boundary,
+		meta.PreservedSegment.HeadUUID, anchorUUID, meta.PreservedSegment.TailUUID); err != nil {
+		// A silent no-op here would reintroduce the summary splice bug invisibly.
+		slog.Warn("short: compact re-anchor annotation failed", "error", err)
+	}
+}
+
 // parseBoundaryContentMap extracts the inner JSON object from a boundary message's
 // content block array. Content is stored as [{"type":"text","text":"<inner JSON>"}].
 func parseBoundaryContentMap(content string) (map[string]any, error) {
@@ -964,13 +1018,13 @@ func (s *Store) insertOrReplaceMessageTx(tx *sql.Tx, sessionID string, msg *Tran
 
 	query := `
 		INSERT OR REPLACE INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
-		                     is_sidechain, type, subtype, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                     is_sidechain, type, subtype, content, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	result, err := tx.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
 		msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
-		createdAt)
+		nullIfEmpty(msg.Metadata), createdAt)
 	if err != nil {
 		return 0, err
 	}
@@ -983,10 +1037,14 @@ func (s *Store) insertMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMes
 		createdAt = time.Now()
 	}
 
+	// metadata is included so summary/boundary flags survive the DB
+	// round-trip: StoreMessageToEngine restores flags from this column, and a
+	// flagless reloaded compact summary breaks the next compact's
+	// stale-marker filter.
 	query := `
 		INSERT INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
-		                     is_sidechain, type, subtype, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                     is_sidechain, type, subtype, content, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	var result sql.Result
@@ -994,11 +1052,11 @@ func (s *Store) insertMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMes
 	if tx != nil {
 		result, err = tx.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
 			msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
-			createdAt)
+			nullIfEmpty(msg.Metadata), createdAt)
 	} else {
 		result, err = s.db.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
 			msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
-			createdAt)
+			nullIfEmpty(msg.Metadata), createdAt)
 	}
 
 	if err != nil {

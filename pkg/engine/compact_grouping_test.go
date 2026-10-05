@@ -121,8 +121,8 @@ func TestCompact_RetainSplitKeepsToolPairsIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPostCompactChainMessages: %v", err)
 	}
-	if len(reloaded) != 4 {
-		t.Fatalf("reloaded chain: got %d messages, want 4 (boundary + 3 kept)", len(reloaded))
+	if len(reloaded) != 5 {
+		t.Fatalf("reloaded chain: got %d messages, want 5 (boundary + summary + 3 kept)", len(reloaded))
 	}
 	engineReloaded := make([]types.Message, 0, len(reloaded))
 	for _, m := range reloaded {
@@ -134,7 +134,7 @@ func TestCompact_RetainSplitKeepsToolPairsIntact(t *testing.T) {
 			"the retained tail led with an orphaned tool_result",
 			len(engineReloaded), len(paired))
 	}
-	wantRoles := []types.Role{types.RoleSystem, types.RoleAssistant, types.RoleUser, types.RoleUser}
+	wantRoles := []types.Role{types.RoleSystem, types.RoleUser, types.RoleAssistant, types.RoleUser, types.RoleUser}
 	for i, want := range wantRoles {
 		if paired[i].Role != want {
 			t.Errorf("paired[%d].Role = %s, want %s", i, paired[i].Role, want)

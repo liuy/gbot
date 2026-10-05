@@ -257,9 +257,10 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 		t.Fatalf("expected at least 3 messages (boundary + summary + kept), got %d", len(msgs))
 	}
 
-	// First message should be boundary (user role)
-	if msgs[0].Role != types.RoleUser {
-		t.Errorf("first message role = %q, want %q", msgs[0].Role, types.RoleUser)
+	// First message is the TS-aligned boundary: system role, filtered from
+	// the API by marshalMessages on both the live and reloaded paths.
+	if msgs[0].Role != types.RoleSystem {
+		t.Errorf("first message role = %q, want %q", msgs[0].Role, types.RoleSystem)
 	}
 
 	// Second message should contain summary
@@ -301,9 +302,10 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 		t.Fatal("should produce at least one message")
 	}
 
-	// Boundary message should exist even if content is empty
-	if msgs[0].Role != types.RoleUser {
-		t.Errorf("boundary should be user role, got %q", msgs[0].Role)
+	// Boundary message should exist even if content is empty; system role,
+	// TS-aligned (filtered from the API on both live and reloaded paths).
+	if msgs[0].Role != types.RoleSystem {
+		t.Errorf("boundary should be system role, got %q", msgs[0].Role)
 	}
 }
 

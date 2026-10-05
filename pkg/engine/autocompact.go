@@ -380,16 +380,30 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	if boundaryContent == "" {
 		boundaryContent = "Previous conversation compacted"
 	}
-	boundaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(boundaryContent)})
-	boundaryMsg.Flags = types.FlagCompactSummary
+	// TS-aligned boundary form: a system-role message that marshalMessages
+	// filters from the API — the persisted row is system-role too, so the
+	// live and reloaded requests agree on its absence (the live user-form
+	// boundary used to be SENT while the reloaded one was filtered, leaving
+	// a one-message prefix gap across restarts).
+	boundaryMsg := types.Message{
+		Role:    types.RoleSystem,
+		Content: []types.ContentBlock{types.NewTextBlock(boundaryContent)},
+		Flags:   types.FlagCompactSummary,
+	}
 	msgs = append(msgs, boundaryMsg)
 
-	// Summary message (if available)
+	// Summary message (if available). The store form is created first and the
+	// engine message is derived from it through StoreMessageToEngine — the
+	// exact reload path — so a restart reproduces a byte-identical engine
+	// message by construction (存=发). The message also joins the RecordCompact
+	// persistence set: without the summary row, a restart loses ~all summary
+	// tokens from the request (provider cache miss + pre-compact amnesia).
 	if summaryText != "" {
 		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "recent messages are preserved")
-		summaryMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(summaryContent)})
-		summaryMsg.Flags = types.FlagCompactSummary
+		summaryStore := short.CreateCompactSummaryMessage(summaryContent)
+		summaryMsg := short.StoreMessageToEngine(summaryStore)
 		msgs = append(msgs, summaryMsg)
+		result.SummaryMessages = append(result.SummaryMessages, summaryStore)
 	}
 
 	// Kept messages (converted back to types.Message).
