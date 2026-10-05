@@ -366,67 +366,6 @@ func TestCheckResumeConsistency_NoCheckpoint(t *testing.T) {
 	CheckResumeConsistency(chain)
 }
 
-func TestGroupMessagesByApiRound_SingleRound(t *testing.T) {
-	// Without message_id, function groups by UUID — each assistant starts a new group.
-	// user→assistant produces 2 groups: [user], [assistant]
-	messages := []*TranscriptMessage{
-		{Type: "user", UUID: "u1", Content: `[{"type":"text","text":"hi"}]`},
-		{Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"hello"}]`},
-	}
-
-	groups := GroupMessagesByApiRound(messages)
-	if len(groups) != 2 {
-		t.Fatalf("got %d groups, want 2 (user group + assistant group)", len(groups))
-	}
-	if groups[0][0].UUID != "u1" {
-		t.Errorf("group[0][0] = %q, want u1", groups[0][0].UUID)
-	}
-	if groups[1][0].UUID != "a1" {
-		t.Errorf("group[1][0] = %q, want a1", groups[1][0].UUID)
-	}
-}
-
-func TestGroupMessagesByApiRound_MultipleRounds(t *testing.T) {
-	// Each assistant with different UUID starts a new group.
-	// u1, a1, u2, a2 → [u1], [a1, u2], [a2]
-	messages := []*TranscriptMessage{
-		{Type: "user", UUID: "u1", Content: `[{"type":"text","text":"hi"}]`},
-		{Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"hello"}]`},
-		{Type: "user", UUID: "u2", Content: `[{"type":"text","text":"next"}]`},
-		{Type: "assistant", UUID: "a2", Content: `[{"type":"text","text":"response"}]`},
-	}
-
-	groups := GroupMessagesByApiRound(messages)
-	if len(groups) != 3 {
-		t.Fatalf("got %d groups, want 3", len(groups))
-	}
-
-	// Group 0: [u1]
-	if groups[0][0].UUID != "u1" {
-		t.Errorf("group[0][0] = %q, want u1", groups[0][0].UUID)
-	}
-
-	// Group 1: [a1, u2]
-	if groups[1][0].UUID != "a1" {
-		t.Errorf("group[1][0] = %q, want a1", groups[1][0].UUID)
-	}
-	if groups[1][1].UUID != "u2" {
-		t.Errorf("group[1][1] = %q, want u2", groups[1][1].UUID)
-	}
-
-	// Group 2: [a2]
-	if groups[2][0].UUID != "a2" {
-		t.Errorf("group[2][0] = %q, want a2", groups[2][0].UUID)
-	}
-}
-
-func TestGroupMessagesByApiRound_Empty(t *testing.T) {
-	groups := GroupMessagesByApiRound(nil)
-	if groups != nil {
-		t.Errorf("got %v, want nil for empty input", groups)
-	}
-}
-
 func TestProcessResumedConversation_Empty(t *testing.T) {
 	store := openTestStore(t)
 
@@ -492,39 +431,6 @@ func TestRefreshAgentDefinitionsForModeSwitch(t *testing.T) {
 	err := RefreshAgentDefinitionsForModeSwitch("session-1")
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
-	}
-}
-
-func TestExtractMessageID(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    string
-	}{
-		{
-			name:    "with message_id",
-			content: `{"message_id":"msg-123","content":"hello"}`,
-			want:    "msg-123",
-		},
-		{
-			name:    "without message_id",
-			content: `{"content":"hello"}`,
-			want:    "",
-		},
-		{
-			name:    "invalid JSON",
-			content: "not json",
-			want:    "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractMessageID(tt.content)
-			if got != tt.want {
-				t.Errorf("extractMessageID() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 

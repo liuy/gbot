@@ -357,68 +357,6 @@ func CheckResumeConsistency(chain []*TranscriptMessage) {
 	}
 }
 
-// GroupMessagesByApiRound groups messages by API round boundaries.
-// A new group starts when an assistant message has a different "message_id" from the previous assistant.
-// For Go messages without message_id, we group by UUID sequence as a heuristic.
-// TS: grouping.ts:22-63
-func GroupMessagesByApiRound(messages []*TranscriptMessage) [][]*TranscriptMessage {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	var groups [][]*TranscriptMessage
-	var current []*TranscriptMessage
-
-	// Track the last assistant's message_id (extracted from content if available)
-	var lastMessageID string
-
-	for _, msg := range messages {
-		var currentMessageID string
-
-		// Try to extract message_id from assistant messages
-		if msg.Type == "assistant" {
-			currentMessageID = extractMessageID(msg.Content)
-			// If no message_id in content, use UUID as fallback
-			if currentMessageID == "" {
-				currentMessageID = msg.UUID
-			}
-		}
-
-		// Start new group when assistant has different message_id
-		if msg.Type == "assistant" &&
-			currentMessageID != lastMessageID &&
-			len(current) > 0 {
-			groups = append(groups, current)
-			current = []*TranscriptMessage{msg}
-		} else {
-			current = append(current, msg)
-		}
-
-		if msg.Type == "assistant" {
-			lastMessageID = currentMessageID
-		}
-	}
-
-	if len(current) > 0 {
-		groups = append(groups, current)
-	}
-
-	return groups
-}
-
-// extractMessageID extracts the message_id from an assistant message's content JSON.
-// This is the API response identifier shared by streaming chunks from the same response.
-// Returns empty string if not found.
-func extractMessageID(content string) string {
-	var result map[string]any
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return ""
-	}
-
-	messageID, _ := result["message_id"].(string)
-	return messageID
-}
-
 // valueAsString is a helper to extract string values from interface{}
 func valueAsString(v any) string {
 	if s, ok := v.(string); ok {

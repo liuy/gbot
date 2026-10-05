@@ -117,6 +117,35 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 		}, nil
 	}
 
+	if keepFrom == 0 {
+		// The whole history is one API round (alignKeepFromToRoundBoundary found
+		// no boundary that keeps tool_use/tool_result pairs intact across the
+		// split). Summarize everything and retain nothing — TS
+		// compactConversation's default, which never keeps a tail.
+		summaryText, err := c.summarizeMessages(ctx, shortMsgs, customInstructions)
+		if err != nil {
+			return nil, fmt.Errorf("summarize failed: %w", err)
+		}
+		// Calibrated estimator (vs PartialCompact's roughTokenCount basis);
+		// here the summarized segment is the whole transcript.
+		preTokens := c.estimateStoreTokens(shortMsgs)
+		boundary := short.CreateCompactBoundaryMessage(trigger, preTokens, "")
+		pcr := &short.CompactResult{
+			BoundaryMarker:   boundary,
+			SummaryMessages:  []*short.TranscriptMessage{},
+			MessagesToKeep:   nil,
+			Attachments:      []*short.TranscriptMessage{},
+			PreCompactTokens: preTokens,
+		}
+		built := c.buildResultMessages(pcr, summaryText)
+		pcr.Summary = summaryText
+		pcr.BeforeTokens = beforeTokens
+		pcr.BeforeMessages = len(messages)
+		pcr.AfterTokens = EstimateMessagesTokens(built)
+		pcr.Messages = built
+		return pcr, nil
+	}
+
 	// Generate summary for the head messages via LLM
 	headMsgs := shortMsgs[:keepFrom]
 	summaryText, err := c.summarizeMessages(ctx, headMsgs, customInstructions)
@@ -204,6 +233,9 @@ func (c *AutoCompactor) estimateStoreTokens(messages []*short.TranscriptMessage)
 // budget strictly smaller than the estimate total, so the rescan always
 // stops before the head — no sentinel collision. estTotal == 0 (all store
 // contents empty) skips the rescale and keeps the plain scan's verdict.
+// The final index is snapped onto API-round boundaries
+// (alignKeepFromToRoundBoundary) so the retained tail never starts at a
+// user(tool_result) whose assistant was summarized.
 func (c *AutoCompactor) rescaledKeepFrom(shortMsgs []*short.TranscriptMessage, beforeTokens int) int {
 	keepFrom := c.findKeepFrom(shortMsgs)
 	keepBudget := c.keepBudget()
@@ -214,7 +246,7 @@ func (c *AutoCompactor) rescaledKeepFrom(shortMsgs []*short.TranscriptMessage, b
 			keepFrom = c.findKeepFromBudget(shortMsgs, int(int64(keepBudget)*int64(estTotal)/int64(beforeTokens)))
 		}
 	}
-	return keepFrom
+	return alignKeepFromToRoundBoundary(shortMsgs, keepFrom)
 }
 
 // summarizeMessages calls the LLM to generate a summary of the given messages.
