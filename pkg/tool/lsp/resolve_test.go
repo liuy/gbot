@@ -3,6 +3,7 @@ package lsptool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,7 @@ func TestIntegration_ResolveInWorkspace(t *testing.T) {
 
 	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
 
-	uri, pos, err := resolveSymbolPosition(context.Background(), reg, "foo", dir)
+	uri, pos, err := resolveSymbolPosition(context.Background(), reg, "foo", dir, reg.DefaultRoot(), "")
 	if err != nil {
 		t.Fatalf("resolveSymbolPosition: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestIntegration_ResolveInWorkspace_Occurrence(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc foo() {}\n"), 0644)
 	_ = os.WriteFile(filepath.Join(dir, "b.go"), []byte("package main\nfunc foo() {}\n"), 0644)
 
-	uri1, _, err := resolveSymbolPosition(context.Background(), reg, "foo#1", dir)
+	uri1, _, err := resolveSymbolPosition(context.Background(), reg, "foo#1", dir, reg.DefaultRoot(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +94,7 @@ func TestIntegration_ResolveInWorkspace_Occurrence(t *testing.T) {
 		t.Errorf("occurrence 1 uri = %q, want a.go", uri1)
 	}
 
-	uri2, _, err := resolveSymbolPosition(context.Background(), reg, "foo#2", dir)
+	uri2, _, err := resolveSymbolPosition(context.Background(), reg, "foo#2", dir, reg.DefaultRoot(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestIntegration_ResolveInWorkspace_Occurrence(t *testing.T) {
 
 func TestResolveSymbolPosition_EmptySymbol(t *testing.T) {
 	reg := lsp.NewRegistry(t.TempDir())
-	_, _, err := resolveSymbolPosition(context.Background(), reg, "", "/test")
+	_, _, err := resolveSymbolPosition(context.Background(), reg, "", "/test", reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("should fail for empty symbol")
 	}
@@ -140,7 +141,7 @@ func TestIntegration_ResolveSymbol_OccurrenceOutOfRange(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "test.go"),
 		[]byte("package main\nfunc foo() {}\n"), 0644)
 
-	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo#5", dir)
+	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo#5", dir, reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("expected error for occurrence out of range")
 	}
@@ -151,7 +152,7 @@ func TestIntegration_ResolveSymbol_OccurrenceOutOfRange(t *testing.T) {
 
 func TestIntegration_ResolveSymbolInWorkspace_NoServers(t *testing.T) {
 	reg := lsp.NewRegistry("/empty")
-	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo", "/empty")
+	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo", "/empty", reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("expected error for no servers")
 	}
@@ -171,12 +172,13 @@ func TestIntegration_ResolveSymbolInWorkspace_NotFound(t *testing.T) {
 	})
 	defer cleanup()
 
-	_, _, err := resolveSymbolPosition(context.Background(), reg, "nonexistent", dir)
+	_, _, err := resolveSymbolPosition(context.Background(), reg, "nonexistent", dir, reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("expected error for symbol not found in workspace")
 	}
-	if !strings.Contains(err.Error(), "not found in workspace") {
-		t.Errorf("unexpected error: %v", err)
+	want := fmt.Sprintf(`symbol "nonexistent" not found in %s (pass file=<a path inside the project you mean> to query a different project)`, reg.DefaultRoot())
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -218,7 +220,7 @@ func TestIntegration_ResolveQualifiedSymbolName(t *testing.T) {
 	defer cleanup()
 
 	// Unqualified name should match qualified return
-	uri, _, err := resolveSymbolPosition(context.Background(), reg, "LoadMessagesAfterSeq", dir)
+	uri, _, err := resolveSymbolPosition(context.Background(), reg, "LoadMessagesAfterSeq", dir, reg.DefaultRoot(), "")
 	if err != nil {
 		t.Fatalf("expected LoadMessagesAfterSeq to resolve, got: %v", err)
 	}
@@ -227,7 +229,7 @@ func TestIntegration_ResolveQualifiedSymbolName(t *testing.T) {
 	}
 
 	// (*Type).Method pattern: "Messages" should match "(*mockEngine).Messages"
-	uri2, _, err := resolveSymbolPosition(context.Background(), reg, "Messages", dir)
+	uri2, _, err := resolveSymbolPosition(context.Background(), reg, "Messages", dir, reg.DefaultRoot(), "")
 	if err != nil {
 		t.Fatalf("expected Messages to resolve, got: %v", err)
 	}
@@ -256,7 +258,7 @@ func TestIntegration_ResolveSymbolInWorkspace_OccurrenceOutOfRange(t *testing.T)
 	})
 	defer cleanup()
 
-	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo#5", dir)
+	_, _, err := resolveSymbolPosition(context.Background(), reg, "foo#5", dir, reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("expected error for occurrence out of range in workspace")
 	}

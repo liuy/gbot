@@ -68,7 +68,7 @@ func New(reg *lsp.Registry) tool.Tool {
 			},
 			"file": {
 				"type": "string",
-				"description": "File path. Required for rename_file."
+				"description": "File path. Required for rename_file. When set, it also selects which project the query runs against — pass it for files outside the current workspace, e.g. a git worktree."
 			},
 			"symbol": {
 				"type": "string",
@@ -202,9 +202,9 @@ func dispatch(ctx context.Context, reg *lsp.Registry, in Input, workingDir strin
 	case "status":
 		return status(ctx, reg)
 	case "capabilities":
-		return capabilities(ctx, reg, in)
+		return capabilities(ctx, reg, in, workingDir)
 	case "reload":
-		return reload(ctx, reg)
+		return reload(ctx, reg, in, workingDir)
 	case "workspace_symbol":
 		return workspaceSymbol(ctx, reg, in, workingDir)
 	case "request":
@@ -225,6 +225,13 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 	// rename validation early so the error is about new_name, not symbol resolution
 	if in.Action == "rename" && in.NewName == "" {
 		return nil, fmt.Errorf("new_name parameter required for rename")
+	}
+
+	if (in.Action == "rename" && boolPtrVal(in.Apply, true)) ||
+		(in.Action == "code_actions" && boolPtrVal(in.Apply, false)) {
+		if err := guardWriteRoot(reg, in, workingDir); err != nil {
+			return nil, err
+		}
 	}
 
 	// symbols only needs a file, no symbol resolution
@@ -282,7 +289,12 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 // resolveAndOpen resolves the symbol to a position, ensures the file is open
 // in the LSP server, and returns everything the action handlers need.
 func resolveAndOpen(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (uri string, pos lsp.Position, c *lsp.Client, spec lsp.ServerSpec, err error) {
-	uri, pos, err = resolveSymbolPosition(ctx, reg, in.Symbol, workingDir)
+	root := targetRoot(reg, in, workingDir)
+	inExt := ""
+	if in.File != "" {
+		inExt = filepath.Ext(resolvePath(in.File, workingDir))
+	}
+	uri, pos, err = resolveSymbolPosition(ctx, reg, in.Symbol, workingDir, root, inExt)
 	if err != nil {
 		return "", lsp.Position{}, nil, lsp.ServerSpec{}, err
 	}
@@ -293,7 +305,11 @@ func resolveAndOpen(ctx context.Context, reg *lsp.Registry, in Input, workingDir
 		return "", lsp.Position{}, nil, lsp.ServerSpec{}, fmt.Errorf("no extension: %s", targetFile)
 	}
 
-	c, err = reg.ForFile(ctx, targetFile)
+	// The root stays the one chosen from in.File. Re-deriving it from the
+	// resolved URI would send a symbol that lives in a module-cache dependency
+	// to a server rooted there — a full process that can answer almost nothing,
+	// and under the extra-root cap it evicts the project the caller asked about.
+	c, err = reg.ForFileInRoot(ctx, targetFile, root)
 	if err != nil {
 		return "", lsp.Position{}, nil, lsp.ServerSpec{}, fmt.Errorf("lsp for file: %w", err)
 	}
@@ -367,6 +383,40 @@ func resolvePath(p, wd string) string {
 		return p
 	}
 	return filepath.Join(wd, p)
+}
+
+// targetRoot picks the project a request runs against: the root of in.File when
+// the caller named a file, otherwise the launch workspace. A symbol query with
+// no file cannot know which project it means, so it stays on the launch root.
+func targetRoot(reg *lsp.Registry, in Input, workingDir string) string {
+	if in.File != "" {
+		return reg.RootFor(resolvePath(in.File, workingDir))
+	}
+	return reg.DefaultRoot()
+}
+
+// guardWriteRootPath rejects a write action on a path that lies outside the
+// launch workspace but has no project of its own: the only server that could
+// serve it is the launch-workspace one, whose edits would be computed against —
+// and written into — a different tree than the file the caller named. It judges
+// the path the action will actually use, because an argument that is trimmed or
+// resolved before use must not be judged in its raw form: padding like
+// "  /outside/x.go  " is not absolute, so it would read as a relative path
+// inside the workspace and the guard would pass while the write lands outside.
+func guardWriteRootPath(reg *lsp.Registry, action, path string) error {
+	if err := reg.CheckWriteRoot(path); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return nil
+}
+
+// guardWriteRoot is the Input-shaped form, for the actions that use in.File
+// verbatim, so the empty-file short-circuit and the action prefix live in one place.
+func guardWriteRoot(reg *lsp.Registry, in Input, workingDir string) error {
+	if in.File == "" {
+		return nil
+	}
+	return guardWriteRootPath(reg, in.Action, resolvePath(in.File, workingDir))
 }
 
 func boolPtrVal(p *bool, def bool) bool {

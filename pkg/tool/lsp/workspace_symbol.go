@@ -3,6 +3,8 @@ package lsptool
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/lsp"
@@ -22,9 +24,34 @@ func workspaceSymbol(ctx context.Context, reg *lsp.Registry, in Input, wd string
 		return nil, fmt.Errorf("no language server configured")
 	}
 
+	ext := ""
+	if in.File != "" {
+		ext = filepath.Ext(resolvePath(in.File, wd))
+	}
+	rootScoped := false
+	if ext != "" {
+		var filtered []lsp.ServerSpec
+		for _, s := range specs {
+			if slices.Contains(s.FileExts, ext) {
+				filtered = append(filtered, s)
+			}
+		}
+		if len(filtered) > 0 {
+			specs = filtered
+			rootScoped = true
+		}
+	}
+	root := targetRoot(reg, in, wd)
+
 	var allSymbols []lsp.SymbolInformation
 	for _, spec := range specs {
-		c, err := reg.ForSpec(ctx, spec)
+		var c *lsp.Client
+		var err error
+		if rootScoped {
+			c, err = reg.ForSpecInRoot(ctx, spec, root)
+		} else {
+			c, err = reg.ForSpec(ctx, spec)
+		}
 		if err != nil {
 			continue
 		}

@@ -13,7 +13,7 @@ import (
 
 // capabilities reports LSP server capabilities, optionally filtered by file extension.
 // Mirrors omp action="capabilities" (index.ts:1828-1878).
-func capabilities(ctx context.Context, reg *lsp.Registry, in Input) (*tool.ToolResult, error) {
+func capabilities(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (*tool.ToolResult, error) {
 	var specs []lsp.ServerSpec
 	if in.File != "" {
 		s := reg.Snapshot()
@@ -35,7 +35,7 @@ func capabilities(ctx context.Context, reg *lsp.Registry, in Input) (*tool.ToolR
 
 	var outputs []string
 	for _, spec := range specs {
-		c, err := reg.ForSpec(ctx, spec)
+		c, err := reg.ForSpecInRoot(ctx, spec, targetRoot(reg, in, workingDir))
 		if err != nil {
 			outputs = append(outputs, fmt.Sprintf("%s: failed - %v", spec.Name, err))
 			continue

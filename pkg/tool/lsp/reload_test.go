@@ -3,8 +3,12 @@ package lsptool
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/lsp"
 )
@@ -76,11 +80,67 @@ func TestReload_NoServers(t *testing.T) {
 	}
 }
 
+// TestIntegration_Reload_FileScopesToWorktreeRoot pins the file= scoping: a
+// reload naming a worktree file must ask the worktree root, where no client is
+// injected, so the spawn of the (nonexistent) command fails — while the launch
+// root's injected client stays untouched. Before the fix, reload asked
+// ForSpec (launch root) regardless of file, so the injected client answered
+// and this test failed on its "Failed" expectation.
+func TestIntegration_Reload_FileScopesToWorktreeRoot(t *testing.T) {
+	mainDir := t.TempDir()
+	wtDir := t.TempDir()
+	for _, dir := range []string{mainDir, wtDir} {
+		writeGoFile(t, filepath.Join(dir, "go.mod"), "module example.com/proj\n\ngo 1.27\n")
+		writeGoFile(t, filepath.Join(dir, "a", "use.go"), "package a\n\nfunc use() {}\n")
+	}
+	reg := lsp.NewRegistry(mainDir)
+	spec := lsp.ServerSpec{Name: "fakels", Language: "Fake", FileExts: []string{".go"}, Command: "fake-lsp"}
+	// Launch root only: one injected client, none for wtDir.
+	clientConn, serverConn := net.Pipe()
+	var wg sync.WaitGroup
+	wg.Go(func() { serveFake(t, serverConn, func(_ string, _ json.RawMessage) (any, bool) { return nil, false }, mainDir) })
+	c := lsp.NewTestClient("fakels", clientConn)
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	if err := c.Initialize(initCtx, lsp.FileToURI(mainDir)); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	reg.InjectClientInRoot("fakels", mainDir, spec, c)
+	defer func() {
+		clientConn.Close()
+		serverConn.Close()
+		wg.Wait()
+	}()
+
+	result, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "reload",
+		File:   filepath.Join(wtDir, "a", "use.go"),
+	}), basicCtx())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := result.Data.(string)
+	if !strings.Contains(got, "Failed to reload fakels") {
+		t.Errorf("expected worktree-root failure output, got: %s", got)
+	}
+
+	// No file= must keep hitting the launch root's injected client.
+	result2, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "reload",
+	}), basicCtx())
+	if err != nil {
+		t.Fatalf("reload (no file): %v", err)
+	}
+	if got2 := result2.Data.(string); !strings.Contains(got2, "Reloaded fakels") && !strings.Contains(got2, "Restarted fakels") {
+		t.Errorf("expected launch-root reload/restart, got: %s", got2)
+	}
+}
+
 // TestReloadServer_ForSpecError covers the ForSpec failure path.
 func TestReloadServer_ForSpecError(t *testing.T) {
 	reg := lsp.NewRegistry("/tmp")
 	// No server injected → ForSpec fails.
-	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "ghost"})
+	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "ghost"}, reg.DefaultRoot())
 	if !strings.Contains(got, "Failed to reload ghost") {
 		t.Errorf("expected failure message, got: %s", got)
 	}
@@ -99,7 +159,7 @@ func TestReloadServer_CancelledContext(t *testing.T) {
 	if len(specs) == 0 {
 		t.Fatal("expected at least 1 spec")
 	}
-	got := reloadServer(ctx, reg, specs[0])
+	got := reloadServer(ctx, reg, specs[0], reg.DefaultRoot())
 	if !strings.Contains(got, "Failed to reload") {
 		t.Errorf("expected 'Failed to reload' on cancelled ctx, got: %s", got)
 	}
@@ -123,7 +183,7 @@ func TestReloadServer_FallbackKillAndEvict(t *testing.T) {
 	defer cleanup()
 
 	specs := reg.Snapshot()
-	got := reloadServer(context.Background(), reg, specs[0])
+	got := reloadServer(context.Background(), reg, specs[0], reg.DefaultRoot())
 	// Branch 1 (rust-analyzer/reloadWorkspace) succeeds with null result.
 	if !strings.Contains(got, "Reloaded fakels") && !strings.Contains(got, "Restarted fakels") {
 		t.Errorf("expected reload/restart message, got: %s", got)

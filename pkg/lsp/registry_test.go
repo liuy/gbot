@@ -50,7 +50,10 @@ func TestRegistry_ForFile_NoSpec(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown extension")
 	}
-	_ = err.Error()
+	want := `no lsp server for file extension ".unknownext" (path: /tmp/foo.unknownext)`
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
 }
 
 func TestRegistry_ForFile_NoExtension(t *testing.T) {
@@ -61,7 +64,10 @@ func TestRegistry_ForFile_NoExtension(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing extension")
 	}
-	_ = err.Error()
+	want := "lsp needs a file path with extension (e.g. .go), got: /tmp/README"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
 }
 
 func TestRegistry_Shutdown_Idempotent(t *testing.T) {

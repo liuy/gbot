@@ -151,7 +151,7 @@ func TestRegistry_ClientFor_SpawnSuccess_DeadEviction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := r.clientFor(ctx, spec)
+	c, err := r.clientFor(ctx, spec, r.rootDir)
 	if err != nil {
 		t.Fatalf("clientFor: %v", err)
 	}
@@ -165,8 +165,8 @@ func TestRegistry_ClientFor_SpawnSuccess_DeadEviction(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for {
 		r.mu.RLock()
-		_, present := r.live["fake"]
-		rest := r.restarts["fake"]
+		_, present := r.live[clientKey{"fake", r.rootDir}]
+		rest := r.restarts[clientKey{"fake", r.rootDir}]
 		r.mu.RUnlock()
 		if !present && rest > 0 {
 			break
@@ -174,8 +174,8 @@ func TestRegistry_ClientFor_SpawnSuccess_DeadEviction(t *testing.T) {
 		select {
 		case <-deadline:
 			r.mu.RLock()
-			p := r.live["fake"]
-			rest := r.restarts["fake"]
+			p := r.live[clientKey{"fake", r.rootDir}]
+			rest := r.restarts[clientKey{"fake", r.rootDir}]
 			r.mu.RUnlock()
 			t.Fatalf("eviction goroutine did not run: present=%v restarts=%d", p != nil, rest)
 		case <-time.After(20 * time.Millisecond):
@@ -199,7 +199,7 @@ func TestRegistry_ClientFor_RegistryDone(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := r.clientFor(ctx, spec)
+	c, err := r.clientFor(ctx, spec, r.rootDir)
 	if err != nil {
 		t.Fatalf("clientFor: %v", err)
 	}

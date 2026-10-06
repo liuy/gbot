@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,21 +15,41 @@ import (
 // maxRestarts caps how many times Registry will re-spawn a crashed server per session.
 const maxRestarts = 2
 
-// Registry owns all live LSP clients, indexed by file extension.
+// maxExtraRoots bounds the number of additional project roots one Registry
+// serves. Each extra root is a full language-server process (~400MB for gopls
+// on this repo), so the pool must not grow with every path the model touches.
+const maxExtraRoots = 2
+
+// clientKey identifies one language-server process: a server kind rooted at a
+// project directory. The same server name serving two trees is two processes.
+type clientKey struct {
+	spec string
+	root string
+}
+
+// LiveServer is one live (server, root) pair.
+type LiveServer struct {
+	Spec   ServerSpec
+	Root   string
+	Client *Client
+}
+
+// Registry owns all live LSP clients, indexed by file extension and project root.
 type Registry struct {
 	rootDir string
 
-	mu        sync.RWMutex
-	specs     []ServerSpec
-	extToSpec map[string]ServerSpec
-	live      map[string]*Client
-	restarts  map[string]int           // spec.Name -> crash-induced restart count (excludes initial spawn)
-	sessions  map[string]*spawnSession // spec.Name -> in-progress spawn gate
-	closed    bool
-	done      chan struct{}
+	mu         sync.RWMutex
+	specs      []ServerSpec
+	extToSpec  map[string]ServerSpec
+	live       map[clientKey]*Client
+	restarts   map[clientKey]int           // (spec, root) -> crash-induced restart count (excludes initial spawn)
+	sessions   map[clientKey]*spawnSession // (spec, root) -> in-progress spawn gate
+	extraRoots []string                    // roots added beyond rootDir, in creation order
+	closed     bool
+	done       chan struct{}
 }
 
-// spawnSession serializes spawn attempts per spec.
+// spawnSession serializes spawn attempts per (spec, root).
 type spawnSession struct {
 	done chan struct{} // closed when spawn attempt completes (success or failure)
 }
@@ -37,9 +58,9 @@ func NewRegistry(rootDir string) *Registry {
 	return &Registry{
 		rootDir:   rootDir,
 		extToSpec: make(map[string]ServerSpec),
-		live:      make(map[string]*Client),
-		restarts:  make(map[string]int),
-		sessions:  make(map[string]*spawnSession),
+		live:      make(map[clientKey]*Client),
+		restarts:  make(map[clientKey]int),
+		sessions:  make(map[clientKey]*spawnSession),
 		done:      make(chan struct{}),
 	}
 }
@@ -121,13 +142,45 @@ func (r *Registry) SpecForFile(path string) (ServerSpec, bool) {
 		return ServerSpec{}, false
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	spec, ok := r.extToSpec[ext]
+	r.mu.RUnlock()
 	return spec, ok
+}
+
+// DefaultRoot reports the launch workspace.
+func (r *Registry) DefaultRoot() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.rootDir
+}
+
+// RootFor reports which root will serve path, without spawning anything.
+// The order is deliberate: a path inside the launch workspace stays there even
+// when a nested module marker sits above it, so the single-workspace case can
+// never be rerouted. Only a path that is outside it looks for its own project.
+func (r *Registry) RootFor(path string) string {
+	defaultRoot := r.DefaultRoot()
+	p := cleanAbs(path)
+	if pathWithin(p, defaultRoot) {
+		return defaultRoot
+	}
+	// A marker is an ancestor of the path, so a path outside rootDir cannot
+	// have its marker inside rootDir — rule 1 already covers that case.
+	if mr := projectRootFor(p, filepath.Ext(p)); mr != "" {
+		return mr
+	}
+	return defaultRoot
 }
 
 // ForFile returns a live LSP client for the file's extension, lazily spawning if needed.
 func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
+	return r.ForFileInRoot(ctx, path, r.RootFor(path))
+}
+
+// ForFileInRoot is ForFile with the root already decided. Use it when the
+// caller resolved a symbol through a specific root and must keep using that
+// server for the file the symbol lives in.
+func (r *Registry) ForFileInRoot(ctx context.Context, path, root string) (*Client, error) {
 	ext := filepath.Ext(path)
 	if ext == "" {
 		return nil, fmt.Errorf("lsp needs a file path with extension (e.g. .go), got: %s", path)
@@ -140,7 +193,7 @@ func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
 		return nil, fmt.Errorf("no lsp server for file extension %q (path: %s)", ext, path)
 	}
 
-	return r.clientFor(ctx, spec)
+	return r.clientFor(ctx, spec, root)
 }
 
 // ForSpec returns the client for a specific ServerSpec, spawning it if needed.
@@ -148,20 +201,43 @@ func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
 // when the caller already knows which server to talk to (workspace_symbol,
 // capabilities, reload, request without a file).
 func (r *Registry) ForSpec(ctx context.Context, spec ServerSpec) (*Client, error) {
-	return r.clientFor(ctx, spec)
+	return r.ForSpecInRoot(ctx, spec, r.DefaultRoot())
+}
+
+// ForSpecInRoot returns the client for spec rooted at root, spawning if needed.
+func (r *Registry) ForSpecInRoot(ctx context.Context, spec ServerSpec, root string) (*Client, error) {
+	return r.clientFor(ctx, spec, root)
 }
 
 // InjectClient registers a pre-made client directly, bypassing spawn.
 // The spec is needed to populate the extension→spec mapping for ForFile.
 // Only used in tests — the client's Dead channel is monitored for eviction.
 func (r *Registry) InjectClient(name string, spec ServerSpec, c *Client) {
+	r.InjectClientInRoot(name, r.DefaultRoot(), spec, c)
+}
+
+// InjectClientInRoot registers a pre-made client for a specific root. Tests only.
+// An injected foreign root joins extraRoots so LiveServers can report it, which
+// also puts it in the eviction FIFO: a later on-demand spawn can evict it like
+// any other extra root.
+func (r *Registry) InjectClientInRoot(name, root string, spec ServerSpec, c *Client) {
+	k := clientKey{name, root}
+
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.live[name] = c
-	r.specs = append(r.specs, spec)
+	r.live[k] = c
+	// Idempotent by name: a duplicated spec would make status print the server
+	// twice and make resolveInWorkspace query the same client twice, which
+	// duplicates matches and shifts symbol#N.
+	if !slices.ContainsFunc(r.specs, func(s ServerSpec) bool { return s.Name == spec.Name }) {
+		r.specs = append(r.specs, spec)
+	}
 	for _, ext := range spec.FileExts {
 		r.extToSpec[ext] = spec
 	}
+	if root != r.rootDir && !slices.Contains(r.extraRoots, root) {
+		r.extraRoots = append(r.extraRoots, root)
+	}
+	r.mu.Unlock()
 
 	go func() {
 		select {
@@ -169,8 +245,8 @@ func (r *Registry) InjectClient(name string, spec ServerSpec, c *Client) {
 		case <-r.done:
 		}
 		r.mu.Lock()
-		if cur, ok := r.live[name]; ok && cur == c {
-			delete(r.live, name)
+		if cur, ok := r.live[k]; ok && cur == c {
+			delete(r.live, k)
 		}
 		r.mu.Unlock()
 	}()
@@ -179,10 +255,12 @@ func (r *Registry) InjectClient(name string, spec ServerSpec, c *Client) {
 // clientFor returns a live client, spawning under single-flight.
 // Each spawn session is its own gate: after the spawn finishes (success or fail),
 // the gate is removed, so a subsequent crash starts a fresh gate.
-func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, error) {
+func (r *Registry) clientFor(ctx context.Context, spec ServerSpec, root string) (*Client, error) {
+	k := clientKey{spec.Name, root}
+
 	// Fast path: live and not dead.
 	r.mu.RLock()
-	if c, ok := r.live[spec.Name]; ok {
+	if c, ok := r.live[k]; ok {
 		select {
 		case <-c.Dead():
 		default:
@@ -200,7 +278,7 @@ func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, err
 			return nil, errors.New("lsp registry closed")
 		}
 		// Re-check live after acquiring write lock.
-		if c, ok := r.live[spec.Name]; ok {
+		if c, ok := r.live[k]; ok {
 			select {
 			case <-c.Dead():
 			default:
@@ -209,7 +287,7 @@ func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, err
 			}
 		}
 		// Is another goroutine already spawning?
-		if sess, ok := r.sessions[spec.Name]; ok {
+		if sess, ok := r.sessions[k]; ok {
 			r.mu.Unlock()
 			select {
 			case <-sess.done:
@@ -221,30 +299,39 @@ func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, err
 		}
 		// We won the race — create our own session.
 		sess := &spawnSession{done: make(chan struct{})}
-		r.sessions[spec.Name] = sess
+		r.sessions[k] = sess
 		r.mu.Unlock()
 
 		// Spawn outside the lock.
-		c, err := r.spawnWithBudget(ctx, spec)
+		c, err := r.spawnWithBudget(ctx, spec, root)
 		close(sess.done)
 
 		r.mu.Lock()
-		delete(r.sessions, spec.Name)
+		delete(r.sessions, k)
 		if err != nil {
 			r.mu.Unlock()
 			return nil, err
 		}
-		r.live[spec.Name] = c
+		r.live[k] = c
+		victims := r.evictOldestRootLocked(r.registerRootLocked(root))
 		r.mu.Unlock()
+
+		// Kill outside the write lock: Shutdown would deadlock waiting on the
+		// process we just killed (same reason as KillAndEvict). A request that
+		// was already in flight on a victim surfaces as ErrServerDead, and the
+		// caller's next attempt respawns that root.
+		for _, v := range victims {
+			v.Kill()
+		}
 
 		go func() {
 			select {
 			case <-c.Dead():
 				// Real crash or Shutdown — evict from live map.
 				r.mu.Lock()
-				if cur, ok := r.live[spec.Name]; ok && cur == c {
-					delete(r.live, spec.Name)
-					r.restarts[spec.Name]++
+				if cur, ok := r.live[k]; ok && cur == c {
+					delete(r.live, k)
+					r.restarts[k]++
 				}
 				r.mu.Unlock()
 			case <-r.done:
@@ -256,15 +343,57 @@ func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, err
 	}
 }
 
-// spawnWithBudget enforces maxRestarts before calling spawnClient.
-func (r *Registry) spawnWithBudget(ctx context.Context, spec ServerSpec) (*Client, error) {
+// registerRootLocked records root as an extra root when it is new and is not
+// the launch workspace. Returns true when the root was added. Caller holds r.mu.
+func (r *Registry) registerRootLocked(root string) bool {
+	if root == r.rootDir {
+		return false
+	}
+	if slices.Contains(r.extraRoots, root) {
+		return false
+	}
+	r.extraRoots = append(r.extraRoots, root)
+	return true
+}
+
+// evictOldestRootLocked drops the oldest extra root when the pool is over
+// budget, returning the clients that must be killed by the caller. Caller
+// holds r.mu and must Kill the returned clients after unlocking.
+//
+// Eviction is creation-order rather than least-recently-used: with a cap of 2
+// the difference is immaterial, and FIFO avoids taking the write lock on every
+// cache hit. r.sessions is deliberately untouched — clientFor deletes the
+// session before inserting into live, so a key present in live never has a
+// session, while a different key at the same root that is mid-spawn must keep
+// its own.
+func (r *Registry) evictOldestRootLocked(rootWasNew bool) []*Client {
+	if !rootWasNew || len(r.extraRoots) <= maxExtraRoots {
+		return nil
+	}
+	victim := r.extraRoots[0]
+	r.extraRoots = r.extraRoots[1:]
+	var victims []*Client
+	for k, c := range r.live {
+		if k.root == victim {
+			victims = append(victims, c)
+			delete(r.live, k)
+			delete(r.restarts, k)
+		}
+	}
+	return victims
+}
+
+// spawnWithBudget enforces maxRestarts before calling spawnClient. The budget
+// is per (spec, root): a server crashing in one project must not exhaust the
+// restart allowance for the same server in another.
+func (r *Registry) spawnWithBudget(ctx context.Context, spec ServerSpec, root string) (*Client, error) {
 	r.mu.RLock()
-	restarts := r.restarts[spec.Name]
+	restarts := r.restarts[clientKey{spec.Name, root}]
 	r.mu.RUnlock()
 	if restarts > maxRestarts {
 		return nil, fmt.Errorf("lsp %s: exceeded %d restarts", spec.Name, maxRestarts)
 	}
-	return spawnClient(ctx, spec, r.rootDir)
+	return spawnClient(ctx, spec, root)
 }
 
 func spawnClient(ctx context.Context, spec ServerSpec, rootDir string) (*Client, error) {
@@ -301,7 +430,7 @@ func (r *Registry) Shutdown(ctx context.Context) {
 	for _, c := range r.live {
 		clients = append(clients, c)
 	}
-	r.live = make(map[string]*Client)
+	r.live = make(map[clientKey]*Client)
 	r.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -324,28 +453,83 @@ func (r *Registry) NumServers() int {
 	return len(r.specs)
 }
 
-// StartedClient reports whether a server with the given name has been spawned
-// (live in the registry) and is still responsive. Mirrors omp's
-// startedByConfigName check (index.ts:1366-1375).
-func (r *Registry) StartedClient(name string) (*Client, bool) {
+// LiveServers returns every live (spec, root) pair: default root first, then
+// extra roots in creation order, each group sorted by spec name. Entries whose
+// client reports IsAlive() == false are skipped, so a crashed-but-not-yet-
+// evicted server is not reported as ready.
+func (r *Registry) LiveServers() []LiveServer {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	c, ok := r.live[name]
-	if !ok || !c.IsAlive() {
-		return nil, false
+
+	byRoot := make(map[string][]LiveServer, len(r.extraRoots)+1)
+	for k, c := range r.live {
+		if !c.IsAlive() {
+			continue
+		}
+		byRoot[k.root] = append(byRoot[k.root], LiveServer{
+			Spec:   r.specForNameLocked(k.spec),
+			Root:   k.root,
+			Client: c,
+		})
 	}
-	return c, true
+
+	var out []LiveServer
+	appendGroup := func(root string) {
+		group := byRoot[root]
+		if len(group) == 0 {
+			return
+		}
+		slices.SortFunc(group, func(a, b LiveServer) int {
+			return strings.Compare(a.Spec.Name, b.Spec.Name)
+		})
+		out = append(out, group...)
+	}
+	appendGroup(r.rootDir)
+	for _, root := range r.extraRoots {
+		appendGroup(root)
+	}
+	return out
 }
 
-// KillAndEvict kills the subprocess for `name` (if any) and removes it from
-// the live map so the next ForFile call respawns. Returns false if no live
-// client exists. Used by reload as the kill fallback when neither
+// specForNameLocked recovers a ServerSpec from the name half of a clientKey.
+// Falls back to a name-only spec when the pool holds a client that was never
+// registered in specs, so callers still get a usable Name.
+func (r *Registry) specForNameLocked(name string) ServerSpec {
+	for _, s := range r.specs {
+		if s.Name == name {
+			return s
+		}
+	}
+	return ServerSpec{Name: name}
+}
+
+// CheckWriteRoot returns an error when a write action on path would be served by
+// the launch-workspace server even though path lies outside it.
+func (r *Registry) CheckWriteRoot(path string) error {
+	p := cleanAbs(path)
+	root := r.DefaultRoot()
+	if pathWithin(p, root) {
+		return nil
+	}
+	if projectRootFor(p, filepath.Ext(p)) != "" {
+		return nil
+	}
+	// "no marker of its own" would be false for a .py under a go.mod directory:
+	// the marker is there, it just does not belong to that file's language.
+	return fmt.Errorf("file %s is outside the workspace root %s and its directory has no project marker for its file type (go.mod, package.json or Cargo.toml), so no language server can be rooted at its directory; pass a file inside %s or a file whose directory has a marker for that extension",
+		p, root, root)
+}
+
+// KillAndEvict kills the subprocess for `name` rooted at `root` (if any) and
+// removes it from the live map so the next ForFile call respawns. Returns false
+// if no live client exists. Used by reload as the kill fallback when neither
 // rust-analyzer/reloadWorkspace nor workspace/didChangeConfiguration succeeds.
-func (r *Registry) KillAndEvict(name string) bool {
+func (r *Registry) KillAndEvict(name, root string) bool {
+	k := clientKey{name, root}
 	r.mu.Lock()
-	c, ok := r.live[name]
+	c, ok := r.live[k]
 	if ok {
-		delete(r.live, name)
+		delete(r.live, k)
 	}
 	r.mu.Unlock()
 	if !ok {

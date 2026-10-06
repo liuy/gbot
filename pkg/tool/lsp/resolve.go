@@ -3,30 +3,54 @@ package lsptool
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/lsp"
 )
 
-func resolveSymbolPosition(ctx context.Context, reg *lsp.Registry, symbol, wd string) (string, lsp.Position, error) {
+func resolveSymbolPosition(ctx context.Context, reg *lsp.Registry, symbol, wd, root, ext string) (string, lsp.Position, error) {
 	if symbol == "" {
 		return "", lsp.Position{}, fmt.Errorf("symbol parameter required")
 	}
 
 	sym, occurrence := parseSymbolOccurrence(symbol)
-	return resolveInWorkspace(ctx, reg, sym, occurrence, wd)
+	return resolveInWorkspace(ctx, reg, sym, occurrence, wd, root, ext)
 }
 
-func resolveInWorkspace(ctx context.Context, reg *lsp.Registry, symbol string, occurrence int, wd string) (string, lsp.Position, error) {
+func resolveInWorkspace(ctx context.Context, reg *lsp.Registry, symbol string, occurrence int, wd, root, ext string) (string, lsp.Position, error) {
 	specs := reg.Snapshot()
 	if len(specs) == 0 {
 		return "", lsp.Position{}, fmt.Errorf("no language server configured")
 	}
 
+	// rootScoped: ask servers rooted at `root`. Only safe when we know the
+	// extension the caller means — otherwise a foreign root would spawn a full
+	// process for every configured server for a file no server claims.
+	rootScoped := false
+	if ext != "" {
+		var filtered []lsp.ServerSpec
+		for _, s := range specs {
+			if slices.Contains(s.FileExts, ext) {
+				filtered = append(filtered, s)
+			}
+		}
+		if len(filtered) > 0 {
+			specs = filtered
+			rootScoped = true
+		}
+	}
+
 	var matches []symbolMatch
 	for _, spec := range specs {
-		c, err := reg.ForSpec(ctx, spec)
+		var c *lsp.Client
+		var err error
+		if rootScoped {
+			c, err = reg.ForSpecInRoot(ctx, spec, root)
+		} else {
+			c, err = reg.ForSpec(ctx, spec)
+		}
 		if err != nil {
 			continue
 		}
@@ -45,7 +69,14 @@ func resolveInWorkspace(ctx context.Context, reg *lsp.Registry, symbol string, o
 	}
 
 	if len(matches) == 0 {
-		return "", lsp.Position{}, fmt.Errorf("symbol %q not found in workspace", symbol)
+		// Name the root the search actually used. Without a claimed extension
+		// the query ran in the launch workspace, and blaming `root` would send
+		// the caller to a project that was never asked.
+		queried := root
+		if !rootScoped {
+			queried = reg.DefaultRoot()
+		}
+		return "", lsp.Position{}, fmt.Errorf("symbol %q not found in %s (pass file=<a path inside the project you mean> to query a different project)", symbol, queried)
 	}
 	if occurrence > len(matches) {
 		return "", lsp.Position{}, fmt.Errorf("symbol %q occurrence %d not found (found %d)", symbol, occurrence, len(matches))

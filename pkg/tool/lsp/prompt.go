@@ -28,25 +28,27 @@ Position-based actions (definition, references, hover, rename, etc.) take a ` + 
 
 - ` + "`symbol`" + `: the identifier name (e.g. ` + "`buildHistory`" + `, ` + "`WUIConnector`" + `). For Go methods, use the bare method name (e.g. ` + "`buildHistory`" + `).
 - For symbols that appear multiple times, append ` + "`#N`" + ` to select the Nth occurrence (e.g. ` + "`value#2`" + `). Default is ` + "`#1`" + `.
+- Pass ` + "`file`" + ` when the target lives outside the current workspace (a git worktree, a second checkout, a sibling project): ` + "`file`" + ` selects which project the query runs against. Without it, symbol queries run against the workspace gbot was started in.
 
 ### Available actions
 
 | Action | symbol | file | Description |
 |--------|--------|------|-------------|
-| definition | yes | — | Navigate to symbol definition |
-| type_definition | yes | — | Navigate to type definition |
-| implementation | yes | — | Find concrete implementations |
-| references | yes | — | Find all usages |
-| hover | yes | — | Get type information + docs |
-| callers | yes | — | What calls this function |
-| callees | yes | — | What this function calls |
-| source | yes | — | Extract full source text of a symbol |
-| inspect | yes | — | hover + definition + callers combined |
-| impact | yes | — | references + callers + callees combined |
+| definition | yes | optional | Navigate to symbol definition |
+| type_definition | yes | optional | Navigate to type definition |
+| implementation | yes | optional | Find concrete implementations |
+| references | yes | optional | Find all usages |
+| hover | yes | optional | Get type information + docs |
+| callers | yes | optional | What calls this function |
+| callees | yes | optional | What this function calls |
+| source | yes | optional | Extract full source text of a symbol |
+| inspect | yes | optional | hover + definition + callers combined |
+| impact | yes | optional | references + callers + callees combined |
 | symbols | — | yes | List symbols in a file (hierarchical) |
-| workspace_symbol | — | — | Search symbols across project (uses query param) |
-| code_actions | yes | — | List available quick-fixes |
-| rename | yes | — | Rename a symbol (requires new_name) |
+| workspace_symbol | — | optional | Search symbols across project (uses query param) |
+| code_actions | yes | optional | List available quick-fixes |
+| rename | yes | optional | Rename a symbol (requires new_name) |
+| rename_file | — | yes | Rename a file or directory (requires new_name) |
 | request | optional | optional | Raw LSP method call (query=method, payload=JSON params) |
 | status | — | — | Show active language servers |
 | capabilities | optional | — | Show what each server supports |

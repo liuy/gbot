@@ -303,7 +303,7 @@ func TestRegistry_SpawnClient_ExceedsRestarts(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRegistry(dir)
 	r.mu.Lock()
-	r.restarts["bogus"] = 999
+	r.restarts[clientKey{"bogus", r.rootDir}] = 999
 	r.extToSpec[".go"] = ServerSpec{
 		Name:     "bogus",
 		Command:  "bogus",
@@ -311,7 +311,7 @@ func TestRegistry_SpawnClient_ExceedsRestarts(t *testing.T) {
 	}
 	r.mu.Unlock()
 
-	_, err := r.clientFor(context.Background(), r.extToSpec[".go"])
+	_, err := r.clientFor(context.Background(), r.extToSpec[".go"], r.rootDir)
 	if err == nil {
 		t.Fatal("expected 'exceeded' error")
 	}

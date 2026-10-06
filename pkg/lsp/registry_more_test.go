@@ -49,47 +49,61 @@ func TestRegistry_NumServers(t *testing.T) {
 	}
 }
 
-func TestRegistry_StartedClient(t *testing.T) {
+func TestRegistry_LiveServers_EmptyAndDead(t *testing.T) {
 	r := NewRegistry("/tmp")
 
-	if _, ok := r.StartedClient("gopls"); ok {
-		t.Error("StartedClient on empty registry = true, want false")
+	if n := len(r.LiveServers()); n != 0 {
+		t.Errorf("LiveServers on empty registry = %d, want 0", n)
 	}
 
 	c, _, cleanup := newInProcessServer(t)
 	defer cleanup()
 	c.teardownOnce.Do(func() { close(c.done); close(c.dead) })
 	r.mu.Lock()
-	r.live["gopls"] = c
+	r.live[clientKey{"gopls", r.rootDir}] = c
 	r.mu.Unlock()
 
-	if _, ok := r.StartedClient("gopls"); ok {
-		t.Error("StartedClient on dead client = true, want false")
+	select {
+	case <-c.Dead():
+	case <-time.After(time.Second):
+		t.Fatal("Dead did not close")
+	}
+	if n := len(r.LiveServers()); n != 0 {
+		t.Errorf("LiveServers on dead client = %d, want 0: a dead entry must be skipped, not merely absent", n)
 	}
 }
 
-func TestRegistry_StartedClient_Alive(t *testing.T) {
+func TestRegistry_LiveServers_AliveClient(t *testing.T) {
 	r := NewRegistry("/tmp")
 
 	c, _, cleanup := newInProcessServer(t)
 	defer cleanup()
 
 	r.mu.Lock()
-	r.live["alive"] = c
+	r.live[clientKey{"alive", r.rootDir}] = c
 	r.mu.Unlock()
 
-	got, ok := r.StartedClient("alive")
-	if !ok {
-		t.Fatal("StartedClient on live client = false, want true")
+	live := r.LiveServers()
+	if len(live) != 1 {
+		t.Fatalf("len(LiveServers) = %d, want 1", len(live))
 	}
-	if got != c {
-		t.Error("StartedClient returned different client")
+	if live[0].Client != c {
+		t.Error("LiveServers()[0].Client is not the injected client")
+	}
+	if live[0].Root != r.rootDir {
+		t.Errorf("LiveServers()[0].Root = %q, want %q", live[0].Root, r.rootDir)
+	}
+	// This test inserts into live with no entry in specs, so Spec must come
+	// from the name-only fallback: status groups by Spec.Name, and a zero Name
+	// would drop that server's line.
+	if live[0].Spec.Name != "alive" {
+		t.Errorf("LiveServers()[0].Spec.Name = %q, want alive", live[0].Spec.Name)
 	}
 }
 
 func TestRegistry_KillAndEvict_Missing(t *testing.T) {
 	r := NewRegistry("/tmp")
-	if r.KillAndEvict("gopls") {
+	if r.KillAndEvict("gopls", r.rootDir) {
 		t.Error("KillAndEvict on empty registry = true, want false")
 	}
 }
@@ -107,10 +121,10 @@ func TestRegistry_KillAndEvict_Subprocess(t *testing.T) {
 	}
 	r := NewRegistry(t.TempDir())
 	r.mu.Lock()
-	r.live["fake"] = c
+	r.live[clientKey{"fake", r.rootDir}] = c
 	r.mu.Unlock()
 
-	if !r.KillAndEvict("fake") {
+	if !r.KillAndEvict("fake", r.rootDir) {
 		t.Fatal("KillAndEvict returned false")
 	}
 	select {
@@ -120,7 +134,7 @@ func TestRegistry_KillAndEvict_Subprocess(t *testing.T) {
 	}
 
 	r.mu.RLock()
-	_, present := r.live["fake"]
+	_, present := r.live[clientKey{"fake", r.rootDir}]
 	r.mu.RUnlock()
 	if present {
 		t.Error("client still in live map after KillAndEvict")
@@ -147,8 +161,12 @@ func TestRegistry_InjectClient(t *testing.T) {
 		t.Errorf("gotSpec.Name = %q, want injected", gotSpec.Name)
 	}
 
-	if _, ok := r.StartedClient("injected"); !ok {
-		t.Error("StartedClient(injected) = false, want true")
+	live := r.LiveServers()
+	if len(live) != 1 {
+		t.Fatalf("len(LiveServers) = %d, want 1", len(live))
+	}
+	if live[0].Client != c {
+		t.Error("LiveServers()[0].Client is not the injected client")
 	}
 
 	_ = serverConn.Close()
@@ -160,7 +178,7 @@ func TestRegistry_InjectClient(t *testing.T) {
 	deadline := time.After(time.Second)
 	for {
 		r.mu.RLock()
-		_, present := r.live["injected"]
+		_, present := r.live[clientKey{"injected", r.rootDir}]
 		r.mu.RUnlock()
 		if !present {
 			break

@@ -145,7 +145,7 @@ func TestRegistry_ClientFor_ClosedRegistry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "x"})
+	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "x"}, r.rootDir)
 	if err == nil {
 		t.Fatal("expected error on closed registry")
 	}
@@ -161,12 +161,12 @@ func TestRegistry_ClientFor_LiveNotDead(t *testing.T) {
 	defer cleanup()
 
 	r.mu.Lock()
-	r.live["x"] = c
+	r.live[clientKey{"x", r.rootDir}] = c
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	got, err := r.clientFor(ctx, ServerSpec{Name: "x"})
+	got, err := r.clientFor(ctx, ServerSpec{Name: "x"}, r.rootDir)
 	if err != nil {
 		t.Fatalf("clientFor: %v", err)
 	}
@@ -184,13 +184,13 @@ func TestRegistry_ClientFor_LiveButDead(t *testing.T) {
 	c.teardownOnce.Do(func() { close(c.done); close(c.dead) })
 
 	r.mu.Lock()
-	r.live["x"] = c
+	r.live[clientKey{"x", r.rootDir}] = c
 	r.extToSpec[".go"] = ServerSpec{Name: "x", Command: "this-does-not-exist-xyz", FileExts: []string{".go"}}
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "this-does-not-exist-xyz"})
+	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "this-does-not-exist-xyz"}, r.rootDir)
 	if err == nil {
 		t.Fatal("expected error when spawn fails after live-but-dead")
 	}
@@ -217,7 +217,7 @@ func TestRegistry_ClientFor_SingleFlight_WaitThenSucceed(t *testing.T) {
 	r.mu.Lock()
 	// Pre-populate an in-progress session that we'll close after a delay.
 	sess := &spawnSession{done: make(chan struct{})}
-	r.sessions["fake"] = sess
+	r.sessions[clientKey{"fake", r.rootDir}] = sess
 	// And pre-populate live with the client we'll "produce" once the
 	// waiting goroutine wakes up.
 	clientToReturn, _, cleanup := newInProcessServer(t)
@@ -233,7 +233,7 @@ func TestRegistry_ClientFor_SingleFlight_WaitThenSucceed(t *testing.T) {
 	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c, err := r.clientFor(ctx, spec)
+		c, err := r.clientFor(ctx, spec, r.rootDir)
 		if err == nil {
 			gotName = c.Name()
 		} else {
@@ -247,8 +247,8 @@ func TestRegistry_ClientFor_SingleFlight_WaitThenSucceed(t *testing.T) {
 
 	// Now populate live with the "produced" client and close the session.
 	r.mu.Lock()
-	r.live["fake"] = clientToReturn
-	delete(r.sessions, "fake")
+	r.live[clientKey{"fake", r.rootDir}] = clientToReturn
+	delete(r.sessions, clientKey{"fake", r.rootDir})
 	r.mu.Unlock()
 	close(sess.done)
 
@@ -267,12 +267,12 @@ func TestRegistry_ClientFor_SingleFlight_WaitCtxCancel(t *testing.T) {
 	r := NewRegistry("/tmp")
 	r.mu.Lock()
 	sess := &spawnSession{done: make(chan struct{})}
-	r.sessions["x"] = sess
+	r.sessions[clientKey{"x", r.rootDir}] = sess
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "x"})
+	_, err := r.clientFor(ctx, ServerSpec{Name: "x", Command: "x"}, r.rootDir)
 	if err == nil {
 		t.Fatal("expected ctx.Done error")
 	}

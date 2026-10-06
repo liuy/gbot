@@ -23,6 +23,10 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 
 	var chosenSpec *lsp.ServerSpec
 	var resolvedFile string
+	// chosenByExt records whether the extension match picked the server. Only
+	// then is there evidence the caller means that server, and only then may it
+	// be rooted at the file's project.
+	chosenByExt := false
 
 	if in.File != "" {
 		targetFile := resolvePath(in.File, workingDir)
@@ -32,6 +36,7 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 		for _, s := range specs {
 			if slices.Contains(s.FileExts, ext) {
 				chosenSpec = &s
+				chosenByExt = true
 			}
 			if chosenSpec != nil {
 				break
@@ -47,7 +52,13 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 		chosenSpec = &specs[0]
 	}
 
-	c, err := reg.ForSpec(ctx, *chosenSpec)
+	var c *lsp.Client
+	var err error
+	if chosenByExt {
+		c, err = reg.ForSpecInRoot(ctx, *chosenSpec, targetRoot(reg, in, workingDir))
+	} else {
+		c, err = reg.ForSpec(ctx, *chosenSpec)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("lsp: %w", err)
 	}
@@ -71,7 +82,8 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 		}
 
 		if in.Symbol != "" {
-			_, pos, err := resolveSymbolPosition(ctx, reg, in.Symbol, workingDir)
+			_, pos, err := resolveSymbolPosition(ctx, reg, in.Symbol, workingDir,
+				targetRoot(reg, in, workingDir), filepath.Ext(resolvedFile))
 			if err != nil {
 				return nil, err
 			}

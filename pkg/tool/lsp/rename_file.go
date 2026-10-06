@@ -95,6 +95,17 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 		return nil, fmt.Errorf("destination already exists: %s", lsp.URItoRelativePath(lsp.FileToURI(dest), workingDir))
 	}
 
+	apply := boolPtrVal(in.Apply, true)
+	// Guarded after the path validation so an identical/missing/already-existing
+	// path still reports the error that describes it. The edits are computed by
+	// the server that would serve `source`, so `source` is the path whose root
+	// decides whether the write can be trusted.
+	if apply {
+		if err := guardWriteRootPath(reg, "rename_file", source); err != nil {
+			return nil, err
+		}
+	}
+
 	pairs, _, exceeded, err := enumerateRenamePairs(source, dest)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate rename pairs: %w", err)
@@ -157,8 +168,6 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 	if info.IsDir() {
 		fileCountLabel = fmt.Sprintf("%d file%s under %s", len(pairs), pluralS(len(pairs)), sourceLabel)
 	}
-
-	apply := boolPtrVal(in.Apply, true)
 
 	// PREVIEW MODE: no disk writes.
 	if !apply {
@@ -265,7 +274,7 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 		if ctx.Err() != nil {
 			break
 		}
-		c, err := reg.ForSpec(ctx, spec)
+		c, err := reg.ForSpecInRoot(ctx, spec, reg.RootFor(source))
 		if err != nil {
 			continue
 		}

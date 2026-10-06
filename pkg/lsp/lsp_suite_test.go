@@ -25,6 +25,7 @@ func TestMain(m *testing.M) {
 // Only compiled into test binaries via _test.go.
 func serveFakeLSP() {
 	r := bufio.NewReader(os.Stdin)
+	var initRootURI string
 	for {
 		var contentLength int
 		for {
@@ -60,6 +61,12 @@ func serveFakeLSP() {
 		}
 		switch req.Method {
 		case "initialize":
+			var p struct {
+				RootURI string `json:"rootUri"`
+			}
+			if err := json.Unmarshal(req.Params, &p); err == nil {
+				initRootURI = p.RootURI
+			}
 			writeFakeResp(*req.ID, map[string]any{
 				"capabilities": map[string]any{
 					"referencesProvider":      true,
@@ -98,6 +105,29 @@ func serveFakeLSP() {
 					},
 				},
 			})
+		case "workspace/symbol":
+			// "rootprobe" is the one query that reports the rootUri the server
+			// was initialized with, so a test can observe the root through the
+			// protocol instead of through registry internals. Every other query
+			// keeps the nil answer the default branch gives.
+			var p struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal(req.Params, &p); err == nil && p.Query == "rootprobe" {
+				writeFakeResp(*req.ID, []map[string]any{{
+					"name": "rootprobe",
+					"kind": 12,
+					"location": map[string]any{
+						"uri": initRootURI + "/pkg.go",
+						"range": map[string]any{
+							"start": map[string]any{"line": 0, "character": 0},
+							"end":   map[string]any{"line": 0, "character": 9},
+						},
+					},
+				}})
+				continue
+			}
+			writeFakeResp(*req.ID, nil)
 		default:
 			writeFakeResp(*req.ID, nil)
 		}
@@ -222,7 +252,7 @@ func TestRegistry_SpawnWithBudget_ExceedsRestarts(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRegistry(dir)
 	r.mu.Lock()
-	r.restarts["fakie"] = 999 // exceeds maxRestarts=2
+	r.restarts[clientKey{"fakie", r.rootDir}] = 999 // exceeds maxRestarts=2
 	r.extToSpec[".go"] = ServerSpec{
 		Name:     "fakie",
 		Command:  "nonexistent-binary",
@@ -230,7 +260,7 @@ func TestRegistry_SpawnWithBudget_ExceedsRestarts(t *testing.T) {
 	}
 	r.mu.Unlock()
 
-	_, err := r.clientFor(context.Background(), r.extToSpec[".go"])
+	_, err := r.clientFor(context.Background(), r.extToSpec[".go"], r.rootDir)
 	if err == nil || !strings.Contains(err.Error(), "exceeded") {
 		t.Errorf("expected 'exceeded' error, got %v", err)
 	}

@@ -310,7 +310,7 @@ func TestIntegration_Source_NotFound(t *testing.T) {
 
 func TestResolveInWorkspace_NoServers(t *testing.T) {
 	reg := lsp.NewRegistry("/test")
-	_, _, err := resolveInWorkspace(context.Background(), reg, "foo", 1, "/test")
+	_, _, err := resolveInWorkspace(context.Background(), reg, "foo", 1, "/test", reg.DefaultRoot(), "")
 	if err == nil {
 		t.Fatal("expected error with no servers")
 	}

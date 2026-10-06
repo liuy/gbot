@@ -57,7 +57,7 @@ func newFakeEnv(t *testing.T, handlerFactory func(dir string) fakeHandler) (*lsp
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	reg := lsp.NewRegistry("/test")
+	reg := lsp.NewRegistry(dir)
 	reg.InjectClient("fakels", lsp.ServerSpec{
 		Name:     "fakels",
 		Language: "Fake",
