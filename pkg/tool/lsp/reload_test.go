@@ -107,8 +107,8 @@ func TestIntegration_Reload_FileScopesToWorktreeRoot(t *testing.T) {
 	}
 	reg.InjectClientInRoot("fakels", mainDir, spec, c)
 	defer func() {
-		clientConn.Close()
-		serverConn.Close()
+		_ = clientConn.Close()
+		_ = serverConn.Close()
 		wg.Wait()
 	}()
 
