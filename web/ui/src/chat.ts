@@ -1840,8 +1840,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (fullText.trim() === '' && pastes.length === 0) return
       inputHistory.add(fullText)
       if (streaming) {
-        // Mid-turn queued message: the engine persists it immediately and the
-        // attachment event echoes it in the stream (gray) — no queue chip.
+        // Mid-turn queued message: rides the server queue until the turn
+        // boundary attaches it, so show the cancellable queue bubble. The
+        // 'queued' ack stamps the uuid; the attachment event later removes
+        // the bubble when the message is attached.
+        queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
+        inputBar.setQueuedMsgs(queuedMsgs)
         conn.send({ type: 'message', text: fullText })
         inputBar.removeAttachments(all)
         return
@@ -1889,8 +1893,23 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     })
     inputBar.removeAttachments(all)
     if (streaming) {
-      // Same as the text-only branch: no queue chip — the queued message
-      // echoes into the stream when the engine persists it.
+      queuedMsgs = [...queuedMsgs, {
+        uuid: '',
+        text: fullText,
+        // Keep each image's blob URL and every meta alive on the bubble:
+        // removeAttachments never revokes blobs, so a cancel-restore can
+        // rebuild the chip thumbnail and original filename locally.
+        attachments: metas.map((a, i) => {
+          const ref = files[i]
+          return {
+            name: a.name,
+            mime: a.mime,
+            size: a.size,
+            previewURL: ref && ref.kind === 'image' ? ref.previewURL : undefined,
+          }
+        }),
+      }]
+      inputBar.setQueuedMsgs(queuedMsgs)
       return
     }
     renderUserMessage(fullText, files)
