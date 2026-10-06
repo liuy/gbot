@@ -1,4 +1,4 @@
-.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -84,6 +84,64 @@ CHECK_TARGETS := build test lint fix web-lint web-weak
 else
 CHECK_TARGETS := build build-windows build-windows-gui test lint fix web-lint web-weak
 endif
+
+# mutate rewrites one expression at a time on the lines changed since MUTATE_BASE
+# and re-runs the tests: an escaped mutant is code no test asserts, which coverage
+# cannot show. Standalone on purpose -- it is NOT in CHECK_TARGETS.
+#
+# The mutant numbers below are for MUTATE_BASE=HEAD~1 (one commit): 60 mutants --
+# --dry-run's count, an upper bound, so MUTATE_MAX trips slightly early -- scoring
+# 29 killed / 31 escaped, MSI 48.3%. The default base is origin/master, which diffs
+# since the last push, so a long-lived branch costs proportionally more. Wall clock
+# depends on the flag set: the pre-coefficient runs measured 52s on a warm build
+# cache and 3m30s cold, a run with the coefficient 3m35s cold. Cost is dominated by
+# escaped mutants, each of which pays the full suite of its package (~20s for
+# pkg/engine) on top of recompiling the mutated one. --per-test was measured slower
+# (6m45s): building the per-test coverage map does not amortize at this mutant count.
+#
+# The tool runs its own `go test` with -vet=off and without -race (unlike
+# `make test`), so MSI says nothing about data races.
+#
+# --timeout-coefficient is here because a mutant that merely runs slow is scored
+# KILLED: `go test` panics at its -timeout, exits 1, and exit 1 means killed, which
+# inflates MSI. Without the coefficient the per-mutant timeout is the 10s
+# --exec-timeout default, which is below the clean run of the slower packages here;
+# 3 gives each mutant 3x the slowest targeted package's measured clean run, so no
+# hand-tuned number goes stale as the suite grows. The green-baseline pre-flight
+# uses neither: it gets a fixed 300s and exits 3 when a package is not already
+# green. No --min-msi: a handful of mutants makes the percentage meaningless (both
+# thresholds default to -1, so --ignore-msi-with-no-mutations would suppress
+# nothing).
+#
+# The recipe must stay ONE \-continued command: `exit 0` in its own recipe line
+# ends only that line's shell and make runs the next line anyway, which would drop
+# the skip guards straight into go-mutesting.
+MUTATE_BASE ?= origin/master
+MUTATE_MAX ?= 400
+# The tool's own default is all 72 CPUs on this box; 16 caps contention, it is not a
+# speed win. Tunable: make mutate MUTATE_WORKERS=8.
+MUTATE_WORKERS ?= 16
+mutate:
+	@command -v go-mutesting >/dev/null 2>&1 || { \
+	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
+	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
+	  exit 0; }; \
+	git rev-parse --verify -q '$(MUTATE_BASE)' >/dev/null || { \
+	  echo "NOTE: $(MUTATE_BASE) not found, skipping (make mutate MUTATE_BASE=<ref>)"; \
+	  exit 0; }; \
+	n=$$(go-mutesting --git-diff-lines --git-diff-base='$(MUTATE_BASE)' --dry-run $(PKG) | awk '/^Total:/{print $$2}'); \
+	if [ "$${n:-0}" -eq 0 ]; then \
+	  echo "NOTE: no mutants on the lines changed since $(MUTATE_BASE), nothing to mutate"; \
+	  exit 0; \
+	fi; \
+	if [ "$${n:-0}" -gt $(MUTATE_MAX) ] && [ -z "$(FORCE)" ]; then \
+	  echo "NOTE: $${n:-0} mutants on the changed lines (> $(MUTATE_MAX)), skipping"; \
+	  echo "      make mutate FORCE=1 to run them anyway"; \
+	  exit 0; \
+	fi; \
+	go-mutesting --git-diff-lines --git-diff-base='$(MUTATE_BASE)' \
+	  --workers $(MUTATE_WORKERS) --no-diffs --quiet \
+	  --timeout-coefficient=3 $(PKG)
 
 check: $(CHECK_TARGETS)
 	@echo "✓ ALL CHECKS PASSED"
