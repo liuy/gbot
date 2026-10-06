@@ -141,7 +141,6 @@ export const dict: Dict = {
   ctxCatSystemPrompt: '系统提示词',
   ctxCatBasePrompt: '基础提示词',
   ctxCatPlatformInfo: '平台信息',
-  ctxCatGitStatus: 'Git 状态',
   ctxCatToolPrompts: '工具提示词',
   ctxCatSkillListing: '技能清单',
   ctxCatMemoryFiles: '记忆文件',

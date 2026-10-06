@@ -1531,7 +1531,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 			displayText += " " + skillArgs
 		}
 		a.repl.AddUserMessage(displayText)
-		a.engine.RunSkill(context.Background(), skillName, skillArgs, a.systemPrompt)
+		a.engine.RunSkill(context.Background(), skillName, skillArgs, a.engine.SystemPrompt())
 		a.repl.StartQuery()
 		a.status.SetStreaming(true)
 		a.spinner.Start()
@@ -1569,7 +1569,12 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.repl.cancelFunc = a.engine.Abort
 
 	// events flow through Hub → TUIHandler → appCh
-	a.engine.Query(context.Background(), text, a.systemPrompt)
+	//
+	// The engine owns the system prompt: refreshContext swaps it after a
+	// compaction, and a copy cached here would pin the startup bytes to the
+	// wire for the rest of the process. a.systemPrompt survives only as the
+	// cold-start token estimate.
+	a.engine.Query(context.Background(), text, a.engine.SystemPrompt())
 	a.repl.StartQuery()
 	a.status.SetStreaming(true)
 	a.spinner.Start()

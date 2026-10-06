@@ -8,7 +8,6 @@ import "github.com/liuy/gbot/pkg/lsp"
 func BuildSystemPrompt(workingDir, projectDir string, toolPrompts []string, skillListing string, lspReg *lsp.Registry, memoryDirOverride string) string {
 	builder := NewBuilder(workingDir)
 	builder.ProjectDir = projectDir
-	builder.GitStatus = LoadGitStatus(workingDir)
 	builder.MemoryFiles = LoadMemoryFiles(workingDir, memoryDirOverride)
 	builder.MemoryDirOverride = memoryDirOverride
 	builder.SkillListing = skillListing

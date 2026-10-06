@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -997,7 +999,7 @@ func TestFormatWireBlocks_NonSubQueryResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: User context injection + gitStatus system prompt tests
+// Step 4: User context injection + <env> block system prompt tests
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1067,14 +1069,14 @@ func TestCall_SkillPreloading_EmptySkills(t *testing.T) {
 }
 
 func TestEnhanceSystemPrompt_FallbackOnEmpty(t *testing.T) {
-	result := EnhanceSystemPrompt("", nil, "/tmp", false, "")
+	result := EnhanceSystemPrompt("", nil, "/tmp", "")
 	if !strings.Contains(result, defaultAgentPrompt) {
 		t.Error("expected defaultAgentPrompt fallback when basePrompt is empty")
 	}
 }
 
 func TestEnhanceSystemPrompt_UsesCustomPrompt(t *testing.T) {
-	result := EnhanceSystemPrompt("Custom agent prompt", nil, "/tmp", false, "")
+	result := EnhanceSystemPrompt("Custom agent prompt", nil, "/tmp", "")
 	if !strings.Contains(result, "Custom agent prompt") {
 		t.Error("expected custom prompt to be used")
 	}
@@ -1084,7 +1086,7 @@ func TestEnhanceSystemPrompt_UsesCustomPrompt(t *testing.T) {
 }
 
 func TestEnhanceSystemPrompt_ContainsNotes(t *testing.T) {
-	result := EnhanceSystemPrompt("test", nil, "/tmp", false, "")
+	result := EnhanceSystemPrompt("test", nil, "/tmp", "")
 	if !strings.Contains(result, "always absolute, never relative") {
 		t.Error("expected notes about absolute paths")
 	}
@@ -1097,15 +1099,19 @@ func TestEnhanceSystemPrompt_ContainsNotes(t *testing.T) {
 }
 
 func TestEnhanceSystemPrompt_ContainsEnvBlock(t *testing.T) {
-	result := EnhanceSystemPrompt("test", nil, "/home/user/project", true, "sonnet")
+	repoDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git: %v", err)
+	}
+	result := EnhanceSystemPrompt("test", nil, repoDir, "sonnet")
 	if !strings.Contains(result, "<env>") {
 		t.Error("expected <env> block")
 	}
-	if !strings.Contains(result, "Working directory: /home/user/project") {
-		t.Error("expected working directory in env block")
+	if !strings.Contains(result, "Working directory: "+repoDir) {
+		t.Errorf("expected working directory %q in env block, got:\n%s", repoDir, result)
 	}
 	if !strings.Contains(result, "Is directory a git repo: Yes") {
-		t.Error("expected isGit=Yes")
+		t.Error("expected isGit=Yes for a dir containing .git")
 	}
 	if !strings.Contains(result, "You are powered by the model sonnet") {
 		t.Error("expected model name")
@@ -1113,14 +1119,14 @@ func TestEnhanceSystemPrompt_ContainsEnvBlock(t *testing.T) {
 }
 
 func TestEnhanceSystemPrompt_NotGitRepo(t *testing.T) {
-	result := EnhanceSystemPrompt("test", nil, "/tmp", false, "")
+	result := EnhanceSystemPrompt("test", nil, t.TempDir(), "")
 	if !strings.Contains(result, "Is directory a git repo: No") {
-		t.Error("expected isGit=No")
+		t.Error("expected isGit=No for a dir with no .git in any parent")
 	}
 }
 
 func TestEnhanceSystemPrompt_NoModel(t *testing.T) {
-	result := EnhanceSystemPrompt("test", nil, "/tmp", false, "")
+	result := EnhanceSystemPrompt("test", nil, "/tmp", "")
 	if strings.Contains(result, "You are powered by the model") {
 		t.Error("model line should not appear when model is empty")
 	}
@@ -1132,7 +1138,7 @@ func TestEnhanceSystemPrompt_ToolNames(t *testing.T) {
 		"Read": &mockTool{name: "Read"},
 		"Bash": &mockTool{name: "Bash"},
 	}
-	result := EnhanceSystemPrompt("test", tools, "/tmp", false, "")
+	result := EnhanceSystemPrompt("test", tools, "/tmp", "")
 	if !strings.Contains(result, "Enabled tools:") {
 		t.Error("expected Enabled tools section")
 	}
@@ -1393,7 +1399,7 @@ func TestGetLastToolUseName_ToolUseAtStart(t *testing.T) {
 }
 
 func TestBuildEnvBlock_ContainsShellAndModel(t *testing.T) {
-	env := buildEnvBlock("/tmp", false, "test-model")
+	env := buildEnvBlock("/tmp", "test-model")
 	if !strings.Contains(env, "/tmp") {
 		t.Errorf("env block should contain working dir, got: %q", env)
 	}
@@ -1402,6 +1408,69 @@ func TestBuildEnvBlock_ContainsShellAndModel(t *testing.T) {
 	}
 	if !strings.Contains(env, "Shell:") {
 		t.Errorf("env block should contain Shell line, got: %q", env)
+	}
+}
+
+func TestIsGitRepo_DotGitDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	if !isGitRepo(dir) {
+		t.Errorf("isGitRepo(%q) = false, want true — dir itself holds a .git directory", dir)
+	}
+}
+
+func TestIsGitRepo_WalksUpFromSubdir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	nested := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested dir: %v", err)
+	}
+	if !isGitRepo(nested) {
+		t.Errorf("isGitRepo(%q) = false, want true — .git is three levels up", nested)
+	}
+}
+
+func TestIsGitRepo_DotGitFileCounts(t *testing.T) {
+	dir := t.TempDir()
+	// Worktrees and submodules write .git as a file pointing at the real gitdir.
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /elsewhere/.git\n"), 0o644); err != nil {
+		t.Fatalf("create .git file: %v", err)
+	}
+	if !isGitRepo(dir) {
+		t.Errorf("isGitRepo(%q) = false, want true — a .git file is a valid repo marker", dir)
+	}
+}
+
+func TestIsGitRepo_PlainDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatalf("create src: %v", err)
+	}
+	if isGitRepo(dir) {
+		t.Errorf("isGitRepo(%q) = true, want false — no .git anywhere on the path", dir)
+	}
+}
+
+func TestIsGitRepo_MissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+	if isGitRepo(dir) {
+		t.Errorf("isGitRepo(%q) = true, want false — path does not exist", dir)
+	}
+}
+
+func TestIsGitRepo_MissingDirUnderRepoIsNotARepo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	missing := filepath.Join(root, "gone")
+	if isGitRepo(missing) {
+		t.Errorf("isGitRepo(%q) = true, want false — walking up must not rescue a path that does not exist", missing)
 	}
 }
 

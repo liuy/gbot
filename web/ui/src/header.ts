@@ -285,7 +285,6 @@ const CATEGORY_I18N: Record<string, StaticKey> = {
   system_prompt: 'ctxCatSystemPrompt',
   base_prompt: 'ctxCatBasePrompt',
   platform_info: 'ctxCatPlatformInfo',
-  git_status: 'ctxCatGitStatus',
   tool_prompts: 'ctxCatToolPrompts',
   skill_listing: 'ctxCatSkillListing',
   memory_files: 'ctxCatMemoryFiles',

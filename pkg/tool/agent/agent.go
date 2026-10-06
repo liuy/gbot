@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -16,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
@@ -53,19 +53,18 @@ type SkillRegistry interface {
 // AgentOpts passes parameters to SubagentEngine.RunAgent.
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
-	Prompt              string                  // actual user prompt for the sub-agent
-	SystemPrompt        string                  // sub-agent's system prompt (pre-built; empty = build from agent def)
-	Tools               map[string]tool.Tool    // filtered tool set
-	MaxTurns            int                     // 0 = no limit
-	Model               string                  // "" = inherit from parent
-	AgentType           string                  // resolved agent type (e.g. "General", "Explore")
-	ParentToolUseID     string                  // parent Agent tool call ID for TUI progress display
-	ForkMessages        []types.Message         // non-nil: use pre-built fork messages instead of Prompt
-	UserContextMessages []types.Message         // caller-supplied extras before userPrompt; no production caller sets it, RunAgent appends skill messages itself
-	GitStatus           *ctxbuild.GitStatusInfo // git status for system prompt injection (nil = no git info)
-	ResolveTierFn       func(string) string     // model tier resolver (nil = identity)
-	McpConnect          McpConnectFunc          // agent-specific MCP server connector (nil = skip)
-	AllowedTools        []string                // further restrict tools to this list (nil = use agent def)
+	Prompt              string               // actual user prompt for the sub-agent
+	SystemPrompt        string               // sub-agent's system prompt (pre-built; empty = build from agent def)
+	Tools               map[string]tool.Tool // filtered tool set
+	MaxTurns            int                  // 0 = no limit
+	Model               string               // "" = inherit from parent
+	AgentType           string               // resolved agent type (e.g. "General", "Explore")
+	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
+	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
+	UserContextMessages []types.Message      // caller-supplied extras before userPrompt; no production caller sets it, RunAgent appends skill messages itself
+	ResolveTierFn       func(string) string  // model tier resolver (nil = identity)
+	McpConnect          McpConnectFunc       // agent-specific MCP server connector (nil = skip)
+	AllowedTools        []string             // further restrict tools to this list (nil = use agent def)
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +79,6 @@ type AgentTool struct {
 	notifyFn    func(xml string)
 	sysPromptFn func() string
 	workingDir  string
-	gitStatus   *ctxbuild.GitStatusInfo
 	skillReg    SkillRegistry
 	mcpConnect  McpConnectFunc
 	resolveTier func(string) string
@@ -104,7 +102,6 @@ func (t *AgentTool) SubagentDeps() *SubagentDeps {
 	}
 	return &SubagentDeps{
 		Engine:        t.engine,
-		GitStatus:     t.gitStatus,
 		ResolveTierFn: t.resolveTier,
 		McpConnect:    t.mcpConnect,
 		SysPromptFn:   t.sysPromptFn,
@@ -125,9 +122,6 @@ func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
 
 // SetResolveTierFn injects a tier-name resolver for agent model selection.
 func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTier = fn }
-
-// SetGitStatus sets the git status for sub-agent system prompt injection.
-func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
 
 // SetSkillRegistry sets the skill registry for agent skill preloading.
 func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
@@ -230,7 +224,6 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		Prompt:          agentInput.Prompt,
 		AgentType:       agentInput.SubagentType,
 		Model:           agentInput.Model,
-		GitStatus:       t.gitStatus,
 		ResolveTierFn:   t.resolveTier,
 		ParentToolUseID: parentToolUseID,
 	})
@@ -387,7 +380,6 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		Model:           model,
 		AgentType:       agentType,
 		ParentToolUseID: parentToolUseID,
-		GitStatus:       t.gitStatus,
 		ResolveTierFn:   t.resolveTier,
 	}
 
@@ -433,17 +425,6 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	}, nil
 }
 
-// FormatGitStatusForSystemPrompt formats git status for the agent system prompt.
-//
-// Returns empty string — the <env> block in EnhanceSystemPrompt already
-// includes "Is directory a git repo: Yes/No". Branch, default branch, and
-// dirty/clean state are intentionally omitted because they go stale (computed
-// once at startup). Sub-agents that need live state should run git commands
-// directly.
-func FormatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
-	return ""
-}
-
 // ---------------------------------------------------------------------------
 // System prompt enhancement for sub-agents
 // Source: prompts.ts:606-791 — computeEnvInfo + enhanceSystemPromptWithEnvDetails
@@ -465,7 +446,7 @@ const agentNotes = `Notes:
 //
 // Source: runAgent.ts:906 — getAgentSystemPrompt()
 // Source: prompts.ts:760-791 — enhanceSystemPromptWithEnvDetails()
-func EnhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingDir string, isGit bool, model string) string {
+func EnhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingDir string, model string) string {
 	var parts []string
 
 	// Base prompt (or fallback to DEFAULT_AGENT_PROMPT)
@@ -485,18 +466,18 @@ func EnhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingD
 	}
 
 	// Environment info — Source: prompts.ts:606-649 — computeEnvInfo
-	parts = append(parts, buildEnvBlock(workingDir, isGit, model))
+	parts = append(parts, buildEnvBlock(workingDir, model))
 
 	return strings.Join(parts, "\n\n")
 }
 
 // buildEnvBlock generates the <env> block for the agent system prompt.
 // Source: prompts.ts:606-649 — computeEnvInfo
-func buildEnvBlock(workingDir string, isGit bool, model string) string {
+func buildEnvBlock(workingDir string, model string) string {
 	var buf strings.Builder
 	buf.WriteString("Here is useful information about the environment you are running in:\n<env>")
 	fmt.Fprintf(&buf, "\nWorking directory: %s", workingDir)
-	if isGit {
+	if isGitRepo(workingDir) {
 		buf.WriteString("\nIs directory a git repo: Yes")
 	} else {
 		buf.WriteString("\nIs directory a git repo: No")
@@ -515,6 +496,31 @@ func buildEnvBlock(workingDir string, isGit bool, model string) string {
 		fmt.Fprintf(&buf, "\nYou are powered by the model %s.", model)
 	}
 	return buf.String()
+}
+
+// isGitRepo reports whether dir, or any parent of dir, contains a .git entry.
+//
+// The TS reference injects branch, default branch and dirty state alongside
+// this flag (Source: context.ts). gbot deliberately does not: those are
+// computed once at startup and go stale the moment the user runs git checkout
+// or edits a file, so an agent that needs live state runs git itself.
+func isGitRepo(dir string) bool {
+	// A path that doesn't exist can't be inside a repo, even if its parents are.
+	if _, err := os.Stat(dir); err != nil {
+		return false
+	}
+	for d := dir; ; {
+		// A .git file counts as much as a directory — worktrees and submodules
+		// use a file that points at the real gitdir.
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
 }
 
 // formatToolNamesList formats the tool names as a sorted bullet list.

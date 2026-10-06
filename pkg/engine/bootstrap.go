@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/config"
-	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -37,7 +36,6 @@ import (
 // SharedDeps holds dependencies that don't vary per engine (main + sub-agents).
 type SharedDeps struct {
 	WorkingDir string
-	GitStatus  *ctxbuild.GitStatusInfo
 	SkillReg   *skills.Registry
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
@@ -84,7 +82,6 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// getWorkingDir). Known divergence, accepted to keep the AgentTool
 	// decoupled from per-engine state.
 	at.SetWorkingDir(deps.WorkingDir)
-	at.SetGitStatus(deps.GitStatus)
 	at.SetSkillRegistry(deps.SkillReg)
 	// Inject tier resolver so agent model: "max" resolves to the configured model.
 	if deps.Cfg != nil {

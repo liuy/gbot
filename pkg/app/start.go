@@ -238,8 +238,6 @@ func Start(opts Options) (*Instance, error) {
 		slog.Info("lsp:startup", "servers", lspReg.LSPString())
 	}()
 
-	gitStatus := ctxbuild.LoadGitStatus(workingDir)
-
 	needWS := opts.NoTUI || opts.WSPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
 	var wsRegistry *computer.ConnectionRegistry
 	var wsMux *http.ServeMux
@@ -294,7 +292,6 @@ func Start(opts Options) (*Instance, error) {
 
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
-		GitStatus:  gitStatus,
 		SkillReg:   skillReg,
 		McpReg:     mcpRegistry,
 		Hooks:      hookSystem,
@@ -330,7 +327,19 @@ func Start(opts Options) (*Instance, error) {
 			toolPrompts = append(toolPrompts, p)
 		}
 	}
-	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, lspReg, "")
+	// Both the startup prompt and every later refresh are built from the same
+	// construction-time workingDir. That is deliberate and is the same bug
+	// class the original freeze fixed: re-resolving the dir made CLAUDE.md
+	// appear and disappear with a bash `cd`, breaking the whole prompt-cache
+	// prefix on every flip. A refresh re-reads the files behind this one dir,
+	// never a live cwd.
+	buildSystemPrompt := func() string {
+		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, lspReg, "")
+	}
+	refreshContext := func() (string, map[string]string) {
+		return buildSystemPrompt(), ctxbuild.LoadContextFiles(workingDir)
+	}
+	systemPrompt := buildSystemPrompt()
 
 	engineFactory := func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
 		engineProvider := provider
@@ -402,6 +411,7 @@ func Start(opts Options) (*Instance, error) {
 		})
 		engine.WireEngine(newEng, refs, deps)
 		newEng.SetSystemPrompt(systemPrompt)
+		newEng.SetContextRefresher(refreshContext)
 		newEng.SetSkillListing(skillListing)
 		newEng.SetAgentDefs(agent.ListAgentDefinitions())
 		newEng.SetSharedDeps(&deps)
@@ -737,7 +747,6 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 	// Build the full tool set via the standard path.
 	dreamRefs := engine.CreateTools(engine.SharedDeps{
 		WorkingDir: d.WorkingDir,
-		GitStatus:  nil,
 		SkillReg:   nil,
 		McpReg:     nil,
 		Hooks:      nil,
@@ -816,7 +825,6 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 	dreamEng.SetToolRefs(dreamRefs)
 	engine.WireEngine(dreamEng, dreamRefs, engine.SharedDeps{
 		WorkingDir: d.WorkingDir,
-		GitStatus:  nil,
 		SkillReg:   nil,
 		McpReg:     nil,
 		Hooks:      nil,

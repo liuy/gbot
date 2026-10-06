@@ -2,8 +2,6 @@ package context_test
 
 import (
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,9 +16,6 @@ func TestNewBuilder(t *testing.T) {
 	}
 	if b.WorkingDir != "/work" {
 		t.Errorf("WorkingDir = %q, want %q", b.WorkingDir, "/work")
-	}
-	if b.GitStatus != nil {
-		t.Error("GitStatus should be nil by default")
 	}
 	if len(b.ToolPrompts) != 0 {
 		t.Errorf("ToolPrompts should be empty, got %d items", len(b.ToolPrompts))
@@ -45,37 +40,6 @@ func TestBuild_Basic(t *testing.T) {
 	}
 	if !strings.Contains(promptStr, "Runtime:") {
 		t.Error("built prompt missing runtime info")
-	}
-}
-
-func TestBuild_GitStatusNotInjected(t *testing.T) {
-	// Git branch, default branch, and clean/dirty state go stale as soon
-	// as the user runs git checkout or edits a file. They're not injected
-	// into the built system prompt anymore — sub-agents run `git` themselves
-	// if they need live state.
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GitStatus = &context.GitStatusInfo{
-		IsGit:         true,
-		Branch:        "test-branch",
-		DefaultBranch: "test-default",
-		IsDirty:       false,
-	}
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-
-	promptStr := result
-
-	if strings.Contains(promptStr, "Git branch:") {
-		t.Error("built prompt should not contain 'Git branch:' — git section was removed (stale state)")
-	}
-	if strings.Contains(promptStr, "Default branch:") {
-		t.Error("built prompt should not contain 'Default branch:' — git section was removed")
-	}
-	if strings.Contains(promptStr, "Working tree:") {
-		t.Error("built prompt should not contain 'Working tree:' — git section was removed")
 	}
 }
 
@@ -105,11 +69,6 @@ func TestBuild_WithToolPrompts_NoLongerInSystemPrompt(t *testing.T) {
 func TestBuild_AllSections(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/project")
-	b.GitStatus = &context.GitStatusInfo{
-		IsGit:   true,
-		Branch:  "develop",
-		IsDirty: true,
-	}
 
 	result, err := b.Build()
 	if err != nil {
@@ -178,93 +137,6 @@ func TestRuntimeInfo(t *testing.T) {
 	}
 	if !strings.Contains(info, "model={{MODEL}}") {
 		t.Error("runtime info missing model={{MODEL}}")
-	}
-}
-
-func TestLoadGitStatus(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Skip("git not available")
-	}
-	cmd = exec.Command("git", "config", "user.email", "test@test.com")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	cmd = exec.Command("git", "config", "user.name", "Test")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	cmd = exec.Command("git", "checkout", "-b", "test-branch")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(tmpDir, "initial.txt"), []byte("init"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cmd = exec.Command("git", "add", "initial.txt")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	cmd = exec.Command("git", "commit", "-m", "initial")
-	cmd.Dir = tmpDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-
-	info := context.LoadGitStatus(tmpDir)
-	if !info.IsGit {
-		t.Fatal("expected IsGit=true for git repo")
-	}
-	if info.Branch != "test-branch" {
-		t.Errorf("Branch = %q, want 'test-branch'", info.Branch)
-	}
-	if info.IsDirty {
-		t.Error("expected clean status for fresh repo")
-	}
-}
-
-func TestLoadGitStatus_NonGitDir(t *testing.T) {
-	t.Parallel()
-	tmpDir := t.TempDir()
-	info := context.LoadGitStatus(tmpDir)
-	if info.IsGit {
-		t.Error("temp dir should not be a git repository")
-	}
-}
-
-func TestLoadGitStatus_WithRemote(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cmd := exec.Command("git", "init", tmpDir)
-	if err := cmd.Run(); err != nil {
-		t.Skip("git not available")
-	}
-	_, _ = exec.Command("git", "-C", tmpDir, "config", "user.email", "t@t.com").Output()
-	_, _ = exec.Command("git", "-C", tmpDir, "config", "user.name", "T").Output()
-	if err := os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("x"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = exec.Command("git", "-C", tmpDir, "add", ".").Output()
-	_, _ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Output()
-
-	_, _ = exec.Command("git", "-C", tmpDir, "remote", "add", "origin", "/tmp/fake").Output()
-	_, _ = exec.Command("git", "-C", tmpDir, "update-ref", "refs/remotes/origin/main", "HEAD").Output()
-	_, _ = exec.Command("git", "-C", tmpDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main").Output()
-
-	info := context.LoadGitStatus(tmpDir)
-	if !info.IsGit {
-		t.Fatal("expected IsGit=true")
-	}
-	if info.DefaultBranch != "main" {
-		t.Errorf("DefaultBranch = %q, want 'main'", info.DefaultBranch)
 	}
 }
 

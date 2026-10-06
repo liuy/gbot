@@ -294,9 +294,8 @@ func TestContextBreakdown_PercentagesSumTo100(t *testing.T) {
 }
 
 // TestContextBreakdown_CategoryIDs verifies every emitted category carries a
-// stable semantic ID for wui-side i18n. "Git status" never emits today
-// (GitStatusSection returns "") and is therefore absent from the fixture's
-// expected set.
+// stable semantic ID for wui-side i18n. Every entry in the fixture's expected
+// set must actually emit, otherwise its ID mapping goes untested.
 func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	memDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(memDir, "notes.md"), []byte("some durable memory notes"), 0o644); err != nil {
@@ -333,7 +332,6 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	want := map[string]string{
 		"System prompt":      "system_prompt",
 		"Platform info":      "platform_info",
-		"Git status":         "git_status",
 		"Tool prompts":       "tool_prompts",
 		"Skill listing":      "skill_listing",
 		"Memory files":       "memory_files",
@@ -358,9 +356,6 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		emitted[c.Name] = true
 	}
 	for name := range want {
-		if name == "Git status" {
-			continue
-		}
 		if !emitted[name] {
 			t.Errorf("category %q not emitted; its ID mapping is untested", name)
 		}
@@ -368,9 +363,9 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 }
 
 // TestContextBreakdown_SystemPromptSectionIDs verifies every emitted system
-// prompt section carries a stable semantic ID for wui-side i18n. Sections
-// with zero tokens are dropped, so "Git status" (LoadGitStatus returns nil
-// in a non-repo temp dir) is not emitted.
+// prompt section carries a stable semantic ID for wui-side i18n. Sections with
+// zero tokens are dropped, so every entry in the fixture's expected set must
+// emit for its ID mapping to be covered.
 func TestContextBreakdown_SystemPromptSectionIDs(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("You are a test assistant.")
@@ -381,7 +376,6 @@ func TestContextBreakdown_SystemPromptSectionIDs(t *testing.T) {
 	want := map[string]string{
 		"Base prompt":   "base_prompt",
 		"Platform info": "platform_info",
-		"Git status":    "git_status",
 		"Tool prompts":  "tool_prompts",
 		"Skill listing": "skill_listing",
 	}
@@ -405,9 +399,6 @@ func TestContextBreakdown_SystemPromptSectionIDs(t *testing.T) {
 		emitted[s.Name] = true
 	}
 	for name := range want {
-		if name == "Git status" {
-			continue
-		}
 		if !emitted[name] {
 			t.Errorf("section %q not emitted; its ID mapping is untested", name)
 		}

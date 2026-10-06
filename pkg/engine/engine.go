@@ -160,11 +160,23 @@ type Engine struct {
 	// RunAgent's message seeding, so the injector is the one that has to know.
 	omitClaudeMd bool
 
-	// userContextMap is the claudeMd/projectMd context, read once from the
-	// construction-time working dir and frozen for the engine's lifetime.
+	// userContextMap is the claudeMd/projectMd context, read from the
+	// construction-time working dir and swapped wholesale by refreshContext.
 	// Per-call re-reading followed bash `cd` and flipped the prepend on/off,
-	// breaking the prompt-cache prefix on every flip.
+	// breaking the prompt-cache prefix on every flip, so the dir is never
+	// re-resolved — only the files behind that one dir are re-read.
+	//
+	// Guarded by mu, and never mutated in place: readers take the reference
+	// under RLock and iterate it unlocked, which is safe only because a
+	// refresh assigns a fresh map instead of editing the live one.
 	userContextMap map[string]string
+	// contextRefresher rebuilds the two prompt-cache prefix halves (system
+	// prompt + user context) from the construction-time dir. Injected by the
+	// app layer; nil means "no refresh" — sub-engines and tests. Sub-engines
+	// deliberately get none: a running sub-agent must not change instructions
+	// mid-task, so it keeps the map NewSubEngine copied from its parent.
+	// Guarded by mu, like the two fields it rewrites.
+	contextRefresher func() (systemPrompt string, userContext map[string]string)
 
 	// agentType is the sub-agent type (e.g. "General", "Explore", "Planner").
 	// Empty for the main engine. Set by NewSubEngine from SubEngineOptions.AgentType.
@@ -882,19 +894,8 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	systemPrompt := opts.SystemPrompt
 	if systemPrompt == "" {
 		basePrompt := agentDef.SystemPrompt()
-		isGit := opts.GitStatus != nil && opts.GitStatus.IsGit
 		workingDir := e.sharedDeps.WorkingDir
-		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, workingDir, isGit, model)
-
-		// Skip git-status context for read-only planning/exploration agents;
-		// they don't act on the working tree, so the section only adds noise.
-		readOnlyAgents := map[string]bool{"Explore": true, "Plan": true, "Planner": true}
-		if opts.GitStatus != nil && !readOnlyAgents[agentDef.AgentType] {
-			section := agenttool.FormatGitStatusForSystemPrompt(opts.GitStatus)
-			if section != "" {
-				systemPrompt += section
-			}
-		}
+		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, workingDir, model)
 	}
 
 	// Build user context messages
@@ -1095,7 +1096,6 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				AgentType:       cmd.AgentType,
 				Model:           cmd.Model,
 				ParentToolUseID: forkToolID,
-				GitStatus:       e.sharedDeps.GitStatus,
 			})
 
 			resultText := "Skill execution completed"
@@ -1142,7 +1142,10 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 // No timeout — processAttachments runs the same agentic loop as Query,
 // which may take arbitrarily long (complex tool use, sub-agents).
 func (e *Engine) startProcessAttachmentsIfIdle() {
-	if e.systemPrompt == "" {
+	// Read through the getter: refreshContext swaps the prompt from the query
+	// goroutine, and this kick runs on whatever goroutine enqueued the item.
+	systemPrompt := e.SystemPrompt()
+	if systemPrompt == "" {
 		return
 	}
 	if e.attachments.Len() == 0 {
@@ -1156,7 +1159,7 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 	}
 	go func() {
 		defer cancel()
-		e.processAttachments(ctx, token, e.systemPrompt)
+		e.processAttachments(ctx, token, systemPrompt)
 	}()
 }
 
@@ -1739,6 +1742,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				e.logger.Info("pre-turn auto-compact succeeded",
 					"messages", len(result.Messages))
 				e.fireCompactHooks(ctx, "auto", "post")
+				// Deliberately not inside fireCompactHooks: it returns early
+				// when no hooks are configured.
+				// callLLM is handed the parameter, not the field, so the
+				// refreshed prompt has to replace it — otherwise the rest of
+				// this query sends new CLAUDE.md over the old system prompt.
+				if e.refreshContext() {
+					systemPrompt = e.SystemPrompt()
+				}
 			}
 		}
 
@@ -1817,6 +1828,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					result, compactErr := e.runCompact(ctx)
 					if compactErr == nil {
 						e.fireCompactHooks(ctx, "auto", "post")
+						// The new summary already cost the cache prefix, so any
+						// miss from re-reading the head here rides on that miss.
+						if e.refreshContext() {
+							// callLLM is handed the parameter, not the field.
+							systemPrompt = e.SystemPrompt()
+						}
 						e.emitEvent(types.QueryEvent{
 							Type: types.EventToolParamDelta,
 							PartialInput: &types.PartialInputEvent{
@@ -2006,6 +2023,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 							// Compact failed — fall through to existing terminal path.
 						} else {
 							e.fireCompactHooks(ctx, "auto", "post")
+							if e.refreshContext() {
+								// callLLM is handed the parameter, not the field.
+								systemPrompt = e.SystemPrompt()
+							}
 							e.emitEvent(types.QueryEvent{
 								Type: types.EventToolParamDelta,
 								PartialInput: &types.PartialInputEvent{
@@ -2584,8 +2605,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// changes the working dir mid-session, and re-reading CLAUDE.md per call
 	// made the prepend appear/disappear with the dir — each flip broke the
 	// whole prompt-cache prefix. TS memoizes getUserContext for the same
-	// effect; a frozen field is the plain-Go form.
-	ctxMap := e.userContextMap
+	// effect; a frozen field is the plain-Go form. refreshContext swaps the
+	// map after a compaction but never re-resolves the dir, so cd stays inert.
+	ctxMap := e.userContext()
 	if e.omitClaudeMd {
 		filtered := make(map[string]string, len(ctxMap))
 		for k, v := range ctxMap {
@@ -3384,6 +3406,7 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 
 	suppressCompactWarning()
 	e.fireCompactHooks(ctx, "manual", "post")
+	e.refreshContext()
 	e.emitEvent(types.QueryEvent{
 		Type:  types.EventUsage,
 		Usage: &types.UsageEvent{InputTokens: result.AfterTokens},
@@ -3771,6 +3794,9 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	toolOrderCopy := make([]string, len(e.toolOrder))
 	copy(toolOrderCopy, e.toolOrder)
 	systemPromptRaw := e.systemPrompt
+	// Snapshot with systemPrompt so the dump shows one generation of the
+	// prefix, not a refreshed head over a stale tail.
+	ctxMap := e.userContextMap
 	workingDir := e.workingDir
 	isSubagent := e.isSubagent
 	omitClaudeMd := e.omitClaudeMd
@@ -3813,7 +3839,6 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	// Prepend user context (CLAUDE.md/AGENTS.md); no currentDate — see the
 	// matching callLLM site for why the date is not injected. Sub-agents are
 	// not skipped: the dump has to mirror the request callLLM actually sends.
-	ctxMap := e.userContextMap
 	if omitClaudeMd {
 		filtered := make(map[string]string, len(ctxMap))
 		for k, v := range ctxMap {
@@ -4824,10 +4849,13 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		agentMetaDepth:  e.agentMetaDepth + 1,
 		agentType:       opts.AgentType,
 		maxTurns:        subMaxTurns(opts.MaxTurns),
-		// Share the parent's frozen context map (read-only; omitClaudeMd
-		// filtering copies) — a sub-agent must inject the same CLAUDE.md the
-		// parent would, from the same construction-time dir.
-		userContextMap: e.userContextMap,
+		// Share the parent's context map as it stands right now (read-only;
+		// omitClaudeMd filtering copies) — a sub-agent must inject the same
+		// CLAUDE.md the parent would, from the same construction-time dir.
+		// contextRefresher is deliberately left nil: the sub-engine keeps this
+		// snapshot for its whole life, so a parent compaction cannot rewrite
+		// a running sub-agent's instructions mid-task.
+		userContextMap: e.userContext(),
 		// sharedDeps propagates so sub-agents can themselves spawn
 		// sub-agents (grandchildren). Without this, AgentTool.Call inside
 		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the
@@ -5017,7 +5045,11 @@ func (e *Engine) ProjectDir() string {
 }
 
 // SystemPrompt returns the stored system prompt bytes.
-func (e *Engine) SystemPrompt() string { return e.systemPrompt }
+func (e *Engine) SystemPrompt() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.systemPrompt
+}
 
 // IsBusy reports whether a query or attachment-processing turn is running.
 func (e *Engine) IsBusy() bool {
@@ -5030,7 +5062,60 @@ func (e *Engine) AttachmentsLen() int {
 }
 
 // SetSystemPrompt stores the system prompt for later access by fork agents.
-func (e *Engine) SetSystemPrompt(sp string) { e.systemPrompt = sp }
+func (e *Engine) SetSystemPrompt(sp string) {
+	e.mu.Lock()
+	e.systemPrompt = sp
+	e.mu.Unlock()
+}
+
+// SetContextRefresher injects the callback that rebuilds the prompt-cache
+// prefix halves. See refreshContext for when it runs.
+func (e *Engine) SetContextRefresher(fn func() (systemPrompt string, userContext map[string]string)) {
+	e.mu.Lock()
+	e.contextRefresher = fn
+	e.mu.Unlock()
+}
+
+// userContext returns the current claudeMd/projectMd map. The reference is
+// taken under the read lock and then used unlocked: a refresh assigns a fresh
+// map rather than editing this one, so a reader can never see a torn map, only
+// the old or the new one.
+func (e *Engine) userContext() map[string]string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.userContextMap
+}
+
+// refreshContext re-reads the system prompt and the CLAUDE.md/AGENTS.md context
+// and swaps both in, reporting whether a refresh actually happened — callers
+// inside a turn loop need the bool to replace a system prompt they already
+// captured as a parameter. It runs only after a compaction: that is the one
+// moment the prompt-cache prefix is already destroyed by the new summary, so
+// any miss this rebuild costs is absorbed by a miss we are already paying.
+//
+// Unconditional on purpose. A rebuild with nothing edited usually lands on the
+// same bytes and so still hits, since caching keys on content, not object
+// identity; it is not guaranteed to (the runtime section re-detects the repo
+// root and the LSP list, which changes while servers start up), and that is
+// acceptable because the compaction that triggered the rebuild already cost the
+// prefix. Change detection would add state that can go stale and buy nothing.
+func (e *Engine) refreshContext() bool {
+	e.mu.RLock()
+	refresh := e.contextRefresher
+	e.mu.RUnlock()
+	if refresh == nil {
+		return false
+	}
+	// Built outside the lock: it does file I/O, and mu is held by the request
+	// path on every turn. The critical section below stays two assignments with
+	// no calls inside, which is what keeps it deadlock-free.
+	systemPrompt, userContext := refresh()
+	e.mu.Lock()
+	e.systemPrompt = systemPrompt
+	e.userContextMap = userContext
+	e.mu.Unlock()
+	return true
+}
 
 func (e *Engine) SetMemoryDir(dir string) { e.memoryDir = dir }
 func (e *Engine) MemoryDir() string       { return e.memoryDir }

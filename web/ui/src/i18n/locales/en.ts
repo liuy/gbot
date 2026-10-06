@@ -166,7 +166,6 @@ export const dict = {
   ctxCatSystemPrompt: 'System prompt',
   ctxCatBasePrompt: 'Base prompt',
   ctxCatPlatformInfo: 'Platform info',
-  ctxCatGitStatus: 'Git status',
   ctxCatToolPrompts: 'Tool prompts',
   ctxCatSkillListing: 'Skill listing',
   ctxCatMemoryFiles: 'Memory files',

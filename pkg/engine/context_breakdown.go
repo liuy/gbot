@@ -169,7 +169,6 @@ type APIUsageSnapshot struct {
 const (
 	ColorSystemPrompt = "12"  // blue
 	ColorPlatformInfo = "39"  // sky blue
-	ColorGitStatus    = "33"  // dim cyan
 	ColorToolPrompts  = "51"  // cyan
 	ColorSkillListing = "201" // magenta
 	ColorMemoryFiles  = "220" // yellow
@@ -308,7 +307,6 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 type sysPromptSections struct {
 	base        int
 	platform    int
-	git         int
 	toolPrompts int
 	skill       int
 }
@@ -316,7 +314,6 @@ type sysPromptSections struct {
 type componentEstimates struct {
 	SystemPromptBase   int
 	PlatformInfo       int
-	GitStatus          int
 	ToolPrompts        int
 	SkillListing       int
 	MemoryFiles        int
@@ -341,7 +338,6 @@ func (e *Engine) estimateComponents(
 		MessagesByCategory: &MessageBreakdown{},
 		SystemPromptBase:   sections.base,
 		PlatformInfo:       sections.platform,
-		GitStatus:          sections.git,
 		ToolPrompts:        sections.toolPrompts,
 		SkillListing:       sections.skill,
 	}
@@ -401,7 +397,6 @@ func (e *Engine) estimateSystemPromptSections(
 	// against the same working dir. We use a fresh Builder to compute
 	// each section independently, then subtract the per-section estimate.
 	builder := context.NewBuilder(workingDir)
-	builder.GitStatus = context.LoadGitStatus(workingDir)
 	builder.MemoryFiles = context.LoadMemoryFiles(workingDir, memoryDir)
 	builder.MemoryDirOverride = memoryDir
 	builder.SkillListing = skillListing
@@ -413,12 +408,6 @@ func (e *Engine) estimateSystemPromptSections(
 
 	platformStr := builder.RuntimeInfo()
 	platform := e.EstimateTokensCalibrated(platformStr)
-
-	gitStr := ""
-	if builder.GitStatus != nil {
-		gitStr = builder.GitStatusSection()
-	}
-	git := e.EstimateTokensCalibrated(gitStr)
 
 	// Tool prompts: sum each tool's Prompt() contribution.
 	toolPromptsTotal := 0
@@ -438,7 +427,7 @@ func (e *Engine) estimateSystemPromptSections(
 		skill = e.EstimateTokensCalibrated(skillListing)
 	}
 
-	return sysPromptSections{base: base, platform: platform, git: git, toolPrompts: toolPrompts, skill: skill}
+	return sysPromptSections{base: base, platform: platform, toolPrompts: toolPrompts, skill: skill}
 }
 
 // excluding deferred tools and MCP tools.
@@ -607,7 +596,6 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 	}{
 		{"System prompt", est.SystemPromptBase},
 		{"Platform info", est.PlatformInfo},
-		{"Git status", est.GitStatus},
 		{"Tool prompts", est.ToolPrompts},
 		{"Skill listing", est.SkillListing},
 		{"Memory files", est.MemoryFiles},
@@ -664,7 +652,6 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 var categoryOrder = []string{
 	"System prompt",
 	"Platform info",
-	"Git status",
 	"Tool prompts",
 	"Skill listing",
 	"Memory files",
@@ -680,7 +667,6 @@ var categoryOrder = []string{
 var categoryColors = map[string]string{
 	"System prompt":      ColorSystemPrompt,
 	"Platform info":      ColorPlatformInfo,
-	"Git status":         ColorGitStatus,
 	"Tool prompts":       ColorToolPrompts,
 	"Skill listing":      ColorSkillListing,
 	"Memory files":       ColorMemoryFiles,
@@ -699,7 +685,6 @@ var categoryColors = map[string]string{
 var categoryIDs = map[string]string{
 	"System prompt":      "system_prompt",
 	"Platform info":      "platform_info",
-	"Git status":         "git_status",
 	"Tool prompts":       "tool_prompts",
 	"Skill listing":      "skill_listing",
 	"Memory files":       "memory_files",
@@ -939,7 +924,6 @@ func (e *Engine) buildDetails(
 	}{
 		{"Base prompt", "base_prompt", sections.base},
 		{"Platform info", "platform_info", sections.platform},
-		{"Git status", "git_status", sections.git},
 		{"Tool prompts", "tool_prompts", sections.toolPrompts},
 		{"Skill listing", "skill_listing", sections.skill},
 	} {

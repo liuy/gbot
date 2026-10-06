@@ -328,9 +328,6 @@ func TestSharedDeps_ZeroValues(t *testing.T) {
 	if deps.WorkingDir != "" {
 		t.Error("default WorkingDir should be empty string")
 	}
-	if deps.GitStatus != nil {
-		t.Error("default GitStatus should be nil")
-	}
 	if deps.SkillReg != nil {
 		t.Error("default SkillReg should be nil")
 	}

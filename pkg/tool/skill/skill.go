@@ -317,7 +317,6 @@ func executeNewSkill(
 		AllowedTools:    cmd.AllowedTools,
 		ParentToolUseID: parentToolUseID,
 		McpConnect:      deps.McpConnect,
-		GitStatus:       deps.GitStatus,
 		ResolveTierFn:   deps.ResolveTierFn,
 	})
 
@@ -389,7 +388,6 @@ func executeForkSkill(
 		AllowedTools:    cmd.AllowedTools,
 		ParentToolUseID: tctx.ToolUseID,
 		McpConnect:      deps.McpConnect,
-		GitStatus:       deps.GitStatus,
 		ResolveTierFn:   deps.ResolveTierFn,
 	})
 

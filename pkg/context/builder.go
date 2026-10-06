@@ -20,9 +20,6 @@ type Builder struct {
 	// Contains gbot.log, gbot.pid, memory/, session_notes/, file-history/, meta.json.
 	ProjectDir string
 
-	// GitStatus is the injected git status information.
-	GitStatus *GitStatusInfo
-
 	// ToolPrompts are system prompt contributions from tools.
 	ToolPrompts []string
 
@@ -64,12 +61,7 @@ func (b *Builder) Build() (string, error) {
 	// 3. Platform info
 	buf.WriteString(b.RuntimeInfo())
 
-	// 4. Git status
-	if b.GitStatus != nil {
-		buf.WriteString(b.GitStatusSection())
-	}
-
-	// 5. Memory — typed-memory prompt with full instructions
+	// 4. Memory — typed-memory prompt with full instructions
 	if memPrompt := FormatMemoryPrompt(b.WorkingDir, b.MemoryDirOverride); memPrompt != "" {
 		buf.WriteString("\n\n")
 		buf.WriteString(memPrompt)
@@ -77,7 +69,7 @@ func (b *Builder) Build() (string, error) {
 		buf.WriteString(FormatMemorySection(b.MemoryFiles))
 	}
 
-	// 6. Skill listing
+	// 5. Skill listing
 	if b.SkillListing != "" {
 		buf.WriteString("\n\n## Available Skills\n\n")
 		buf.WriteString(b.SkillListing)

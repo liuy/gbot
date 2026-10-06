@@ -164,6 +164,14 @@ func startWeChatConnector(d startWeChatDeps) error {
 		memDir := filepath.Join(d.projectDir, "memory", engineID)
 		wcEng.SetMemoryDir(memDir)
 		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, d.lspReg, memDir))
+		// The refresher must match the prompt it is paired with: the factory's
+		// closure builds with an empty memoryDir, so the first compaction would
+		// silently revert this engine's memory section to the main project's
+		// memory dir and point the model at the wrong memory index.
+		wcEng.SetContextRefresher(func() (string, map[string]string) {
+			return ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, d.lspReg, memDir),
+				ctxbuild.LoadContextFiles(d.workingDir)
+		})
 	}
 	// Capture the media cache for shutdown teardown (the cache owns its
 	// cleanup goroutine; main must Close() it to stop that goroutine).
