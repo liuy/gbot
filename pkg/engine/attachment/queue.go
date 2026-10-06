@@ -68,6 +68,28 @@ func (q *Queue) DrainByPriority(maxPriority types.QueuePriority) []types.QueuedI
 	return matched
 }
 
+// DrainIf drains items matching pred, preserving FIFO order among the
+// matched items. Non-matching items stay queued.
+// DrainIf removes and returns items matching pred, leaving the rest queued.
+// Note: it ignores Priority — a PriorityLater prompt enqueued mid-turn would
+// be adopted at the turn boundary, bypassing its wait-for-query-end contract.
+// No production caller sets PriorityLater on prompts today; guard here if one
+// ever appears.
+func (q *Queue) DrainIf(pred func(types.QueuedItem) bool) []types.QueuedItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var matched, remaining []types.QueuedItem
+	for _, item := range q.items {
+		if pred(item) {
+			matched = append(matched, item)
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	q.items = remaining
+	return matched
+}
+
 // Snapshot returns the current items for the WUI connector to restore queued
 // messages on takeover. Does not drain.
 func (q *Queue) Snapshot() []types.QueuedItem {

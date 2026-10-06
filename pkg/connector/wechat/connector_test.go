@@ -2636,30 +2636,23 @@ func TestEnqueue_RealEngine_RaceDetector(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Persist-in-final-form era: mid-turn human messages append to history
-	// immediately as reminder envelopes instead of queueing.
+	// Turn-boundary era: mid-turn human messages wait in the attachment queue
+	// while the response is streaming; history stays clean until the boundary.
 	msgs := eng.Messages()
 	envelopes := 0
-	seen := make(map[string]bool)
 	for _, m := range msgs {
 		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
 			continue
 		}
-		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+		if _, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
 			envelopes++
-			seen[original] = true
 		}
 	}
-	if envelopes != N {
-		t.Fatalf("history envelope messages = %d, want %d (no concurrent drops)", envelopes, N)
+	if envelopes != 0 {
+		t.Fatalf("history envelope messages while stream blocked = %d, want 0 (attach must wait for the turn boundary)", envelopes)
 	}
-	for i := range N {
-		if !seen[fmt.Sprintf("m%d", i)] {
-			t.Errorf("queued message %q missing from history", fmt.Sprintf("m%d", i))
-		}
-	}
-	if n := eng.AttachmentsLen(); n != 0 {
-		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
+	if n := eng.AttachmentsLen(); n != N {
+		t.Fatalf("AttachmentsLen() = %d, want %d (all waiting in the queue, no concurrent drops)", n, N)
 	}
 
 	// inboundCh should be empty.
@@ -2677,6 +2670,28 @@ func TestEnqueue_RealEngine_RaceDetector(t *testing.T) {
 			t.Fatal("timed out waiting for engine to become idle")
 		default:
 			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+
+	// At the boundary every queued message attached as a reminder envelope —
+	// the concurrent enqueues lost nothing.
+	seen := make(map[string]bool)
+	envelopes = 0
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			envelopes++
+			seen[original] = true
+		}
+	}
+	if envelopes != N {
+		t.Fatalf("history envelope messages = %d, want %d (no drops)", envelopes, N)
+	}
+	for i := range N {
+		if !seen[fmt.Sprintf("m%d", i)] {
+			t.Errorf("queued message %q missing from history", fmt.Sprintf("m%d", i))
 		}
 	}
 }
@@ -2787,13 +2802,15 @@ func TestEnqueue_FullChain_AttachmentResponseDelivered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEnqueue_MultipleRapidMessages_AllAttached verifies that 3+ messages
-// arriving during a single running query all persist immediately as
-// queued message history messages (reminder envelope) — none dropped, none
-// routed to the idle inboundCh.
+// arriving during a single running query all survive: they wait in the
+// attachment queue mid-turn (none dropped, none routed to the idle
+// inboundCh) and attach at the turn boundary as reminder envelopes, in the
+// order they were sent.
 func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
 	t.Parallel()
+	release := make(chan struct{})
 	eng := engine.New(&engine.Params{
-		Provider: &blockingEngineMock{release: make(chan struct{})},
+		Provider: &blockingEngineMock{release: release},
 		Model:    "test-model",
 	})
 	eng.SetSystemPrompt("test")
@@ -2829,25 +2846,12 @@ func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
 	c.enqueue("userA", "msg2", nil)
 	c.enqueue("userA", "msg3", nil)
 
-	// All 3 must be in history as queued message envelopes, queue empty
-	msgs := eng.Messages()
-	envelopes := 0
-	for _, m := range msgs {
-		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
-			continue
-		}
-		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
-			envelopes++
-			if !strings.HasPrefix(original, "msg") {
-				t.Errorf("unexpected queued message text %q", original)
-			}
-		}
+	// Mid-turn all 3 wait in the queue; nothing in history yet.
+	if envelopes := countHistoryEnvelopes(eng.Messages()); envelopes != 0 {
+		t.Fatalf("history envelope messages mid-turn = %d, want 0 (attach must wait for the turn boundary)", envelopes)
 	}
-	if envelopes != 3 {
-		t.Fatalf("history envelope messages = %d, want 3", envelopes)
-	}
-	if n := eng.AttachmentsLen(); n != 0 {
-		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
+	if n := eng.AttachmentsLen(); n != 3 {
+		t.Fatalf("AttachmentsLen() = %d, want 3 (no drops)", n)
 	}
 
 	// None should be in inboundCh
@@ -2857,8 +2861,54 @@ func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
 	default:
 	}
 
-	// Release query 1 — engine processes all 3 attachments
-	eng.Close() // triggers cleanup, which will process remaining work
+	// Release query 1 — the boundary attaches all 3 in FIFO order.
+	close(release)
+	deadline2 := time.After(10 * time.Second)
+	for eng.IsBusy() {
+		select {
+		case <-deadline2:
+			t.Fatal("timed out waiting for engine to become idle")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop
+		}
+	}
+
+	msgs := eng.Messages()
+	envelopes := 0
+	var order []string
+	for _, m := range msgs {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if original, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			envelopes++
+			if !strings.HasPrefix(original, "msg") {
+				t.Errorf("unexpected queued message text %q", original)
+			}
+			order = append(order, original)
+		}
+	}
+	if envelopes != 3 {
+		t.Fatalf("history envelope messages = %d, want 3", envelopes)
+	}
+	if len(order) != 3 || order[0] != "msg1" || order[1] != "msg2" || order[2] != "msg3" {
+		t.Errorf("attach order = %v, want [msg1 msg2 msg3] (FIFO)", order)
+	}
+}
+
+// countHistoryEnvelopes counts user messages whose first text block unwraps
+// to a queued message reminder envelope.
+func countHistoryEnvelopes(msgs []types.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
+			continue
+		}
+		if _, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
+			n++
+		}
+	}
+	return n
 }
 
 // ---------------------------------------------------------------------------
@@ -2947,13 +2997,14 @@ func TestEnqueue_AttachmentTurn_ErrorDelivered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEnqueue_AttachmentQueue_Unbounded verifies that rapid mid-turn messages
-// are all accepted without dropping (the persist-in-final-form path appends
-// to history, which is unbounded). This contrasts with inboundCh which drops
-// when full.
+// are all accepted without dropping: mid-turn they pile into the attachment
+// queue (unbounded), and the turn boundary attaches every one of them. This
+// contrasts with inboundCh which drops when full.
 func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
 	t.Parallel()
+	release := make(chan struct{})
 	eng := engine.New(&engine.Params{
-		Provider: &blockingEngineMock{release: make(chan struct{})},
+		Provider: &blockingEngineMock{release: release},
 		Model:    "test-model",
 	})
 	eng.SetSystemPrompt("test")
@@ -2989,20 +3040,26 @@ func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
 		c.enqueue("userA", fmt.Sprintf("msg%d", i), nil)
 	}
 
-	envelopes := 0
-	for _, m := range eng.Messages() {
-		if m.Role != types.RoleUser || len(m.Content) == 0 || m.Content[0].Type != types.ContentTypeText {
-			continue
-		}
-		if _, ok := utils.UnwrapQueuedReminder(m.Content[0].Text); ok {
-			envelopes++
+	if envelopes := countHistoryEnvelopes(eng.Messages()); envelopes != 0 {
+		t.Fatalf("history envelope messages mid-turn = %d, want 0", envelopes)
+	}
+	if n := eng.AttachmentsLen(); n != 50 {
+		t.Fatalf("AttachmentsLen() = %d, want 50 (unbounded queue, no drops)", n)
+	}
+
+	// The boundary attaches all 50.
+	close(release)
+	deadline2 := time.After(10 * time.Second)
+	for eng.IsBusy() {
+		select {
+		case <-deadline2:
+			t.Fatal("timed out waiting for engine to become idle")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop
 		}
 	}
-	if envelopes != 50 {
+	if envelopes := countHistoryEnvelopes(eng.Messages()); envelopes != 50 {
 		t.Fatalf("history envelope messages = %d, want 50 (no drops)", envelopes)
-	}
-	if n := eng.AttachmentsLen(); n != 0 {
-		t.Errorf("AttachmentsLen() = %d, want 0 (queued messages never queue)", n)
 	}
 
 	// Clean up

@@ -514,22 +514,26 @@ func New(p *Params) *Engine {
 
 // EnqueueAttachment adds an item to the attachment queue.
 // Thread-safe: may be called from any goroutine.
-// Exception — mid-turn queued user messages: when a query is active and the
-// item is a prompt hitting wrapOriginText's default branch (the user sent a
-// message while the agent was working), the message is appended to history
-// immediately in its final reminder-wrapped wire form and persisted, so the
-// prompt prefix is byte-identical before and after a restart. Queueing it
-// instead used to persist the bare text, which diverged from the assembled
-// request and broke the provider's exact-prefix cache at the queued message.
+// Mid-turn user prompts (query active, prompt mode, wrapOriginText's default
+// branch) ride this same queue: the turn boundary drains them through
+// appendQueuedUserMessage so the reminder-wrapped message lands at the
+// sequence tail — after the completed assistant and its tool results. That
+// keeps the visible time order true and leaves the live decode's KV prefix
+// reusable for the follow-up request; an immediate append used to insert the
+// message before the in-flight assistant(tool_use), forcing every later
+// request to re-read the whole response. The seq watermark then makes the
+// terminal unaddressed check run one more turn so the model answers them.
 // Job/coordinator/channel origins keep the queue path (follow-up: giving them
 // the same persist-in-final-form treatment would fix their restart stability
 // the same way, but their envelope wraps carry instructions the turn loop
 // does not need to re-run turns for, so they are left unchanged here).
+//
+// Known gap: a prompt enqueued between the last turn-boundary drain and
+// endQuery misses both drains; endQuery's idle path (processAttachments) then
+// handles it as a bare-text queue item, so the stored form is the bare text
+// wrapped only at assembly time. Millisecond-scale window, same behavior as
+// the pre-c7359230 idle path.
 func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
-	if item.Mode == types.ItemModePrompt && isUserQueuedOrigin(item.Origin) && e.queryActive.Load() != 0 {
-		e.appendQueuedUserMessage(item)
-		return
-	}
 	if item.Priority == "" {
 		if item.Mode == types.ItemModePrompt {
 			item.Priority = types.PriorityNext
@@ -550,7 +554,8 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 
 // isUserQueuedOrigin mirrors wrapOriginText's default branch: any
 // origin other than job/coordinator/channel (including nil) wraps with the
-// "user sent a new message" text, so exactly that set persists immediately.
+// "user sent a new message" text, so exactly that set is attached in final
+// reminder form at the turn boundary.
 func isUserQueuedOrigin(origin *types.MessageOrigin) bool {
 	if origin == nil {
 		return true
@@ -560,6 +565,20 @@ func isUserQueuedOrigin(origin *types.MessageOrigin) bool {
 		return false
 	}
 	return true
+}
+
+// drainQueuedUserAttachments attaches mid-turn queued user messages at a turn
+// boundary. Call it only once the assistant message is complete and its tool
+// results are in history, so the tail append keeps time order and
+// tool_use/tool_result pairing intact (queuedInsertIndex inside
+// appendQueuedUserMessage stays as the pairing defense). The seq bump makes
+// the terminal unaddressed check run one more turn so the model answers.
+func (e *Engine) drainQueuedUserAttachments() {
+	for _, item := range e.attachments.DrainIf(func(i types.QueuedItem) bool {
+		return i.Mode == types.ItemModePrompt && isUserQueuedOrigin(i.Origin)
+	}) {
+		e.appendQueuedUserMessage(item)
+	}
 }
 
 // appendQueuedUserMessage appends the reminder-wrapped user message to history
@@ -2035,8 +2054,11 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 
 			// A user queued message landed after the last LLM call began (e.g.
 			// during this response's streaming): the model has never seen it.
-			// Run one more turn so it is addressed instead of silently sitting
-			// in history behind an answer that predates it.
+			// Attach it now that the (tool-free) response is complete, then
+			// let the check below see the seq bump and run one more turn so
+			// the message is addressed instead of silently sitting in history
+			// behind an answer that predates it.
+			e.drainQueuedUserAttachments()
 			e.mu.Lock()
 			unaddressed := e.queuedMsgSeq != e.queuedMsgSeen
 			seq := e.queuedMsgSeq
@@ -2113,9 +2135,17 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.appendMessage(toolResultMsg)
 		}
 
-		// Post-tool abort check — must come before attachment drain.
-		// If context is cancelled, skip draining so processAttachments can
-		// pick up any attachments queued during tool execution.
+		// Turn boundary for queued user messages: the assistant is complete
+		// and its tool results are in history, so the tail append is
+		// pairing-safe. Placed before the abort check on purpose — an
+		// interrupted query still echoes and persists what the user sent
+		// mid-tool, instead of leaving it to the idle drain's bare-text form.
+		e.drainQueuedUserAttachments()
+
+		// Post-tool abort check. User-origin prompts were already attached and
+		// persisted by drainQueuedUserAttachments above, so only job/coordinator/
+		// channel items remain for the priority drain below (or, after a cancel,
+		// for processAttachments' idle path).
 		if err := ShouldAbort(ctx, "tools"); err != nil {
 			e.appendInlineInterruptMessage()
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})

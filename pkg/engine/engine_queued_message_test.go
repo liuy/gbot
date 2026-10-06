@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -17,10 +18,13 @@ import (
 	"github.com/liuy/gbot/pkg/utils"
 )
 
-// Queued message tests: a user message sent while the engine is mid-turn is
-// persisted immediately in its final wire form (the system-reminder envelope
-// normalizeAttachmentForAPI used to build only at request time), so the
-// prompt prefix is byte-stable across restarts.
+// Queued message tests: a user message sent while the engine is mid-turn
+// waits in the attachment queue until the turn boundary — the assistant has
+// completed and its tool results are in history — then attaches at the
+// sequence tail through appendQueuedUserMessage, which persists the final
+// reminder-wrapped wire form so the prompt prefix is byte-stable across
+// restarts. Attaching any earlier (before an in-flight tool_use assistant)
+// twisted the time order and invalidated the live decode's KV cache.
 
 // queuedEnvelope returns the exact expected content block for a
 // user-queued message with raw text, computed through the SAME legacy path
@@ -94,12 +98,14 @@ func findEnvelopeMessages(msgs []types.Message) []int {
 	return out
 }
 
-// TestQueuedMessage_MidToolExec_AppendedImmediatelyInFinalForm is the core
-// behavior change: EnqueueAttachment with a human-origin prompt while a query
-// is active must NOT queue the item — it must append the reminder-wrapped
-// user message to history immediately, positioned pairing-safe (before the
-// in-flight tool_use assistant), and the attachment queue must stay empty.
-func TestQueuedMessage_MidToolExec_AppendedImmediatelyInFinalForm(t *testing.T) {
+// TestQueuedMessage_MidToolExec_TailAttachAtTurnBoundary is the core timing
+// contract: EnqueueAttachment with a user-origin prompt while a query is
+// active only queues the item — no history append, no persist, no
+// EventAttachment while the tool runs. When the assistant completed and its
+// tool results are in history, the boundary attaches the message at the tail
+// (order: assistant(tool_use), tool_result, queued message), emits the echo,
+// and the follow-up LLM request carries the envelope.
+func TestQueuedMessage_MidToolExec_TailAttachAtTurnBoundary(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "final answer"), nil)
@@ -116,6 +122,14 @@ func TestQueuedMessage_MidToolExec_AppendedImmediatelyInFinalForm(t *testing.T) 
 		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(bt.releaseCh)
+		}
+	}
+	t.Cleanup(release)
 
 	eng.Query(context.Background(), "run the tool", "")
 	select {
@@ -133,58 +147,67 @@ func TestQueuedMessage_MidToolExec_AppendedImmediatelyInFinalForm(t *testing.T) 
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
 
-	// Asserted BEFORE the tool completes: the message must already be history.
+	// While the tool runs the message must be NOWHERE but the queue.
+	if envelopes := findEnvelopeMessages(eng.Messages()); len(envelopes) != 0 {
+		t.Fatalf("history contains %d queued message messages while the tool runs, want 0 (attach must wait for the turn boundary)", len(envelopes))
+	}
+	if n := eng.AttachmentsLen(); n != 1 {
+		t.Fatalf("attachment queue len = %d, want 1 (message waits in the queue)", n)
+	}
+	if evs := ec.FindEvents(types.EventAttachment); len(evs) != 0 {
+		t.Fatalf("%d EventAttachment events while the tool runs, want 0", len(evs))
+	}
+
+	release()
+	// The attach fires at the boundary, before the follow-up LLM call.
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("no EventAttachment after the tool completed")
+	}
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
+
 	msgs := eng.Messages()
 	envelopes := findEnvelopeMessages(msgs)
 	if len(envelopes) != 1 {
-		t.Fatalf("history contains %d queued message messages immediately after enqueue, want 1 (msgs=%d)", len(envelopes), len(msgs))
+		t.Fatalf("history contains %d queued message messages after the turn, want 1", len(envelopes))
 	}
-	got := msgs[envelopes[0]]
-	want := queuedEnvelope(t, "wait, change of plans")
-	if len(got.Content) != len(want) || got.Content[0].Text != want[0].Text {
-		t.Errorf("persisted content = %q, want byte-exact legacy assembled form %q", got.Content[0].Text, want[0].Text)
-	}
-	if got.ID != "itst-uuid" {
-		t.Errorf("message ID = %q, want item UUID %q", got.ID, "itst-uuid")
-	}
-	// Pairing safety: the queued message must sit BEFORE the assistant message
-	// holding the in-flight tool_use, never between it and its pending result.
-	assistantIdx := -1
+	assistantIdx, toolResultIdx := -1, -1
 	for i, m := range msgs {
-		if m.Role == types.RoleAssistant {
+		switch m.Role {
+		case types.RoleAssistant:
 			for _, b := range m.Content {
 				if b.Type == types.ContentTypeToolUse && b.ID == "t1" {
 					assistantIdx = i
 				}
 			}
+		case types.RoleUser:
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeToolResult && b.ToolUseID == "t1" {
+					toolResultIdx = i
+				}
+			}
 		}
 	}
-	if assistantIdx == -1 {
-		t.Fatal("assistant message with tool_use not found in history")
+	if assistantIdx == -1 || toolResultIdx == -1 {
+		t.Fatalf("assistant(tool_use)@%d tool_result@%d not found in history", assistantIdx, toolResultIdx)
 	}
-	if envelopes[0] >= assistantIdx {
-		t.Errorf("queued message at index %d must precede in-flight tool_use assistant at index %d", envelopes[0], assistantIdx)
+	envIdx := envelopes[0]
+	if assistantIdx >= toolResultIdx || toolResultIdx >= envIdx {
+		t.Errorf("sequence order broken: assistant(tool_use)@%d, tool_result@%d, queued message@%d; want assistant < tool_result < queued message", assistantIdx, toolResultIdx, envIdx)
 	}
-	if n := eng.AttachmentsLen(); n != 0 {
-		t.Errorf("attachment queue len = %d, want 0 (queued message must not queue)", n)
+	got := msgs[envIdx]
+	want := queuedEnvelope(t, "wait, change of plans")
+	if got.Content[0].Text != want[0].Text {
+		t.Errorf("attached content = %q, want byte-exact reminder envelope %q", got.Content[0].Text, want[0].Text)
 	}
-
-	close(bt.releaseCh)
-	ec.WaitForResult()
-
-	// Exactly one persisted occurrence — the drain must not add a second copy.
-	msgs = eng.Messages()
-	if envelopes := findEnvelopeMessages(msgs); len(envelopes) != 1 {
-		t.Fatalf("after query end, history contains %d queued message messages, want 1", len(envelopes))
+	if got.ID != "itst-uuid" {
+		t.Errorf("message ID = %q, want item UUID %q", got.ID, "itst-uuid")
 	}
-	// The second LLM request must carry the envelope verbatim (it is an
+	// The follow-up request must carry the envelope verbatim (it is an
 	// ordinary history message — assembly sends it as-is).
-	req := mp.lastRequest
-	if req == nil {
-		t.Fatal("no captured LLM request")
-	}
 	foundEnvelope := false
-	for _, m := range req.Messages {
+	for _, m := range mp.lastRequestMessages() {
 		if m.Role != types.RoleUser {
 			continue
 		}
@@ -195,15 +218,114 @@ func TestQueuedMessage_MidToolExec_AppendedImmediatelyInFinalForm(t *testing.T) 
 		}
 	}
 	if !foundEnvelope {
-		t.Error("second LLM request does not contain the queued message envelope")
+		t.Error("follow-up LLM request does not contain the queued message envelope")
 	}
 }
 
-// TestQueuedMessage_MidToolExec_PersistedAndRestartStable drives a full query
-// with a mid-tool queued message against a real store, then reloads the session
-// and asserts the reloaded sequence is identical and pairing-clean. This is
-// the restart cache-stability contract: same bytes before and after restart.
-func TestQueuedMessage_MidToolExec_PersistedAndRestartStable(t *testing.T) {
+// TestQueuedMessage_MidToolExec_MultiQueuedFIFO pins drain order: several
+// messages queued mid-tool attach at the boundary in the order they were
+// sent, all after the tool result.
+func TestQueuedMessage_MidToolExec_MultiQueuedFIFO(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "both noted"), nil)
+
+	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bt.Name(): bt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(bt.releaseCh)
+		}
+	}
+	t.Cleanup(release)
+
+	eng.Query(context.Background(), "run the tool", "")
+	select {
+	case <-bt.startCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+	for i, text := range []string{"first change", "second change"} {
+		eng.EnqueueAttachment(types.QueuedItem{
+			Value:     text,
+			Mode:      types.ItemModePrompt,
+			UUID:      fmt.Sprintf("fifo-%d", i),
+			Priority:  types.PriorityNext,
+			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+			Timestamp: time.Date(2026, 10, 5, 11, 0, i, 0, time.UTC),
+		})
+	}
+	if n := eng.AttachmentsLen(); n != 2 {
+		t.Fatalf("attachment queue len = %d, want 2", n)
+	}
+
+	release()
+	if !ec.WaitForEventCount(types.EventAttachment, 2, 5*time.Second) {
+		t.Fatal("did not observe 2 EventAttachment events at the boundary")
+	}
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
+
+	msgs := eng.Messages()
+	envelopes := findEnvelopeMessages(msgs)
+	if len(envelopes) != 2 {
+		t.Fatalf("history contains %d queued message messages, want 2", len(envelopes))
+	}
+	first := msgs[envelopes[0]].Content[0].Text
+	second := msgs[envelopes[1]].Content[0].Text
+	if !strings.Contains(first, "first change") || !strings.Contains(second, "second change") {
+		t.Errorf("FIFO order broken:\nfirst attached:  %q\nsecond attached: %q", first, second)
+	}
+	// Both after the tool result: the message directly before the first
+	// attached queued message must carry the t1 tool_result.
+	prev := msgs[envelopes[0]-1]
+	hasResult := false
+	for _, b := range prev.Content {
+		if b.Type == types.ContentTypeToolResult && b.ToolUseID == "t1" {
+			hasResult = true
+		}
+	}
+	if !hasResult {
+		t.Errorf("message directly before the first attached queued message (role=%s) does not carry the t1 tool_result", prev.Role)
+	}
+	// The follow-up request carries both, in order.
+	reqTexts := ""
+	for _, m := range mp.lastRequestMessages() {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText {
+				reqTexts += b.Text + "\n"
+			}
+		}
+	}
+	firstPos := strings.Index(reqTexts, "first change")
+	secondPos := strings.Index(reqTexts, "second change")
+	if firstPos == -1 || secondPos == -1 {
+		t.Errorf("follow-up request missing queued messages (firstPos=%d secondPos=%d)", firstPos, secondPos)
+	} else if firstPos > secondPos {
+		t.Errorf("follow-up request order broken: first change at %d after second change at %d", firstPos, secondPos)
+	}
+}
+
+// TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable drives a
+// full query with a mid-tool queued message against a real store. The message
+// must NOT be in the store while the tool runs; the boundary attach persists
+// it immediately (before the follow-up LLM call completes), and reloading the
+// session must reproduce the live sequence byte-for-byte — the restart
+// cache-stability contract.
+func TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable(t *testing.T) {
 	store := newTestStore(t)
 	session, err := store.CreateSession("", "test-model")
 	if err != nil {
@@ -228,6 +350,14 @@ func TestQueuedMessage_MidToolExec_PersistedAndRestartStable(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(bt.releaseCh)
+		}
+	}
+	t.Cleanup(release)
 
 	eng.Query(context.Background(), "run the tool", "")
 	select {
@@ -245,17 +375,50 @@ func TestQueuedMessage_MidToolExec_PersistedAndRestartStable(t *testing.T) {
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
 
-	// Persisted before the query completes — crash-safe by design.
+	// While the tool runs the message is only queued: nothing in history,
+	// nothing persisted.
+	if envelopes := findEnvelopeMessages(eng.Messages()); len(envelopes) != 0 {
+		t.Fatalf("history contains %d queued message messages while the tool runs, want 0", len(envelopes))
+	}
+	if n := eng.AttachmentsLen(); n != 1 {
+		t.Fatalf("attachment queue len = %d, want 1", n)
+	}
 	storeMsgs, err := store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
-	persisted, err := short.StoreMessagesToEngine(storeMsgs)
+	midRun, err := short.StoreMessagesToEngine(storeMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}
-	if idx := findEnvelopeMessages(persisted); len(idx) != 1 {
-		t.Fatalf("store contains %d envelope messages immediately after queued message, want 1", len(idx))
+	if idx := findEnvelopeMessages(midRun); len(idx) != 0 {
+		t.Fatalf("store contains %d envelope messages while the tool runs, want 0 (nothing may persist before the turn boundary)", len(idx))
+	}
+
+	release()
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("no EventAttachment after the tool completed")
+	}
+	// Attach-time persist: the store holds the envelope while the query is
+	// still running (the follow-up LLM call has not returned yet).
+	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	var persisted []types.Message
+	for {
+		storeMsgs, err := store.LoadMessages(session.SessionID)
+		if err != nil {
+			t.Fatalf("LoadMessages: %v", err)
+		}
+		persisted, err = short.StoreMessagesToEngine(storeMsgs)
+		if err != nil {
+			t.Fatalf("StoreMessagesToEngine: %v", err)
+		}
+		if idx := findEnvelopeMessages(persisted); len(idx) == 1 {
+			break
+		}
+		if time.Now().After(deadline) { // REAL-TIME: poll loop bounded by deadline
+			t.Fatalf("store contains %d envelope messages after the boundary attach, want 1 (attach must persist immediately)", len(findEnvelopeMessages(persisted)))
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME
 	}
 	want := queuedEnvelope(t, "restart-stability check")
 	if persisted[findEnvelopeMessages(persisted)[0]].Content[0].Text != want[0].Text {
@@ -263,12 +426,13 @@ func TestQueuedMessage_MidToolExec_PersistedAndRestartStable(t *testing.T) {
 			persisted[findEnvelopeMessages(persisted)[0]].Content[0].Text, want[0].Text)
 	}
 
-	close(bt.releaseCh)
-	ec.WaitForResult()
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
 
 	// The query-exit PersistNewMessages defer runs after QueryEnd; poll until
 	// the store settles at the live history size before comparing.
-	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	settleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME
 	live := eng.Messages()
 	var reloaded []types.Message
 	for {
@@ -283,7 +447,7 @@ func TestQueuedMessage_MidToolExec_PersistedAndRestartStable(t *testing.T) {
 		if len(reloaded) == len(live) {
 			break
 		}
-		if time.Now().After(deadline) { // REAL-TIME: poll loop bounded by deadline
+		if time.Now().After(settleDeadline) { // REAL-TIME: poll loop bounded by deadline
 			t.Fatalf("reloaded message count = %d, want %d (live history)", len(reloaded), len(live))
 		}
 		time.Sleep(10 * time.Millisecond) // REAL-TIME
@@ -381,9 +545,10 @@ func (p *streamGateProvider) Stream(ctx context.Context, req *llm.Request) (<-ch
 }
 
 // TestQueuedMessage_DuringStreaming_AnsweredInFollowUpTurn covers the
-// queued message arriving while the FINAL response is streaming: the message
-// lands in history before the assistant message, the model never saw it, and
-// the terminal path must run one more turn so it is addressed.
+// queued message arriving while the FINAL response is streaming: it stays in
+// the queue mid-stream (the in-flight answer is not interrupted), attaches at
+// the terminal boundary, and the seq watermark forces one more turn so the
+// model addresses it.
 func TestQueuedMessage_DuringStreaming_AnsweredInFollowUpTurn(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "final answer"), nil)
@@ -422,12 +587,19 @@ func TestQueuedMessage_DuringStreaming_AnsweredInFollowUpTurn(t *testing.T) {
 		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
-	if msgs := eng.Messages(); len(findEnvelopeMessages(msgs)) != 1 {
-		t.Fatalf("queued message not appended mid-stream: %d envelope messages", len(findEnvelopeMessages(msgs)))
+	// Mid-stream the message is only queued — attaching would interrupt the
+	// live decode and invalidate its KV prefix.
+	if msgs := eng.Messages(); len(findEnvelopeMessages(msgs)) != 0 {
+		t.Fatalf("queued message appended mid-stream: %d envelope messages, want 0", len(findEnvelopeMessages(msgs)))
+	}
+	if n := eng.AttachmentsLen(); n != 1 {
+		t.Fatalf("attachment queue len = %d, want 1 mid-stream", n)
 	}
 	close(gated.gate)
 
-	ec.WaitForResult()
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
 
 	if got := mp.callCount(); got != 2 {
 		t.Errorf("LLM call count = %d, want 2 (terminal path must re-run for the unseen queued message)", got)
@@ -685,14 +857,13 @@ func TestQueuedMessageInsertIndex(t *testing.T) {
 }
 
 // TestQueuedMessage_CrashRecoveredUnpairedTail_PersistedAndReloaded pins the
-// persist-cursor clamp. The state is REACHABLE through the public path: the
-// queued message's own immediate persistence can commit an in-flight
-// assistant(tool_use) mid-execution, a hard kill leaves that unpaired tail in
-// the DB, and a restart (SwitchSession → LoadChainMessages, which does not
-// filter it) reloads it with cursor = len. The next query's queued message then
-// computes an insert index below the cursor, and the uncommitted slice would
-// silently drop it. The state is injected directly here only because a real
-// process kill cannot be simulated in-process.
+// persist-cursor clamp. The state is REACHABLE: a hard kill between an
+// assistant(tool_use) append and its turn-boundary persist leaves an unpaired
+// tail in the DB, and a restart (SwitchSession → LoadChainMessages, which does
+// not filter it) reloads it with cursor = len. The next query's queued message
+// then computes an insert index below the cursor, and the uncommitted slice
+// would silently drop it. The state is injected directly here only because a
+// real process kill cannot be simulated in-process.
 func TestQueuedMessage_CrashRecoveredUnpairedTail_PersistedAndReloaded(t *testing.T) {
 	store := newTestStore(t)
 	session, err := store.CreateSession("", "test-model")
@@ -730,17 +901,56 @@ func TestQueuedMessage_CrashRecoveredUnpairedTail_PersistedAndReloaded(t *testin
 		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
-	eng.queryActive.Store(0)
+	// Mid-turn the message is only queued: nothing in history, nothing persisted.
+	if n := eng.AttachmentsLen(); n != 1 {
+		t.Fatalf("attachment queue len = %d, want 1 (mid-turn enqueue must not attach)", n)
+	}
 	storeMsgs, err := store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
+	}
+	midRun, err := short.StoreMessagesToEngine(storeMsgs)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if idx := findEnvelopeMessages(midRun); len(idx) != 0 {
+		t.Fatalf("store contains %d envelope messages while the message is queued, want 0", len(idx))
+	}
+
+	// The turn boundary attaches at max(queuedInsertIndex, cursor) = 2 —
+	// below-cursor indices would drop the message from the uncommitted slice.
+	eng.drainQueuedUserAttachments()
+	storeMsgs, err = store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after attach: %v", err)
 	}
 	persisted, err := short.StoreMessagesToEngine(storeMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}
-	if got := len(findEnvelopeMessages(persisted)); got != 1 {
-		t.Fatalf("store contains %d envelope messages after queued message on crash-recovered history, want 1 (cursor clamp must keep it in the uncommitted slice)", got)
+	idx := findEnvelopeMessages(persisted)
+	if got := len(idx); got != 1 {
+		t.Fatalf("store contains %d envelope messages after the boundary attach on crash-recovered history, want 1 (cursor clamp must keep it in the uncommitted slice)", got)
+	}
+	if persisted[idx[0]].ID != "itst-crash" {
+		t.Errorf("persisted envelope ID = %q, want item UUID %q", persisted[idx[0]].ID, "itst-crash")
+	}
+
+	// Restart chain: a fresh engine recovers the session through the public
+	// path and sees the queued message as an ordinary history message.
+	eng2 := New(&Params{Provider: mp, Model: "test-model", Logger: slog.Default()})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetStore(store, "")
+	loaded, err := eng2.SwitchSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("SwitchSession: %v", err)
+	}
+	reloadedIdx := findEnvelopeMessages(loaded)
+	if len(reloadedIdx) != 1 {
+		t.Fatalf("reloaded history contains %d envelope messages, want 1", len(reloadedIdx))
+	}
+	if last := len(loaded) - 1; reloadedIdx[0] != last {
+		t.Errorf("reloaded envelope at index %d, want the sequence tail (%d)", reloadedIdx[0], last)
 	}
 }
 
@@ -755,6 +965,7 @@ func TestQueuedMessage_ZeroTimestampGuard(t *testing.T) {
 	}
 	mp := &mockProvider{}
 	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
 	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
 	ec := newEventCollector()
 	eng := New(&Params{
@@ -783,6 +994,13 @@ func TestQueuedMessage_ZeroTimestampGuard(t *testing.T) {
 		Origin:   &types.MessageOrigin{Kind: types.OriginHuman},
 		// Timestamp deliberately zero.
 	})
+	close(bt.releaseCh)
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("no EventAttachment at the turn boundary")
+	}
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
 	eng.mu.RLock()
 	var stamped int
 	for _, m := range eng.messages {
@@ -798,12 +1016,11 @@ func TestQueuedMessage_ZeroTimestampGuard(t *testing.T) {
 	if stamped != 1 {
 		t.Fatalf("found %d queued message messages in memory, want 1", stamped)
 	}
-	close(bt.releaseCh)
-	ec.WaitForResult()
 }
 
 // TestQueuedMessage_EventStubShape pins the UI contract of the emitted
-// EventAttachment: original text in Prompt, prompt mode, envelope in content.
+// EventAttachment: no echo while the tool runs, then at the boundary the
+// event carries the original text in Prompt, prompt mode, envelope in content.
 func TestQueuedMessage_EventStubShape(t *testing.T) {
 	store := newTestStore(t)
 	session, err := store.CreateSession("", "test-model")
@@ -812,6 +1029,7 @@ func TestQueuedMessage_EventStubShape(t *testing.T) {
 	}
 	mp := &mockProvider{}
 	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
 	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
 	ec := newEventCollector()
 	eng := New(&Params{
@@ -840,9 +1058,16 @@ func TestQueuedMessage_EventStubShape(t *testing.T) {
 		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
+	// No echo before the boundary: the message has not attached yet.
+	if evs := ec.FindEvents(types.EventAttachment); len(evs) != 0 {
+		t.Fatalf("%d EventAttachment events while the tool runs, want 0", len(evs))
+	}
+	close(bt.releaseCh)
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("no EventAttachment at the turn boundary")
+	}
 	att := findQueuedMessageAttachment(ec)
 	if att == nil {
-		close(bt.releaseCh)
 		t.Fatal("no EventAttachment emitted for queued message")
 	}
 	if att.Prompt != "stub shape check" {
@@ -851,8 +1076,9 @@ func TestQueuedMessage_EventStubShape(t *testing.T) {
 	if att.Mode != types.ItemModePrompt {
 		t.Errorf("Attachment.Mode = %v, want ItemModePrompt", att.Mode)
 	}
-	close(bt.releaseCh)
-	ec.WaitForResult()
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
 }
 
 // findQueuedMessageAttachment returns the Attachment of the latest

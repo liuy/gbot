@@ -58,6 +58,33 @@ func TestQueue_DrainEmpty(t *testing.T) {
 	}
 }
 
+func TestQueue_DrainIf(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{Value: "keep1", Mode: types.ItemModeJob})
+	q.Enqueue(types.QueuedItem{Value: "take1", Mode: types.ItemModePrompt})
+	q.Enqueue(types.QueuedItem{Value: "take2", Mode: types.ItemModePrompt})
+	q.Enqueue(types.QueuedItem{Value: "keep2", Mode: types.ItemModeJob})
+
+	items := q.DrainIf(func(i types.QueuedItem) bool { return i.Mode == types.ItemModePrompt })
+	if len(items) != 2 {
+		t.Fatalf("DrainIf returned %d items, want 2", len(items))
+	}
+	if items[0].Value != "take1" || items[1].Value != "take2" {
+		t.Errorf("DrainIf order = [%s, %s], want [take1, take2] (FIFO)", items[0].Value, items[1].Value)
+	}
+	remaining := q.DrainAll()
+	if len(remaining) != 2 || remaining[0].Value != "keep1" || remaining[1].Value != "keep2" {
+		t.Errorf("DrainAll after DrainIf = %v, want [keep1 keep2]", remaining)
+	}
+
+	if items := q.DrainIf(func(types.QueuedItem) bool { return false }); len(items) != 0 {
+		t.Errorf("DrainIf with false predicate = %d items, want 0", len(items))
+	}
+	if items := q.DrainIf(func(types.QueuedItem) bool { return true }); len(items) != 0 {
+		t.Errorf("DrainIf on empty queue = %d items, want 0", len(items))
+	}
+}
+
 func TestQueue_UnknownPriority(t *testing.T) {
 	q := &Queue{}
 	q.Enqueue(types.QueuedItem{Value: "unknown", Priority: types.QueuePriority("unknown")})
