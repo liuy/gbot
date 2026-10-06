@@ -1094,3 +1094,70 @@ func findQueuedMessageAttachment(ec *eventCollector) *types.Attachment {
 	}
 	return nil
 }
+
+// TestQueuedMessage_AbortLeavesQueueForIdleRun pins the pre-c7359230 abort
+// behavior on top of turn-boundary attach: aborting mid-tool must leave the
+// queued message in the queue so endQuery's idle path runs it as a fresh
+// turn. Attaching at the abort point instead would strand the message in
+// history with no turn left to answer it (the 12:53 regression).
+func TestQueuedMessage_AbortLeavesQueueForIdleRun(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "idle answer"), nil)
+	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bt.Name(): bt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(bt.releaseCh)
+		}
+	}
+	t.Cleanup(release)
+	// Query's systemPrompt parameter does not populate e.systemPrompt; the
+	// idle path's startProcessAttachmentsIfIdle returns early without it.
+	eng.SetSystemPrompt("sys")
+	eng.Query(context.Background(), "run the tool", "sys")
+	select {
+	case <-bt.startCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "queued while aborting",
+		Mode:      types.ItemModePrompt,
+		UUID:      "abort-uuid",
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Date(2026, 10, 6, 12, 53, 40, 0, time.UTC),
+	})
+	eng.Abort()
+	release()
+	res := ec.WaitForResult()
+	if res.Error == nil {
+		t.Fatal("expected the aborted query to return an error")
+	}
+	// The message must NOT be attached by the aborted query: no envelope in
+	// history, the item still queued, no attachment event from this query.
+	if envelopes := findEnvelopeMessages(eng.Messages()); len(envelopes) != 0 {
+		t.Fatalf("aborted query attached %d queued messages, want 0 (must stay queued for the idle run)", len(envelopes))
+	}
+	// The idle path (endQuery -> startProcessAttachmentsIfIdle) picks the
+	// queued message up and runs a fresh turn that answers it.
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("idle path never drained the queued message")
+	}
+	if !ec.WaitForEventCount(types.EventQueryEnd, 2, 5*time.Second) {
+		t.Fatal("idle path never ran a second query")
+	}
+}

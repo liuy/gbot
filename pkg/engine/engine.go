@@ -528,11 +528,13 @@ func New(p *Params) *Engine {
 // the same way, but their envelope wraps carry instructions the turn loop
 // does not need to re-run turns for, so they are left unchanged here).
 //
-// Known gap: a prompt enqueued between the last turn-boundary drain and
-// endQuery misses both drains; endQuery's idle path (processAttachments) then
-// handles it as a bare-text queue item, so the stored form is the bare text
-// wrapped only at assembly time. Millisecond-scale window, same behavior as
-// the pre-c7359230 idle path.
+// Known gap: prompts that bypass both drains persist in bare-text form and
+// are wrapped only at assembly time. Two entry points: a prompt enqueued in
+// the millisecond window between the last turn-boundary drain and endQuery,
+// and — deliberately — an aborted query's queued messages, which the idle
+// path (processAttachments) runs so they are answered rather than stranded;
+// aborting is an explicit user action, so its bare-text persist is an
+// accepted cost for keeping the message runnable.
 func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 	if item.Priority == "" {
 		if item.Mode == types.ItemModePrompt {
@@ -2135,17 +2137,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.appendMessage(toolResultMsg)
 		}
 
-		// Turn boundary for queued user messages: the assistant is complete
-		// and its tool results are in history, so the tail append is
-		// pairing-safe. Placed before the abort check on purpose — an
-		// interrupted query still echoes and persists what the user sent
-		// mid-tool, instead of leaving it to the idle drain's bare-text form.
-		e.drainQueuedUserAttachments()
-
-		// Post-tool abort check. User-origin prompts were already attached and
-		// persisted by drainQueuedUserAttachments above, so only job/coordinator/
-		// channel items remain for the priority drain below (or, after a cancel,
-		// for processAttachments' idle path).
+		// Post-tool abort check comes FIRST: an aborted query must leave
+		// queued user messages in the queue so endQuery's idle path
+		// (startProcessAttachmentsIfIdle) runs them as a fresh turn — the
+		// pre-c7359230 behavior. Draining here instead would attach the
+		// message into a query that is about to return, with no turn left
+		// to answer it.
 		if err := ShouldAbort(ctx, "tools"); err != nil {
 			e.appendInlineInterruptMessage()
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
@@ -2163,6 +2160,11 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				Error:      err,
 			}
 		}
+
+		// Turn boundary for queued user messages: the assistant is complete
+		// and its tool results are in history, so the tail append is
+		// pairing-safe. Must run after the abort check — see above.
+		e.drainQueuedUserAttachments()
 
 		// Drain queued attachments at turn boundary.
 		// Drains PriorityNow + PriorityNext items (e.g. prompt input, job notifications).

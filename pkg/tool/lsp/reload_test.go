@@ -98,7 +98,9 @@ func TestIntegration_Reload_FileScopesToWorktreeRoot(t *testing.T) {
 	// Launch root only: one injected client, none for wtDir.
 	clientConn, serverConn := net.Pipe()
 	var wg sync.WaitGroup
-	wg.Go(func() { serveFake(t, serverConn, func(_ string, _ json.RawMessage) (any, bool) { return nil, false }, mainDir) })
+	wg.Go(func() {
+		serveFake(t, serverConn, func(_ string, _ json.RawMessage) (any, bool) { return nil, false }, mainDir)
+	})
 	c := lsp.NewTestClient("fakels", clientConn)
 	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer initCancel()

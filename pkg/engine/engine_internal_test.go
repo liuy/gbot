@@ -6868,10 +6868,10 @@ func (p *attachmentGateProvider) Stream(ctx context.Context, req *llm.Request) (
 // Regression: ESC aborts query mid-tool, user queued message sent during tool
 // execution. Original bug (queue era): the turn loop drained the queued item
 // before the ShouldAbort check, processAttachments found an empty queue, and
-// the message was lost. Persist-in-final-form era: the queued message is
-// appended to history the moment it is sent, so an abort can no longer lose
-// it — but it must also not run a surprise follow-up turn after the user
-// pressed ESC, and no duplicate plain copy may appear later.
+// the message was lost. The abort must leave the message queued (not
+// attached into the dying query) so endQuery's idle path runs it as a
+// fresh turn — the user's message always gets answered, never lost and
+// never duplicated.
 func TestAbort_DuringTool_QueuedMessageSurvivesInHistory(t *testing.T) {
 	eventCh := make(chan types.QueryEvent, 30)
 	dispatcher := &chanDispatcher{ch: eventCh}
@@ -6939,49 +6939,39 @@ func TestAbort_DuringTool_QueuedMessageSurvivesInHistory(t *testing.T) {
 		t.Fatal("timed out waiting for tool cancellation")
 	}
 
-	// The queued message must survive the abort as a history message in final
-	// (reminder-wrapped) form — never lost, never duplicated.
-	waitForEnvelope := func(n int) {
-		t.Helper()
-		deadline := time.After(5 * time.Second)
-		for {
-			count := 0
-			for _, m := range eng.Messages() {
-				if m.Role == types.RoleUser && len(m.Content) > 0 && m.Content[0].Type == types.ContentTypeText &&
-					strings.Contains(m.Content[0].Text, "user input during bash") {
-					count++
-				}
-			}
-			if count == n {
-				return
-			}
-			select {
-			case <-eventCh:
-			case <-deadline:
-				t.Fatalf("queued message occurrence count = %d, want %d after abort", count, n)
+	// The queued message must survive the abort and be answered: it stays in
+	// the queue through the abort, then the idle path (endQuery ->
+	// startProcessIfIdle) runs it as a fresh turn, which puts the message
+	// into history. Both observables are consumed in ONE loop — the idle
+	// TurnStart can arrive before or after the envelope lands in history,
+	// and a helper that swallows events while waiting for the other
+	// condition makes the test flap.
+	var gotFirstTurnEnd, idleTurnStarted bool
+	deadline := time.After(5 * time.Second)
+	for {
+		count := 0
+		for _, m := range eng.Messages() {
+			if m.Role == types.RoleUser && len(m.Content) > 0 && m.Content[0].Type == types.ContentTypeText &&
+				strings.Contains(m.Content[0].Text, "user input during bash") {
+				count++
 			}
 		}
-	}
-	waitForEnvelope(1)
-
-	// ESC'd queries must not spawn a follow-up turn for the queued message:
-	// no second TurnStart may fire after the query's TurnEnd.
-	var gotFirstTurnEnd bool
-	deadline := time.After(1 * time.Second)
-	for {
+		if count == 1 && idleTurnStarted {
+			return
+		}
+		if count > 1 {
+			t.Fatalf("queued message occurrence count = %d, want 1 (duplicated)", count)
+		}
 		select {
 		case evt := <-eventCh:
 			if evt.Type == types.EventTurnEnd && !gotFirstTurnEnd {
 				gotFirstTurnEnd = true
 			}
 			if evt.Type == types.EventTurnStart && gotFirstTurnEnd {
-				t.Fatal("follow-up turn ran after ESC abort — the queued message should stay in history, not auto-run")
-			}
-			if evt.Type == types.EventQueryEnd && gotFirstTurnEnd {
-				return
+				idleTurnStarted = true
 			}
 		case <-deadline:
-			return // quiet after abort — expected
+			t.Fatalf("after abort: envelope count=%d idleTurnStarted=%v — the queued message was lost or never answered", count, idleTurnStarted)
 		}
 	}
 }
