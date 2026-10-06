@@ -47,12 +47,13 @@ type ResponsesProvider struct {
 
 // ResponsesConfig configures the Responses provider.
 type ResponsesConfig struct {
-	Name        string
-	APIKey      string
-	BaseURL     string // defaults to https://api.openai.com/v1; GLM uses https://open.bigmodel.cn/api/v1
-	Model       string
-	Timeout     time.Duration
-	ExtraParams map[string]any // merged into the request body (e.g. {"reasoning":{"effort":"high"}})
+	Name         string
+	APIKey       string
+	BaseURL      string // defaults to https://api.openai.com/v1; GLM uses https://open.bigmodel.cn/api/v1
+	Model        string
+	Timeout      time.Duration
+	ExtraParams  map[string]any // merged into the request body (e.g. {"reasoning":{"effort":"high"}})
+	Microcompact *bool          // nil = enabled; see MicrocompactProvider
 }
 
 // NewResponsesProvider creates a new Responses provider.
@@ -69,11 +70,12 @@ func NewResponsesProvider(cfg *ResponsesConfig) *ResponsesProvider {
 		retryConfig: DefaultRetryConfig(),
 		// 90s, not openai.go's 60s: reasoning-phase deltas can arrive in
 		// bursts spaced further apart than chat-completion tokens.
-		idleTimeout: DefaultSSETimeout,
-		apiKey:      cfg.APIKey,
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		model:       cfg.Model,
-		extraParams: cfg.ExtraParams,
+		idleTimeout:         DefaultSSETimeout,
+		microcompactEnabled: resolveMicrocompactEnabled(cfg.Microcompact),
+		apiKey:              cfg.APIKey,
+		baseURL:             strings.TrimRight(cfg.BaseURL, "/"),
+		model:               cfg.Model,
+		extraParams:         cfg.ExtraParams,
 	}
 }
 

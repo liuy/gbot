@@ -281,3 +281,100 @@ func TestCreateAllProviders_FreeRefreshReplacesStale(t *testing.T) {
 		t.Errorf("FreeFetched = %v, want [shared:free fresh:free hand:free]", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Per-provider microcompact switch
+// ---------------------------------------------------------------------------
+
+func TestProviderMicrocompact_ParseAndResolve(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"providers": [
+			{"name": "strata", "url": "http://localhost:9", "keys": ["k"], "models": {"m": {}}, "microcompact": false},
+			{"name": "zhipu", "url": "https://open.bigmodel.cn", "keys": ["k"], "models": {"m": {}}},
+			{"name": "glm", "url": "https://x.example", "keys": ["k"], "models": {"m": {}}, "microcompact": true}
+		]
+	}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(cfg.Providers) != 3 {
+		t.Fatalf("len(Providers) = %d, want 3", len(cfg.Providers))
+	}
+
+	strata := &cfg.Providers[0]
+	if strata.Microcompact == nil || *strata.Microcompact {
+		t.Errorf("strata.Microcompact = %v, want pointer to false", strata.Microcompact)
+	}
+	if strata.MicrocompactEnabled() {
+		t.Error("strata.MicrocompactEnabled() = true, want false")
+	}
+
+	zhipu := &cfg.Providers[1]
+	if zhipu.Microcompact != nil {
+		t.Errorf("zhipu.Microcompact = %v, want nil (field absent)", zhipu.Microcompact)
+	}
+	if !zhipu.MicrocompactEnabled() {
+		t.Error("zhipu.MicrocompactEnabled() = false, want true (absent defaults to enabled)")
+	}
+
+	glm := &cfg.Providers[2]
+	if glm.Microcompact == nil || !*glm.Microcompact {
+		t.Errorf("glm.Microcompact = %v, want pointer to true", glm.Microcompact)
+	}
+	if !glm.MicrocompactEnabled() {
+		t.Error("glm.MicrocompactEnabled() = false, want true")
+	}
+}
+
+// TestCreateAllProviders_MicrocompactPropagation checks the config → llm
+// provider hop: the tri-state flag must land on the provider instance so
+// every engine built from it (including runtime SetProvider switches) sees
+// the right value.
+func TestCreateAllProviders_MicrocompactPropagation(t *testing.T) {
+	t.Parallel()
+	off := false
+	on := true
+	cfg := &Config{
+		Providers: []Provider{
+			{
+				Name:         "mc-off",
+				URL:          "http://localhost:9",
+				Keys:         []string{"sk-key"},
+				Models:       NewModelsFromMap(map[string]ModelConfig{"m": {}}),
+				Type:         ProviderTypeOpenAI,
+				Microcompact: &off,
+			},
+			{
+				Name:   "mc-default",
+				URL:    "http://localhost:10",
+				Keys:   []string{"sk-key"},
+				Models: NewModelsFromMap(map[string]ModelConfig{"m": {}}),
+				Type:   ProviderTypeOpenAI,
+			},
+			{
+				Name:         "mc-on",
+				URL:          "http://localhost:11",
+				Keys:         []string{"sk-key"},
+				Models:       NewModelsFromMap(map[string]ModelConfig{"m": {}}),
+				Type:         ProviderTypeOpenAI,
+				Microcompact: &on,
+			},
+		},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for name, want := range map[string]bool{"mc-off": false, "mc-default": true, "mc-on": true} {
+		p, ok := m[name].(llm.MicrocompactProvider)
+		if !ok {
+			t.Fatalf("provider %s (%T) does not implement llm.MicrocompactProvider", name, m[name])
+		}
+		if got := p.MicrocompactEnabled(); got != want {
+			t.Errorf("%s MicrocompactEnabled() = %v, want %v", name, got, want)
+		}
+	}
+}

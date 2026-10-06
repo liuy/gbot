@@ -1644,12 +1644,16 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 	// Microcompact: shrink prompt before the turn loop.
 	// Source: query.ts:413-419 — runs once per query, before autocompact.
 	// Sub-agents use agent-specific querySource so isMainThreadSource excludes them.
-	mcQuerySource := e.querySource()
-	e.mu.RLock()
-	mcMsgs := e.messages
-	e.mu.RUnlock()
-	mcResult := MicrocompactMessages(mcMsgs, mcQuerySource, e.logger)
-	e.setMessages(mcResult.Messages)
+	// Providers whose cache has no TTL keep the sequence verbatim: a clear
+	// there is a cache break plus a full re-read, not a saving.
+	if e.microcompactEnabled() {
+		mcQuerySource := e.querySource()
+		e.mu.RLock()
+		mcMsgs := e.messages
+		e.mu.RUnlock()
+		mcResult := MicrocompactMessages(mcMsgs, mcQuerySource, e.logger)
+		e.setMessages(mcResult.Messages)
+	}
 
 	reactiveCompactDone := false
 	contextWindowRecoveryDone := false
@@ -3159,7 +3163,7 @@ func (e *Engine) currentInputTokens() int {
 // Returns nil if pruning is not needed or not possible.
 func (e *Engine) maybeTokenPrune() *TokenPruneResult {
 	config := getTokenPruneConfig()
-	if !config.Enabled {
+	if !config.Enabled || !e.microcompactEnabled() {
 		return nil
 	}
 

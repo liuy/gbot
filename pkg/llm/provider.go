@@ -34,6 +34,15 @@ type Provider interface {
 	Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error)
 }
 
+// MicrocompactProvider is an optional Provider capability. Providers whose
+// prompt cache has no TTL (e.g. local docking caches) implement it returning
+// false so the engine skips microcompact: clearing old tool results there
+// breaks the cache instead of saving a rewrite. Providers that don't
+// implement it keep the historical always-on behavior.
+type MicrocompactProvider interface {
+	MicrocompactEnabled() bool
+}
+
 // Request represents an LLM API request.
 // Source: Anthropic Messages API POST /v1/messages
 type Request struct {
@@ -282,6 +291,9 @@ type BaseProvider struct {
 	httpClient  *http.Client
 	retryConfig *RetryConfig
 	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider
+	// microcompactEnabled is resolved from the tri-state config flag at
+	// construction so the zero value keeps the historical default (enabled).
+	microcompactEnabled bool
 }
 
 // DefaultHTTPTimeout is the overall timeout for a single LLM HTTP request
@@ -305,6 +317,18 @@ func newLLMHTTPClient(timeout time.Duration) *http.Client {
 // Name returns the provider's identifier.
 func (b *BaseProvider) Name() string {
 	return b.name
+}
+
+// MicrocompactEnabled satisfies MicrocompactProvider for every provider
+// embedding BaseProvider.
+func (b *BaseProvider) MicrocompactEnabled() bool {
+	return b.microcompactEnabled
+}
+
+// resolveMicrocompactEnabled maps the tri-state config flag onto the runtime
+// boolean: nil (field absent in settings) keeps microcompact on.
+func resolveMicrocompactEnabled(v *bool) bool {
+	return v == nil || *v
 }
 
 // newLLMTransport returns an http.Transport tuned for LLM API streaming.

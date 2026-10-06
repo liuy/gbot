@@ -122,6 +122,14 @@ type Provider struct {
 	Type        string         `json:"type,omitempty"`         // "auto" (default) | "openai" | "anthropic"
 	FreeFetched []string       `json:"free_fetched,omitempty"` // ids the last free fetch managed — non-empty means startup auto-refreshes; absent means hand-managed
 	ExtraParams map[string]any `json:"extra_params,omitempty"` // Provider-specific params merged into request body
+
+	// Microcompact gates this provider's microcompact chain (time-based
+	// precheck + token-based prune). nil = enabled: after the 60-minute idle
+	// gap a server-side cache with TTL is already cold, so clearing old tool
+	// results is free. Set false for providers whose prompt cache has no TTL
+	// (e.g. local docking caches) — a clear there is a cache break plus a
+	// full re-read.
+	Microcompact *bool `json:"microcompact,omitempty"`
 }
 
 const (

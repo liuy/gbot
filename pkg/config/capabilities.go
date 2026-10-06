@@ -34,3 +34,9 @@ func (p *Provider) ResolveInput(model string) []string {
 	}
 	return []string{"text"}
 }
+
+// MicrocompactEnabled reports whether the microcompact chain may run for
+// this provider. An absent field (nil) keeps the historical default: enabled.
+func (p *Provider) MicrocompactEnabled() bool {
+	return p.Microcompact == nil || *p.Microcompact
+}

@@ -653,6 +653,18 @@ func maybeTokenBasedMicrocompact(
 // MicrocompactMessages — source: microCompact.ts:253-293
 // ---------------------------------------------------------------------------
 
+// microcompactEnabled reports whether the active provider allows the
+// microcompact chain. The capability probe is optional so providers (and
+// test doubles) built without it keep the historical always-on behavior.
+// Riding the provider instance means runtime SetProvider switches (/model)
+// pick up the new provider's flag automatically.
+func (e *Engine) microcompactEnabled() bool {
+	if mp, ok := e.Provider().(llm.MicrocompactProvider); ok {
+		return mp.MicrocompactEnabled()
+	}
+	return true
+}
+
 // MicrocompactMessages is the main entry point for microcompact.
 // Source: microCompact.ts:253
 func MicrocompactMessages(messages []types.Message, querySource string, logger *slog.Logger) MicrocompactResult {

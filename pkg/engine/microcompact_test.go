@@ -2,7 +2,9 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -1217,4 +1219,200 @@ func TestEstimateMessagesTokens_ImageBlock(t *testing.T) {
 		t.Errorf("image-only estimate = %d, want %d (ImageMaxTokenSize + envelope), not raw-JSON overcount",
 			rawJSONOnly, ImageMaxTokenSize+defaultMessageEnvelopeTokens)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-provider microcompact gate
+// ---------------------------------------------------------------------------
+
+// mcOptOutProvider is a mockProvider whose cache has no TTL, so it opts out
+// of the microcompact chain.
+type mcOptOutProvider struct {
+	mockProvider
+}
+
+func (m *mcOptOutProvider) MicrocompactEnabled() bool { return false }
+
+// mcGapMessages builds Read tool_use/tool_result pairs timestamped past the
+// 60-minute time-based trigger.
+func mcGapMessages(oldTime time.Time, pairs, resultSize int) []types.Message {
+	content := strings.Repeat("z", resultSize)
+	var messages []types.Message
+	for i := range pairs {
+		id := fmt.Sprintf("mc-t-%d", i)
+		messages = append(messages, types.Message{
+			Role:      types.RoleAssistant,
+			Timestamp: oldTime,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock(id, "Read", json.RawMessage(`{"path":"/f"}`)),
+			},
+		})
+		messages = append(messages, types.Message{
+			Role:      types.RoleUser,
+			Timestamp: oldTime,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock(id, json.RawMessage(`"`+content+`"`), false),
+			},
+		})
+	}
+	return messages
+}
+
+func mcCountToolResults(msgs []types.Message) (intact, cleared int) {
+	for _, msg := range msgs {
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolResult {
+				continue
+			}
+			if string(block.Content) == `"`+TimeBasedMCClearedMessage+`"` ||
+				string(block.Content) == `"`+TokenPrunedMessage+`"` {
+				cleared++
+			} else if bytes.Contains(block.Content, []byte("zzz")) {
+				intact++
+			}
+		}
+	}
+	return intact, cleared
+}
+
+// TestQuery_TimeBasedMC_DisabledByProviderOptOut: with the provider flag off,
+// a gap-past-threshold sequence must reach the LLM verbatim — no cleared
+// markers, no engine:time_based_mc log. For TTL-less caches a clear is a
+// cache break plus a full re-read, not a saving.
+func TestQuery_TimeBasedMC_DisabledByProviderOptOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
+
+		mp := &mcOptOutProvider{}
+		mp.addResponse(textStreamEvents("test-model", "ok."), nil)
+
+		var logBuf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+		eng := New(&Params{
+			Provider: mp,
+			Model:    "test-model",
+			Logger:   logger,
+			// Large window: auto-compact must stay out of the way so the only
+			// thing that could touch the sequence is time-based mc.
+			AutoCompact: AutoCompactConfig{ContextWindow: 100000},
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		// 6 pairs, default KeepRecent=5 → mc would clear exactly 1 if enabled.
+		eng.SetMessages(mcGapMessages(baseTime.Add(-61*time.Minute), 6, 40))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result := eng.QuerySync(ctx, "next", "")
+		if result.Error != nil {
+			t.Fatalf("QuerySync error: %v", result.Error)
+		}
+
+		intact, cleared := mcCountToolResults(mp.lastRequestMessages())
+		if intact != 6 {
+			t.Errorf("intact tool_results sent to LLM = %d, want 6 (provider opted out of mc)", intact)
+		}
+		if cleared != 0 {
+			t.Errorf("cleared tool_results sent to LLM = %d, want 0", cleared)
+		}
+		if strings.Contains(logBuf.String(), "engine:time_based_mc") {
+			t.Errorf("time-based mc fired despite provider opt-out, log:\n%s", logBuf.String())
+		}
+	})
+}
+
+// TestQuery_TimeBasedMC_FiresWithDefaultProvider: same sequence, provider
+// without the opt-out capability (historical default) → mc clears the oldest
+// result. Pairs with the opt-out test to isolate the flag as the only
+// variable.
+func TestQuery_TimeBasedMC_FiresWithDefaultProvider(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
+
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEvents("test-model", "ok."), nil)
+
+		eng := New(&Params{
+			Provider:    mp,
+			Model:       "test-model",
+			Logger:      slog.Default(),
+			AutoCompact: AutoCompactConfig{ContextWindow: 100000},
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		eng.SetMessages(mcGapMessages(baseTime.Add(-61*time.Minute), 6, 40))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result := eng.QuerySync(ctx, "next", "")
+		if result.Error != nil {
+			t.Fatalf("QuerySync error: %v", result.Error)
+		}
+
+		intact, cleared := mcCountToolResults(mp.lastRequestMessages())
+		if cleared != 1 {
+			t.Errorf("cleared tool_results sent to LLM = %d, want 1 (6 pairs, KeepRecent=5)", cleared)
+		}
+		if intact != 5 {
+			t.Errorf("intact tool_results sent to LLM = %d, want 5", intact)
+		}
+	})
+}
+
+// TestMaybeTokenPrune_DisabledByProviderOptOut: token pressure past the
+// budget must not clear tool results when the provider opted out.
+func TestMaybeTokenPrune_DisabledByProviderOptOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
+
+		eng := New(&Params{
+			Provider: &mcOptOutProvider{},
+			Model:    "test-model",
+			Logger:   slog.Default(),
+			// Budget = 40000 - min(16000, 20000) - 3000 = 21000; 100 results of
+			// 3000 chars estimate ~33k, well past that.
+			AutoCompact: AutoCompactConfig{ContextWindow: 40000},
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		eng.SetMessages(mcGapMessages(baseTime, 100, 3000))
+
+		if pruned := eng.maybeTokenPrune(); pruned != nil {
+			t.Fatalf("maybeTokenPrune cleared %d results (%d tokens) despite provider opt-out",
+				pruned.Cleared, pruned.TokensSaved)
+		}
+		if _, cleared := mcCountToolResults(eng.Messages()); cleared != 0 {
+			t.Errorf("engine messages contain %d cleared tool_results despite provider opt-out", cleared)
+		}
+	})
+}
+
+// TestMaybeTokenPrune_FiresWithDefaultProvider: same pressure, provider
+// without the opt-out capability → prune clears all but KeepRecent.
+func TestMaybeTokenPrune_FiresWithDefaultProvider(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
+
+		eng := New(&Params{
+			Provider:    &mockProvider{},
+			Model:       "test-model",
+			Logger:      slog.Default(),
+			AutoCompact: AutoCompactConfig{ContextWindow: 40000},
+		})
+		t.Cleanup(func() { eng.Close() })
+
+		eng.SetMessages(mcGapMessages(baseTime, 100, 3000))
+
+		pruned := eng.maybeTokenPrune()
+		if pruned == nil {
+			t.Fatal("maybeTokenPrune returned nil for default provider, want prune of 95 results (100 - KeepRecent 5)")
+		}
+		if pruned.Cleared != 95 {
+			t.Errorf("pruned.Cleared = %d, want 95 (100 pairs, KeepRecent=5)", pruned.Cleared)
+		}
+		if pruned.TokensSaved <= 0 {
+			t.Errorf("pruned.TokensSaved = %d, want > 0", pruned.TokensSaved)
+		}
+	})
 }
