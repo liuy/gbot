@@ -101,9 +101,12 @@ describe('renderMarkdown', () => {
     expect(bq!.textContent).toContain('quoted text')
   })
 
-  it('DOMPurify strips XSS event handlers', () => {
-    const out = renderMarkdown('<img src=x onerror=alert(1)>')
-    expect(out).not.toContain('onerror')
+  it('raw HTML with XSS event handlers renders inert (escaped text, no live element)', () => {
+    // html:false: the tag surfaces as escaped text — no live element, no attribute
+    const div = document.createElement('div')
+    div.innerHTML = renderMarkdown('<img src=x onerror=alert(1)>')
+    expect(div.querySelectorAll('img').length).toBe(0)
+    expect(div.querySelector('[onerror]')).toBeNull()
   })
 
   it('empty input yields empty/whitespace-only result', () => {

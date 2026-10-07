@@ -6,8 +6,13 @@ import katexMath from '@vscode/markdown-it-katex'
 // system fonts — no KaTeX webfonts bundled, which keeps the single-file
 // build ~1MB gz smaller. The top-level katex stays on the plugin's native
 // ^0.16 line so its nested require dedupes to one copy with ours.
-const mdHighlighted: MarkdownIt = MarkdownIt({ html: true, linkify: true, breaks: true }).use(highlightjs).use(katexMath, { throwOnError: false, output: 'mathml' })
-const mdPlain: MarkdownIt = MarkdownIt({ html: true, linkify: true, breaks: true }).use(katexMath, { throwOnError: false, output: 'mathml' })
+// html stays false (the default): model/tool output is untrusted content —
+// raw HTML in it must render as text. With html:true a scraped page's
+// <style>body{width:600px}</style> once passed markdown-it, survived
+// DOMPurify's html profile (it keeps <style> elements in real browsers), and
+// applied document-wide — blowing every mobile layout.
+const mdHighlighted: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(highlightjs).use(katexMath, { throwOnError: false, output: 'mathml' })
+const mdPlain: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(katexMath, { throwOnError: false, output: 'mathml' })
 
 for (const md of [mdHighlighted, mdPlain]) {
   md.renderer.rules.table_open = () => '<div class="table-wrap"><table>'
