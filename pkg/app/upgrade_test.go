@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -72,4 +73,48 @@ func TestNewUpgrader_PinsArgv0(t *testing.T) {
 	if os.Args[0] != exe {
 		t.Errorf("os.Args[0] = %q, want os.Executable() %q", os.Args[0], exe)
 	}
+}
+
+// TestNewUpgrader_ScrubsTableflipMarkerFromEnv guards the leak that made every
+// descendant of a hot-restarted daemon believe it was a tableflip child: the
+// marker sits in the daemon's own env, and exec.Cmd inherits os.Environ() by
+// default, so any child's tableflip.New tries to decode parent fds that do not
+// exist there and dies with EBADF. Asserting on os.Environ() is asserting on
+// exactly what a child would inherit.
+//
+// Unlike the rest of this file, the first subtest does reach tableflip.New, so it
+// constructs an Upgrader whenever the process-wide slot is still free. That is
+// benign today only because file-name ordering runs TestNewUpgrader_PinsArgv0
+// first: by the time this subtest runs, the slot is claimed either by that test or
+// by an earlier Start(), and newUpgrader returns nil here.
+func TestNewUpgrader_ScrubsTableflipMarkerFromEnv(t *testing.T) {
+	marker := tableflipEnvPrefix + "HAS_PARENT_7DIU3"
+
+	t.Run("cold boot drops it before New", func(t *testing.T) {
+		t.Setenv("GBOT_SUPERVISED", "0")
+		t.Setenv(marker, "yes")
+		if upg := newUpgrader(); upg != nil {
+			upg.Stop()
+		}
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, tableflipEnvPrefix) {
+				t.Errorf("marker survived into the process env, so every child inherits it: %s", kv)
+			}
+		}
+	})
+
+	// Supervised daemons never call tableflip.New, so nothing consumes the
+	// marker here — it must still not be handed down.
+	t.Run("supervised drops it without constructing", func(t *testing.T) {
+		t.Setenv("GBOT_SUPERVISED", "1")
+		t.Setenv(marker, "yes")
+		if upg := newUpgrader(); upg != nil {
+			t.Error("supervised mode must not construct an upgrader")
+		}
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, tableflipEnvPrefix) {
+				t.Errorf("marker survived into the process env, so every child inherits it: %s", kv)
+			}
+		}
+	})
 }

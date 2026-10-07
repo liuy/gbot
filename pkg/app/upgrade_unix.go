@@ -45,3 +45,32 @@ func notifyUpgradeSignal(upg Upgrader, upgrade func() error, busy func() wui.Bus
 		}
 	}()
 }
+
+// tableflipHandoverFdsArePipes reports whether fds 3 and 4 are the two pipe ends
+// a tableflip child is exec'd with — the only proof available that this process
+// really is an upgraded child rather than one that merely inherited the marker
+// from some other process's environment. See the guard in newUpgrader for why the
+// answer is needed before tableflip.New runs.
+//
+// Both ends must be FIFOs, not just one: tableflip exec's a genuine child with the
+// pair together, so a process holding one pipe at 3 or 4 is by definition not one.
+// That state is reachable — a harness passing ExtraFiles, a shell started with 3<
+// — which is exactly why a single FIFO must not be read as a handover.
+//
+// What this cannot rule out is a marker-bearing process holding unrelated FIFOs at
+// both numbers: it is reported as genuine, and newParent then runs a blocking
+// gob.Decode on fd 4, hanging boot until whoever holds the write end writes or
+// closes. That is not a regression — before this guard existed every
+// marker-bearing process took that path, and this only narrows the exposure.
+func tableflipHandoverFdsArePipes() bool {
+	for _, fd := range [2]int{3, 4} {
+		var st syscall.Stat_t
+		if err := syscall.Fstat(fd, &st); err != nil {
+			return false
+		}
+		if st.Mode&syscall.S_IFMT != syscall.S_IFIFO {
+			return false
+		}
+	}
+	return true
+}

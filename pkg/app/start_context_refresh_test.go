@@ -48,7 +48,10 @@ func dumpedUserContext(d *engine.APIRequestDump) string {
 // factory's engines hold the config's provider, not a mock.
 func TestEngineFactory_WiresContextRefresher(t *testing.T) {
 	t.Setenv("HOME", minimalHome(t))
-	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+freeTCPPort(t))
+	// Port 0 on purpose: nothing here dials the ws address — Start only binds it —
+	// so naming a probed-free port would only open the window in which another
+	// process takes that port between the probe and Start's bind.
+	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:0")
 
 	project := t.TempDir()
 	oldCwd, err := os.Getwd()

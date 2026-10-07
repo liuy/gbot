@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -64,17 +65,63 @@ func newUpgrader() Upgrader {
 	// overlaps instead (an upgraded tableflip child is an orphan grandchild
 	// the Android phantom killer targets).
 	if supervisedMode() {
+		unsetTableflipEnv()
 		return nil
+	}
+	// The marker must not reach tableflip.New unless this process really is an
+	// upgraded child, because reading it is destructive: newParent wraps fd 3 and
+	// fd 4 — hard-coded as the handover pipes — with os.NewFile before checking
+	// anything else, and a process that only inherited the marker in its
+	// environment hands it whatever it holds at those numbers. What sits there is
+	// build-dependent — in this build typically netpoll's eventpoll and eventfd,
+	// and a plain test binary was measured with a hole at 3 — and either way the
+	// *os.File finalizers close the descriptor once the failed New is collected:
+	// that does not merely report a wrong HasParent() but takes the process down
+	// (`epollwait on fd 4 failed with 9`), leaves every later socket call with
+	// EBADF, and over a hole hands whatever the process next allocates at that
+	// number to a stale finalizer.
+	if !tableflipHandoverFdsArePipes() {
+		unsetTableflipEnv()
 	}
 	if exe, err := os.Executable(); err == nil {
 		os.Args[0] = exe
 	}
 	u, err := tableflip.New(tableflip.Options{})
+	// The post-New scrub is a separate concern and cannot replace the guard
+	// above: a genuine handover leaves that guard untouched, and without this call
+	// the marker is inherited by every shell and tool process the daemon spawns.
+	unsetTableflipEnv()
 	if err != nil {
 		slog.Warn("upgrade: disabled", "error", err)
 		return nil
 	}
 	return u
+}
+
+// tableflipEnvPrefix namespaces tableflip's handover marker
+// (TABLEFLIP_HAS_PARENT_7DIU3). The exact name is an unexported constant in
+// the library, so match the prefix instead of hard-coding a name that can
+// change underneath us.
+const tableflipEnvPrefix = "TABLEFLIP_"
+
+// unsetTableflipEnv drops tableflip's handover marker from this process's
+// environment.
+//
+// It is safe to call at any point after this process's own HasParent() has been
+// decided, for two reasons: the parent New records is fixed during construction
+// rather than something re-read later, and the next Upgrade rebuilds the child's
+// environment from scratch — tableflip filters any stale marker out of
+// os.Environ() before appending a fresh one, so a scrubbed parent still hands
+// over correctly.
+//
+// What is NOT safe is relying on this call alone: it runs after New, so it cannot
+// undo the descriptors New already wrapped. See the guard in newUpgrader.
+func unsetTableflipEnv() {
+	for _, kv := range os.Environ() {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, tableflipEnvPrefix) {
+			_ = os.Unsetenv(name)
+		}
+	}
 }
 
 // drainTimeout bounds graceful drain after a handover; retunable.

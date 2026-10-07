@@ -51,7 +51,7 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 	// to decode parent fds that don't exist here and die with EBADF.
 	helperEnv := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "TABLEFLIP_") {
+		if strings.HasPrefix(kv, tableflipEnvPrefix) {
 			continue
 		}
 		helperEnv = append(helperEnv, kv)
