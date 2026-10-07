@@ -378,10 +378,6 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 const (
 	archiveMaxSnippetLines = 3
 	archiveSnippetRunes    = 50
-	// archiveIndexName is the legacy-design index inside archive/ — a
-	// curated pointer list, not a case record; scanning it would surface
-	// its curation notes as if they were records.
-	archiveIndexName = "INDEX.md"
 )
 
 // scanArchive searches memory/archive/*.md for any-term (OR,
@@ -401,7 +397,7 @@ func scanArchive(memoryDir, query string) []ArchiveHit {
 	}
 	var hits []ArchiveHit
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || e.Name() == archiveIndexName {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))

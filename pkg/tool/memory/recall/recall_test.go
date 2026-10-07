@@ -721,8 +721,6 @@ func TestRecall_ArchiveHits(t *testing.T) {
 			"复现 = 调小 max_tokens 就能炸\n"+
 			"fixed in 4dfed1ce\n")
 	writeArchiveFile(t, memDir, "unrelated.md", "nothing about gardens here\n")
-	// Legacy-design index: contains the keyword but must never be scanned.
-	writeArchiveFile(t, memDir, "INDEX.md", "max_tokens entry that must not surface\n")
 	// Non-markdown file: only *.md in archive/ is scanned.
 	writeArchiveFile(t, memDir, "notes.txt", "max_tokens in plain txt\n")
 	// Directory whose name ends in .md: not a file, never scanned.
@@ -743,7 +741,7 @@ func TestRecall_ArchiveHits(t *testing.T) {
 	}
 	out := result.Data.(*Output)
 	if len(out.Archive) != 1 {
-		t.Fatalf("archive hits = %d, want 1 (unrelated/INDEX/txt/dir excluded): %+v", len(out.Archive), out.Archive)
+		t.Fatalf("archive hits = %d, want 1 (unrelated/txt/dir excluded): %+v", len(out.Archive), out.Archive)
 	}
 	hit := out.Archive[0]
 	if hit.File != aPath {
