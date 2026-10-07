@@ -151,10 +151,24 @@ func (m *mockEngine) IsBusy() bool {
 }
 
 func (m *mockEngine) QueryStartMsgIdx() int {
-	if m.queryStartMsgIdxFn != nil {
-		return m.queryStartMsgIdxFn()
+	m.mu.RLock()
+	fn := m.queryStartMsgIdxFn
+	m.mu.RUnlock()
+	if fn != nil {
+		return fn()
 	}
 	return -1
+}
+
+// SetQueryStartMsgIdxFn sets the query start index function under the mock's
+// lock (mirror of SetMessagesFn). sendMetadata's replay path reads the index
+// after the metadata frame is already on the wire, so a test that updates the
+// field while a server goroutine is still finishing sendMetadata races
+// without it — the read no longer precedes the frame that unblocks the test.
+func (m *mockEngine) SetQueryStartMsgIdxFn(fn func() int) {
+	m.mu.Lock()
+	m.queryStartMsgIdxFn = fn
+	m.mu.Unlock()
 }
 
 func (m *mockEngine) Messages() []types.Message {

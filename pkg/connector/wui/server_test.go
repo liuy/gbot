@@ -882,6 +882,30 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
+	// Prefill replay: queryStartMsgIdx=3 with empty blocks → snapshot absent
+	// → a query_start event frame for msgs[3] must follow the metadata.
+	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
+	_, replayData, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected replayed query_start after metadata: %v", err)
+	}
+	var replayEnv struct {
+		Type  string `json:"type"`
+		Event struct {
+			Type    string `json:"type"`
+			Message *struct {
+				ID string `json:"id"`
+			} `json:"message"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(replayData, &replayEnv); err != nil {
+		t.Fatalf("unmarshal replay: %v", err)
+	}
+	if replayEnv.Type != "event" || replayEnv.Event.Type != "query_start" ||
+		replayEnv.Event.Message == nil || replayEnv.Event.Message.ID != "goal" {
+		t.Fatalf("replay frame = %s, want event/query_start for message id \"goal\"", string(replayData))
+	}
+
 	// Explicitly request page 1 so we observe exactly what buildHistory returns.
 	req, err := json.Marshal(map[string]any{"type": "history_request", "cursor": "", "limit": 30})
 	if err != nil {

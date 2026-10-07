@@ -2675,6 +2675,41 @@ func (c *WUIConnector) SetMediaCache(store *media.Store) {
 	c.mediaCache = store
 }
 
+// buildQueryStartReplay synthesizes the query_start event frame for an
+// engine captured mid-query. The client has no other in-flight signal in
+// the prefill window: history ends at the user message and the snapshot
+// channel is empty (streamState.blocks only gains entries on the first
+// streamed block). Wire shape mirrors onEngineEvent's marshal exactly so
+// the client cannot distinguish a replay from a live event; its native
+// query_start path builds the streaming shell, and the later real
+// turn_start is swallowed by the existing `if (streaming) return` guard.
+// Returns nil when no query is in flight or the recorded index no longer
+// resolves (messages mutated between the two engine reads).
+func (c *WUIConnector) buildQueryStartReplay(slot *engineSlot) []byte {
+	idx := slot.engine.QueryStartMsgIdx()
+	if idx < 0 {
+		return nil
+	}
+	msgs := slot.engine.Messages()
+	if idx >= len(msgs) {
+		return nil
+	}
+	userMsg := msgs[idx]
+	payload, err := json.Marshal(struct {
+		Type  string              `json:"type"`
+		Event queryEventWithAbort `json:"event"`
+	}{Type: "event", Event: queryEventWithAbort{QueryEvent: types.QueryEvent{
+		Type:    types.EventQueryStart,
+		Message: &userMsg,
+		Model:   slot.engine.Model(),
+	}}})
+	if err != nil {
+		slog.Warn("wui: marshal query_start replay failed", "error", err)
+		return nil
+	}
+	return payload
+}
+
 // sendMetadata sends a composite metadata message containing connect_status,
 // config, engine_list, task_list, history, snapshot, queuedMsgs, and stats.
 // The snapshot embeds the current streamState (under ssMu) so the client
@@ -2715,6 +2750,18 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Stats:      c.buildStats(slot),
 	})
 	c.sendWS(payload)
+	// Prefill-window busy restore: snapshot == nil means no streamed blocks
+	// exist, so the metadata frame alone leaves the client with no in-flight
+	// signal. Replayed query_start rides the same ssMu critical section,
+	// making metadata → replay → live events a total order on the wire.
+	// When a snapshot IS present it already restored the streaming shell;
+	// replaying here would let query_start's cleanupStreamingRefs discard
+	// snapshot-rendered content.
+	if snapshot == nil {
+		if replay := c.buildQueryStartReplay(slot); replay != nil {
+			c.sendWS(replay)
+		}
+	}
 	slot.ssMu.Unlock()
 }
 

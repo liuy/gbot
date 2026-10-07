@@ -862,7 +862,7 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 			MessageType: types.MessageTypeAttachment},
 	}
 	c.mock().SetMessagesFn(func() []types.Message { return msgs })
-	c.mock().queryStartMsgIdxFn = func() int { return len(msgs) }
+	c.mock().SetQueryStartMsgIdxFn(func() int { return len(msgs) })
 
 	// Query 1: streaming events
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
@@ -954,5 +954,247 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 	}
 	if !foundQuery1Response {
 		t.Errorf("history missing query1 response — QueryStartMsgIdx truncation")
+	}
+}
+
+// TestTakeover_PrefillReplaysQueryStart verifies that a client subscribing to
+// an engine captured in the prefill window (query started, no streamed blocks
+// yet) receives a synthetic query_start event frame right after the metadata
+// frame. History ends at the user message and the snapshot is absent in this
+// window, so without the replay the client has no in-flight signal at all.
+func TestTakeover_PrefillReplaysQueryStart(t *testing.T) {
+	c := newTestConnector(t)
+
+	// ws1 connects first (drains its metadata with empty history), then the
+	// engine enters the prefill window: one user message, query in flight,
+	// zero streamed blocks.
+	_ = dialAndStore(t, c)
+	c.mock().SetMessagesFn(func() []types.Message {
+		return []types.Message{
+			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
+		}
+	})
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+
+	// ws2 takes over → metadata frame, then the replayed query_start frame.
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	readMetadata(t, ws2)
+
+	// Raw ReadMessage with its own deadline — readWSMessage resets to 30s and
+	// would turn a missing replay frame into a 30s hang instead of a fast red.
+	_ = ws2.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
+	_, data, err := ws2.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected replayed query_start frame after metadata, got read error (prefill window not replayed): %v", err)
+	}
+
+	// Raw map cross-check: assert exact wire keys, including the absence of
+	// aborted/rewound (omitempty zero values must stay omitted).
+	var rawFrame map[string]any
+	if err := json.Unmarshal(data, &rawFrame); err != nil {
+		t.Fatalf("replay frame unmarshal: %v", err)
+	}
+	if rawFrame["type"] != "event" {
+		t.Fatalf("replay frame type = %v, want \"event\"", rawFrame["type"])
+	}
+	event, ok := rawFrame["event"].(map[string]any)
+	if !ok {
+		t.Fatalf("replay frame missing event object: %s", string(data))
+	}
+	if event["type"] != "query_start" {
+		t.Fatalf("replay event type = %v, want \"query_start\"", event["type"])
+	}
+	if _, exists := event["agent"]; exists {
+		t.Fatalf("replay event must not carry agent (main query path): %s", string(data))
+	}
+	for _, banned := range []string{"aborted", "rewound"} {
+		if _, exists := event[banned]; exists {
+			t.Fatalf("replay frame must not contain %q key: %s", banned, string(data))
+		}
+	}
+
+	var env struct {
+		Event struct {
+			Message *struct {
+				ID   string `json:"id"`
+				Role string `json:"role"`
+			} `json:"message"`
+			Model string `json:"model"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("replay frame typed unmarshal: %v", err)
+	}
+	if env.Event.Message == nil || env.Event.Message.ID != "u1" || env.Event.Message.Role != "user" {
+		t.Fatalf("replay event.message = %+v, want id \"u1\" role \"user\"", env.Event.Message)
+	}
+	if env.Event.Model != "glm-5.2" {
+		t.Fatalf("replay event.model = %q, want \"glm-5.2\"", env.Event.Model)
+	}
+
+	// Live events must still flow after the replay — the metadata → replay →
+	// live frames form one total order on the wire.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "late"})
+	_, data, err = ws2.ReadMessage()
+	if err != nil {
+		t.Fatalf("post-replay live event read: %v", err)
+	}
+	var late struct {
+		Event struct {
+			Text string `json:"text"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(data, &late); err != nil {
+		t.Fatalf("late frame unmarshal: %v", err)
+	}
+	if late.Event.Text != "late" {
+		t.Fatalf("post-replay live event text = %q, want \"late\"", late.Event.Text)
+	}
+}
+
+// TestTakeover_IdleEngineNoReplay verifies that a takeover of an idle engine
+// (no query in flight) sends nothing after the metadata frame.
+func TestTakeover_IdleEngineNoReplay(t *testing.T) {
+	c := newTestConnector(t)
+	_ = dialAndStore(t, c) // mock default queryStartMsgIdxFn → -1
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	readMetadata(t, ws2)
+
+	// If an idle engine also gets a replay, this read returns a frame and fails.
+	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+	if _, data, err := ws2.ReadMessage(); err == nil {
+		t.Fatalf("idle engine received unexpected frame after metadata: %s", string(data))
+	}
+}
+
+// TestTakeover_SnapshotPresentNoReplay verifies that when streamed blocks
+// exist (snapshot channel populated), the replay is suppressed — query_start's
+// client-side cleanup would otherwise discard snapshot-rendered content.
+func TestTakeover_SnapshotPresentNoReplay(t *testing.T) {
+	c := newTestConnector(t)
+	_ = dialAndStore(t, c)
+
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+	// Stream one block into streamState while ws1 is active.
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "d0"})
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+
+	// Anchor the snapshot channel: it must still carry the streamed block.
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	if len(snapBlocks) != 1 {
+		t.Fatalf("snapshot should have 1 text block, got %d", len(snapBlocks))
+	}
+	if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0" {
+		t.Fatalf("snapshot block = kind=%s text=%q, want text \"d0\"", snapBlocks[0].Kind, snapBlocks[0].Text)
+	}
+
+	// Snapshot present → replay suppressed: no frame may follow the metadata.
+	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+	if _, data, err := ws2.ReadMessage(); err == nil {
+		t.Fatalf("snapshot-present takeover must not replay query_start (would discard snapshot content), got: %s", string(data))
+	}
+}
+
+// TestTakeover_ReplayIdxPastMessagesNoReplay covers the stale-index guard:
+// the recorded query start index no longer resolves against the current
+// message list (messages shrank between the engine's two reads), so the
+// replay must be dropped rather than synthesize a phantom message.
+func TestTakeover_ReplayIdxPastMessagesNoReplay(t *testing.T) {
+	c := newTestConnector(t)
+	_ = dialAndStore(t, c)
+
+	// One message on record, index pointing one past its end.
+	c.mock().SetMessagesFn(func() []types.Message {
+		return []types.Message{
+			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
+		}
+	})
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	readMetadata(t, ws2)
+
+	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+	if _, data, err := ws2.ReadMessage(); err == nil {
+		t.Fatalf("stale query start index must not replay, got: %s", string(data))
+	}
+}
+
+// TestBuildQueryStartReplay unit-covers the helper's guard paths. The
+// wire-level tests only exercise idx=0 with a healthy index; a mutated
+// bounds check would panic inside the WS handler where net/http recovers
+// it, indistinguishable from a clean no-replay, so the guards are pinned
+// here where a panic fails the test directly.
+func TestBuildQueryStartReplay(t *testing.T) {
+	c := newTestConnector(t)
+	slot := c.activeSlotTest(t)
+
+	// No query in flight.
+	if got := c.buildQueryStartReplay(slot); got != nil {
+		t.Fatalf("idle engine replay = %s, want nil", string(got))
+	}
+
+	// In flight, one user message: frame must carry message + model.
+	c.mock().SetMessagesFn(func() []types.Message {
+		return []types.Message{
+			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
+		}
+	})
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+	payload := c.buildQueryStartReplay(slot)
+	if payload == nil {
+		t.Fatal("prefill engine replay = nil, want query_start frame")
+	}
+	var env struct {
+		Type  string `json:"type"`
+		Event struct {
+			Type    string `json:"type"`
+			Message *struct {
+				ID string `json:"id"`
+			} `json:"message"`
+			Model string `json:"model"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("unmarshal replay: %v", err)
+	}
+	if env.Type != "event" || env.Event.Type != "query_start" ||
+		env.Event.Message == nil || env.Event.Message.ID != "u1" || env.Event.Model != "glm-5.2" {
+		t.Fatalf("replay frame = %s, want event/query_start u1 glm-5.2", string(payload))
+	}
+
+	// Index equal to len (message shrank to exactly the boundary) and index
+	// past the end — both must replay nil. Two distinct boundaries: the ==
+	// and > mutants of the bounds comparison only diverge on one of them.
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
+	if got := c.buildQueryStartReplay(slot); got != nil {
+		t.Fatalf("boundary index replay = %s, want nil", string(got))
+	}
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 2 })
+	if got := c.buildQueryStartReplay(slot); got != nil {
+		t.Fatalf("stale index replay = %s, want nil", string(got))
 	}
 }
