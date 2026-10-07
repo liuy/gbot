@@ -81,6 +81,11 @@ func buildMemoryLines(displayName, memoryDir string, skipIndex bool) []string {
 
 	lines = append(lines, "")
 
+	// Archive: cold-layer consumption guide
+	lines = append(lines, archiveSection()...)
+
+	lines = append(lines, "")
+
 	// Memory and other forms of persistence
 	lines = append(lines,
 		"## Memory and other forms of persistence",
@@ -235,6 +240,19 @@ func trustingRecallSection() []string {
 		"- If the user is about to act on your recommendation (not just asking about history), verify first.", "",
 		"\"The memory says X exists\" is not the same as \"X exists now.\"", "",
 		"A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot.",
+	}
+}
+
+// archiveSection returns the Archive consumption guide. Archiving RULES
+// (what qualifies, the move + index-line removal) live in the dream engine's
+// prompt — this section only teaches how to surface archived records, so
+// the two never drift into overlap.
+func archiveSection() []string {
+	return []string{
+		"## Archive", "",
+		"`memory/archive/` holds closed-out project and incident records. It is never loaded into context.",
+		"- The Recall tool searches archive file contents alongside conversation history. Archive hits render as a file path with snippet lines.",
+		"- When an archive hit looks relevant, use the Read tool on that file — it carries the complete case record (root cause, evidence, lessons).",
 	}
 }
 

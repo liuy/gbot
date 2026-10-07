@@ -1,13 +1,15 @@
 package dream
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestSystemPrompt_PhaseStructure(t *testing.T) {
-	for _, phase := range []string{"Phase 1 — Orient", "Phase 2 — Gather", "Phase 3 — Consolidate", "Phase 4 — Prune"} {
+	for _, phase := range []string{"Phase 1 — Orient", "Phase 2 — Gather", "Phase 3 — Consolidate", "Phase 4 — Prune", "Phase 5 — Archive"} {
 		if !strings.Contains(SystemPrompt, phase) {
 			t.Errorf("system prompt missing phase header %q", phase)
 		}
@@ -76,7 +78,7 @@ func TestSystemPrompt_PruneGuidance(t *testing.T) {
 }
 
 func TestTriggerMessage_ColdStart(t *testing.T) {
-	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", time.Time{}, 42)
+	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", time.Time{}, 42, 0)
 	if !strings.Contains(result, "Last consolidation: never") {
 		t.Error("cold-start trigger should say 'Last consolidation: never'")
 	}
@@ -90,6 +92,17 @@ func TestTriggerMessage_ColdStart(t *testing.T) {
 	if !strings.Contains(result, "> '1970-01-01 00:00:00'") {
 		t.Error("cold-start queries should use the epoch cutoff")
 	}
+	// The runbook names every phase, marks each as required, and the
+	// archive pass is never gated by a line count.
+	if !strings.Contains(result, "Phase 5 (archive, MUST run every pass)") {
+		t.Error("trigger runbook should name Phase 5 (archive) as a MUST")
+	}
+	if !strings.Contains(result, "none is optional") {
+		t.Error("runbook must state every phase is required")
+	}
+	if strings.Contains(result, "truncation wall") {
+		t.Error("0-line index must not trigger the wall warning")
+	}
 }
 
 func TestTriggerMessage_LastDreamFormatted(t *testing.T) {
@@ -97,7 +110,7 @@ func TestTriggerMessage_LastDreamFormatted(t *testing.T) {
 	// clock while the query cutoff must be UTC.
 	cst := time.FixedZone("CST", 8*3600)
 	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, cst)
-	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7)
+	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7, 0)
 	if !strings.Contains(result, "Last consolidation: 2026-03-15 10:30") {
 		t.Errorf("trigger should render local wall clock 2026-03-15 10:30, got: %s", result)
 	}
@@ -111,7 +124,7 @@ func TestTriggerMessage_LastDreamFormatted(t *testing.T) {
 
 func TestTriggerMessage_Queries(t *testing.T) {
 	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
-	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7)
+	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7, 0)
 
 	// Both steps are copy-pasteable Read calls against the DB path.
 	for _, want := range []string{
@@ -152,7 +165,7 @@ func TestTriggerMessage_Queries(t *testing.T) {
 // staleness check before prune).
 func TestTriggerMessage_PhaseFramingNotSteps(t *testing.T) {
 	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
-	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7)
+	result := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7, 0)
 
 	for _, step := range []string{"Step 1", "Step 2", "Step 3"} {
 		if strings.Contains(result, step) {
@@ -172,5 +185,86 @@ func TestTriggerMessage_PhaseFramingNotSteps(t *testing.T) {
 	}
 	if !strings.Contains(result, "Begin.") {
 		t.Error("trigger should end with the begin cue")
+	}
+}
+
+// TestSystemPrompt_ArchivePhase guards the archive consolidation rules:
+// type=project only, explicit closure markers, when-unsure-leave-it, the
+// mv + provenance + index-line-removal action, and the no-dedicated-log
+// rule.
+func TestSystemPrompt_ArchivePhase(t *testing.T) {
+	for _, want := range []string{
+		"type=project",
+		"shipped",
+		"fixed with verification passed",
+		"merged",
+		// 宁留勿误归: an unsure archive is worse than a stale index line.
+		"When unsure, leave it",
+		"feedback/user/reference/personal",
+		"mv memory/xxx.md memory/archive/xxx.md",
+		"> Archived from MEMORY.md @ YYYY-MM-DD",
+		"delete the entry's line from MEMORY.md",
+		"No dedicated log",
+	} {
+		if !strings.Contains(SystemPrompt, want) {
+			t.Errorf("system prompt archive phase missing %q", want)
+		}
+	}
+	// The index line must survive the archive move — removal is only from
+	// MEMORY.md.
+	if strings.Contains(SystemPrompt, "delete the file") {
+		t.Error("archive phase must not tell the agent to delete memory files")
+	}
+}
+
+func truncateForTest(s string) string {
+	if len(s) > 200 {
+		return s[:200]
+	}
+	return s
+}
+
+// TestTriggerMessage_IndexWallWarning: the index-size report is context, and
+// turns into a warning past archiveWarnLines — never a gate on Phase 5.
+func TestTriggerMessage_IndexWallWarning(t *testing.T) {
+	lastDream := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	over := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7, 151)
+	if !strings.Contains(over, "MEMORY.md: 151 lines") {
+		t.Errorf("trigger should report the index line count, got: %s", truncateForTest(over))
+	}
+	if !strings.Contains(over, "truncation wall") {
+		t.Error("over-150 index must carry the wall warning")
+	}
+	at := TriggerMessage("/mem", "/mem/memory.db", "dream-sid", lastDream, 7, 150)
+	if strings.Contains(at, "truncation wall") {
+		t.Error("150 lines is at the bar, not over it — no warning expected")
+	}
+	if !strings.Contains(at, "MEMORY.md: 150 lines") {
+		t.Errorf("trigger should report the index line count, got: %s", truncateForTest(at))
+	}
+}
+
+// TestSystemPrompt_PhasesRequired: the system prompt states every phase runs
+// every pass.
+func TestSystemPrompt_PhasesRequired(t *testing.T) {
+	if !strings.Contains(SystemPrompt, "All five phases below run on EVERY pass") {
+		t.Error("system prompt must state all phases are required every pass")
+	}
+	if !strings.Contains(SystemPrompt, "Phase 5 — Archive closed-out projects (MUST run every pass)") {
+		t.Error("Phase 5 heading must carry the MUST-run-every-pass marker")
+	}
+}
+
+// TestIndexLineCount covers the precomputed index size.
+func TestIndexLineCount(t *testing.T) {
+	dir := t.TempDir()
+	if got := IndexLineCount(dir); got != 0 {
+		t.Errorf("IndexLineCount(missing) = %d, want 0", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatalf("write MEMORY.md: %v", err)
+	}
+	if got := IndexLineCount(dir); got != 3 {
+		t.Errorf("IndexLineCount(3 lines) = %d, want 3", got)
 	}
 }

@@ -2,15 +2,30 @@ package dream
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
-// SystemPrompt returns the static 4-phase consolidation instructions. Set as
+// entrypointFileName is the memory index the archive phase works against.
+const entrypointFileName = "MEMORY.md"
+
+// archiveWarnLines is where the trigger's index-size report turns into a
+// warning. MaxEntrypointLines (200) is a hard context cut; the warning sits
+// below it so archive/merge pressure is visible before the wall.
+const archiveWarnLines = 150
+
+// SystemPrompt returns the static 5-phase consolidation instructions. Set as
 // the dream engine's system prompt once at startup — it survives auto-compact
 // and doesn't contain time-sensitive data.
 const SystemPrompt = `# Dream: Memory Consolidation
 
 You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories.
+
+All five phases below run on EVERY pass, in order — none is optional. When the
+trigger reports the index is near its truncation wall, treat Phase 5 as the
+most urgent item of the pass.
 
 ---
 
@@ -70,6 +85,26 @@ Update MEMORY.md so it stays well under 25KB. It's an index, not a dump:
   the index from the files on disk (files survive; only the index lines were lost)
 - Never write memory content directly into MEMORY.md
 
+## Phase 5 — Archive closed-out projects (MUST run every pass)
+
+memory/archive/ is the cold layer: closed-out case records, never loaded
+into context, reachable only via Recall. Move finished projects into it:
+- Scan MEMORY.md entries; open the pointed-to files and check type. Only
+  type=project candidates qualify
+- Archive criterion: the memory carries an explicit closure marker (shipped,
+  fixed with verification passed, merged — or an equivalent unambiguous
+  completion) AND you are confident. When unsure, leave it — a wrongly
+  archived memory becomes unreachable; a stale index line is merely noise
+- Never archive feedback/user/reference/personal memories — they are
+  evergreen
+- Action per archived memory: mv memory/xxx.md memory/archive/xxx.md,
+  prepend "> Archived from MEMORY.md @ YYYY-MM-DD" as the first line of the
+  moved file, and delete the entry's line from MEMORY.md — confirm the moved
+  file exists in memory/archive/ BEFORE deleting the line (a failed mv plus a
+  deleted line loses the memory on both layers)
+- No dedicated log — the archive/ directory plus the removed MEMORY.md lines
+  are the record
+
 ---
 
 Return a brief summary of what you consolidated, updated, or pruned. If nothing changed, say so.`
@@ -81,8 +116,11 @@ Return a brief summary of what you consolidated, updated, or pruned. If nothing 
 // last consolidation: the LLM copies them verbatim instead of guessing time
 // literals (DB stores UTC; the cutoff is pre-computed by the caller) or
 // blind keyword searches. dreamSessionID excludes the dream's own transcript
-// so it never consolidates its own previous dreams.
-func TriggerMessage(memoryDir, dbPath, dreamSessionID string, lastDream time.Time, newMsgCount int) string {
+// so it never consolidates its own previous dreams. indexLines is the
+// pre-computed MEMORY.md line count, reported as context — near the
+// truncation wall it becomes a warning, not a gate: the archive phase runs
+// every pass regardless.
+func TriggerMessage(memoryDir, dbPath, dreamSessionID string, lastDream time.Time, newMsgCount, indexLines int) string {
 	lastDreamStr := "never"
 	cutoff := "1970-01-01 00:00:00"
 	if !lastDream.IsZero() {
@@ -103,15 +141,20 @@ func TriggerMessage(memoryDir, dbPath, dreamSessionID string, lastDream time.Tim
 		"(type = 'assistant' AND content LIKE '%\"type\":\"text\"%'))" +
 		" AND is_sidechain = 0" + exclude +
 		" AND created_at > '" + cutoff + "' ORDER BY seq LIMIT 80"
+	indexLine := fmt.Sprintf("%s: %d lines", entrypointFileName, indexLines)
+	if indexLines > archiveWarnLines {
+		indexLine += " — near the 200-line truncation wall: treat Phase 5 (archive) and merging as this pass's most urgent items"
+	}
 	return fmt.Sprintf(`Memory directory: %s
 Transcript DB: %s
 Last consolidation: %s (query cutoff: '%s' UTC)
 New main-thread messages since cutoff: %d
+%s
 
 Read("%s")   — overview: sessions active since the cutoff
 Read("%s")   — dialogue previews since the cutoff
 
-This run, per the phases in your system prompt:
+This run, execute every phase below in order — none is optional:
 Phase 1 (orient) — orient before writing: the grep-then-write rule applies
 from the first file you touch.
 Phase 2 (gather) — run both queries above; while the dialogue query still
@@ -122,5 +165,22 @@ Phase 3 (consolidate) — before overwriting a memory that conflicts with
 what you read, use the Recall tool on the original discussion to confirm.
 Phase 4 (prune) — before deleting a memory as stale or duplicated,
 use the Recall tool to confirm.
-Begin.`, memoryDir, dbPath, lastDreamStr, cutoff, newMsgCount, overview, dialogue)
+Phase 5 (archive, MUST run every pass) — move closed-out type=project memories into
+memory/archive/ (explicit closure marker + confident; when unsure, leave
+the entry — never feedback/user/reference/personal).
+Begin.`, memoryDir, dbPath, lastDreamStr, cutoff, newMsgCount, indexLine, overview, dialogue)
+}
+
+// IndexLineCount returns the line count of MEMORY.md in memoryDir. A missing
+// or empty index is 0.
+func IndexLineCount(memoryDir string) int {
+	data, err := os.ReadFile(filepath.Join(memoryDir, entrypointFileName))
+	if err != nil {
+		return 0
+	}
+	content := strings.TrimRight(string(data), "\n")
+	if content == "" {
+		return 0
+	}
+	return strings.Count(content, "\n") + 1
 }

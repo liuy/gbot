@@ -124,7 +124,7 @@ func (p TimerParams) tick(ctx context.Context) {
 		"messages", len(msgs))
 
 	dbPath := filepath.Join(p.MemoryDir, "memory.db")
-	prompt := TriggerMessage(p.MemoryDir, dbPath, p.Engine.SessionID(), lastDream, len(msgs))
+	prompt := TriggerMessage(p.MemoryDir, dbPath, p.Engine.SessionID(), lastDream, len(msgs), IndexLineCount(p.MemoryDir))
 
 	if err := p.Engine.Query(ctx, prompt); err != nil {
 		p.Logger.Warn("dream: query failed", "error", err)

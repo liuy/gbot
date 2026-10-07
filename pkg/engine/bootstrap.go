@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
@@ -125,8 +126,9 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
 	// recall: conversation history search. ShortStore is nil-guarded upstream.
+	// MemoryDir points the archive scan at the projectspace memory dir.
 	if deps.ShortStore != nil {
-		reg.MustRegister(recall.New(deps.ShortStore))
+		reg.MustRegister(recall.New(deps.ShortStore, long.GetMemoryPath(deps.WorkingDir)))
 	}
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}

@@ -556,6 +556,32 @@ func TestBuildMemoryPrompt_WithContent(t *testing.T) {
 	}
 }
 
+// The Archive section is a pure consumption guide — archiving RULES live in
+// the dream engine's prompt, so the two must not drift into overlap.
+func TestBuildMemoryPrompt_ArchiveSection(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	prompt := BuildMemoryPrompt(t.TempDir(), "")
+	for _, want := range []string{
+		"## Archive",
+		"`memory/archive/` holds closed-out project and incident records. It is never loaded into context.",
+		"The Recall tool searches archive file contents alongside conversation history. Archive hits render as a file path with snippet lines.",
+		"When an archive hit looks relevant, use the Read tool on that file — it carries the complete case record (root cause, evidence, lessons).",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing archive guidance %q", want)
+		}
+	}
+	// Placement: after the trusting-recall section, before the closing
+	// persistence section — archive is a memory-consumption topic.
+	archiveIdx := strings.Index(prompt, "## Archive")
+	trustIdx := strings.Index(prompt, "## Before recommending from memory")
+	persistIdx := strings.Index(prompt, "## Memory and other forms of persistence")
+	if archiveIdx < trustIdx || archiveIdx > persistIdx {
+		t.Errorf("Archive section at %d, want between trusting-recall (%d) and persistence (%d)",
+			archiveIdx, trustIdx, persistIdx)
+	}
+}
+
 // --- Coverage gap tests ---
 
 // paths.go coverage

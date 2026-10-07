@@ -1,5 +1,6 @@
 // Package recall implements the recall tool: an FTS5 search across message
-// history in pkg/memory/short.
+// history in pkg/memory/short, plus a scan of memory/archive/*.md
+// (closed-out case records) in query mode.
 // Queries are keyword-oriented: words are OR-matched with bm25 ranking, so
 // messages matching more keywords rank first. Boolean operators in the input
 // are stripped as stopwords rather than interpreted.
@@ -10,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,9 +31,14 @@ var sinceRe = regexp.MustCompile(`^(\d+)([hdwmy])$`)
 // centering. Operators (AND, OR, NOT, NEAR) and syntax chars are delimiters.
 var ftsTermSplitRe = regexp.MustCompile(`[\s()"*~^{}\[\]]+`)
 
-// Deps holds the store recall queries.
+// Deps holds the store recall queries and the memory directory whose
+// archive/ subtree is scanned alongside it.
 type Deps struct {
 	Store *short.Store
+	// MemoryDir is the projectspace memory directory (absolute). Empty
+	// disables the archive scan — tests and callers without a projectspace
+	// stay clean.
+	MemoryDir string
 }
 
 // Input is the recall tool input schema.
@@ -50,11 +58,22 @@ type msgHit struct {
 	Score   float64 `json:"score,omitempty"`
 }
 
-// Output is the recall result. Empty slice serializes as `[]` (not `null`)
+// ArchiveHit is one memory/archive/*.md match. File is absolute so the LLM
+// can pass it straight to Read (relative paths resolve against the repo
+// CWD, not the projectspace).
+type ArchiveHit struct {
+	File     string   `json:"file"`
+	Snippets []string `json:"snippets"`
+}
+
+// Output is the recall result. Empty slices serialize as `[]` (not `null`)
 // so the LLM sees a stable shape. An empty search injects one hint message
 // into Messages instead of a separate field — one semantic place to look.
+// Archive carries closed-out case records; omitempty keeps the serialized
+// shape of archive-less results byte-identical.
 type Output struct {
-	Messages []msgHit `json:"messages"`
+	Messages []msgHit     `json:"messages"`
+	Archive  []ArchiveHit `json:"archive,omitempty"`
 }
 
 // emptyHint is returned as the single message on an empty search: it suggests
@@ -65,14 +84,16 @@ type Output struct {
 const emptyHint = "No matches — matching is keyword-exact, not semantic. Retry with synonyms or the other language (e.g. 调研 → 调查/梳理/survey)."
 
 // New creates the recall tool. store must be non-nil — if the store is
-// unavailable, recall should not be registered at all.
-func New(store *short.Store) tool.Tool {
+// unavailable, recall should not be registered at all. memoryDir is the
+// projectspace memory directory; its archive/ subtree is searched in query
+// mode (empty skips the scan).
+func New(store *short.Store, memoryDir string) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "Keywords describing what you are looking for (e.g. 'alice blue', '数据库 migration'). Separate multiple keywords with spaces; messages matching more keywords rank first. Do not use boolean operators."
+				"description": "Keywords describing what you are looking for (e.g. 'alice blue', '数据库 migration'). Separate multiple keywords with spaces; messages matching more keywords rank first. Do not use boolean operators. Also searches memory/archive/*.md (closed-out case records); archive hits render as a file path + snippet lines — Read the file for full details."
 			},
 			"uuid": {
 				"type": "string",
@@ -111,7 +132,7 @@ func New(store *short.Store) tool.Tool {
 			return s, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return execute(ctx, input, Deps{Store: store})
+			return execute(ctx, input, Deps{Store: store, MemoryDir: memoryDir})
 		},
 		IsReadOnly_: func(json.RawMessage) bool {
 			return true
@@ -128,36 +149,44 @@ func New(store *short.Store) tool.Tool {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
-			if len(out.Messages) == 0 {
+			hintOnly := len(out.Messages) == 1 && out.Messages[0].Content == emptyHint
+			if len(out.Messages) == 0 && len(out.Archive) == 0 {
 				return "No matches found."
 			}
 			// The empty-search hint rides in messages[] for the LLM; for
 			// humans render it bare instead of as a numbered block with an
 			// empty date line. Match on content (not UUID=="") because
 			// uuid-mode hits also carry an empty UUID.
-			if len(out.Messages) == 1 && out.Messages[0].Content == emptyHint {
+			if hintOnly && len(out.Archive) == 0 {
 				return out.Messages[0].Content
 			}
-			blocks := make([]string, 0, len(out.Messages))
-			for i, m := range out.Messages {
-				var b strings.Builder
-				// Score 0 means uuid mode (no relevance concept) — the
-				// score prefix is search-mode-only to avoid "0.00" noise.
-				if m.Score != 0 {
-					fmt.Fprintf(&b, "%d. [%.2f] %s\n", i+1, m.Score, m.Date)
-				} else {
-					fmt.Fprintf(&b, "%d. %s\n", i+1, m.Date)
-				}
-				// Indent every line so multi-line snippets stay one visual
-				// block instead of bleeding into the next entry's header.
-				for line := range strings.SplitSeq(m.Content, "\n") {
-					b.WriteString("   " + line + "\n")
-				}
-				// Trim spaces too: empty or trailing-newline content would
-				// otherwise leave a stray 3-space line after the trim of \n.
-				blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
+			sections := make([]string, 0, 2)
+			if len(out.Archive) > 0 {
+				sections = append(sections, archiveSectionText(out.Archive))
 			}
-			return strings.Join(blocks, "\n\n")
+			if len(out.Messages) > 0 && !hintOnly {
+				blocks := make([]string, 0, len(out.Messages))
+				for i, m := range out.Messages {
+					var b strings.Builder
+					// Score 0 means uuid mode (no relevance concept) — the
+					// score prefix is search-mode-only to avoid "0.00" noise.
+					if m.Score != 0 {
+						fmt.Fprintf(&b, "%d. [%.2f] %s\n", i+1, m.Score, m.Date)
+					} else {
+						fmt.Fprintf(&b, "%d. %s\n", i+1, m.Date)
+					}
+					// Indent every line so multi-line snippets stay one visual
+					// block instead of bleeding into the next entry's header.
+					for line := range strings.SplitSeq(m.Content, "\n") {
+						b.WriteString("   " + line + "\n")
+					}
+					// Trim spaces too: empty or trailing-newline content would
+					// otherwise leave a stray 3-space line after the trim of \n.
+					blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
+				}
+				sections = append(sections, strings.Join(blocks, "\n\n"))
+			}
+			return strings.Join(sections, "\n\n")
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
 			text, err := tool.UnmarshalSingleBlock(raw)
@@ -171,14 +200,16 @@ func New(store *short.Store) tool.Tool {
 			// Wire text that happens to be a JSON object decodes into an
 			// all-zero Output (unknown fields ignored), which replay would
 			// render as "No matches found." instead of falling back to the
-			// wire text. Uniform rule across wire-plaintext tools.
+			// wire text. Uniform rule across wire-plaintext tools. An
+			// archive-only hit list (Messages empty, Archive non-empty) is a
+			// legal shape and must decode.
 			//
 			// Accepted and recorded false negatives — two reachable paths
-			// produce the all-zero {"messages":[]} Output: a search-storage
-			// error (execute logs it and keeps Messages empty) and a uuid
-			// lookup miss. Both degrade legacy replay to showing the raw
-			// JSON, which loses no information.
-			if len(o.Messages) == 0 {
+			// produce an all-zero Output: a search-storage error (execute
+			// logs it and keeps Messages empty) and a uuid lookup miss. Both
+			// degrade legacy replay to showing the raw JSON, which loses no
+			// information.
+			if len(o.Messages) == 0 && len(o.Archive) == 0 {
 				return nil, fmt.Errorf("recall: decoded output lacks identifying fields (not a legacy JSON result)")
 			}
 			return &o, nil
@@ -202,36 +233,59 @@ func New(store *short.Store) tool.Tool {
 // line. UUID and score ride on the header because the LLM needs the UUID
 // for uuid-mode follow-up reads (the schema documents that flow) and the
 // score to judge match confidence — the old JSON wire carried both, so the
-// plaintext wire keeps them.
+// plaintext wire keeps them. Archive hits render first: a closed-out case
+// record is more authoritative than a conversation fragment.
 func wireText(out *Output) string {
-	if len(out.Messages) == 1 && out.Messages[0].Content == emptyHint {
-		return emptyHint
-	}
-	if len(out.Messages) == 0 {
+	hintOnly := len(out.Messages) == 1 && out.Messages[0].Content == emptyHint
+	if len(out.Messages) == 0 && len(out.Archive) == 0 {
 		return "No matches found."
 	}
-	blocks := make([]string, 0, len(out.Messages))
-	for i, m := range out.Messages {
-		var b strings.Builder
-		header := fmt.Sprintf("%d. %s", i+1, m.Date)
-		if m.Score != 0 {
-			// Score 0 means uuid mode (no relevance concept) — the score
-			// prefix is search-mode-only to avoid "score 0.00" noise.
-			header = fmt.Sprintf("score %.2f  %s  uuid %s", m.Score, header, m.UUID)
-		} else {
-			header = fmt.Sprintf("%s  uuid %s", header, m.UUID)
-		}
-		b.WriteString(header + "\n")
-		// Indent every line so multi-line content stays one visual block
-		// instead of bleeding into the next entry's header. Trailing
-		// whitespace is trimmed so a trailing newline in content does not
-		// leave a stray 3-space line (same reason the render trims).
-		for line := range strings.SplitSeq(m.Content, "\n") {
-			b.WriteString("   " + line + "\n")
-		}
-		blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
+	if hintOnly && len(out.Archive) == 0 {
+		return emptyHint
 	}
-	return strings.Join(blocks, "\n\n")
+	sections := make([]string, 0, 2)
+	if len(out.Archive) > 0 {
+		sections = append(sections, archiveSectionText(out.Archive))
+	}
+	if len(out.Messages) > 0 && !hintOnly {
+		blocks := make([]string, 0, len(out.Messages))
+		for i, m := range out.Messages {
+			var b strings.Builder
+			header := fmt.Sprintf("%d. %s", i+1, m.Date)
+			if m.Score != 0 {
+				// Score 0 means uuid mode (no relevance concept) — the score
+				// prefix is search-mode-only to avoid "score 0.00" noise.
+				header = fmt.Sprintf("score %.2f  %s  uuid %s", m.Score, header, m.UUID)
+			} else {
+				header = fmt.Sprintf("%s  uuid %s", header, m.UUID)
+			}
+			b.WriteString(header + "\n")
+			// Indent every line so multi-line content stays one visual block
+			// instead of bleeding into the next entry's header. Trailing
+			// whitespace is trimmed so a trailing newline in content does not
+			// leave a stray 3-space line (same reason the render trims).
+			for line := range strings.SplitSeq(m.Content, "\n") {
+				b.WriteString("   " + line + "\n")
+			}
+			blocks = append(blocks, strings.TrimRight(b.String(), " \n"))
+		}
+		sections = append(sections, strings.Join(blocks, "\n\n"))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// archiveSectionText renders the archive hit list: one path bullet per hit
+// with 4-space-indented snippet lines under it.
+func archiveSectionText(hits []ArchiveHit) string {
+	var b strings.Builder
+	b.WriteString("## Archive\n")
+	for _, h := range hits {
+		b.WriteString("- " + h.File + "\n")
+		for _, s := range h.Snippets {
+			b.WriteString("    " + s + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // execute runs the recall query against message history.
@@ -282,6 +336,14 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		Messages: []msgHit{},
 	}
 
+	// Archive scan runs concurrently with the DB search — local file reads
+	// independent of the FTS query.
+	var archiveCh chan []ArchiveHit
+	if deps.MemoryDir != "" {
+		archiveCh = make(chan []ArchiveHit, 1)
+		go func() { archiveCh <- scanArchive(deps.MemoryDir, in.Query) }()
+	}
+
 	opts := &short.SearchOptions{Limit: limit}
 	if !sinceTime.IsZero() {
 		opts.Since = sinceTime
@@ -301,11 +363,98 @@ func execute(ctx context.Context, input json.RawMessage, deps Deps) (*tool.ToolR
 		}
 	}
 
-	if len(out.Messages) == 0 && err == nil {
+	if archiveCh != nil {
+		out.Archive = <-archiveCh
+	}
+
+	if len(out.Messages) == 0 && len(out.Archive) == 0 && err == nil {
 		out.Messages = []msgHit{{Content: emptyHint}}
 	}
 
 	return &tool.ToolResult{Data: out}, nil
+}
+
+// Archive scan tuning and exclusions.
+const (
+	archiveMaxSnippetLines = 3
+	archiveSnippetRunes    = 50
+	// archiveIndexName is the legacy-design index inside archive/ — a
+	// curated pointer list, not a case record; scanning it would surface
+	// its curation notes as if they were records.
+	archiveIndexName = "INDEX.md"
+)
+
+// scanArchive searches memory/archive/*.md for any-term (OR,
+// case-insensitive) matches — the same term semantics as the FTS message
+// search. A file hit aggregates up to archiveMaxSnippetLines matching lines,
+// each windowed through makeSnippet. Missing directory or unreadable files
+// are a silent empty result: the archive layer is additive, never fatal.
+func scanArchive(memoryDir, query string) []ArchiveHit {
+	dir := filepath.Join(memoryDir, "archive")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	terms := archiveTerms(query)
+	if len(terms) == 0 {
+		return nil
+	}
+	var hits []ArchiveHit
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || e.Name() == archiveIndexName {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if !containsAnyFold(content, terms) {
+			continue
+		}
+		hit := ArchiveHit{File: filepath.Join(dir, e.Name())}
+		for line := range strings.SplitSeq(content, "\n") {
+			if len(hit.Snippets) >= archiveMaxSnippetLines {
+				break
+			}
+			if containsAnyFold(line, terms) {
+				hit.Snippets = append(hit.Snippets, makeSnippet(line, query, archiveSnippetRunes))
+			}
+		}
+		hits = append(hits, hit)
+	}
+	return hits
+}
+
+// archiveTerms splits a query into lowercase search terms, skipping FTS
+// operators — a query that ignored the no-operators guidance must not
+// degenerate into matching every file containing the English word "and".
+func archiveTerms(query string) []string {
+	var terms []string
+	// Same split as the FTS5 side (ftsTermSplitRe) so quoted/punctuated
+	// terms like "migration" match on both layers.
+	for _, f := range ftsTermSplitRe.Split(query, -1) {
+		if f == "" {
+			continue
+		}
+		switch strings.ToUpper(f) {
+		case "AND", "OR", "NOT", "NEAR":
+			continue
+		}
+		terms = append(terms, strings.ToLower(f))
+	}
+	return terms
+}
+
+// containsAnyFold reports whether any term appears in s, case-insensitively.
+func containsAnyFold(s string, terms []string) bool {
+	lower := strings.ToLower(s)
+	for _, t := range terms {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseSince converts a shorthand duration string ("7d", "12h", "2w", "3m",

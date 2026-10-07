@@ -12,7 +12,7 @@ import (
 // single text block) and returns the block text.
 func recallWireText(t *testing.T, data any) string {
 	t.Helper()
-	wb, ok := New(nil).(tool.ToolWithWireBlocks)
+	wb, ok := New(nil, "").(tool.ToolWithWireBlocks)
 	if !ok {
 		t.Fatal("Recall tool must implement ToolWithWireBlocks")
 	}
@@ -100,7 +100,7 @@ func TestRecallWire_NonOutputFallsBackToJSON(t *testing.T) {
 
 func TestRecallDecodeResult_LegacyJSONWire(t *testing.T) {
 	t.Parallel()
-	r := New(nil)
+	r := New(nil, "")
 	raw := tool.WrapSingleBlock(`{"messages":[{"uuid":"u-1","content":"hello","date":"2026-01-01","score":1.5}]}`)
 	v, err := r.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestRecallDecodeResult_LegacyJSONWire(t *testing.T) {
 // "No matches found." instead of falling back to the wire text.
 func TestRecallDecodeResult_RejectsJSONObjectWire(t *testing.T) {
 	t.Parallel()
-	r := New(nil)
+	r := New(nil, "")
 	raw := tool.WrapSingleBlock(`{"name":"gbot","version":"1.0"}`)
 	_, err := r.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
@@ -133,7 +133,7 @@ func TestRecallDecodeResult_RejectsJSONObjectWire(t *testing.T) {
 
 func TestRecallDecodeResult_RejectsPlainTextWire(t *testing.T) {
 	t.Parallel()
-	r := New(nil)
+	r := New(nil, "")
 	raw := tool.WrapSingleBlock("No matches found.")
 	_, err := r.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
@@ -141,5 +141,134 @@ func TestRecallDecodeResult_RejectsPlainTextWire(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid character 'N' looking for beginning of value") {
 		t.Errorf("err = %v, want json syntax error", err)
+	}
+}
+
+// --- Archive wire tests ---
+
+// Closed-out case records are more authoritative than conversation
+// fragments — the Archive section renders BEFORE the message list.
+func TestRecallWire_ArchiveBeforeMessages(t *testing.T) {
+	t.Parallel()
+	got := recallWireText(t, &Output{
+		Archive:  []ArchiveHit{{File: "/mem/archive/a.md", Snippets: []string{"s one", "s two"}}},
+		Messages: []msgHit{{UUID: "u-1", Content: "first hit", Date: "2026-01-02 15:04", Score: 1.0}},
+	})
+	want := "## Archive\n" +
+		"- /mem/archive/a.md\n" +
+		"    s one\n" +
+		"    s two\n" +
+		"\n" +
+		"score 1.00  1. 2026-01-02 15:04  uuid u-1\n" +
+		"   first hit"
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
+	}
+}
+
+// Archive-only results are legitimate matches — never "No matches found.".
+func TestRecallWire_ArchiveOnly(t *testing.T) {
+	t.Parallel()
+	got := recallWireText(t, &Output{
+		Archive: []ArchiveHit{{File: "/mem/archive/a.md", Snippets: []string{"only snippet"}}},
+	})
+	want := "## Archive\n- /mem/archive/a.md\n    only snippet"
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
+	}
+}
+
+// The hint claims "No matches" — with archive hits present that claim is
+// false, so the hint section is dropped.
+func TestRecallWire_HintSuppressedWithArchive(t *testing.T) {
+	t.Parallel()
+	got := recallWireText(t, &Output{
+		Archive:  []ArchiveHit{{File: "/mem/archive/a.md", Snippets: []string{"snippet"}}},
+		Messages: []msgHit{{Content: emptyHint}},
+	})
+	want := "## Archive\n- /mem/archive/a.md\n    snippet"
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
+	}
+}
+
+// Replay of an archive-only result: Messages empty + Archive non-empty is a
+// legal shape and must decode, not fall back to raw wire text.
+func TestRecallDecodeResult_ArchiveOnlyAccepted(t *testing.T) {
+	t.Parallel()
+	r := New(nil, "")
+	raw := tool.WrapSingleBlock(`{"messages":[],"archive":[{"file":"/mem/archive/a.md","snippets":["s one"]}]}`)
+	v, err := r.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	o, ok := v.(*Output)
+	if !ok {
+		t.Fatalf("DecodeResult returned %T, want *Output", v)
+	}
+	if len(o.Archive) != 1 || o.Archive[0].File != "/mem/archive/a.md" {
+		t.Errorf("decoded archive = %+v, want one hit /mem/archive/a.md", o.Archive)
+	}
+	if len(o.Archive[0].Snippets) != 1 || o.Archive[0].Snippets[0] != "s one" {
+		t.Errorf("decoded snippets = %v, want [s one]", o.Archive[0].Snippets)
+	}
+	// Round-trips through the wire renderer as an archive section.
+	if got := recallWireText(t, o); !strings.Contains(got, "## Archive") {
+		t.Errorf("decoded output re-renders = %q, want archive section", got)
+	}
+}
+
+// Human render mirrors the wire ordering: archive section before messages.
+func TestRecallRender_ArchiveBeforeMessages(t *testing.T) {
+	t.Parallel()
+	r := New(nil, "")
+	got := r.RenderResult(&Output{
+		Archive:  []ArchiveHit{{File: "/mem/archive/a.md", Snippets: []string{"s one"}}},
+		Messages: []msgHit{{UUID: "u-1", Content: "first hit", Date: "2026-01-02 15:04", Score: 1.0}},
+	})
+	want := "## Archive\n" +
+		"- /mem/archive/a.md\n" +
+		"    s one\n" +
+		"\n" +
+		"1. [1.00] 2026-01-02 15:04\n" +
+		"   first hit"
+	if got != want {
+		t.Errorf("render = %q, want %q", got, want)
+	}
+	// Archive-only render must not claim "No matches found."
+	got = r.RenderResult(&Output{Archive: []ArchiveHit{{File: "/m/a.md", Snippets: []string{"s"}}}})
+	if want := "## Archive\n- /m/a.md\n    s"; got != want {
+		t.Errorf("archive-only render = %q, want %q", got, want)
+	}
+	// Hint + archive: only the archive section renders — the hint's
+	// "No matches" claim would be false.
+	got = r.RenderResult(&Output{
+		Archive:  []ArchiveHit{{File: "/m/a.md", Snippets: []string{"s"}}},
+		Messages: []msgHit{{Content: emptyHint}},
+	})
+	if want := "## Archive\n- /m/a.md\n    s"; got != want {
+		t.Errorf("hint+archive render = %q, want %q", got, want)
+	}
+	// Messages-only render keeps the pre-archive shape.
+	got = r.RenderResult(&Output{Messages: []msgHit{{Content: "m", Date: "2026-01-02 15:04", Score: 1.0}}})
+	if want := "1. [1.00] 2026-01-02 15:04\n   m"; got != want {
+		t.Errorf("messages-only render = %q, want %q", got, want)
+	}
+}
+
+// The schema's query description must teach the archive layer so the LLM
+// knows hits may include file paths worth Reading.
+func TestRecall_SchemaMentionsArchive(t *testing.T) {
+	t.Parallel()
+	r := New(nil, "")
+	schema := string(r.InputSchema())
+	for _, want := range []string{
+		"memory/archive/*.md",
+		"closed-out case records",
+		"Read the file for full details",
+	} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("query description missing %q", want)
+		}
 	}
 }

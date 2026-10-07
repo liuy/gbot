@@ -3,10 +3,12 @@ package recall
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
@@ -51,7 +53,7 @@ func TestRecall_DateRenderedInLocalWallClock(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	r := New(fs)
+	r := New(fs, "")
 	res, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call(query): %v", err)
@@ -85,7 +87,7 @@ func TestRecall_DateRenderedInLocalWallClock(t *testing.T) {
 
 func TestRecall_MissingQuery(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	_, err := r.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error for missing query and uuid")
@@ -112,7 +114,7 @@ func TestRecall_HitsMessages(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -145,7 +147,7 @@ func TestRecall_HitsMessages(t *testing.T) {
 
 func TestRecall_InvalidSince(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue","since":"bad"}`), nil)
 	if err == nil {
 		t.Fatal("expected error for invalid since")
@@ -157,7 +159,7 @@ func TestRecall_InvalidSince(t *testing.T) {
 
 func TestRecall_MalformedQuery(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"("}`), nil)
 	if err != nil {
 		t.Fatalf("malformed query should not error: %v", err)
@@ -173,7 +175,7 @@ func TestRecall_MalformedQuery(t *testing.T) {
 
 func TestRecall_EmptyResults(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"nothinghere"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -207,7 +209,7 @@ func TestRecall_SearchError_NoHint(t *testing.T) {
 	if err := fs.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
 		t.Fatalf("Call: %v (search errors degrade to empty results, not tool errors)", err)
@@ -223,7 +225,7 @@ func TestRecall_SearchError_NoHint(t *testing.T) {
 
 func TestRecall_LimitClamp(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	_, err := r.Call(context.Background(), json.RawMessage(`{"query":"test","limit":0}`), nil)
 	if err != nil {
 		t.Fatalf("limit=0: %v", err)
@@ -236,7 +238,7 @@ func TestRecall_LimitClamp(t *testing.T) {
 
 func TestRecall_IsReadOnly(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	if !r.IsReadOnly(nil) {
 		t.Error("recall should be read-only")
 	}
@@ -249,7 +251,7 @@ func TestRecall_IsReadOnly(t *testing.T) {
 }
 
 func TestRecall_RenderResult(t *testing.T) {
-	r := New(nil)
+	r := New(nil, "")
 	// Single hit, score=1: numbered header then 3-space indented content.
 	rendered := r.RenderResult(&Output{
 		Messages: []msgHit{{Content: "test msg", Date: "2026-08-15 12:37", Score: 1.0}},
@@ -332,7 +334,7 @@ func TestRecall_RenderResult(t *testing.T) {
 }
 
 func TestRecall_DecodeResult(t *testing.T) {
-	r := New(nil)
+	r := New(nil, "")
 	decoder, ok := r.(tool.ToolWithDecodeResult)
 	if !ok {
 		t.Fatal("recall tool should implement ToolWithDecodeResult")
@@ -384,7 +386,7 @@ func TestRecall_Since(t *testing.T) {
 		t.Fatalf("AppendMessage recent: %v", err)
 	}
 
-	r := New(fs)
+	r := New(fs, "")
 	// since="1m" (30 days): old data (100 days) excluded, recent included.
 	result, err := r.Call(context.Background(),
 		json.RawMessage(`{"query":"blue","since":"1m"}`), nil)
@@ -427,7 +429,7 @@ func TestRecall_MessageSnippet(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(),
 		json.RawMessage(`{"query":"blue"}`), nil)
 	if err != nil {
@@ -624,7 +626,7 @@ func TestRecall_UUIDReadsFullContent(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(),
 		json.RawMessage(`{"uuid":"msg-uuid-full"}`), nil)
 	if err != nil {
@@ -662,7 +664,7 @@ func TestRecall_UUIDReadsFullContent(t *testing.T) {
 
 func TestRecall_UUIDNotFoundReturnsEmpty(t *testing.T) {
 	fs := openStore(t)
-	r := New(fs)
+	r := New(fs, "")
 	result, err := r.Call(context.Background(),
 		json.RawMessage(`{"uuid":"does-not-exist"}`), nil)
 	if err != nil {
@@ -683,12 +685,312 @@ func TestRecall_UUIDNotFoundReturnsEmpty(t *testing.T) {
 }
 
 func TestRecall_Description_UUID(t *testing.T) {
-	r := New(nil)
+	r := New(nil, "")
 	desc, err := r.Description(json.RawMessage(`{"uuid":"abc-123"}`))
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
 	if desc != "uuid: abc-123" {
 		t.Errorf("description = %q, want 'uuid: abc-123'", desc)
+	}
+}
+
+// --- Archive scan tests ---
+
+// writeArchiveFile writes one file under memoryDir/archive/.
+func writeArchiveFile(t *testing.T, memoryDir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(memoryDir, "archive", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir archive: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+func TestRecall_ArchiveHits(t *testing.T) {
+	memDir := t.TempDir()
+	// Sorts BEFORE the matching file: a scan that stops at the first
+	// non-matching file would miss the hit below.
+	writeArchiveFile(t, memDir, "aaa_nomatch.md", "gardens only, sorts first\n")
+	aPath := writeArchiveFile(t, memDir, "project_incident.md",
+		"# Truncation incident\n\n"+
+			"max_tokens 腰斩参数 → 批次炸 + cursor 冻结\n"+
+			"复现 = 调小 max_tokens 就能炸\n"+
+			"fixed in 4dfed1ce\n")
+	writeArchiveFile(t, memDir, "unrelated.md", "nothing about gardens here\n")
+	// Legacy-design index: contains the keyword but must never be scanned.
+	writeArchiveFile(t, memDir, "INDEX.md", "max_tokens entry that must not surface\n")
+	// Non-markdown file: only *.md in archive/ is scanned.
+	writeArchiveFile(t, memDir, "notes.txt", "max_tokens in plain txt\n")
+	// Directory whose name ends in .md: not a file, never scanned.
+	if err := os.MkdirAll(filepath.Join(memDir, "archive", "zz_dir.md"), 0o755); err != nil {
+		t.Fatalf("mkdir zz_dir.md: %v", err)
+	}
+	// Broken symlink sorting before the match: an unreadable entry must be
+	// skipped, not end the scan.
+	if err := os.Symlink("no-such-target", filepath.Join(memDir, "archive", "aaa_broken.md")); err != nil {
+		t.Fatalf("symlink aaa_broken.md: %v", err)
+	}
+
+	fs := openStore(t)
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"max_tokens"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 1 {
+		t.Fatalf("archive hits = %d, want 1 (unrelated/INDEX/txt/dir excluded): %+v", len(out.Archive), out.Archive)
+	}
+	hit := out.Archive[0]
+	if hit.File != aPath {
+		t.Errorf("hit file = %q, want %q (absolute so the LLM can Read it directly)", hit.File, aPath)
+	}
+	wantSnippets := []string{
+		"max_tokens 腰斩参数 → 批次炸 + cursor 冻结",
+		"复现 = 调小 max_tokens 就能炸",
+	}
+	if len(hit.Snippets) != len(wantSnippets) {
+		t.Fatalf("snippets = %v, want %v", hit.Snippets, wantSnippets)
+	}
+	for i, want := range wantSnippets {
+		if hit.Snippets[i] != want {
+			t.Errorf("snippet[%d] = %q, want %q", i, hit.Snippets[i], want)
+		}
+	}
+	// Archive hits are real matches — the empty-search hint must not appear.
+	if len(out.Messages) != 0 {
+		t.Errorf("db miss + archive hit must not inject the hint, got messages %v", out.Messages)
+	}
+}
+
+func TestRecall_ArchiveAnyTermCaseInsensitive(t *testing.T) {
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "case.md", "alice has BLUE shoes\nplain line\n")
+	writeArchiveFile(t, memDir, "nomatch.md", "only gardens\n")
+
+	fs := openStore(t)
+	r := New(fs, memDir)
+	// Query term differs in case; second term matches nothing — any-term OR.
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue 蓝色zzz"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 1 {
+		t.Fatalf("archive hits = %d, want 1: %+v", len(out.Archive), out.Archive)
+	}
+	if out.Archive[0].File != filepath.Join(memDir, "archive", "case.md") {
+		t.Errorf("hit file = %q, want case.md", out.Archive[0].File)
+	}
+	// Snippet keeps the file's original casing; only matching is folded.
+	if len(out.Archive[0].Snippets) != 1 || out.Archive[0].Snippets[0] != "alice has BLUE shoes" {
+		t.Errorf("snippets = %v, want [alice has BLUE shoes]", out.Archive[0].Snippets)
+	}
+}
+
+func TestRecall_ArchiveSnippetWindow(t *testing.T) {
+	memDir := t.TempDir()
+	longLine := strings.Repeat("a", 60) + "needle" + strings.Repeat("b", 60)
+	writeArchiveFile(t, memDir, "long.md", longLine+"\n")
+
+	fs := openStore(t)
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"needle"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 1 || len(out.Archive[0].Snippets) != 1 {
+		t.Fatalf("want 1 hit with 1 snippet, got %+v", out.Archive)
+	}
+	snippet := out.Archive[0].Snippets[0]
+	if !strings.Contains(snippet, "needle") {
+		t.Errorf("snippet must contain the term: %q", snippet)
+	}
+	if !strings.Contains(snippet, "...") {
+		t.Errorf("snippet must be windowed with ellipsis: %q", snippet)
+	}
+	// 50-rune window on both truncated sides + two 3-dot ellipses = exactly
+	// 56 runes — pins the window size, not just an upper bound.
+	if got := utf8.RuneCountInString(snippet); got != 56 {
+		t.Errorf("snippet = %d runes, want exactly 56", got)
+	}
+}
+
+func TestRecall_ArchiveMaxThreeSnippetLines(t *testing.T) {
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "many.md",
+		"hit one\nhit two\nhit three\nhit four\nhit five\n")
+
+	fs := openStore(t)
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"hit"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 1 {
+		t.Fatalf("archive hits = %d, want 1", len(out.Archive))
+	}
+	want := []string{"hit one", "hit two", "hit three"}
+	if len(out.Archive[0].Snippets) != 3 {
+		t.Fatalf("snippets = %v, want first 3 lines %v", out.Archive[0].Snippets, want)
+	}
+	for i, w := range want {
+		if out.Archive[0].Snippets[i] != w {
+			t.Errorf("snippet[%d] = %q, want %q", i, out.Archive[0].Snippets[i], w)
+		}
+	}
+}
+
+// Empty MemoryDir disables the archive scan — tests and production callers
+// without a projectspace stay clean.
+func TestRecall_ArchiveEmptyMemoryDirSkips(t *testing.T) {
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "a.md", "blue moon\n")
+
+	fs := openStore(t)
+	r := New(fs, "")
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 0 {
+		t.Errorf("archive hits = %d, want 0 with empty MemoryDir", len(out.Archive))
+	}
+	// No archive layer at all → the db-miss hint applies as before.
+	if len(out.Messages) != 1 || out.Messages[0].Content != emptyHint {
+		t.Errorf("messages = %v, want the empty-search hint", out.Messages)
+	}
+}
+
+// Missing archive/ directory is the common case — scan is a silent no-op.
+func TestRecall_ArchiveMissingDirNoError(t *testing.T) {
+	fs := openStore(t)
+	r := New(fs, t.TempDir())
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Archive) != 0 {
+		t.Errorf("archive hits = %d, want 0 without archive dir", len(out.Archive))
+	}
+}
+
+// uuid mode reads a single message — it must not scan the archive.
+func TestRecall_ArchiveUUIDModeSkips(t *testing.T) {
+	pinLocalCST(t)
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "a.md", "blue moon archive copy\n")
+
+	fs := openStore(t)
+	sess, err := fs.CreateSession("/test", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	msg := &short.TranscriptMessage{
+		UUID:      "msg-uuid-arch",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"blue zap"}]`,
+		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+	}
+	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"uuid":"msg-uuid-arch"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Messages) != 1 || out.Messages[0].UUID != "msg-uuid-arch" {
+		t.Fatalf("uuid hit = %+v, want msg-uuid-arch", out.Messages)
+	}
+	if len(out.Archive) != 0 {
+		t.Errorf("uuid mode must not scan archive, got %+v", out.Archive)
+	}
+}
+
+// Both layers hit in one query: message history AND archive files.
+func TestRecall_ArchiveAndMessagesMixed(t *testing.T) {
+	pinLocalCST(t)
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "a.md", "blue moon archive copy\n")
+
+	fs := openStore(t)
+	sess, err := fs.CreateSession("/test", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	msg := &short.TranscriptMessage{
+		UUID:      "msg-mixed",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"blue zap live"}]`,
+		CreatedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+	}
+	if err := fs.AppendMessage(sess.SessionID, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Messages) != 1 || out.Messages[0].UUID != "msg-mixed" {
+		t.Fatalf("message hits = %+v, want msg-mixed", out.Messages)
+	}
+	if len(out.Archive) != 1 || out.Archive[0].File != filepath.Join(memDir, "archive", "a.md") {
+		t.Fatalf("archive hits = %+v, want a.md", out.Archive)
+	}
+}
+
+// Store failure must not lose archive hits (nor inject the hint): the two
+// layers are independent.
+func TestRecall_ArchiveSurvivesStoreError(t *testing.T) {
+	memDir := t.TempDir()
+	writeArchiveFile(t, memDir, "a.md", "blue moon archive copy\n")
+
+	fs := openStore(t)
+	if err := fs.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	r := New(fs, memDir)
+	result, err := r.Call(context.Background(), json.RawMessage(`{"query":"blue"}`), nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Messages) != 0 {
+		t.Errorf("failed store must yield 0 messages, no hint, got %+v", out.Messages)
+	}
+	if len(out.Archive) != 1 {
+		t.Fatalf("archive hits = %d, want 1 despite store failure", len(out.Archive))
+	}
+}
+
+func TestArchiveTerms(t *testing.T) {
+	// FTS operators are skipped, real terms lowercased.
+	got := archiveTerms("AND OR NOT NEAR blue")
+	if len(got) != 1 || got[0] != "blue" {
+		t.Errorf("archiveTerms(operator-laden query) = %v, want [blue]", got)
+	}
+	got = archiveTerms("Blue 蓝色")
+	if len(got) != 2 || got[0] != "blue" || got[1] != "蓝色" {
+		t.Errorf("archiveTerms(mixed case) = %v, want [blue 蓝色]", got)
+	}
+	if got := archiveTerms("AND OR NOT NEAR"); len(got) != 0 {
+		t.Errorf("archiveTerms(operators only) = %v, want empty", got)
+	}
+	if got := archiveTerms(""); len(got) != 0 {
+		t.Errorf("archiveTerms(empty) = %v, want empty", got)
 	}
 }
