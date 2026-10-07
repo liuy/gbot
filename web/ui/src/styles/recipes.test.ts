@@ -103,8 +103,8 @@ describe('stream_dom className snapshot guards', () => {
       expect(prefix.className).toBe('shrink-0 w-6')
       expect(h.dot.className).toBe('text-[10px] leading-none align-middle inline-block w-3 text-center text-white heartbeat')
       expect(svg.getAttribute('class')).toBe('inline-block align-middle text-t3 transition-transform')
-      expect(content.className).toBe('flex-1 min-w-0')
-      expect(nameEl.className).toBe('font-mono text-sm text-blue')
+      expect(content.className).toBe('flex-1 min-w-0 break-all')
+      expect(nameEl.className).toBe("font-mono text-sm text-blue break-all")
       expect(summaryEl.className).toBe('text-sm text-t2 font-light break-all whitespace-pre-wrap')
       expect(h.durEl.className).toBe('font-mono text-xs text-blue')
       expect(h.body.className).toBe('md-body ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden')
@@ -147,7 +147,7 @@ describe('stream_dom className snapshot guards', () => {
       const duration = group.querySelector('[data-group-duration]') as HTMLElement
       const toolsContainer = group.querySelector('[data-group-tools]') as HTMLElement
 
-      expect(summary.className).toBe('font-mono text-sm text-blue')
+      expect(summary.className).toBe("font-mono text-sm text-blue")
       expect(duration.className).toBe('font-mono text-xs text-t3')
       expect(toolsContainer.className).toBe('ml-6 hidden')
     })

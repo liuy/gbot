@@ -26,7 +26,7 @@ export const anchoredPopup = tv({
 // Shared between tool header and thinking header
 export const toolHeaderBtn = tv({ base: 'flex items-baseline cursor-pointer bg-transparent border-0 p-0 text-left' })
 export const toolPrefix = tv({ base: 'shrink-0 w-6' })
-export const toolHeaderContent = tv({ base: 'flex-1 min-w-0' })
+export const toolHeaderContent = tv({ base: 'flex-1 min-w-0 break-all' })
 export const runningDot = tv({
   base: 'text-[10px] leading-none align-middle inline-block w-3 text-center',
   variants: { color: { white: 'text-white heartbeat', blue: 'text-blue heartbeat' } },
@@ -47,7 +47,7 @@ export const queuedEchoBlock = tv({ base: 'text-[13px] text-t3 italic ml-2 my-1'
 export const queuedTextSpan = tv({ base: 'whitespace-pre-wrap break-words text-t3 italic' })
 export const thinkingText = tv({ base: 'md-body md-text ml-6 text-t2 text-sm break-words' })
 
-export const toolName = tv({ base: 'font-mono text-sm text-blue' })
+export const toolName = tv({ base: 'font-mono text-sm text-blue break-all' })
 export const toolSummary = tv({ base: 'text-sm text-t2 font-light break-all whitespace-pre-wrap' })
 export const toolDuration = tv({
   base: 'font-mono text-xs',
