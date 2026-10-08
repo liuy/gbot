@@ -37,14 +37,14 @@ func TestAutoCompactor_AfterTokens_IncludesEngineContextOverhead(t *testing.T) {
 		model: "m", sessionID: "s-overhead", contextWindow: 40000, provider: &compactMockProvider{},
 		ov: 20000,
 	})
-	msgs := makeLargeMessages(10, 10000) // 每条 ~1148 est × 10 ≈ 11.5k > 8000 budget → 真实压缩
+	msgs := makeLargeMessages(10, 10000) // ~1148 est each × 10 ≈ 11.5k > 8000 budget → real compaction
 	result, err := sc.Compact(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	want := EstimateMessagesTokens(result.Messages) + 20000
 	if result.AfterTokens != want {
-		t.Errorf("AfterTokens = %d, want %d (est(%d) + overhead 20000) — 压缩后账本缺静态开销",
+		t.Errorf("AfterTokens = %d, want %d (est(%d) + overhead 20000) — post-compact ledger missing static overhead",
 			result.AfterTokens, want, want-20000)
 	}
 }
@@ -104,7 +104,7 @@ func TestEngine_EstimationFallback_MatchesAnchoredAfterResponse(t *testing.T) {
 		stripped[i].Usage = nil
 	}
 	if got := eng.tokenCountWithEstimation(stripped); got != total {
-		t.Errorf("fallback estimation = %d, want %d — 回退路径必须复现锚点口径（含静态开销）", got, total)
+		t.Errorf("fallback estimation = %d, want %d — fallback must reproduce the anchored total (overhead included)", got, total)
 	}
 }
 
@@ -127,13 +127,13 @@ func TestEngine_RunCompact_ContextTokens_IncludesOverhead(t *testing.T) {
 			Content:    []types.ContentBlock{{Type: types.ContentTypeText, Text: "<summary>sum</summary>"}},
 			StopReason: "end_turn"}, nil
 	}
-	// 不传 Compactor，只配 AutoCompact → engine.go 自动创建、meta=engine → 探针生效
+	// No Compactor passed, only AutoCompact → engine.go auto-creates it with meta=engine so the probe is live.
 	eng := New(&Params{Provider: p, Model: "test-model", AutoCompact: AutoCompactConfig{ContextWindow: 4000}})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, tmpDir)
 	eng.SetSessionID(sess.SessionID)
 
-	msgs := makeLargeMessages(10, 3000) // ~3.5k est > 2000 budget → 真实压缩
+	msgs := makeLargeMessages(10, 3000) // ~3.5k est > 2000 budget → real compaction
 	anchored := types.Message{Role: types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock("done")},
 		Usage:   &types.Usage{InputTokens: 9600}}
@@ -149,10 +149,10 @@ func TestEngine_RunCompact_ContextTokens_IncludesOverhead(t *testing.T) {
 	}
 	want := EstimateMessagesTokens(eng.Messages()) + overheadWant
 	if got := eng.GetContextTokens(); got != want {
-		t.Errorf("ContextTokens = %d, want %d (est(%d) + overhead %d) — AfterTokens 未入账静态开销",
+		t.Errorf("ContextTokens = %d, want %d (est(%d) + overhead %d) — AfterTokens missing static overhead",
 			got, want, want-overheadWant, overheadWant)
 	}
-	// 恢复场景：持久化的会话行与内存账本一致
+	// Restore scenario: the persisted session row matches the in-memory ledger.
 	row, err := store.GetSession(sess.SessionID)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
@@ -191,13 +191,13 @@ func TestEngine_RunCompact_SeedsOverhead_WhenUnlearned(t *testing.T) {
 	eng.SetStore(store, tmpDir)
 	eng.SetSessionID(sess.SessionID)
 
-	msgs := makeLargeMessages(10, 10000) // ~11.5k est → 真实压缩
+	msgs := makeLargeMessages(10, 10000) // ~11.5k est → real compaction
 	anchored := types.Message{Role: types.RoleAssistant,
 		Content: []types.ContentBlock{types.NewTextBlock("done")},
 		Usage:   &types.Usage{InputTokens: 30000}}
 	pre := append(append([]types.Message{}, msgs...), anchored)
 	eng.SetMessages(pre)
-	// 重启场景：锚点在、学习值不在 — 不调用 recordContextOverhead。
+	// Restart scenario: the anchor is present, the learned value is not — recordContextOverhead is never called.
 
 	seedWant := 30000 - EstimateMessagesTokens(pre)
 	if seedWant <= 0 {
@@ -208,12 +208,12 @@ func TestEngine_RunCompact_SeedsOverhead_WhenUnlearned(t *testing.T) {
 		t.Fatalf("runCompact: %v", err)
 	}
 	if got := eng.ContextOverheadTokens(); got != seedWant {
-		t.Errorf("ContextOverheadTokens = %d, want seed %d (anchor 30000 − est %d) — 重启后首次压缩未从锚点播种",
+		t.Errorf("ContextOverheadTokens = %d, want seed %d (anchor 30000 − est %d) — first post-restart compact did not seed from the anchor",
 			got, seedWant, 30000-seedWant)
 	}
 	want := EstimateMessagesTokens(eng.Messages()) + seedWant
 	if got := eng.GetContextTokens(); got != want {
-		t.Errorf("ContextTokens = %d, want %d (est(%d) + seed %d) — AfterTokens 缺锚点播种的静态开销",
+		t.Errorf("ContextTokens = %d, want %d (est(%d) + seed %d) — AfterTokens missing the anchor-seeded static overhead",
 			got, want, want-seedWant, seedWant)
 	}
 	row, err := store.GetSession(sess.SessionID)
@@ -251,37 +251,37 @@ func TestEngine_SeedContextOverhead_Guards(t *testing.T) {
 			Content: []types.ContentBlock{types.NewTextBlock("done")},
 			Usage:   &types.Usage{InputTokens: 9000}})
 		want := 9000 - EstimateMessagesTokens(eng.Messages())
-		eng.seedContextOverhead(anchoredSet(30000)) // 可播种 30000−est ≠ want
+		eng.seedContextOverhead(anchoredSet(30000)) // would seed 30000−est ≠ want
 		if got := eng.ContextOverheadTokens(); got != want {
-			t.Errorf("overhead = %d after seed attempt, want learned %d — 学习值必须压过种子", got, want)
+			t.Errorf("overhead = %d after seed attempt, want learned %d — the learned value must win over the seed", got, want)
 		}
 	})
 
 	t.Run("learned_zero_wins", func(t *testing.T) {
 		t.Parallel()
 		eng := newEngine()
-		// 学习到合法的 0：内容估计已覆盖账单（钳位路径）。
+		// A legitimate learned 0: the content estimate already covers the bill (clamp path).
 		eng.SetMessages(makeLargeMessages(10, 12000))
 		eng.recordContextOverhead(&types.Message{Role: types.RoleAssistant,
 			Content: []types.ContentBlock{types.NewTextBlock("done")},
 			Usage:   &types.Usage{InputTokens: 100}})
 		eng.seedContextOverhead(anchoredSet(30000))
 		if got := eng.ContextOverheadTokens(); got != 0 {
-			t.Errorf("overhead = %d after seed attempt, want learned 0 — 0 不能当未学习哨兵", got)
+			t.Errorf("overhead = %d after seed attempt, want learned 0 — 0 must not be treated as the unset sentinel", got)
 		}
 	})
 
 	t.Run("negative_residual_stays_unset_then_good_anchor_seeds", func(t *testing.T) {
 		t.Parallel()
 		eng := newEngine()
-		eng.seedContextOverhead(anchoredSet(100)) // est ≈ 250 > 100 → 负残差
+		eng.seedContextOverhead(anchoredSet(100)) // est ≈ 250 > 100 → negative residual
 		if got := eng.ContextOverheadTokens(); got != 0 {
 			t.Errorf("overhead = %d after negative residual, want 0 (unset)", got)
 		}
-		// unset 意味着稍后的好锚点仍可播种。
+		// Unset means a later good anchor can still seed.
 		eng.seedContextOverhead(anchoredSet(30000))
 		if got := eng.ContextOverheadTokens(); got != goodSeed() {
-			t.Errorf("overhead = %d, want %d — 负残差后好锚点必须仍能播种", got, goodSeed())
+			t.Errorf("overhead = %d, want %d — a good anchor must still seed after a negative residual", got, goodSeed())
 		}
 	})
 
@@ -289,7 +289,7 @@ func TestEngine_SeedContextOverhead_Guards(t *testing.T) {
 		t.Parallel()
 		eng := newEngine()
 		pre := anchoredSet(0)
-		// 锚点 base 精确等于估计 → 残差 0：不留种子、不占坑。
+		// Anchor base exactly equals the estimate → residual 0: no seed, and the unset state is preserved.
 		exact := EstimateMessagesTokens(pre)
 		pre[2].Usage = &types.Usage{InputTokens: exact}
 		eng.seedContextOverhead(pre)
@@ -298,7 +298,7 @@ func TestEngine_SeedContextOverhead_Guards(t *testing.T) {
 		}
 		eng.seedContextOverhead(anchoredSet(30000))
 		if got := eng.ContextOverheadTokens(); got != goodSeed() {
-			t.Errorf("overhead = %d, want %d — 零残差必须视为未设置", got, goodSeed())
+			t.Errorf("overhead = %d, want %d — a zero residual must count as unset", got, goodSeed())
 		}
 	})
 
@@ -306,12 +306,12 @@ func TestEngine_SeedContextOverhead_Guards(t *testing.T) {
 		t.Parallel()
 		eng := newEngine()
 		pre := anchoredSet(0)
-		// 锚点 base = est + 1 → 残差恰为 1：越过 0 门限就必须播种。
+		// Anchor base = est + 1 → residual is exactly 1: anything above 0 must seed.
 		exact := EstimateMessagesTokens(pre)
 		pre[2].Usage = &types.Usage{InputTokens: exact + 1}
 		eng.seedContextOverhead(pre)
 		if got := eng.ContextOverheadTokens(); got != 1 {
-			t.Errorf("overhead = %d, want 1 — 残差 1 必须播种，不得并入非正门限", got)
+			t.Errorf("overhead = %d, want 1 — a residual of 1 must seed, not fall into the non-positive guard", got)
 		}
 	})
 
@@ -320,7 +320,7 @@ func TestEngine_SeedContextOverhead_Guards(t *testing.T) {
 		eng := newEngine()
 		eng.seedContextOverhead(anchoredSet(30000))
 		want := goodSeed()
-		// 二次播种（压缩后的消息集锚点已过期）不得覆盖首个种子。
+		// A second seed (post-compact message set with a stale anchor) must not overwrite the first.
 		eng.seedContextOverhead(anchoredSet(50000))
 		if got := eng.ContextOverheadTokens(); got != want {
 			t.Errorf("overhead = %d after second seed, want first seed %d", got, want)
@@ -360,7 +360,7 @@ func TestEngine_ManualCompact_SeedsOverhead(t *testing.T) {
 		t.Fatalf("ManualCompact: %v", err)
 	}
 	if got := eng.ContextOverheadTokens(); got != want {
-		t.Errorf("ContextOverheadTokens = %d, want seed %d — 手动 /compact 路径未播种", got, want)
+		t.Errorf("ContextOverheadTokens = %d, want seed %d — the manual /compact path did not seed", got, want)
 	}
 }
 

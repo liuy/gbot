@@ -418,7 +418,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	// Summary message (if available). The store form is created first and the
 	// engine message is derived from it through StoreMessageToEngine — the
 	// exact reload path — so a restart reproduces a byte-identical engine
-	// message by construction (存=发). The message also joins the RecordCompact
+	// message by construction (stored = sent). The message also joins the RecordCompact
 	// persistence set: without the summary row, a restart loses ~all summary
 	// tokens from the request (provider cache miss + pre-compact amnesia).
 	if summaryText != "" {

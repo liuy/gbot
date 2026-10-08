@@ -76,7 +76,7 @@ var compactableTools = map[string]bool{
 	"Glob":  true, // pkg/tool/glob/glob.go:61)
 	"Edit":  true, // pkg/tool/fileedit/fileedit.go:114
 	"Write": true, // pkg/tool/filewrite/filewrite.go:400
-	// WebSearch/WebFetch: gbot 未实现，不包含
+	// WebSearch/WebFetch: not implemented in gbot, excluded
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ type MicrocompactConfig struct {
 
 var defaultMicrocompactConfig = MicrocompactConfig{
 	TimeBased: TimeBasedMCConfig{
-		Enabled:             true, // gbot 默认开启（MiniMax 支持 cache）
+		Enabled:             true, // on by default in gbot (MiniMax supports cache)
 		GapThresholdMinutes: 60,
 		KeepRecent:          5,
 	},
@@ -699,7 +699,7 @@ func MicrocompactMessages(messages []types.Message, querySource string, logger *
 
 	// Cached MC: skip. Source: microCompact.ts:276-286
 	// TS: if feature('CACHED_MICROCOMPACT') { ... }
-	// gbot: cachedMC 模块不存在，等价于 feature flag off
+	// gbot: the cachedMC module does not exist, equivalent to feature flag off
 
 	return MicrocompactResult{Messages: messages}
 }
