@@ -1127,3 +1127,60 @@ func memoryDetailPaths(ds []MemoryFileDetail) []string {
 	}
 	return out
 }
+
+func TestBreakdown_CodeModeMCPToolsHidden(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	directSchema := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
+	reg.SetToolsForTest([]mcp.DiscoveredTool{
+		// Code-mode tool first: the skip must not abort iteration over the
+		// tools that follow it.
+		{
+			Name: "mcp__srv__secret", OriginalName: "secret", ServerName: "srv",
+			Description: "hidden", InputSchema: json.RawMessage(`{"type":"object"}`),
+			Mode: mcp.ModeCode,
+		},
+		{
+			Name: "mcp__srv__direct", OriginalName: "direct", ServerName: "srv",
+			Description: "direct load", InputSchema: directSchema,
+			Mode: mcp.ModeDirect, // AlwaysLoad stays false: direct must still load
+		},
+		{
+			Name: "mcp__srv__ondemand", OriginalName: "ondemand", ServerName: "srv",
+			Description: "load on demand", InputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	})
+	e.mcpRegistry = reg
+	// Mirror refreshTools: discovered MCP tools land in the engine tool map.
+	e.tools["mcp__srv__direct"] = NewMCPTool(reg.GetTools()[1], nil)
+	e.tools["mcp__srv__secret"] = NewMCPTool(reg.GetTools()[0], nil)
+	e.SetSystemPrompt("x")
+	e.ContextTokens = 50_000
+
+	// Estimator: only the direct-mode tool counts as LLM-loaded.
+	want := e.estimateMCPSchema("direct load", directSchema)
+	if got := e.estimateMCPLoadedTools(reg); got != want {
+		t.Errorf("estimateMCPLoadedTools = %d, want %d (direct only)", got, want)
+	}
+
+	bd := e.ContextBreakdown()
+	for _, d := range bd.MCPToolsLoaded {
+		if d.Name == "secret" {
+			t.Error("code-mode tool must not appear in MCPToolsLoaded")
+		}
+	}
+	for _, d := range bd.MCPToolsDeferred {
+		if d.Name == "secret" {
+			t.Error("code-mode tool must not appear in MCPToolsDeferred")
+		}
+	}
+	var directLoaded bool
+	for _, d := range bd.MCPToolsLoaded {
+		if d.Name == "direct" {
+			directLoaded = true
+		}
+	}
+	if !directLoaded {
+		t.Error("direct-mode tool must appear in MCPToolsLoaded even with AlwaysLoad=false")
+	}
+}

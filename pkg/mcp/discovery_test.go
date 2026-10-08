@@ -1366,3 +1366,65 @@ func TestDiscoverForServer_ToolFetchErrorStops(t *testing.T) {
 		t.Errorf("commands should be nil when tool fetch fails, got %v", d.Commands)
 	}
 }
+
+func TestFetchToolsForServer_StampsMode(t *testing.T) {
+	conn, cleanup := connectTestServer(t,
+		&mcp.Tool{Name: "secret_tool", Description: "hidden from LLM"},
+	)
+	defer cleanup()
+	conn.Config.Config = &StdioConfig{Command: "test", Mode: ModeCode}
+
+	cache := mustLRU[string, []DiscoveredTool](10)
+	tools, err := FetchToolsForServer(context.Background(), conn, cache)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Mode != ModeCode {
+		t.Errorf("Mode = %q, want %q (stamped from server config)", tools[0].Mode, ModeCode)
+	}
+
+	// Default (no mode on config) must stamp "" — equivalent to deferred.
+	conn2, cleanup2 := connectTestServer(t,
+		&mcp.Tool{Name: "plain_tool", Description: "default exposure"},
+	)
+	defer cleanup2()
+
+	cache2 := mustLRU[string, []DiscoveredTool](10)
+	tools2, err := FetchToolsForServer(context.Background(), conn2, cache2)
+	if err != nil {
+		t.Fatalf("fetch default: %v", err)
+	}
+	if len(tools2) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools2))
+	}
+	if tools2[0].Mode != "" {
+		t.Errorf("Mode = %q, want \"\" for unset mode", tools2[0].Mode)
+	}
+}
+
+func TestServerToolMode(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  McpServerConfig
+		want ToolMode
+	}{
+		{"stdio", &StdioConfig{Command: "x", Mode: ModeCode}, ModeCode},
+		{"sse", &SSEConfig{Type: TransportSSE, URL: "https://x", Mode: ModeDirect}, ModeDirect},
+		{"sse-ide", &SSEIDEConfig{Type: TransportSSEIDE, URL: "https://x", IDEName: "ide", Mode: ModeDeferred}, ModeDeferred},
+		{"ws-ide", &WSIDEConfig{Type: TransportWSIDE, URL: "wss://x", IDEName: "ide", Mode: ModeCode}, ModeCode},
+		{"http", &HTTPConfig{Type: TransportHTTP, URL: "https://x", Mode: ModeDirect}, ModeDirect},
+		{"ws", &WSConfig{Type: TransportWS, URL: "wss://x", Mode: ModeDeferred}, ModeDeferred},
+		{"unset stdio mode", &StdioConfig{Command: "x"}, ""},
+		{"sdk defaults to deferred", &SDKConfig{Name: "x"}, ModeDeferred},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServerToolMode(tc.cfg); got != tc.want {
+				t.Errorf("ServerToolMode(%T) = %q, want %q", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}

@@ -500,6 +500,39 @@ func TestSearchHint_NoHint(t *testing.T) {
 	}
 }
 
+func TestIsCodeOnly(t *testing.T) {
+	t.Parallel()
+
+	// builtTool implements Tool but NOT CodeOnlyTool.
+	plain := tool.BuildTool(tool.ToolDef{
+		Name_: "Plain",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	})
+	if tool.IsCodeOnly(plain) {
+		t.Error("IsCodeOnly() = true, want false for tool without the interface")
+	}
+
+	// minimalTool likewise has no optional interfaces.
+	if tool.IsCodeOnly(minimalTool{}) {
+		t.Error("IsCodeOnly() = true, want false for minimalTool")
+	}
+
+	if !tool.IsCodeOnly(codeOnlyFake{}) {
+		t.Error("IsCodeOnly() = false, want true for CodeOnlyTool with IsCodeOnly()=true")
+	}
+}
+
+// codeOnlyFake implements CodeOnlyTool returning true.
+type codeOnlyFake struct {
+	minimalTool
+}
+
+func (codeOnlyFake) IsCodeOnly() bool { return true }
+
 // minimalTool implements only the Tool interface — no optional interfaces.
 type minimalTool struct{}
 

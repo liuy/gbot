@@ -466,13 +466,22 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	}
 
 	// Get all tools from context
-	allTools := tctx.Options.Tools
+	// Code-only tools are invisible to the model: excluded from the deferred
+	// set AND from every allTools fallback (exact-name fast path, select:,
+	// keyword fallback), so neither search nor direct selection can surface them.
+	allTools := make(map[string]tool.Tool, len(tctx.Options.Tools))
+	for name, t := range tctx.Options.Tools {
+		if tool.IsCodeOnly(t) {
+			continue
+		}
+		allTools[name] = t
+	}
 
 	// Filter to deferred tools only
 	// Source: ToolSearchTool.ts:331 — const deferredTools = tools.filter(isDeferredTool)
 	deferredTools := make(map[string]tool.Tool)
 	for name, t := range allTools {
-		if tool.IsDeferred(t) {
+		if tool.IsDeferred(t) && !tool.IsCodeOnly(t) {
 			deferredTools[name] = t
 		}
 	}

@@ -33,6 +33,34 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// ToolMode — gbot extension (no TS counterpart)
+// ---------------------------------------------------------------------------
+
+// ToolMode controls how a server's tools are exposed to the LLM. gbot
+// extension (no TS counterpart): "direct" enters the initial tool list,
+// "deferred" (default, = historical behavior) is listed by name and
+// discoverable via ToolSearch, "code" is hidden from the LLM entirely
+// (tool list, ToolSearch, name announcement) while staying callable via
+// ExecuteTool (REPL tools.*).
+type ToolMode string
+
+const (
+	ModeDirect   ToolMode = "direct"
+	ModeDeferred ToolMode = "deferred"
+	ModeCode     ToolMode = "code"
+)
+
+// Valid treats the zero value ("") as the deferred default; normalization
+// happens at consumption (IsDeferred/IsCodeOnly), not at parse.
+func (m ToolMode) Valid() bool {
+	switch m {
+	case "", ModeDirect, ModeDeferred, ModeCode:
+		return true
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
 // ConfigScope — Source: types.ts:10-21 ConfigScopeSchema
 // ---------------------------------------------------------------------------
 
@@ -67,6 +95,7 @@ type StdioConfig struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	Mode    ToolMode          `json:"mode,omitempty"`
 }
 
 func (c *StdioConfig) GetTransport() Transport { return TransportStdio }
@@ -80,6 +109,7 @@ type SSEConfig struct {
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`
+	Mode          ToolMode          `json:"mode,omitempty"`
 	OAuth         *OAuthConfig      `json:"oauth,omitempty"`
 }
 
@@ -92,6 +122,7 @@ type SSEIDEConfig struct {
 	URL                 string    `json:"url"`
 	IDEName             string    `json:"ideName"`
 	IDERunningInWindows bool      `json:"ideRunningInWindows,omitempty"`
+	Mode                ToolMode  `json:"mode,omitempty"`
 }
 
 func (c *SSEIDEConfig) GetTransport() Transport { return TransportSSEIDE }
@@ -104,6 +135,7 @@ type WSIDEConfig struct {
 	IDEName             string    `json:"ideName"`
 	AuthToken           string    `json:"authToken,omitempty"`
 	IDERunningInWindows bool      `json:"ideRunningInWindows,omitempty"`
+	Mode                ToolMode  `json:"mode,omitempty"`
 }
 
 func (c *WSIDEConfig) GetTransport() Transport { return TransportWSIDE }
@@ -117,6 +149,7 @@ type HTTPConfig struct {
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`
+	Mode          ToolMode          `json:"mode,omitempty"`
 	OAuth         *OAuthConfig      `json:"oauth,omitempty"`
 }
 
@@ -130,6 +163,7 @@ type WSConfig struct {
 	URL           string            `json:"url"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	HeadersHelper string            `json:"headersHelper,omitempty"`
+	Mode          ToolMode          `json:"mode,omitempty"`
 }
 
 func (c *WSConfig) GetTransport() Transport { return TransportWS }
@@ -506,6 +540,30 @@ func UnmarshalServerConfig(data json.RawMessage) (McpServerConfig, error) {
 		configType = "stdio"
 	}
 
+	// Fail-fast on invalid mode values: a typo silently falling back to
+	// deferred would expose tools the user meant to hide from the LLM.
+	validateMode := func(cfg McpServerConfig, configType string) error {
+		var mode ToolMode
+		switch c := cfg.(type) {
+		case *StdioConfig:
+			mode = c.Mode
+		case *SSEConfig:
+			mode = c.Mode
+		case *SSEIDEConfig:
+			mode = c.Mode
+		case *WSIDEConfig:
+			mode = c.Mode
+		case *HTTPConfig:
+			mode = c.Mode
+		case *WSConfig:
+			mode = c.Mode
+		}
+		if !mode.Valid() {
+			return fmt.Errorf("mcp: invalid mode %q for %s server (want direct, deferred, or code)", mode, configType)
+		}
+		return nil
+	}
+
 	switch configType {
 	case "stdio":
 		var cfg StdioConfig
@@ -515,11 +573,17 @@ func UnmarshalServerConfig(data json.RawMessage) (McpServerConfig, error) {
 		if cfg.Command == "" {
 			return nil, fmt.Errorf("mcp: stdio command cannot be empty")
 		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
+		}
 		return &cfg, nil
 	case "sse":
 		var cfg SSEConfig
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("mcp: invalid sse config: %w", err)
+		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
 		}
 		return &cfg, nil
 	case "sse-ide":
@@ -527,11 +591,17 @@ func UnmarshalServerConfig(data json.RawMessage) (McpServerConfig, error) {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("mcp: invalid sse-ide config: %w", err)
 		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
+		}
 		return &cfg, nil
 	case "ws-ide":
 		var cfg WSIDEConfig
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("mcp: invalid ws-ide config: %w", err)
+		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
 		}
 		return &cfg, nil
 	case "http":
@@ -539,11 +609,17 @@ func UnmarshalServerConfig(data json.RawMessage) (McpServerConfig, error) {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("mcp: invalid http config: %w", err)
 		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
+		}
 		return &cfg, nil
 	case "ws":
 		var cfg WSConfig
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("mcp: invalid ws config: %w", err)
+		}
+		if err := validateMode(&cfg, configType); err != nil {
+			return nil, err
 		}
 		return &cfg, nil
 	case "sdk":

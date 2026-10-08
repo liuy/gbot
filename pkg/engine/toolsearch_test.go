@@ -8,7 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -952,5 +954,367 @@ func TestRestoreFromToolResult_InvalidJSONContent(t *testing.T) {
 	// Should fall through to string(block.Content) which has no <function> blocks
 	if len(state.DiscoveredNames()) != 0 {
 		t.Error("expected no discoveries from non-JSON content without function blocks")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Code-only tools — hidden from the LLM (list, ToolSearch, announcement),
+// still callable via ExecuteTool (REPL tools.*).
+// ---------------------------------------------------------------------------
+
+// codeOnlyStubTool wraps a tool and marks it code-only. It wraps a deferred
+// stub deliberately: the code-only axis must win even if the wrapped tool
+// would otherwise be deferred.
+type codeOnlyStubTool struct {
+	tool.Tool
+}
+
+func (codeOnlyStubTool) IsCodeOnly() bool { return true }
+
+func TestFilterToolsForRequest_CodeOnlyExcluded(t *testing.T) {
+	codeOnly := codeOnlyStubTool{deferredStubTool("mcp__s__secret")}
+	tools := map[string]tool.Tool{
+		"Read":           tsStubTool("Read"),
+		"DeferredA":      deferredStubTool("DeferredA"),
+		"zz_tail":        tsStubTool("zz_tail"), // sorts after mcp__s__secret in toolOrder
+		"mcp__s__secret": codeOnly,
+	}
+	state := newToolSearchState()
+	order := tsToolOrder(tools)
+
+	active, deferred, activated := FilterToolsForRequest(tools, state, order)
+
+	if !activated {
+		t.Fatal("expected filtering activated (deferred tool present)")
+	}
+	activeNames := tsExtractToolNames(active)
+	if !tsContainsStr(activeNames, "Read") {
+		t.Error("expected Read in active tools")
+	}
+	if !tsContainsStr(activeNames, "zz_tail") {
+		t.Error("expected zz_tail in active tools (tools after the code-only entry must still be partitioned)")
+	}
+	if tsContainsStr(activeNames, "mcp__s__secret") {
+		t.Error("code-only tool must not appear in active tools")
+	}
+	deferredNames := tsExtractToolNames(deferred)
+	if !tsContainsStr(deferredNames, "DeferredA") {
+		t.Error("expected DeferredA in deferred partition")
+	}
+	if tsContainsStr(deferredNames, "mcp__s__secret") {
+		t.Error("code-only tool must not appear in deferred partition")
+	}
+}
+
+func TestFilterToolsForRequest_OnlyCodeTools_NotActivated(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"mcp__s__secret": codeOnlyStubTool{tsStubTool("mcp__s__secret")},
+	}
+	state := newToolSearchState()
+	order := tsToolOrder(tools)
+
+	active, _, activated := FilterToolsForRequest(tools, state, order)
+
+	if activated {
+		t.Error("expected filtering NOT activated (only code-only tools, nothing searchable)")
+	}
+	if len(active) != 0 {
+		t.Errorf("expected 0 active tools, got %v", tsExtractToolNames(active))
+	}
+}
+
+func TestDeferredToolsAnnouncement_CodeOnlyAbsent(t *testing.T) {
+	codeOnly := codeOnlyStubTool{deferredStubTool("mcp__s__secret")}
+	tools := map[string]tool.Tool{
+		"Read":           tsStubTool("Read"),
+		"DeferredA":      deferredStubTool("DeferredA"),
+		"mcp__s__secret": codeOnly,
+	}
+	state := newToolSearchState()
+	_, deferred, activated := FilterToolsForRequest(tools, state, tsToolOrder(tools))
+	if !activated {
+		t.Fatal("expected filtering activated")
+	}
+	ann := DeferredToolsAnnouncement(deferred)
+	if strings.Contains(ann, "mcp__s__secret") {
+		t.Errorf("announcement must not mention code-only tool:\n%s", ann)
+	}
+	if !strings.Contains(ann, "DeferredA") {
+		t.Errorf("announcement should list deferred tool:\n%s", ann)
+	}
+}
+
+func TestDumpAPIRequest_CodeOnlyExcluded(t *testing.T) {
+	// Fallback path: no deferred tools, no ToolSearch in the map.
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+	t.Cleanup(func() { e.Close() })
+	disabled := tool.BuildTool(tool.ToolDef{
+		Name_:        "Disabled",
+		IsEnabled_:   func() bool { return false },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(json.RawMessage) (string, error) { return "disabled", nil },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+	})
+	e.tools = map[string]tool.Tool{
+		"Echo":           tsStubTool("Echo"),
+		"Disabled":       disabled,
+		"mcp__s__secret": codeOnlyStubTool{tsStubTool("mcp__s__secret")},
+	}
+	e.toolOrder = tsToolOrder(e.tools)
+
+	dump := e.DumpAPIRequest()
+	var names []string
+	for _, td := range dump.Tools {
+		names = append(names, td.Name)
+	}
+	if !tsContainsStr(names, "Echo") {
+		t.Errorf("expected Echo in dump.Tools, got %v", names)
+	}
+	if tsContainsStr(names, "mcp__s__secret") {
+		t.Errorf("dump.Tools contains code-only tool mcp__s__secret: %v", names)
+	}
+	if tsContainsStr(names, "Disabled") {
+		t.Errorf("dump.Tools contains disabled tool: %v", names)
+	}
+
+	// Active path: ToolSearch present, deferred partition active.
+	e2 := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+	t.Cleanup(func() { e2.Close() })
+	e2.tools = map[string]tool.Tool{
+		"Echo":             tsStubTool("Echo"),
+		"DeferredA":        deferredStubTool("DeferredA"),
+		ToolSearchToolName: tsStubTool(ToolSearchToolName),
+		"mcp__s__secret":   codeOnlyStubTool{tsStubTool("mcp__s__secret")},
+	}
+	e2.toolOrder = tsToolOrder(e2.tools)
+
+	dump2 := e2.DumpAPIRequest()
+	var names2 []string
+	for _, td := range dump2.Tools {
+		names2 = append(names2, td.Name)
+	}
+	if !tsContainsStr(names2, "Echo") {
+		t.Errorf("expected Echo in dump2.Tools, got %v", names2)
+	}
+	if tsContainsStr(names2, "mcp__s__secret") {
+		t.Errorf("dump2.Tools contains code-only tool mcp__s__secret: %v", names2)
+	}
+}
+
+func TestRefreshTools_CodeOnlyDoesNotRegisterToolSearch(t *testing.T) {
+	codeOnly := NewMCPTool(mcp.DiscoveredTool{
+		Name: "mcp__s__secret", OriginalName: "secret", ServerName: "s",
+		Description: "hidden", Mode: mcp.ModeCode,
+	}, nil)
+	eng := New(&Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{codeOnly.Name(): codeOnly}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.refreshTools()
+	if _, ok := eng.tools[ToolSearchToolName]; ok {
+		t.Error("ToolSearch must not be registered when only code-only tools exist (nothing to search)")
+	}
+	if _, ok := eng.tools["mcp__s__secret"]; !ok {
+		t.Error("code-only tool must stay registered in e.tools (REPL reachability)")
+	}
+
+	// Adding a deferred MCP tool alongside re-activates ToolSearch.
+	deferred := NewMCPTool(mcp.DiscoveredTool{
+		Name: "mcp__s__ondemand", OriginalName: "ondemand", ServerName: "s",
+		Description: "deferred tool", Mode: mcp.ModeDeferred,
+	}, nil)
+	eng.toolsProvider = func() map[string]tool.Tool {
+		return map[string]tool.Tool{
+			codeOnly.Name(): codeOnly,
+			deferred.Name(): deferred,
+		}
+	}
+	eng.refreshTools()
+	if _, ok := eng.tools[ToolSearchToolName]; !ok {
+		t.Error("ToolSearch must be registered once a deferred tool exists")
+	}
+}
+
+func TestAllTools_IncludesCodeOnlyTool(t *testing.T) {
+	eng := New(&Params{
+		Provider:      &mockProvider{},
+		Model:         "test-model",
+		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{} },
+		MCPRegistry:   mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.mcpRegistry.SetToolsForTest([]mcp.DiscoveredTool{{
+		Name: "mcp__s__secret", OriginalName: "secret", ServerName: "s",
+		Description: "hidden", InputSchema: json.RawMessage(`{"type":"object"}`),
+		Mode: mcp.ModeCode,
+	}})
+	eng.refreshTools()
+
+	all := eng.AllTools()
+	if _, ok := all["mcp__s__secret"]; !ok {
+		t.Error("AllTools (REPL lister source) must include the code-only tool")
+	}
+	if _, ok := eng.Tools()["mcp__s__secret"]; !ok {
+		t.Error("e.tools must include the code-only tool (ExecuteTool resolution)")
+	}
+}
+
+func TestEngineRequest_ExcludesCodeModeMCPTool(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+	codeOnly := NewMCPTool(mcp.DiscoveredTool{
+		Name: "mcp__s__secret", OriginalName: "secret", ServerName: "s",
+		Description: "hidden", InputSchema: json.RawMessage(`{"type":"object"}`),
+		Mode: mcp.ModeCode,
+	}, nil)
+	disabled := tool.BuildTool(tool.ToolDef{
+		Name_:        "Disabled",
+		IsEnabled_:   func() bool { return false },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(json.RawMessage) (string, error) { return "disabled", nil },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+	})
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test-model",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Echo":          tsStubTool("Echo"),
+				"Disabled":      disabled,
+				codeOnly.Name(): codeOnly,
+			}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if r := eng.QuerySync(ctx, "hi", ""); r.Error != nil {
+		t.Fatalf("unexpected error: %v", r.Error)
+	}
+
+	mp.mu.Lock()
+	req := mp.lastRequest
+	mp.mu.Unlock()
+	if req == nil {
+		t.Fatal("provider never saw a request")
+	}
+	var names []string
+	for _, td := range req.Tools {
+		names = append(names, td.Name)
+	}
+	if !tsContainsStr(names, "Echo") {
+		t.Errorf("request tools missing Echo: %v", names)
+	}
+	if tsContainsStr(names, "mcp__s__secret") {
+		t.Errorf("request tools contain code-mode MCP tool: %v", names)
+	}
+	if tsContainsStr(names, "Disabled") {
+		t.Errorf("request tools contain disabled tool: %v", names)
+	}
+}
+
+// dualToolUseStreamEvents emits one stream with two tool_use blocks: a legit
+// tool first, then a hallucinated call to a code-mode tool.
+func dualToolUseStreamEvents(model string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 20}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_echo", Name: "Echo"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_secret", Name: "mcp__s__secret"}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 10}},
+		{Type: "message_stop"},
+	}
+}
+
+func TestEngineHallucinatedCodeTool_Rejected(t *testing.T) {
+	// The executor map is built by iterating e.tools (map order is random),
+	// so a break-instead-of-skip bug only misbehaves on some orders. Run
+	// enough fresh engines that every order class is exercised.
+	for range 12 {
+		func() {
+			mp := &mockProvider{}
+			// First response: the model calls a legit tool AND hallucinates a
+			// tool_use for the code-mode tool. Second response: text to finish.
+			mp.addResponse(dualToolUseStreamEvents("test-model"), nil)
+			mp.addResponse(textStreamEvents("test-model", "done"), nil)
+			codeOnly := NewMCPTool(mcp.DiscoveredTool{
+				Name: "mcp__s__secret", OriginalName: "secret", ServerName: "s",
+				Description: "hidden", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Mode: mcp.ModeCode,
+			}, nil)
+			eng := New(&Params{
+				Provider: mp,
+				Model:    "test-model",
+				ToolsProvider: func() map[string]tool.Tool {
+					return map[string]tool.Tool{
+						"Echo":          tsStubTool("Echo"),
+						codeOnly.Name(): codeOnly,
+					}
+				},
+			})
+			defer eng.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if r := eng.QuerySync(ctx, "try both tools", ""); r.Error != nil {
+				t.Fatalf("unexpected error: %v", r.Error)
+			}
+
+			results := map[string]*types.ContentBlock{}
+			for _, msg := range eng.Messages() {
+				for i := range msg.Content {
+					cb := &msg.Content[i]
+					if cb.Type == types.ContentTypeToolResult {
+						results[cb.ToolUseID] = cb
+					}
+				}
+			}
+
+			echoRes, ok := results["tu_echo"]
+			if !ok {
+				t.Fatal("no tool_result for legit tool_use tu_echo")
+			}
+			if echoRes.IsError {
+				var parsed []types.ContentBlock
+				if err := json.Unmarshal(echoRes.Content, &parsed); err != nil {
+					t.Fatalf("legit tool must execute; error result failed to parse: %v", err)
+				}
+				if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+					t.Fatalf("legit tool must execute, got non-text error result: %+v", parsed)
+				}
+				t.Fatalf("legit tool must execute, got error: %q", parsed[0].Text)
+			}
+
+			secretRes, ok := results["tu_secret"]
+			if !ok {
+				t.Fatal("no tool_result block for hallucinated tool_use tu_secret")
+			}
+			if !secretRes.IsError {
+				t.Fatal("tool_result for hallucinated code-mode tool must be an error")
+			}
+			var parsed []types.ContentBlock
+			if err := json.Unmarshal(secretRes.Content, &parsed); err != nil {
+				t.Fatalf("parse tool_result content: %v", err)
+			}
+			if len(parsed) != 1 || parsed[0].Type != types.ContentTypeText {
+				t.Fatalf("expected single text block, got %+v", parsed)
+			}
+			if !strings.Contains(parsed[0].Text, "No such tool available") {
+				t.Fatalf("error text should mention 'No such tool available', got: %q", parsed[0].Text)
+			}
+		}()
 	}
 }

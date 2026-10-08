@@ -200,6 +200,53 @@ func TestLoadMcpServers_NoManifestField(t *testing.T) {
 	}
 }
 
+func TestLoadMcpServers_ModePreserved(t *testing.T) {
+	root := t.TempDir()
+	mcpConfig := `{"mcpServers":{"pw":{"command":"node","args":["bridge.js"],"mode":"code"}}}`
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	plugin := &ResolvedPlugin{
+		Name:     "browser",
+		RootPath: root,
+		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0", McpServers: "./.mcp.json"},
+	}
+
+	servers := loadMcpServers(plugin)
+	if len(servers) != 1 {
+		t.Fatalf("servers count = %d, want 1", len(servers))
+	}
+	scoped, ok := servers["plugin:browser:pw"]
+	if !ok {
+		t.Fatal("missing scoped server 'plugin:browser:pw'")
+	}
+	raw, err := json.Marshal(scoped.Config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if !strings.Contains(string(raw), `"mode":"code"`) {
+		t.Errorf("mode dropped from server config: got %s, want it to contain \"mode\":\"code\"", raw)
+	}
+}
+
+func TestLoadMcpServers_InvalidMode_SkipsServer(t *testing.T) {
+	root := t.TempDir()
+	mcpConfig := `{"mcpServers":{"pw":{"command":"node","args":["bridge.js"],"mode":"nope"}}}`
+	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	plugin := &ResolvedPlugin{
+		Name:     "browser",
+		RootPath: root,
+		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0", McpServers: "./.mcp.json"},
+	}
+
+	servers := loadMcpServers(plugin)
+	if len(servers) != 0 {
+		t.Errorf("servers count = %d, want 0 for invalid mode (server must be dropped, not silently deferred)", len(servers))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // loadHooks tests
 // ---------------------------------------------------------------------------

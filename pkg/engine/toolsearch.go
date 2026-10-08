@@ -82,6 +82,8 @@ func (s *toolSearchState) DiscoveredNames() []string {
 //     non-deferred + discovered deferred = active tools
 //     undiscovered deferred = deferred names
 //  4. The ToolSearch tool itself is always included in active tools
+//
+// Code-only tools are excluded from both partitions.
 func FilterToolsForRequest(
 	tools map[string]tool.Tool,
 	state *toolSearchState,
@@ -99,7 +101,7 @@ func FilterToolsForRequest(
 	if deferredCount == 0 {
 		for _, name := range toolOrder {
 			t, ok := tools[name]
-			if !ok || !t.IsEnabled() {
+			if !ok || !t.IsEnabled() || tool.IsCodeOnly(t) {
 				continue
 			}
 			activeTools = append(activeTools, t)
@@ -111,6 +113,11 @@ func FilterToolsForRequest(
 	for _, name := range toolOrder {
 		t, ok := tools[name]
 		if !ok || !t.IsEnabled() {
+			continue
+		}
+		// Code-only tools are invisible to the LLM — must be skipped before
+		// the non-deferred→active branch (code tools report IsDeferred=false).
+		if tool.IsCodeOnly(t) {
 			continue
 		}
 

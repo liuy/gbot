@@ -22,6 +22,7 @@ type mockTool struct {
 	description string
 	deferred    bool
 	searchHint  string
+	codeOnly    bool
 }
 
 func (m *mockTool) Name() string                                { return m.name }
@@ -44,6 +45,7 @@ func (m *mockTool) MaxResultSize() int                        { return 50000 }
 func (m *mockTool) Prompt() string                            { return "" }
 func (m *mockTool) IsDeferred() bool                          { return m.deferred }
 func (m *mockTool) SearchHint() string                        { return m.searchHint }
+func (m *mockTool) IsCodeOnly() bool                          { return m.codeOnly }
 
 // helper to create a deferred tool
 func deferredTool(name, desc string) *mockTool {
@@ -58,6 +60,17 @@ func deferredToolWithHint(name, desc, hint string) *mockTool {
 // helper to create a non-deferred tool
 func regularTool(name, desc string) *mockTool {
 	return &mockTool{name: name, description: desc, deferred: false}
+}
+
+// helper to create a code-only tool (hidden from the LLM entirely)
+func codeOnlyTool(name, desc string) *mockTool {
+	return &mockTool{name: name, description: desc, deferred: false, codeOnly: true}
+}
+
+// helper to create a tool that is BOTH deferred and code-only — code-only
+// must win (defense-in-depth for tools carrying both signals).
+func codeOnlyDeferredTool(name, desc string) *mockTool {
+	return &mockTool{name: name, description: desc, deferred: true, codeOnly: true}
 }
 
 // helper to build a tool map
@@ -714,6 +727,80 @@ func TestExecute_SelectMissing(t *testing.T) {
 	out := result.Data.(*Output)
 	if len(out.Matches) != 0 {
 		t.Errorf("expected 0 matches for non-existent tool, got %d", len(out.Matches))
+	}
+}
+
+func TestExecute_CodeOnlyNotDiscoverable(t *testing.T) {
+	tools := toolMap(
+		deferredTool("FileRead", "Read file contents"),
+		codeOnlyTool("mcp__s__secret", "browser secret automation"),
+	)
+	tctx := makeTctx(tools)
+
+	run := func(query string) *Output {
+		t.Helper()
+		result, err := Execute(context.Background(), json.RawMessage(`{"query": "`+query+`"}`), tctx)
+		if err != nil {
+			t.Fatalf("query %q: unexpected error: %v", query, err)
+		}
+		return result.Data.(*Output)
+	}
+
+	// select: must not reach the code-only tool via the allTools fallback.
+	out := run("select:mcp__s__secret")
+	if len(out.Matches) != 0 {
+		t.Errorf("select: Matches = %v, want empty (code-only tool must not be selectable)", out.Matches)
+	}
+
+	// Exact-name query must not hit the fast path over the full tool set.
+	out = run("mcp__s__secret")
+	if len(out.Matches) != 0 {
+		t.Errorf("exact-name: Matches = %v, want empty (code-only tool must not be name-addressable)", out.Matches)
+	}
+
+	// Keyword matching the code-only tool's description must not return it.
+	out = run("secret")
+	if ts := out.Matches; slices.Contains(ts, "mcp__s__secret") {
+		t.Errorf("keyword: Matches = %v, want no mcp__s__secret", ts)
+	}
+}
+
+func TestExecute_CodeOnlyDeferredToolNotDiscoverable(t *testing.T) {
+	tools := toolMap(
+		codeOnlyDeferredTool("mcp__s__both", "hidden browser automation"),
+		deferredTool("FileRead", "Read file contents"),
+	)
+	tctx := makeTctx(tools)
+
+	result, err := Execute(context.Background(), json.RawMessage(`{"query": "select:mcp__s__both"}`), tctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.Data.(*Output)
+	if len(out.Matches) != 0 {
+		t.Errorf("select: Matches = %v, want empty (code-only wins over deferred)", out.Matches)
+	}
+}
+
+func TestExecute_RegularToolSurvivesCodeOnlyFilter(t *testing.T) {
+	// The allTools filter copies non-code tools while skipping code-only
+	// ones; map iteration order is random, so run enough rounds that a
+	// break-instead-of-continue bug drops the regular tool at least once.
+	for range 10 {
+		tools := toolMap(
+			regularTool("Grep", "Search in files"),
+			codeOnlyTool("mcp__s__secret", "browser secret automation"),
+		)
+		tctx := makeTctx(tools)
+
+		result, err := Execute(context.Background(), json.RawMessage(`{"query": "select:Grep"}`), tctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := result.Data.(*Output)
+		if len(out.Matches) != 1 || out.Matches[0] != "Grep" {
+			t.Fatalf("select:Grep Matches = %v, want [Grep] (regular tool must survive the code-only filter)", out.Matches)
+		}
 	}
 }
 

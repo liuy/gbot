@@ -2571,7 +2571,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		toolsToBuild = activeTools
 	} else {
 		for _, name := range e.toolOrder {
-			if t, ok := e.tools[name]; ok && t.IsEnabled() {
+			if t, ok := e.tools[name]; ok && t.IsEnabled() && !tool.IsCodeOnly(t) {
 				toolsToBuild = append(toolsToBuild, t)
 			}
 		}
@@ -2915,7 +2915,16 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 						// minimal context without access to the full tool map.
 						// When ToolSearch is active, use filtered tool map so undiscovered
 						// deferred tools return "No such tool available" instead of executing.
-						executorToolMap := e.tools
+						// Code-only tools must never enter the LLM dispatch map, even when
+						// ToolSearch is inactive: a hallucinated tool_use for a code-mode tool
+						// must fail with "No such tool", not execute.
+						executorToolMap := make(map[string]tool.Tool, len(e.tools))
+						for name, t := range e.tools {
+							if tool.IsCodeOnly(t) {
+								continue
+							}
+							executorToolMap[name] = t
+						}
 						if toolSearchActive && len(activeTools) > 0 {
 							executorToolMap = make(map[string]tool.Tool, len(activeTools))
 							for _, t := range activeTools {
@@ -3817,7 +3826,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	}
 	if len(toolsToBuild) == 0 {
 		for _, name := range toolOrderCopy {
-			if t, ok := toolsSnapshot[name]; ok && t.IsEnabled() {
+			if t, ok := toolsSnapshot[name]; ok && t.IsEnabled() && !tool.IsCodeOnly(t) {
 				toolsToBuild = append(toolsToBuild, t)
 			}
 		}

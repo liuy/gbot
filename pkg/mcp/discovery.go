@@ -32,8 +32,9 @@ type DiscoveredTool struct {
 	Description  string
 	InputSchema  json.RawMessage
 	Annotations  ToolAnnotations
-	SearchHint   string // Source: client.ts:1779-1784 — _meta.anthropic/searchHint
-	AlwaysLoad   bool   // Source: client.ts:1785 — _meta.anthropic/alwaysLoad
+	SearchHint   string   // Source: client.ts:1779-1784 — _meta.anthropic/searchHint
+	AlwaysLoad   bool     // Source: client.ts:1785 — _meta.anthropic/alwaysLoad
+	Mode         ToolMode // server-level exposure mode stamped at discovery; zero value "" behaves as deferred
 }
 
 // IsReadOnly returns true if the tool is marked as read-only.
@@ -94,6 +95,27 @@ func IsLocalServer(config ScopedMcpServerConfig) bool {
 	return t == TransportStdio || t == TransportSDK || t == ""
 }
 
+// ServerToolMode returns the configured exposure mode for a server config.
+// Unset or unknown config types default to ModeDeferred (historical behavior).
+func ServerToolMode(cfg McpServerConfig) ToolMode {
+	switch c := cfg.(type) {
+	case *StdioConfig:
+		return c.Mode
+	case *SSEConfig:
+		return c.Mode
+	case *SSEIDEConfig:
+		return c.Mode
+	case *WSIDEConfig:
+		return c.Mode
+	case *HTTPConfig:
+		return c.Mode
+	case *WSConfig:
+		return c.Mode
+	default:
+		return ModeDeferred
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FetchToolsForServer — LRU-cached tool discovery
 // Source: client.ts:1743-1998 — fetchToolsForClient (memoizeWithLRU)
@@ -136,6 +158,7 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 	}
 
 	// Source: client.ts:1766-1990 — convert SDK tools to DiscoveredTool
+	mode := ServerToolMode(conn.Config.Config)
 	tools := make([]DiscoveredTool, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		// Source: sanitization.ts — sanitize tool metadata from untrusted server
@@ -182,6 +205,7 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 			Annotations:  annotations,
 			SearchHint:   searchHint,
 			AlwaysLoad:   alwaysLoad,
+			Mode:         mode,
 		})
 	}
 

@@ -47,6 +47,21 @@ func TestAddScopeToServers_AddsScope(t *testing.T) {
 	}
 }
 
+func TestParseMcpConfig_ModeRoundTrip(t *testing.T) {
+	raw := json.RawMessage(`{"mcpServers":{"s":{"command":"node","args":["a.js"],"mode":"code"}}}`)
+	cfg, errs := ParseMcpConfig(raw, true, ScopeProject, "test.mcp.json")
+	if len(errs) != 0 {
+		t.Fatalf("unexpected validation errors: %v", errs)
+	}
+	got, ok := cfg.McpServers["s"]
+	if !ok {
+		t.Fatal("missing server 's' in validated config")
+	}
+	if !strings.Contains(string(got), `"mode":"code"`) {
+		t.Errorf("mode lost through expandVars rebuild: got %s, want it to contain \"mode\":\"code\"", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetServerCommandArray — Source: config.ts:137-144
 // ---------------------------------------------------------------------------

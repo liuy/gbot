@@ -195,12 +195,24 @@ func (t *MCPTool) IsDestructive(_ json.RawMessage) bool {
 	return t.info.IsDestructive()
 }
 
-// IsDeferred implements IsDeferredTool interface.
-// MCP tools are deferred by default unless AlwaysLoad=true.
-// Source: TS prompt.ts:62-68 — alwaysLoad → false, isMcp → true
+// IsDeferred implements IsDeferredTool.
+// Source: TS prompt.ts:62-68 — alwaysLoad → false, isMcp → true.
+// gbot extension: server mode direct/code override the per-tool _meta
+// alwaysLoad signal; code tools are not "deferred" (hidden-from-LLM is a
+// separate axis from deferred-but-discoverable).
 func (t *MCPTool) IsDeferred() bool {
-	return !t.info.AlwaysLoad
+	switch t.info.Mode {
+	case mcp.ModeDirect, mcp.ModeCode:
+		return false
+	default: // ModeDeferred and "" keep the historical rule
+		return !t.info.AlwaysLoad
+	}
 }
+
+// IsCodeOnly implements CodeOnlyTool: excluded from the LLM tool list,
+// ToolSearch, and the deferred announcement, but still executable via
+// ExecuteTool (REPL tools.*).
+func (t *MCPTool) IsCodeOnly() bool { return t.info.Mode == mcp.ModeCode }
 
 func (t *MCPTool) IsConcurrencySafe(_ json.RawMessage) bool {
 	// Remote MCP tools are concurrency-safe (they don't share local state).

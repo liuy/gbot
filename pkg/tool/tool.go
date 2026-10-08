@@ -258,6 +258,14 @@ type IsDeferredTool interface {
 	IsDeferred() bool
 }
 
+// CodeOnlyTool is an optional interface for tools hidden from the LLM
+// (tool list, ToolSearch, deferred-name announcement) that remain callable
+// via ExecuteTool (REPL tools.*, hooks). gbot extension — no TS counterpart.
+type CodeOnlyTool interface {
+	Tool
+	IsCodeOnly() bool
+}
+
 // ToolWithSearchHint is an optional interface for tools that provide a short
 // search hint for ToolSearch scoring.
 type ToolWithSearchHint interface {
@@ -270,6 +278,12 @@ type ToolWithSearchHint interface {
 func IsDeferred(t Tool) bool {
 	d, ok := t.(IsDeferredTool)
 	return ok && d.IsDeferred()
+}
+
+// IsCodeOnly returns whether a tool is hidden from the LLM entirely.
+func IsCodeOnly(t Tool) bool {
+	c, ok := t.(CodeOnlyTool)
+	return ok && c.IsCodeOnly()
 }
 
 // SearchHint returns the search hint for a tool, or empty string if none.

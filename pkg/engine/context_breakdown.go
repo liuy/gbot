@@ -452,6 +452,20 @@ func (e *Engine) estimateSystemTools(
 	return total
 }
 
+// mcpToolLLMLoaded reports whether a discovered MCP tool enters the LLM
+// request: direct-mode servers always load; code-mode never; default keeps
+// the historical _meta alwaysLoad signal.
+func mcpToolLLMLoaded(t mcp.DiscoveredTool) bool {
+	switch t.Mode {
+	case mcp.ModeDirect:
+		return true
+	case mcp.ModeCode:
+		return false
+	default:
+		return t.AlwaysLoad
+	}
+}
+
 func (e *Engine) estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
 	if mcpReg == nil {
 		return 0
@@ -459,7 +473,7 @@ func (e *Engine) estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
 	tools := mcpReg.GetTools()
 	total := 0
 	for _, t := range tools {
-		if t.AlwaysLoad {
+		if mcpToolLLMLoaded(t) {
 			total += e.estimateMCPSchema(t.Description, t.InputSchema)
 		}
 	}
@@ -969,6 +983,11 @@ func (e *Engine) buildDetails(
 	// MCP tools (loaded vs deferred).
 	if mcpReg != nil {
 		for _, t := range mcpReg.GetTools() {
+			// Code-mode tools are neither loaded nor deferred in the breakdown —
+			// they never enter the LLM request, and the dump mirrors the request.
+			if t.Mode == mcp.ModeCode {
+				continue
+			}
 			detail := MCPToolDetail{
 				Name:       t.OriginalName,
 				ServerName: t.ServerName,

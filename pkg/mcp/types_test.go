@@ -1081,3 +1081,122 @@ func TestScopedMcpServerConfig_MarshalJSON_MarshalError(t *testing.T) {
 		t.Errorf("error = %v, want 'forced marshal failure'", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ToolMode — parse, validate, round-trip
+// ---------------------------------------------------------------------------
+
+func TestUnmarshalServerMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     json.RawMessage
+		want    ToolMode
+		wantErr string
+	}{
+		{"stdio code", json.RawMessage(`{"command":"node","mode":"code"}`), ModeCode, ""},
+		{"stdio direct", json.RawMessage(`{"command":"node","mode":"direct"}`), ModeDirect, ""},
+		{"stdio deferred", json.RawMessage(`{"command":"node","mode":"deferred"}`), ModeDeferred, ""},
+		{"stdio no mode", json.RawMessage(`{"command":"node"}`), "", ""},
+		{"stdio invalid mode", json.RawMessage(`{"command":"node","mode":"nope"}`), "", "invalid mode"},
+		{"http direct", json.RawMessage(`{"type":"http","url":"https://x","mode":"direct"}`), ModeDirect, ""},
+		{"http invalid mode", json.RawMessage(`{"type":"http","url":"https://x","mode":"nope"}`), "", "invalid mode"},
+		{"sse code", json.RawMessage(`{"type":"sse","url":"https://x","mode":"code"}`), ModeCode, ""},
+		{"sse invalid mode", json.RawMessage(`{"type":"sse","url":"https://x","mode":"nope"}`), "", "invalid mode"},
+		{"ws deferred", json.RawMessage(`{"type":"ws","url":"wss://x","mode":"deferred"}`), ModeDeferred, ""},
+		{"ws invalid mode", json.RawMessage(`{"type":"ws","url":"wss://x","mode":"nope"}`), "", "invalid mode"},
+		{"sse-ide code", json.RawMessage(`{"type":"sse-ide","url":"https://x","ideName":"ide","mode":"code"}`), ModeCode, ""},
+		{"sse-ide invalid mode", json.RawMessage(`{"type":"sse-ide","url":"https://x","ideName":"ide","mode":"nope"}`), "", "invalid mode"},
+		{"ws-ide invalid mode", json.RawMessage(`{"type":"ws-ide","url":"wss://x","ideName":"ide","mode":"nope"}`), "", "invalid mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := UnmarshalServerConfig(tc.raw)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var got ToolMode
+			switch c := cfg.(type) {
+			case *StdioConfig:
+				got = c.Mode
+			case *SSEConfig:
+				got = c.Mode
+			case *SSEIDEConfig:
+				got = c.Mode
+			case *WSIDEConfig:
+				got = c.Mode
+			case *HTTPConfig:
+				got = c.Mode
+			case *WSConfig:
+				got = c.Mode
+			default:
+				t.Fatalf("unexpected config type %T", cfg)
+			}
+			if got != tc.want {
+				t.Errorf("Mode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandConfigEnv_PreservesMode(t *testing.T) {
+	stdio := &StdioConfig{Command: "node", Args: []string{"a.js"}, Mode: ModeCode}
+	expanded, missing := ExpandConfigEnv(stdio)
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %v", missing)
+	}
+	es, ok := expanded.(*StdioConfig)
+	if !ok {
+		t.Fatalf("expected *StdioConfig, got %T", expanded)
+	}
+	if es.Mode != ModeCode {
+		t.Errorf("stdio Mode after expand = %q, want %q", es.Mode, ModeCode)
+	}
+
+	http := &HTTPConfig{Type: TransportHTTP, URL: "https://x", Mode: ModeDirect}
+	expanded, missing = ExpandConfigEnv(http)
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %v", missing)
+	}
+	eh, ok := expanded.(*HTTPConfig)
+	if !ok {
+		t.Fatalf("expected *HTTPConfig, got %T", expanded)
+	}
+	if eh.Mode != ModeDirect {
+		t.Errorf("http Mode after expand = %q, want %q", eh.Mode, ModeDirect)
+	}
+
+	sse := &SSEConfig{Type: TransportSSE, URL: "https://x", Mode: ModeCode}
+	expanded, missing = ExpandConfigEnv(sse)
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %v", missing)
+	}
+	es2, ok := expanded.(*SSEConfig)
+	if !ok {
+		t.Fatalf("expected *SSEConfig, got %T", expanded)
+	}
+	if es2.Mode != ModeCode {
+		t.Errorf("sse Mode after expand = %q, want %q", es2.Mode, ModeCode)
+	}
+
+	ws := &WSConfig{Type: TransportWS, URL: "wss://x", Mode: ModeDeferred}
+	expanded, missing = ExpandConfigEnv(ws)
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %v", missing)
+	}
+	ew, ok := expanded.(*WSConfig)
+	if !ok {
+		t.Fatalf("expected *WSConfig, got %T", expanded)
+	}
+	if ew.Mode != ModeDeferred {
+		t.Errorf("ws Mode after expand = %q, want %q", ew.Mode, ModeDeferred)
+	}
+}

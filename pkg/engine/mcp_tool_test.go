@@ -741,3 +741,52 @@ func TestMCPTool_DecodeResult_RejectsBareStruct(t *testing.T) {
 		t.Error("DecodeResult must reject non-array-form input")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mode matrix — server mode × per-tool alwaysLoad
+// ---------------------------------------------------------------------------
+
+func TestMCPTool_ModeMatrix(t *testing.T) {
+	cases := []struct {
+		name         string
+		mode         mcp.ToolMode
+		alwaysLoad   bool
+		wantDeferred bool
+		wantCodeOnly bool
+	}{
+		// Historical behavior pinned: no mode → deferred unless alwaysLoad.
+		{"unset alwaysLoad=false", "", false, true, false},
+		{"unset alwaysLoad=true", "", true, false, false},
+		{"deferred alwaysLoad=false", mcp.ModeDeferred, false, true, false},
+		{"deferred alwaysLoad=true", mcp.ModeDeferred, true, false, false},
+		// direct enters the initial list regardless of alwaysLoad.
+		{"direct alwaysLoad=false", mcp.ModeDirect, false, false, false},
+		{"direct alwaysLoad=true", mcp.ModeDirect, true, false, false},
+		// code overrides the server-side _meta alwaysLoad signal and is a
+		// separate axis from deferred.
+		{"code alwaysLoad=false", mcp.ModeCode, false, false, true},
+		{"code alwaysLoad=true", mcp.ModeCode, true, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tl := NewMCPTool(mcp.DiscoveredTool{
+				Name:       "mcp__s__t",
+				ServerName: "s",
+				AlwaysLoad: tc.alwaysLoad,
+				Mode:       tc.mode,
+			}, nil)
+			if got := tl.IsDeferred(); got != tc.wantDeferred {
+				t.Errorf("IsDeferred() = %v, want %v", got, tc.wantDeferred)
+			}
+			if got := tl.IsCodeOnly(); got != tc.wantCodeOnly {
+				t.Errorf("IsCodeOnly() = %v, want %v", got, tc.wantCodeOnly)
+			}
+			if got := tool.IsDeferred(tl); got != tc.wantDeferred {
+				t.Errorf("tool.IsDeferred = %v, want %v", got, tc.wantDeferred)
+			}
+			if got := tool.IsCodeOnly(tl); got != tc.wantCodeOnly {
+				t.Errorf("tool.IsCodeOnly = %v, want %v", got, tc.wantCodeOnly)
+			}
+		})
+	}
+}

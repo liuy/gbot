@@ -429,6 +429,7 @@ func ExpandConfigEnv(cfg McpServerConfig) (expanded McpServerConfig, missingVars
 			Command: expandString(c.Command),
 			Args:    args,
 			Env:     expandMap(c.Env),
+			Mode:    c.Mode,
 		}, dedupStrings(missingVars)
 
 	case *SSEConfig:
@@ -439,6 +440,7 @@ func ExpandConfigEnv(cfg McpServerConfig) (expanded McpServerConfig, missingVars
 			URL:           expandString(c.URL),
 			Headers:       expandMap(c.Headers),
 			HeadersHelper: c.HeadersHelper,
+			Mode:          c.Mode,
 			OAuth:         c.OAuth,
 		}, dedupStrings(missingVars)
 
@@ -448,6 +450,7 @@ func ExpandConfigEnv(cfg McpServerConfig) (expanded McpServerConfig, missingVars
 			URL:           expandString(c.URL),
 			Headers:       expandMap(c.Headers),
 			HeadersHelper: c.HeadersHelper,
+			Mode:          c.Mode,
 			OAuth:         c.OAuth,
 		}, dedupStrings(missingVars)
 
@@ -457,6 +460,7 @@ func ExpandConfigEnv(cfg McpServerConfig) (expanded McpServerConfig, missingVars
 			URL:           expandString(c.URL),
 			Headers:       expandMap(c.Headers),
 			HeadersHelper: c.HeadersHelper,
+			Mode:          c.Mode,
 		}, dedupStrings(missingVars)
 
 	case *SSEIDEConfig, *WSIDEConfig, *SDKConfig, *ClaudeAIProxyConfig:
