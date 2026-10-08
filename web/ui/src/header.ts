@@ -313,34 +313,46 @@ function categoryLabel(cat: ContextCategoryData): string {
 function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData, onCompact?: () => void, streaming?: boolean) {
   panel.innerHTML = ''
 
-  const titleBar = createElement('div', 'flex items-start justify-between px-4 pt-3 pb-1')
-  const titleCol = createElement('div')
+  // The popup panel is itself the scroll container, so the header must stick —
+  // otherwise the compact action scrolls out of reach exactly when the
+  // breakdown is long enough to need scrolling.
+  const head = createElement('div', 'sticky top-0 z-10 card-bg')
+  const titleRow = createElement('div', 'flex items-center justify-between gap-3 px-4 pt-3')
   const title = createNode('div', {
     className: 'text-[14px] font-semibold text-t1',
     text: t('ctxTitle'),
   })
-  titleCol.appendChild(title)
-  const total = createElement('div', 'mono text-[12px] text-t3 mt-0.5')
+  titleRow.appendChild(title)
+  const total = createElement('div', 'mono text-[12px] text-t3 px-4 pt-0.5')
   total.textContent =
     formatTokenCount(data.totalTokens) + ' / ' + formatTokenCount(data.contextWindow) +
     ' (' + data.percentage.toFixed(1) + '%)'
-  titleCol.appendChild(total)
-  titleBar.appendChild(titleCol)
   if (onCompact) {
+    // Same thresholds as the header meter (setBreakdown below): the signal and
+    // the action change colour together, so a grey button never sits next to a
+    // red percentage.
+    const tone = streaming
+      ? 'text-t3 border-ink3/60'
+      : data.percentage >= 90
+        ? 'text-red-500 border-red-500/60 hover:bg-red-500/10'
+        : data.percentage >= 80
+          ? 'text-amber-500 border-amber-500/60 hover:bg-amber-500/10'
+          : 'text-blue border-blue/60 hover:bg-blue/10'
     const compactBtn = createTextButton({
       text: t('ctxCompact'),
       variant: 'link',
-      className: streaming
-        ? 'text-[13px] text-t3 shrink-0 pointer-events-none'
-        : 'text-[13px] text-blue shrink-0',
+      className: 'text-[13px] shrink-0 rounded-md border px-2 py-px ' + tone +
+        (streaming ? ' pointer-events-none' : ''),
     })
     compactBtn.dataset.testid = 'compact-btn'
     compactBtn.addEventListener('click', onCompact)
-    titleBar.appendChild(compactBtn)
+    titleRow.appendChild(compactBtn)
   }
-  panel.appendChild(titleBar)
+  head.appendChild(titleRow)
+  head.appendChild(total)
+  panel.appendChild(head)
 
-  const barWrap = createElement('div', 'px-4 py-2')
+  const barWrap = createElement('div', 'px-4 pt-1.5 pb-2.5')
   const bar = createElement('div', 'flex h-2 rounded-full overflow-hidden bg-ink3/50')
   bar.dataset.testid = 'context-bar'
   for (const cat of data.categories) {
@@ -353,7 +365,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     bar.appendChild(seg)
   }
   barWrap.appendChild(bar)
-  panel.appendChild(barWrap)
+  head.appendChild(barWrap)
 
   const listWrap = createElement('div', 'pb-1')
   for (const cat of data.categories) {

@@ -693,12 +693,12 @@ describe('Header engine picker popover', () => {
 describe('Header Compact button', () => {
   let header: ReturnType<typeof createHeader>
 
-  function sampleBreakdown(): ContextBreakdownData {
+  function sampleBreakdown(percentage = 25): ContextBreakdownData {
     return {
       model: 'test',
       contextWindow: 200000,
       totalTokens: 50000,
-      percentage: 25,
+      percentage,
       isAutoCompact: false,
       categories: [
         { name: 'Messages', tokens: 50000, percentage: 25, color: '255', isFree: false, isReserved: false },
@@ -763,6 +763,27 @@ describe('Header Compact button', () => {
 
     btn.click()
     expect(clicked).toBe(true)
+  })
+  it('escalates the compact button on the header meter thresholds', () => {
+    const toneAt = (pct: number) => {
+      document.body.innerHTML = ''
+      const h = createHeader({
+        onModelSelect: () => {},
+        onEngineSwitch: () => {},
+        onEngineNew: () => {},
+        onContextCompact: () => {},
+      })
+      document.body.appendChild(h.root)
+      h.setContext(500, 200000)
+      h.setContextBreakdown(sampleBreakdown(pct))
+      ;(h.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement).click()
+      return (getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement).className
+    }
+    expect(toneAt(79.9)).toContain('text-blue')
+    expect(toneAt(80)).toContain('text-amber-500')
+    expect(toneAt(80)).not.toContain('text-blue')
+    expect(toneAt(90)).toContain('text-red-500')
+    expect(toneAt(90)).not.toContain('text-amber-500')
   })
 
   it('grey and disabled when streaming', () => {
