@@ -91,8 +91,10 @@ endif
 #
 # The mutant numbers below are for MUTATE_BASE=HEAD~1 (one commit): 60 mutants --
 # --dry-run's count, an upper bound, so MUTATE_MAX trips slightly early -- scoring
-# 29 killed / 31 escaped, MSI 48.3%. The default base is origin/master, which diffs
-# since the last push, so a long-lived branch costs proportionally more. Wall clock
+# 29 killed / 31 escaped, MSI 48.3%. HEAD is the default because the gate reviews
+# the change about to be committed (CLAUDE.md runs it after `git add`, before `git
+# commit`); an origin/master base also scores whatever other agents' commits landed
+# on the shared tree in the meantime. Wall clock
 # depends on the flag set: the pre-coefficient runs measured 52s on a warm build
 # cache and 3m30s cold, a run with the coefficient 3m35s cold. Cost is dominated by
 # escaped mutants, each of which pays the full suite of its package (~20s for
@@ -116,7 +118,7 @@ endif
 # The recipe must stay ONE \-continued command: `exit 0` in its own recipe line
 # ends only that line's shell and make runs the next line anyway, which would drop
 # the skip guards straight into go-mutesting.
-MUTATE_BASE ?= origin/master
+MUTATE_BASE ?= HEAD
 MUTATE_MAX ?= 400
 # The tool's own default is all 72 CPUs on this box; 16 caps contention, it is not a
 # speed win. Tunable: make mutate MUTATE_WORKERS=8.
