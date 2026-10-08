@@ -800,6 +800,10 @@ describe('Header Compact button', () => {
 
     const btn = getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement
     expect(btn.className).toContain('text-t3')
+    // ink3 is the panel's own background colour in the dark theme, so a border
+    // derived from it renders invisible there — the border needs a text token.
+    expect(btn.className).toContain('border-t3/60')
+    expect(btn.className).not.toContain('border-ink3')
     expect(btn.className).toContain('pointer-events-none')
   })
 

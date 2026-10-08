@@ -332,7 +332,7 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     // the action change colour together, so a grey button never sits next to a
     // red percentage.
     const tone = streaming
-      ? 'text-t3 border-ink3/60'
+      ? 'text-t3 border-t3/60'
       : data.percentage >= 90
         ? 'text-red-500 border-red-500/60 hover:bg-red-500/10'
         : data.percentage >= 80
