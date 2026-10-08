@@ -52,6 +52,12 @@ type AutoCompactor struct {
 	// calibrated estimator when available (token_calibration.go); test metas
 	// without it keep the plain char heuristic.
 	estimator func(text string) int
+
+	// overhead returns the engine's learned request-shape overhead (system
+	// prompt, tool schemas, skills, memory) so AfterTokens bills what the
+	// next real request will. Nil-able: test metas without the probe
+	// estimate message content only (historical behavior).
+	overhead func() int
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
@@ -62,11 +68,16 @@ func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompa
 	}); ok {
 		est = cal.EstimateTokensCalibrated
 	}
+	overheadFn := func() int { return 0 }
+	if op, ok := engine.(interface{ ContextOverheadTokens() int }); ok {
+		overheadFn = op.ContextOverheadTokens
+	}
 	return &AutoCompactor{
 		store:     store,
 		engine:    engine,
 		logger:    slog.Default(),
 		estimator: est,
+		overhead:  overheadFn,
 	}
 }
 
@@ -141,7 +152,7 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 		pcr.Summary = summaryText
 		pcr.BeforeTokens = beforeTokens
 		pcr.BeforeMessages = len(messages)
-		pcr.AfterTokens = EstimateMessagesTokens(built)
+		pcr.AfterTokens = c.estimateBuiltTokens(built)
 		pcr.Messages = built
 		return pcr, nil
 	}
@@ -165,14 +176,23 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 	pcr.Summary = summaryText
 	pcr.BeforeTokens = beforeTokens
 	pcr.BeforeMessages = len(messages)
-	pcr.AfterTokens = EstimateMessagesTokens(built)
+	pcr.AfterTokens = c.estimateBuiltTokens(built)
 	pcr.Messages = built
 	return pcr, nil
 }
 
+// estimateBuiltTokens estimates the post-compact context on the same basis
+// the usage anchor bills: kept/summary message content under the engine's
+// estimator plus the learned request-shape overhead. AfterTokens must match
+// what the next request actually reports, or the context meter jumps by the
+// overhead the moment the first post-compact response lands.
+func (c *AutoCompactor) estimateBuiltTokens(built []types.Message) int {
+	return estimateMessagesTokensWith(built, defaultMessageEnvelopeTokens, c.estimator) + c.overhead()
+}
+
 // findKeepFrom determines how many recent messages to keep (count from tail).
 // Pure token-based: walk backwards from tail, keep adding messages until the
-// token budget (contextWindow/5, clamped to [2K, 60K]) is exceeded.
+// token budget (contextWindow/5, clamped to [2K, 30K]) is exceeded.
 //
 // The tail is whatever fits the budget, with the newest message kept
 // unconditionally. keepFrom == len means "everything fits" (compact() treats
@@ -185,9 +205,12 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 	return c.findKeepFromBudget(messages, c.keepBudget())
 }
 
-// keepBudget returns the tail-keep token budget: contextWindow/5 clamped to [2K, 60K].
+// keepBudget returns the tail-keep token budget: contextWindow/5 clamped to [2K, 30K].
+// The 30k cap keeps post-compact context lean on large windows: static request
+// overhead (~20k: system prompt, tool schemas, skills, memory) + summary
+// (~10k) + tail (30k) ≈ 60k total after a compact on a 384k window.
 func (c *AutoCompactor) keepBudget() int {
-	return max(min(c.engine.ContextWindow()/5, 60000), 2000)
+	return max(min(c.engine.ContextWindow()/5, 30000), 2000)
 }
 
 // findKeepFromBudget is findKeepFrom with an explicit budget, so the CJK

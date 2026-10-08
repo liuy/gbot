@@ -1416,3 +1416,38 @@ func TestMaybeTokenPrune_FiresWithDefaultProvider(t *testing.T) {
 		}
 	})
 }
+
+// TestLastAnchoredTokenCount_Contract pins the extracted predicate's return
+// contract: anchorless input reports (0, false) — the sentinel value is part
+// of the API even though callers ignore v when !ok — and an anchor that is not
+// the last message still wins, billing base + est(tail).
+func TestLastAnchoredTokenCount_Contract(t *testing.T) {
+	t.Parallel()
+
+	v, ok := lastAnchoredTokenCount(nil, defaultMessageEnvelopeTokens, utils.EstimateTokens)
+	if ok || v != 0 {
+		t.Errorf("nil transcript: got (%d, %v), want (0, false)", v, ok)
+	}
+
+	anchorless := makeLargeMessages(4, 2000)
+	v, ok = lastAnchoredTokenCount(anchorless, defaultMessageEnvelopeTokens, utils.EstimateTokens)
+	if ok || v != 0 {
+		t.Errorf("anchorless transcript: got (%d, %v), want (0, false)", v, ok)
+	}
+
+	// Anchor at the head with a two-message tail: the backward scan must walk
+	// past the tail to find it.
+	msgs := append([]types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("done")},
+		Usage:   &types.Usage{InputTokens: 9000},
+	}}, makeLargeMessages(2, 2000)...)
+	v, ok = lastAnchoredTokenCount(msgs, defaultMessageEnvelopeTokens, utils.EstimateTokens)
+	if !ok {
+		t.Fatal("anchored transcript reported no anchor")
+	}
+	want := 9000 + EstimateMessagesTokens(msgs[1:])
+	if v != want {
+		t.Errorf("anchored count = %d, want base + est(tail) = %d", v, want)
+	}
+}

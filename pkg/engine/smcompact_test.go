@@ -560,10 +560,10 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 	if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\ncjk rescale mirror test\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// contextWindow=262144 → keep budget 52428. Char estimate ≈ 57.2k is
+	// contextWindow=262144 → keep budget 30000. Char estimate ≈ 57.2k is
 	// already over budget while the usage anchor says 100039: without the
 	// rescale the SM path kept a tail of ≈36 messages (~2.5x the real
-	// budget); rescaled it keeps ≈21.
+	// budget); rescaled it keeps ≈11.
 	ac := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-sm-cjk", contextWindow: 262144, provider: nil})
 	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
 	msgs := make([]types.Message, 0, 41)
@@ -598,10 +598,10 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 			}
 		}
 	}
-	if kept > 23 {
-		t.Errorf("kept %d fixture messages: SM tail not rescaled (expected 21, old behavior ≈36)", kept)
+	if kept > 13 {
+		t.Errorf("kept %d fixture messages: SM tail not rescaled (expected 11, old behavior ≈36)", kept)
 	}
-	if kept < 19 {
-		t.Errorf("kept only %d fixture messages: rescale overshot (expected 21)", kept)
+	if kept < 9 {
+		t.Errorf("kept only %d fixture messages: rescale overshot (expected 11)", kept)
 	}
 }

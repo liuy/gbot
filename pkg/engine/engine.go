@@ -231,6 +231,12 @@ type Engine struct {
 	// After compact, decremented by message delta (heuristic) and corrected
 	// on next API response.
 	ContextTokens int
+	// contextOverhead is the learned request-shape overhead (system prompt,
+	// tool schemas, skill listing, memory files) that real usage bills but
+	// message-content estimation cannot see. Refreshed on every response;
+	// guarded by calibMu. Transient by design — like the calibration ratios
+	// it re-learns after the first post-restart response.
+	contextOverhead int
 
 	// mcpRegistry manages MCP server connections and tool discovery.
 	mcpRegistry *mcp.Registry
@@ -1951,6 +1957,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// now in history — exactly the anchor point the differential
 		// observation needs (token_calibration.go).
 		e.recordCalibrationObservation(resp)
+		e.recordContextOverhead(resp)
 
 		// Populate conversation history on the executor so tools
 		// (e.g. Agent tool) can access the full parent conversation.

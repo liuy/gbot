@@ -352,6 +352,18 @@ func TokenCountWithEstimation(messages []types.Message) int {
 // tokenCountWithEstimationCore is the estimator-parameterized core shared by
 // the free function and the engine's calibrated path.
 func tokenCountWithEstimationCore(messages []types.Message, envelope int, est func(string) int) int {
+	if v, ok := lastAnchoredTokenCount(messages, envelope, est); ok {
+		return v
+	}
+	// No message has usage data — fall back to full estimation.
+	// Source: TS tokens.ts:260.
+	return estimateMessagesTokensWith(messages, envelope, est)
+}
+
+// lastAnchoredTokenCount returns the usage-anchored total when the transcript
+// carries a usable anchor (last assistant message with non-zero usage), with
+// the post-anchor tail estimated; ok=false when the fallback must run.
+func lastAnchoredTokenCount(messages []types.Message, envelope int, est func(string) int) (int, bool) {
 	for i, msg := range slices.Backward(messages) {
 
 		if msg.Role != types.RoleAssistant || msg.Usage == nil {
@@ -366,12 +378,9 @@ func tokenCountWithEstimationCore(messages []types.Message, envelope int, est fu
 		if base == 0 {
 			continue
 		}
-		delta := estimateMessagesTokensWith(messages[i+1:], envelope, est)
-		return base + delta
+		return base + estimateMessagesTokensWith(messages[i+1:], envelope, est), true
 	}
-	// No message has usage data — fall back to full estimation.
-	// Source: TS tokens.ts:260.
-	return estimateMessagesTokensWith(messages, envelope, est)
+	return 0, false
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +392,17 @@ func tokenCountWithEstimationCore(messages []types.Message, envelope int, est fu
 // path is unchanged: a real base + calibrated delta still wins.
 // Must not be called while holding e.mu.
 func (e *Engine) tokenCountWithEstimation(messages []types.Message) int {
-	return tokenCountWithEstimationCore(messages, defaultMessageEnvelopeTokens, e.calibratedEstimator())
+	est := e.calibratedEstimator()
+	if v, ok := lastAnchoredTokenCount(messages, defaultMessageEnvelopeTokens, est); ok {
+		return v
+	}
+	// The anchored path's real base already bills the request-shape overhead
+	// (system prompt, tool schemas, skills, memory); the fallback must bill it
+	// too or the two paths disagree by exactly that amount. The equality
+	// learned at response time (fallback = est + (total − est) = total)
+	// persists for later appends because estimateMessagesTokensWith is
+	// per-message additive — both sides grow by the same est(tail).
+	return estimateMessagesTokensWith(messages, defaultMessageEnvelopeTokens, est) + e.ContextOverheadTokens()
 }
 
 // tokenCountWithEstimationLocked is tokenCountWithEstimation for callers
@@ -394,7 +413,10 @@ func (e *Engine) tokenCountWithEstimationLocked(messages []types.Message) int {
 	est := func(s string) int {
 		return estimateWithFeatures(utils.CountTokenFeatures(s), R)
 	}
-	return tokenCountWithEstimationCore(messages, defaultMessageEnvelopeTokens, est)
+	if v, ok := lastAnchoredTokenCount(messages, defaultMessageEnvelopeTokens, est); ok {
+		return v
+	}
+	return estimateMessagesTokensWith(messages, defaultMessageEnvelopeTokens, est) + e.ContextOverheadTokens()
 }
 
 // ---------------------------------------------------------------------------

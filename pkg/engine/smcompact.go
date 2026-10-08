@@ -72,7 +72,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 	summaryText := formatSMSummary(truncated)
 
 	built := c.buildResultMessages(pcr, summaryText)
-	afterTokens := EstimateMessagesTokens(built)
+	afterTokens := c.estimateBuiltTokens(built)
 
 	c.logger.Info("sm-compact: using session memory for compact",
 		"before_tokens", beforeTokens,

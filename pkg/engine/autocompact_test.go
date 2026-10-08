@@ -1187,7 +1187,7 @@ func TestBuildResultMessages_RemovesOrphanedToolResults(t *testing.T) {
 // findKeepFrom: [0, targetKeepTokens] design
 //
 // Invariant: tail = messages[keepFrom:] fits the token budget
-// (contextWindow/5 clamped to [2K, 60K]). Walk backwards from tail, stop when
+// (contextWindow/5 clamped to [2K, 30K]). Walk backwards from tail, stop when
 // the budget is hit. keepFrom == len means "everything fits" (compact() treats
 // it as a no-op); the newest message is always kept, so an oversized tail
 // message yields keepFrom = len-1, never len.
@@ -1688,8 +1688,8 @@ func TestCompactor_PartialCompact_BoundaryMetadata(t *testing.T) {
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	// Messages exceed the tail budget → goes through PartialCompact.
-	// tail budget = min(200000/5, 60000) = 40000 tokens.
-	// 5 messages × ~13.4K store-estimated tokens each ≈ 67K > 40K budget →
+	// tail budget = min(200000/5, 30000) = 30000 tokens.
+	// 5 messages × ~13.4K store-estimated tokens each ≈ 67K > 30K budget →
 	// tail keeps the newest messages under budget, head is compacted.
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 122000))}},
@@ -1781,10 +1781,10 @@ func TestCompactor_Compact_SmallMessages_NoOp(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	// contextWindow=200000 → tail budget = min(200000/5, 60000) = 60000 tokens.
+	// contextWindow=200000 → tail budget = min(200000/5, 30000) = 30000 tokens.
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
-	// 3 small messages, total ~100 tokens << 60000 budget.
+	// 3 small messages, total ~100 tokens << 30000 budget.
 	// findKeepFrom returns len(messages) → "nothing to compact".
 	// compact() should return original messages unchanged, NOT [boundary, summary].
 	msgs := []types.Message{
@@ -1829,11 +1829,11 @@ func TestAutoCompactor_Compact_RealContextGate_CJKUnderestimate(t *testing.T) {
 	defer store.Close()
 
 	p := &compactMockProvider{}
-	// contextWindow=262144 → tail budget = min(262144/5, 60000) = 52428.
+	// contextWindow=262144 → tail budget = min(262144/5, 30000) = 30000.
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-cjk", contextWindow: 262144, provider: p})
 
 	// 20 CJK messages × 2200 chars ≈ 44k chars → char estimate 44k×0.65 ≈ 28.6k
-	// tokens < 52428 budget, but the last assistant turn carries a usage block
+	// tokens < 30000 budget, but the last assistant turn carries a usage block
 	// anchoring the real context at 100039 tokens (what the API actually bills).
 	mkText := func() string {
 		return strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
@@ -1863,7 +1863,7 @@ func TestAutoCompactor_Compact_RealContextGate_CJKUnderestimate(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 	if p.compactCallCount == 0 {
-		t.Fatal("compact noop'd: summary LLM never called although the usage-anchored context (100039) far exceeds the tail budget (52428)")
+		t.Fatal("compact noop'd: summary LLM never called although the usage-anchored context (100039) far exceeds the tail budget (30000)")
 	}
 	if len(result.Messages) >= len(msgs) {
 		t.Errorf("expected compacted message count < %d, got %d", len(msgs), len(result.Messages))
@@ -1892,13 +1892,13 @@ func TestAutoCompactor_Compact_RescaleWhenEstimateAlreadyOverBudget(t *testing.T
 	defer store.Close()
 
 	p := &compactMockProvider{}
-	// contextWindow=262144 → keep budget 52428.
+	// contextWindow=262144 → keep budget 30000.
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-cjk2", contextWindow: 262144, provider: p})
 
 	// 40 CJK messages × 2200 chars → char estimate ≈ 40×1430 ≈ 57.2k, already
-	// over the 52428 budget, while the usage anchor says the real context is
-	// 100039. Rescaled effective budget ≈ 52428×57.2k/100039 ≈ 30k in
-	// estimate-space → roughly 21 messages kept, not ~36.
+	// over the 30000 budget, while the usage anchor says the real context is
+	// 100039. Rescaled effective budget ≈ 30000×57.2k/100039 ≈ 17.2k in
+	// estimate-space → roughly 11 messages kept, not ~36.
 	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
 	msgs := make([]types.Message, 0, 41)
 	for i := range 40 {
@@ -1934,14 +1934,14 @@ func TestAutoCompactor_Compact_RescaleWhenEstimateAlreadyOverBudget(t *testing.T
 			}
 		}
 	}
-	// Rescaled tail lands on exactly 21 (deterministic: mock provider, pure
+	// Rescaled tail lands on exactly 11 (deterministic: mock provider, pure
 	// integer arithmetic). The old un-rescaled scan kept ≈ 36. A ±10%
 	// budget-formula regression trips the tightened window.
-	if kept > 23 {
-		t.Errorf("kept %d fixture messages: tail not rescaled (expected 21, old behavior ≈36)", kept)
+	if kept > 13 {
+		t.Errorf("kept %d fixture messages: tail not rescaled (expected 11, old behavior ≈36)", kept)
 	}
-	if kept < 19 {
-		t.Errorf("kept only %d fixture messages: rescale overshot (expected 21)", kept)
+	if kept < 9 {
+		t.Errorf("kept only %d fixture messages: rescale overshot (expected 11)", kept)
 	}
 	if result.AfterTokens >= result.BeforeTokens {
 		t.Errorf("expected AfterTokens < BeforeTokens, got %d -> %d", result.BeforeTokens, result.AfterTokens)
@@ -1965,7 +1965,7 @@ func TestAutoCompactor_Compact_LastMessageOversized_NotNoop(t *testing.T) {
 	defer store.Close()
 
 	p := &compactMockProvider{}
-	// contextWindow=1000 → budget = max(min(200, 60000), 2000) = 2000.
+	// contextWindow=1000 → budget = max(min(200, 30000), 2000) = 2000.
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-big", contextWindow: 1000, provider: p})
 
 	msgs := []types.Message{
@@ -1993,5 +1993,105 @@ func TestAutoCompactor_Compact_LastMessageOversized_NotNoop(t *testing.T) {
 	}
 	if !found {
 		t.Error("the oversized newest message was not kept in the compact result")
+	}
+}
+
+func TestAutoCompactor_KeepBudget_Cap30K(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ window, want int }{
+		{384000, 30000}, // cap 生效（旧值 60000）
+		{262144, 30000}, // window/5=52428 > 30000 → cap
+		{100000, 20000}, // window/5 < cap，比例段不变
+		{1000, 2000},    // floor 段不变
+	}
+	for _, tc := range cases {
+		sc := NewAutoCompactor(nil, &testEngineMeta{model: "m", sessionID: "s", contextWindow: tc.window, provider: &compactMockProvider{}})
+		if got := sc.keepBudget(); got != tc.want {
+			t.Errorf("keepBudget(window=%d) = %d, want %d", tc.window, got, tc.want)
+		}
+	}
+}
+
+// TestCompactor_Compact_MidSizeTranscript_CompressesUnder30KCap: a transcript
+// priced between the new cap (30k) and the old cap (60k) must compact. 35
+// messages × 12000 chars price at ~1341 store tokens each (0.11·C+21.23) ≈ 47k
+// total — under the old 60000 cap everything fit the tail budget (noop); under
+// the 30000 cap the head must be summarized.
+func TestCompactor_Compact_MidSizeTranscript_CompressesUnder30KCap(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	p := &compactMockProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-midsize", contextWindow: 384000, provider: p})
+
+	msgs := makeLargeMessages(35, 12000) // ~47k est: fits 60k (noop) but not 30k
+	result, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if p.compactCallCount == 0 {
+		t.Fatal("compact noop'd: 47k transcript fits the old 60000 cap but must compact under 30000")
+	}
+	if len(result.Messages) >= len(msgs) {
+		t.Errorf("result has %d messages, want fewer than the %d input", len(result.Messages), len(msgs))
+	}
+	if result.AfterTokens >= result.BeforeTokens {
+		t.Errorf("expected AfterTokens < BeforeTokens, got %d -> %d", result.BeforeTokens, result.AfterTokens)
+	}
+}
+
+// TestAutoCompactor_Compact_SingleRound_WholeTranscript covers the keepFrom==0
+// branch: an assistant-led transcript is one API-round group, so alignment
+// clamps the split to 0 and everything is summarized with no tail kept. The
+// result's token bookkeeping (BeforeTokens passthrough, AfterTokens > 0 on the
+// built [boundary, summary]) must still be filled in on this branch.
+func TestAutoCompactor_Compact_SingleRound_WholeTranscript(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	p := &compactMockProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-whole", contextWindow: 10000, provider: p})
+
+	// Assistant-led pair → single round group; ~2.2k est each, combined over
+	// the 2000 budget → keepFrom=1 → align clamps to 0 → whole-transcript path.
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+	}
+
+	result, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if p.compactCallCount == 0 {
+		t.Fatal("compact noop'd: single round over budget must summarize everything")
+	}
+	wantBefore := TokenCountWithEstimation(msgs)
+	if result.BeforeTokens != wantBefore {
+		t.Errorf("BeforeTokens = %d, want %d (measured context passthrough)", result.BeforeTokens, wantBefore)
+	}
+	wantAfter := EstimateMessagesTokens(result.Messages)
+	if result.AfterTokens != wantAfter {
+		t.Errorf("AfterTokens = %d, want %d (est of built messages)", result.AfterTokens, wantAfter)
+	}
+	if result.AfterTokens == 0 {
+		t.Error("AfterTokens = 0: whole-transcript branch left the post-compact ledger empty")
+	}
+	if len(result.Messages) != 2 { // [boundary, summary], no tail kept
+		t.Errorf("result has %d messages, want 2 (boundary + summary)", len(result.Messages))
 	}
 }

@@ -139,7 +139,7 @@ func newManualCompactSMCase(t *testing.T) manualCompactCaseFixture {
 
 	// Build enough large messages that findKeepFrom returns keepFrom in
 	// (1, len): TrySMCompact only succeeds when keepFrom > 1 && keepFrom < len.
-	// contextWindow=10000 → keep budget = max(min(2000,60000),2000) = 2000 tokens;
+	// contextWindow=10000 → keep budget = max(min(2000,30000),2000) = 2000 tokens;
 	// 10 messages of ~900 tokens each → head compacted, tail kept.
 	msgs := make([]types.Message, 0, 10)
 	for i := range 10 {
