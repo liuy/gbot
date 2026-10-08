@@ -73,6 +73,7 @@ func (r *Registry) Scan(specs []ServerSpec) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	sortSpecsByName(alive)
 	r.specs = alive
 	r.extToSpec = make(map[string]ServerSpec, len(alive))
 	for _, s := range alive {
@@ -95,6 +96,7 @@ func (r *Registry) Start(ctx context.Context, specs []ServerSpec) {
 	validated := Discover(ctx, specs, r.rootDir)
 
 	r.mu.Lock()
+	sortSpecsByName(validated)
 	r.specs = validated
 	r.extToSpec = make(map[string]ServerSpec, len(validated))
 	for _, s := range validated {
@@ -102,28 +104,30 @@ func (r *Registry) Start(ctx context.Context, specs []ServerSpec) {
 			r.extToSpec[ext] = s
 		}
 	}
-	if len(validated) > 0 {
-		slog.Info("lsp:startup", "servers", r.lspStringLocked())
-	}
+	// Unconditional on purpose: the empty list is the record worth having — with
+	// a guard here, "no server passed initialize" reads the same as "Start never
+	// ran" when gbot.log is inspected after a restart.
+	slog.Info("lsp:startup", "servers", r.serverNamesLocked())
 	r.mu.Unlock()
 }
 
-// lspStringLocked builds LSPString without taking the lock (caller holds mu).
-func (r *Registry) lspStringLocked() string {
-	if len(r.specs) == 0 {
-		return ""
-	}
-	var b strings.Builder
+// sortSpecsByName pins r.specs to name-ascending order. Discover appends results
+// in goroutine-completion order, so without this the list reshuffles every process
+// start — which shifts symbol#N numbering across restarts and invalidated the
+// prompt prefix cache when the list was rendered into # Environment.
+func sortSpecsByName(specs []ServerSpec) {
+	slices.SortFunc(specs, func(a, b ServerSpec) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+}
+
+// serverNamesLocked lists server names in r.specs order (caller holds mu).
+func (r *Registry) serverNamesLocked() []string {
+	names := make([]string, len(r.specs))
 	for i, s := range r.specs {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(s.Name)
-		b.WriteString(" (")
-		b.WriteString(s.Language)
-		b.WriteString(")")
+		names[i] = s.Name
 	}
-	return b.String()
+	return names
 }
 
 func (r *Registry) Snapshot() []ServerSpec {
@@ -546,26 +550,4 @@ func (r *Registry) HasExtension(ext string) bool {
 	defer r.mu.RUnlock()
 	_, ok := r.extToSpec[ext]
 	return ok
-}
-
-// LSPString returns a compact server listing for the # Environment section.
-// Includes language labels so the model can match lsp:true to the right file type.
-// Uses comma (not pipe) to avoid confusion with the outer Runtime separator.
-func (r *Registry) LSPString() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.specs) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for i, s := range r.specs {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(s.Name)
-		b.WriteString(" (")
-		b.WriteString(s.Language)
-		b.WriteString(")")
-	}
-	return b.String()
 }

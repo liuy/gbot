@@ -1,11 +1,15 @@
 package lsp
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -247,22 +251,132 @@ func TestRegistry_Scan_Found(t *testing.T) {
 	}
 }
 
-func TestRegistry_LSPStringLocked(t *testing.T) {
-	r := NewRegistry("/tmp")
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s := r.lspStringLocked(); s != "" {
-		t.Errorf("lspStringLocked empty = %q, want empty", s)
-	}
+func TestRegistry_ScanSortsSpecsByName(t *testing.T) {
+	orig := execLookPath
+	defer func() { execLookPath = orig }()
+	execLookPath = func(string) (string, error) { return "/usr/bin/fake-lsp", nil }
 
-	r.specs = []ServerSpec{
-		{Name: "gopls", Language: "Go"},
-		{Name: "tsserver", Language: "TypeScript"},
+	// ScanServers keeps input order, so a shuffled input deterministically
+	// proves Scan sorted the list.
+	r := NewRegistry("/tmp")
+	r.Scan([]ServerSpec{
+		{Name: "rust-analyzer", Command: "fake-lsp", FileExts: []string{".rs"}, Language: "Rust"},
+		{Name: "gopls", Command: "fake-lsp", FileExts: []string{".go"}, Language: "Go"},
+		{Name: "clangd", Command: "fake-lsp", FileExts: []string{".c"}, Language: "C"},
+	})
+
+	want := []string{"clangd", "gopls", "rust-analyzer"}
+	if got := snapshotNames(r); !slices.Equal(got, want) {
+		t.Errorf("Scan spec order = %v, want %v", got, want)
 	}
-	s := r.lspStringLocked()
-	if s != "gopls (Go), tsserver (TypeScript)" {
-		t.Errorf("lspStringLocked = %q", s)
+}
+
+func TestRegistry_StartSortsSpecsByName(t *testing.T) {
+	if os.Getenv("GBOT_TEST_SKIP_SUBPROCESS") != "" {
+		t.Skip("GBOT_TEST_SKIP_SUBPROCESS is set")
 	}
+	bin := buildFakeBinary(t, t.TempDir())
+	// Discover appends in goroutine-completion order, so five servers make an
+	// unsorted result ~120x less likely to coincide with the expected order.
+	specs := []ServerSpec{
+		{Name: "rust-analyzer", Command: bin, FileExts: []string{".rs"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+		{Name: "clangd", Command: bin, FileExts: []string{".c"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+		{Name: "typescript-language-server", Command: bin, FileExts: []string{".ts"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+		{Name: "gopls", Command: bin, FileExts: []string{".go"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+		{Name: "pyright-langserver", Command: bin, FileExts: []string{".py"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	r := NewRegistry(t.TempDir())
+	r.Start(ctx, specs)
+
+	want := []string{"clangd", "gopls", "pyright-langserver", "rust-analyzer", "typescript-language-server"}
+	if got := snapshotNames(r); !slices.Equal(got, want) {
+		t.Errorf("Start spec order = %v, want %v", got, want)
+	}
+}
+
+// slog's default handler is process-global, and a fake-LSP Client logs from its
+// waitLoop goroutine while tearing down — which can outlive the test that started
+// it and land in whichever buffer is default at that moment.
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Start's lsp:startup record is the operator's only view of which servers
+// actually passed the initialize handshake, so both its presence and the order
+// of its names are pinned here.
+func TestRegistry_StartLogsSortedServers(t *testing.T) {
+	if os.Getenv("GBOT_TEST_SKIP_SUBPROCESS") != "" {
+		t.Skip("GBOT_TEST_SKIP_SUBPROCESS is set")
+	}
+	bin := buildFakeBinary(t, t.TempDir())
+	specs := []ServerSpec{
+		{Name: "typescript-language-server", Command: bin, FileExts: []string{".ts"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+		{Name: "clangd", Command: bin, FileExts: []string{".c"}, ExtraEnv: []string{"GBOT_FAKE_LSP=1"}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var logBuf lockedBuf
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(old)
+
+	NewRegistry(t.TempDir()).Start(ctx, specs)
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "lsp:startup") {
+		t.Fatalf("no lsp:startup record; log was:\n%s", logged)
+	}
+	if !strings.Contains(logged, `servers="[clangd typescript-language-server]"`) {
+		t.Errorf("lsp:startup servers = want sorted [clangd typescript-language-server]; log was:\n%s", logged)
+	}
+}
+
+func TestRegistry_StartRecordsEmptyServerList(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var logBuf lockedBuf
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(old)
+
+	NewRegistry(t.TempDir()).Start(ctx, []ServerSpec{
+		{Name: "absent-lsp", Command: "gbot-test-no-such-binary", FileExts: []string{".zz"}},
+	})
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "lsp:startup") {
+		t.Fatalf("no lsp:startup record although nothing validated — the empty case is the one that must be visible; log was:\n%s", logged)
+	}
+	if !strings.Contains(logged, "servers=[]") {
+		t.Errorf("lsp:startup servers = want empty []; log was:\n%s", logged)
+	}
+}
+
+func snapshotNames(r *Registry) []string {
+	specs := r.Snapshot()
+	names := make([]string, len(specs))
+	for i, s := range specs {
+		names[i] = s.Name
+	}
+	return names
 }
 
 // Ensure unused imports are still referenced.

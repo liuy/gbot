@@ -92,6 +92,12 @@ func TestEngineFactory_WiresContextRefresher(t *testing.T) {
 		t.Fatalf("fresh engine's request lacks the startup CLAUDE.md sentinel %s, got: %.300s", sentinelA, got)
 	}
 
+	// The same closure builds the system prompt, so pin that it reached the engine
+	// built by the factory: an empty or mis-argumented prompt is silent otherwise,
+	// and the sentinel checks above only prove the file half arrived.
+	if sp := eng.DumpAPIRequest().SystemPrompt; !strings.Contains(sp, "workspace="+project) {
+		t.Errorf("engine system prompt lacks workspace=%s — buildSystemPrompt was built with the wrong arguments; got: %.200s", project, sp)
+	}
 	if err := os.WriteFile(claudeMd, []byte("# project rules\n"+sentinelB), 0o644); err != nil {
 		t.Fatalf("rewrite CLAUDE.md: %v", err)
 	}

@@ -23,7 +23,7 @@ func appStyleRefresher(dir string) func() (string, map[string]string) {
 // its own memory dir, which is how the WeChat daemon engines are wired.
 func appStyleRefresherWithMem(dir, memDir string) func() (string, map[string]string) {
 	return func() (string, map[string]string) {
-		return ctxbuild.BuildSystemPrompt(dir, "", nil, "", nil, memDir),
+		return ctxbuild.BuildSystemPrompt(dir, "", nil, "", memDir),
 			ctxbuild.LoadContextFiles(dir)
 	}
 }

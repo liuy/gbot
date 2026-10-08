@@ -70,7 +70,7 @@ Do NOT use Bash to run commands when a relevant dedicated tool is provided. This
 - To search file contents, use Grep instead of grep, rg, or find
 - To list files by name, use Glob instead of find, ls, or Bash
 - NEVER use sed/awk/python scripts for code modifications of any kind — Edit tool only, or Lsp for semantic operations
-- For code files with an LSP server configured (see Environment), prefer the Lsp tool over Grep/Read/Edit:
+- For code files with an LSP server configured, prefer the Lsp tool over Grep/Read/Edit:
   - Find where a symbol is defined or used → Lsp definition/references, not Grep
   - Search for a symbol by name across the project → Lsp workspace_symbol, not Grep
   - Understand a file's structure → Lsp symbols, not Read
@@ -137,11 +137,6 @@ func (b *Builder) RuntimeInfo() string {
 	}
 	if b.ProjectDir != "" {
 		parts = append(parts, fmt.Sprintf("projectspace=%s", b.ProjectDir))
-	}
-	if b.LSPReg != nil {
-		if lspStr := b.LSPReg.LSPString(); lspStr != "" {
-			parts = append(parts, fmt.Sprintf("lsp=%s", lspStr))
-		}
 	}
 	parts = append(parts, "model={{MODEL}}")
 	parts = append(parts, "modalities={{MODALITIES}}")

@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 )
@@ -96,23 +97,42 @@ func TestPathToURI_Absolute(t *testing.T) {
 	}
 }
 
-func TestLSPString_Empty(t *testing.T) {
-	r := NewRegistry("/tmp")
-	if s := r.LSPString(); s != "" {
-		t.Errorf("LSPString() = %q, want empty", s)
+func TestSortSpecsByName(t *testing.T) {
+	// Command and Language are ordered opposite to Name so a sort keyed on the
+	// wrong field cannot pass.
+	specs := []ServerSpec{
+		{Name: "rust-analyzer", Command: "alpha", Language: "Alpha", FileExts: []string{".rs"}},
+		{Name: "clangd", Command: "zinc", Language: "Zulu", FileExts: []string{".c"}},
+		{Name: "gopls", Command: "mid", Language: "Mid", FileExts: []string{".go"}},
+	}
+	sortSpecsByName(specs)
+
+	got := make([]string, len(specs))
+	for i, s := range specs {
+		got[i] = s.Name + "/" + s.Language
+	}
+	want := []string{"clangd/Zulu", "gopls/Mid", "rust-analyzer/Alpha"}
+	if !slices.Equal(got, want) {
+		t.Errorf("sortSpecsByName = %v, want %v", got, want)
 	}
 }
 
-func TestLSPString_WithServers(t *testing.T) {
+func TestServerNamesLocked(t *testing.T) {
 	r := NewRegistry("/tmp")
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if got := r.serverNamesLocked(); len(got) != 0 {
+		t.Errorf("serverNamesLocked on empty registry = %v, want empty", got)
+	}
+
 	r.specs = []ServerSpec{
 		{Name: "gopls", Language: "Go"},
-		{Name: "tsserver", Language: "TypeScript"},
+		{Name: "pyright-langserver", Language: "Python"},
+		{Name: "rust-analyzer", Language: "Rust"},
 	}
-	r.mu.Unlock()
-	s := r.LSPString()
-	if s != "gopls (Go), tsserver (TypeScript)" {
-		t.Errorf("LSPString() = %q", s)
+	want := []string{"gopls", "pyright-langserver", "rust-analyzer"}
+	if got := r.serverNamesLocked(); !slices.Equal(got, want) {
+		t.Errorf("serverNamesLocked = %v, want %v", got, want)
 	}
 }

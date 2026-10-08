@@ -14,7 +14,6 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
-	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -45,7 +44,6 @@ type startWeChatDeps struct {
 	daemonMode         bool
 	toolPrompts        []string
 	skillListing       string
-	lspReg             *lsp.Registry
 }
 
 // startWeChatConnector wires one WeChat account: builds (or adopts a restored)
@@ -163,13 +161,13 @@ func startWeChatConnector(d startWeChatDeps) error {
 	if d.daemonMode {
 		memDir := filepath.Join(d.projectDir, "memory", engineID)
 		wcEng.SetMemoryDir(memDir)
-		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, d.lspReg, memDir))
+		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, memDir))
 		// The refresher must match the prompt it is paired with: the factory's
 		// closure builds with an empty memoryDir, so the first compaction would
 		// silently revert this engine's memory section to the main project's
 		// memory dir and point the model at the wrong memory index.
 		wcEng.SetContextRefresher(func() (string, map[string]string) {
-			return ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, d.lspReg, memDir),
+			return ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, memDir),
 				ctxbuild.LoadContextFiles(d.workingDir)
 		})
 	}

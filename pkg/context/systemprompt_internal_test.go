@@ -160,6 +160,11 @@ func TestRuntimeInfo_IncludesAllFields(t *testing.T) {
 	if !strings.Contains(info, "model={{MODEL}}") {
 		t.Error("RuntimeInfo missing model={{MODEL}}")
 	}
+	// lsp= was removed: its server order came from concurrent discovery, so it
+	// reshuffled every restart and invalidated the prompt prefix cache.
+	if strings.Contains(info, "lsp=") {
+		t.Errorf("RuntimeInfo must not list lsp servers, got %q", info)
+	}
 }
 
 func TestRuntimeInfo_SHELLNotSet(t *testing.T) {

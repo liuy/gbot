@@ -235,7 +235,6 @@ func Start(opts Options) (*Instance, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		lspReg.Start(ctx, lsp.DefaultServers)
-		slog.Info("lsp:startup", "servers", lspReg.LSPString())
 	}()
 
 	needWS := opts.NoTUI || opts.WSPort != "8765" || os.Getenv("GBOT_WS_ADDR") != ""
@@ -334,7 +333,7 @@ func Start(opts Options) (*Instance, error) {
 	// prefix on every flip. A refresh re-reads the files behind this one dir,
 	// never a live cwd.
 	buildSystemPrompt := func() string {
-		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, lspReg, "")
+		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, "")
 	}
 	refreshContext := func() (string, map[string]string) {
 		return buildSystemPrompt(), ctxbuild.LoadContextFiles(workingDir)
@@ -552,7 +551,6 @@ func Start(opts Options) (*Instance, error) {
 			daemonMode:         opts.DaemonMode,
 			toolPrompts:        toolPrompts,
 			skillListing:       skillListing,
-			lspReg:             lspReg,
 		}); err != nil {
 			slog.Warn("wechat: start connector failed", "account_id", state.AccountID, "error", err)
 			continue
