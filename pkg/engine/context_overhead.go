@@ -36,6 +36,44 @@ func (e *Engine) recordContextOverhead(msg *types.Message) {
 		0)
 	e.calibMu.Lock()
 	e.contextOverhead = d
+	e.contextOverheadSet = true
+	e.calibMu.Unlock()
+}
+
+// seedContextOverhead fills the unlearned overhead from a transcript's usage
+// anchor, so the first compact after a restart (before any response has
+// landed in this engine instance) still bills the request-shape overhead in
+// AfterTokens. anchored = base + est(tail-after-anchor) and pure =
+// est(head-including-anchor) + est(tail); the tail cancels, so
+// anchored − pure = base − est(head) — the same residual recordContextOverhead
+// learns at response time, computed on the exact message range the anchor
+// bills. Only fills the unset state: a learned value (or a previous seed)
+// always wins, and a non-positive residual (estimator overshoot) leaves the
+// state unset. Takes calibMu only, never e.mu — callers pass a message
+// snapshot, preserving the global e.mu → calibMu order. Must not be called
+// while holding e.mu (calibratedEstimator re-acquires calibMu).
+func (e *Engine) seedContextOverhead(messages []types.Message) {
+	e.calibMu.Lock()
+	set := e.contextOverheadSet
+	e.calibMu.Unlock()
+	if set {
+		return
+	}
+	est := e.calibratedEstimator()
+	anchored, ok := lastAnchoredTokenCount(messages, defaultMessageEnvelopeTokens, est)
+	if !ok {
+		return
+	}
+	pure := estimateMessagesTokensWith(messages, defaultMessageEnvelopeTokens, est)
+	seed := anchored - pure
+	if seed <= 0 {
+		return
+	}
+	e.calibMu.Lock()
+	if !e.contextOverheadSet {
+		e.contextOverhead = seed
+		e.contextOverheadSet = true
+	}
 	e.calibMu.Unlock()
 }
 

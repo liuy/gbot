@@ -237,6 +237,10 @@ type Engine struct {
 	// guarded by calibMu. Transient by design — like the calibration ratios
 	// it re-learns after the first post-restart response.
 	contextOverhead int
+	// contextOverheadSet marks contextOverhead as populated (learned from a
+	// response or seeded from a usage anchor at compact time), so the seed
+	// never clobbers a value — including a legitimate learned 0.
+	contextOverheadSet bool
 
 	// mcpRegistry manages MCP server connections and tool discovery.
 	mcpRegistry *mcp.Registry
@@ -3280,6 +3284,11 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	comp := e.compactor
 	e.mu.RUnlock()
 
+	// Seed the overhead from the pre-compact transcript's usage anchor before
+	// any compactor path prices AfterTokens — the full message set is intact
+	// here and no response has landed in a freshly restarted engine.
+	e.seedContextOverhead(e.Messages())
+
 	var result *short.CompactResult
 
 	// TS: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
@@ -3351,6 +3360,10 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 	})
 
 	e.fireCompactHooks(ctx, "manual", "pre")
+
+	// Same seed as runCompact: manual /compact right after a restart must not
+	// bill AfterTokens content-only while the anchor sits in the transcript.
+	e.seedContextOverhead(e.Messages())
 
 	var result *short.CompactResult
 
