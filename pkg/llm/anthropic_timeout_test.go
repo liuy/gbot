@@ -103,3 +103,70 @@ func TestAnthropicToolInput_TimeoutDisabled(t *testing.T) {
 		t.Errorf("stream truncated — timeout fired during tool input phase? got events: %v", eventTypes)
 	}
 }
+
+// TestAnthropicStream_IdleTimeoutRetryable reproduces the zero-byte SSE body
+// (connection established, server never writes a byte): the idle timeout must
+// surface as a transport_error APIError flagged Retryable so the engine
+// reconnects instead of failing the turn.
+func TestAnthropicStream_IdleTimeoutRetryable(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		// Flush the headers so the client's http.Do returns; without it the
+		// unflushed 200 sits in the server buffer and Do blocks forever.
+		w.(http.Flusher).Flush()
+		// Zero bytes — block until the client disconnects so the handler
+		// goroutine does not leak.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	provider := &AnthropicProvider{
+		httpClient:  srv.Client(),
+		idleTimeout: 50 * time.Millisecond,
+		apiKey:      "test-key",
+		baseURL:     srv.URL,
+		model:       "test-model",
+	}
+
+	req := &Request{
+		Model:     "test-model",
+		MaxTokens: 100,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}},
+	}
+
+	eventCh, err := provider.Stream(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	errCount := 0
+	var apiErr *APIError
+	sawMessageStop := false
+	for evt := range eventCh {
+		if evt.Type == "message_stop" {
+			sawMessageStop = true
+		}
+		if evt.Error != nil {
+			errCount++
+			apiErr = evt.Error
+		}
+	}
+	if errCount != 1 {
+		t.Fatalf("expected exactly 1 error event, got %d", errCount)
+	}
+	if apiErr.Type != "transport_error" {
+		t.Errorf("error type = %q, want transport_error", apiErr.Type)
+	}
+	if apiErr.Message != "SSE idle timeout: no data received" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "SSE idle timeout: no data received")
+	}
+	if !apiErr.Retryable {
+		t.Error("idle-timeout transport_error must be Retryable so the engine reconnects")
+	}
+	if sawMessageStop {
+		t.Error("zero-byte stream must not emit message_stop")
+	}
+}

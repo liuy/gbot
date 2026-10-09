@@ -60,7 +60,7 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 		name:                cfg.Name,
 		httpClient:          newLLMHTTPClient(cfg.Timeout),
 		retryConfig:         DefaultRetryConfig(),
-		idleTimeout:         60 * time.Second,
+		idleTimeout:         DefaultSSETimeout,
 		microcompactEnabled: resolveMicrocompactEnabled(cfg.Microcompact),
 		apiKey:              cfg.APIKey,
 		baseURL:             strings.TrimRight(cfg.BaseURL, "/"),
@@ -396,7 +396,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 				Error: &APIError{
 					Type:      "transport_error",
 					Message:   err.Error(),
-					Retryable: false,
+					Retryable: errors.Is(err, ErrIdleTimeout),
 				},
 			})
 		}

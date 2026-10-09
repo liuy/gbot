@@ -252,6 +252,62 @@ func TestTimeoutReader_DisabledDeadline(t *testing.T) {
 	}
 }
 
+// neverReader blocks until unblocked, then returns EOF — simulates an SSE
+// body where the server never sends a byte (the Strata queueing scenario).
+type neverReader struct{ unblock chan struct{} }
+
+func (n *neverReader) Read(p []byte) (int, error) {
+	<-n.unblock
+	return 0, io.EOF
+}
+
+// TestTimeoutReader_IdleTimeoutSentinel verifies the idle-timeout error is
+// the ErrIdleTimeout sentinel so provider wrap sites can mark it retryable
+// via errors.Is, while the user-visible message stays unchanged.
+func TestTimeoutReader_IdleTimeoutSentinel(t *testing.T) {
+	t.Parallel()
+
+	unblock := make(chan struct{})
+	defer close(unblock)
+	tr := &timeoutReader{
+		reader:  &neverReader{unblock: unblock},
+		timeout: 5 * time.Millisecond,
+		ctx:     context.Background(),
+	}
+
+	n, err := tr.Read(make([]byte, 64))
+	if !errors.Is(err, ErrIdleTimeout) {
+		t.Errorf("Read error = %v (%T), want ErrIdleTimeout sentinel", err, err)
+	}
+	if err.Error() != "SSE idle timeout: no data received" {
+		t.Errorf("Read error message = %q, want %q", err.Error(), "SSE idle timeout: no data received")
+	}
+	// No bytes were read into p — a nonzero n would feed the scanner a
+	// phantom SSE byte.
+	if n != 0 {
+		t.Errorf("Read returned n = %d with idle-timeout error, want 0", n)
+	}
+}
+
+// TestProviderDefaultIdleTimeout pins all three providers to the same
+// DefaultSSETimeout so idle-timeout behavior is uniform across backends.
+func TestProviderDefaultIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	if DefaultSSETimeout != 90*time.Second {
+		t.Errorf("DefaultSSETimeout = %v, want 90s", DefaultSSETimeout)
+	}
+	if got := NewAnthropicProvider(&AnthropicConfig{APIKey: "k", Model: "m"}).idleTimeout; got != DefaultSSETimeout {
+		t.Errorf("anthropic idleTimeout = %v, want %v", got, DefaultSSETimeout)
+	}
+	if got := NewOpenAIProvider(&OpenAIConfig{APIKey: "k", Model: "m"}).idleTimeout; got != DefaultSSETimeout {
+		t.Errorf("openai idleTimeout = %v, want %v", got, DefaultSSETimeout)
+	}
+	if got := NewResponsesProvider(&ResponsesConfig{APIKey: "k", Model: "m"}).idleTimeout; got != DefaultSSETimeout {
+		t.Errorf("responses idleTimeout = %v, want %v", got, DefaultSSETimeout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // synctest based test — mocked clock, io.Pipe, simulates 5m timeout instantly
 // ---------------------------------------------------------------------------

@@ -2410,13 +2410,21 @@ func (e *StreamEndedError) Error() string {
 }
 
 // isStreamError reports whether err is a transient stream failure safe to retry
-// (connection interrupted or ended without content), not an API error like 429/5xx.
+// (connection interrupted or ended without content), or a retryable APIError
+// (SSE idle timeout, server overload). Non-retryable API errors (4xx/5xx
+// terminal, auth) stay terminal here — the provider already exhausted its
+// HTTP-level retries for those.
 func isStreamError(err error) bool {
 	if _, ok := errors.AsType[*StreamInterruptedError](err); ok {
 		return true
 	}
-	_, ok := errors.AsType[*StreamEndedError](err)
-	return ok
+	if _, ok := errors.AsType[*StreamEndedError](err); ok {
+		return true
+	}
+	if apiErr, ok := errors.AsType[*llm.APIError](err); ok && apiErr.Retryable {
+		return true
+	}
+	return false
 }
 
 // retryErrorType maps a stream error to its display category for the TUI.
@@ -2433,7 +2441,9 @@ func retryErrorType(err error) types.RetryErrorType {
 // callLLMWithRetry wraps callLLM with exponential backoff retry for stream-level failures.
 // Sub-agents bypass retry to prevent deadlock.
 // AbortError is never retried because callLLM mutates e.messages on ctx cancellation.
-// Only stream-level errors are retried; API errors (429/5xx) are handled by the provider.
+// Stream-level errors and retryable APIErrors (SSE idle timeout, overload) are
+// retried; non-retryable API errors are terminal here — the provider already
+// handled HTTP-level retries.
 func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*types.Message, *StreamingToolExecutor, error) {
 	cfg := e.retryConfig
 	if cfg == nil {
@@ -2454,7 +2464,7 @@ func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*ty
 			return nil, nil, err
 		}
 
-		// Only retry stream-level errors; API errors are terminal here.
+		// Non-stream errors (non-retryable API errors) are terminal here.
 		if !isStreamError(err) {
 			return nil, nil, err
 		}

@@ -63,6 +63,54 @@ func TestResponsesStreamRetryExhausted(t *testing.T) {
 	}
 }
 
+// TestResponsesStream_IdleTimeoutRetryable reproduces the zero-byte SSE body
+// (connection established, server never writes a byte): the idle timeout must
+// surface as a retryable transport_error APIError so the engine reconnects
+// instead of failing the turn.
+func TestResponsesStream_IdleTimeoutRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Flush the headers so the client's http.Do returns; without it the
+		// unflushed 200 sits in the server buffer and Do blocks forever.
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	p := NewResponsesProvider(&ResponsesConfig{APIKey: "k", BaseURL: server.URL, Model: "glm-4.6"})
+	p.idleTimeout = 50 * time.Millisecond
+
+	eventCh, err := p.Stream(context.Background(), &Request{
+		Model:    "glm-4.6",
+		Messages: []types.Message{userTextMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() initial error: %v", err)
+	}
+
+	errCount := 0
+	var apiErr *APIError
+	for evt := range eventCh {
+		if evt.Error != nil {
+			errCount++
+			apiErr = evt.Error
+		}
+	}
+	if errCount != 1 {
+		t.Fatalf("expected exactly 1 error event, got %d", errCount)
+	}
+	if apiErr.Type != "transport_error" {
+		t.Errorf("error type = %q, want transport_error", apiErr.Type)
+	}
+	if apiErr.Message != "SSE idle timeout: no data received" {
+		t.Errorf("error message = %q, want %q", apiErr.Message, "SSE idle timeout: no data received")
+	}
+	if !apiErr.Retryable {
+		t.Error("idle-timeout transport_error must be Retryable so the engine reconnects")
+	}
+}
+
 func TestResponsesParseHTTPErrorStatusBranches(t *testing.T) {
 	// 429 and 403 map to their typed codes — the Retryable flag decides the
 	// stream retry loop, so a mis-typed status silently changes retry behavior.

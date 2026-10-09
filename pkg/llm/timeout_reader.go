@@ -14,6 +14,11 @@ import (
 // The tool input phase disables this timeout entirely.
 const DefaultSSETimeout = 90 * time.Second
 
+// ErrIdleTimeout is returned by timeoutReader when no data arrives within
+// the idle window. Providers mark the wrapped APIError retryable so the
+// engine's retry loop reconnects instead of surfacing a terminal error.
+var ErrIdleTimeout = errors.New("SSE idle timeout: no data received")
+
 // timeoutReader wraps an io.Reader with per-read idle timeout.
 // Each Read() call has a deadline — if no data arrives within the
 // timeout, Read returns an error instead of blocking indefinitely.
@@ -66,7 +71,7 @@ func (r *timeoutReader) Read(p []byte) (int, error) {
 	case res := <-done:
 		return res.n, res.err
 	case <-t.C:
-		return 0, errors.New("SSE idle timeout: no data received")
+		return 0, ErrIdleTimeout
 	case <-r.ctx.Done():
 		return 0, r.ctx.Err()
 	}

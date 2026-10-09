@@ -68,7 +68,7 @@ func NewResponsesProvider(cfg *ResponsesConfig) *ResponsesProvider {
 		name:        cfg.Name,
 		httpClient:  newLLMHTTPClient(cfg.Timeout),
 		retryConfig: DefaultRetryConfig(),
-		// 90s, not openai.go's 60s: reasoning-phase deltas can arrive in
+		// DefaultSSETimeout (90s): reasoning-phase deltas can arrive in
 		// bursts spaced further apart than chat-completion tokens.
 		idleTimeout:         DefaultSSETimeout,
 		microcompactEnabled: resolveMicrocompactEnabled(cfg.Microcompact),
@@ -704,7 +704,7 @@ func (p *ResponsesProvider) Stream(ctx context.Context, req *Request) (<-chan St
 				Error: &APIError{
 					Type:      "transport_error",
 					Message:   err.Error(),
-					Retryable: false,
+					Retryable: errors.Is(err, ErrIdleTimeout),
 				},
 			})
 		}

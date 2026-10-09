@@ -277,7 +277,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 					Error: &APIError{
 						Type:      "transport_error",
 						Message:   err.Error(),
-						Retryable: false,
+						Retryable: errors.Is(err, ErrIdleTimeout),
 					},
 				}
 			}

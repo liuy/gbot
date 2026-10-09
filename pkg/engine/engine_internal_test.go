@@ -1003,7 +1003,7 @@ func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-ch
 			{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "discard_slow"}},
 			{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
 			{Type: "content_block_stop", Index: 0},
-			{Error: &llm.APIError{Status: 429, Retryable: true, Message: "rate limited mid-stream"}},
+			{Error: &llm.APIError{Status: 429, Retryable: false, Message: "rate limited mid-stream"}},
 		}
 		ch := make(chan llm.StreamEvent, len(events))
 		for _, e := range events {
@@ -1053,7 +1053,8 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "test", "")
 
-	// API error (429) is terminal at engine level — no retry (D2)
+	// Non-retryable API error (429) is terminal at engine level — no retry,
+	// so the tool goroutine cleanup below happens exactly once.
 	if result.Error == nil {
 		t.Fatal("expected terminal error for mid-stream 429, got nil")
 	}
@@ -7859,6 +7860,136 @@ func TestQuery_NonRetryableTerminal(t *testing.T) {
 	}
 }
 
+// TestQuery_RetryableAPIErrorRetries verifies that a retryable APIError
+// delivered as an in-stream error event (the SSE idle-timeout production
+// path) flows through callLLMWithRetry: one retry event with the raw error
+// message, a second provider call, eventual success.
+func TestQuery_RetryableAPIErrorRetries(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse([]llm.StreamEvent{{Type: "error", Error: &llm.APIError{
+		Type:      "transport_error",
+		Message:   "SSE idle timeout: no data received",
+		Retryable: true,
+	}}}, nil)
+	mp.addResponse(subTextEvents("test", "recovered"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.retryConfig = &llm.RetryConfig{MaxRetries: 1, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t.Cleanup(func() { eng.Close() })
+
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 1 {
+		t.Fatalf("expected 1 EventRetryAttempt, got %d", len(retryEvents))
+	}
+	ra := retryEvents[0].RetryAttempt
+	if ra.Error != "SSE idle timeout: no data received" {
+		t.Errorf("retry event Error = %q, want %q", ra.Error, "SSE idle timeout: no data received")
+	}
+	// Empty ErrorType keeps the TUI on formatRetryError's default
+	// "Request timed out. Check your internet connection" branch.
+	if ra.ErrorType != "" {
+		t.Errorf("retry event ErrorType = %q, want empty", ra.ErrorType)
+	}
+	if mp.index != 2 {
+		t.Errorf("expected 2 provider calls, got %d", mp.index)
+	}
+}
+
+// TestQuery_NonRetryableAPIErrorEventTerminal guards the retry gate from the
+// other side: an in-stream error event with a non-retryable APIError (e.g.
+// connection reset) stays terminal — no retry events, single provider call.
+// No retryConfig is set: the 0-retry assertion must hold under defaults.
+// The queued success response is never consumed on the correct path; it only
+// exists so a gate mutation (retrying non-retryable errors) terminates and
+// fails this test fast instead of hanging on a drained provider.
+func TestQuery_NonRetryableAPIErrorEventTerminal(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse([]llm.StreamEvent{{Type: "error", Error: &llm.APIError{
+		Type:    "transport_error",
+		Message: "connection reset by peer",
+	}}}, nil)
+	mp.addResponse(subTextEvents("test", "never reached on correct path"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error == nil {
+		t.Fatal("expected terminal error for non-retryable APIError, got nil")
+	}
+	if result.Error.Error() != "connection reset by peer" {
+		t.Errorf("result.Error = %q, want %q", result.Error.Error(), "connection reset by peer")
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 0 {
+		t.Errorf("expected 0 EventRetryAttempt for non-retryable APIError, got %d", len(retryEvents))
+	}
+	if mp.index != 1 {
+		t.Errorf("expected 1 provider call, got %d", mp.index)
+	}
+}
+
+// TestQuery_RetryableAPIErrorMidContentRetries verifies retry semantics when
+// the idle timeout fires mid-stream after partial content: the error path
+// appends the partial assistant message to history, and the retried turn's
+// full answer lands after it (user / partial / final).
+func TestQuery_RetryableAPIErrorMidContentRetries(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	events := append(partialTextEvents("test", "partial"), llm.StreamEvent{
+		Type: "error",
+		Error: &llm.APIError{
+			Type:      "transport_error",
+			Message:   "SSE idle timeout: no data received",
+			Retryable: true,
+		},
+	})
+	mp.addResponse(events, nil)
+	mp.addResponse(subTextEvents("test", "recovered"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.retryConfig = &llm.RetryConfig{MaxRetries: 1, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t.Cleanup(func() { eng.Close() })
+
+	result := eng.QuerySync(context.Background(), "hello", "")
+	if result.Error != nil {
+		t.Fatalf("expected success after mid-content retry, got: %v", result.Error)
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 1 {
+		t.Fatalf("expected 1 EventRetryAttempt, got %d", len(retryEvents))
+	}
+
+	msgs := result.Messages
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (user, partial assistant, final assistant), got %d", len(msgs))
+	}
+	if msgs[1].Role != types.RoleAssistant {
+		t.Errorf("msgs[1].Role = %q, want assistant (partial message must be retained)", msgs[1].Role)
+	}
+	if msgs[1].Content[0].Text != "partial" {
+		t.Errorf("msgs[1].Content[0].Text = %q, want %q", msgs[1].Content[0].Text, "partial")
+	}
+	if msgs[2].Role != types.RoleAssistant || msgs[2].Content[0].Text != "recovered" {
+		t.Errorf("msgs[2] = %s/%q, want assistant/%q", msgs[2].Role, msgs[2].Content[0].Text, "recovered")
+	}
+}
+
 // TestQuery_RetryAbortErrorNoRetry verifies AbortError is NOT retried.
 // callLLM mutates e.messages on ctx cancellation — retrying would corrupt history.
 func TestQuery_RetryAbortErrorNoRetry(t *testing.T) {
@@ -8048,6 +8179,20 @@ func TestStreamErrorTypeDiscrimination(t *testing.T) {
 	}
 	if !isStreamError(ended) {
 		t.Error("isStreamError should return true for StreamEndedError")
+	}
+
+	// Retryable APIError (SSE idle timeout, server overload) passes the gate;
+	// non-retryable API errors stay terminal.
+	if !isStreamError(&llm.APIError{Retryable: true}) {
+		t.Error("isStreamError should return true for retryable *llm.APIError")
+	}
+	if isStreamError(&llm.APIError{Retryable: false}) {
+		t.Error("isStreamError should return false for non-retryable *llm.APIError")
+	}
+	// Wrapped form: callLLM returns the bare *APIError today, but the gate
+	// must not depend on that — errors.AsType semantics survive wrapping.
+	if !isStreamError(fmt.Errorf("wrap: %w", &llm.APIError{Retryable: true})) {
+		t.Error("isStreamError should return true for wrapped retryable *llm.APIError")
 	}
 
 	// Wrapped error
@@ -8273,6 +8418,17 @@ func TestRetryErrorType_StreamEnded(t *testing.T) {
 	got := retryErrorType(&StreamEndedError{})
 	if got != types.RetryErrorStreamEnded {
 		t.Errorf("retryErrorType(StreamEndedError) = %q, want %q", got, types.RetryErrorStreamEnded)
+	}
+}
+
+// TestRetryErrorType_RetryableAPIError pins the decision that retryable
+// APIErrors map to "": the TUI's formatRetryError then falls to its default
+// "Request timed out. Check your internet connection" branch, which matches
+// an SSE idle timeout. A dedicated RetryErrorType would be a new feature.
+func TestRetryErrorType_RetryableAPIError(t *testing.T) {
+	got := retryErrorType(&llm.APIError{Retryable: true, Message: "SSE idle timeout: no data received"})
+	if got != "" {
+		t.Errorf("retryErrorType(retryable APIError) = %q, want empty", got)
 	}
 }
 

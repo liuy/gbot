@@ -767,13 +767,15 @@ func TestQuery_StreamError_APIErrorTerminal(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	// API-level error (429) — engine does NOT retry these (provider handles HTTP-level retry).
-	// If it reaches engine, it's terminal.
+	// Non-retryable API-level error: the provider exhausted HTTP-level retries
+	// and did not flag it retryable, so the engine treats it as terminal.
+	// (Retryable API errors — SSE idle timeout, overload — are retried by
+	// callLLMWithRetry; see TestQuery_RetryableAPIErrorRetries.)
 	mp.addResponse(nil, &llm.APIError{
 		Type:      "rate_limit_error",
 		Message:   "rate limited",
 		Status:    429,
-		Retryable: true,
+		Retryable: false,
 	})
 
 	eng := New(&Params{
@@ -1691,16 +1693,19 @@ func TestQuery_ErrorInStream(t *testing.T) {
 // TestQuery_RetryableStreamError_APIErrorTerminal verifies that mid-stream API errors
 // (e.g. 529 overloaded) are NOT retried at engine level. Provider handles HTTP-level retries;
 // if the error reaches engine, it's terminal.
-func TestQuery_RetryableStreamError_APIErrorTerminal(t *testing.T) {
+func TestQuery_RetryableStreamError_APIErrorRetries(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	// Mid-stream API error (529) — returned via event.Error
+	// Mid-stream retryable API error (529): the engine retries it through
+	// callLLMWithRetry — the retryable flag is exactly the gate contract.
+	// Second response succeeds, so the query must recover.
 	retryableEvents := []llm.StreamEvent{
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
 		{Error: &llm.APIError{Message: "overloaded", Status: 529, Retryable: true}},
 	}
 	mp.addResponse(retryableEvents, nil)
+	mp.addResponse(textStreamEvents("test-model", "recovered"), nil)
 
 	eng := New(&Params{
 		Provider: mp,
@@ -1713,11 +1718,14 @@ func TestQuery_RetryableStreamError_APIErrorTerminal(t *testing.T) {
 	defer cancel()
 
 	result := eng.QuerySync(ctx, "test", "")
-	if result.Error == nil {
-		t.Fatal("expected terminal error for mid-stream 529, got nil")
+	if result.Error != nil {
+		t.Fatalf("expected recovery after retrying mid-stream 529, got: %v", result.Error)
 	}
-	if !strings.Contains(result.Error.Error(), "overloaded") {
-		t.Errorf("error should contain 'overloaded', got: %v", result.Error)
+	if !strings.Contains(result.Reply, "recovered") {
+		t.Errorf("reply should contain retried answer, got: %q", result.Reply)
+	}
+	if mp.index != 2 {
+		t.Errorf("expected 2 provider calls (initial + retry), got %d", mp.index)
 	}
 }
 
@@ -5896,7 +5904,9 @@ func (r *stopFailureRecorder) snapshot() (events []string, reason string) {
 // response, so a blocking Stop hook would loop error→hook→retry→error.
 func TestTerminalAPIErrorFiresStopFailureNotStop(t *testing.T) {
 	mp := &mockProvider{}
-	mp.addResponse(nil, &llm.APIError{Type: "rate_limit_error", Message: "rate limited", Status: 429, Retryable: true})
+	// Non-retryable 429: terminal at engine level, so the StopFailure hook
+	// path must fire with the error text as Reason.
+	mp.addResponse(nil, &llm.APIError{Type: "rate_limit_error", Message: "rate limited", Status: 429, Retryable: false})
 	rec := newStopFailureRecorder()
 	h := hooks.NewHooks(hooks.HooksConfig{
 		"StopFailure": []hooks.HookMatcher{{Hooks: []hooks.HookConfig{
