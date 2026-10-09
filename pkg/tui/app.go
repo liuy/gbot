@@ -1370,7 +1370,7 @@ func (a *App) View() string {
 					toolsStr = fmt.Sprintf(" · %d tools", tc)
 				}
 			}
-			// Throttle rate display to 1 refresh/sec to avoid jitter.
+			// Throttle rate display to one refresh per 500ms to avoid jitter.
 			if time.Since(a.rateDisplayTime) >= 500*time.Millisecond {
 				a.rateDisplayVal = a.repl.TokenRate().Rate()
 				a.rateDisplayTime = time.Now()

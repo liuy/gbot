@@ -7,6 +7,19 @@ import (
 	"github.com/liuy/gbot/pkg/utils"
 )
 
+// minRateSpan is the shortest observation interval Rate() will divide by.
+// Backlogged deltas (tool-call or turn end) land several samples apart within
+// 1-5ms; tokens over that span is noise with unbounded variance, not a rate.
+// 500ms equals the display's refresh period (app.go samples Rate() every
+// 500ms), so anything shorter can never be rendered stably anyway; Rate()
+// reports 0 until real spread accumulates.
+const minRateSpan = 500 * time.Millisecond
+
+// nowFn is rate.go's clock seam: tests drive exact sub-millisecond arrival
+// patterns without sleeping; production reads the wall clock. Tests that
+// override it must not run in parallel (they write this package variable).
+var nowFn = time.Now
+
 // TokenRate tracks streaming token arrivals in a sliding window for real-time
 // t/s display. All streaming data (text, thinking, tool params) is fed via Add.
 type TokenRate struct {
@@ -40,7 +53,7 @@ func (r *TokenRate) Add(text string) {
 	if tokens == 0 {
 		return
 	}
-	now := time.Now()
+	now := nowFn()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -59,9 +72,11 @@ func (r *TokenRate) Add(text string) {
 }
 
 // Rate returns tokens/second over the samples' own span (last - first).
-// A zero span — burst jitter delivering several deltas in the same
-// millisecond — returns 0 instead of the old 1ms floor, which displayed
-// thousands of t/s; the next tick or a later sample restores the value.
+// Same-instant samples AND any span below minRateSpan return 0: there is no
+// usable observation interval (burst jitter packs deltas into the same
+// millisecond; backlog flushes land several samples a few ms apart, and
+// tokens over such spans displayed thousands of t/s). A later sample that
+// opens the span restores the value.
 func (r *TokenRate) Rate() float64 {
 	if r == nil {
 		return 0
@@ -77,7 +92,7 @@ func (r *TokenRate) Rate() float64 {
 		total += s.tokens
 	}
 	elapsed := r.samples[len(r.samples)-1].ts.Sub(r.samples[0].ts)
-	if elapsed <= 0 {
+	if elapsed < minRateSpan {
 		return 0
 	}
 	return float64(total) / elapsed.Seconds()
@@ -117,7 +132,7 @@ func (r *TokenRate) StreamDuration() time.Duration {
 // evict removes expired samples and compacts the backing array to prevent
 // unbounded memory growth over long streaming sessions.
 func (r *TokenRate) evict() {
-	cutoff := time.Now().Add(-r.window)
+	cutoff := nowFn().Add(-r.window)
 	i := 0
 	for i < len(r.samples) && r.samples[i].ts.Before(cutoff) {
 		i++

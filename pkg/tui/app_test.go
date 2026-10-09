@@ -1087,6 +1087,31 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	}
 }
 
+func TestApp_View_StreamingRateBacklogFlushShowsZero(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.width = 80
+		app.height = 24
+		app.repl.StartQuery()
+		app.spinner.Start()
+		app.repl.AppendTextItem()
+		// Backlogged deltas: three text deltas within a few ms total span,
+		// as a turn-end flush delivers them.
+		for range 3 {
+			app.updateRepl(textDeltaMsg{Text: "a chunk of tokens"})
+			time.Sleep(2 * time.Millisecond)
+		}
+		// Force the 500ms-throttled refresh to fire now.
+		app.rateDisplayTime = time.Now().Add(-time.Second)
+		v := app.View()
+		// The " · " separator qualifies the value: bare "0.0 t/s" also
+		// matches " · 3000.0 t/s" (the spike), so it would be vacuous.
+		if !strings.Contains(v, " · 0.0 t/s") {
+			t.Errorf("streaming view after backlog flush should show 0.0 t/s, not a thousands-t/s spike; got:\n%s", v)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // updateRepl — toolParamDeltaMsg
 // ---------------------------------------------------------------------------

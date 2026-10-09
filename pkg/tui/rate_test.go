@@ -4,6 +4,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 func TestTokenRate_NilReceiver(t *testing.T) {
@@ -39,13 +41,13 @@ func TestTokenRate_Rate_UsesActualElapsed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
 		for range 5 {
-			r.Add("six token chunk") // 6 tokens each = 30 total
-			time.Sleep(60 * time.Millisecond)
+			r.Add("six estimated token chunk of words") // 6 tokens each = 30 total
+			time.Sleep(150 * time.Millisecond)
 		}
 		rate := r.Rate()
-		// 30 tokens over ~300ms = ~100 t/s, not 30/2=15.
-		if rate < 50.0 {
-			t.Errorf("Rate() = %.1f, want >= 50 (30 tokens over 300ms)", rate)
+		// 30 tokens over ~600ms = ~50 t/s, not 30/2=15.
+		if rate < 40.0 || rate > 60.0 {
+			t.Errorf("Rate() = %.1f, want 40-60 (30 tokens over 600ms)", rate)
 		}
 	})
 }
@@ -175,4 +177,116 @@ func TestTokenRate_Rate_SingleSample(t *testing.T) {
 			t.Errorf("Rate() with a single sample = %v, want 0 (no span)", got)
 		}
 	})
+}
+
+func TestTokenRate_Rate_BacklogFlushSpike(t *testing.T) {
+	// Turn-end backlog delivers several deltas within a few ms; tokens over
+	// that span is noise with unbounded variance, not a rate.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		base := time.Now()
+		for _, s := range []rateSample{
+			{ts: base, tokens: 50},
+			{ts: base.Add(2 * time.Millisecond), tokens: 50},
+			{ts: base.Add(5 * time.Millisecond), tokens: 50},
+		} {
+			r.mu.Lock()
+			r.samples = append(r.samples, s)
+			r.mu.Unlock()
+		}
+		if got := r.Rate(); got != 0.0 {
+			t.Errorf("Rate() after 5ms backlog flush = %v, want 0 (span below minRateSpan — no estimate)", got)
+		}
+	})
+}
+
+func TestTokenRate_Rate_MinSpanBoundary(t *testing.T) {
+	// Exactly minRateSpan is accepted (strict <): 24 tokens / 0.5s = 48.0.
+	// 0.5s is binary-exact, no epsilon needed.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		base := time.Now()
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: base, tokens: 12})
+		r.mu.Unlock()
+		time.Sleep(500 * time.Millisecond)
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: base.Add(minRateSpan), tokens: 12})
+		r.mu.Unlock()
+		if got := r.Rate(); got != 48.0 {
+			t.Errorf("Rate() at exactly minRateSpan = %v, want 48.0 (24 tokens over 0.5s)", got)
+		}
+	})
+	// One millisecond under the gate: still no estimate.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		base := time.Now()
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: base, tokens: 12})
+		r.mu.Unlock()
+		time.Sleep(500 * time.Millisecond)
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: base.Add(minRateSpan - time.Millisecond), tokens: 12})
+		r.mu.Unlock()
+		if got := r.Rate(); got != 0.0 {
+			t.Errorf("Rate() below minRateSpan = %v, want 0 (no usable observation interval)", got)
+		}
+	})
+}
+
+func TestTokenRate_Rate_ClusterThenSpreadRecovers(t *testing.T) {
+	// A burst-start cluster delays, never corrupts, the estimate: once a
+	// later sample opens the span to exactly 500ms, all 100 tokens count.
+	synctest.Test(t, func(t *testing.T) {
+		r := NewTokenRate()
+		base := time.Now()
+		for _, s := range []rateSample{
+			{ts: base, tokens: 30},
+			{ts: base.Add(2 * time.Millisecond), tokens: 30},
+			{ts: base.Add(5 * time.Millisecond), tokens: 30},
+		} {
+			r.mu.Lock()
+			r.samples = append(r.samples, s)
+			r.mu.Unlock()
+		}
+		time.Sleep(500 * time.Millisecond)
+		r.mu.Lock()
+		r.samples = append(r.samples, rateSample{ts: base.Add(500 * time.Millisecond), tokens: 10})
+		r.mu.Unlock()
+		if got := r.Rate(); got != 200.0 {
+			t.Errorf("Rate() once spread reaches 500ms = %v, want 200.0 (100 tokens over 0.5s)", got)
+		}
+	})
+}
+
+func TestTokenRate_NowFnControlsAddAndEvict(t *testing.T) {
+	// Writes the package-level nowFn; must not run in parallel. Every time
+	// the estimator sees after this anchor comes from the seam below.
+	// REAL-TIME: read the wall clock once for the base timestamp.
+	base := time.Now()
+	cur := base
+	orig := nowFn
+	nowFn = func() time.Time { return cur }
+	t.Cleanup(func() { nowFn = orig })
+
+	s1 := "a chunk of tokens"
+	s2 := "another chunk of tokens"
+	r := NewTokenRate()
+	r.Add(s1)
+	cur = base.Add(1 * time.Second)
+	r.Add(s2)
+
+	// Two samples exactly 1s apart (binary-exact span): the exact positive
+	// rate must come back before any further clock advance.
+	want := float64(utils.EstimateTokens(s1)+utils.EstimateTokens(s2)) / 1.0
+	if got := r.Rate(); got != want {
+		t.Fatalf("Rate() under seam clock = %v, want %v", got, want)
+	}
+
+	// Advance past the 2s window: Rate()'s own evict() must drop both
+	// samples per the seam clock (cutoff = base+1100ms).
+	cur = base.Add(3100 * time.Millisecond)
+	if got := r.Rate(); got != 0.0 {
+		t.Errorf("Rate() after nowFn advanced past the window = %v, want 0 (samples evicted per the seam clock)", got)
+	}
 }
