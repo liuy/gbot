@@ -80,9 +80,13 @@ func (t *REPLTool) SetToolLister(fn func() []ToolMeta) {
 }
 
 // replScripts are plugin-supplied harness sources preloaded into every new
-// session (set once at startup from LoadedPlugins; engine-agnostic because
+// session (set at startup and on config reload; engine-agnostic because
 // sessions are created lazily inside whatever engine runs the tool).
 var replScripts []ReplScript
+
+// replScriptsMu guards replScripts: config reload writes it concurrently
+// with session-creation reads (previously startup-set-once, so unlocked).
+var replScriptsMu sync.RWMutex
 
 // ReplScript is one preloaded plugin JS file. Same shape as
 // plugins.ReplScript (duplicated here to avoid an import cycle; bootstrap
@@ -93,9 +97,20 @@ type ReplScript struct {
 }
 
 // SetReplScripts sets the harness scripts evaluated into new sessions.
-// Call once at startup; later calls only affect sessions created afterwards.
+// Existing sessions keep their evaluated globals; later calls only affect
+// sessions created afterwards.
 func SetReplScripts(scripts []ReplScript) {
+	replScriptsMu.Lock()
+	defer replScriptsMu.Unlock()
 	replScripts = scripts
+}
+
+// currentReplScripts returns a copy of the current harness scripts under the
+// read lock; the caller iterates its own snapshot.
+func currentReplScripts() []ReplScript {
+	replScriptsMu.RLock()
+	defer replScriptsMu.RUnlock()
+	return append([]ReplScript(nil), replScripts...)
 }
 
 // Name returns the tool name.

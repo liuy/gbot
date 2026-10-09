@@ -113,6 +113,31 @@ export async function fetchRawSettings(): Promise<string> {
   return body.raw
 }
 
+// Manual config reload (daemon-side two-phase reload) — request→report.
+export interface ReloadFileEntry {
+  path: string
+  status: 'reloaded' | 'unchanged' | 'failed'
+  note?: string
+  noteKey?: string
+  errLine?: string
+}
+export interface ReloadReport {
+  applied: boolean
+  phase: number
+  err?: string
+  files: ReloadFileEntry[]
+  counts: { reloaded: number; unchanged: number; failed: number }
+  promptChanged: boolean
+  enginesRefreshed: number
+  settingsChanged: boolean
+  lastReloadAt: string
+}
+export async function postReloadConfig(): Promise<ReloadReport> {
+  const res = await fetch('/api/settings/reload', { method: 'POST', headers: jsonHeaders })
+  if (!res.ok) throw new Error(`reload failed: ${res.status}`)
+  return res.json()
+}
+
 export async function saveSettings(providers: SettingsProvider[]): Promise<void> {
   const res = await fetch('/api/settings/providers', {
     method: 'PUT',
@@ -238,6 +263,15 @@ const EYE_OFF =
 interface KVRow {
   k: string
   v: string
+}
+
+const NOTE_KEYS: Record<string, 'configNoteNextRequest' | 'configNoteNewSessions'> = {
+  effectiveNextRequest: 'configNoteNextRequest',
+  newSessionsOnly: 'configNoteNewSessions',
+}
+const noteKeyText = (key: string): string => {
+  const k = NOTE_KEYS[key]
+  return k ? t(k) : key
 }
 
 export function createSettingsPage(): SettingsPageHandles {
@@ -1290,6 +1324,217 @@ export function createSettingsPage(): SettingsPageHandles {
   generalCard.insertBefore(logDivider, systemRow)
   generalCard.insertBefore(appLogHead, logDivider)
   generalCard.insertBefore(appLogPanel, logDivider)
+
+  // ------------------------------------------------- configuration reload
+  // Manual two-phase config reload. The card is request→report: the daemon
+  // answers once, so while the POST is in flight the phase list shows an
+  // ADVANCING ACTIVE PULSE only — never a done mark. Done/fail marks appear
+  // exclusively from real daemon data in the response (applied / phase).
+  const configCard = createElement(
+    'div',
+    'mx-3 mb-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden',
+  )
+  configCard.setAttribute('data-config-card', '')
+  configCard.append(
+    createNode('div', { className: 'px-3.5 pt-3 text-[13px] font-medium text-t1', ...L('configRow') }),
+    createNode('div', { className: 'px-3.5 pt-1 text-[11.5px] text-t3', ...L('configScope') }),
+  )
+
+  const configPhases = createElement('div', 'hidden px-3.5 py-1')
+  configPhases.setAttribute('data-config-phases', '')
+  const phaseRows: HTMLElement[] = []
+  for (let i = 0; i < 5; i++) {
+    const row = createElement('div', 'flex items-center gap-2.5 py-1 text-[13px] text-t3')
+    row.setAttribute('data-config-phase', String(i))
+    const dot = createElement(
+      'span',
+      'w-[17px] h-[17px] rounded-full border border-hairline grid place-items-center text-[10px] flex-none',
+    )
+    row.append(dot, createNode('span', { ...L(`configPhase${i}` as StaticKey) }))
+    phaseRows.push(row)
+    configPhases.append(row)
+  }
+  const setPhaseState = (i: number, state: 'idle' | 'active' | 'done' | 'fail') => {
+    const row = phaseRows[i]
+    const dot = row.firstElementChild as HTMLElement
+    row.classList.remove('hidden')
+    row.classList.toggle('text-t1', state !== 'idle')
+    dot.className =
+      'w-[17px] h-[17px] rounded-full border grid place-items-center text-[10px] flex-none ' +
+      (state === 'active'
+        ? 'border-blue'
+        : state === 'done'
+          ? 'border-green bg-green text-ink font-bold'
+          : state === 'fail'
+            ? 'border-red bg-red text-white font-bold'
+            : 'border-hairline')
+    dot.replaceChildren()
+    if (state === 'active') {
+      dot.append(createElement('span', 'w-[7px] h-[7px] rounded-full bg-blue animate-pulse'))
+    } else if (state === 'done') {
+      dot.textContent = '✓'
+    } else if (state === 'fail') {
+      dot.textContent = '✕'
+    }
+  }
+  const resetPhases = () => {
+    for (let i = 0; i < 5; i++) setPhaseState(i, 'idle')
+  }
+  configCard.append(configPhases)
+
+  const configReloadBtn = createNode('button', {
+    className:
+      'block w-[calc(100%-28px)] mx-3.5 mt-3 mb-1 py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35 cursor-pointer',
+    ...L('configReloadBtn', { type: 'button', 'data-config-reload': '' }),
+  }) as HTMLButtonElement
+  const configMeta = createNode('div', {
+    className: 'text-t3 text-[11px] text-center pb-2.5',
+    text: t('configNeverReloaded'),
+    attrs: { 'data-config-meta': '' },
+  })
+  configCard.append(configReloadBtn, configMeta)
+
+  const configReport = createElement('div', 'hidden px-3.5 pb-2')
+  configReport.setAttribute('data-config-report', '')
+  const configBanner = createElement('div', 'flex-1 min-w-0 text-xs leading-relaxed')
+  configBanner.setAttribute('data-config-banner', '')
+  const configRows = createElement('div', '')
+  const configDetailsLabel = createNode('span', {
+    className: 'text-t3 text-[13px] shrink-0',
+    ...L('configDetails'),
+  })
+  const configChev = createNode('span', {
+    className: 'text-t3 text-[15px] leading-none transition-transform',
+    text: '›',
+    attrs: { 'data-config-chev': '' },
+  })
+  const configBannerRow = createElement('div', 'flex items-center gap-2 px-3.5 pt-2 cursor-pointer')
+  configBannerRow.setAttribute('data-config-banner-row', '')
+  configBannerRow.append(configBanner, configDetailsLabel, configChev)
+  configReport.append(configBannerRow, configRows)
+  configCard.append(configReport)
+
+  const badgeFor = (status: ReloadFileEntry['status']) => {
+    const key =
+      status === 'reloaded' ? 'configBadgeReloaded' : status === 'failed' ? 'configBadgeFailed' : 'configBadgeUnchanged'
+    const cls =
+      status === 'reloaded'
+        ? 'bg-blue/10 text-blue'
+        : status === 'failed'
+          ? 'bg-red/10 text-red'
+          : 'bg-ink3 text-t3'
+    return createNode('span', {
+      className: `flex-none text-[10.5px] font-semibold rounded px-1.5 py-0.5 mt-0.5 ${cls}`,
+      ...L(key as StaticKey, { 'data-config-badge': '' }),
+    })
+  }
+  const renderReloadReport = (report: ReloadReport) => {
+    // Banner: busy disclosure beats the generic abort copy when the daemon
+    // reports single-flight contention.
+    const busy = report.err?.includes('already in progress') ?? false
+    if (report.applied) {
+      configBanner.className =
+        'flex-1 min-w-0 text-xs leading-relaxed text-green'
+      configBanner.textContent = t('configBannerOk')(
+        report.counts.reloaded,
+        report.counts.unchanged,
+        report.counts.failed,
+      )
+    } else if (busy) {
+      configBanner.className =
+        'flex-1 min-w-0 text-xs leading-relaxed text-t2'
+      configBanner.textContent = t('configBannerBusy')
+    } else {
+      configBanner.className =
+        'flex-1 min-w-0 text-xs leading-relaxed text-red'
+      configBanner.textContent = t('configBannerErr')(report.counts.failed)
+    }
+    configRows.replaceChildren()
+    for (const f of report.files) {
+      const row = createElement('div', 'flex items-start gap-2 py-2 border-b border-hairline last:border-b-0')
+      row.setAttribute('data-config-file', '')
+      row.setAttribute('data-config-file-status', f.status)
+      const body = createElement('div', 'flex-1 min-w-0')
+      body.append(createNode('div', { className: 'font-mono text-[11.5px] text-t1 break-all', text: f.path }))
+      if (f.note || f.noteKey) {
+        const noteText = [f.note, f.noteKey ? noteKeyText(f.noteKey) : ''].filter(Boolean).join(' · ')
+        body.append(createNode('div', { className: 'text-[11.5px] text-t2 mt-0.5', text: noteText }))
+      }
+      if (f.errLine)
+        body.append(
+          createNode('span', {
+            className: 'bg-red/10 text-red font-mono text-[11px] rounded px-1.5 py-0.5 inline-block mt-1',
+            text: f.errLine,
+          }),
+        )
+      row.append(badgeFor(f.status), body)
+      configRows.append(row)
+    }
+    // Progressive disclosure: a clean reload shows only the one-line banner;
+    // failures need attention, so the rows start expanded.
+    const expand = !report.applied || report.counts.failed > 0
+    configBannerRow.classList.toggle('cursor-pointer', report.files.length > 0)
+    setReportExpanded(expand)
+  }
+  const setReportExpanded = (open: boolean) => {
+    configRows.classList.toggle('hidden', !open)
+    configChev.classList.toggle('rotate-90', open)
+    configDetailsLabel.textContent = open ? t('configHide') : t('configDetails')
+  }
+  configBannerRow.addEventListener('click', () => {
+    setReportExpanded(configRows.classList.contains('hidden'))
+  })
+
+  let reloadInFlight = false
+  configReloadBtn.addEventListener('click', () => {
+    if (reloadInFlight) return
+    reloadInFlight = true
+    configReloadBtn.disabled = true
+    configReloadBtn.textContent = t('configReloading')
+    configReport.classList.add('hidden')
+    configPhases.classList.remove('hidden')
+    resetPhases()
+    // Activity pulse: advance "active" every 700ms. Honest by design — the
+    // daemon answers once, so no phase is marked done before the response.
+    let pulse = 0
+    setPhaseState(0, 'active')
+    const timer = window.setInterval(() => {
+      setPhaseState(pulse, 'idle')
+      pulse = Math.min(pulse + 1, 4)
+      setPhaseState(pulse, 'active')
+    }, 700)
+    postReloadConfig()
+      .then((report) => {
+        window.clearInterval(timer)
+        if (report.applied) {
+          for (let i = 0; i < 5; i++) setPhaseState(i, 'done')
+        } else {
+          for (let i = 0; i < report.phase; i++) setPhaseState(i, 'done')
+          setPhaseState(report.phase, 'fail')
+          for (let i = report.phase + 1; i < 5; i++) phaseRows[i].classList.add('hidden')
+        }
+        renderReloadReport(report)
+        configMeta.textContent = t('configLastReload')(new Date(report.lastReloadAt).toLocaleString())
+      })
+      .catch((err: unknown) => {
+        window.clearInterval(timer)
+        configPhases.classList.add('hidden')
+        configBanner.className =
+          'flex-1 min-w-0 text-xs leading-relaxed text-red'
+        configBanner.textContent = err instanceof Error ? err.message : String(err)
+        configRows.replaceChildren()
+        configReport.classList.remove('hidden')
+      })
+      .finally(() => {
+        configPhases.classList.add('hidden')
+        configReport.classList.remove('hidden')
+        configReloadBtn.disabled = false
+        configReloadBtn.textContent = t('configReloadBtn')
+        reloadInFlight = false
+      })
+  })
+
+  homeScreen.append(sectionLabel('configSection'), configCard)
   homeScreen.append(sectionLabel('generalSection'), generalCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
 

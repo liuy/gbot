@@ -5146,6 +5146,10 @@ func (e *Engine) refreshContext() bool {
 	return true
 }
 
+// RefreshContext is the exported trigger for manual config reload: same
+// semantics as the compaction-time refresh (see refreshContext).
+func (e *Engine) RefreshContext() bool { return e.refreshContext() }
+
 func (e *Engine) SetMemoryDir(dir string) { e.memoryDir = dir }
 func (e *Engine) MemoryDir() string       { return e.memoryDir }
 

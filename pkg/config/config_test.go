@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1237,5 +1238,47 @@ func TestDreamConfig_ModelPassthrough(t *testing.T) {
 	}
 	if cfg.Dream.Model != "zhipu/glm-flash" {
 		t.Errorf("Model = %q, want %q", cfg.Dream.Model, "zhipu/glm-flash")
+	}
+}
+
+// TestConfigBuildModelThinking pins the per-model effort baseline: legacy
+// values migrate, empty is skipped, unknown values are dropped (that model
+// falls back to auto).
+func TestConfigBuildModelThinking(t *testing.T) {
+	// Sequential Set calls keep the order deterministic (NewModelsFromMap
+	// iterates a Go map); the skip cases sit FIRST so a mutant that turns
+	// the empty-value `continue` into a `break` cannot pass by luck.
+	models := config.Models{}
+	models.Set("model-d", config.ModelConfig{})
+	models.Set("model-e", config.ModelConfig{Thinking: "bogus"})
+	models.Set("model-a", config.ModelConfig{Thinking: "adaptive"})
+	models.Set("model-b", config.ModelConfig{Thinking: "disabled"})
+	models.Set("model-c", config.ModelConfig{Thinking: "high"})
+	cfg := &config.Config{
+		Providers: []config.Provider{{Name: "p1", Models: models}},
+	}
+	got := cfg.BuildModelThinking()
+	if len(got) != 3 {
+		t.Fatalf("len(BuildModelThinking) = %d, want 3 (d skipped empty, e skipped unknown): %v", len(got), got)
+	}
+	want := map[string]llm.Effort{
+		"model-a": llm.EffortAuto,
+		"model-b": llm.EffortNone,
+		"model-c": llm.EffortHigh,
+	}
+	for name, effort := range want {
+		if got[name] != effort {
+			t.Errorf("BuildModelThinking[%q] = %q, want %q", name, got[name], effort)
+		}
+	}
+}
+
+// TestConfigBuildModelThinking_EmptyProviders pins the no-providers shape:
+// an empty (non-nil) map, never nil.
+func TestConfigBuildModelThinking_EmptyProviders(t *testing.T) {
+	cfg := &config.Config{}
+	got := cfg.BuildModelThinking()
+	if got == nil || len(got) != 0 {
+		t.Fatalf("BuildModelThinking() = %v, want empty non-nil map", got)
 	}
 }

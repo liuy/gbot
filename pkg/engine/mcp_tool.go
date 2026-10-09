@@ -106,6 +106,11 @@ func (t *MCPTool) DecodeResult(raw json.RawMessage) (any, error) {
 // Call routes the tool invocation through MCP.
 // Source: client.ts:3029-3245 — callMCPTool
 func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+	// Register with the registry's in-flight counter so a manual config
+	// reload's Reconcile drains this call before killing the server process.
+	callDone := t.registry.EnterCall(t.info.ServerName)
+	defer callDone()
+
 	// Get connection from registry, with single reconnect attempt on "not found".
 	// This handles the case where a config reload or transient disconnect removed
 	// the connection — Reconnect re-establishes it from the stored config.

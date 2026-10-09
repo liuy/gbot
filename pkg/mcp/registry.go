@@ -13,7 +13,10 @@ import (
 	"maps"
 	"math/rand"
 	"os"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -116,6 +119,10 @@ type Registry struct {
 	configWatcher *ConfigWatcher
 	reloadMu      sync.Mutex // guards handleConfigReload from concurrent execution
 	configDir     string     // cwd for re-reading configs
+
+	// inflight counts in-flight tool calls per server so a reconcile can wait
+	// for them before killing processes.
+	inflight sync.Map // serverName → *atomic.Int64
 }
 
 // NewRegistry creates a new MCP server registry.
@@ -1184,4 +1191,184 @@ func (r *Registry) connectSingle(ctx context.Context, name string, cfg ScopedMcp
 		_, _ = FetchResourcesForServer(ctx, cs, r.resourceCache)
 		_, _ = FetchCommandsForServer(ctx, cs, r.commandCache)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// In-flight call tracking + manual Reconcile — used by the config reload
+// ---------------------------------------------------------------------------
+
+// EnterCall registers an in-flight tool call on serverName. The returned
+// func decrements the counter; call it exactly once (defer).
+//
+// Counter entries are never deleted: deleting at zero would race a concurrent
+// EnterCall that already loaded the same pointer, leaving DrainServer reading
+// a fresh counter while the call runs. The leak is bounded by the number of
+// distinct server names ever called.
+func (r *Registry) EnterCall(serverName string) func() {
+	vAny, _ := r.inflight.LoadOrStore(serverName, new(atomic.Int64))
+	v := vAny.(*atomic.Int64)
+	v.Add(1)
+	return func() { v.Add(-1) }
+}
+
+func (r *Registry) inflightCount(serverName string) int64 {
+	vAny, ok := r.inflight.Load(serverName)
+	if !ok {
+		return 0
+	}
+	return vAny.(*atomic.Int64).Load()
+}
+
+// drainPollInterval is the polling period of DrainServer. Polling keeps the
+// waiter lock-free against calling goroutines, which only touch the atomic.
+const drainPollInterval = 25 * time.Millisecond
+
+// DrainServer waits until serverName has no in-flight calls or timeout
+// elapses. Returns (idle, remaining). Polls at 25ms — cheap and lock-free
+// against the calling goroutines.
+func (r *Registry) DrainServer(serverName string, timeout time.Duration) (bool, int64) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if n := r.inflightCount(serverName); n == 0 {
+			return true, 0
+		} else if !time.Now().Before(deadline) {
+			return false, n
+		}
+		time.Sleep(drainPollInterval)
+	}
+}
+
+// ReconcileResult reports the per-name outcome of a manual reconcile.
+type ReconcileResult struct {
+	Added, Removed, Changed, ReconnectFailed []string
+	DrainedLate                              []string // servers whose drain timed out with calls still in flight
+}
+
+// Reconcile replaces the registry's config set with configs: drains and
+// disconnects removed/changed servers (bounded by drainTimeout), then
+// eagerly (re)connects added/changed servers. Entries with PluginSource
+// set or an "agent-" name prefix are carried forward untouched (running
+// sub-agent connections outlive the reload). TryLocks reloadMu — returns
+// (nil, false) when the file watcher or another reload is mid-reconcile.
+func (r *Registry) Reconcile(ctx context.Context, configs map[string]ScopedMcpServerConfig, drainTimeout time.Duration) (*ReconcileResult, bool) {
+	if !r.reloadMu.TryLock() {
+		slog.Debug("mcp: manual reconcile skipped, another reload in progress")
+		return nil, false
+	}
+	defer r.reloadMu.Unlock()
+
+	r.mu.RLock()
+	oldConfigs := r.configs
+	r.mu.RUnlock()
+
+	// Preserve plugin servers and running sub-agent inline connections: the
+	// manual reload manages the global config set; entries owned by a plugin
+	// or by an in-flight agent run must outlive it (stricter than the file
+	// watcher, which only preserves plugin entries).
+	for name, oldCfg := range oldConfigs {
+		if oldCfg.PluginSource != "" || strings.HasPrefix(name, "agent-") {
+			if _, inNew := configs[name]; !inNew {
+				configs[name] = oldCfg
+			}
+		}
+	}
+
+	// Diff: find added, removed, changed servers
+	type diffEntry struct {
+		name   string
+		config ScopedMcpServerConfig
+	}
+	var added, changed []diffEntry
+	var removed []string
+
+	newSet := make(map[string]bool)
+	for name, cfg := range configs {
+		newSet[name] = true
+		r.mu.RLock()
+		oldCfg, existed := oldConfigs[name]
+		r.mu.RUnlock()
+		if !existed {
+			added = append(added, diffEntry{name, cfg})
+		} else if !AreMcpConfigsEqual(oldCfg, cfg) {
+			changed = append(changed, diffEntry{name, cfg})
+		}
+	}
+	for name := range oldConfigs {
+		if !newSet[name] {
+			removed = append(removed, name)
+		}
+	}
+
+	res := &ReconcileResult{}
+	for _, e := range added {
+		res.Added = append(res.Added, e.name)
+	}
+	for _, e := range changed {
+		res.Changed = append(res.Changed, e.name)
+	}
+	res.Removed = append([]string(nil), removed...)
+	sort.Strings(res.Added)
+	sort.Strings(res.Changed)
+	sort.Strings(res.Removed)
+
+	if len(added) == 0 && len(removed) == 0 && len(changed) == 0 {
+		return res, true
+	}
+
+	slog.Info("mcp: manual reconcile", "added", len(added), "removed", len(removed), "changed", len(changed))
+
+	// Drain, then disconnect removed and changed servers. Drain timeout does
+	// not abort the disconnect (accepted TOCTOU: a call starting between the
+	// idle return and Disconnect is killed; bounded to that one failed call).
+	drainTargets := append(append([]string(nil), removed...), res.Changed...)
+	sort.Strings(drainTargets)
+	for _, name := range drainTargets {
+		if idle, remaining := r.DrainServer(name, drainTimeout); !idle && remaining > 0 {
+			res.DrainedLate = append(res.DrainedLate, name)
+			slog.Warn("mcp: reconcile drain timed out, disconnecting anyway", "server", name, "in_flight", remaining)
+		}
+		_ = r.Disconnect(name)
+	}
+
+	// Reconnect changed servers, connect added ones. connectSingle stores a
+	// FailedServer on connect failure — MCPTool.Call's GetConnection→Reconnect
+	// fallback is the lazy respawn on next use.
+	for _, group := range [][]diffEntry{changed, added} {
+		for _, entry := range group {
+			r.connectSingle(ctx, entry.name, entry.config)
+			if conn, ok := r.GetConnection(entry.name); ok && conn.ConnType() == "failed" {
+				res.ReconnectFailed = append(res.ReconnectFailed, entry.name)
+			}
+		}
+	}
+	sort.Strings(res.ReconnectFailed)
+
+	// Update configs and rebuild
+	r.mu.Lock()
+	r.configs = configs
+	r.rebuildAggregatesLocked()
+	r.mu.Unlock()
+
+	if r.callbacks.OnToolsChanged != nil {
+		r.callbacks.OnToolsChanged("", nil) // empty server name signals full refresh
+	}
+	return res, true
+}
+
+// SetConfigsForTest seeds the registry's config set for testing.
+func (r *Registry) SetConfigsForTest(configs map[string]ScopedMcpServerConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := make(map[string]ScopedMcpServerConfig, len(configs))
+	maps.Copy(cp, configs)
+	r.configs = cp
+}
+
+// LockReloadForTest holds reloadMu so tests can drive Reconcile's (nil, false)
+// busy path — and, one level up, the orchestrator's skipped-row path — without
+// racing a real file watcher. The returned unlock releases it exactly once.
+func (r *Registry) LockReloadForTest() (unlock func()) {
+	r.reloadMu.Lock()
+	var once sync.Once
+	return func() { once.Do(r.reloadMu.Unlock) }
 }

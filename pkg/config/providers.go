@@ -131,3 +131,22 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 	}
 	return m, nil
 }
+
+// ResolvePrimary resolves the configured model into a live provider, its
+// model name, and the provider's config. Moved from pkg/app so the reload
+// orchestrator shares one implementation.
+func (c *Config) ResolvePrimary(pm ProviderMap) (llm.Provider, string, *Provider, error) {
+	p, modelName, err := c.ResolveModel()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if p == nil {
+		return nil, "", nil, fmt.Errorf("no providers configured")
+	}
+
+	prov, ok := pm[p.Name]
+	if !ok {
+		return nil, "", nil, fmt.Errorf("provider %q has no API key configured", p.Name)
+	}
+	return prov, modelName, p, nil
+}

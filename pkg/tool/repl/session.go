@@ -148,7 +148,7 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 	// globalThis (e.g. closures on browser.*); re-evaluating per Execute
 	// would silently wipe it. A broken script is skipped (warn) — one plugin
 	// must not take down the session for every other plugin.
-	for _, ps := range replScripts {
+	for _, ps := range currentReplScripts() {
 		if _, err := vm.RunString(ps.Source); err != nil {
 			slog.Warn("repl: plugin script failed to load", "script", ps.Name, "error", err)
 		}

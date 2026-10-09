@@ -11,6 +11,7 @@ import (
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tui"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -49,4 +50,8 @@ type Instance struct {
 	LSPReg      *lsp.Registry
 	Logger      *slog.Logger
 	PIDCleanup  func()
+	// Reloader drives the manual two-phase config reload; EnvHolder is the
+	// swap seam the engine factory and refresh closures read at call time.
+	Reloader  *reload.Orchestrator
+	EnvHolder *reload.EnvHolder
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
+	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -98,6 +100,8 @@ type App struct {
 	// engineFactory builds a new *engine.Engine for /engine new. Set by
 	// main.go via SetEngineFactory. nil = /engine new disabled.
 	engineFactory EngineFactoryFn
+	// reloadFn backs /reload; set via SetReloadFn (nil = unavailable).
+	reloadFn func(ctx context.Context) (*reload.Report, *reload.Env)
 
 	// Persistence (short-term memory store)
 	// sessionID is the active engine's session ID. Kept as a cached mirror of
@@ -1143,6 +1147,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled {
 			return a, cmd
 		}
+	case reloadDoneMsg:
+		return a, a.handleReloadDone(m)
 	default:
 		// Bubble Tea internal messages (e.g. printLineMessage from
 		// tea.Println) are handled by the renderer; suppress WARN for them.

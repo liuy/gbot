@@ -1,8 +1,6 @@
 package app
 
 import (
-	"fmt"
-
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/llm"
 )
@@ -23,19 +21,8 @@ func buildProviderConfigMap(cfg *config.Config) map[string]*config.Provider {
 }
 
 // resolvePrimaryProvider resolves Config.Model into a concrete provider, model name,
-// and Provider config using the new model resolution logic.
+// and Provider config. Delegates to config.Config.ResolvePrimary (moved there so
+// the reload orchestrator shares one implementation).
 func resolvePrimaryProvider(cfg *config.Config, providerMap config.ProviderMap) (llm.Provider, string, *config.Provider, error) {
-	p, modelName, err := cfg.ResolveModel()
-	if err != nil {
-		return nil, "", nil, err
-	}
-	if p == nil {
-		return nil, "", nil, fmt.Errorf("no providers configured")
-	}
-
-	prov, ok := providerMap[p.Name]
-	if !ok {
-		return nil, "", nil, fmt.Errorf("provider %q has no API key configured", p.Name)
-	}
-	return prov, modelName, p, nil
+	return cfg.ResolvePrimary(providerMap)
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -8,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
 	"github.com/liuy/gbot/pkg/utils"
@@ -34,6 +36,10 @@ func (inst *Instance) RunTUI() error {
 	}
 	app.SetStore(inst.Store, inst.SessionID, inst.ProjectDir)
 	app.SetEngineFactory(inst.EngineFactory)
+	app.SetReloadFn(func(ctx context.Context) (*reload.Report, *reload.Env) {
+		rep := inst.Reloader.Reload(ctx)
+		return rep, inst.EnvHolder.Load()
+	})
 
 	initialTokens := utils.EstimateTokens(inst.SystemPrompt)
 	for _, t := range inst.MainRefs.Reg.EnabledTools() {

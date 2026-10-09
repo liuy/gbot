@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -395,6 +396,30 @@ func (c *Config) IsPluginEnabled(name string) bool {
 		return true
 	}
 	return enabled
+}
+
+// BuildModelThinking builds the per-model effort baseline from config:
+// legacy values are migrated by NormalizeThinkingMode, unknown values are
+// warned about and skipped (that model falls back to auto). Shared by
+// startup and the manual config reload.
+func (c *Config) BuildModelThinking() map[string]llm.Effort {
+	modelThinking := map[string]llm.Effort{}
+	for i := range c.Providers {
+		for _, name := range c.Providers[i].Models.Ordered() {
+			mc, _ := c.Providers[i].Models.Get(name)
+			if mc.Thinking == "" {
+				continue
+			}
+			effort, ok := llm.NormalizeThinkingMode(mc.Thinking)
+			if !ok {
+				slog.Warn("config: unknown thinking value, ignoring", "model", name,
+					"thinking", mc.Thinking, "valid", "none|auto|low|medium|high|max")
+				continue
+			}
+			modelThinking[name] = effort
+		}
+	}
+	return modelThinking
 }
 
 // findProvider finds a provider by name (exact match).

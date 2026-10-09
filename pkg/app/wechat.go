@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
 )
@@ -42,8 +43,7 @@ type startWeChatDeps struct {
 	primaryProviderCfg *config.Provider
 	mediaStores        *[]*media.Store
 	daemonMode         bool
-	toolPrompts        []string
-	skillListing       string
+	env                *reload.EnvHolder
 }
 
 // startWeChatConnector wires one WeChat account: builds (or adopts a restored)
@@ -161,13 +161,14 @@ func startWeChatConnector(d startWeChatDeps) error {
 	if d.daemonMode {
 		memDir := filepath.Join(d.projectDir, "memory", engineID)
 		wcEng.SetMemoryDir(memDir)
-		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, memDir))
-		// The refresher must match the prompt it is paired with: the factory's
-		// closure builds with an empty memoryDir, so the first compaction would
-		// silently revert this engine's memory section to the main project's
-		// memory dir and point the model at the wrong memory index.
+		env := d.env.Load()
+		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, env.ToolPrompts, env.SkillListing, memDir))
+		// The refresher must match the prompt it is paired with (memoryDir
+		// override) and must read the holder at call time, so a config
+		// reload's env swap lands on the next compaction refresh.
 		wcEng.SetContextRefresher(func() (string, map[string]string) {
-			return ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, d.toolPrompts, d.skillListing, memDir),
+			e := d.env.Load()
+			return ctxbuild.BuildSystemPrompt(d.workingDir, d.projectDir, e.ToolPrompts, e.SkillListing, memDir),
 				ctxbuild.LoadContextFiles(d.workingDir)
 		})
 	}

@@ -33,6 +33,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/plugins"
 	"github.com/liuy/gbot/pkg/project"
+	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tool/repl"
 
 	skills "github.com/liuy/gbot/pkg/skills"
@@ -47,27 +48,9 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// buildModelThinking builds the per-model effort baseline from config:
-// legacy values are migrated by NormalizeThinkingMode, unknown values are
-// warned about and skipped (that model falls back to auto).
+// buildModelThinking delegates to config (shared with the reload orchestrator).
 func buildModelThinking(cfg *config.Config) map[string]llm.Effort {
-	modelThinking := map[string]llm.Effort{}
-	for i := range cfg.Providers {
-		for _, name := range cfg.Providers[i].Models.Ordered() {
-			mc, _ := cfg.Providers[i].Models.Get(name)
-			if mc.Thinking == "" {
-				continue
-			}
-			effort, ok := llm.NormalizeThinkingMode(mc.Thinking)
-			if !ok {
-				slog.Warn("config: unknown thinking value, ignoring", "model", name,
-					"thinking", mc.Thinking, "valid", "none|auto|low|medium|high|max")
-				continue
-			}
-			modelThinking[name] = effort
-		}
-	}
-	return modelThinking
+	return cfg.BuildModelThinking()
 }
 
 // Start performs full initialization: config loading, provider setup,
@@ -326,6 +309,25 @@ func Start(opts Options) (*Instance, error) {
 			toolPrompts = append(toolPrompts, p)
 		}
 	}
+
+	// The env holder is the reload seam: every factory call and context
+	// refresh reads it at CALL time, so a reload swap propagates to new
+	// engines and refreshed prompts while live engines keep their
+	// construction-time values.
+	holder := reload.NewEnvHolder(&reload.Env{
+		Cfg:                cfg,
+		ProviderMap:        providerMap,
+		Provider:           provider,
+		Model:              model,
+		PrimaryProviderCfg: primaryProviderCfg,
+		ModelThinking:      modelThinking,
+		ToolPrompts:        toolPrompts,
+		SkillListing:       skillListing,
+		SkillCmds:          skillCmdsForTUI,
+		PermissionChecker:  permCheckerIface,
+		McpReg:             mcpRegistry,
+	})
+
 	// Both the startup prompt and every later refresh are built from the same
 	// construction-time workingDir. That is deliberate and is the same bug
 	// class the original freeze fixed: re-resolving the dir made CLAUDE.md
@@ -336,14 +338,17 @@ func Start(opts Options) (*Instance, error) {
 		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, "")
 	}
 	refreshContext := func() (string, map[string]string) {
-		return buildSystemPrompt(), ctxbuild.LoadContextFiles(workingDir)
+		env := holder.Load()
+		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, ""),
+			ctxbuild.LoadContextFiles(workingDir)
 	}
 	systemPrompt := buildSystemPrompt()
 
 	engineFactory := func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
-		engineProvider := provider
+		env := holder.Load()
+		engineProvider := env.Provider
 		if providerName != "" {
-			if p, found := providerMap[providerName]; found {
+			if p, found := env.ProviderMap[providerName]; found {
 				engineProvider = p
 			} else {
 				slog.Warn("restore: provider not found, falling back to default",
@@ -364,19 +369,31 @@ func Start(opts Options) (*Instance, error) {
 			engineHub, handler = tui.NewEngineHubWithHandler(id, nil)
 		}
 		engTaskList := task.NewList("")
+		// Fresh SharedDeps per engine from the CURRENT env: live engines keep
+		// their own older deps pointer (old cfg for their sub-agents).
+		deps := engine.SharedDeps{
+			WorkingDir: workingDir,
+			SkillReg:   skillReg,
+			McpReg:     env.McpReg,
+			Hooks:      hookSystem,
+			Cfg:        env.Cfg,
+			LSPReg:     lspReg,
+			WSRegistry: wsRegistry,
+			ShortStore: store,
+		}
 		refs := engine.CreateTools(deps, engTaskList)
 		var providerCfg *config.Provider
 		if providerName == "" {
-			providerCfg = primaryProviderCfg
+			providerCfg = env.PrimaryProviderCfg
 		} else {
-			for i := range cfg.Providers {
-				if cfg.Providers[i].Name == providerName {
-					providerCfg = &cfg.Providers[i]
+			for i := range env.Cfg.Providers {
+				if env.Cfg.Providers[i].Name == providerName {
+					providerCfg = &env.Cfg.Providers[i]
 					break
 				}
 			}
 			if providerCfg == nil {
-				providerCfg = primaryProviderCfg
+				providerCfg = env.PrimaryProviderCfg
 			}
 		}
 		engCtxWindow := providerCfg.ResolveContext(modelArg)
@@ -396,12 +413,12 @@ func Start(opts Options) (*Instance, error) {
 			Compactor:         nil,
 			Logger:            logger,
 			Dispatcher:        engineHub,
-			MCPRegistry:       mcpRegistry,
+			MCPRegistry:       env.McpReg,
 			Hooks:             hookSystem,
-			PermissionChecker: permCheckerIface,
+			PermissionChecker: env.PermissionChecker,
 			WorkingDir:        workingDir,
 			TaskList:          engTaskList,
-			ModelThinking:     modelThinking,
+			ModelThinking:     env.ModelThinking,
 			EngineID:          id,
 			InputModalities:   engInputs,
 		})
@@ -409,14 +426,14 @@ func Start(opts Options) (*Instance, error) {
 			refs.REPL.CleanSession(sessionID)
 		})
 		engine.WireEngine(newEng, refs, deps)
-		newEng.SetSystemPrompt(systemPrompt)
+		newEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, ""))
 		newEng.SetContextRefresher(refreshContext)
-		newEng.SetSkillListing(skillListing)
+		newEng.SetSkillListing(env.SkillListing)
 		newEng.SetAgentDefs(agent.ListAgentDefinitions())
 		newEng.SetSharedDeps(&deps)
 		newEng.SetSkillRegistry(skillReg)
 
-		if !cfg.SessionNotes.Disabled && store != nil && contextWindow > 0 {
+		if !env.Cfg.SessionNotes.Disabled && store != nil && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
 			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
 				editTool := fileedit.New()
@@ -431,11 +448,11 @@ func Start(opts Options) (*Instance, error) {
 				})
 				defer subEng.Close()
 
-				if smName := cfg.SessionNotes.Model; smName != "" {
-					if smProv, smModel, err := cfg.ResolveModelByName(smName); err != nil {
+				if smName := env.Cfg.SessionNotes.Model; smName != "" {
+					if smProv, smModel, err := env.Cfg.ResolveModelByName(smName); err != nil {
 						slog.Warn("session memory: resolve model failed, inheriting parent", "model", smName, "error", err)
 					} else if smProv != nil {
-						if prov, ok := providerMap[smProv.Name]; ok {
+						if prov, ok := env.ProviderMap[smProv.Name]; ok {
 							subEng.SetProvider(prov)
 							subEng.SetModel(smModel)
 						} else {
@@ -464,6 +481,22 @@ func Start(opts Options) (*Instance, error) {
 	}
 
 	engineMgr := engine.NewEngineManager()
+
+	// Orchestrator after the skills/hooks/agent wiring and the manager: its
+	// baseline snapshot reads the just-wired state. LSPReg/ShortStore match
+	// the boot-time deps so the ToolPrompts harvest reproduces the startup
+	// tool set exactly.
+	orch := reload.NewOrchestrator(reload.Deps{
+		WorkingDir: workingDir,
+		ProjectDir: projectDir,
+		PluginsDir: "",
+		EngineMgr:  engineMgr,
+		Hooks:      hookSystem,
+		SkillReg:   skillReg,
+		Env:        holder,
+		LSPReg:     lspReg,
+		ShortStore: store,
+	})
 	var sessionID string
 	if store != nil {
 		sessionID = restoreEngines(restoreEnginesDeps{
@@ -549,8 +582,7 @@ func Start(opts Options) (*Instance, error) {
 			primaryProviderCfg: primaryProviderCfg,
 			mediaStores:        &mediaStores,
 			daemonMode:         opts.DaemonMode,
-			toolPrompts:        toolPrompts,
-			skillListing:       skillListing,
+			env:                holder,
 		}); err != nil {
 			slog.Warn("wechat: start connector failed", "account_id", state.AccountID, "error", err)
 			continue
@@ -614,6 +646,7 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterChatWS(wsMux, wc)
 		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
 		wui.RegisterSettingsRoutes(wsMux)
+		wui.RegisterReloadRoute(wsMux, orch.Reload)
 		wui.RegisterRemoteDesktopRoutes(wsMux)
 		wui.RegisterVNCProxyRoutes(wsMux)
 		wui.RegisterLogRoutes(wsMux, logPath)
@@ -705,6 +738,8 @@ func Start(opts Options) (*Instance, error) {
 		LSPReg:             lspReg,
 		Logger:             logger,
 		PIDCleanup:         pidCleanup,
+		Reloader:           orch,
+		EnvHolder:          holder,
 	}, nil
 }
 

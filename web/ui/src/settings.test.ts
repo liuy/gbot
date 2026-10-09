@@ -62,6 +62,8 @@ interface MockOptions {
   admin?: { busy: boolean; items: unknown[]; upgradable: boolean; build: string, reason?: string }
   restartPostStatus?: number
   restartPost?: { status: number; body: unknown }
+  reloadReport?: ReloadReport
+  reloadError?: string
 }
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
@@ -122,6 +124,14 @@ function makeFetchHandler(
         return { ok: opts.restartPostStatus !== 409, status: opts.restartPostStatus ?? 202, json: async () => ({ status: 'upgrading' }) }
       }
       return { ok: true, status: 200, json: async () => opts.admin ?? { busy: false, items: [], upgradable: true, build: 'dev · none' } }
+    }
+    if (url === '/api/settings/reload') {
+      if (method === 'POST') {
+        if (opts.reloadError) {
+          return { ok: false, status: 500, text: async () => opts.reloadError }
+        }
+        return { ok: true, status: 200, json: async () => opts.reloadReport ?? OK_REPORT }
+      }
     }
     if (url === '/api/settings/models') {
       return { ok: true, status: 200, json: async () => opts.models ?? { mode: 'fetched', models: [] } }
@@ -1030,7 +1040,7 @@ describe('createSettingsPage', () => {
     const labels = [...home.children]
       .filter((c) => c.className.includes('text-t3'))
       .map((c) => c.textContent)
-    expect(labels).toEqual(['提供方', '默认模型', '桌面', '通用'])
+    expect(labels).toEqual(['提供方', '默认模型', '桌面', '配置', '通用'])
     // Protocol identifiers stay literal — only UI copy is translated.
     const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
     expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')
@@ -2177,4 +2187,198 @@ describe('SYSTEM card (native restart bridge)', () => {
       })
       expect((page.root.querySelector('[data-restart-btn]') as HTMLButtonElement).disabled).toBe(true)
     }))
+})
+
+// ---------------------------------------------------------------------------
+// Config reload card
+// ---------------------------------------------------------------------------
+
+import type { ReloadReport } from './settings'
+import { dict as enDict } from './i18n/locales/en'
+import { dict as zhDict } from './i18n/locales/zh'
+import { dict as zhTWDict } from './i18n/locales/zh-TW'
+
+const OK_REPORT: ReloadReport = {
+  applied: true,
+  phase: 4,
+  files: [
+    { path: '~/.gbot/settings.json', status: 'reloaded', note: 'max_tokens: 32768 → 16384', noteKey: 'newSessionsOnly' },
+    { path: '~/.gbot/plugins/browser/mcp.json', status: 'reloaded' },
+    {
+      path: '~/.gbot/plugins/dbquery/mcp.json',
+      status: 'failed',
+      errLine: 'line 7: invalid character',
+    },
+  ],
+  counts: { reloaded: 2, unchanged: 0, failed: 1 },
+  promptChanged: true,
+  enginesRefreshed: 2,
+  settingsChanged: true,
+  lastReloadAt: '2026-10-09T04:12:58Z',
+}
+
+describe('config reload card', () => {
+  beforeEach(() => {
+    setLocale('en')
+  })
+
+  it('renders report rows from a successful daemon report', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: OK_REPORT }))
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+    expect(btn).toBeTruthy()
+    btn.click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerOk')(2, 0, 1),
+      )
+    })
+    const rows = page.root.querySelectorAll('[data-config-file]')
+    expect(rows.length).toBe(3)
+    const failedRow = page.root.querySelector('[data-config-file-status="failed"]') as HTMLElement
+    expect(failedRow.textContent).toContain('line 7: invalid character')
+    const reloadedRow = page.root.querySelector('[data-config-file-status="reloaded"]') as HTMLElement
+    expect(reloadedRow.textContent).toContain('max_tokens: 32768 → 16384')
+    expect(reloadedRow.textContent).toContain(t('configNoteNewSessions'))
+    const failedBadge = failedRow.querySelector('[data-config-badge]') as HTMLElement
+    const reloadedBadge = reloadedRow.querySelector('[data-config-badge]') as HTMLElement
+    expect(failedBadge.className).toContain('bg-red/10')
+    expect(reloadedBadge.className).toContain('bg-blue/10')
+    expect((page.root.querySelector('[data-config-phases]') as HTMLElement).classList.contains('hidden')).toBe(true)
+    expect((page.root.querySelector('[data-config-reload]') as HTMLButtonElement).disabled).toBe(false)
+    const meta = (page.root.querySelector('[data-config-meta]') as HTMLElement).textContent ?? ''
+    expect(meta.startsWith('Last reload:')).toBe(true)
+  })
+  it('collapses file rows after a clean reload and expands on demand', async () => {
+    const clean = { ...OK_REPORT, counts: { reloaded: 3, unchanged: 0, failed: 0 } }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: clean }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerOk')(3, 0, 0),
+      )
+    })
+    const rows = page.root.querySelector('[data-config-file]')?.parentElement as HTMLElement
+    expect(rows.classList.contains('hidden')).toBe(true)
+    const bannerRow = page.root.querySelector('[data-config-banner-row]') as HTMLElement
+    const chev = bannerRow.querySelector('[data-config-chev]') as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    bannerRow.click()
+    expect(rows.classList.contains('hidden')).toBe(false)
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    expect(page.root.querySelectorAll('[data-config-file]').length).toBe(3)
+  })
+
+  it('marks the failed phase and shows the abort banner on an aborted reload', async () => {
+    const report: ReloadReport = {
+      applied: false,
+      phase: 1,
+      err: 'plugins: invalid mcp.json',
+      files: [{ path: '/x/plugins/broken/mcp.json', status: 'failed', errLine: 'bad json' }],
+      counts: { reloaded: 0, unchanged: 0, failed: 1 },
+      promptChanged: false,
+      enginesRefreshed: 0,
+      settingsChanged: false,
+      lastReloadAt: '2026-10-09T04:12:58Z',
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerErr')(1),
+      )
+    })
+    const phase0 = page.root.querySelector('[data-config-phase="0"]') as HTMLElement
+    const phase1 = page.root.querySelector('[data-config-phase="1"]') as HTMLElement
+    const phase2 = page.root.querySelector('[data-config-phase="2"]') as HTMLElement
+    expect(phase0.textContent).toContain('✓')
+    expect(phase1.textContent).toContain('✕')
+    expect(phase2.classList.contains('hidden')).toBe(true)
+  })
+
+  it('uses only theme utilities — no hardcoded colors', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: OK_REPORT }))
+    const card = page.root.querySelector('[data-config-card]') as HTMLElement
+    expect(card.className).toContain('bg-ink2')
+    expect(card.className).toContain('border-hairline')
+    // Drive a full reload first: the phase dots only get their terminal
+    // (done/fail) classNames after the daemon answers, and those are where
+    // hardcoded hex would sneak in.
+    ;(page.root.querySelector('[data-config-reload]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerOk')(2, 0, 1),
+      )
+    })
+    const walk = [card as Element, ...card.querySelectorAll('*')]
+    for (const el of walk) {
+      const style = el.getAttribute('style') ?? ''
+      expect(style.includes('#')).toBe(false)
+      expect(style.includes('rgb(')).toBe(false)
+      const cls = el.getAttribute('class') ?? ''
+      expect(cls.includes('[#')).toBe(false)
+      expect(cls.includes('rgb(')).toBe(false)
+    }
+  })
+
+  it('disables the button and advances the phase pulse while in flight', async () => {
+    let resolveFetch!: (v: unknown) => void
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const hanging = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/reload' && init?.method === 'POST') {
+        await new Promise((r) => {
+          resolveFetch = r
+        })
+        return { ok: true, status: 200, json: async () => OK_REPORT }
+      }
+      return (mock as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(hanging as unknown as ReturnType<typeof makeFetchHandler>)
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+    btn.click()
+    await flushMicrotasks()
+    expect(btn.disabled).toBe(true)
+    expect(btn.textContent).toBe(t('configReloading'))
+    const phases = page.root.querySelector('[data-config-phases]') as HTMLElement
+    expect(phases.classList.contains('hidden')).toBe(false)
+    for (const ph of page.root.querySelectorAll('[data-config-phase]')) {
+      expect((ph as HTMLElement).textContent).not.toContain('✓')
+      expect((ph as HTMLElement).textContent).not.toContain('✕')
+    }
+    resolveFetch(undefined)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-reload]') as HTMLButtonElement).disabled).toBe(false)
+    })
+  })
+
+  it('shows busy banner when the daemon reports a reload in progress', async () => {
+    const report: ReloadReport = {
+      applied: false,
+      phase: 0,
+      err: 'reload already in progress',
+      files: [],
+      counts: { reloaded: 0, unchanged: 0, failed: 0 },
+      promptChanged: false,
+      enginesRefreshed: 0,
+      settingsChanged: false,
+      lastReloadAt: '2026-10-09T04:12:58Z',
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerBusy'),
+      )
+    })
+  })
+
+  it('config card keys exist in every locale', () => {
+    const configKeys = Object.keys(enDict).filter((k) => k.startsWith('config')) as Array<
+      keyof typeof enDict
+    >
+    expect(configKeys.length).toBe(22)
+    for (const key of configKeys) {
+      expect(String((zhDict as Record<string, unknown>)[key] ?? '')).not.toBe('')
+      expect(String((zhTWDict as Record<string, unknown>)[key] ?? '')).not.toBe('')
+    }
+  })
 })

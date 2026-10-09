@@ -31,10 +31,10 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 		t.Fatal("expected completions visible after typing '/'")
 	}
 	items := c.Items()
-	if len(items) != 8 {
-		t.Fatalf("expected 8 items, got %d", len(items))
+	if len(items) != 9 {
+		t.Fatalf("expected 9 items, got %d", len(items))
 	}
-	// Must be alphabetical: agent, clear, compact, context, model, rewind, session, think
+	// Must be alphabetical: agent, clear, compact, context, model, reload, rewind, session, think
 	if items[0].Name != "agent" {
 		t.Errorf("first item = %q, want %q", items[0].Name, "agent")
 	}
@@ -50,14 +50,17 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 	if items[4].Name != "model" {
 		t.Errorf("fifth item = %q, want %q", items[4].Name, "model")
 	}
-	if items[5].Name != "rewind" {
-		t.Errorf("sixth item = %q, want %q", items[5].Name, "rewind")
+	if items[5].Name != "reload" {
+		t.Errorf("sixth item = %q, want %q", items[5].Name, "reload")
 	}
-	if items[6].Name != "session" {
-		t.Errorf("seventh item = %q, want %q", items[6].Name, "session")
+	if items[6].Name != "rewind" {
+		t.Errorf("seventh item = %q, want %q", items[6].Name, "rewind")
 	}
-	if items[7].Name != "think" {
-		t.Errorf("eighth item = %q, want %q", items[7].Name, "think")
+	if items[7].Name != "session" {
+		t.Errorf("eighth item = %q, want %q", items[7].Name, "session")
+	}
+	if items[8].Name != "think" {
+		t.Errorf("ninth item = %q, want %q", items[8].Name, "think")
 	}
 }
 
