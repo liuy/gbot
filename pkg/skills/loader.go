@@ -65,13 +65,13 @@ func NewRegistry(cwd string) *Registry {
 func (r *Registry) Load() error {
 	var allSkills []types.SkillCommand
 
-	// Source 1: Bundled skills (embedded via go:embed).
-	// RegisterBundledSkills writes them into r.skills. Snapshot them here
-	// before the unconditional/conditional split overwrites r.skills, and
-	// merge them into allSkills so they survive the final assignment.
-	r.RegisterBundledSkills()
-	bundled := r.GetAllSkills()
-	allSkills = append(allSkills, bundled...)
+	// Source 1: Bundled skills (embedded via go:embed), parsed fresh from
+	// the embed FS — never snapshotted from r.skills. On a reload r.skills
+	// still holds the previous load's skills plus any plugin skills
+	// registered after it; seeding the rebuild from stale registry state
+	// would duplicate those plugin skills once the reload re-registers
+	// them (and flip the reload prompt-diff row with unchanged files).
+	allSkills = append(allSkills, parseBundledSkills()...)
 
 	// Source 2: Managed skills (policy)
 	// TS: managedSkills — loadSkillsDir.ts:686-688
