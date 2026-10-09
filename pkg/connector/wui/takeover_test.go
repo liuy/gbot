@@ -181,7 +181,8 @@ func TestWSWriter_FailureMarksInactive(t *testing.T) {
 }
 
 // TestSendWS_NoActiveWSIsNoOp verifies that sendWS with nil activeWS
-// is a silent no-op — the payload goes into wsCh but wsWriter drops it
+// is a silent no-op — the payload goes into the outbound queue but
+// wsWriter drops it
 // because activeWS is nil.
 func TestSendWS_NoActiveWSIsNoOp(t *testing.T) {
 	c := newTestConnector(t)

@@ -6,26 +6,25 @@ import (
 	"testing"
 )
 
-// drainErrorText pops one frame from wsCh and returns its error message text
-// ("" if the queue is empty or the frame is not an error frame).
+// drainErrorText pops the outbound queue and returns the first error
+// frame's message text ("" if the queue is empty or no error frame).
 func drainErrorText(t *testing.T, c *WUIConnector) string {
 	t.Helper()
-	select {
-	case f := <-c.wsCh:
-		var m struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(f.data, &m) != nil {
-			return ""
-		}
-		if m.Type != "error" {
-			return ""
-		}
-		return m.Message
-	default:
+	frames := c.outQ.Load().take()
+	if len(frames) == 0 {
 		return ""
 	}
+	var m struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(frames[0].data, &m) != nil {
+		return ""
+	}
+	if m.Type != "error" {
+		return ""
+	}
+	return m.Message
 }
 
 // busyConnector builds a connector whose active engine reports busy.
@@ -36,10 +35,10 @@ func busyConnector(t *testing.T) (*WUIConnector, *mockEngine) {
 	}
 	c := &WUIConnector{
 		slots:    make(map[string]*engineSlot),
-		wsCh:     make(chan wsMsg, 16),
 		done:     make(chan struct{}),
 		testMock: mock,
 	}
+	c.outQ.Store(newOutQueue(16))
 	mainID := "main"
 	c.active.Store(&mainID)
 	c.slots["main"] = &engineSlot{engine: mock}
@@ -76,10 +75,10 @@ func TestHandleSessionSwitch_IdleStillSwitches(t *testing.T) {
 	mock := &mockEngine{isBusyFn: func() bool { return false }}
 	c := &WUIConnector{
 		slots:    make(map[string]*engineSlot),
-		wsCh:     make(chan wsMsg, 16),
 		done:     make(chan struct{}),
 		testMock: mock,
 	}
+	c.outQ.Store(newOutQueue(16))
 	mainID := "main"
 	c.active.Store(&mainID)
 	c.slots["main"] = &engineSlot{engine: mock}

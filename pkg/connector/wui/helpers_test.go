@@ -453,11 +453,11 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 		pendingAsks:     make(map[string]*types.AskEvent),
 		providers:       providers,
 		providerConfigs: providerConfigs,
-		wsCh:            make(chan wsMsg, 1024),
 		done:            make(chan struct{}),
 		testMock:        mock,
 		thumbs:          newThumbCache(),
 	}
+	c.outQ.Store(newOutQueue(outQueueCapacity))
 	activeID := engineID
 	c.active.Store(&activeID)
 	slot := &engineSlot{

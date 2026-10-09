@@ -712,10 +712,10 @@ func TestObserveLLM(t *testing.T) {
 	t.Run("nil engine reports not ok", func(t *testing.T) {
 		c := &WUIConnector{
 			slots:  make(map[string]*engineSlot),
-			wsCh:   make(chan wsMsg, 1),
 			done:   make(chan struct{}),
 			thumbs: newThumbCache(),
 		}
+		c.outQ.Store(newOutQueue(1))
 		go c.wsWriter()
 		t.Cleanup(c.Stop)
 		_, _, ok := c.ObserveLLM()

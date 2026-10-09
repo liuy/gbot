@@ -39,8 +39,10 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 
 // serveChatWS drives one WS connection to completion with a unified
 // takeover = swap WS + switchEngine. Deactivates old engine first (prevents
-// live events from reaching new WS before metadata), swaps activeWS, then
-// calls switchEngine which sends metadata (with embedded streamState snapshot).
+// live events from reaching new WS before metadata), installs a fresh
+// outbound era (so the writer never writes old-era frames to the new conn
+// and pushers parked on the flood are released), swaps activeWS, then calls
+// switchEngine which sends metadata (with embedded streamState snapshot).
 // The previous WS is notified with a close frame (code 1000, reason
 // "taken_over") so the client suppresses auto-reconnect — the client's
 // onclose handler checks ev.code === 1000 && ev.reason === 'taken_over'.
@@ -50,6 +52,16 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 		oldSlot.active.Store(false)
 	}
 	c.slotsMu.RUnlock()
+
+	// Swap the era BEFORE the conn: between the two swaps the new queue is
+	// empty, so the writer has nothing to misdirect. A batch the writer
+	// already TOOK from the old queue is covered by wsWriter's per-frame
+	// check, which pairs with THIS swap order by loading the conn BEFORE
+	// the era check — observing the new conn implies the outQ swap already
+	// happened, so the check that follows breaks.
+	// sendMetadata's pristine check reuses the fresh queue.
+	oldQ := c.outQ.Swap(newOutQueue(outQueueCapacity))
+	oldQ.close() // release any pusher parked on the flood
 
 	if oldWS := c.activeWS.Swap(ws); oldWS != nil {
 		// Send a close frame with code 1000 + reason "taken_over" so the

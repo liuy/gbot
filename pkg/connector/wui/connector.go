@@ -326,13 +326,128 @@ type engineSlot struct {
 	system bool
 }
 
-// wsMsg carries one outbound WS frame through wsCh. isBinary selects the
-// gorilla opcode (TextMessage vs BinaryMessage) in wsWriter, so a single
-// channel + single writer goroutine owns both frame types and FIFO ordering
-// is the only synchronization needed for file_start → binary → file_end.
+// wsMsg carries one outbound WS frame through the outbound queue. isBinary
+// selects the gorilla opcode (TextMessage vs BinaryMessage) in wsWriter, so
+// a single queue + single writer goroutine owns both frame types and FIFO
+// ordering is the only synchronization needed for file_start → binary →
+// file_end.
 type wsMsg struct {
 	data     []byte
 	isBinary bool
+}
+
+// outQueue is one era's outbound frame queue. A new era starts at every
+// sendMetadata (takeover, engine_switch, session switch/new): the old queue
+// is closed — pending frames are dropped and blocked pushers released — and
+// metadata becomes the first frame of a fresh queue. Queue identity (not
+// sequence numbers) is what orders frames vs the handshake: a pusher that
+// captured the old queue cannot interleave with the new era.
+type outQueue struct {
+	mu     sync.Mutex
+	frames []wsMsg
+	cap    int
+	closed bool
+	pushes int           // total frames ever pushed; 0 means pristine
+	notify chan struct{} // cap 1, writer wakeup; closed on close
+	room   chan struct{} // cap 1, pusher wakeup on take; closed on close
+}
+
+func newOutQueue(capacity int) *outQueue {
+	return &outQueue{
+		cap:    capacity,
+		notify: make(chan struct{}, 1),
+		room:   make(chan struct{}, 1),
+	}
+}
+
+// signalLocked nudges ch without blocking. A cap-1 channel may already hold
+// a token, which is fine: a token therefore pends whenever frames are
+// queued or room exists, so a waiter always wakes. Callers must hold mu and
+// have already observed !closed — close() closes both channels under mu, so
+// a signaler holding mu can never send on a closed channel.
+func (q *outQueue) signalLocked(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// push appends m, blocking while the queue is at capacity (one warn per
+// blocking episode, mirroring the old sendWS full-channel warn). The frame
+// is dropped — not an error — when the queue closes (its era was superseded)
+// or done fires (shutdown).
+func (q *outQueue) push(m wsMsg, done <-chan struct{}) {
+	q.mu.Lock()
+	warned := false
+	for {
+		if q.closed {
+			q.mu.Unlock()
+			return
+		}
+		if len(q.frames) < q.cap {
+			q.frames = append(q.frames, m)
+			q.pushes++
+			q.signalLocked(q.notify)
+			q.mu.Unlock()
+			return
+		}
+		if !warned {
+			warned = true
+			slog.Warn("wui:sendWS blocked (outbound queue full)", "len", len(q.frames), "cap", q.cap)
+		}
+		q.mu.Unlock()
+		select {
+		case <-q.room:
+		case <-done:
+			return
+		}
+		q.mu.Lock()
+	}
+}
+
+// take atomically swaps out all queued frames (nil when empty). After close
+// it returns nil forever: a closed queue never resurrects frames.
+func (q *outQueue) take() []wsMsg {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || len(q.frames) == 0 {
+		return nil
+	}
+	frames := q.frames
+	q.frames = nil
+	q.signalLocked(q.room)
+	return frames
+}
+
+// close drops all pending frames and wakes every blocked pusher (room) and
+// the writer (notify). A closed channel receives forever, which is correct
+// here: each queue is single-era, so close is terminal. Idempotent because
+// Stop, CloseForUpgrade, and serveChatWS may all see the same queue.
+func (q *outQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	q.closed = true
+	q.frames = nil
+	close(q.room)
+	close(q.notify)
+}
+
+// isPristine reports whether no frame was ever pushed. sendMetadata reuses
+// a pristine queue (first connect) and flips to a fresh one otherwise.
+func (q *outQueue) isPristine() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.pushes == 0
+}
+
+// len returns the number of queued frames. Test helper.
+func (q *outQueue) len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.frames)
 }
 
 // WUIConnector implements connector.Connector for the web chat. It owns
@@ -359,19 +474,23 @@ type WUIConnector struct {
 	// time; a new connection replaces the prior one via takeover.
 	activeWS atomic.Pointer[websocket.Conn]
 
-	// wsCh is the single-consumer write queue for the WS writer goroutine.
-	// All WS writes go through sendWS → wsCh → wsWriter. This ensures
-	// gorilla's single-writer constraint without a mutex on the hot path.
-	// Takeover (serveChatWS) is the one exception: it uses WriteControl
+	// outQ is the current era's outbound frame queue. All WS writes go
+	// through sendWS → outQ → wsWriter, which enforces gorilla's
+	// single-writer constraint without a mutex on the hot path. The queue
+	// is swapped — and the old one closed, dropping its frames — at every
+	// metadata handshake, so frames queued for a superseded client can
+	// neither delay nor precede the new client's metadata. Takeover
+	// (serveChatWS) is the one write exception: it uses WriteControl
 	// (gorilla's only concurrency-safe write method) to send a close frame
-	// directly, bypassing wsCh.
-	wsCh chan wsMsg
+	// directly, bypassing the queue.
+	outQ atomic.Pointer[outQueue]
 
 	// done signals the wsWriter goroutine to exit during shutdown.
 	done chan struct{}
 
 	// sendFileMu serializes concurrent SendFile calls so each file's
-	// file_start → chunk → file_end frame sequence is contiguous on wsCh
+	// file_start → chunk → file_end frame sequence is contiguous on the
+	// outbound queue
 	// (the executor runs concurrency-safe tools in parallel; see runTools.go).
 	sendFileMu sync.Mutex
 
@@ -420,6 +539,11 @@ type WUIConnector struct {
 	testMock any
 }
 
+// outQueueCapacity keeps backpressure parity with the old wsCh: a slow
+// current-era client still parks event senders, but a handshake never
+// queues behind them (era close releases parked pushers instantly).
+const outQueueCapacity = 1024
+
 // New builds a WUIConnector bound to an EngineManager. The connector
 // subscribes to every engine's hub immediately. The active engine is set
 // from mgr.ActiveID(). main.go must call SetCreateEngineFn to enable
@@ -431,10 +555,10 @@ func New(mgr *engine.EngineManager, providers map[string]llm.Provider, providerC
 		pendingAsks:     make(map[string]*types.AskEvent),
 		providers:       providers,
 		providerConfigs: providerConfigs,
-		wsCh:            make(chan wsMsg, 1024),
 		done:            make(chan struct{}),
 		thumbs:          newThumbCache(),
 	}
+	c.outQ.Store(newOutQueue(outQueueCapacity))
 	for _, vs := range mgr.List() {
 		c.registerEngine(vs)
 	}
@@ -454,66 +578,80 @@ func (c *WUIConnector) ActiveID() string {
 }
 
 // wsWriter is the single WS writer goroutine. All outbound frames — text and
-// binary — go through wsCh. Started in New(), stopped by closing done in Stop().
+// binary — flow through the current era's outQueue. Started in New(),
+// stopped by closing done in Stop(). A queue whose era ended (closed by a
+// metadata handshake) wakes the writer via its closed notify channel; the
+// loop-top re-load then picks up the new era's queue.
 func (c *WUIConnector) wsWriter() {
 	for {
-		select {
-		case msg := <-c.wsCh:
-			ws := c.activeWS.Load()
-			if ws != nil {
-				opcode := websocket.TextMessage
-				if msg.isBinary {
-					opcode = websocket.BinaryMessage
-				}
-				_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				err := ws.WriteMessage(opcode, msg.data)
-				if err != nil {
-					c.activeWS.Store(nil)
-					slog.Warn("wui:ws write failed", "error", err)
-				}
+		q := c.outQ.Load()
+		frames := q.take()
+		if frames == nil {
+			select {
+			case <-q.notify: // fires on push or on queue close
+			case <-c.done:
+				return
 			}
-		case <-c.done:
-			return
+			continue
+		}
+		for _, msg := range frames {
+			// Load the conn BEFORE the era check, i.e. in the OPPOSITE
+			// order of serveChatWS's swaps (outQ first, then activeWS):
+			// observing a NEW conn here implies the outQ swap already
+			// happened, so the era check right after breaks. Loaded in
+			// the other order, both swaps could land between the two
+			// loads — the check would pass, the conn would be the NEW
+			// one, and an old-era frame would beat the new client's
+			// metadata.
+			ws := c.activeWS.Load()
+			// Era check per frame: this batch was taken from q, but the
+			// era can flip (takeover swaps outQ) while the batch is
+			// mid-write. Without this check the batch tail would land on
+			// the NEW conn before its metadata frame.
+			if c.outQ.Load() != q {
+				break
+			}
+			if ws == nil {
+				continue // no conn: drop (existing semantics)
+			}
+			opcode := websocket.TextMessage
+			if msg.isBinary {
+				opcode = websocket.BinaryMessage
+			}
+			_ = ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if err := ws.WriteMessage(opcode, msg.data); err != nil {
+				// CAS, not Store: this ws may already be superseded by a
+				// takeover — Store(nil) would clobber the freshly installed
+				// conn and silently drop the whole new era.
+				c.activeWS.CompareAndSwap(ws, nil)
+				slog.Warn("wui:ws write failed", "error", err)
+			}
 		}
 	}
 }
 
 // sendBinaryChunk enqueues a binary frame for wsWriter, mirroring sendWS's
-// blocking select (no default — blocks until wsWriter drains a slot or done
-// closes). Binary chunks cannot be dropped (dropping corrupts the file), and
-// wsWriter always drains wsCh, so this never deadlocks on shutdown: the only
-// escape is <-c.done.
+// blocking push (the queue-full block lives in outQueue.push). Binary chunks
+// cannot be dropped on an era flip mid-file (dropping corrupts the file),
+// but a flip means the receiving client is gone wholesale — the entire
+// sequence, earlier frames included, is dropped with the era, so no orphan
+// chunks reach the new client.
 //
 // The data is copied because callers (SendFile) reuse the read buffer across
 // loop iterations — without a copy, a later ReadFull would overwrite the
-// bytes of a chunk still buffered in wsCh. android.go avoids this by writing
-// each chunk synchronously; the buffered channel here requires ownership
+// bytes of a chunk still buffered in the queue. android.go avoids this by
+// writing each chunk synchronously; the queued path here requires ownership
 // transfer.
 func (c *WUIConnector) sendBinaryChunk(data []byte) {
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	select {
-	case c.wsCh <- wsMsg{data: cp, isBinary: true}:
-	case <-c.done:
-	}
+	c.outQ.Load().push(wsMsg{data: cp, isBinary: true}, c.done)
 }
 
 // sendWS enqueues a payload for the wsWriter goroutine.
-// Logs a warning if wsCh is full (slow WS client).
+// Logs a warning if the outbound queue is full (slow WS client).
 func (c *WUIConnector) sendWS(payload []byte) {
-	select {
-	case c.wsCh <- wsMsg{data: payload, isBinary: false}:
-		return
-	case <-c.done:
-		return
-	default:
-		// wsCh full — warn but still block (don't drop events).
-		slog.Warn("wui:sendWS blocked (wsCh full)", "len", len(c.wsCh), "cap", cap(c.wsCh))
-		select {
-		case c.wsCh <- wsMsg{data: payload, isBinary: false}:
-		case <-c.done:
-		}
-	}
+	c.outQ.Load().push(wsMsg{data: payload, isBinary: false}, c.done)
 }
 
 // activeSlot returns the slot for the active engine. Uses ActiveID() for
@@ -614,6 +752,9 @@ func (c *WUIConnector) Start(ctx context.Context) error { return nil }
 // mobile browser backgrounding) should not interrupt the LLM.
 func (c *WUIConnector) Stop() {
 	close(c.done)
+	// Close the current era so pushers parked on a full queue exit promptly
+	// instead of waiting for the done-select inside their blocking loop.
+	c.outQ.Load().close()
 	c.slotsMu.Lock()
 	for _, slot := range c.slots {
 		if slot.unsubscribe != nil {
@@ -635,6 +776,15 @@ func (c *WUIConnector) Send(userID, text string) error { return nil }
 // concurrency-safe write vs the wsWriter goroutine — same exception as
 // takeover.
 func (c *WUIConnector) CloseForUpgrade() {
+	// Pending frames target the pre-upgrade client; the reconnect's
+	// sendMetadata starts a new era anyway. A fresh queue must REPLACE the
+	// closed one (same as serveChatWS): a closed queue's notify receives
+	// forever and its take() returns nil forever, so the writer would
+	// busy-spin at 100% CPU for the seconds of Shutdown before the
+	// upgrade's os.Exit. Frames pushed to the interregnum queue are
+	// dropped at write time — activeWS is nil by the end of this call.
+	oldQ := c.outQ.Swap(newOutQueue(outQueueCapacity))
+	oldQ.close()
 	if ws := c.activeWS.Swap(nil); ws != nil {
 		closeFrame := websocket.FormatCloseMessage(1012, "upgrading")
 		_ = ws.WriteControl(websocket.CloseMessage, closeFrame, time.Now().Add(time.Second))
@@ -778,7 +928,8 @@ const fileChunkSize = 256 * 1024
 // the file, matching WeChat's media-only behavior.
 //
 // sendFileMu is held across the entire sequence so concurrent SendFile calls
-// (the Send tool is concurrency-safe) cannot interleave their frames on wsCh.
+// (the Send tool is concurrency-safe) cannot interleave their frames on the
+// outbound queue.
 // The file is streamed from disk via io.ReadFull so peak memory is one chunk
 // regardless of size — there is no cap.
 func (c *WUIConnector) SendFile(_ context.Context, filePath, _ string) error {
@@ -1088,10 +1239,14 @@ func updateStreamState(ss *streamState, event hub.Event) {
 
 // onEngineEvent is the per-engine event handler, called by engineHubShim for
 // each event on that engine's hub. All events from all engines are processed
-// here. Stats always accumulate (atomic). For the active engine, live
-// events go to wsCh. For inactive engines, streamState is updated in
-// real-time (like TUI's background drain). The streamState snapshot is
-// embedded in the metadata frame by sendMetadata (under ssMu).
+// here. Stats always accumulate (atomic). streamState is updated for every
+// engine in real-time (like TUI's background drain), and the streamState
+// snapshot is embedded in the metadata frame by sendMetadata (under ssMu).
+// State updates and the outbound-capture decision happen INSIDE the ssMu
+// critical section while the frame push happens OUTSIDE it — a pusher parked
+// on a full outbound queue therefore never holds ssMu, so the takeover
+// handshake can always acquire the lock (hub.Dispatch is synchronous on the
+// engine goroutine; parking under ssMu would stall the engine itself).
 //
 // Ask events from inactive engines are silently dropped: an Ask demands a UI
 // prompt, and only the active engine's UI is visible.
@@ -1150,36 +1305,37 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	slog.Debug("wui:event", "type", event.Type, "engine", engineID,
 		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
 
-	if !slot.active.Load() || c.activeWS.Load() == nil {
-		slot.ssMu.Lock()
-		updateStreamState(&slot.streamState, event)
-		if isQueryEnd {
-			slot.streamState = streamState{}
-			resetQueryStats(&slot.queryStats)
-			slot.taskToolIDs = make(map[string]bool)
-		}
-		slot.ssMu.Unlock()
-		return
-	}
-
 	slot.ssMu.Lock()
 	updateStreamState(&slot.streamState, event)
-	c.sendWS(payload)
+	var q *outQueue
+	if slot.active.Load() && c.activeWS.Load() != nil {
+		// Capture decision MUST be under the lock: active flips false→true
+		// under ssMu at every handshake. An event that read false pre-lock,
+		// then waited behind sendMetadata, updates state AFTER the snapshot
+		// marshal — it must land in the live tail, not the inactive branch.
+		q = c.outQ.Load()
+	}
 	if isQueryEnd {
-		if event.Error != nil && !aborted {
-			c.sendWS(buildError(event.Error))
-		}
 		slot.streamState = streamState{}
 		resetQueryStats(&slot.queryStats)
 		slot.taskToolIDs = make(map[string]bool)
 	}
 	slot.ssMu.Unlock()
-
-	// Sub-agent Task tool_end must also push task_list (see ToolStart comment).
-	if event.Type == types.EventToolEnd && event.ToolResult != nil {
-		if slot.taskToolIDs[event.ToolResult.ToolUseID] {
-			if taskPayload := c.buildTaskList(slot); taskPayload != nil {
-				c.sendWS(taskPayload)
+	if q != nil {
+		q.push(wsMsg{data: payload}, c.done)
+		if isQueryEnd && event.Error != nil && !aborted {
+			c.sendWS(buildError(event.Error))
+		}
+		// Sub-agent Task tool_end must also push task_list (see ToolStart
+		// comment); guarded by q != nil to match the active-branch-only
+		// behavior. Plain sendWS loads the CURRENT queue: dropped with the
+		// era or delivered after metadata are both correct — the metadata
+		// rebuild covers task state.
+		if event.Type == types.EventToolEnd && event.ToolResult != nil {
+			if slot.taskToolIDs[event.ToolResult.ToolUseID] {
+				if taskPayload := c.buildTaskList(slot); taskPayload != nil {
+					c.sendWS(taskPayload)
+				}
 			}
 		}
 	}
@@ -2716,6 +2872,12 @@ func (c *WUIConnector) buildQueryStartReplay(slot *engineSlot) []byte {
 // receives streaming state and history in a single message. queuedMsgs
 // restores user-typed messages still waiting in the attachment queue so a
 // reconnecting client can re-render its pending queue.
+//
+// Every sendMetadata starts a new outbound era: frames already queued belong
+// to a view this metadata frame replaces (the client's resetAllState), so
+// the old queue is closed — dropping them and releasing parked pushers — and
+// metadata becomes the first frame of a fresh queue. The handshake can never
+// queue behind a backlog.
 func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 	type metaPayload struct {
 		Type       string          `json:"type"`
@@ -2749,7 +2911,15 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		QueuedMsgs: buildQueuedMsgs(slot.engine.PendingAttachments()),
 		Stats:      c.buildStats(slot),
 	})
-	c.sendWS(payload)
+	// Era flip: any frame already queued belongs to a view this metadata
+	// frame replaces (client resetAllState) — drop it so metadata is first.
+	q := c.outQ.Load()
+	if !q.isPristine() {
+		q.close()
+		q = newOutQueue(outQueueCapacity)
+		c.outQ.Store(q)
+	}
+	q.push(wsMsg{data: payload}, c.done)
 	// Prefill-window busy restore: snapshot == nil means no streamed blocks
 	// exist, so the metadata frame alone leaves the client with no in-flight
 	// signal. Replayed query_start rides the same ssMu critical section,
@@ -2759,9 +2929,18 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 	// snapshot-rendered content.
 	if snapshot == nil {
 		if replay := c.buildQueryStartReplay(slot); replay != nil {
-			c.sendWS(replay)
+			q.push(wsMsg{data: replay}, c.done)
 		}
 	}
+	// Activate inside the same critical section: an event taking ssMu after
+	// this point misses the snapshot (updateStreamState runs after the
+	// marshal) and therefore sees active=true under the lock → captured on
+	// the new queue → delivered live after metadata; one taking it before is
+	// inside the snapshot. Either way no delta is lost between snapshot and
+	// live tail. This pairing only holds because onEngineEvent makes the
+	// capture decision under ssMu — activating here while events decided
+	// pre-lock would reopen the gap.
+	slot.active.Store(true)
 	slot.ssMu.Unlock()
 }
 
@@ -3011,8 +3190,11 @@ func (c *WUIConnector) handleRestoreAttachments() {
 
 // switchEngine is the unified engine switch (pointer swap only). Deactivates
 // old engine (its events start updating streamState), flips active ID, syncs
-// EngineManager, sends metadata (with embedded streamState snapshot under
-// ssMu), and activates new engine.
+// EngineManager, and sends metadata (with embedded streamState snapshot under
+// ssMu). Activation happens INSIDE sendMetadata's ssMu section so the
+// snapshot/live-tail pairing holds (see the comment there); the no-conn path
+// still activates directly — without a client there is no handshake to pair
+// with.
 func (c *WUIConnector) switchEngine(newID string) {
 	c.slotsMu.RLock()
 	oldID := c.ActiveID()
@@ -3044,9 +3226,9 @@ func (c *WUIConnector) switchEngine(newID string) {
 
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(newSlot)
+	} else {
+		newSlot.active.Store(true)
 	}
-
-	newSlot.active.Store(true)
 }
 
 // handleEngineSwitch is kept for test compatibility and readLoop dispatch.

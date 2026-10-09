@@ -16,17 +16,17 @@ import (
 )
 
 // TestWUI_SendFile_WSReceivesEvent verifies the full outbound chain end to
-// end: SendFile → sendWS/sendBinaryChunk → wsCh → wsWriter →
+// end: SendFile → sendWS/sendBinaryChunk → outQueue → wsWriter →
 // activeWS.WriteMessage → client WS read. The connector struct is built by
 // hand (no New(), no engine) so the test owns exactly the goroutines under
 // test; wsWriter is started manually because the chain terminates at a real
-// WS conn — without it the payload would sit in wsCh and never reach the
-// client read end.
+// WS conn — without it the payload would sit in the queue and never reach
+// the client read end.
 func TestWUI_SendFile_WSReceivesEvent(t *testing.T) {
 	c := &WUIConnector{
-		wsCh: make(chan wsMsg, 16),
 		done: make(chan struct{}),
 	}
+	c.outQ.Store(newOutQueue(16))
 	go c.wsWriter()
 	t.Cleanup(func() { close(c.done) })
 

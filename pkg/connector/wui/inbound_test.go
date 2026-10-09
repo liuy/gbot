@@ -329,9 +329,9 @@ func TestAssembleContentBlocks_NonImageBytesSkipped(t *testing.T) {
 // content items are rejected AND text is empty, a WS error frame is sent
 // (rather than silently dispatching nothing).
 func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
-	// Build a connector WITHOUT starting wsWriter so the test can drain
-	// wsCh directly. Otherwise wsWriter would consume and discard frames
-	// (no active WS connection).
+	// Build a connector WITHOUT starting wsWriter so the test can take the
+	// outbound frames directly. Otherwise wsWriter would consume and
+	// discard them (no active WS connection).
 	mock := &mockEngine{
 		isBusyFn: func() bool { return false },
 	}
@@ -339,10 +339,10 @@ func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
-		wsCh:        make(chan wsMsg, 16),
 		done:        make(chan struct{}),
 		testMock:    mock,
 	}
+	c.outQ.Store(newOutQueue(16))
 	activeID := engineID
 	c.active.Store(&activeID)
 	slot := &engineSlot{
@@ -358,16 +358,17 @@ func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
 		{Type: "image", Source: inboundSource{Type: "file", Path: "/x/y.png"}},
 	})
 
-	select {
-	case got := <-c.wsCh:
-		if !strings.Contains(string(got.data), `"type":"error"`) {
-			t.Errorf("payload = %q, want substring '\"type\":\"error\"'", string(got.data))
-		}
-		if !strings.Contains(string(got.data), "attachments rejected") {
-			t.Errorf("payload = %q, want substring 'attachments rejected'", string(got.data))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no WS frame received within 2s")
+	// The error frame is pushed by an async assemble goroutine; wait for it
+	// to land in the queue.
+	if !waitFor(2*time.Second, func() bool { return c.outQ.Load().len() == 1 }) {
+		t.Fatal("no WS error frame queued within 2s")
+	}
+	frames := c.outQ.Load().take()
+	if !strings.Contains(string(frames[0].data), `"type":"error"`) {
+		t.Errorf("payload = %q, want substring '\"type\":\"error\"'", string(frames[0].data))
+	}
+	if !strings.Contains(string(frames[0].data), "attachments rejected") {
+		t.Errorf("payload = %q, want substring 'attachments rejected'", string(frames[0].data))
 	}
 }
 

@@ -925,9 +925,9 @@ func TestHandleMessageInbound_NilEngine(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
-		wsCh:        make(chan wsMsg, 16),
 		done:        make(chan struct{}),
 	}
+	c.outQ.Store(newOutQueue(16))
 	emptyID := ""
 	c.active.Store(&emptyID)
 	go c.wsWriter()
@@ -1079,10 +1079,10 @@ func TestHandleModelSwitch_NilEngine(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
-		wsCh:        make(chan wsMsg, 16),
 		done:        make(chan struct{}),
 		providers:   make(map[string]llm.Provider),
 	}
+	c.outQ.Store(newOutQueue(16))
 	emptyID := ""
 	c.active.Store(&emptyID)
 	go c.wsWriter()
@@ -1123,9 +1123,9 @@ func TestHandleSessionSwitch_NilEngine(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
-		wsCh:        make(chan wsMsg, 16),
 		done:        make(chan struct{}),
 	}
+	c.outQ.Store(newOutQueue(16))
 	emptyID := ""
 	c.active.Store(&emptyID)
 	go c.wsWriter()
