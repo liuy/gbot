@@ -60,6 +60,14 @@ type queryEventWithAbort struct {
 	// client-side rewind without the server's would resurrect the prompt on
 	// the next history load.
 	Rewound bool `json:"rewound,omitempty"`
+	// RewoundText names the exact prompt the server rewound (first text
+	// block), so clients pop THAT message instead of guessing "my last user
+	// message" — a stale-streaming queue misroute, an observer tab, or a
+	// takeover snapshot can all leave the rewound prompt absent from a
+	// client's local view, and the boolean alone then pops the wrong (old)
+	// message. Absent when no rewind ran or the prompt had no text block
+	// (attachment-only prompts fall back to legacy client behavior).
+	RewoundText string `json:"rewound_text,omitempty"`
 }
 
 // engineClient is the subset of engine.Engine methods the connector uses.
@@ -1283,11 +1291,12 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 
 	aborted := false
 	rewound := false
+	rewoundText := ""
 	if isQueryEnd && event.Error != nil {
 		if _, ok := errors.AsType[*engine.AbortError](event.Error); ok {
 			aborted = true
-			rewound = c.autoRewindOnAbortFor(slot.engine)
-			slog.Info("wui:abort", "engine", engineID, "rewound", rewound, "msgs", len(slot.engine.Messages()))
+			rewound, rewoundText = c.autoRewindOnAbortFor(slot.engine)
+			slog.Info("wui:abort", "engine", engineID, "rewound", rewound, "rewound_text", rewoundText, "msgs", len(slot.engine.Messages()))
 			// Engine emits the interrupt text via text_start/delta/end on
 			// its own; the connector only needs to drive rewind here.
 		}
@@ -1296,7 +1305,7 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	payload, err := json.Marshal(struct {
 		Type  string              `json:"type"`
 		Event queryEventWithAbort `json:"event"`
-	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted, Rewound: rewound}})
+	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted, Rewound: rewound, RewoundText: rewoundText}})
 	if err != nil {
 		slog.Warn("wui: marshal event failed", "type", event.Type, "error", err)
 		return
@@ -1379,16 +1388,21 @@ type rewindStash struct {
 }
 
 // autoRewindOnAbortFor mirrors TUI's tryAutoRewind, operating on the given
-// engine. Returns whether the rewind ran.
-func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) bool {
+// engine. Returns whether the rewind ran and the text of the rewound prompt
+// (first text block, captured before the rewind drops it).
+func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) (bool, string) {
 	if !c.shouldAutoRewindFor(eng) {
-		return false
+		return false, ""
 	}
 	msgs := eng.Messages()
 	lastUserIdx := utils.LastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
-		return false
+		return false, ""
 	}
+	// Capture the prompt's text BEFORE the rewind drops it — the query_end
+	// frame must name the rewound target so clients never guess it from the
+	// boolean alone.
+	rewoundText := utils.FirstTextBlockContent(msgs[lastUserIdx])
 	// Stash the prompt's attachment blocks BEFORE the rewind drops them —
 	// restore_attachments arrives after RewindTo, so this is the only copy.
 	// A text-only rewind stores nil, which also retires any older stash.
@@ -1403,9 +1417,9 @@ func (c *WUIConnector) autoRewindOnAbortFor(eng engineClient) bool {
 	c.restoreMu.Unlock()
 	if err := eng.RewindTo(lastUserIdx); err != nil {
 		slog.Warn("wui: autoRewind failed", "idx", lastUserIdx, "error", err)
-		return false
+		return false, ""
 	}
-	return true
+	return true, rewoundText
 }
 
 // inputHistoryEntry is the JSONL on-disk format for the shared input history,

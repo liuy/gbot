@@ -213,6 +213,11 @@ export type QueryEvent = {
   /** Set when the server actually auto-rewound the aborted prompt (empty
    * queue). Absent when the interrupted turn stays (queued follow-ups). */
   rewound?: boolean
+  /** Text of the exact prompt the server rewound (first text block). The
+   * client pops only a user message matching this text — never a blind
+   * "last user message". Absent on legacy frames and attachment-only
+   * prompts. */
+  rewound_text?: string
 }
 
 export type AskDecision = 'allow' | 'deny' | 'allow_always'

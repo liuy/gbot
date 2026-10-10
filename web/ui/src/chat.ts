@@ -1289,7 +1289,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // mirror its rewind when it actually performed one. hasContent covers
         // the same turn into the commit path either way.
         const serverRewound = !!e.rewound
-        console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound)
+        console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound + ' rewound_text=' + (e.rewound_text ? 'yes' : 'no'))
         finalizeRunningBlocks(pendingBlocks, wasAborted)
 
         if (wasAborted) {
@@ -1321,7 +1321,22 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               last.domRoot.remove()
               messages.pop()
             }
-            const userMsg = [...messages].reverse().find((m) => m.role === 'user')
+            // Server-authoritative target: rewound_text names the exact
+            // prompt the server rewound. Pop only a local user message
+            // whose first text block matches — a stale-streaming queue
+            // misroute, an observer tab, or a takeover snapshot can leave
+            // the rewound prompt absent here, and popping "the last user
+            // message" then removes an OLD answered turn. Empty/absent
+            // rewound_text keeps the legacy last-user behavior.
+            const rewoundText = typeof e.rewound_text === 'string' ? e.rewound_text : ''
+            const isTarget = rewoundText !== ''
+              ? (m: MessageState) => {
+                  if (m.role !== 'user') return false
+                  const tb = m.blocks.find((b) => b.kind === 'text') as { text?: string } | undefined
+                  return tb?.text === rewoundText
+                }
+              : (m: MessageState) => m.role === 'user'
+            const userMsg = [...messages].reverse().find(isTarget)
             if (userMsg) {
               const textBlock = userMsg.blocks.find(
                 (b) => b.kind === 'text',
@@ -1332,11 +1347,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               const attBlocks = userMsg.blocks.filter(
                 (b) => b.kind === 'image' || b.kind === 'document',
               )
-              if (textBlock?.text || attBlocks.length > 0) {
+              if (rewoundText !== '' || textBlock?.text || attBlocks.length > 0) {
                 userMsg.domRoot.remove()
-                messages.pop()
-                if (textBlock?.text) {
-                  inputBar.setInputText(textBlock.text)
+                // Splice at the found index: the target is not necessarily
+                // the array tail (pop would drop whatever landed after it).
+                messages.splice(messages.indexOf(userMsg), 1)
+                // Prefer the server payload (identical on match); the
+                // textBlock fallback covers the legacy no-field path.
+                const restoreText = rewoundText || textBlock?.text
+                if (restoreText) {
+                  inputBar.setInputText(restoreText)
                 }
                 // The popped prompt's attachments still live server-side
                 // (engine history / media cache); ask the connector to
@@ -1352,6 +1372,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
                   conn.send({ type: 'restore_attachments' })
                 }
               }
+            } else if (rewoundText !== '') {
+              // No local copy of the rewound prompt (queue misroute /
+              // observer tab / takeover): touch no history — restoring the
+              // text only keeps old turns intact and recovers the prompt.
+              inputBar.setInputText(rewoundText)
             }
           }
         } else {
