@@ -17,14 +17,14 @@ const (
 
 // FileEntry is one config surface's outcome row.
 type FileEntry struct {
-	Path    string     `json:"path"`
-	Status  FileStatus `json:"status"`
-	Note    string     `json:"note,omitempty"`
+	Path   string     `json:"path"`
+	Status FileStatus `json:"status"`
+	Note   string     `json:"note,omitempty"`
 	// NoteKey is a client-localizable note identifier (e.g.
 	// "effectiveNextRequest"); the wui maps it through its i18n table.
 	// Free-form Note stays for machine output (diffs, error hints).
-	NoteKey string     `json:"noteKey,omitempty"`
-	ErrLine string     `json:"errLine,omitempty"`
+	NoteKey string `json:"noteKey,omitempty"`
+	ErrLine string `json:"errLine,omitempty"`
 }
 
 // Report is the full reload outcome: the TUI overlay text and the wui
