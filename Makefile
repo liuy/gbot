@@ -131,6 +131,7 @@ mutate:
 	git rev-parse --verify -q '$(MUTATE_BASE)' >/dev/null || { \
 	  echo "NOTE: $(MUTATE_BASE) not found, skipping (make mutate MUTATE_BASE=<ref>)"; \
 	  exit 0; }; \
+	git diff --unified=0 $(MUTATE_BASE) | awk '/^\+\+\+ b\//{f=$$2} length($$0)>65000{print "ERROR: " f " has a >64KB diff line (go-mutesting parser limit) — mutation would silently no-op. Commit or stash it first."; exit 1}' || exit 1; \
 	n=$$(go-mutesting --git-diff-lines --git-diff-base='$(MUTATE_BASE)' --dry-run $(PKG) | awk '/^Total:/{print $$2}'); \
 	if [ "$${n:-0}" -eq 0 ]; then \
 	  echo "NOTE: no mutants on the lines changed since $(MUTATE_BASE), nothing to mutate"; \
