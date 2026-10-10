@@ -33,6 +33,16 @@ func TestStoreJournalModeWAL(t *testing.T) {
 	if mode != "wal" {
 		t.Errorf("journal_mode = %q, want wal", mode)
 	}
+
+	// Sidecars must EXIST while the store is open: the pinned single write
+	// connection holds them for the store's lifetime (SQLite deletes -wal/-shm
+	// only when the last connection closes). Cleaned on Close — see
+	// TestStoreCleanCloseCheckpointsWal.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); err != nil {
+			t.Errorf("sidecar %s missing while store open: %v", suffix, err)
+		}
+	}
 }
 
 // TestStoreCleanCloseCheckpointsWal asserts the invariant that keeps Read

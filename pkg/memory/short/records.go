@@ -29,7 +29,7 @@ func (s *Store) SaveContentReplacementRecords(sessionID string, records []toolre
 // LoadContentReplacementRecords loads all budget replacement records.
 // Merges records from all rows for the session.
 func (s *Store) LoadContentReplacementRecords(sessionID string) ([]toolresult.ContentReplacementRecord, error) {
-	rows, err := s.db.Query(
+	rows, err := s.readDB.Query(
 		`SELECT replacements FROM content_replacements WHERE session_id = ? ORDER BY created_at ASC`,
 		sessionID,
 	)
@@ -72,7 +72,7 @@ func (s *Store) SaveFileHistoryState(sessionID string, state filehistory.FileHis
 // Returns nil if no persisted state exists.
 func (s *Store) LoadFileHistoryState(sessionID string) (*filehistory.FileHistoryState, error) {
 	var data string
-	err := s.db.QueryRow(
+	err := s.readDB.QueryRow(
 		`SELECT snapshot_data FROM file_history_snapshots WHERE session_id = ?`,
 		sessionID,
 	).Scan(&data)

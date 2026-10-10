@@ -73,7 +73,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 		       created_at, updated_at
 		FROM sessions WHERE session_id = ?
 	`
-	err := s.db.QueryRow(query, sessionID).Scan(
+	err := s.readDB.QueryRow(query, sessionID).Scan(
 		&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
 		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens, &engineID,
 		&ses.CreatedAt, &ses.UpdatedAt,
@@ -151,9 +151,9 @@ func (s *Store) listSessionsFiltered(projectDir, engineFilter string, limit int)
 	var rows *sql.Rows
 	var err error
 	if limit > 0 {
-		rows, err = s.db.Query(query+" LIMIT ?", append(args, limit)...)
+		rows, err = s.readDB.Query(query+" LIMIT ?", append(args, limit)...)
 	} else {
-		rows, err = s.db.Query(query, args...)
+		rows, err = s.readDB.Query(query, args...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
@@ -241,7 +241,7 @@ func (s *Store) UpdateSessionTimestamp(sessionID string) error {
 // Excludes excludeSID (the current session).
 // Note: updated_at is stored as canonical UTC strings (driver _time_format=sqlite&_timezone=UTC); bound time.Time parameters serialize identically so SQL string comparison is chronologically correct.
 func (s *Store) SessionsTouchedSince(projectDir string, since time.Time, excludeSID string) ([]string, error) {
-	rows, err := s.db.Query(
+	rows, err := s.readDB.Query(
 		"SELECT session_id FROM sessions WHERE project_dir = ? AND updated_at > ? AND session_id != ?",
 		projectDir, since, excludeSID,
 	)
@@ -415,6 +415,8 @@ func extractTextBlocks(content any) []string {
 }
 
 // getSession loads a session without acquiring the lock (caller must hold lock).
+// Stays on the write conn: its only callers (ForkSession, MergeForkBack) are
+// read-then-write compounds that must run entirely on the single write conn.
 func (s *Store) getSession(sessionID string) (*Session, error) {
 	var ses Session
 	var settingsJSON string

@@ -71,7 +71,7 @@ func (s *Store) LoadMessages(sessionID string) ([]*TranscriptMessage, error) {
 		ORDER BY seq ASC
 	`
 
-	rows, err := s.db.Query(query, sessionID)
+	rows, err := s.readDB.Query(query, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -107,7 +107,7 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Transcr
 		ORDER BY seq ASC
 	`
 
-	rows, err := s.db.Query(query, sessionID, afterSeq)
+	rows, err := s.readDB.Query(query, sessionID, afterSeq)
 	if err != nil {
 		return nil, fmt.Errorf("query messages after seq: %w", err)
 	}
@@ -139,7 +139,7 @@ func (s *Store) LoadMessagesBeforeSeq(sessionID string, beforeSeq int) ([]*Trans
 		ORDER BY seq ASC
 	`
 
-	rows, err := s.db.Query(query, sessionID, beforeSeq)
+	rows, err := s.readDB.Query(query, sessionID, beforeSeq)
 	if err != nil {
 		return nil, fmt.Errorf("query messages before seq: %w", err)
 	}
@@ -274,7 +274,7 @@ func (s *Store) TruncateMessagesFromIndex(sessionID string, index int) error {
 func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {
 
 	var exists bool
-	err := s.db.QueryRow(
+	err := s.readDB.QueryRow(
 		"SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ? AND uuid = ?)",
 		sessionID, uuid,
 	).Scan(&exists)
@@ -320,7 +320,7 @@ func (s *Store) MessagesSince(since time.Time) ([]*TranscriptMessage, error) {
 		ORDER BY created_at ASC, seq ASC
 	`
 
-	rows, err := s.db.Query(query, since)
+	rows, err := s.readDB.Query(query, since)
 	if err != nil {
 		return nil, fmt.Errorf("query messages since: %w", err)
 	}
@@ -402,7 +402,7 @@ func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Tr
 		ORDER BY m.seq ASC
 	`
 
-	rows, err := s.db.Query(query, sessionID)
+	rows, err := s.readDB.Query(query, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query sidechain messages: %w", err)
 	}
@@ -454,7 +454,7 @@ func (s *Store) FindLatestMessage(sessionID string, filter func(*TranscriptMessa
 func (s *Store) CountVisibleMessages(sessionID string) (int, error) {
 
 	var count int
-	err := s.db.QueryRow(
+	err := s.readDB.QueryRow(
 		"SELECT COUNT(*) FROM messages WHERE session_id = ? AND type != 'progress'",
 		sessionID,
 	).Scan(&count)
@@ -471,7 +471,7 @@ func (s *Store) CountVisibleMessages(sessionID string) (int, error) {
 func (s *Store) GetPreBoundaryMetadata(sessionID string) (*PreBoundaryMetadata, error) {
 
 	var agentType, mode, settingsJSON sql.NullString
-	err := s.db.QueryRow(`
+	err := s.readDB.QueryRow(`
 		SELECT agent_type, mode, settings
 		FROM sessions
 		WHERE session_id = ?
@@ -590,8 +590,10 @@ func (s *Store) getLastChainUUID(tx *sql.Tx, sessionID string) string {
 }
 
 // queryOneMessage executes a query and returns a single message.
+// Read pool: every caller (GetLastBoundary, GetMessageByUUID,
+// LastAssistantTime) is a pure read.
 func (s *Store) queryOneMessage(query string, args ...any) (*TranscriptMessage, error) {
-	row := s.db.QueryRow(query, args...)
+	row := s.readDB.QueryRow(query, args...)
 	return s.scanMessageFromRow(row)
 }
 

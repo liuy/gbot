@@ -143,7 +143,7 @@ func (s *Store) GetForkChildren(parentSessionID string) ([]*Session, error) {
 		ORDER BY created_at ASC
 	`
 
-	rows, err := s.db.Query(query, parentSessionID)
+	rows, err := s.readDB.Query(query, parentSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query fork children: %w", err)
 	}
@@ -170,13 +170,9 @@ func (s *Store) GetForkChildren(parentSessionID string) ([]*Session, error) {
 // Only messages created after the fork point in the child are copied.
 // TS: sessionStorage.ts:2970-3020 (mergeForkBack)
 func (s *Store) MergeForkBack(childSessionID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// Load child session to get parent and fork point
+	// Load child session to get parent and fork point before the tx starts:
+	// the tx holds the single write conn, and getSession's autocommit read
+	// on that same conn would deadlock behind it.
 	child, err := s.getSession(childSessionID)
 	if err != nil {
 		return fmt.Errorf("load child session: %w", err)
@@ -187,6 +183,12 @@ func (s *Store) MergeForkBack(childSessionID string) error {
 	if child.ParentSessionID == "" {
 		return fmt.Errorf("session %q is not a fork", childSessionID)
 	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
 	// Get last seq in parent for appending
 	var lastParentSeq int64

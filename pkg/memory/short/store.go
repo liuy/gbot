@@ -9,12 +9,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps the underlying sql.DB so callers don't need to import database/sql.
+// DB returns the write connection — the single long-lived conn pinned by
+// openSQLite. Callers (tests, external tools) use it for writes and direct
+// schema access; the store's own reads go through the separate read-only
+// pool so a read can never block or hold the write conn.
 func (s *Store) DB() *sql.DB { return s.db }
 
 // Store manages short-term memory persistence via SQLite.
 type Store struct {
 	db     *sql.DB
+	readDB *sql.DB
 	dbPath string
 }
 
@@ -35,11 +39,30 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
+	// The read pool must open only after initSchema: a mode=ro connection
+	// cannot create the WAL sidecars, and initSchema's DDL writes on the
+	// write conn are what materialize them. The write conn then holds the
+	// sidecars for the store's lifetime, so read conns can always attach.
+	readDB, err := openSQLiteRead(dbPath)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s.readDB = readDB
+
 	return s, nil
 }
 
-// Close shuts down the database connection.
+// Close shuts down both pools. The read pool closes first so the write conn
+// is the last connection standing — its close runs the final WAL
+// checkpoint and removes the -wal/-shm sidecars.
 func (s *Store) Close() error {
+	if s.readDB != nil {
+		if err := s.readDB.Close(); err != nil {
+			_ = s.db.Close()
+			return err
+		}
+	}
 	return s.db.Close()
 }
 
@@ -56,10 +79,12 @@ func (s *Store) DBPath() string {
 //
 // _txlock=immediate makes every tx.Begin() use BEGIN IMMEDIATE instead of
 // BEGIN DEFERRED: the transaction acquires the reserved (write) lock up front
-// rather than lazily upgrading from a read lock on first write. This is
-// mandatory for multi-connection correctness — without it, two connections
-// can each hold a shared (read) lock and then deadlock trying to upgrade to a
-// write lock, and busy_timeout does NOT cover that deadlock.
+// rather than lazily upgrading from a read lock on first write. In-process
+// the pool below pins a single write connection, so two of our own
+// connections can no longer deadlock upgrading — but external processes
+// (another gbot instance, maintenance tools) can still hold concurrent
+// read/write locks, and BEGIN IMMEDIATE + busy_timeout remains the correct
+// way to take the write lock against them.
 //
 // journal_mode=WAL: 4x faster writes than DELETE for gbot's per-message
 // transaction pattern (benchmark: 0.29ms vs 1.21ms per INSERT). WAL was
@@ -82,6 +107,38 @@ func openSQLite(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database %q: %w", path, err)
+	}
+	// Pin exactly one long-lived connection that is never closed or
+	// recycled mid-run. Multiple write connections on a WAL file can pair a
+	// commit with a checkpoint at the same instant and cycle the -wal/-shm
+	// sidecars (SQLite deletes them when the last connection closes),
+	// producing commits whose rows vanish — the data-loss class this
+	// topology prevents. With one perpetual write conn the sidecars are
+	// held for the store's entire lifetime. Reads run on the separate
+	// read-only pool (openSQLiteRead) so they never queue behind writes.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	return db, nil
+}
+
+// openSQLiteRead opens the read-only pool used by every read-only store
+// method. The URI form is required for mode=ro. No journal_mode pragma: a
+// ro connection cannot switch journal modes, and WAL is already persisted
+// in the database header by the write conn. busy_timeout still matters
+// here — an external process can hold an exclusive lock. The time-format
+// pragmas must mirror the write DSN so both pools scan TIMESTAMP columns
+// into identical canonical UTC values.
+func openSQLiteRead(path string) (*sql.DB, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path %q: %w", path, err)
+	}
+	dsn := "file:" + abs + "?mode=ro&_pragma=busy_timeout(5000)&_time_format=sqlite&_timezone=UTC"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read pool %q: %w", abs, err)
 	}
 	return db, nil
 }

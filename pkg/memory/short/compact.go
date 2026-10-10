@@ -252,7 +252,7 @@ func (s *Store) LoadPostCompactChainMessages(sessionID string) ([]*TranscriptMes
 	}
 
 	// Only load messages from boundary onward — the boundary starts a fresh chain
-	rows, err := s.db.Query(`
+	rows, err := s.readDB.Query(`
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
 		       is_sidechain, type, subtype, content, metadata, created_at
 		FROM messages

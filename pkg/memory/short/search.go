@@ -115,7 +115,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 
 	args = append(args, opts.Limit, opts.Offset)
 
-	rows, err := s.db.Query(querySQL, args...)
+	rows, err := s.readDB.Query(querySQL, args...)
 	if err != nil {
 		if isMalformedFTSError(err) {
 			return nil, nil
@@ -234,7 +234,7 @@ func (s *Store) SearchSessions(query string, projectDir string, limit int) ([]*S
 
 	args = append(args, limit)
 
-	rows, err := s.db.Query(querySQL, args...)
+	rows, err := s.readDB.Query(querySQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search sessions: %w", err)
 	}
