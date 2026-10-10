@@ -29,6 +29,57 @@ function dispatchPaste(textarea: HTMLTextAreaElement, text: string): { evt: Inpu
   return { evt, spy }
 }
 
+// dispatchFilePaste: jsdom 29 has no ClipboardEvent/DataTransfer (issue
+// #1568), so build a synthetic paste Event with a stubbed clipboardData
+// carrying kind=file items backed by real File objects. The optional
+// `items` override lets a test model string-only or empty item lists.
+// Returns the preventDefault spy so call sites can assert the
+// text-suppression decision.
+function dispatchFilePaste(
+  textarea: HTMLTextAreaElement,
+  files: File[],
+  text = '',
+  items?: Array<{ kind: string; type: string; getAsFile: () => File | null }>,
+): { spy: Mock } {
+  const evt = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(evt, 'clipboardData', {
+    value: {
+      items: items ?? files.map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+      files,
+      getData: (t: string) => (t === 'text/plain' ? text : ''),
+    },
+    writable: false, configurable: true,
+  })
+  const spy = vi.spyOn(evt as unknown as { preventDefault: () => void }, 'preventDefault')
+  textarea.dispatchEvent(evt)
+  return { spy }
+}
+
+// dispatchDrag: synthetic drag events with a stubbed dataTransfer (jsdom has
+// no DragEvent). dragenter/dragover/dragleave/drop share the shape.
+function dispatchDrag(el: HTMLElement, type: 'dragenter' | 'dragover' | 'dragleave' | 'drop', files: File[] = []): { spy: Mock } {
+  const evt = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperty(evt, 'dataTransfer', {
+    value: { files },
+    writable: false, configurable: true,
+  })
+  const spy = vi.spyOn(evt as unknown as { preventDefault: () => void }, 'preventDefault')
+  el.dispatchEvent(evt)
+  return { spy }
+}
+
+// cardEl returns the composer card element (drag/drop target).
+function cardEl(ib: ReturnType<typeof createInputBar>): HTMLElement {
+  return ib.root.querySelector('.card-bg') as HTMLElement
+}
+
+// fileNameOf unwraps a file-bearing attachment ref. Paste refs carry no
+// file; throwing keeps a wrong-kind assertion from passing silently.
+function fileNameOf(ref: AttachmentRef): string {
+  if (ref.kind === 'paste') throw new Error('expected image/document ref, got paste')
+  return ref.file.name
+}
+
 // getEditPopup returns the edit popup element from document.body. The popup
 // is lazily appended on first open, so callers must open it first.
 function getEditPopup(): HTMLElement {
@@ -843,5 +894,223 @@ describe('createInputBar paste compression', () => {
     handles.onAttachmentsChange(() => { calls++ })
     dispatchPaste(handles.textarea, 'hello\nworld\nfoo\nbar')
     expect(calls).toBe(1)
+  })
+})
+
+describe('createInputBar clipboard file paste', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('ScreenshotPaste_AttachesImageChip_WithStampedName', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })
+    const file = new File([blob], 'image.png', { type: 'image/png' })
+    const { spy } = dispatchFilePaste(handles.textarea, [file])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('image')
+    expect(fileNameOf(atts[0])).toBe('pasted-140305.png')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const img = handles.root.querySelector<HTMLImageElement>('img[alt="pasted-140305.png"]')
+    if (!img) throw new Error('image chip with stamped name not rendered')
+    expect(img.src.startsWith('blob:')).toBe(true)
+    // preventDefault must suppress the default text insertion too.
+    expect(handles.textarea.value).toBe('')
+  })
+
+  it('FileManagerCopy_KeepsRealName_RendersDocumentChip', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' })
+    const file = new File([blob], 'report.pdf', { type: 'application/pdf' })
+    const { spy } = dispatchFilePaste(handles.textarea, [file], '/home/user/report.pdf')
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('document')
+    expect(fileNameOf(atts[0])).toBe('report.pdf')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const chipText = handles.root.textContent ?? ''
+    expect(chipText).toContain('[report.pdf 4 B]')
+  })
+
+  it('TextOnlyPaste_DoesNotAttach_DoesNotPreventDefault', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const { spy } = dispatchFilePaste(handles.textarea, [], 'hello', [
+      { kind: 'string', type: 'text/plain', getAsFile: () => null },
+    ])
+    expect(handles.getAttachments().length).toBe(0)
+    // No preventDefault: the browser default insertion and the beforeinput
+    // threshold logic stay authoritative for text-only pastes.
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('NamelessBlob_UsesJpgExt', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], { type: 'image/jpeg' })
+    const file = new File([blob], '', { type: 'image/jpeg' })
+    dispatchFilePaste(handles.textarea, [file])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('image')
+    expect(fileNameOf(atts[0])).toBe('pasted-140305.jpg')
+  })
+
+  it('OctetStream_UsesBinExt', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0x00, 0x01])], { type: 'application/octet-stream' })
+    const file = new File([blob], '', { type: 'application/octet-stream' })
+    dispatchFilePaste(handles.textarea, [file])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('document')
+    expect(fileNameOf(atts[0])).toBe('pasted-140305.bin')
+  })
+
+  it('EmptyTypeAndName_UsesBinExt', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0x00])])
+    const file = new File([blob], '')
+    dispatchFilePaste(handles.textarea, [file])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('document')
+    expect(fileNameOf(atts[0])).toBe('pasted-140305.bin')
+  })
+
+  it('DuplicateNamesInOnePaste_DedupeWithSuffix', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const b1 = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const b2 = new Blob([new Uint8Array([0x89, 0x51])], { type: 'image/png' })
+    const f1 = new File([b1], 'photo.png', { type: 'image/png' })
+    const f2 = new File([b2], 'photo.png', { type: 'image/png' })
+    dispatchFilePaste(handles.textarea, [f1, f2])
+    expect(handles.getAttachments().map((r) => fileNameOf(r))).toEqual(['photo.png', 'photo-2.png'])
+  })
+
+  it('FilesFallback_WhenItemsEmpty', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const file = new File([blob], 'camera.png', { type: 'image/png' })
+    const { spy } = dispatchFilePaste(handles.textarea, [file], '', [])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('image')
+    expect(fileNameOf(atts[0])).toBe('camera.png')
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('OnAttachmentsChange_FiresOnFilePaste', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    let calls = 0
+    handles.onAttachmentsChange(() => { calls++ })
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const file = new File([blob], 'photo.png', { type: 'image/png' })
+    dispatchFilePaste(handles.textarea, [file])
+    expect(calls).toBe(1)
+  })
+})
+
+describe('composer drag and drop', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('Drop_FileOnCard_AttachesWithRealName', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const card = cardEl(handles)
+    const noteTxt = new File([new Uint8Array([0x6e, 0x6f, 0x74, 0x65])], 'notes.txt', { type: 'text/plain' })
+    dispatchDrag(card, 'dragenter', [noteTxt])
+    dispatchDrag(card, 'dragover', [noteTxt])
+    const { spy } = dispatchDrag(card, 'drop', [noteTxt])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(atts[0].kind).toBe('document')
+    expect(fileNameOf(atts[0])).toBe('notes.txt')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const chipText = handles.root.textContent ?? ''
+    expect(chipText).toContain('[notes.txt 4 B]')
+  })
+
+  it('Drop_HighlightsCard_DuringDragAndClearsOnDrop', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const card = cardEl(handles)
+    const noteTxt = new File([new Uint8Array([0x6e])], 'notes.txt', { type: 'text/plain' })
+    dispatchDrag(card, 'dragenter', [noteTxt])
+    expect(card.classList.contains('ring-2')).toBe(true)
+    expect(card.classList.contains('ring-blue')).toBe(true)
+    dispatchDrag(card, 'drop', [noteTxt])
+    expect(card.classList.contains('ring-2')).toBe(false)
+    expect(card.classList.contains('ring-blue')).toBe(false)
+    // Depth counter path: enter then leave (1 -> 0) also clears.
+    dispatchDrag(card, 'dragenter', [noteTxt])
+    expect(card.classList.contains('ring-2')).toBe(true)
+    dispatchDrag(card, 'dragleave', [noteTxt])
+    expect(card.classList.contains('ring-2')).toBe(false)
+    expect(card.classList.contains('ring-blue')).toBe(false)
+  })
+
+  it('Drop_DragOverPreventDefault_AllowsDrop', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const card = cardEl(handles)
+    const aTxt = new File([new Uint8Array([0x61])], 'a.txt', { type: 'text/plain' })
+    const { spy } = dispatchDrag(card, 'dragover', [aTxt])
+    // The browser only allows drop when dragover is canceled.
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('Drop_EmptyPayload_NoAttach', () => {
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const card = cardEl(handles)
+    const { spy } = dispatchDrag(card, 'drop', [])
+    expect(handles.getAttachments().length).toBe(0)
+    // No preventDefault: the browser-default text-drag insertion is kept.
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('Drop_ImageWithSynthesizedName_GetsStamp', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const handles = createInputBar({ connected: true })
+    document.body.appendChild(handles.root)
+    const card = cardEl(handles)
+    const blob = new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' })
+    const file = new File([blob], 'image.png', { type: 'image/png' })
+    dispatchDrag(card, 'drop', [file])
+    const atts = handles.getAttachments()
+    expect(atts.length).toBe(1)
+    expect(fileNameOf(atts[0])).toBe('pasted-140305.png')
   })
 })

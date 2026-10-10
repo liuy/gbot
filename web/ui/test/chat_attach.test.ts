@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 
 // Mock WS at the path chat.ts imports. The mock captures every listener
 // registered via subscribe() so tests can drive inbound messages through
@@ -137,6 +137,25 @@ function dispatchPaste(textarea: HTMLTextAreaElement, text: string): { evt: Inpu
 // img/span queries here avoids picking up chip thumbnails.
 function messagesContainer(): HTMLElement {
   return document.querySelector('.space-y-7') as HTMLElement
+}
+
+// dispatchFilePaste: jsdom 29 has no ClipboardEvent/DataTransfer (issue
+// #1568), so build a synthetic paste Event with a stubbed clipboardData
+// carrying kind=file items backed by real File objects. Returns the
+// preventDefault spy so call sites can assert the text-suppression decision.
+function dispatchFilePaste(ta: HTMLTextAreaElement, files: File[]): { spy: Mock } {
+  const evt = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(evt, 'clipboardData', {
+    value: {
+      items: files.map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+      files,
+      getData: (t: string) => (t === 'text/plain' ? '' : ''),
+    },
+    writable: false, configurable: true,
+  })
+  const spy = vi.spyOn(evt as unknown as { preventDefault: () => void }, 'preventDefault')
+  ta.dispatchEvent(evt)
+  return { spy }
 }
 
 beforeEach(() => {
@@ -525,5 +544,93 @@ describe('chat paste integration', () => {
     expect(document.querySelector('[data-paste-chip]')).not.toBeNull()
     // No commit frame sent.
     expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+  })
+})
+
+describe('chat clipboard file paste', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('PastedImage_SendsThroughUploadPipeline_WithSynthesizedName', async () => {
+    mount()
+    const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })
+    const file = new File([blob], '', { type: 'image/png' })
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea')!
+    // Freeze the clock around the paste so the stamp is deterministic;
+    // real timers are restored before the async upload phase so vi.waitFor
+    // polls with real intervals.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    const { spy } = dispatchFilePaste(ta, [file])
+    vi.useRealTimers()
+    expect(spy).toHaveBeenCalledTimes(1)
+    setTextarea('look')
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(sent.length).toBe(3)
+    })
+
+    const start = sent[0] as { type: string; id: string; name: string; mime: string; size: number }
+    expect(start.type).toBe('attachment_start')
+    expect(start.name).toBe('pasted-140305.png')
+    expect(start.mime).toBe('image/png')
+    expect(start.size).toBe(blob.size)
+    expect(typeof start.id).toBe('string')
+    expect(start.id.length).toBeGreaterThan(0)
+
+    const end = sent[1] as { type: string; id: string }
+    expect(end.type).toBe('attachment_end')
+    expect(end.id).toBe(start.id)
+
+    const msg = sent[2] as {
+      type: string
+      text: string
+      attachments: Array<{ id: string; name: string; mime: string; size: number }>
+    }
+    expect(msg.type).toBe('message')
+    expect(msg.text).toBe('look')
+    expect(msg.attachments.length).toBe(1)
+    expect(msg.attachments[0].name).toBe('pasted-140305.png')
+    expect(msg.attachments[0].id).toBe(start.id)
+    expect(msg.attachments[0].mime).toBe('image/png')
+    expect(msg.attachments[0].size).toBe(blob.size)
+
+    // One binary chunk carrying the pasted bytes.
+    expect(sentBinary.length).toBe(1)
+    expect(sentBinary[0].byteLength).toBe(blob.size)
+
+    // Rendered user message shows the stamped name with a blob preview.
+    const img = messagesContainer().querySelector('img') as HTMLImageElement
+    if (!img) throw new Error('rendered user message img not found')
+    expect(img.alt).toBe('pasted-140305.png')
+    expect(img.src.startsWith('blob:')).toBe(true)
+    // Textarea cleared after send.
+    const taAfter = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(taAfter.value).toBe('')
+  })
+
+  it('PastedFile_UploadFailure_MarksChipRed_KeepsName', async () => {
+    installConn({ disconnectAfterBinary: 1 })
+    mount()
+    const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })
+    const file = new File([blob], 'image.png', { type: 'image/png' })
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea')!
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 10, 14, 3, 5))
+    dispatchFilePaste(ta, [file])
+    vi.useRealTimers()
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.border-red-500').length).toBe(1)
+    })
+    // No commit frame — the failure path stops before conn.send.
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+    // The failed chip keeps the stamped name through the failure path.
+    const failedChip = document.querySelector('.border-red-500') as HTMLImageElement
+    if (!failedChip) throw new Error('failed chip not found')
+    expect(failedChip.alt).toBe('pasted-140305.png')
   })
 })

@@ -56,6 +56,28 @@ function countNewlines(text: string): number {
   return count
 }
 
+// PASTED_EXT maps clipboard mimes to filename extensions for pasted blobs
+// that arrive without a usable name. Everything unmapped (including empty
+// and octet-stream) becomes .bin; the server sniffs magic bytes anyway
+// (pkg/connector/wui/attachment.go classifyAttachment), so this only
+// affects display.
+const PASTED_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+  'image/svg+xml': 'svg',
+}
+
+// SYNTHESIZED_NAME matches the generic name every engine invents for bitmap
+// clipboard data (screenshots, "copy image"): Chromium has minted
+// "image.png" since 2017 "as Firefox does", and WebKit does the same. The
+// OS clipboard carries no filename, so these get the pasted- stamp rather
+// than piling up as identical image.png chips.
+const SYNTHESIZED_NAME = /^image\.(png|jpe?g|gif|webp|bmp|tiff?)$/i
+
 export interface InputBarHandles {
   root: HTMLElement
   bubbles: HTMLElement
@@ -517,6 +539,64 @@ export function createInputBar(initial: {
     recomputeCanSend()
   }
 
+  // addClipboardFiles feeds pasted/dropped Files through addAttachment,
+  // applying the naming rule: real filenames are kept, missing or
+  // engine-synthesized (image.png) names get pasted-HHMMSS.ext, and names
+  // colliding within one batch get -2/-3 suffixes before the extension.
+  const addClipboardFiles = (files: File[]) => {
+    const now = new Date()
+    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((n) => String(n).padStart(2, '0')).join('')
+    const used = new Set<string>()
+    for (const f of files) {
+      let name = f.name
+      if (!name || SYNTHESIZED_NAME.test(name)) {
+        name = `pasted-${stamp}.${PASTED_EXT[f.type] ?? 'bin'}`
+      }
+      if (used.has(name)) {
+        const dot = name.lastIndexOf('.')
+        const base = dot > 0 ? name.slice(0, dot) : name
+        const ext = dot > 0 ? name.slice(dot) : ''
+        let n = 2
+        while (used.has(`${base}-${n}${ext}`)) n++
+        name = `${base}-${n}${ext}`
+      }
+      used.add(name)
+      addAttachment(
+        name === f.name
+          ? f
+          : new File([f], name, { type: f.type, lastModified: f.lastModified }),
+      )
+    }
+  }
+
+  // Desktop clipboard file paste. items is the canonical route (kind is
+  // visible before materializing the File); files is the fallback for
+  // engines that only populate it. Text-only pastes return before
+  // preventDefault so the browser default insertion — and the beforeinput
+  // threshold logic above — stay authoritative. preventDefault after files
+  // were consumed also suppresses the file path text that file-manager
+  // copies often carry alongside the file items.
+  const handleFilePaste = (e: ClipboardEvent) => {
+    const dt = e.clipboardData
+    if (!dt) return
+    const files: File[] = []
+    if (dt.items && dt.items.length > 0) {
+      for (const item of Array.from(dt.items)) {
+        if (item.kind !== 'file') continue
+        // getAsFile must run synchronously: the item list is neutered
+        // once the listener returns.
+        const f = item.getAsFile()
+        if (f) files.push(f)
+      }
+    } else if (dt.files && dt.files.length > 0) {
+      files.push(...Array.from(dt.files))
+    }
+    if (files.length === 0) return
+    e.preventDefault()
+    addClipboardFiles(files)
+  }
+
   // removeAttachment splices a ref out of the array and revokes its blob URL
   // (image only). Used by the chip × button.
   const removeAttachment = (ref: AttachmentRef) => {
@@ -763,6 +843,39 @@ export function createInputBar(initial: {
       e.preventDefault()
       addPasteAttachment(text)
     }
+  })
+
+  textarea.addEventListener('paste', handleFilePaste)
+
+  // Drag-and-drop onto the composer card. dragover MUST be prevented for
+  // the browser to allow drop; dragenter/dragleave fire on every child
+  // boundary so a depth counter, not a boolean, tracks "still over the
+  // card". ring-2/ring-blue compose with the card's existing border
+  // utilities without a new CSS rule.
+  let dragDepth = 0
+  const clearDropHighlight = () => {
+    dragDepth = 0
+    card.classList.remove('ring-2', 'ring-blue')
+  }
+  card.addEventListener('dragenter', (e) => {
+    e.preventDefault()
+    dragDepth++
+    card.classList.add('ring-2', 'ring-blue')
+  })
+  card.addEventListener('dragover', (e) => e.preventDefault())
+  card.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1)
+    if (dragDepth === 0) card.classList.remove('ring-2', 'ring-blue')
+  })
+  card.addEventListener('drop', (e) => {
+    const files = Array.from(e.dataTransfer?.files ?? [])
+    if (files.length > 0) {
+      // preventDefault only for file drops: unconditional would also
+      // swallow the browser-default text-drag insertion
+      e.preventDefault()
+      addClipboardFiles(files)
+    }
+    clearDropHighlight()
   })
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
