@@ -52,6 +52,7 @@ import {
   markToolCollapsible,
 } from './components/stream_dom'
 import { createHeader } from './header'
+import { createTakeoverBar } from './takeover_bar'
 import { createSidebar } from './sidebar'
 import { createInputBar, type InputBarHandles, type AttachmentRef, type QueuedMsg } from './input_bar'
 import { createTaskPanel } from './task_panel'
@@ -519,9 +520,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   initTheme()
   const sidebar = createSidebar({ mainContent })
 
+  // Takeover/session-switch loading bar: 2px fill pinned to the header's
+  // bottom edge. start() fires when the switch request leaves, finish()
+  // when the answering metadata frame renders the new session.
+  const takeoverBar = createTakeoverBar()
+
   const header = createHeader({
     onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }),
-    onEngineSwitch: (engineID) => conn.send({ type: 'engine_switch', engineID }),
+    onEngineSwitch: (engineID) => {
+      takeoverBar.start()
+      conn.send({ type: 'engine_switch', engineID })
+    },
     onEngineNew: () => conn.send({ type: 'engine_new' }),
     onContextRequest: () => conn.send({ type: 'context_request' }),
     onContextCompact: () => {
@@ -532,6 +541,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   })
   header.setStatus(initial.connected)
   header.onHamburgerClick(() => sidebar.toggle())
+  header.root.appendChild(takeoverBar.root)
   scroll.appendChild(header.root)
 
   // ── Disconnect banner: slides in below header when WS is down.
@@ -669,11 +679,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         setStreamFreeze(messagesContainer, false)
       }
     } else if (cs === 'reconnecting') {
+      // serveChatWS auto-takes-over on every (re)connect and replays
+      // metadata without any client-sent switch, so the reconnect window
+      // itself is a takeover window: start here, the replayed metadata
+      // frame finishes it. The same holds for the 1012 upgrading branch.
+      takeoverBar.start()
       disconnectBanner.style.cursor = 'default'
       startDots()
       disconnectBanner.style.maxHeight = '40px'
       disconnectBanner.style.opacity = '1'
     } else if (cs === 'upgrading') {
+      takeoverBar.start()
       // Capsule owns the visuals; the banner must not appear for a planned
       // restart. Rollback bail-out: if the socket never actually dropped,
       // the server answered our reconnect with the old process (the
@@ -703,6 +719,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         document.body.removeAttribute('data-upgrading')
         setStreamFreeze(messagesContainer, false)
       }
+      // The reconnect window opened a takeover bar; closing it here beats
+      // stranding the fill at the asymptote — the banner owns the failure
+      // messaging, and a manual retry reopens the window on 'reconnecting'.
+      takeoverBar.finish()
       dcText.textContent = 'Reconnection failed. Tap to retry.'
       disconnectBanner.style.cursor = 'pointer'
       disconnectBanner.style.maxHeight = '40px'
@@ -2003,6 +2023,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let wuiHashSnapshot: string | undefined
 
   sidebar.onSessionClick((id) => {
+    takeoverBar.start()
     conn.send({ type: 'session_switch', sessionID: id })
   })
   sidebar.onNewSession(() => {
@@ -2047,6 +2068,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
     switch (msg.type) {
       case 'metadata': {
+        // The metadata frame is what ends a switch's loading window —
+        // complete the takeover bar before rendering the new session.
+        takeoverBar.finish()
         const c = msg.connect
         // Bundle staleness check before state reset: on reload the rest of
         // this handler is wasted work. First frame per page lifetime only
@@ -2229,6 +2253,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         loadHistory(msg)
         return
       case 'error':
+        // A failed switch must not strand the bar at the asymptote: the
+        // server answers e.g. an unknown engine with an error frame
+        // instead of metadata. Idle-guarded, so unrelated errors no-op.
+        takeoverBar.finish()
         appendError(msg.message)
         return
       case 'ask': {
