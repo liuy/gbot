@@ -21,7 +21,13 @@ import (
 	"github.com/liuy/gbot/pkg/utils"
 )
 
-var chatUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+// EnableCompression negotiates permessage-deflate: chat frames are JSON
+// (8-15x compressible) and remote clients can sit on ~1Mbps tailscale links
+// where an uncompressed ~1MB takeover metadata frame costs ~16 seconds.
+var chatUpgrader = websocket.Upgrader{
+	CheckOrigin:       func(*http.Request) bool { return true },
+	EnableCompression: true,
+}
 
 // RegisterChatWS mounts the chat WebSocket endpoint at /ws/chat on mux. The
 // handler upgrades the connection, emits connect_status, then runs a readLoop
@@ -33,6 +39,9 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 			http.Error(w, "upgrade failed", http.StatusInternalServerError)
 			return
 		}
+		// Level 1 (BestSpeed): streaming frames are latency-sensitive and
+		// the CPU cost stays negligible while JSON still compresses ~10x.
+		_ = ws.SetCompressionLevel(1)
 		serveChatWS(ws, c)
 	})
 }
