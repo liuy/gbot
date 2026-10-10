@@ -118,7 +118,7 @@ func TestTaskHook_BlocksCreate_RollsBackTask(t *testing.T) {
 	gate := blockingGate("no new tasks allowed")
 	hk := gateWithHooks(gate, "TaskCreated")
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"Fix the auth bug"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"Fix the auth bug"}`)
 
 	if len(out.Created) != 1 {
 		t.Fatalf("len(Created) = %d, want 1", len(out.Created))
@@ -170,7 +170,7 @@ func TestTaskHook_NonEmptyMatcherStillBlocksCreate(t *testing.T) {
 		}},
 	}, gate)
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 
 	if out.Created[0].Error != "TaskCreated hook feedback:\n[gate]: no new tasks allowed" {
 		t.Errorf("Error = %q, want the hook feedback — a tool-shaped matcher must not filter the event out", out.Created[0].Error)
@@ -190,7 +190,7 @@ func TestTaskHook_NonBlockingHookKeepsTask(t *testing.T) {
 	gate := &hookGate{}
 	hk := gateWithHooks(gate, "TaskCreated")
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 
 	if out.Created[0].ID != "1" {
 		t.Errorf("ID = %q, want 1", out.Created[0].ID)
@@ -207,25 +207,6 @@ func TestTaskHook_NonBlockingHookKeepsTask(t *testing.T) {
 	}
 	if task == nil {
 		t.Fatal("task #1 should exist when no hook blocks")
-	}
-}
-
-func TestTaskHook_CreateGateStillRunsSiblingCreates(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	gate := blockingGate("first one rejected")
-	hk := gateWithHooks(gate, "TaskCreated")
-
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"A","description":"a"},{"subject":"B","description":"b"}]}`)
-
-	if len(out.Created) != 2 {
-		t.Fatalf("len(Created) = %d, want 2", len(out.Created))
-	}
-	if out.Created[0].Error != "TaskCreated hook feedback:\n[gate]: first one rejected" {
-		t.Errorf("Created[0].Error = %q, want the hook feedback", out.Created[0].Error)
-	}
-	if out.Created[1].ID != "2" || out.Created[1].Error != "" {
-		t.Errorf("Created[1] = %+v, want an unaffected successful create", out.Created[1])
 	}
 }
 
@@ -248,7 +229,7 @@ func TestTaskHook_BlocksCreate_RollbackFailureSurfacesDeleteError(t *testing.T) 
 	}
 	hk := gateWithHooks(gate, "TaskCreated")
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 
 	if len(out.Created) != 1 {
 		t.Fatalf("len(Created) = %d, want 1", len(out.Created))
@@ -284,7 +265,7 @@ func TestTaskHook_BlocksCompletion_StatusUnchanged(t *testing.T) {
 	gate := blockingGate("tests still failing")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"completed"}`)
 
 	if len(out.Updated) != 1 {
 		t.Fatalf("len(Updated) = %d, want 1", len(out.Updated))
@@ -339,7 +320,7 @@ func TestTaskHook_BlocksCompletion_AbortsWholeUpdate(t *testing.T) {
 	gate := blockingGate("not verified")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","subject":"New subject","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","subject":"New subject","status":"completed"}`)
 
 	if out.Updated[0].Success {
 		t.Error("Success = true, want false")
@@ -370,7 +351,7 @@ func TestTaskHook_BlocksCompletion_DecisionBlockReason(t *testing.T) {
 	}}}
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"completed"}`)
 
 	wantErr := "TaskCompleted hook feedback:\nno evidence it works"
 	if out.Updated[0].Error != wantErr {
@@ -396,7 +377,7 @@ func TestTaskHook_DoesNotFireWhenStatusUnchanged(t *testing.T) {
 	gate := blockingGate("should never run")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"completed"}`)
 
 	if gate.callCount() != 0 {
 		t.Errorf("hook calls = %d, want 0 — no transition means no TaskCompleted event", gate.callCount())
@@ -416,7 +397,7 @@ func TestTaskHook_DoesNotFireForNonCompletedStatus(t *testing.T) {
 	gate := blockingGate("should never run")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"in_progress"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"in_progress"}`)
 
 	if gate.callCount() != 0 {
 		t.Errorf("hook calls = %d, want 0 — only a transition into completed fires the event", gate.callCount())
@@ -440,13 +421,13 @@ func TestTaskHook_DoesNotFireOnDelete(t *testing.T) {
 	gate := blockingGate("should never run")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"deleted"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"delete","taskIds":["`+id+`"]}`)
 
 	if gate.callCount() != 0 {
 		t.Errorf("hook calls = %d, want 0 — deleting is not completing", gate.callCount())
 	}
-	if !out.Updated[0].Success {
-		t.Errorf("Success = false, want true; Error = %q", out.Updated[0].Error)
+	if len(out.Deleted) != 1 || !out.Deleted[0].Success {
+		t.Fatalf("Deleted = %+v, want one successful delete", out.Deleted)
 	}
 	task, err := list.GetTask(id)
 	if err != nil {
@@ -464,7 +445,7 @@ func TestTaskHook_NonBlockingCompletionAppliesStatus(t *testing.T) {
 	gate := &hookGate{}
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"completed"}`)
 
 	if !out.Updated[0].Success {
 		t.Fatalf("Success = false, want true; Error = %q", out.Updated[0].Error)
@@ -495,12 +476,12 @@ func TestTaskHook_NilHooksBehavesAsBefore(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 
-	out := callWithHooks(t, list, nil, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, nil, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 	if out.Created[0].ID != "1" || out.Created[0].Error != "" {
 		t.Fatalf("Created[0] = %+v, want a successful create", out.Created[0])
 	}
 
-	out = callWithHooks(t, list, nil, `{"updates":[{"taskId":"1","status":"completed"}]}`)
+	out = callWithHooks(t, list, nil, `{"action":"update","taskId":"1","status":"completed"}`)
 	if !out.Updated[0].Success {
 		t.Fatalf("Success = false, want true; Error = %q", out.Updated[0].Error)
 	}
@@ -522,12 +503,12 @@ func TestTaskHook_EmptyConfigDispatchesNothing(t *testing.T) {
 	gate := &hookGate{}
 	hk := hooks.NewHooks(hooks.HooksConfig{}, gate)
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 	if out.Created[0].ID != "1" {
 		t.Fatalf("Created[0] = %+v, want a successful create", out.Created[0])
 	}
 
-	out = callWithHooks(t, list, hk, `{"updates":[{"taskId":"1","status":"completed"}]}`)
+	out = callWithHooks(t, list, hk, `{"action":"update","taskId":"1","status":"completed"}`)
 	if !out.Updated[0].Success {
 		t.Fatalf("Success = false, want true; Error = %q", out.Updated[0].Error)
 	}
@@ -551,11 +532,11 @@ func TestTaskHook_InputCarriesSessionIDAndCwd(t *testing.T) {
 		OriginalWorkingDir: "/work/original",
 	}
 
-	out := callWithTctx(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`, tctx)
+	out := callWithTctx(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`, tctx)
 	if out.Created[0].ID != "1" {
 		t.Fatalf("Created[0] = %+v, want a successful create", out.Created[0])
 	}
-	out = callWithTctx(t, list, hk, `{"updates":[{"taskId":"1","status":"completed"}]}`, tctx)
+	out = callWithTctx(t, list, hk, `{"action":"update","taskId":"1","status":"completed"}`, tctx)
 	if !out.Updated[0].Success {
 		t.Fatalf("Success = false, want true; Error = %q", out.Updated[0].Error)
 	}
@@ -587,7 +568,7 @@ func TestTaskHook_CwdFallsBackToOriginalWorkingDir(t *testing.T) {
 		OriginalWorkingDir: "/work/original",
 	}
 
-	out := callWithTctx(t, list, hk, `{"creates":[{"subject":"A","description":"a"}]}`, tctx)
+	out := callWithTctx(t, list, hk, `{"action":"create","subject":"A","description":"a"}`, tctx)
 	if out.Created[0].ID != "1" {
 		t.Fatalf("Created[0] = %+v, want a successful create", out.Created[0])
 	}
@@ -609,7 +590,7 @@ func TestTaskHook_NilCallContextLeavesBaseFieldsEmpty(t *testing.T) {
 	gate := &hookGate{}
 	hk := gateWithHooks(gate, "TaskCreated")
 
-	out := callWithTctx(t, list, hk, `{"creates":[{"subject":"A","description":"a"}]}`, nil)
+	out := callWithTctx(t, list, hk, `{"action":"create","subject":"A","description":"a"}`, nil)
 	if out.Created[0].ID != "1" {
 		t.Fatalf("Created[0] = %+v, want a successful create with no call context", out.Created[0])
 	}
@@ -633,7 +614,7 @@ func TestTaskHook_OnlyTaskCreatedHooksDoNotGateCompletion(t *testing.T) {
 	gate := blockingGate("should never run")
 	hk := gateWithHooks(gate, "TaskCreated")
 
-	out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"completed"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"completed"}`)
 
 	if gate.callCount() != 0 {
 		t.Fatalf("hook calls = %d, want 0 — a TaskCreated-only config must not gate completions", gate.callCount())
@@ -659,7 +640,7 @@ func TestTaskHook_OnlyTaskCompletedHooksDoNotGateCreate(t *testing.T) {
 	gate := blockingGate("should never run")
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithHooks(t, list, hk, `{"creates":[{"subject":"Fix auth","description":"desc"}]}`)
+	out := callWithHooks(t, list, hk, `{"action":"create","subject":"Fix auth","description":"desc"}`)
 
 	if gate.callCount() != 0 {
 		t.Fatalf("hook calls = %d, want 0 — a TaskCompleted-only config must not gate creates", gate.callCount())
@@ -688,7 +669,7 @@ func TestTaskHook_CompletedInputCarriesPreUpdateFields(t *testing.T) {
 	gate := &hookGate{}
 	hk := gateWithHooks(gate, "TaskCompleted")
 
-	out := callWithTctx(t, list, hk, `{"updates":[{"taskId":"`+id+`","subject":"New subject","description":"new description","status":"completed"}]}`, &tool.ToolUseContext{Options: tool.ToolUseOptions{SessionID: "sess-1"}})
+	out := callWithTctx(t, list, hk, `{"action":"update","taskId":"`+id+`","subject":"New subject","description":"new description","status":"completed"}`, &tool.ToolUseContext{Options: tool.ToolUseOptions{SessionID: "sess-1"}})
 
 	if !out.Updated[0].Success {
 		t.Fatalf("Success = false, want true; Error = %q", out.Updated[0].Error)
@@ -732,12 +713,12 @@ func TestTaskUpdate_RejectsInvalidStatus(t *testing.T) {
 		gate := blockingGate("should never run")
 		hk := gateWithHooks(gate, "TaskCompleted")
 
-		out := callWithHooks(t, list, hk, `{"updates":[{"taskId":"`+id+`","status":"`+status+`"}]}`)
+		out := callWithHooks(t, list, hk, `{"action":"update","taskId":"`+id+`","status":"`+status+`"}`)
 
 		if len(out.Updated) != 1 {
 			t.Fatalf("status %q: len(Updated) = %d, want 1", status, len(out.Updated))
 		}
-		wantErr := `invalid status "` + status + `": must be one of pending, in_progress, completed, deleted`
+		wantErr := `invalid status "` + status + `": must be one of pending, in_progress, completed`
 		if out.Updated[0].Error != wantErr {
 			t.Errorf("status %q: Error = %q, want %q", status, out.Updated[0].Error, wantErr)
 		}

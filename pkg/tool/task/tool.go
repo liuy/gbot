@@ -38,55 +38,106 @@ type ListOutputTask struct {
 	BlockedBy []string `json:"blockedBy"`
 }
 
-// TasksInput is the unified input schema for the Tasks tool.
-// All fields are optional — the LLM includes only what it needs.
+// TasksInput is the input schema for the Task tool. The action enum is the
+// primary key: exactly one operation per call. Any parameter the action does
+// not accept — including the legacy creates/updates/deletes/list/get keys —
+// is rejected at dispatch, because the old flat arrays let mixed payloads
+// run as silent partial no-ops.
 type TasksInput struct {
-	Creates []CreateItem `json:"creates,omitempty"`
-	Updates []UpdateItem `json:"updates,omitempty"`
-	Deletes []string     `json:"deletes,omitempty"`
-	List    *bool        `json:"list,omitempty"`
-	Get     *string      `json:"get,omitempty"`
+	Action       string         `json:"action"`
+	TaskID       string         `json:"taskId,omitempty"`       // update, get
+	TaskIDs      []string       `json:"taskIds,omitempty"`      // delete (bulk)
+	Subject      *string        `json:"subject,omitempty"`      // create (required), update
+	Description  *string        `json:"description,omitempty"`  // create (required), update
+	ActiveForm   *string        `json:"activeForm,omitempty"`   // create, update
+	Status       *string        `json:"status,omitempty"`       // update
+	AddBlocks    []string       `json:"addBlocks,omitempty"`    // update
+	AddBlockedBy []string       `json:"addBlockedBy,omitempty"` // update
+	Owner        *string        `json:"owner,omitempty"`        // update
+	Metadata     map[string]any `json:"metadata,omitempty"`     // create, update
+
+	// legacyParams records old-schema keys present in the input. No action
+	// accepts them; dispatch rejects them so a half-migrated caller fails
+	// loudly instead of silently no-op-ing.
+	legacyParams []string
 }
 
-// UnmarshalJSON tolerates task IDs sent as numbers in deletes and get — LLMs
-// occasionally emit numeric IDs even though the schema declares "type":"string".
-// UpdateItem handles its own taskId via a separate UnmarshalJSON.
+// UnmarshalJSON tolerates task IDs sent as numbers — LLMs occasionally emit
+// numeric IDs even though the schema declares "type":"string".
 func (t *TasksInput) UnmarshalJSON(data []byte) error {
 	type raw struct {
-		Creates []CreateItem    `json:"creates,omitempty"`
-		Updates []UpdateItem    `json:"updates,omitempty"`
-		Deletes []json.Number   `json:"deletes,omitempty"`
-		List    *bool           `json:"list,omitempty"`
-		Get     json.RawMessage `json:"get,omitempty"`
+		Action       string          `json:"action"`
+		TaskID       json.RawMessage `json:"taskId"`
+		TaskIDs      []json.Number   `json:"taskIds"`
+		Subject      *string         `json:"subject"`
+		Description  *string         `json:"description"`
+		ActiveForm   *string         `json:"activeForm"`
+		Status       *string         `json:"status"`
+		AddBlocks    []string        `json:"addBlocks"`
+		AddBlockedBy []string        `json:"addBlockedBy"`
+		Owner        *string         `json:"owner"`
+		Metadata     map[string]any  `json:"metadata"`
+		Creates      json.RawMessage `json:"creates"`
+		Updates      json.RawMessage `json:"updates"`
+		Deletes      json.RawMessage `json:"deletes"`
+		List         *bool           `json:"list"`
+		Get          json.RawMessage `json:"get"`
 	}
 	var r raw
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	t.Creates = r.Creates
-	t.Updates = r.Updates
-	t.List = r.List
-
-	// deletes: accept numbers or strings
-	for _, d := range r.Deletes {
-		t.Deletes = append(t.Deletes, d.String())
+	t.Action = r.Action
+	t.TaskIDs = make([]string, len(r.TaskIDs))
+	for i, id := range r.TaskIDs {
+		t.TaskIDs[i] = id.String()
 	}
+	t.Subject = r.Subject
+	t.Description = r.Description
+	t.ActiveForm = r.ActiveForm
+	t.Status = r.Status
+	t.AddBlocks = r.AddBlocks
+	t.AddBlockedBy = r.AddBlockedBy
+	t.Owner = r.Owner
+	t.Metadata = r.Metadata
 
-	// get: accept quoted string or number
-	if len(r.Get) > 0 {
-		trimmed := bytes.TrimSpace(r.Get)
+	// taskId: accept quoted string ("5"), unquoted number (5), or empty
+	// string (""); anything else fails the whole call instead of silently
+	// dropping the ID the caller meant to target.
+	trimmed := bytes.TrimSpace(r.TaskID)
+	if len(trimmed) > 0 {
 		var s string
 		if err := json.Unmarshal(trimmed, &s); err == nil {
-			t.Get = &s
+			t.TaskID = s
 		} else {
 			var n json.Number
 			if err := json.Unmarshal(trimmed, &n); err == nil {
-				str := n.String()
-				t.Get = &str
+				t.TaskID = n.String()
+			} else {
+				return fmt.Errorf("taskId: cannot unmarshal %s into string or number", string(trimmed))
 			}
 		}
 	}
+
+	legacyPresent := map[string]bool{
+		"creates": rawPresent(r.Creates),
+		"updates": rawPresent(r.Updates),
+		"deletes": rawPresent(r.Deletes),
+		"list":    r.List != nil,
+		"get":     rawPresent(r.Get),
+	}
+	for _, name := range [...]string{"creates", "updates", "deletes", "list", "get"} {
+		if legacyPresent[name] {
+			t.legacyParams = append(t.legacyParams, name)
+		}
+	}
 	return nil
+}
+
+// rawPresent reports whether a legacy raw value carries a non-null JSON value.
+func rawPresent(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
 type CreateItem struct {
@@ -106,55 +157,6 @@ type UpdateItem struct {
 	AddBlockedBy []string       `json:"addBlockedBy,omitempty"`
 	Owner        *string        `json:"owner,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
-}
-
-// UnmarshalJSON tolerates taskId sent as a number — LLMs occasionally emit
-// numeric IDs even though the schema declares "type":"string". Without this,
-// the whole batch fails with "cannot unmarshal number into string".
-func (u *UpdateItem) UnmarshalJSON(data []byte) error {
-	// Use json.RawMessage for taskId so we can accept string, number, or
-	// empty string without json.Number's strict parsing.
-	type rawUpdate struct {
-		Subject      *string         `json:"subject,omitempty"`
-		Description  *string         `json:"description,omitempty"`
-		ActiveForm   *string         `json:"activeForm,omitempty"`
-		Status       *string         `json:"status,omitempty"`
-		AddBlocks    []string        `json:"addBlocks,omitempty"`
-		AddBlockedBy []string        `json:"addBlockedBy,omitempty"`
-		Owner        *string         `json:"owner,omitempty"`
-		Metadata     map[string]any  `json:"metadata,omitempty"`
-		TaskID       json.RawMessage `json:"taskId"`
-	}
-	var raw rawUpdate
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	u.Subject = raw.Subject
-	u.Description = raw.Description
-	u.ActiveForm = raw.ActiveForm
-	u.Status = raw.Status
-	u.AddBlocks = raw.AddBlocks
-	u.AddBlockedBy = raw.AddBlockedBy
-	u.Owner = raw.Owner
-	u.Metadata = raw.Metadata
-	// Accept quoted string ("5"), unquoted number (5), or empty string ("").
-	trimmed := bytes.TrimSpace(raw.TaskID)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte(`""`)) {
-		// Empty/absent: leave TaskID as zero value.
-		return nil
-	}
-	// Try string first (most common), fall back to number.
-	var s string
-	if err := json.Unmarshal(trimmed, &s); err == nil {
-		u.TaskID = s
-		return nil
-	}
-	var n json.Number
-	if err := json.Unmarshal(trimmed, &n); err == nil {
-		u.TaskID = n.String()
-		return nil
-	}
-	return fmt.Errorf("taskId: cannot unmarshal %s into string or number", string(trimmed))
 }
 
 // TasksOutput is the unified output schema for the Tasks tool.
@@ -198,106 +200,66 @@ type GetResult struct {
 var tasksToolSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "creates": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["subject", "description"],
-        "properties": {
-          "subject": {
-            "type": "string",
-            "description": "A brief title for the task"
-          },
-          "description": {
-            "type": "string",
-            "description": "What needs to be done"
-          },
-          "activeForm": {
-            "type": "string",
-            "description": "Present continuous form shown in spinner when in_progress (e.g., \"Running tests\")"
-          },
-          "metadata": {
-            "type": "object",
-            "description": "Arbitrary metadata to attach to the task"
-          }
-        }
-      },
-      "description": "Tasks to create"
+    "action": {
+      "type": "string",
+      "enum": ["create", "update", "delete", "get", "list"],
+      "description": "Operation to perform (exactly one per call)"
     },
-    "updates": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["taskId"],
-        "properties": {
-          "taskId": {
-            "type": "string",
-            "description": "The ID of the task to update"
-          },
-          "subject": {
-            "type": "string",
-            "description": "New subject for the task"
-          },
-          "description": {
-            "type": "string",
-            "description": "New description for the task"
-          },
-          "activeForm": {
-            "type": "string",
-            "description": "Present continuous form shown in spinner when in_progress"
-          },
-          "status": {
-            "type": "string",
-            "enum": ["pending", "in_progress", "completed", "deleted"],
-            "description": "New status. Use 'deleted' to permanently delete the task."
-          },
-          "addBlocks": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Task IDs that this task blocks"
-          },
-          "addBlockedBy": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Task IDs that block this task"
-          },
-          "owner": {
-            "type": "string",
-            "description": "New owner for the task"
-          },
-          "metadata": {
-            "type": "object",
-            "description": "Metadata keys to merge. Set a key to null to delete it."
-          }
-        }
-      },
-      "description": "Task updates to apply"
+    "taskId": {
+      "type": "string",
+      "description": "The ID of the task to update or get (required for update and get)"
     },
-    "deletes": {
+    "taskIds": {
       "type": "array",
       "items": {"type": "string"},
-      "description": "Task IDs to permanently delete"
+      "description": "Task IDs to permanently delete (required for delete; accepts multiple)"
     },
-    "list": {
-      "type": "boolean",
-      "description": "Set to true to list all tasks"
-    },
-    "get": {
+    "subject": {
       "type": "string",
-      "description": "Task ID to retrieve"
+      "description": "A brief actionable title in imperative form (required for create, optional for update)"
+    },
+    "description": {
+      "type": "string",
+      "description": "What needs to be done (required for create, optional for update)"
+    },
+    "activeForm": {
+      "type": "string",
+      "description": "Present continuous form shown in spinner when in_progress (e.g., \"Running tests\")"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "in_progress", "completed"],
+      "description": "New status — e.g. \"in_progress\" before starting work, \"completed\" only when fully done (update only)"
+    },
+    "addBlocks": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Task IDs that this task blocks (update only)"
+    },
+    "addBlockedBy": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Task IDs that block this task (update only)"
+    },
+    "owner": {
+      "type": "string",
+      "description": "New owner for the task (update only; empty string clears)"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Metadata keys to merge. Set a key to null to delete it (create and update)"
     }
-  }
+  },
+  "required": ["action"]
 }`)
 
-// updateStatuses is the status set the update path acts on: the three stored
-// TaskStatus values plus "deleted", which is an action routed to DeleteTask
-// rather than a status that ever gets written. It mirrors the enum the input
-// schema declares, which is TS's TaskStatusSchema().or(z.literal('deleted'))
-// (TaskUpdateTool.ts:31-44).
-var updateStatuses = []string{string(StatusPending), string(StatusInProgress), string(StatusCompleted), "deleted"}
+// updateStatuses mirrors the enum the input schema declares for status.
+// "deleted" is not a status — deletion is the delete action.
+var updateStatuses = []string{string(StatusPending), string(StatusInProgress), string(StatusCompleted)}
 
 // New creates the unified Tasks tool that merges TaskCreate, TaskUpdate,
-// TaskGet, and TaskList into a single batch-capable tool.
+// TaskGet, and TaskList behind an action enum: exactly one operation per
+// call, with delete the only bulk action (its taskIds accept multiple IDs).
 //
 // hk gates the create and completion call sites; nil disables the gate. It is
 // captured at construction rather than stored on the List: a List is shared
@@ -320,7 +282,9 @@ func New(list *List, hk *hooks.Hooks) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return false
 			}
-			return len(in.Creates) == 0 && len(in.Updates) == 0 && len(in.Deletes) == 0
+			// Unknown actions default to not read-only: they will fail at
+			// dispatch anyway, and treating them as mutating is the safe side.
+			return in.Action == "get" || in.Action == "list"
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
@@ -470,70 +434,137 @@ func tasksDescription(list *List, input json.RawMessage) (string, error) {
 		return "Manage tasks", nil
 	}
 
-	hasCreates := len(in.Creates) > 0
-	hasUpdates := len(in.Updates) > 0
-	hasDeletes := len(in.Deletes) > 0
-	hasGet := in.Get != nil
-	hasList := in.List != nil && *in.List
-
-	parts := make([]string, 0, 3)
-
-	if hasCreates {
-		if len(in.Creates) == 1 {
-			parts = append(parts, in.Creates[0].Subject)
-		} else {
-			parts = append(parts, fmt.Sprintf("Create %d tasks", len(in.Creates)))
+	switch in.Action {
+	case "create":
+		if in.Subject != nil && *in.Subject != "" {
+			return *in.Subject, nil
 		}
-	}
-	if hasUpdates {
-		if len(in.Updates) == 1 {
-			if t, _ := list.GetTask(in.Updates[0].TaskID); t != nil {
-				parts = append(parts, t.Subject)
-			} else {
-				parts = append(parts, "#"+in.Updates[0].TaskID)
-			}
-		} else {
-			parts = append(parts, fmt.Sprintf("Update %d tasks", len(in.Updates)))
+		return "Create task", nil
+	case "update", "get":
+		if t, _ := list.GetTask(in.TaskID); t != nil {
+			return t.Subject, nil
 		}
-	}
-	if hasDeletes {
-		parts = append(parts, fmt.Sprintf("Delete %d tasks", len(in.Deletes)))
-	}
-	if hasGet {
-		if t, _ := list.GetTask(*in.Get); t != nil {
-			parts = append(parts, t.Subject)
-		} else {
-			parts = append(parts, "#"+*in.Get)
-		}
-	}
-	if hasList {
-		parts = append(parts, "List all tasks")
-	}
-
-	if len(parts) == 0 {
+		return "#" + in.TaskID, nil
+	case "delete":
+		return fmt.Sprintf("Delete %d tasks", len(in.TaskIDs)), nil
+	case "list":
+		return "List all tasks", nil
+	default:
 		return "Manage tasks", nil
 	}
-	return strings.Join(parts, ", "), nil
 }
 
-// Execution order: creates -> updates -> deletes -> get -> list.
-// A failure in one item does NOT stop subsequent items.
+// actionParams lists, per action, the only parameters the action accepts.
+// list accepts none, hence the nil slice.
+var actionParams = map[string][]string{
+	"create": {"subject", "description", "activeForm", "metadata"},
+	"update": {"taskId", "subject", "description", "activeForm", "status", "addBlocks", "addBlockedBy", "owner", "metadata"},
+	"delete": {"taskIds"},
+	"get":    {"taskId"},
+	"list":   nil,
+}
+
+// disallowedParams returns the parameters present in the input that the
+// action does not accept, in fixed schema order with legacy keys appended in
+// creates/updates/deletes/list/get order. Presence means non-empty string,
+// non-nil pointer/map, or non-empty slice, so an explicitly-empty value
+// (taskId:"", taskIds:[]) flows through to the required-param checks instead.
+func disallowedParams(in *TasksInput, action string) []string {
+	allowed := make(map[string]bool, len(actionParams[action]))
+	for _, p := range actionParams[action] {
+		allowed[p] = true
+	}
+	present := []struct {
+		name string
+		ok   bool
+	}{
+		{"taskId", in.TaskID != ""},
+		{"taskIds", len(in.TaskIDs) > 0},
+		{"subject", in.Subject != nil},
+		{"description", in.Description != nil},
+		{"activeForm", in.ActiveForm != nil},
+		{"status", in.Status != nil},
+		{"addBlocks", len(in.AddBlocks) > 0},
+		{"addBlockedBy", len(in.AddBlockedBy) > 0},
+		{"owner", in.Owner != nil},
+		{"metadata", in.Metadata != nil},
+	}
+	var bad []string
+	for _, p := range present {
+		if p.ok && !allowed[p.name] {
+			bad = append(bad, p.name)
+		}
+	}
+	return append(bad, in.legacyParams...)
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// tasksCall validates the action enum and the per-action parameter set, then
+// dispatches to exactly one handler. Missing required IDs for get/delete fail
+// at tool level (they had no old equivalent); create/update keep their
+// in-result error entries by flowing through the handlers unchanged.
 func tasksCall(ctx context.Context, list *List, hk *hooks.Hooks, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in TasksInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
 	}
 
+	_, known := actionParams[in.Action]
+	if !known {
+		if in.Action == "" {
+			// Job's missing-action error appends a "run list" hint; the Task
+			// enum is self-explanatory, so the enum list alone is the fix.
+			return nil, fmt.Errorf(`action is required — valid actions are "create", "update", "delete", "get", "list"`)
+		}
+		return nil, fmt.Errorf(`unknown action %q — valid actions are "create", "update", "delete", "get", "list"`, in.Action)
+	}
+
+	if bad := disallowedParams(&in, in.Action); len(bad) > 0 {
+		if accepted := actionParams[in.Action]; len(accepted) > 0 {
+			return nil, fmt.Errorf("action %q accepts only: %s — got %s", in.Action, strings.Join(accepted, ", "), strings.Join(bad, ", "))
+		}
+		return nil, fmt.Errorf("action %q accepts no other params — got %s", in.Action, strings.Join(bad, ", "))
+	}
+
 	var out TasksOutput
 
-	out.Created = tasksHandleCreates(ctx, list, hk, in.Creates, tctx)
-	out.Updated = tasksHandleUpdates(ctx, list, hk, in.Updates, tctx)
-	out.Deleted = tasksHandleDeletes(list, in.Deletes)
-
-	if in.Get != nil {
-		out.Get = tasksHandleGet(list, *in.Get)
-	}
-	if in.List != nil && *in.List {
+	switch in.Action {
+	case "create":
+		out.Created = tasksHandleCreates(ctx, list, hk, []CreateItem{{
+			Subject:     derefString(in.Subject),
+			Description: derefString(in.Description),
+			ActiveForm:  derefString(in.ActiveForm),
+			Metadata:    in.Metadata,
+		}}, tctx)
+	case "update":
+		out.Updated = tasksHandleUpdates(ctx, list, hk, []UpdateItem{{
+			TaskID:       in.TaskID,
+			Subject:      in.Subject,
+			Description:  in.Description,
+			ActiveForm:   in.ActiveForm,
+			Status:       in.Status,
+			AddBlocks:    in.AddBlocks,
+			AddBlockedBy: in.AddBlockedBy,
+			Owner:        in.Owner,
+			Metadata:     in.Metadata,
+		}}, tctx)
+	case "delete":
+		if len(in.TaskIDs) == 0 {
+			return nil, fmt.Errorf(`action "delete" requires taskIds — run {"action":"list"} to see tasks`)
+		}
+		out.Deleted = tasksHandleDeletes(list, in.TaskIDs)
+	case "get":
+		if in.TaskID == "" {
+			return nil, fmt.Errorf(`action "get" requires taskId — run {"action":"list"} to see tasks`)
+		}
+		out.Get = tasksHandleGet(list, in.TaskID)
+	case "list":
 		out.List = tasksHandleList(list)
 	}
 
@@ -614,29 +645,6 @@ func tasksHandleUpdates(ctx context.Context, list *List, hk *hooks.Hooks, items 
 				TaskID:  item.TaskID,
 				Error:   "Task not found",
 			})
-			continue
-		}
-
-		if item.Status != nil && *item.Status == "deleted" {
-			deleted, delErr := list.DeleteTask(item.TaskID)
-			if delErr != nil {
-				results = append(results, UpdateResult{TaskID: item.TaskID, Error: delErr.Error()})
-				continue
-			}
-			if deleted {
-				results = append(results, UpdateResult{
-					Success:       true,
-					TaskID:        item.TaskID,
-					UpdatedFields: []string{"deleted"},
-					StatusChange:  &StatusChange{From: string(existingTask.Status), To: "deleted"},
-				})
-			} else {
-				results = append(results, UpdateResult{
-					Success: false,
-					TaskID:  item.TaskID,
-					Error:   "Failed to delete task",
-				})
-			}
 			continue
 		}
 

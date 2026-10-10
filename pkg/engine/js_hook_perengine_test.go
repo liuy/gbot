@@ -357,13 +357,13 @@ func TestIntegration_PerEngine_TaskHooksFromToolCallUseEngineRepl(t *testing.T) 
 		return mockResponse{events: toolUseStreamEvents("test-model", id, "Task", input)}
 	}
 	engA, replA := newPerEngineHarness(t, hookSystem, "engineA",
-		taskUse("tu_create_a", `{"creates":[{"subject":"alpha","description":"first task"}]}`),
-		taskUse("tu_complete_a", `{"updates":[{"taskId":"1","status":"completed"}]}`),
+		taskUse("tu_create_a", `{"action":"create","subject":"alpha","description":"first task"}`),
+		taskUse("tu_complete_a", `{"action":"update","taskId":"1","status":"completed"}`),
 		mockResponse{events: textStreamEvents("test-model", "done")},
 	)
 	engB, replB := newPerEngineHarness(t, hookSystem, "engineB",
-		taskUse("tu_create_b", `{"creates":[{"subject":"alpha","description":"first task"}]}`),
-		taskUse("tu_complete_b", `{"updates":[{"taskId":"1","status":"completed"}]}`),
+		taskUse("tu_create_b", `{"action":"create","subject":"alpha","description":"first task"}`),
+		taskUse("tu_complete_b", `{"action":"update","taskId":"1","status":"completed"}`),
 		mockResponse{events: textStreamEvents("test-model", "done")},
 	)
 
@@ -414,7 +414,7 @@ func TestIntegration_PerEngine_TaskHookReentrantToolCallSkipsInnerJsHook(t *test
 				Type: hooks.HookTypeJS,
 				Code: `async (input) => {
 					globalThis.__outer = input.task_id
-					globalThis.__inner = await tools.Task({creates: [{subject: "inner", description: "created by the hook"}]})
+					globalThis.__inner = await tools.Task({action: "create", subject: "inner", description: "created by the hook"})
 					return "ok"
 				}`,
 				Timeout: 5,
@@ -423,7 +423,7 @@ func TestIntegration_PerEngine_TaskHookReentrantToolCallSkipsInnerJsHook(t *test
 	}, &integrationHookRecorder{})
 
 	eng, replTool := buildPerEngineHarness(t, hookSystem, "engineA",
-		mockResponse{events: toolUseStreamEvents("test-model", "tu_task_re", "Task", `{"creates":[{"subject":"outer","description":"created by the model"}]}`)},
+		mockResponse{events: toolUseStreamEvents("test-model", "tu_task_re", "Task", `{"action":"create","subject":"outer","description":"created by the model"}`)},
 		mockResponse{events: textStreamEvents("test-model", "done")},
 	)
 

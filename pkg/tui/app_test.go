@@ -9046,7 +9046,7 @@ func TestResume_TaskOutput_NotRawBytes(t *testing.T) {
 
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"updates":[{"taskId":"34","status":"completed"}]}`)},
+			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"action":"update","taskId":"34","status":"completed"}`)},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: taskResultJSON},
@@ -9095,7 +9095,7 @@ func TestResume_BashWithOutput_NoRawJSON(t *testing.T) {
 }
 
 // TestResume_TaskSummary_UsesToolDescription verifies that Task tool summary
-// is generated via the tool's Description function (e.g. "Create 3 tasks"),
+// is generated via the tool's Description function (e.g. the create subject),
 // not left empty.
 func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
 	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()), nil)
@@ -9103,10 +9103,10 @@ func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
 
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"creates":[{"subject":"Read config","description":"read it"},{"subject":"Check git","description":"check it"},{"subject":"Build","description":"build it"}]}`)},
+			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"action":"create","subject":"Read config","description":"read it"}`)},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: json.RawMessage(`"{\"created\":[{\"id\":\"1\",\"subject\":\"Read config\"},{\"id\":\"2\",\"subject\":\"Check git\"},{\"id\":\"3\",\"subject\":\"Build\"}]}"`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: json.RawMessage(`"{\"created\":[{\"id\":\"1\",\"subject\":\"Read config\"}]}"`)},
 		}},
 	}
 
@@ -9115,8 +9115,8 @@ func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
 		t.Fatalf("views = %d, want 1", len(views))
 	}
 	tc := views[0].Blocks[0].ToolCall
-	if !strings.Contains(tc.Summary, "Create") {
-		t.Errorf("Task summary should contain 'Create', got: %q", tc.Summary)
+	if tc.Summary != "Read config" {
+		t.Errorf("Task summary = %q, want %q", tc.Summary, "Read config")
 	}
 }
 

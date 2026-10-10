@@ -990,7 +990,7 @@ func TestCreateTools_PerEngineTaskList(t *testing.T) {
 	if !ok {
 		t.Fatal("Task tool not found in refs1")
 	}
-	createInput := json.RawMessage(`{"creates":[{"subject":"s1","description":"d1"}]}`)
+	createInput := json.RawMessage(`{"action":"create","subject":"s1","description":"d1"}`)
 	_, err := taskTool1.Call(context.Background(), createInput, nil)
 	if err != nil {
 		t.Fatalf("Task tool call on refs1 failed: %v", err)
@@ -1020,7 +1020,7 @@ func TestCreateTools_PerEngineTaskList(t *testing.T) {
 	if !ok {
 		t.Fatal("Task tool not found in refs2")
 	}
-	createInput2 := json.RawMessage(`{"creates":[{"subject":"s2","description":"d2"}]}`)
+	createInput2 := json.RawMessage(`{"action":"create","subject":"s2","description":"d2"}`)
 	_, err = taskTool2.Call(context.Background(), createInput2, nil)
 	if err != nil {
 		t.Fatalf("Task tool call on refs2 failed: %v", err)

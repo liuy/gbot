@@ -54,7 +54,7 @@ func mustCreateForTool(t *testing.T, list *List, subject, desc string) string {
 func TestTasks_Create_Basic(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"Fix auth","description":"Fix the auth bug"}]}`)
+	_, out := callTasks(t, list, `{"action":"create","subject":"Fix auth","description":"Fix the auth bug"}`)
 
 	if len(out.Created) != 1 {
 		t.Fatalf("len(Created) = %d, want 1", len(out.Created))
@@ -73,7 +73,7 @@ func TestTasks_Create_Basic(t *testing.T) {
 func TestTasks_Create_AllFields(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"Fix auth","description":"Fix the auth bug","activeForm":"Fixing auth","metadata":{"priority":"high"}}]}`)
+	_, out := callTasks(t, list, `{"action":"create","subject":"Fix auth","description":"Fix the auth bug","activeForm":"Fixing auth","metadata":{"priority":"high"}}`)
 
 	if out.Created[0].ID != "1" {
 		t.Errorf("ID = %q, want %q", out.Created[0].ID, "1")
@@ -94,7 +94,7 @@ func TestTasks_Create_AllFields(t *testing.T) {
 func TestTasks_Create_EmptySubject(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"","description":"desc"}]}`)
+	_, out := callTasks(t, list, `{"action":"create","subject":"","description":"desc"}`)
 
 	if len(out.Created) != 1 {
 		t.Fatal("expected 1 result")
@@ -110,7 +110,7 @@ func TestTasks_Create_EmptySubject(t *testing.T) {
 func TestTasks_Create_EmptyDescription(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"subj","description":""}]}`)
+	_, out := callTasks(t, list, `{"action":"create","subject":"subj","description":""}`)
 
 	if out.Created[0].Error != "description is required" {
 		t.Errorf("Error = %q, want %q", out.Created[0].Error, "description is required")
@@ -130,18 +130,17 @@ func TestTasks_Create_InvalidJSON(t *testing.T) {
 	}
 }
 
+// create is single-item, so monotonic IDs span separate calls.
 func TestTasks_Create_MonotonicIDs(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"A","description":"a"},{"subject":"B","description":"b"},{"subject":"C","description":"c"}]}`)
-
-	if len(out.Created) != 3 {
-		t.Fatalf("len = %d, want 3", len(out.Created))
-	}
-	want := []string{"1", "2", "3"}
-	for i, w := range want {
-		if out.Created[i].ID != w {
-			t.Errorf("Created[%d].ID = %q, want %q", i, out.Created[i].ID, w)
+	for i, subj := range []string{"A", "B", "C"} {
+		_, out := callTasks(t, list, `{"action":"create","subject":"`+subj+`","description":"d"}`)
+		if len(out.Created) != 1 {
+			t.Fatalf("call %d: len(Created) = %d, want 1", i+1, len(out.Created))
+		}
+		if want := string(rune('1' + i)); out.Created[0].ID != want {
+			t.Errorf("call %d: ID = %q, want %q", i+1, out.Created[0].ID, want)
 		}
 	}
 }
@@ -149,7 +148,7 @@ func TestTasks_Create_MonotonicIDs(t *testing.T) {
 func TestTasks_Create_MetadataTypes(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"M","description":"m","metadata":{"s":"hello","i":42.0,"b":true}}]}`)
+	_, out := callTasks(t, list, `{"action":"create","subject":"M","description":"m","metadata":{"s":"hello","i":42.0,"b":true}}`)
 	if out.Created[0].Error != "" {
 		t.Fatalf("unexpected error: %q", out.Created[0].Error)
 	}
@@ -166,48 +165,6 @@ func TestTasks_Create_MetadataTypes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Batch create
-// ---------------------------------------------------------------------------
-
-func TestTasks_BatchCreate(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"A","description":"a"},{"subject":"B","description":"b"},{"subject":"C","description":"c"}]}`)
-
-	if len(out.Created) != 3 {
-		t.Fatalf("len = %d, want 3", len(out.Created))
-	}
-	wantSubjects := []string{"A", "B", "C"}
-	for i, ws := range wantSubjects {
-		if out.Created[i].Subject != ws {
-			t.Errorf("Created[%d].Subject = %q, want %q", i, out.Created[i].Subject, ws)
-		}
-		if out.Created[i].ID == "" {
-			t.Errorf("Created[%d].ID is empty", i)
-		}
-	}
-}
-
-func TestTasks_BatchCreate_PartialFailure(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"creates":[{"subject":"A","description":"a"},{"subject":"","description":"bad"},{"subject":"C","description":"c"}]}`)
-
-	if len(out.Created) != 3 {
-		t.Fatalf("len = %d, want 3", len(out.Created))
-	}
-	if out.Created[0].ID == "" {
-		t.Error("first create should succeed")
-	}
-	if out.Created[1].Error != "subject is required" {
-		t.Errorf("second create error = %q, want %q", out.Created[1].Error, "subject is required")
-	}
-	if out.Created[2].ID == "" {
-		t.Error("third create should succeed")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Update tests
 // ---------------------------------------------------------------------------
 
@@ -217,7 +174,7 @@ func TestTasks_Update_StatusFlow(t *testing.T) {
 	mustCreateForTool(t, list, "Task A", "desc")
 
 	// pending -> in_progress
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1","status":"in_progress"}]}`)
+	_, out := callTasks(t, list, `{"action":"update","taskId":"1","status":"in_progress"}`)
 	if !out.Updated[0].Success {
 		t.Fatal("update should succeed")
 	}
@@ -229,7 +186,7 @@ func TestTasks_Update_StatusFlow(t *testing.T) {
 	}
 
 	// in_progress -> completed
-	_, out = callTasks(t, list, `{"updates":[{"taskId":"1","status":"completed"}]}`)
+	_, out = callTasks(t, list, `{"action":"update","taskId":"1","status":"completed"}`)
 	if out.Updated[0].StatusChange.To != "completed" {
 		t.Errorf("StatusChange.To = %q, want completed", out.Updated[0].StatusChange.To)
 	}
@@ -240,7 +197,7 @@ func TestTasks_Update_Subject(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "Old", "desc")
 
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1","subject":"New"}]}`)
+	_, out := callTasks(t, list, `{"action":"update","taskId":"1","subject":"New"}`)
 	if !out.Updated[0].Success {
 		t.Fatal("update should succeed")
 	}
@@ -256,7 +213,7 @@ func TestTasks_Update_Description(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "old desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"1","description":"new desc"}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"1","description":"new desc"}`)
 	task, _ := list.GetTask("1")
 	if task.Description != "new desc" {
 		t.Errorf("Description = %q, want %q", task.Description, "new desc")
@@ -268,7 +225,7 @@ func TestTasks_Update_ActiveForm(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"1","activeForm":"Working on A"}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"1","activeForm":"Working on A"}`)
 	task, _ := list.GetTask("1")
 	if task.ActiveForm != "Working on A" {
 		t.Errorf("ActiveForm = %q, want %q", task.ActiveForm, "Working on A")
@@ -280,7 +237,7 @@ func TestTasks_Update_Owner(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"1","owner":"agent-1"}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"1","owner":"agent-1"}`)
 	task, _ := list.GetTask("1")
 	if task.Owner != "agent-1" {
 		t.Errorf("Owner = %q, want %q", task.Owner, "agent-1")
@@ -292,7 +249,7 @@ func TestTasks_Update_Metadata(t *testing.T) {
 	list := newTestListForTool(t)
 	id, _ := list.CreateTask("A", "desc", "", map[string]any{"k1": "v1"})
 
-	callTasks(t, list, `{"updates":[{"taskId":"`+id+`","metadata":{"k2":"v2"}}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id+`","metadata":{"k2":"v2"}}`)
 	task, _ := list.GetTask(id)
 	if task.Metadata["k1"] != "v1" {
 		t.Error("existing key k1 should be preserved")
@@ -305,7 +262,7 @@ func TestTasks_Update_Metadata(t *testing.T) {
 func TestTasks_Update_NotFound(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"999","status":"in_progress"}]}`)
+	_, out := callTasks(t, list, `{"action":"update","taskId":"999","status":"in_progress"}`)
 
 	if out.Updated[0].Success {
 		t.Error("should not succeed for non-existent task")
@@ -318,7 +275,7 @@ func TestTasks_Update_NotFound(t *testing.T) {
 func TestTasks_Update_EmptyID(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"updates":[{"taskId":""}]}`)
+	_, out := callTasks(t, list, `{"action":"update","taskId":""}`)
 
 	if out.Updated[0].Error != "taskId is required" {
 		t.Errorf("Error = %q, want %q", out.Updated[0].Error, "taskId is required")
@@ -330,25 +287,9 @@ func TestTasks_Update_NoChanges(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "desc")
 
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1"}]}`)
+	_, out := callTasks(t, list, `{"action":"update","taskId":"1"}`)
 	if !out.Updated[0].Success {
 		t.Error("update with no changes should still succeed")
-	}
-}
-
-func TestTasks_Update_DeleteViaStatus(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "A", "desc")
-
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1","status":"deleted"}]}`)
-	if !out.Updated[0].Success {
-		t.Fatal("delete should succeed")
-	}
-
-	task, _ := list.GetTask("1")
-	if task != nil {
-		t.Error("task should be nil after deletion")
 	}
 }
 
@@ -358,7 +299,7 @@ func TestTasks_Update_AddBlocks(t *testing.T) {
 	id1 := mustCreateForTool(t, list, "Blocker", "desc")
 	id2 := mustCreateForTool(t, list, "Blocked", "desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"`+id1+`","addBlocks":["`+id2+`"]}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id1+`","addBlocks":["`+id2+`"]}`)
 	task1, _ := list.GetTask(id1)
 	if len(task1.Blocks) != 1 || task1.Blocks[0] != id2 {
 		t.Errorf("Blocks = %v, want [%s]", task1.Blocks, id2)
@@ -375,58 +316,10 @@ func TestTasks_Update_AddBlockedBy(t *testing.T) {
 	id1 := mustCreateForTool(t, list, "Blocker", "desc")
 	id2 := mustCreateForTool(t, list, "Blocked", "desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}`)
 	task2, _ := list.GetTask(id2)
 	if len(task2.BlockedBy) != 1 || task2.BlockedBy[0] != id1 {
 		t.Errorf("BlockedBy = %v, want [%s]", task2.BlockedBy, id1)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Batch update
-// ---------------------------------------------------------------------------
-
-func TestTasks_BatchUpdate(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "A", "a")
-	mustCreateForTool(t, list, "B", "b")
-	mustCreateForTool(t, list, "C", "c")
-
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1","subject":"A2"},{"taskId":"2","subject":"B2"}]}`)
-	if len(out.Updated) != 2 {
-		t.Fatalf("len = %d, want 2", len(out.Updated))
-	}
-	if !out.Updated[0].Success || !out.Updated[1].Success {
-		t.Fatal("both updates should succeed")
-	}
-	task1, _ := list.GetTask("1")
-	if task1.Subject != "A2" {
-		t.Errorf("task1.Subject = %q, want A2", task1.Subject)
-	}
-	task2, _ := list.GetTask("2")
-	if task2.Subject != "B2" {
-		t.Errorf("task2.Subject = %q, want B2", task2.Subject)
-	}
-}
-
-func TestTasks_BatchUpdate_PartialFailure(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "A", "a")
-
-	_, out := callTasks(t, list, `{"updates":[{"taskId":"1","subject":"A2"},{"taskId":"999","subject":"X"}]}`)
-	if len(out.Updated) != 2 {
-		t.Fatalf("len = %d, want 2", len(out.Updated))
-	}
-	if !out.Updated[0].Success {
-		t.Error("first update should succeed")
-	}
-	if out.Updated[1].Success {
-		t.Error("second update should fail (not found)")
-	}
-	if out.Updated[1].Error != "Task not found" {
-		t.Errorf("error = %q, want %q", out.Updated[1].Error, "Task not found")
 	}
 }
 
@@ -439,7 +332,7 @@ func TestTasks_Delete_Basic(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "desc")
 
-	_, out := callTasks(t, list, `{"deletes":["1"]}`)
+	_, out := callTasks(t, list, `{"action":"delete","taskIds":["1"]}`)
 	if len(out.Deleted) != 1 {
 		t.Fatalf("len = %d, want 1", len(out.Deleted))
 	}
@@ -458,21 +351,22 @@ func TestTasks_Delete_Basic(t *testing.T) {
 func TestTasks_Delete_NotFound(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"deletes":["999"]}`)
+	_, out := callTasks(t, list, `{"action":"delete","taskIds":["999"]}`)
 
 	if out.Deleted[0].Success {
 		t.Error("deleting non-existent task should not succeed")
 	}
 }
 
-func TestTasks_BatchDelete(t *testing.T) {
+// delete is the one bulk action: multiple IDs ride in a single call.
+func TestTasks_Delete_MultipleIDs(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "A", "a")
 	mustCreateForTool(t, list, "B", "b")
 	mustCreateForTool(t, list, "C", "c")
 
-	_, out := callTasks(t, list, `{"deletes":["1","2"]}`)
+	_, out := callTasks(t, list, `{"action":"delete","taskIds":["1","2"]}`)
 	if len(out.Deleted) != 2 {
 		t.Fatalf("len = %d, want 2", len(out.Deleted))
 	}
@@ -497,7 +391,7 @@ func TestTasks_Get_Basic(t *testing.T) {
 	list := newTestListForTool(t)
 	mustCreateForTool(t, list, "Fix auth", "Fix the auth bug in login")
 
-	_, out := callTasks(t, list, `{"get":"1"}`)
+	_, out := callTasks(t, list, `{"action":"get","taskId":"1"}`)
 	if out.Get == nil {
 		t.Fatal("Get should not be nil")
 	}
@@ -521,7 +415,7 @@ func TestTasks_Get_Basic(t *testing.T) {
 func TestTasks_Get_NotFound(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"get":"999"}`)
+	_, out := callTasks(t, list, `{"action":"get","taskId":"999"}`)
 
 	if out.Get == nil {
 		t.Fatal("Get result wrapper should not be nil")
@@ -536,9 +430,9 @@ func TestTasks_Get_WithBlocks(t *testing.T) {
 	list := newTestListForTool(t)
 	id1 := mustCreateForTool(t, list, "Blocker", "desc")
 	id2 := mustCreateForTool(t, list, "Blocked", "desc")
-	callTasks(t, list, `{"updates":[{"taskId":"`+id1+`","addBlocks":["`+id2+`"]}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id1+`","addBlocks":["`+id2+`"]}`)
 
-	_, out := callTasks(t, list, `{"get":"`+id1+`"}`)
+	_, out := callTasks(t, list, `{"action":"get","taskId":"`+id1+`"}`)
 	if len(out.Get.Task.Blocks) != 1 || out.Get.Task.Blocks[0] != id2 {
 		t.Errorf("Blocks = %v, want [%s]", out.Get.Task.Blocks, id2)
 	}
@@ -551,7 +445,7 @@ func TestTasks_Get_WithBlocks(t *testing.T) {
 func TestTasks_List_Empty(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
-	_, out := callTasks(t, list, `{"list":true}`)
+	_, out := callTasks(t, list, `{"action":"list"}`)
 
 	if out.List == nil {
 		t.Fatal("List should not be nil")
@@ -568,7 +462,7 @@ func TestTasks_List_OrderByID(t *testing.T) {
 	mustCreateForTool(t, list, "A", "a")
 	mustCreateForTool(t, list, "B", "b")
 
-	_, out := callTasks(t, list, `{"list":true}`)
+	_, out := callTasks(t, list, `{"action":"list"}`)
 	if len(out.List.Tasks) != 3 {
 		t.Fatalf("len = %d, want 3", len(out.List.Tasks))
 	}
@@ -586,11 +480,11 @@ func TestTasks_List_FilterCompletedBlockers(t *testing.T) {
 	id1 := mustCreateForTool(t, list, "Blocker", "desc")
 	id2 := mustCreateForTool(t, list, "Blocked", "desc")
 
-	callTasks(t, list, `{"updates":[{"taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}`)
 	// Complete the blocker
-	callTasks(t, list, `{"updates":[{"taskId":"`+id1+`","status":"completed"}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id1+`","status":"completed"}`)
 
-	_, out := callTasks(t, list, `{"list":true}`)
+	_, out := callTasks(t, list, `{"action":"list"}`)
 	// Find the blocked task
 	for _, task := range out.List.Tasks {
 		if task.ID == id2 {
@@ -609,7 +503,7 @@ func TestTasks_List_ExcludeInternal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, out := callTasks(t, list, `{"list":true}`)
+	_, out := callTasks(t, list, `{"action":"list"}`)
 	if len(out.List.Tasks) != 1 {
 		t.Fatalf("len = %d, want 1 (_internal excluded)", len(out.List.Tasks))
 	}
@@ -619,94 +513,122 @@ func TestTasks_List_ExcludeInternal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mixed operations
+// Action dispatch: missing, unknown, disallowed params, missing required IDs
 // ---------------------------------------------------------------------------
 
-func TestTasks_Mixed_CreateAndList(t *testing.T) {
+// {} and the legacy shape {"creates":[...]} both lack action; the error
+// must name the enum so the caller can retry correctly.
+func TestTasks_MissingAction(t *testing.T) {
+	want := `action is required — valid actions are "create", "update", "delete", "get", "list"`
+	for _, input := range []string{`{}`, `{"creates":[{"subject":"A","description":"a"}]}`} {
+		_, err := New(newTestListForTool(t), nil).Call(context.Background(), json.RawMessage(input), &tool.ToolUseContext{})
+		if err == nil || err.Error() != want {
+			t.Errorf("input %s: err = %v, want %q", input, err, want)
+		}
+	}
+}
+
+func TestTasks_UnknownAction(t *testing.T) {
+	want := `unknown action "restart" — valid actions are "create", "update", "delete", "get", "list"`
+	_, err := New(newTestListForTool(t), nil).Call(context.Background(), json.RawMessage(`{"action":"restart"}`), &tool.ToolUseContext{})
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+}
+
+// callRejection runs one input expected to be rejected at dispatch and asserts
+// the exact error, a nil result, and an untouched store.
+func callRejection(t *testing.T, input, want string) {
+	t.Helper()
+	list := newTestListForTool(t)
+	result, err := New(list, nil).Call(context.Background(), json.RawMessage(input), &tool.ToolUseContext{})
+	if err == nil || err.Error() != want {
+		t.Errorf("input %s: err = %v, want %q", input, err, want)
+	}
+	if result != nil {
+		t.Errorf("input %s: result = %+v, want nil", input, result)
+	}
+	if tasks, lerr := list.ListTasks(); lerr != nil {
+		t.Errorf("input %s: ListTasks: %v", input, lerr)
+	} else if len(tasks) != 0 {
+		t.Errorf("input %s: rejection must not mutate storage, found %d tasks", input, len(tasks))
+	}
+}
+
+func TestTasks_RejectsDisallowedParams(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ input, want string }{
+		{`{"action":"create","taskId":"1"}`,
+			`action "create" accepts only: subject, description, activeForm, metadata — got taskId`},
+		{`{"action":"update","taskIds":["1"]}`,
+			`action "update" accepts only: taskId, subject, description, activeForm, status, addBlocks, addBlockedBy, owner, metadata — got taskIds`},
+		{`{"action":"get","taskIds":["1"]}`,
+			`action "get" accepts only: taskId — got taskIds`},
+		{`{"action":"delete","taskId":"1","subject":"x"}`,
+			`action "delete" accepts only: taskIds — got taskId, subject`},
+		{`{"action":"create","addBlocks":["1"]}`,
+			`action "create" accepts only: subject, description, activeForm, metadata — got addBlocks`},
+		{`{"action":"create","addBlockedBy":["1"]}`,
+			`action "create" accepts only: subject, description, activeForm, metadata — got addBlockedBy`},
+		{`{"action":"list","subject":"x"}`,
+			`action "list" accepts no other params — got subject`},
+	}
+	for _, tt := range tests {
+		callRejection(t, tt.input, tt.want)
+	}
+}
+
+// Legacy keys ride along no matter which action is set — a half-migrated
+// caller must fail loudly instead of silently no-op-ing.
+func TestTasks_RejectsLegacyShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ input, want string }{
+		{`{"action":"list","creates":[{"subject":"A","description":"a"}]}`,
+			`action "list" accepts no other params — got creates`},
+		{`{"action":"get","taskId":"1","updates":[{"taskId":"1"}]}`,
+			`action "get" accepts only: taskId — got updates`},
+		{`{"action":"create","subject":"A","description":"a","deletes":["1"],"list":true,"get":"1"}`,
+			`action "create" accepts only: subject, description, activeForm, metadata — got deletes, list, get`},
+		{`{"action":"list","creates":[{"subject":"A","description":"a"}],"updates":[{"taskId":"1"}]}`,
+			`action "list" accepts no other params — got creates, updates`},
+		{`{"action":"update","taskId":"1","creates":[{"subject":"A","description":"a"}],"get":"1"}`,
+			`action "update" accepts only: taskId, subject, description, activeForm, status, addBlocks, addBlockedBy, owner, metadata — got creates, get`},
+		{`{"action":"list","get":5}`,
+			`action "list" accepts no other params — got get`},
+	}
+	for _, tt := range tests {
+		callRejection(t, tt.input, tt.want)
+	}
+}
+
+// A null legacy key carries no value, so it must not count as a disallowed
+// param — only non-null values are half-migrated payloads worth rejecting.
+func TestTasks_NullLegacyKeysIgnored(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
+	_, out := callTasks(t, list, `{"action":"list","creates":null,"updates":null,"deletes":null,"list":null,"get":null}`)
 
-	_, out := callTasks(t, list, `{"creates":[{"subject":"New","description":"new task"}],"list":true}`)
-
-	if len(out.Created) != 1 || out.Created[0].ID == "" {
-		t.Fatal("create should succeed")
-	}
 	if out.List == nil {
-		t.Fatal("List should not be nil")
+		t.Fatal("List should not be nil when legacy keys are null")
 	}
-	if len(out.List.Tasks) != 1 {
-		t.Fatalf("List.Tasks len = %d, want 1", len(out.List.Tasks))
-	}
-	if out.List.Tasks[0].Subject != "New" {
-		t.Errorf("listed task subject = %q, want %q", out.List.Tasks[0].Subject, "New")
+	if len(out.List.Tasks) != 0 {
+		t.Errorf("Tasks len = %d, want 0", len(out.List.Tasks))
 	}
 }
 
-func TestTasks_Mixed_DeleteAndGet(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "A", "desc")
-
-	// Order: deletes -> get. Delete runs first, so get should return nil.
-	_, out := callTasks(t, list, `{"deletes":["1"],"get":"1"}`)
-
-	if !out.Deleted[0].Success {
-		t.Error("delete should succeed")
-	}
-	if out.Get.Task != nil {
-		t.Error("Get.Task should be nil after delete")
+// An empty taskId/taskIds fails the presence checks above, so both the bare
+// action and the explicitly-empty forms land on the required-param error.
+func TestTasks_GetMissingTaskId(t *testing.T) {
+	want := `action "get" requires taskId — run {"action":"list"} to see tasks`
+	for _, input := range []string{`{"action":"get"}`, `{"action":"get","taskId":""}`} {
+		callRejection(t, input, want)
 	}
 }
 
-func TestTasks_Mixed_FullBatch(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "PreExist1", "p1")
-	mustCreateForTool(t, list, "PreExist2", "p2")
-
-	input := `{"creates":[{"subject":"New","description":"n"}],"updates":[{"taskId":"1","subject":"Updated1"}],"deletes":["2"],"list":true,"get":"1"}`
-	_, out := callTasks(t, list, input)
-
-	// Create
-	if len(out.Created) != 1 || out.Created[0].Subject != "New" {
-		t.Errorf("Created = %v, unexpected", out.Created)
-	}
-	// Update
-	if !out.Updated[0].Success {
-		t.Error("update should succeed")
-	}
-	// Delete
-	if !out.Deleted[0].Success {
-		t.Error("delete should succeed")
-	}
-	// List: should have 2 tasks (PreExist1 updated + New)
-	if out.List == nil || len(out.List.Tasks) != 2 {
-		t.Fatalf("List.Tasks len = %d, want 2", len(out.List.Tasks))
-	}
-	// Get: task 1 should have updated subject
-	if out.Get == nil || out.Get.Task == nil {
-		t.Fatal("Get.Task should not be nil")
-	}
-	if out.Get.Task.Subject != "Updated1" {
-		t.Errorf("Got subject = %q, want %q", out.Get.Task.Subject, "Updated1")
-	}
-}
-
-func TestTasks_Mixed_CreateAndUpdate(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	mustCreateForTool(t, list, "Existing", "desc")
-
-	_, out := callTasks(t, list, `{"creates":[{"subject":"New","description":"n"}],"updates":[{"taskId":"1","status":"in_progress"}]}`)
-
-	if len(out.Created) != 1 || out.Created[0].ID == "" {
-		t.Error("create should succeed")
-	}
-	if !out.Updated[0].Success {
-		t.Error("update should succeed")
-	}
-	if out.Updated[0].StatusChange.To != "in_progress" {
-		t.Errorf("StatusChange.To = %q, want in_progress", out.Updated[0].StatusChange.To)
+func TestTasks_DeleteMissingTaskIds(t *testing.T) {
+	want := `action "delete" requires taskIds — run {"action":"list"} to see tasks`
+	for _, input := range []string{`{"action":"delete"}`, `{"action":"delete","taskIds":[]}`} {
+		callRejection(t, input, want)
 	}
 }
 
@@ -723,12 +645,12 @@ func TestTasks_IsReadOnly(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{`{"creates":[{"subject":"A","description":"a"}]}`, false},
-		{`{"updates":[{"taskId":"1"}]}`, false},
-		{`{"deletes":["1"]}`, false},
-		{`{"list":true}`, true},
-		{`{"get":"1"}`, true},
-		{`{}`, true},
+		{`{"action":"create","subject":"A","description":"a"}`, false},
+		{`{"action":"update","taskId":"1"}`, false},
+		{`{"action":"delete","taskIds":["1"]}`, false},
+		{`{"action":"get","taskId":"1"}`, true},
+		{`{"action":"list"}`, true},
+		{`{}`, false},
 	}
 	for _, tt := range tests {
 		got := tl.IsReadOnly(json.RawMessage(tt.input))
@@ -752,10 +674,45 @@ func TestTasks_InputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("schema has no properties")
 	}
-	for _, name := range []string{"creates", "updates", "deletes", "list", "get"} {
+	for _, name := range []string{"action", "taskId", "taskIds", "subject", "description", "activeForm", "status", "addBlocks", "addBlockedBy", "owner", "metadata"} {
 		if _, ok := props[name]; !ok {
 			t.Errorf("property %q missing from schema", name)
 		}
+	}
+}
+
+func TestTasks_ActionEnumInSchema(t *testing.T) {
+	t.Parallel()
+	list := newTestListForTool(t)
+	schema := New(list, nil).InputSchema()
+
+	var s struct {
+		Properties struct {
+			Action struct {
+				Type string   `json:"type"`
+				Enum []string `json:"enum"`
+			} `json:"action"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	if s.Properties.Action.Type != "string" {
+		t.Errorf("action type = %q, want string", s.Properties.Action.Type)
+	}
+	want := []string{"create", "update", "delete", "get", "list"}
+	if len(s.Properties.Action.Enum) != len(want) {
+		t.Fatalf("action enum = %v, want %v", s.Properties.Action.Enum, want)
+	}
+	for i, w := range want {
+		if s.Properties.Action.Enum[i] != w {
+			t.Errorf("action enum[%d] = %q, want %q", i, s.Properties.Action.Enum[i], w)
+		}
+	}
+	if len(s.Required) != 1 || s.Required[0] != "action" {
+		t.Errorf("required = %v, want [action]", s.Required)
 	}
 }
 
@@ -769,27 +726,21 @@ func TestTasksToolSchema_StatusEnum(t *testing.T) {
 
 	var s struct {
 		Properties struct {
-			Updates struct {
-				Items struct {
-					Properties struct {
-						Status struct {
-							Type string   `json:"type"`
-							Enum []string `json:"enum"`
-						} `json:"status"`
-					} `json:"properties"`
-				} `json:"items"`
-			} `json:"updates"`
+			Status struct {
+				Type string   `json:"type"`
+				Enum []string `json:"enum"`
+			} `json:"status"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(schema, &s); err != nil {
 		t.Fatalf("schema is not valid JSON: %v", err)
 	}
 
-	status := s.Properties.Updates.Items.Properties.Status
+	status := s.Properties.Status
 	if status.Type != "string" {
 		t.Errorf("status type = %q, want string", status.Type)
 	}
-	want := []string{"pending", "in_progress", "completed", "deleted"}
+	want := []string{"pending", "in_progress", "completed"}
 	if len(status.Enum) != len(want) {
 		t.Fatalf("status enum = %v, want %v", status.Enum, want)
 	}
@@ -797,6 +748,37 @@ func TestTasksToolSchema_StatusEnum(t *testing.T) {
 		if status.Enum[i] != w {
 			t.Errorf("status enum[%d] = %q, want %q", i, status.Enum[i], w)
 		}
+	}
+}
+
+// "deleted" stopped being a status when deletion became an action; an update
+// carrying it must fail in-result and leave the task untouched.
+func TestTasks_Update_StatusDeletedRejected(t *testing.T) {
+	t.Parallel()
+	list := newTestListForTool(t)
+	mustCreateForTool(t, list, "A", "desc")
+
+	_, out := callTasks(t, list, `{"action":"update","taskId":"1","status":"deleted"}`)
+
+	if len(out.Updated) != 1 {
+		t.Fatalf("len(Updated) = %d, want 1", len(out.Updated))
+	}
+	wantErr := `invalid status "deleted": must be one of pending, in_progress, completed`
+	if out.Updated[0].Error != wantErr {
+		t.Errorf("Error = %q, want %q", out.Updated[0].Error, wantErr)
+	}
+	if out.Updated[0].Success {
+		t.Error("Success = true, want false")
+	}
+	task, err := list.GetTask("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil {
+		t.Fatal("task must survive a rejected status update")
+	}
+	if task.Status != StatusPending {
+		t.Errorf("Status = %q, want %q", task.Status, StatusPending)
 	}
 }
 
@@ -818,7 +800,7 @@ func TestTasks_Description_Create(t *testing.T) {
 	list := newTestListForTool(t)
 	tl := New(list, nil)
 
-	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"Fix auth","description":"a"}]}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"create","subject":"Fix auth","description":"a"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,12 +809,42 @@ func TestTasks_Description_Create(t *testing.T) {
 	}
 }
 
+func TestTasks_Description_LegacyShapeInput(t *testing.T) {
+	t.Parallel()
+	// Old sessions replay stored tool_use inputs through Description; the
+	// legacy keys are recorded-but-unused and must render the generic label.
+	list := newTestListForTool(t)
+	tl := New(list, nil)
+	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"a"}],"list":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc != "Manage tasks" {
+		t.Errorf("Description = %q, want %q", desc, "Manage tasks")
+	}
+}
+func TestTasks_Description_CreateEmptySubject(t *testing.T) {
+	t.Parallel()
+	list := newTestListForTool(t)
+	tl := New(list, nil)
+
+	for _, input := range []string{`{"action":"create"}`, `{"action":"create","subject":""}`} {
+		desc, err := tl.Description(json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if desc != "Create task" {
+			t.Errorf("Description(%s) = %q, want %q", input, desc, "Create task")
+		}
+	}
+}
+
 func TestTasks_Description_List(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	tl := New(list, nil)
 
-	desc, err := tl.Description(json.RawMessage(`{"list":true}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"list"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,31 +853,19 @@ func TestTasks_Description_List(t *testing.T) {
 	}
 }
 
-func TestTasks_Description_MultipleCreates(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	tl := New(list, nil)
-
-	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"A","description":"a"},{"subject":"B","description":"b"},{"subject":"C","description":"c"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if desc != "Create 3 tasks" {
-		t.Errorf("Description = %q, want %q", desc, "Create 3 tasks")
-	}
-}
-
 func TestTasks_Description_EmptyInput(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	tl := New(list, nil)
 
-	desc, err := tl.Description(json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if desc != "Manage tasks" {
-		t.Errorf("Description = %q, want %q", desc, "Manage tasks")
+	for _, input := range []string{`{}`, `{"action":"restart"}`} {
+		desc, err := tl.Description(json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if desc != "Manage tasks" {
+			t.Errorf("Description(%s) = %q, want %q", input, desc, "Manage tasks")
+		}
 	}
 }
 
@@ -875,7 +875,7 @@ func TestTasks_Description_UpdateExisting(t *testing.T) {
 	mustCreateForTool(t, list, "My Task", "desc")
 	tl := New(list, nil)
 
-	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"1"}]}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"update","taskId":"1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,26 +890,12 @@ func TestTasks_Description_GetExisting(t *testing.T) {
 	mustCreateForTool(t, list, "Some Task", "desc")
 	tl := New(list, nil)
 
-	desc, err := tl.Description(json.RawMessage(`{"get":"1"}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"get","taskId":"1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if desc != "Some Task" {
 		t.Errorf("Description = %q, want %q", desc, "Some Task")
-	}
-}
-
-func TestTasks_Description_MixedOps(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	tl := New(list, nil)
-
-	desc, err := tl.Description(json.RawMessage(`{"creates":[{"subject":"A","description":"a"}],"list":true}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if desc != "A, List all tasks" {
-		t.Errorf("Description = %q, want %q", desc, "A, List all tasks")
 	}
 }
 
@@ -1071,7 +1057,7 @@ func TestTasks_Create_StoreError(t *testing.T) {
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"creates":[{"subject":"A","description":"a"}]}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"create","subject":"A","description":"a"}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,7 +1079,7 @@ func TestTasks_Update_StoreError(t *testing.T) {
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"1","status":"in_progress"}]}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"update","taskId":"1","status":"in_progress"}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +1098,7 @@ func TestTasks_Delete_StoreError(t *testing.T) {
 	list, cleanup := readOnlyList(t)
 	defer cleanup()
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"deletes":["1"]}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"delete","taskIds":["1"]}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,7 +1124,7 @@ func TestTasks_List_NoDir(t *testing.T) {
 	// Set a session-based dir that doesn't exist
 	_ = list.SetDir(filepath.Join(dir, "nonexistent"))
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"list"}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1157,7 @@ func TestTasks_Description_UpdateNonExistent(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	tl := New(list, nil)
-	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"999"}]}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"update","taskId":"999"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1180,24 +1166,11 @@ func TestTasks_Description_UpdateNonExistent(t *testing.T) {
 	}
 }
 
-func TestTasks_Description_MultipleUpdates(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	tl := New(list, nil)
-	desc, err := tl.Description(json.RawMessage(`{"updates":[{"taskId":"1"},{"taskId":"2"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if desc != "Update 2 tasks" {
-		t.Errorf("Description = %q, want %q", desc, "Update 2 tasks")
-	}
-}
-
 func TestTasks_Description_Deletes(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	tl := New(list, nil)
-	desc, err := tl.Description(json.RawMessage(`{"deletes":["1","2"]}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"delete","taskIds":["1","2"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1210,7 +1183,7 @@ func TestTasks_Description_GetNonExistent(t *testing.T) {
 	t.Parallel()
 	list := newTestListForTool(t)
 	tl := New(list, nil)
-	desc, err := tl.Description(json.RawMessage(`{"get":"999"}`))
+	desc, err := tl.Description(json.RawMessage(`{"action":"get","taskId":"999"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1308,9 +1281,9 @@ func TestTasks_List_ActiveBlockedBy(t *testing.T) {
 	id2 := mustCreateForTool(t, list, "Blocked", "desc")
 
 	// Set up blocker relationship but don't complete the blocker
-	callTasks(t, list, `{"updates":[{"taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"`+id2+`","addBlockedBy":["`+id1+`"]}`)
 
-	_, out := callTasks(t, list, `{"list":true}`)
+	_, out := callTasks(t, list, `{"action":"list"}`)
 	for _, task := range out.List.Tasks {
 		if task.ID == id2 {
 			if len(task.BlockedBy) != 1 || task.BlockedBy[0] != id1 {
@@ -1337,7 +1310,7 @@ func TestTasks_Update_GetTaskIOError(t *testing.T) {
 	defer func() { _ = os.Chmod(taskFile, 0644) }()
 
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"in_progress"}]}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"update","taskId":"`+id+`","status":"in_progress"}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1348,61 +1321,6 @@ func TestTasks_Update_GetTaskIOError(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, "read") && !strings.Contains(errMsg, "permission") {
 		t.Errorf("unexpected error message: %q", errMsg)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Update: DeleteTask IO error during status=deleted path
-// ---------------------------------------------------------------------------
-
-func TestTasks_Update_DeleteIOError(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	id := mustCreateForTool(t, list, "A", "desc")
-
-	// Make the dir read-only so DeleteTask fails on os.Remove
-	dir := list.Dir()
-	if err := os.Chmod(dir, 0555); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(dir, 0755) }()
-
-	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"deleted"}]}`), &tool.ToolUseContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := result.Data.(*TasksOutput)
-	errMsg := out.Updated[0].Error
-	if errMsg == "" {
-		t.Fatalf("DeleteTask should fail when dir is read-only, got empty error")
-	}
-	if !strings.Contains(errMsg, "remove") && !strings.Contains(errMsg, "permission") {
-		t.Errorf("unexpected error message: %q", errMsg)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Update: DeleteTask returns deleted=false — defensive path
-// Only possible with concurrent modification; tested as "Task not found" instead.
-// ---------------------------------------------------------------------------
-
-func TestTasks_Update_DeleteAlreadyGone(t *testing.T) {
-	t.Parallel()
-	list := newTestListForTool(t)
-	id := mustCreateForTool(t, list, "A", "desc")
-
-	// Delete the file manually so DeleteTask returns (false, nil)
-	_ = os.Remove(filepath.Join(list.Dir(), id+".json"))
-
-	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"updates":[{"taskId":"`+id+`","status":"deleted"}]}`), &tool.ToolUseContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := result.Data.(*TasksOutput)
-	if out.Updated[0].Error != "Task not found" {
-		t.Errorf("Error = %q, want %q", out.Updated[0].Error, "Task not found")
 	}
 }
 
@@ -1427,7 +1345,7 @@ func TestTasks_List_IOError(t *testing.T) {
 	}
 
 	tl := New(list, nil)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"list":true}`), &tool.ToolUseContext{})
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"list"}`), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1450,7 +1368,7 @@ func TestTasks_CheckAutoReset_AllCompleted(t *testing.T) {
 	mustCreateForTool(t, list, "A", "desc")
 
 	// Complete the only task — triggers checkAutoReset which should set allDoneSince
-	callTasks(t, list, `{"updates":[{"taskId":"1","status":"completed"}]}`)
+	callTasks(t, list, `{"action":"update","taskId":"1","status":"completed"}`)
 
 	// If allDoneSince was set by checkAutoReset → time.Since < 1h → false
 	// If allDoneSince was zero → ShouldCleanupCompleted detects from disk → true
@@ -1466,75 +1384,65 @@ func TestTasks_CheckAutoReset_AllCompleted(t *testing.T) {
 	}
 }
 
-func TestUpdateItem_UnmarshalJSON_TaskIDAsStringOrNumber(t *testing.T) {
+// ---------------------------------------------------------------------------
+// TasksInput unmarshaling tolerance
+// ---------------------------------------------------------------------------
+
+// LLMs sometimes send taskId as a number despite the schema declaring
+// "type":"string". Both forms must work; unparseable values must error
+// instead of being silently dropped (the old get path dropped them).
+func TestTasksInput_UnmarshalJSON_TaskIdAsStringOrNumber(t *testing.T) {
 	t.Parallel()
 
-	// LLMs sometimes send taskId as a number despite the schema declaring
-	// "type":"string". Both forms must work; without tolerant unmarshaling
-	// the whole batch fails with "cannot unmarshal number into string".
 	tests := []struct {
 		name string
 		json string
 		want string
 	}{
-		{"string form", `{"taskId":"5","status":"completed"}`, "5"},
-		{"number form", `{"taskId":5,"status":"completed"}`, "5"},
-		{"large number", `{"taskId":12345}`, "12345"},
+		{"string form", `{"action":"get","taskId":"42"}`, "42"},
+		{"number form", `{"taskId":42}`, "42"},
+		{"single digit number", `{"taskId":5}`, "5"},
+		{"large number", `{"taskId":9999999}`, "9999999"},
 		{"string zero", `{"taskId":"0"}`, "0"},
+		{"empty string", `{"taskId":""}`, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var u UpdateItem
-			if err := json.Unmarshal([]byte(tt.json), &u); err != nil {
+			var in TasksInput
+			if err := json.Unmarshal([]byte(tt.json), &in); err != nil {
 				t.Fatalf("UnmarshalJSON failed: %v", err)
 			}
-			if u.TaskID != tt.want {
-				t.Errorf("TaskID = %q, want %q", u.TaskID, tt.want)
+			if in.TaskID != tt.want {
+				t.Errorf("TaskID = %q, want %q", in.TaskID, tt.want)
 			}
 		})
 	}
+
+	t.Run("boolean rejected", func(t *testing.T) {
+		t.Parallel()
+		var in TasksInput
+		err := json.Unmarshal([]byte(`{"taskId":true}`), &in)
+		want := "taskId: cannot unmarshal true into string or number"
+		if err == nil || err.Error() != want {
+			t.Errorf("err = %v, want %q", err, want)
+		}
+	})
 }
 
-func TestUpdateItem_UnmarshalJSON_BatchPreservesOtherFields(t *testing.T) {
+// taskIds mirrors the old deletes tolerance: numbers and strings both work.
+func TestTasksInput_UnmarshalJSON_TaskIdsAsStringOrNumber(t *testing.T) {
 	t.Parallel()
 
-	// Batch update mixing number and string taskId — must not fail mid-batch.
-	input := `[
-		{"taskId": 5, "status": "completed"},
-		{"taskId": "6", "status": "in_progress", "subject": "next step"}
-	]`
-	var updates []UpdateItem
-	if err := json.Unmarshal([]byte(input), &updates); err != nil {
-		t.Fatalf("batch UnmarshalJSON failed: %v", err)
-	}
-	if len(updates) != 2 {
-		t.Fatalf("got %d updates, want 2", len(updates))
-	}
-	if updates[0].TaskID != "5" {
-		t.Errorf("updates[0].TaskID = %q, want \"5\"", updates[0].TaskID)
-	}
-	if updates[1].TaskID != "6" {
-		t.Errorf("updates[1].TaskID = %q, want \"6\"", updates[1].TaskID)
-	}
-	if updates[1].Subject == nil || *updates[1].Subject != "next step" {
-		t.Errorf("updates[1].Subject lost; got %v", updates[1].Subject)
-	}
-}
-
-func TestTasksInput_UnmarshalJSON_DeletesAsStringOrNumber(t *testing.T) {
-	t.Parallel()
-
-	// LLMs sometimes send deletes as [104] instead of ["104"]. Both must work.
 	tests := []struct {
 		name string
 		json string
 		want []string
 	}{
-		{"string ids", `{"deletes":["104","105"]}`, []string{"104", "105"}},
-		{"number ids", `{"deletes":[104,105]}`, []string{"104", "105"}},
-		{"mixed", `{"deletes":["104",105]}`, []string{"104", "105"}},
-		{"large number", `{"deletes":[1234567890]}`, []string{"1234567890"}},
+		{"string ids", `{"action":"delete","taskIds":["104","105"]}`, []string{"104", "105"}},
+		{"number ids", `{"taskIds":[104,105]}`, []string{"104", "105"}},
+		{"mixed", `{"taskIds":["104",105]}`, []string{"104", "105"}},
+		{"large number", `{"taskIds":[1234567890]}`, []string{"1234567890"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1543,42 +1451,13 @@ func TestTasksInput_UnmarshalJSON_DeletesAsStringOrNumber(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &in); err != nil {
 				t.Fatalf("UnmarshalJSON failed: %v", err)
 			}
-			if len(in.Deletes) != len(tt.want) {
-				t.Fatalf("got %d deletes, want %d", len(in.Deletes), len(tt.want))
+			if len(in.TaskIDs) != len(tt.want) {
+				t.Fatalf("got %d taskIds, want %d", len(in.TaskIDs), len(tt.want))
 			}
 			for i, wantID := range tt.want {
-				if in.Deletes[i] != wantID {
-					t.Errorf("deletes[%d] = %q, want %q", i, in.Deletes[i], wantID)
+				if in.TaskIDs[i] != wantID {
+					t.Errorf("taskIds[%d] = %q, want %q", i, in.TaskIDs[i], wantID)
 				}
-			}
-		})
-	}
-}
-
-func TestTasksInput_UnmarshalJSON_GetAsStringOrNumber(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		json string
-		want string
-	}{
-		{"string form", `{"get":"42"}`, "42"},
-		{"number form", `{"get":42}`, "42"},
-		{"large number", `{"get":9999999}`, "9999999"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var in TasksInput
-			if err := json.Unmarshal([]byte(tt.json), &in); err != nil {
-				t.Fatalf("UnmarshalJSON failed: %v", err)
-			}
-			if in.Get == nil {
-				t.Fatal("Get is nil")
-			}
-			if *in.Get != tt.want {
-				t.Errorf("Get = %q, want %q", *in.Get, tt.want)
 			}
 		})
 	}
