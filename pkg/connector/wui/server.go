@@ -84,14 +84,27 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	}
 	c.switchEngine(c.ActiveID())
 
+	// This handler's era: serveChatWS just installed a fresh queue. A newer
+	// era at cleanup time means a takeover superseded this connection.
+	myEra := c.outQ.Load()
+
 	c.readLoop(ws)
 
-	c.activeWS.CompareAndSwap(ws, nil)
-	c.slotsMu.RLock()
-	if slot := c.slots[c.ActiveID()]; slot != nil {
-		slot.active.Store(false)
+	// Era-guard the disconnect deactivation: only when no newer era was
+	// installed was this the last active connection. A stale readLoop exiting
+	// after a newer takeover must not deactivate the slot the new session's
+	// sendMetadata just activated — otherwise the old connection's exit kills
+	// the new session's live streaming until the next takeover. (Comparing
+	// activeWS alone is not enough: the writer's failed-write CAS can nil it
+	// for either connection.)
+	if myEra == c.outQ.Load() {
+		c.slotsMu.RLock()
+		if slot := c.slots[c.ActiveID()]; slot != nil {
+			slot.active.Store(false)
+		}
+		c.slotsMu.RUnlock()
 	}
-	c.slotsMu.RUnlock()
+	c.activeWS.CompareAndSwap(ws, nil)
 	c.abortPendingAsksOnDisconnect()
 	slog.Info("wui:disconnect")
 }

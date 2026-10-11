@@ -3281,6 +3281,11 @@ func (c *WUIConnector) handleEngineNew(name string) {
 		c.sendWS(buildError(err))
 		return
 	}
-	c.sendWS(c.buildEngineList())
+	// The list must ride the NEW era: switchEngine's sendMetadata flips any
+	// queue that already carries a push, so a frame pushed before the switch
+	// is dropped whenever the writer loses the drain race. Pushing after the
+	// switch lands it behind the metadata on the fresh queue — delivered
+	// deterministically (same ordering handleSessionNew uses).
 	c.switchEngine(engineID)
+	c.sendWS(c.buildEngineList())
 }
