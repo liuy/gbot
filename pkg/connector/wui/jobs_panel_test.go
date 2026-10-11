@@ -1,6 +1,7 @@
 package wui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -149,18 +151,33 @@ func TestJobTick_PushesJobListOnNewJob(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	started := time.Now().UnixMilli() // REAL-TIME
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", started)}
-	})
-
+	// Dial BEFORE any job exists: the first sighting must then serialize the
+	// new-entry literal itself. Dialing after SetJobsFn races the watcher —
+	// the first tick can fire pre-dial, where the activeWS guard silently
+	// swallows the frame and the update branch heals fields by the next tick,
+	// hiding new-literal field-clear mutants.
 	ws := dialAndStore(t, c)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{
+			bgBashJob("bg-1", "running", "make check", started),
+			{
+				ID:           "bg-2",
+				Type:         "local_bash",
+				Status:       "failed",
+				Command:      "make lint",
+				Backgrounded: true,
+				ExitCode:     130,
+				StartedMs:    started + 1,
+			},
+		}
+	})
 	raw := readUntilType(t, ws, "job_list")
 	var out jobListOutbound
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal job_list: %v", err)
 	}
-	if len(out.Jobs) != 1 {
-		t.Fatalf("jobs len = %d, want 1", len(out.Jobs))
+	if len(out.Jobs) != 2 {
+		t.Fatalf("jobs len = %d, want 2", len(out.Jobs))
 	}
 	got := out.Jobs[0]
 	if got.ID != "bg-1" || got.Kind != "bash" || got.Status != "running" {
@@ -171,6 +188,12 @@ func TestJobTick_PushesJobListOnNewJob(t *testing.T) {
 	}
 	if got.StartedMs != started || got.StartedMs <= 0 {
 		t.Errorf("startedMs = %d, want %d (>0)", got.StartedMs, started)
+	}
+	// The terminal entry must carry its exit code straight from the
+	// new-entry literal (field-clear at construction would zero it).
+	term := out.Jobs[1]
+	if term.Status != "failed" || term.ExitCode != 130 {
+		t.Errorf("terminal job = {status:%s exitCode:%d}, want {failed 130}", term.Status, term.ExitCode)
 	}
 	// job_list is scalar-only; blocks only exist on metadata hydration entries.
 	if strings.Contains(string(raw), "blocks") {
@@ -329,13 +352,15 @@ func TestJobsClear_RemovesTerminalKeepsRunning(t *testing.T) {
 		return []*job.JobInfo{
 			bgBashJob("bg-1", "completed", "done cmd", 1000),
 			bgBashJob("bg-2", "running", "live cmd", 2000),
+			{ID: "bg-3", Type: "local_bash", Status: "killed", Command: "stopped cmd",
+				Backgrounded: true, StartedMs: 1500, ExitCode: 137},
 		}
 	})
 
 	ws := dialAndStore(t, c)
 	first := readJobList(t, ws)
-	if len(first.Jobs) != 2 {
-		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
+	if len(first.Jobs) != 3 {
+		t.Fatalf("initial jobs len = %d, want 3", len(first.Jobs))
 	}
 
 	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
@@ -420,6 +445,9 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 	it := items[0]
 	if it.ID != "agent-1" || it.Kind != "agent" || it.AgentType != "Explore" || it.ParentToolUseID != "toolu_parent" {
 		t.Errorf("hydrated item = %+v, want agent-1/agent/Explore/toolu_parent", it.jobWireItem)
+	}
+	if it.Description != "explore the repo" {
+		t.Errorf("hydrated description = %q, want %q", it.Description, "explore the repo")
 	}
 	var toolBlock *streamBlock
 	var textBlock *streamBlock
@@ -789,5 +817,904 @@ func TestEngineAdapter_KillJobAndJobTail(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("KillJob unknown-id error = %v, want it to mention 'not found'", err)
+	}
+}
+
+// TestJobsPanel_DefaultCadence pins the production watcher cadence (500ms
+// tick, 5s pending TTL — the documented contract; panel update frequency is
+// user-visible). Tests override both knobs, so nothing else observes the
+// defaults; a direct value pin is the only deterministic observable.
+func TestJobsPanel_DefaultCadence(t *testing.T) {
+	if got := jobsWatcherInterval(); got != 500*time.Millisecond {
+		t.Errorf("default watcher interval = %v, want 500ms", got)
+	}
+	if got := jobsPendingTTL(); got != 5*time.Second {
+		t.Errorf("default pending TTL = %v, want 5s", got)
+	}
+}
+
+// TestPendingAgentEvents_ShortDelayBeforeDiscoveryStillFlushes locks the TTL
+// semantics: events parked for well under the default 5s TTL must survive
+// several job-less ticks and still flush when the job is finally discovered.
+// A zeroed TTL (or a zero firstSeen) sweeps them on the first tick and the
+// feed would hydrate empty.
+func TestPendingAgentEvents_ShortDelayBeforeDiscoveryStillFlushes(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_slow"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_slow_tool", Name: "Read", Summary: "read file"}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_slow"}, Text: "slow flushed text"})
+	// Several job-less ticks pass; the default 5s TTL must keep them parked.
+	time.Sleep(100 * time.Millisecond) // REAL-TIME
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{{
+			ID: "agent-slow", Type: "local_agent", Status: "running",
+			Description: "late", ParentToolUseID: "toolu_slow",
+			Backgrounded: true, StartedMs: 100,
+		}}
+	})
+
+	ws := dialJobsServer(t, c)
+	readJobList(t, ws) // discovery — the parked events must flush here
+	ws2 := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws2)
+	if len(items) != 1 {
+		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	}
+	if len(items[0].Blocks) != 2 {
+		t.Fatalf("blocks = %+v, want 2 (tool + text survived the delay)", items[0].Blocks)
+	}
+	if items[0].Blocks[0].ID != "toolu_slow_tool" || items[0].Blocks[1].Text != "slow flushed text" {
+		t.Errorf("blocks = [%+v %+v], want [toolu_slow_tool, \"slow flushed text\"]",
+			items[0].Blocks[0], items[0].Blocks[1])
+	}
+}
+
+// TestJobsWatcher_ExitsOnStop pins the watcher's lifecycle: Stop closes
+// c.done and the watcher's select must take the done case. A watcher that
+// ignores done keeps polling the engine forever after the connector died.
+func TestJobsWatcher_ExitsOnStop(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	// Hand-built connector: the test itself owns Stop (newTestConnector
+	// registers a second Stop in cleanup — closing c.done twice panics).
+	var calls atomic.Int32
+	m := &mockEngine{}
+	m.SetJobsFn(func() []*job.JobInfo {
+		calls.Add(1)
+		return nil
+	})
+	c := &WUIConnector{
+		slots:       make(map[string]*engineSlot),
+		pendingAsks: make(map[string]*types.AskEvent),
+		done:        make(chan struct{}),
+		testMock:    m,
+		thumbs:      newThumbCache(),
+	}
+	c.outQ.Store(newOutQueue(outQueueCapacity))
+	activeID := "main"
+	c.active.Store(&activeID)
+	slot := &engineSlot{
+		engineID:           "main",
+		engine:             m,
+		hub:                hub.NewHub(),
+		taskToolIDs:        map[string]bool{},
+		jobView:            map[string]*jobViewEntry{},
+		jobFeeds:           map[string]*jobFeedState{},
+		innerToolToFeed:    map[string]string{},
+		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	}
+	slot.active.Store(true)
+	c.slots["main"] = slot
+	c.startJobsWatcher(slot)
+
+	if !waitFor(2*time.Second, func() bool { return calls.Load() > 0 }) {
+		t.Fatal("watcher never ticked before Stop")
+	}
+	c.Stop()
+	after := calls.Load()
+	time.Sleep(150 * time.Millisecond) // REAL-TIME
+	if got := calls.Load(); got != after {
+		t.Errorf("JobSummaries calls after Stop = %d (was %d) — watcher must exit on done", got, after)
+	}
+}
+
+// TestJobKind_UnknownTypePassthrough pins jobKind's default branch: registry
+// types outside the bash/agent vocabulary ride the wire verbatim instead of
+// collapsing to "".
+func TestJobKind_UnknownTypePassthrough(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{{
+			ID: "x-1", Type: "custom_kind", Status: "running",
+			Backgrounded: true, StartedMs: 42,
+		}}
+	})
+
+	ws := dialAndStore(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(out.Jobs))
+	}
+	if out.Jobs[0].Kind != "custom_kind" {
+		t.Errorf("kind = %q, want the raw type %q", out.Jobs[0].Kind, "custom_kind")
+	}
+}
+
+// TestJobTick_NilViewSlotNoPanic pins the nil-map guard: slots built directly
+// (bypassing registerEngine) have no jobs maps, and a tick on such a slot must
+// be a silent no-op, not a nil-map write panic.
+func TestJobTick_NilViewSlotNoPanic(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", 1)}
+	})
+	ghost := &engineSlot{engineID: "ghost", engine: c.mock()}
+	c.jobTick(ghost) // must return at the guard, not panic on the nil jobView
+}
+
+// TestCaptureJobEvent_NilViewNoPanic pairs with TestJobTick_NilViewSlotNoPanic
+// for the event path: an agent-meta event on a map-less slot must park
+// nowhere and panic nowhere.
+func TestCaptureJobEvent_NilViewNoPanic(t *testing.T) {
+	c := newTestConnector(t)
+	ghost := &engineSlot{engineID: "ghost", hub: hub.NewHub()}
+	c.captureJobEvent(ghost, types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_x"}, Text: "stray"})
+}
+
+// TestJobTick_MergeSkipsNilAndForegroundEntries covers the merge filter's
+// three-way contract in one fixture: a nil summary is skipped (no panic), a
+// foreground job is skipped without abandoning the loop (a later background
+// job still merges), and a fresh completed entry carries its exit code onto
+// the wire.
+func TestJobTick_MergeSkipsNilAndForegroundEntries(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{
+			nil,
+			{ID: "bg-fg", Type: "local_bash", Status: "running", Command: "fg cmd",
+				Backgrounded: false, StartedMs: 900},
+			{ID: "bg-1", Type: "local_bash", Status: "completed", Command: "done cmd",
+				Backgrounded: true, StartedMs: 7777, ExitCode: 3},
+		}
+	})
+
+	ws := dialAndStore(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1 (nil + foreground skipped): %+v", len(out.Jobs), out.Jobs)
+	}
+	got := out.Jobs[0]
+	if got.ID != "bg-1" || got.Status != "completed" || got.ExitCode != 3 {
+		t.Errorf("job = {%s %s exit:%d}, want {bg-1 completed exit:3}", got.ID, got.Status, got.ExitCode)
+	}
+}
+
+// TestJobTick_TailsOnlyBashJobs pins the tailID filter: only bash jobs are
+// tailed (agent feeds come from events, not tails), and a non-bash entry in
+// the middle of the summaries must not abort the scan for later bash ids.
+func TestJobTick_TailsOnlyBashJobs(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{
+			{ID: "agent-1", Type: "local_agent", Status: "running",
+				Description: "no tails", ParentToolUseID: "toolu_p",
+				Backgrounded: true, StartedMs: 100},
+			bgBashJob("bg-1", "running", "make check", 200),
+		}
+	})
+	var tailMu sync.Mutex
+	var tailIDs []string
+	c.mock().SetJobTailFn(func(id string) (string, bool) {
+		tailMu.Lock()
+		tailIDs = append(tailIDs, id)
+		tailMu.Unlock()
+		return "tail of " + id, true
+	})
+
+	ws := dialAndStore(t, c)
+	readJobList(t, ws)
+	if out := readJobOutput(t, ws); out.JobID != "bg-1" {
+		t.Fatalf("first job_output = %s, want bg-1", out.JobID)
+	}
+	time.Sleep(80 * time.Millisecond) // REAL-TIME: several more beats
+	tailMu.Lock()
+	defer tailMu.Unlock()
+	for _, id := range tailIDs {
+		if id != "bg-1" {
+			t.Errorf("JobTail called for %q — only bash jobs may be tailed (calls: %v)", id, tailIDs)
+		}
+	}
+}
+
+// TestJobTick_UpdatesExistingEntryStatusAndExitCode pins the update path of
+// an already-known job: a status/exit transition must reach the wire as a new
+// job_list frame with the new values (the entry is not re-created).
+func TestJobTick_UpdatesExistingEntryStatusAndExitCode(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	var jobsMu sync.Mutex
+	info := bgBashJob("bg-1", "running", "long cmd", 5555)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobsMu.Lock()
+		defer jobsMu.Unlock()
+		return []*job.JobInfo{info}
+	})
+
+	ws := dialAndStore(t, c)
+	first := readJobList(t, ws)
+	if first.Jobs[0].Status != "running" {
+		t.Fatalf("initial status = %s, want running", first.Jobs[0].Status)
+	}
+
+	jobsMu.Lock()
+	info = bgBashJob("bg-1", "failed", "long cmd", 5555)
+	info.ExitCode = 3
+	jobsMu.Unlock()
+	second := readJobList(t, ws)
+	if len(second.Jobs) != 1 {
+		t.Fatalf("updated jobs len = %d, want 1", len(second.Jobs))
+	}
+	if second.Jobs[0].Status != "failed" || second.Jobs[0].ExitCode != 3 {
+		t.Errorf("updated job = {%s exit:%d}, want {failed exit:3}", second.Jobs[0].Status, second.Jobs[0].ExitCode)
+	}
+}
+
+// TestJobTick_RunningJobVanishesFromRegistry pins the drop path: a running
+// entry that disappears from the registry is removed from the view (frame
+// with it gone), while jobs still listed survive.
+func TestJobTick_RunningJobVanishesFromRegistry(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	var jobsMu sync.Mutex
+	visible := []*job.JobInfo{
+		bgBashJob("bg-1", "running", "doomed cmd", 1000),
+		bgBashJob("bg-2", "running", "live cmd", 2000),
+	}
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobsMu.Lock()
+		defer jobsMu.Unlock()
+		return visible
+	})
+
+	ws := dialAndStore(t, c)
+	first := readJobList(t, ws)
+	if len(first.Jobs) != 2 {
+		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
+	}
+
+	jobsMu.Lock()
+	visible = visible[1:]
+	jobsMu.Unlock()
+	second := readJobList(t, ws)
+	if len(second.Jobs) != 1 || second.Jobs[0].ID != "bg-2" {
+		t.Fatalf("after vanish jobs = %+v, want only bg-2", second.Jobs)
+	}
+}
+
+// TestJobTick_CapRunningOldestNeverEvicted pins that the cap's victim scan is
+// restricted to TERMINAL entries: a running job with the smallest StartedMs
+// must survive while the oldest terminal is the one evicted.
+func TestJobTick_CapRunningOldestNeverEvicted(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobs := []*job.JobInfo{bgBashJob("bg-run", "running", "oldest but live", 500)}
+		for i := 1; i <= 200; i++ {
+			jobs = append(jobs, bgBashJob(fmt.Sprintf("bg-%03d", i), "completed", fmt.Sprintf("cmd %d", i), int64(1000+i)))
+		}
+		return jobs
+	})
+
+	ws := dialAndStore(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != 200 {
+		t.Fatalf("jobs len = %d, want 200 (capped)", len(out.Jobs))
+	}
+	ids := map[string]bool{}
+	for _, j := range out.Jobs {
+		ids[j.ID] = true
+	}
+	if !ids["bg-run"] {
+		t.Error("running job with smallest startedMs was evicted — the victim scan must skip running entries")
+	}
+	if ids["bg-001"] {
+		t.Error("bg-001 (smallest terminal startedMs) must be the evicted one, but is present")
+	}
+}
+
+// TestJobTick_CapAllRunningRetainsAll pins the cap's escape hatch: with no
+// terminal entries to evict, the loop gives up and the over-cap view is
+// pushed in full — a live job is never dropped and the loop never spins.
+func TestJobTick_CapAllRunningRetainsAll(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobs := make([]*job.JobInfo, 0, 201)
+		for i := 1; i <= 201; i++ {
+			jobs = append(jobs, bgBashJob(fmt.Sprintf("bg-%03d", i), "running", fmt.Sprintf("cmd %d", i), int64(1000+i)))
+		}
+		return jobs
+	})
+
+	ws := dialAndStore(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != 201 {
+		t.Fatalf("jobs len = %d, want 201 (all running, cap cannot evict)", len(out.Jobs))
+	}
+	running := 0
+	for _, j := range out.Jobs {
+		if j.Status == "running" {
+			running++
+		}
+	}
+	if running != 201 {
+		t.Errorf("running count = %d, want 201", running)
+	}
+}
+
+// sortedJobsFixture mints jobs whose startedMs order and ID order disagree,
+// plus a 2-way and a 4-way startedMs tie so both sort keys are exercised (the
+// 4-way tie also makes an always-false tiebreak comparator survive only ~2%
+// of runs rather than ~25%). wantOrder is the (startedMs asc, ID asc)
+// expectation.
+func sortedJobsFixture() ([]*job.JobInfo, []string) {
+	specs := []struct {
+		id string
+		ms int64
+	}{
+		{"bg-e", 1000}, {"bg-h", 1000},
+		{"bg-a", 2000}, {"bg-b", 2000}, {"bg-c", 2000}, {"bg-d", 2000},
+		{"bg-j", 5000}, {"bg-i", 6000},
+	}
+	jobs := make([]*job.JobInfo, 0, len(specs))
+	for _, s := range specs {
+		jobs = append(jobs, bgBashJob(s.id, "running", "cmd "+s.id, s.ms))
+	}
+	return jobs, []string{"bg-e", "bg-h", "bg-a", "bg-b", "bg-c", "bg-d", "bg-j", "bg-i"}
+}
+
+// TestJobList_SortedByStartedMsThenID pins the job_list ordering: startedMs
+// ascending, ID ascending as the tiebreak. jobView is a map, so without the
+// sort the order would be random; the fixture's ID-vs-started disagreement
+// also separates the startedMs key from an ID-only sort.
+func TestJobList_SortedByStartedMsThenID(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	jobs, wantOrder := sortedJobsFixture()
+	c.mock().SetJobsFn(func() []*job.JobInfo { return jobs })
+
+	ws := dialAndStore(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != len(wantOrder) {
+		t.Fatalf("jobs len = %d, want %d", len(out.Jobs), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if out.Jobs[i].ID != want {
+			t.Errorf("jobs[%d] = %s, want %s (full order: %v)", i, out.Jobs[i].ID, want, jobIDs(out.Jobs))
+		}
+	}
+}
+
+// TestMetadata_JobsSortedByStartedMsThenID pins the same ordering contract
+// for the metadata hydration snapshot (a separate sort call site).
+func TestMetadata_JobsSortedByStartedMsThenID(t *testing.T) {
+	// Deterministic pre-warm: a background tick racing the dial can leave the
+	// jobView empty when metadata serializes (dial won, tick never ran).
+	withJobsWatcherInterval(t, time.Hour)
+	c := newTestConnector(t)
+	jobs, wantOrder := sortedJobsFixture()
+	c.mock().SetJobsFn(func() []*job.JobInfo { return jobs })
+	c.jobTick(c.activeSlotTest(t))
+
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != len(wantOrder) {
+		t.Fatalf("metadata jobs len = %d, want %d", len(items), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if items[i].ID != want {
+			t.Errorf("metadata jobs[%d] = %s, want %s (full order: %v)", i, items[i].ID, want, hydratedIDs(items))
+		}
+	}
+}
+
+func jobIDs(jobs []jobWireItem) []string {
+	ids := make([]string, len(jobs))
+	for i, j := range jobs {
+		ids[i] = j.ID
+	}
+	return ids
+}
+
+func hydratedIDs(items []jobWireItemHydrated) []string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+// TestJobOutput_FramesSortedByJobID pins the job_output send order: frames
+// for simultaneously-changed tails go out in ascending job id order.
+func TestJobOutput_FramesSortedByJobID(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	ids := []string{"bg-d", "bg-a", "bg-c", "bg-b"}
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobs := make([]*job.JobInfo, 0, len(ids))
+		for i, id := range ids {
+			jobs = append(jobs, bgBashJob(id, "running", "cmd "+id, int64(1000+i)))
+		}
+		return jobs
+	})
+	c.mock().SetJobTailFn(func(id string) (string, bool) { return "tail " + id, true })
+
+	ws := dialAndStore(t, c)
+	readJobList(t, ws)
+	want := []string{"bg-a", "bg-b", "bg-c", "bg-d"}
+	for _, wantID := range want {
+		out := readJobOutput(t, ws)
+		if out.JobID != wantID {
+			t.Fatalf("job_output order broke at %q, want %q", out.JobID, wantID)
+		}
+		if out.Tail != "tail "+wantID {
+			t.Fatalf("job_output tail = %q, want %q", out.Tail, "tail "+wantID)
+		}
+	}
+}
+
+// TestJobOutput_StableTailDoesNotBlockLaterJobs pins the tail-diff loop: a
+// bash entry whose tail is unchanged must be skipped (continue), not abort
+// the scan (break) — later jobs with changed tails still get their frame.
+func TestJobOutput_StableTailDoesNotBlockLaterJobs(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{
+			bgBashJob("bg-1", "running", "quiet cmd", 1000),
+			bgBashJob("bg-2", "running", "loud cmd", 2000),
+		}
+	})
+	var tailMu sync.Mutex
+	tails := map[string]string{"bg-1": "stable", "bg-2": "first"}
+	c.mock().SetJobTailFn(func(id string) (string, bool) {
+		tailMu.Lock()
+		defer tailMu.Unlock()
+		return tails[id], true
+	})
+
+	ws := dialAndStore(t, c)
+	readJobList(t, ws)
+	for _, want := range []string{"bg-1", "bg-2"} { // warm both baselines (id order)
+		if out := readJobOutput(t, ws); out.JobID != want {
+			t.Fatalf("warm-up frame = %s, want %s", out.JobID, want)
+		}
+	}
+
+	tailMu.Lock()
+	tails["bg-2"] = "second"
+	tailMu.Unlock()
+	out := readJobOutput(t, ws)
+	if out.JobID != "bg-2" || out.Tail != "second" {
+		t.Fatalf("post-flip frame = {%s %q}, want {bg-2 \"second\"}", out.JobID, out.Tail)
+	}
+}
+
+// TestPushJobsSnapshot_NilViewNoFrame pins the nil-view guard of the forced
+// push: a map-less (test-built) slot must push nothing, even though the
+// sentinel baseline reset would otherwise force an empty job_list out.
+func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+
+	ghost := &engineSlot{engineID: "ghost", engine: c.mock()}
+	ghost.active.Store(true)
+	c.pushJobsSnapshot(ghost)
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
+}
+
+// TestJobsClear_WatcherContinuesAfterClear pins that the clear handler
+// releases jobsMu before the forced push: the watcher must keep ticking (a
+// job registered after the clear still reaches the wire).
+func TestJobsClear_WatcherContinuesAfterClear(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	var jobsMu sync.Mutex
+	visible := []*job.JobInfo{bgBashJob("bg-1", "running", "live cmd", 1000)}
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobsMu.Lock()
+		defer jobsMu.Unlock()
+		return visible
+	})
+
+	ws := dialAndStore(t, c)
+	first := readJobList(t, ws)
+	if len(first.Jobs) != 1 || first.Jobs[0].ID != "bg-1" {
+		t.Fatalf("initial jobs = %+v, want [bg-1]", first.Jobs)
+	}
+
+	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
+	forced := readJobList(t, ws) // the forced ack frame (running job survives)
+	if len(forced.Jobs) != 1 || forced.Jobs[0].ID != "bg-1" {
+		t.Fatalf("post-clear jobs = %+v, want [bg-1] (running)", forced.Jobs)
+	}
+
+	jobsMu.Lock()
+	visible = append(visible, bgBashJob("bg-9", "running", "new after clear", 2000))
+	jobsMu.Unlock()
+	after := readJobList(t, ws)
+	ids := map[string]bool{}
+	for _, j := range after.Jobs {
+		ids[j.ID] = true
+	}
+	if !ids["bg-9"] || !ids["bg-1"] {
+		t.Fatalf("post-clear discovery frame = %v, want bg-1 and bg-9 — watcher stalled after jobs_clear", ids)
+	}
+}
+
+// TestMetadata_EmptyViewOmitsJobsField pins the empty-view guard: a slot with
+// no jobs must omit the metadata jobs field entirely (nil raw JSON), not emit
+// an empty {"jobs":[]} envelope.
+func TestMetadata_EmptyViewOmitsJobsField(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+
+	ws := dialJobsServer(t, c)
+	if items := readMetadataJobs(t, ws); items != nil {
+		t.Errorf("metadata jobs = %+v, want the field omitted entirely (nil)", items)
+	}
+}
+
+// TestSessionNew_ClearsTerminalJobs pins the session_new handler's defensive
+// clear: the previous session's terminal entries must not leak into the new
+// session's metadata snapshot; running entries belong to the engine and stay.
+func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	var jobsMu sync.Mutex
+	terminalVisible := true
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		jobsMu.Lock()
+		defer jobsMu.Unlock()
+		if terminalVisible {
+			return []*job.JobInfo{
+				bgBashJob("bg-1", "completed", "old session cmd", 1000),
+				bgBashJob("bg-2", "running", "live cmd", 2000),
+			}
+		}
+		return []*job.JobInfo{bgBashJob("bg-2", "running", "live cmd", 2000)}
+	})
+
+	ws := dialAndStore(t, c)
+	first := readJobList(t, ws)
+	if len(first.Jobs) != 2 {
+		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
+	}
+
+	jobsMu.Lock()
+	terminalVisible = false
+	jobsMu.Unlock()
+	sendJSON(t, ws, map[string]string{"type": "session_new"})
+	items := readMetadataJobs(t, ws)
+	if len(items) != 1 {
+		t.Fatalf("post-new metadata jobs = %+v, want only the running entry", items)
+	}
+	if items[0].ID != "bg-2" || items[0].Status != "running" {
+		t.Errorf("post-new job = {%s %s}, want {bg-2 running}", items[0].ID, items[0].Status)
+	}
+}
+
+// TestJobStop_EmptyJobIDIgnored pins the inbound validation: a job_stop with
+// an empty jobID must be dropped before the handler — no kill call, no ack
+// frame, no error frame.
+func TestJobStop_EmptyJobIDIgnored(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", time.Now().UnixMilli())} // REAL-TIME
+	})
+
+	ws := dialAndStore(t, c)
+	readJobList(t, ws) // warm the view
+
+	sendJSON(t, ws, map[string]string{"type": "job_stop", "jobID": ""})
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
+	m := c.mock()
+	m.mu.RLock()
+	calls := append([]string(nil), m.killJobCalls...)
+	m.mu.RUnlock()
+	if len(calls) != 0 {
+		t.Errorf("killJobCalls = %v, want none for an empty jobID", calls)
+	}
+}
+
+// TestEngineAdapter_NilRegistries pins the adapter's nil-registry guards:
+// KillJob reports the specific error, JobTail reports not-found, and
+// JobSummaries returns nil — none of them dereference the missing registry.
+func TestEngineAdapter_NilRegistries(t *testing.T) {
+	eng := engine.New(&engine.Params{EngineID: "nil-refs", Model: "test-model"})
+	eng.SetDispatcher(hub.NewHub())
+	eng.SetToolRefs(engine.ToolRefs{}) // every registry pointer nil
+	a := &engineAdapter{eng: eng}
+
+	err := a.KillJob("bg-1")
+	if err == nil {
+		t.Fatal("KillJob with nil JobReg must return an error")
+	}
+	if !strings.Contains(err.Error(), "job registry not available") {
+		t.Errorf("KillJob error = %v, want it to mention 'job registry not available'", err)
+	}
+	if tail, ok := a.JobTail("bg-1"); ok || tail != "" {
+		t.Errorf("JobTail with nil BashReg = (%q, %v), want (\"\", false)", tail, ok)
+	}
+	if got := a.JobSummaries(); got != nil {
+		t.Errorf("JobSummaries with nil JobReg = %+v, want nil", got)
+	}
+}
+
+// TestRegisterEngine_SlotFullyWiredForJobs exercises the registerEngine slot
+// literal end to end through real engines: the jobs maps exist (merge, feed
+// creation, route registration, pending parking — nil maps would panic), the
+// watcher is started (frames arrive), taskToolIDs accepts Task calls, and the
+// slot name/system drive BusyReport (running job named, system engine
+// excluded).
+func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	mgr := engine.NewEngineManager()
+	h1 := hub.NewHub()
+	eng1 := engine.New(&engine.Params{EngineID: "main", Model: "test-model"})
+	eng1.SetDispatcher(h1)
+	eng1.SetToolRefs(engine.ToolRefs{})
+	mgr.Add(&engine.EngineViewState{ID: "main", Name: "main", Engine: eng1})
+	c := New(mgr, nil, nil)
+	t.Cleanup(c.Stop)
+
+	// e2: named engine with a running bg bash job and a running bg agent.
+	bashReg := bash.NewBackgroundJobRegistry()
+	bt := bashReg.Spawn("sleep 30", 0, bash.NewStreamingOutput(nil))
+	t.Cleanup(func() { _ = bashReg.Kill(bt.ID) })
+	agentReg := agent.NewBackgroundAgentRegistry()
+	state, err := agentReg.Spawn(context.Background(),
+		func(ctx context.Context) (*types.SubQueryResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, nil, "explore wiring", "toolu_p", "agent", "Explore")
+	if err != nil {
+		t.Fatalf("spawn bg agent: %v", err)
+	}
+	t.Cleanup(func() { _ = agentReg.Cancel(state.ID) })
+	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), agent.NewBackgroundAgentJobAdapter(agentReg))
+	h2 := hub.NewHub()
+	eng2 := engine.New(&engine.Params{EngineID: "e2", Model: "test-model"})
+	eng2.SetDispatcher(h2)
+	eng2.SetToolRefs(engine.ToolRefs{BashReg: bashReg, JobReg: jobReg})
+	c.RegisterEngine(&engine.EngineViewState{ID: "e2", Name: "agent-2", Engine: eng2})
+
+	// e3: SYSTEM engine with a running job — BusyReport must exclude it.
+	e3Bash := bash.NewBackgroundJobRegistry()
+	bt3 := e3Bash.Spawn("sleep 30", 0, bash.NewStreamingOutput(nil))
+	t.Cleanup(func() { _ = e3Bash.Kill(bt3.ID) })
+	h3 := hub.NewHub()
+	eng3 := engine.New(&engine.Params{EngineID: "e3", Model: "test-model"})
+	eng3.SetDispatcher(h3)
+	eng3.SetToolRefs(engine.ToolRefs{
+		BashReg: e3Bash,
+		JobReg:  job.NewMultiRegistry(bash.NewJobInfoAdapter(e3Bash)),
+	})
+	c.RegisterEngine(&engine.EngineViewState{ID: "e3", Name: "sys", Engine: eng3, System: true})
+
+	// Task tool tracking on the registerEngine-built slot (nil taskToolIDs
+	// would panic on the write).
+	h2.Dispatch(types.QueryEvent{Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "toolu_task", Name: "Task", Summary: "track me"}})
+
+	ws := dialAndStore(t, c)
+	sendJSON(t, ws, map[string]string{"type": "engine_switch", "engineID": "e2"})
+	list := readJobList(t, ws)
+	got := map[string]string{} // id -> kind
+	for _, j := range list.Jobs {
+		got[j.ID] = j.Kind
+	}
+	if got[bt.ID] != "bash" {
+		t.Errorf("job %s kind = %q, want bash (full list: %v)", bt.ID, got[bt.ID], got)
+	}
+	if got[state.ID] != "agent" {
+		t.Errorf("job %s kind = %q, want agent (full list: %v)", state.ID, got[state.ID], got)
+	}
+	if len(got) != 2 {
+		t.Errorf("job list = %v, want exactly the bash and agent entries", got)
+	}
+
+	// Agent events through the registerEngine-built maps: an own-parent
+	// tool_start registers an inner route (nil innerToolToFeed would panic)
+	// and an unroutable parent parks (nil pendingAgentEvents would panic).
+	h2.Dispatch(types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_p"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_inner", Name: "Grep", Summary: "inner"}})
+	h2.Dispatch(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_unrelated"}, Text: "stray"})
+
+	ws2 := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws2)
+	var agentItem *jobWireItemHydrated
+	for i := range items {
+		if items[i].ID == state.ID {
+			agentItem = &items[i]
+		}
+	}
+	if agentItem == nil {
+		t.Fatalf("metadata jobs = %v, want the agent entry %s", hydratedIDs(items), state.ID)
+	}
+	if len(agentItem.Blocks) != 1 || agentItem.Blocks[0].ID != "toolu_inner" {
+		t.Errorf("agent blocks = %+v, want [toolu_inner] (stray parent must not pollute)", agentItem.Blocks)
+	}
+
+	report := c.BusyReport()
+	var bashItem *BusyItem
+	for i := range report.Items {
+		if report.Items[i].EngineID == "e2" && strings.Contains(report.Items[i].Detail, "sleep 30") {
+			bashItem = &report.Items[i]
+		}
+		if report.Items[i].EngineID == "e3" {
+			t.Errorf("BusyReport listed system engine e3: %+v — system engines are excluded", report.Items[i])
+		}
+	}
+	if bashItem == nil {
+		t.Fatalf("BusyReport items = %+v, want a bash job item for e2", report.Items)
+	}
+	if bashItem.Engine != "agent-2" {
+		t.Errorf("e2 item Engine = %q, want the registered name %q", bashItem.Engine, "agent-2")
+	}
+}
+
+// TestHandleJobStopJobsClear_NilGuards pins the inbound handlers' nil guards
+// with hand-built slots: no active slot, and an active slot without an
+// engine — both must be silent no-ops, not panics.
+func TestHandleJobStopJobsClear_NilGuards(t *testing.T) {
+	newBareConnector := func() *WUIConnector {
+		c := &WUIConnector{
+			slots:       make(map[string]*engineSlot),
+			pendingAsks: make(map[string]*types.AskEvent),
+			done:        make(chan struct{}),
+			thumbs:      newThumbCache(),
+		}
+		c.outQ.Store(newOutQueue(outQueueCapacity))
+		return c
+	}
+
+	// No active slot at all.
+	c1 := newBareConnector()
+	c1.handleJobStop("bg-1")
+	c1.handleJobsClear()
+
+	// Active slot whose engine is nil (jobView present so the clear path
+	// walks past the map guard).
+	c2 := newBareConnector()
+	slot := &engineSlot{
+		engineID:           "s1",
+		taskToolIDs:        map[string]bool{},
+		jobView:            map[string]*jobViewEntry{},
+		jobFeeds:           map[string]*jobFeedState{},
+		innerToolToFeed:    map[string]string{},
+		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	}
+	c2.slots["s1"] = slot
+	activeID := "s1"
+	c2.active.Store(&activeID)
+	c2.handleJobStop("bg-1")
+	c2.handleJobsClear()
+}
+
+// TestApplyAgentEventLocked_Guards pins applyAgentEventLocked's defensive
+// branches directly: an unknown feed key is a no-op, an Agent-nil event is
+// applied unmasked at the feed root, and a tool_start without a ToolUse
+// registers no route — none of them panic.
+func TestApplyAgentEventLocked_Guards(t *testing.T) {
+	c := newTestConnector(t)
+	slot := &engineSlot{
+		engineID:           "s1",
+		taskToolIDs:        map[string]bool{},
+		jobView:            map[string]*jobViewEntry{},
+		jobFeeds:           map[string]*jobFeedState{"toolu_p": {}},
+		innerToolToFeed:    map[string]string{},
+		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	}
+
+	// Unknown feed key: ignored.
+	c.applyAgentEventLocked(slot, "ghost", types.QueryEvent{Type: types.EventTextDelta, Text: "nowhere"})
+
+	// tool_start without a ToolUse: no block, no route registration, no panic.
+	c.applyAgentEventLocked(slot, "toolu_p", types.QueryEvent{Type: types.EventToolStart,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_p"}})
+
+	// Agent-nil event: applied unmasked — lands as a root text block.
+	c.applyAgentEventLocked(slot, "toolu_p", types.QueryEvent{Type: types.EventTextDelta, Text: "root text"})
+
+	feed := slot.jobFeeds["toolu_p"]
+	blocks := feed.streamState.blocks
+	if len(blocks) != 1 || blocks[0].Kind != "text" || blocks[0].Text != "root text" {
+		t.Errorf("feed blocks = %+v, want [text \"root text\"]", blocks)
+	}
+	if len(slot.innerToolToFeed) != 0 {
+		t.Errorf("innerToolToFeed = %v, want no routes registered", slot.innerToolToFeed)
+	}
+}
+
+// TestDeleteJobEntryLocked_GhostIDNoPanic pins the not-found guard: deleting
+// an id the view never held must be a silent no-op, not a nil-entry deref.
+func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
+	c := newTestConnector(t)
+	slot := &engineSlot{
+		engineID:           "s1",
+		taskToolIDs:        map[string]bool{},
+		jobView:            map[string]*jobViewEntry{},
+		jobFeeds:           map[string]*jobFeedState{},
+		innerToolToFeed:    map[string]string{},
+		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	}
+	c.deleteJobEntryLocked(slot, "never-existed")
+	if len(slot.jobView) != 0 {
+		t.Errorf("jobView = %v, want untouched", slot.jobView)
+	}
+}
+
+// TestJobsClear_RelistDoesNotReplayFlushedPending pins the pending-events
+// bookkeeping: events flushed into a feed at discovery are consumed (deleted
+// from pendingAgentEvents). If they were left behind, jobs_clear on a
+// still-listed terminal agent would rebuild the feed's blocks on relist —
+// replaying stale history into the fresh entry.
+func TestJobsClear_RelistDoesNotReplayFlushedPending(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{{
+			ID: "agent-1", Type: "local_agent", Status: "completed",
+			Description: "clear replay", ParentToolUseID: "toolu_234",
+			Backgrounded: true, StartedMs: 100,
+		}}
+	})
+	// Park events BEFORE the watcher ever sees the job.
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_234"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_once", Name: "Read", Summary: "read file"}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_234"}, Text: "flushed once"})
+
+	// Each dial takes over the previous connection, so only the newest ws is
+	// readable — re-dial per phase.
+	ws := dialJobsServer(t, c)
+	readJobList(t, ws) // discovery: flush + consume
+	ws = dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 1 || len(items[0].Blocks) != 2 {
+		t.Fatalf("pre-clear blocks = %+v, want the flushed tool+text", items)
+	}
+
+	// Terminal agent is still listed by the registry; clear drops the view
+	// entry (and must have consumed the pending events at discovery).
+	ws = dialJobsServer(t, c)
+	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
+	if out := readJobList(t, ws); len(out.Jobs) != 0 {
+		t.Fatalf("post-clear jobs = %+v, want empty", out.Jobs)
+	}
+	relisted := readJobList(t, ws) // registry still lists it — entry comes back
+	if len(relisted.Jobs) != 1 || relisted.Jobs[0].ID != "agent-1" {
+		t.Fatalf("relisted jobs = %+v, want the still-listed agent-1", relisted.Jobs)
+	}
+
+	ws = dialJobsServer(t, c)
+	items = readMetadataJobs(t, ws)
+	if len(items) != 1 {
+		t.Fatalf("post-relist metadata jobs = %v, want the agent entry", hydratedIDs(items))
+	}
+	if len(items[0].Blocks) != 0 {
+		t.Errorf("post-relist blocks = %+v, want none — flushed pending events must not replay", items[0].Blocks)
 	}
 }

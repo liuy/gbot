@@ -288,7 +288,7 @@ func (c *WUIConnector) mergeJobSummariesLocked(slot *engineSlot, summaries []*jo
 // still written back in jobTick) but push nothing. Caller holds jobsMu;
 // sendWS happens outside.
 func (c *WUIConnector) collectJobFramesLocked(slot *engineSlot) []string {
-	if !(slot.active.Load() && c.activeWS.Load() != nil) {
+	if !slot.active.Load() || c.activeWS.Load() == nil {
 		return nil
 	}
 	var payloads []string
@@ -363,7 +363,7 @@ func (c *WUIConnector) pushJobsSnapshot(slot *engineSlot) {
 func (c *WUIConnector) buildJobsMetadata(slot *engineSlot) json.RawMessage {
 	slot.jobsMu.Lock()
 	defer slot.jobsMu.Unlock()
-	if slot.jobView == nil || len(slot.jobView) == 0 {
+	if len(slot.jobView) == 0 {
 		return nil
 	}
 	items := make([]jobWireItemHydrated, 0, len(slot.jobView))

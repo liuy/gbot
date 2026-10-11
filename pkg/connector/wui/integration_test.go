@@ -137,6 +137,15 @@ func TestRegisterEngine_CreatesSlotAndSubscribes(t *testing.T) {
 	if e2Slot.unsubscribe == nil {
 		t.Error("unsubscribe func is nil — not subscribed")
 	}
+	// Field-clear mutants on the slot literal must fail here: a nil
+	// taskToolIDs panics on the first Task tool event, and nil jobs maps
+	// panic in the watcher/capture paths.
+	if e2Slot.taskToolIDs == nil {
+		t.Error("taskToolIDs map is nil")
+	}
+	if e2Slot.jobView == nil || e2Slot.jobFeeds == nil || e2Slot.innerToolToFeed == nil || e2Slot.pendingAgentEvents == nil {
+		t.Error("jobs watcher maps are nil — registerEngine must initialize them")
+	}
 }
 
 // TestRegisterEngine_Idempotent verifies that registering the same engine

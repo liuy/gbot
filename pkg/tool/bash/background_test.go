@@ -1571,7 +1571,7 @@ func TestBackgroundJob_Tail(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	for i := 1; i <= 30; i++ {
-		if _, err := s.Write([]byte(fmt.Sprintf("line %d\n", i))); err != nil {
+		if _, err := fmt.Fprintf(s, "line %d\n", i); err != nil {
 			t.Fatalf("Write() error: %v", err)
 		}
 	}

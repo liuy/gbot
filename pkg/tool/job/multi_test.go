@@ -269,3 +269,47 @@ func TestMulti_CleanupCompleted_NoCleanupAware(t *testing.T) {
 		t.Errorf("underlying registry holds %d jobs, want 1", len(r1.tasks))
 	}
 }
+
+// summaryOnlyRegistry implements SummaryLister. Its List and ListSummaries
+// return disjoint entries so the result IDs reveal which path MultiRegistry
+// took — the fallback also clears Output, which alone cannot distinguish the
+// two paths.
+type summaryOnlyRegistry struct {
+	stubRegistry
+	summaryJobs []*JobInfo
+}
+
+func (s *summaryOnlyRegistry) ListSummaries() []*JobInfo { return s.summaryJobs }
+
+func TestMulti_ListSummaries(t *testing.T) {
+	t.Parallel()
+	sumReg := &summaryOnlyRegistry{
+		stubRegistry: *newStubRegistry(&JobInfo{ID: "sum-via-list", Status: "completed", Output: "full output"}),
+		summaryJobs:  []*JobInfo{{ID: "sum-1", Status: "completed"}},
+	}
+	fallReg := newStubRegistry(
+		&JobInfo{ID: "f-1", Status: "completed", Output: "blob one"},
+		&JobInfo{ID: "f-2", Status: "running", Output: "blob two"},
+	)
+	m := NewMultiRegistry(sumReg, fallReg)
+
+	got := m.ListSummaries()
+	if len(got) != 3 {
+		t.Fatalf("ListSummaries() len = %d, want 3: %+v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, info := range got {
+		ids[info.ID] = true
+		if info.Output != "" {
+			t.Errorf("%s Output = %q, want empty (SummaryLister contract)", info.ID, info.Output)
+		}
+	}
+	for _, want := range []string{"sum-1", "f-1", "f-2"} {
+		if !ids[want] {
+			t.Errorf("%s missing from ListSummaries(): %v", want, ids)
+		}
+	}
+	if ids["sum-via-list"] {
+		t.Error("summary-capable registry fell back to List(): sum-via-list must not appear")
+	}
+}
