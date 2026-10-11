@@ -1107,7 +1107,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 }
 
 // isBackgroundResult returns true if the tool result data is a SubQueryResult
-// from a fork agent that was launched asynchronously.
+// from an agent (fork or subagent) that was launched asynchronously.
 func isBackgroundResult(data any) bool {
 	sqr, ok := data.(*types.SubQueryResult)
 	return ok && sqr.AsyncLaunched

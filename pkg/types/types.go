@@ -748,7 +748,7 @@ type SubQueryResult struct {
 	TotalDurationMs   int64
 	TotalTokens       int
 	TotalToolUseCount int
-	AsyncLaunched     bool // true = fork agent launched in background
+	AsyncLaunched     bool // true = background agent launched async (fork or subagent)
 }
 
 // ForkBoilerplateTag is the marker string used in fork agent directive messages

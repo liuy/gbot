@@ -19,7 +19,7 @@ func TestForkRegistry_SpawnAndWait(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done", AgentType: "fork"}, nil
 		},
-		nil, "test task", "call_1",
+		nil, "test task", "call_1", "fork",
 	)
 	if err != nil {
 		t.Fatalf("Spawn returned error: %v", err)
@@ -48,7 +48,7 @@ func TestForkRegistry_SpawnWithError(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
-		nil, "failing task", "call_1",
+		nil, "failing task", "call_1", "fork",
 	)
 
 	final, _ := reg.Wait(state.ID)
@@ -68,7 +68,7 @@ func TestForkRegistry_Cancel(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		nil, "long task", "call_1",
+		nil, "long task", "call_1", "fork",
 	)
 
 	<-started // wait for goroutine to start
@@ -99,7 +99,7 @@ func TestForkRegistry_Get(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "ok"}, nil
 		},
-		nil, "test", "call_1",
+		nil, "test", "call_1", "fork",
 	)
 
 	got, ok := reg.Get(state.ID)
@@ -129,7 +129,7 @@ func TestForkRegistry_List(t *testing.T) {
 			<-unblockA
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
-		nil, "task a", "call_1",
+		nil, "task a", "call_1", "fork",
 	)
 	if err != nil {
 		t.Fatalf("Spawn a: %v", err)
@@ -139,7 +139,7 @@ func TestForkRegistry_List(t *testing.T) {
 			<-unblockB
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
-		nil, "task b", "call_2",
+		nil, "task b", "call_2", "fork",
 	)
 	if err != nil {
 		t.Fatalf("Spawn b: %v", err)
@@ -175,7 +175,7 @@ func TestForkRegistry_NotifyCalled(t *testing.T) {
 			notifiedResult = result
 			notifiedErr = err
 		},
-		"notify test", "call_notify",
+		"notify test", "call_notify", "fork",
 	)
 
 	reg.Wait(state.ID)
@@ -212,7 +212,7 @@ func TestForkRegistry_NotifyOnError(t *testing.T) {
 			defer mu.Unlock()
 			notifiedErr = err
 		},
-		"error test", "call_err",
+		"error test", "call_err", "fork",
 	)
 
 	reg.Wait(state.ID)
@@ -238,7 +238,7 @@ func TestForkRegistry_ContextCancellation(t *testing.T) {
 			<-runCtx.Done()
 			return nil, runCtx.Err()
 		},
-		nil, "ctx test", "call_ctx",
+		nil, "ctx test", "call_ctx", "fork",
 	)
 
 	// Cancel the parent context — should propagate to the child
@@ -334,7 +334,7 @@ func TestBuildForkNotificationXML_EscapesSpecialChars(t *testing.T) {
 func TestForkRegistry_SpawnNilRunFn(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
-	_, err := reg.Spawn(context.Background(), nil, nil, "test", "call_1")
+	_, err := reg.Spawn(context.Background(), nil, nil, "test", "call_1", "fork")
 	if err == nil {
 		t.Fatal("expected error for nil runFn, got nil")
 	}
@@ -353,7 +353,7 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 			<-unblock
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "snapshot test", "call_1",
+		nil, "snapshot test", "call_1", "fork",
 	)
 
 	// Get while running — returned value should be a copy, not the original pointer
@@ -388,13 +388,13 @@ func TestForkRegistry_CleanupCompleted(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
-		nil, "task a", "call_1",
+		nil, "task a", "call_1", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
-		nil, "task b", "call_2",
+		nil, "task b", "call_2", "fork",
 	)
 
 	// Wait for both to complete
@@ -493,7 +493,7 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 
 	state, err := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
 		panic("something went terribly wrong")
-	}, notifyFn, "test panic", "tool-1")
+	}, notifyFn, "test panic", "tool-1", "fork")
 	if err != nil {
 		t.Fatalf("Spawn should not error, got %v", err)
 	}
@@ -529,7 +529,7 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 		<-innerCtx.Done()
 		// Return partial result even though cancelled
 		return &types.SubQueryResult{Content: "partial work done", TotalTokens: 50}, ctx.Err()
-	}, notifyFn, "test partial", "tool-1")
+	}, notifyFn, "test partial", "tool-1", "fork")
 	if err != nil {
 		t.Fatalf("Spawn should not error, got %v", err)
 	}
@@ -551,7 +551,7 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 	}
 }
 
-func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
+func TestBackgroundAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -559,7 +559,7 @@ func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	// Spawn and complete a fork agent
 	state, _ := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
 		return &types.SubQueryResult{Content: "done"}, nil
-	}, nil, "test", "tool-1")
+	}, nil, "test", "tool-1", "fork")
 	reg.Wait(state.ID) // wait for completion
 
 	// Get should find the completed agent
@@ -576,4 +576,39 @@ func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	if !found {
 		t.Error("Get should still find completed fork agent on second call — lazy cleanup too aggressive")
 	}
+}
+
+func TestSpawn_IDPrefixPerKind(t *testing.T) {
+	t.Parallel()
+	reg := NewBackgroundAgentRegistry()
+
+	s1, err := reg.Spawn(context.Background(),
+		func(ctx context.Context) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{Content: "a"}, nil
+		},
+		nil, "task a", "call_1", "fork",
+	)
+	if err != nil {
+		t.Fatalf("Spawn fork: %v", err)
+	}
+	s2, err := reg.Spawn(context.Background(),
+		func(ctx context.Context) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{Content: "b"}, nil
+		},
+		nil, "task b", "call_2", "agent",
+	)
+	if err != nil {
+		t.Fatalf("Spawn agent: %v", err)
+	}
+
+	// One shared counter mints both kinds — no cross-kind ID collision.
+	if s1.ID != "fork-1" {
+		t.Errorf("first ID = %q, want %q", s1.ID, "fork-1")
+	}
+	if s2.ID != "agent-2" {
+		t.Errorf("second ID = %q, want %q", s2.ID, "agent-2")
+	}
+
+	reg.Wait(s1.ID)
+	reg.Wait(s2.ID)
 }

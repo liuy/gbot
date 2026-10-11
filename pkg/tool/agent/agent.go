@@ -178,7 +178,7 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "subagent_type": {"type": "string", "description": "Agent type to use"},
     "name": {"type": "string", "description": "Name for the spawned agent. Makes it addressable via SendMessage while running."},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
-    "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background"},
+    "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background. Returns immediately with an agent ID; the result arrives as a job notification when the agent finishes. Applies to both fork and subagent_type agents."},
     "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"}
   },
   "required": ["description","prompt"]
@@ -220,13 +220,32 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		parentToolUseID = tctx.ToolUseID
 	}
 
-	result, err := t.engine.RunAgent(ctx, AgentOpts{
+	// One opts literal serves both paths, guaranteeing the background spawn
+	// is field-identical to the sync call (MaxTurns 0 lets RunAgent apply
+	// the agent-def default).
+	opts := AgentOpts{
 		Prompt:          agentInput.Prompt,
 		AgentType:       agentInput.SubagentType,
 		Model:           agentInput.Model,
 		ResolveTierFn:   t.resolveTier,
 		ParentToolUseID: parentToolUseID,
-	})
+	}
+
+	if agentInput.RunInBackground {
+		if t.bgReg == nil {
+			return nil, fmt.Errorf("background mode is not available: agent registry not initialized")
+		}
+		displayType := agentInput.SubagentType
+		if displayType == "" {
+			// Mirrors Engine.RunAgent's default for the launch message and
+			// notification; opts.AgentType stays raw so the engine still
+			// owns type resolution.
+			displayType = "General"
+		}
+		return t.spawnBackground(opts, agentInput, displayType, "agent", parentToolUseID)
+	}
+
+	result, err := t.engine.RunAgent(ctx, opts)
 
 	if err != nil {
 		return nil, fmt.Errorf("sub-agent execution failed: %w", err)
@@ -269,7 +288,12 @@ func (t *AgentTool) RenderResult(data any) string {
 	switch v := data.(type) {
 	case *types.SubQueryResult:
 		if v.AsyncLaunched {
-			return fmt.Sprintf("Fork agent %s running in background...", v.AgentID)
+			// Fork launch results hard-code AgentType "fork", so the
+			// capitalized fork string stays reachable only from fork spawns.
+			if v.AgentType == "fork" {
+				return fmt.Sprintf("Fork agent %s running in background...", v.AgentID)
+			}
+			return fmt.Sprintf("%s agent %s running in background...", v.AgentType, v.AgentID)
 		}
 		return v.Content
 	case string:
@@ -392,34 +416,52 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		return &tool.ToolResult{Data: result}, nil
 	}
 
-	// Async path: spawn in background
+	return t.spawnBackground(opts, input, "fork", "fork", parentToolUseID)
+}
+
+// spawnBackground launches a background agent in the shared registry and
+// returns the async-launched tool result. displayType is the launch result's
+// AgentType and the notification label when input.Name is unset ("fork" for
+// forks, the resolved subagent type otherwise); idPrefix mints the registry ID.
+func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, displayType, idPrefix, parentToolUseID string) (*tool.ToolResult, error) {
 	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
 		return t.engine.RunAgent(runCtx, opts)
 	}
 
-	// Build the notifyFn closure
-	forkNotifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
-		xml := buildAgentNotificationXML(agentID, toolUseID, result, err, input.Description, input.Name)
+	// Fork notifications label the agent name-else-"fork" (the XML builder's
+	// historical default); subagents label name-else-resolved-type.
+	agentLabel := input.Name
+	if agentLabel == "" {
+		agentLabel = displayType
+	}
+	notifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
+		xml := buildAgentNotificationXML(agentID, toolUseID, result, err, input.Description, agentLabel)
 		if t.notifyFn != nil {
 			t.notifyFn(xml)
 		}
 	}
 
-	// Detached context — fork agents must survive parent query lifecycle.
+	// Detached context — background agents must survive parent query lifecycle.
 	// CleanupCompleted is NOT called here — the adapter handles lazy cleanup
 	// to avoid deleting agents before TaskOutput can query them.
 	detachedCtx := context.Background()
 
-	state, err := t.bgReg.Spawn(detachedCtx, runFn, forkNotifyFn, input.Description, parentToolUseID)
+	state, err := t.bgReg.Spawn(detachedCtx, runFn, notifyFn, input.Description, parentToolUseID, idPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("failed to spawn fork agent: %w", err)
+		return nil, fmt.Errorf("failed to spawn background agent: %w", err)
 	}
 
+	var content string
+	if displayType == "fork" {
+		content = fmt.Sprintf("Fork agent %q launched in background", state.ID)
+	} else {
+		content = fmt.Sprintf("%s agent %q launched in background", displayType, state.ID)
+	}
 	return &tool.ToolResult{
 		Data: &types.SubQueryResult{
 			AgentID:       state.ID,
-			AgentType:     "fork",
-			Content:       fmt.Sprintf("Fork agent %q launched in background", state.ID),
+			AgentType:     displayType,
+			Content:       content,
 			AsyncLaunched: true,
 		},
 	}, nil

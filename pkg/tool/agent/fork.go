@@ -54,12 +54,15 @@ func NewBackgroundAgentRegistry() *BackgroundAgentRegistry {
 // Spawn starts a new background agent in a goroutine.
 // The runFn is called in a goroutine with a derived context.
 // On completion, notifyFn is called with the result.
+// idPrefix mints the registry ID ("<idPrefix>-<n>"): "fork" keeps fork IDs
+// unchanged, subagent spawns pass their own prefix.
 func (r *BackgroundAgentRegistry) Spawn(
 	ctx context.Context,
 	runFn func(ctx context.Context) (*types.SubQueryResult, error),
 	notifyFn func(agentID string, toolUseID string, result *types.SubQueryResult, err error),
 	description string,
 	parentToolUseID string,
+	idPrefix string,
 ) (*BackgroundAgentState, error) {
 	if runFn == nil {
 		return nil, fmt.Errorf("runFn is required")
@@ -69,7 +72,7 @@ func (r *BackgroundAgentRegistry) Spawn(
 
 	r.mu.Lock()
 	r.nextID++
-	id := fmt.Sprintf("fork-%d", r.nextID)
+	id := fmt.Sprintf("%s-%d", idPrefix, r.nextID)
 	state := &BackgroundAgentState{
 		ID:          id,
 		Description: description,

@@ -137,7 +137,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 				TotalDurationMs: 200,
 			}, nil
 		},
-		nil, "test task", "call_1",
+		nil, "test task", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -172,7 +172,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 			<-blockCh // block until test has read the status
 			return &types.SubQueryResult{Content: "slow"}, nil
 		},
-		nil, "slow task", "call_1",
+		nil, "slow task", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -198,7 +198,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
-		nil, "failing task", "call_1",
+		nil, "failing task", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -232,13 +232,13 @@ func TestAdapter_List(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
-		nil, "task a", "call_1",
+		nil, "task a", "call_1", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
-		nil, "task b", "call_2",
+		nil, "task b", "call_2", "fork",
 	)
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
@@ -267,7 +267,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "cleanup test", "call_1",
+		nil, "cleanup test", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -292,7 +292,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		nil, "killable task", "call_1",
+		nil, "killable task", "call_1", "fork",
 	)
 	<-started
 
@@ -323,7 +323,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "wait test", "call_1",
+		nil, "wait test", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -343,7 +343,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
 		},
-		nil, "fail test", "call_1",
+		nil, "fail test", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)

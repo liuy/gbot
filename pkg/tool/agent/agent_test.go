@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -663,6 +665,9 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	}
 	if sqr.AgentID == "" {
 		t.Error("AgentID should not be empty")
+	}
+	if want := fmt.Sprintf("Fork agent %q launched in background", sqr.AgentID); sqr.Content != want {
+		t.Errorf("Content = %q, want %q", sqr.Content, want)
 	}
 
 	// Wait for fork agent to complete via registry
@@ -1534,39 +1539,6 @@ func TestForkSync_InheritsContext(t *testing.T) {
 	_ = capturedOpts.Tools
 }
 
-func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
-	// fork=false + run_in_background=true without bgReg → falls through to normal sync path
-	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
-		return &types.SubQueryResult{
-			AgentType: "General",
-			Content:   "done",
-		}, nil
-	}
-
-	_ = makeTestTools("Bash", "Read")
-	at := New()
-	at.SetEngine(&mockSubEngine{runFn: factory})
-	// No SetNotifyFn → bgReg is nil
-
-	input := json.RawMessage(`{"description":"bg without fork","prompt":"do something","run_in_background":true}`)
-	result, err := at.Call(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-
-	sqr, ok := result.Data.(*types.SubQueryResult)
-	if !ok {
-		t.Fatalf("result.Data should be *SubQueryResult, got %T", result.Data)
-	}
-	// Falls through to sync path (no fork, no registry for background)
-	if sqr.AsyncLaunched {
-		t.Error("should not be async — no bgReg to manage background agents")
-	}
-	if sqr.Content != "done" {
-		t.Errorf("Content = %q, want %q", sqr.Content, "done")
-	}
-}
-
 func TestForkTrue_NoForkReg_ReturnsError(t *testing.T) {
 	// fork=true but bgReg is nil → error
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
@@ -1585,5 +1557,437 @@ func TestForkTrue_NoForkReg_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fork mode is not available") {
 		t.Errorf("error = %q, want mention of fork mode not available", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Background subagent tests (subagent_type + run_in_background)
+// ---------------------------------------------------------------------------
+
+// launchBackground spawns a background subagent via at.Call and returns the
+// async-launched result. The engine's runFn may block forever — pre-feature
+// the call runs the engine synchronously, so a timeout here fails the test
+// fast instead of hanging the run.
+func launchBackground(t *testing.T, at *AgentTool, input json.RawMessage, tctx *tool.ToolUseContext) *types.SubQueryResult {
+	t.Helper()
+	type callOut struct {
+		result *tool.ToolResult
+		err    error
+	}
+	out := make(chan callOut, 1)
+	go func() {
+		result, err := at.Call(context.Background(), input, tctx)
+		out <- callOut{result: result, err: err}
+	}()
+	select {
+	case got := <-out:
+		if got.err != nil {
+			t.Fatalf("Call returned error: %v", got.err)
+		}
+		sqr, ok := got.result.Data.(*types.SubQueryResult)
+		if !ok {
+			t.Fatalf("result.Data = %T, want *SubQueryResult", got.result.Data)
+		}
+		return sqr
+	case <-time.After(5 * time.Second):
+		t.Fatal("Call did not return — subagent background launch must return immediately")
+		return nil
+	}
+}
+
+func TestCallSubagent_BackgroundReturnsImmediately(t *testing.T) {
+	t.Parallel()
+	blocked := make(chan struct{})
+	var mu sync.Mutex
+	var captured AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		mu.Lock()
+		captured = opts
+		mu.Unlock()
+		<-blocked
+		return &types.SubQueryResult{Content: "bg done"}, nil
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
+
+	input := json.RawMessage(`{"description":"bg","prompt":"p","subagent_type":"General","run_in_background":true}`)
+	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_1"})
+
+	// The engine is still blocked — proving Call returned before it finished.
+	select {
+	case <-blocked:
+		t.Fatal("Call returned but the engine already finished")
+	default:
+	}
+
+	if !sqr.AsyncLaunched {
+		t.Error("AsyncLaunched = false, want true")
+	}
+	if sqr.AgentID != "agent-1" {
+		t.Errorf("AgentID = %q, want %q", sqr.AgentID, "agent-1")
+	}
+	if sqr.AgentType != "General" {
+		t.Errorf("AgentType = %q, want %q", sqr.AgentType, "General")
+	}
+	if sqr.Content != `General agent "agent-1" launched in background` {
+		t.Errorf("Content = %q, want %q", sqr.Content, `General agent "agent-1" launched in background`)
+	}
+
+	close(blocked)
+	at.bgReg.Wait(sqr.AgentID)
+
+	mu.Lock()
+	opts := captured
+	mu.Unlock()
+	// The background opts must be field-identical to the sync path's —
+	// MaxTurns 0 lets RunAgent apply the agent-def default (fork's 200 would
+	// leak in from a copy-paste of callFork).
+	if opts.Prompt != "p" {
+		t.Errorf("opts.Prompt = %q, want %q", opts.Prompt, "p")
+	}
+	if opts.AgentType != "General" {
+		t.Errorf("opts.AgentType = %q, want %q", opts.AgentType, "General")
+	}
+	if opts.MaxTurns != 0 {
+		t.Errorf("opts.MaxTurns = %d, want 0 (agent-def default applies, not fork's 200)", opts.MaxTurns)
+	}
+	if opts.ParentToolUseID != "call_1" {
+		t.Errorf("opts.ParentToolUseID = %q, want %q", opts.ParentToolUseID, "call_1")
+	}
+}
+
+func TestCallSubagent_BackgroundNotificationDelivered(t *testing.T) {
+	t.Parallel()
+	t.Run("type label", func(t *testing.T) {
+		var mu sync.Mutex
+		var notifications []string
+		factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{
+				Content:           "found 3 todos",
+				TotalTokens:       100,
+				TotalToolUseCount: 2,
+				TotalDurationMs:   500,
+			}, nil
+		}
+
+		at := New()
+		at.SetEngine(&mockSubEngine{runFn: factory})
+		at.SetNotifyFn(func(xml string) {
+			mu.Lock()
+			defer mu.Unlock()
+			notifications = append(notifications, xml)
+		}, func() string { return "" })
+
+		input := json.RawMessage(`{"description":"count todos","prompt":"p","subagent_type":"General","run_in_background":true}`)
+		sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_n"})
+		at.bgReg.Wait(sqr.AgentID)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(notifications) != 1 {
+			t.Fatalf("notifications = %d, want 1", len(notifications))
+		}
+		xml := notifications[0]
+		for _, want := range []string{
+			"<job-notification>",
+			"<job-id>agent-1</job-id>",
+			"<agent-type>General</agent-type>",
+			"<status>completed</status>",
+			"found 3 todos",
+			"<tool-use-id>call_n</tool-use-id>",
+		} {
+			if !strings.Contains(xml, want) {
+				t.Errorf("notification missing %q, got:\n%s", want, xml)
+			}
+		}
+	})
+
+	t.Run("name override", func(t *testing.T) {
+		var mu sync.Mutex
+		var notifications []string
+		factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{Content: "done"}, nil
+		}
+
+		at := New()
+		at.SetEngine(&mockSubEngine{runFn: factory})
+		at.SetNotifyFn(func(xml string) {
+			mu.Lock()
+			defer mu.Unlock()
+			notifications = append(notifications, xml)
+		}, func() string { return "" })
+
+		input := json.RawMessage(`{"description":"find","prompt":"p","subagent_type":"General","name":"finder","run_in_background":true}`)
+		sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_name"})
+		at.bgReg.Wait(sqr.AgentID)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(notifications) != 1 {
+			t.Fatalf("notifications = %d, want 1", len(notifications))
+		}
+		if !strings.Contains(notifications[0], "<agent-type>finder</agent-type>") {
+			t.Errorf("notification should use name as agent-type, got:\n%s", notifications[0])
+		}
+	})
+}
+
+func TestCallSubagent_BackgroundJobListShowsAgent(t *testing.T) {
+	t.Parallel()
+	blocked := make(chan struct{})
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		<-blocked
+		return &types.SubQueryResult{Content: "found it", AgentType: "General"}, nil
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
+
+	input := json.RawMessage(`{"description":"bg search","prompt":"p","subagent_type":"General","run_in_background":true}`)
+	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_list"})
+
+	jobTool := job.NewJob(job.NewMultiRegistry(at.JobAdapter()))
+	listResult, err := jobTool.Call(context.Background(), json.RawMessage(`{"action":"list"}`), nil)
+	if err != nil {
+		t.Fatalf("Job list returned error: %v", err)
+	}
+	list := listResult.Data.(*job.JobOutput).List
+	if len(list.Jobs) != 1 {
+		t.Fatalf("Job list has %d jobs, want 1: %+v", len(list.Jobs), list.Jobs)
+	}
+	j := list.Jobs[0]
+	if j.ID != "agent-1" {
+		t.Errorf("job ID = %q, want %q", j.ID, "agent-1")
+	}
+	if j.Type != "local_agent" {
+		t.Errorf("job Type = %q, want %q", j.Type, "local_agent")
+	}
+	if j.Status != "running" {
+		t.Errorf("job Status = %q, want %q", j.Status, "running")
+	}
+	if j.Description != "bg search" {
+		t.Errorf("job Description = %q, want %q", j.Description, "bg search")
+	}
+
+	close(blocked)
+	at.bgReg.Wait(sqr.AgentID)
+
+	pollResult, err := jobTool.Call(context.Background(), json.RawMessage(`{"action":"poll","job_id":"agent-1","block":false}`), nil)
+	if err != nil {
+		t.Fatalf("Job poll returned error: %v", err)
+	}
+	poll := pollResult.Data.(*job.JobOutput).Poll
+	if poll.RetrievalStatus != "success" {
+		t.Errorf("poll retrieval_status = %q, want %q", poll.RetrievalStatus, "success")
+	}
+	if poll.Task.Status != "completed" {
+		t.Errorf("poll status = %q, want %q", poll.Task.Status, "completed")
+	}
+	if poll.Task.Output != "found it" {
+		t.Errorf("poll output = %q, want %q", poll.Task.Output, "found it")
+	}
+	if poll.Task.AgentType != "General" {
+		t.Errorf("poll agent_type = %q, want %q", poll.Task.AgentType, "General")
+	}
+}
+
+func TestCallSubagent_BackgroundStopKillsAgent(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
+
+	input := json.RawMessage(`{"description":"long bg","prompt":"p","subagent_type":"General","run_in_background":true}`)
+	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_stop"})
+	<-started
+
+	jobTool := job.NewJob(job.NewMultiRegistry(at.JobAdapter()))
+	stopResult, err := jobTool.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"agent-1"}`), nil)
+	if err != nil {
+		t.Fatalf("Job stop returned error: %v", err)
+	}
+	stop := stopResult.Data.(*job.JobOutput).Stop
+	if stop.Status != "killed" {
+		t.Errorf("stop status = %q, want %q", stop.Status, "killed")
+	}
+	if stop.JobType != "local_agent" {
+		t.Errorf("stop job_type = %q, want %q", stop.JobType, "local_agent")
+	}
+
+	final, ok := at.bgReg.Wait(sqr.AgentID)
+	if !ok {
+		t.Fatal("Wait returned false")
+	}
+	if final.Status != AgentCancelled {
+		t.Errorf("registry status = %q, want %q", final.Status, AgentCancelled)
+	}
+
+	// Stopping a terminal job errors instead of reporting a second kill.
+	_, err = jobTool.Call(context.Background(), json.RawMessage(`{"action":"stop","job_id":"agent-1"}`), nil)
+	if err == nil {
+		t.Fatal("expected error stopping a terminal agent")
+	}
+	if !strings.Contains(err.Error(), "not running") {
+		t.Errorf("error = %q, want mention of not running", err.Error())
+	}
+}
+
+func TestCallSubagent_BackgroundErrorSurfacesInNotification(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var notifications []string
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		return nil, errors.New("boom")
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+	at.SetNotifyFn(func(xml string) {
+		mu.Lock()
+		defer mu.Unlock()
+		notifications = append(notifications, xml)
+	}, func() string { return "" })
+
+	input := json.RawMessage(`{"description":"will fail","prompt":"p","subagent_type":"General","run_in_background":true}`)
+	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_err"})
+
+	final, ok := at.bgReg.Wait(sqr.AgentID)
+	if !ok {
+		t.Fatal("Wait returned false")
+	}
+	if final.Status != AgentFailed {
+		t.Errorf("registry status = %q, want %q", final.Status, AgentFailed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notifications) != 1 {
+		t.Fatalf("notifications = %d, want 1", len(notifications))
+	}
+	if !strings.Contains(notifications[0], "<status>failed</status>") {
+		t.Errorf("notification should carry failed status, got:\n%s", notifications[0])
+	}
+	if !strings.Contains(notifications[0], "Error: boom") {
+		t.Errorf("notification should carry error text, got:\n%s", notifications[0])
+	}
+
+	info, found := at.JobAdapter().Get("agent-1")
+	if !found {
+		t.Fatal("JobAdapter Get returned false")
+	}
+	if info.Status != "failed" {
+		t.Errorf("job status = %q, want %q", info.Status, "failed")
+	}
+	if info.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1", info.ExitCode)
+	}
+}
+
+func TestCallSubagent_BackgroundNoRegistryError(t *testing.T) {
+	t.Parallel()
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		return &types.SubQueryResult{Content: "ran sync"}, nil
+	}})
+	// SetNotifyFn NOT called — background registry not initialized.
+
+	input := json.RawMessage(`{"description":"bg no reg","prompt":"p","run_in_background":true}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error when run_in_background=true but registry not initialized")
+	}
+	if !strings.Contains(err.Error(), "background mode is not available") {
+		t.Errorf("error = %q, want mention of background mode not available", err.Error())
+	}
+}
+
+func TestCallSubagent_BackgroundDefaultsToGeneral(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var captured AgentOpts
+	var notifications []string
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		mu.Lock()
+		captured = opts
+		mu.Unlock()
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+	at.SetNotifyFn(func(xml string) {
+		mu.Lock()
+		defer mu.Unlock()
+		notifications = append(notifications, xml)
+	}, func() string { return "" })
+
+	input := json.RawMessage(`{"description":"no type","prompt":"p","run_in_background":true}`)
+	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_def"})
+	at.bgReg.Wait(sqr.AgentID)
+
+	if sqr.AgentType != "General" {
+		t.Errorf("launch AgentType = %q, want %q", sqr.AgentType, "General")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notifications) != 1 {
+		t.Fatalf("notifications = %d, want 1", len(notifications))
+	}
+	if !strings.Contains(notifications[0], "<agent-type>General</agent-type>") {
+		t.Errorf("notification should default agent-type to General, got:\n%s", notifications[0])
+	}
+	// opts.AgentType stays raw — Engine.RunAgent owns type resolution.
+	if captured.AgentType != "" {
+		t.Errorf("opts.AgentType = %q, want empty (engine resolves the default)", captured.AgentType)
+	}
+}
+
+// The sync path must hand the caller's context to the engine so caller-side
+// cancellation (user abort, deadline) stops the sub-agent.
+func TestCallSubagent_SyncPropagatesCallerContext(t *testing.T) {
+	t.Parallel()
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: factory})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	input := json.RawMessage(`{"description":"cancel me","prompt":"p","subagent_type":"General"}`)
+	_, err := at.Call(ctx, input, nil)
+	if err == nil {
+		t.Fatal("expected error when caller context is already canceled")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %q, want mention of context canceled", err.Error())
+	}
+}
+
+func TestRenderResult_BackgroundByType(t *testing.T) {
+	t.Parallel()
+	at := New()
+	fork := at.RenderResult(&types.SubQueryResult{AgentID: "fork-1", AgentType: "fork", AsyncLaunched: true})
+	if fork != "Fork agent fork-1 running in background..." {
+		t.Errorf("fork render = %q, want %q", fork, "Fork agent fork-1 running in background...")
+	}
+	gen := at.RenderResult(&types.SubQueryResult{AgentID: "agent-2", AgentType: "General", AsyncLaunched: true})
+	if gen != "General agent agent-2 running in background..." {
+		t.Errorf("General render = %q, want %q", gen, "General agent agent-2 running in background...")
 	}
 }

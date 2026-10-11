@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
@@ -1044,5 +1045,108 @@ func TestCreateTools_PerEngineTaskList(t *testing.T) {
 	}
 	if len(tl1Tasks) != 1 {
 		t.Errorf("tl1 should still have 1 task, got %d", len(tl1Tasks))
+	}
+}
+
+// TestAgentBackgroundSubagentEndToEnd exercises the full background-subagent
+// chain: Agent tool spawn → shared registry → engine.RunAgent (real
+// sub-engine, real provider) → job notification → engine attachment queue →
+// auto LLM turn that sees the notification.
+func TestAgentBackgroundSubagentEndToEnd(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	refs := CreateTools(deps, tl)
+	mp := &mockProvider{}
+	// Response 1: the background sub-agent's reply. Response 2: the parent's
+	// reaction to the job notification (auto-turn after Wait).
+	mp.addResponse(textStreamEvents("test-model", "sub-agent reply"), nil)
+	mp.addResponse(textStreamEvents("test-model", "noted"), nil)
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: &mockDispatcher{},
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+	WireEngine(eng, refs, deps)
+	// The notification auto-turn requires a non-empty system prompt
+	// (startProcessAttachmentsIfIdle bails on empty).
+	eng.SetSystemPrompt("parent system prompt")
+
+	agentInput, _ := json.Marshal(map[string]any{
+		"description":       "e2e",
+		"prompt":            "p",
+		"subagent_type":     "General",
+		"run_in_background": true,
+	})
+	result, err := refs.Agent.Call(context.Background(), agentInput, &tool.ToolUseContext{
+		ToolUseID: "call_e2e_1",
+		Options:   tool.ToolUseOptions{SessionID: "e2e-session"},
+	})
+	if err != nil {
+		t.Fatalf("Agent.Call returned error: %v", err)
+	}
+	sqr, ok := result.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("result.Data = %T, want *SubQueryResult", result.Data)
+	}
+	if !sqr.AsyncLaunched {
+		t.Fatalf("AsyncLaunched = false, want true (sync path ran instead: %+v)", sqr)
+	}
+	if sqr.AgentID != "agent-1" {
+		t.Errorf("AgentID = %q, want %q", sqr.AgentID, "agent-1")
+	}
+	if sqr.AgentType != "General" {
+		t.Errorf("AgentType = %q, want %q", sqr.AgentType, "General")
+	}
+
+	code, err := refs.JobReg.Wait("agent-1")
+	if err != nil {
+		t.Fatalf("JobReg.Wait returned error: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("JobReg.Wait exit code = %d, want 0", code)
+	}
+
+	// Sub-agent consumed response 1; the notification auto-turn consumes
+	// response 2 via startProcessAttachmentsIfIdle.
+	waitForCallCount(t, mp, 2, 5*time.Second)
+
+	var gotNotification, gotAgentType bool
+	for _, m := range mp.lastRequestMessages() {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type != types.ContentTypeText {
+				continue
+			}
+			if strings.Contains(b.Text, "<job-notification>") && strings.Contains(b.Text, "agent-1") {
+				gotNotification = true
+			}
+			if strings.Contains(b.Text, "<agent-type>General</agent-type>") {
+				gotAgentType = true
+			}
+		}
+	}
+	if !gotNotification {
+		t.Error("parent's notification-turn request must contain the <job-notification> with agent-1")
+	}
+	if !gotAgentType {
+		t.Error("notification delivered to the parent must label the agent type General")
+	}
+
+	info, found := refs.JobReg.Get("agent-1")
+	if !found {
+		t.Fatal("JobReg.Get(agent-1) returned false after completion")
+	}
+	if info.Status != "completed" {
+		t.Errorf("job status = %q, want %q", info.Status, "completed")
 	}
 }
