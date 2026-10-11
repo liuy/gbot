@@ -554,6 +554,12 @@ type WUIConnector struct {
 	// Typed as any so the production file does not depend on the test-only
 	// mockEngine type; mock() (in helpers_test.go) does the type assertion.
 	testMock any
+
+	// stopOnce makes Stop idempotent: synctest-based tests stop the
+	// connector inside the bubble via defer, and the helper's t.Cleanup
+	// fires Stop again after the bubble exits. Production calls Stop once;
+	// double-close of done would panic there otherwise.
+	stopOnce sync.Once
 }
 
 // outQueueCapacity keeps backpressure parity with the old wsCh: a slow
@@ -768,18 +774,20 @@ func (c *WUIConnector) Start(ctx context.Context) error { return nil }
 // the active WS. Does NOT abort the active query — a brief disconnect (e.g.
 // mobile browser backgrounding) should not interrupt the LLM.
 func (c *WUIConnector) Stop() {
-	close(c.done)
-	// Close the current era so pushers parked on a full queue exit promptly
-	// instead of waiting for the done-select inside their blocking loop.
-	c.outQ.Load().close()
-	c.slotsMu.Lock()
-	for _, slot := range c.slots {
-		if slot.unsubscribe != nil {
-			slot.unsubscribe()
+	c.stopOnce.Do(func() {
+		close(c.done)
+		// Close the current era so pushers parked on a full queue exit promptly
+		// instead of waiting for the done-select inside their blocking loop.
+		c.outQ.Load().close()
+		c.slotsMu.Lock()
+		for _, slot := range c.slots {
+			if slot.unsubscribe != nil {
+				slot.unsubscribe()
+			}
 		}
-	}
-	c.slotsMu.Unlock()
-	c.cleanupConn()
+		c.slotsMu.Unlock()
+		c.cleanupConn()
+	})
 }
 
 // Send is an interface no-op: wui has no outbound platform. Nobody calls

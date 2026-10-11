@@ -46,56 +46,62 @@ func contentETagTag(b []byte) string {
 }
 
 func TestEmbeddedAssetsGzipNegotiation(t *testing.T) {
-	srv := newStaticTestServer(t)
-	for _, tc := range newEmbeddedAssetCases(t) {
-		tag := contentETagTag(tc.body)
+	inBubble(t, func(t *testing.T) {
+		mux := http.NewServeMux()
+		RegisterStaticRoutes(mux)
+		srv := startHermeticServer(mux)
+		defer srv.close()
+		client := srv.client()
+		for _, tc := range newEmbeddedAssetCases(t) {
+			tag := contentETagTag(tc.body)
 
-		status, h, gzBody, clen := probeArtifact(t, srv.URL+tc.url, "gzip", nil)
-		if status != http.StatusOK {
-			t.Fatalf("%s gzip status = %d, want 200", tc.url, status)
-		}
-		if got := h.Get("Content-Encoding"); got != "gzip" {
-			t.Errorf("%s Content-Encoding = %q, want gzip", tc.url, got)
-		}
-		if got := h.Get("ETag"); got != `"gz-`+tag+`"` {
-			t.Errorf("%s gzip ETag = %q, want %q", tc.url, got, `"gz-`+tag+`"`)
-		}
-		if got := h.Get("Content-Type"); got != tc.ct {
-			t.Errorf("%s gzip Content-Type = %q, want %q", tc.url, got, tc.ct)
-		}
-		if got := h.Get("Vary"); got != "Accept-Encoding" {
-			t.Errorf("%s Vary = %q, want Accept-Encoding", tc.url, got)
-		}
-		if clen != int64(len(gzBody)) {
-			t.Errorf("%s Content-Length = %d, want the exact compressed size %d", tc.url, clen, len(gzBody))
-		}
-		if plain := gunzipAll(t, gzBody); !bytes.Equal(plain, tc.body) {
-			t.Errorf("%s gunzipped body = %d bytes, want the embed source (%d)", tc.url, len(plain), len(tc.body))
-		}
+			status, h, gzBody, clen := probeArtifactClient(t, client, "http://wui-hermetic"+tc.url, "gzip", nil)
+			if status != http.StatusOK {
+				t.Fatalf("%s gzip status = %d, want 200", tc.url, status)
+			}
+			if got := h.Get("Content-Encoding"); got != "gzip" {
+				t.Errorf("%s Content-Encoding = %q, want gzip", tc.url, got)
+			}
+			if got := h.Get("ETag"); got != `"gz-`+tag+`"` {
+				t.Errorf("%s gzip ETag = %q, want %q", tc.url, got, `"gz-`+tag+`"`)
+			}
+			if got := h.Get("Content-Type"); got != tc.ct {
+				t.Errorf("%s gzip Content-Type = %q, want %q", tc.url, got, tc.ct)
+			}
+			if got := h.Get("Vary"); got != "Accept-Encoding" {
+				t.Errorf("%s Vary = %q, want Accept-Encoding", tc.url, got)
+			}
+			if clen != int64(len(gzBody)) {
+				t.Errorf("%s Content-Length = %d, want the exact compressed size %d", tc.url, clen, len(gzBody))
+			}
+			if plain := gunzipAll(t, gzBody); !bytes.Equal(plain, tc.body) {
+				t.Errorf("%s gunzipped body = %d bytes, want the embed source (%d)", tc.url, len(plain), len(tc.body))
+			}
 
-		status, h, body, clen := probeArtifact(t, srv.URL+tc.url, "identity", nil)
-		if status != http.StatusOK {
-			t.Fatalf("%s identity status = %d, want 200", tc.url, status)
+			status, h, body, clen := probeArtifactClient(t, client, "http://wui-hermetic"+tc.url, "identity", nil)
+			if status != http.StatusOK {
+				t.Fatalf("%s identity status = %d, want 200", tc.url, status)
+			}
+			if got := h.Get("Content-Encoding"); got != "" {
+				t.Errorf("%s identity Content-Encoding = %q, want empty", tc.url, got)
+			}
+			if got := h.Get("ETag"); got != `"`+tag+`"` {
+				t.Errorf("%s identity ETag = %q, want the hash quoted without the gz- prefix (%q)", tc.url, got, `"`+tag+`"`)
+			}
+			if got := h.Get("Content-Type"); got != tc.ct {
+				t.Errorf("%s identity Content-Type = %q, want %q", tc.url, got, tc.ct)
+			}
+			if got := h.Get("Vary"); got != "Accept-Encoding" {
+				t.Errorf("%s identity Vary = %q, want Accept-Encoding", tc.url, got)
+			}
+			if clen != int64(len(tc.body)) {
+				t.Errorf("%s identity Content-Length = %d, want %d", tc.url, clen, len(tc.body))
+			}
+			if !bytes.Equal(body, tc.body) {
+				t.Errorf("%s identity body = %d bytes, want the exact embed source (%d)", tc.url, len(body), len(tc.body))
+			}
 		}
-		if got := h.Get("Content-Encoding"); got != "" {
-			t.Errorf("%s identity Content-Encoding = %q, want empty", tc.url, got)
-		}
-		if got := h.Get("ETag"); got != `"`+tag+`"` {
-			t.Errorf("%s identity ETag = %q, want the hash quoted without the gz- prefix (%q)", tc.url, got, `"`+tag+`"`)
-		}
-		if got := h.Get("Content-Type"); got != tc.ct {
-			t.Errorf("%s identity Content-Type = %q, want %q", tc.url, got, tc.ct)
-		}
-		if got := h.Get("Vary"); got != "Accept-Encoding" {
-			t.Errorf("%s identity Vary = %q, want Accept-Encoding", tc.url, got)
-		}
-		if clen != int64(len(tc.body)) {
-			t.Errorf("%s identity Content-Length = %d, want %d", tc.url, clen, len(tc.body))
-		}
-		if !bytes.Equal(body, tc.body) {
-			t.Errorf("%s identity body = %d bytes, want the exact embed source (%d)", tc.url, len(body), len(tc.body))
-		}
-	}
+	})
 }
 
 // A client that sends no Accept-Encoding at all (no auto-injection) must get

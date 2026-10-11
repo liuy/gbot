@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -22,162 +23,166 @@ import (
 // frame (containing accumulated text from d0..d4), and (c) all subsequent live
 // events. The old connection receives nothing after takeover.
 func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
-	c := newTestConnector(t)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		// Conn1 connects first, becomes active.
+		ws1 := hs.dialDrained(t)
 
-	// Conn1 connects first, becomes active.
-	ws1 := dialAndStore(t, c)
-
-	// Set up engine history AFTER ws1 connects so ws1 doesn't get a history
-	// frame (buildHistoryMessage returns nil for empty Messages).
-	historyMsgs := []types.Message{
-		{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
-			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prior q"}}},
-		{ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
-			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prior a"}}},
-	}
-	c.mock().SetMessagesFn(func() []types.Message { return historyMsgs })
-
-	// Engine streams 5 text_delta events to ws1.
-	for i := range 5 {
-		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
-	}
-
-	// Assert ws1 received exactly d0..d4 (as 5 individual event frames).
-	var got1 []string
-	for i := range 5 {
-		msg := readWSMessage(t, ws1)
-		var env struct {
-			Event struct {
-				Text string `json:"text"`
-			} `json:"event"`
+		// Set up engine history AFTER ws1 connects so ws1 doesn't get a history
+		// frame (buildHistoryMessage returns nil for empty Messages).
+		historyMsgs := []types.Message{
+			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prior q"}}},
+			{ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
+				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prior a"}}},
 		}
-		if err := json.Unmarshal(msg, &env); err != nil {
-			t.Fatalf("ws1 delta %d unmarshal: %v", i, err)
+		c.mock().SetMessagesFn(func() []types.Message { return historyMsgs })
+
+		// Engine streams 5 text_delta events to ws1.
+		for i := range 5 {
+			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
 		}
-		got1 = append(got1, env.Event.Text)
-	}
-	want1 := []string{"d0", "d1", "d2", "d3", "d4"}
-	if !reflect.DeepEqual(got1, want1) {
-		t.Fatalf("ws1 deltas = %v, want %v", got1, want1)
-	}
 
-	// Conn2 connects → takeover. Drain the metadata frame which contains
-	// connect, config, engines, history, stats.
-	mux2 := http.NewServeMux()
-	RegisterChatWS(mux2, c)
-	srv2 := httptest.NewServer(mux2)
-	t.Cleanup(srv2.Close)
-	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	meta := readMetadata(t, ws2)
-
-	// Verify history is inside the metadata frame.
-	var hist struct {
-		Type     string `json:"type"`
-		Messages []struct {
-			Role string `json:"role"`
-			Text string `json:"text"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(meta.History, &hist); err != nil {
-		t.Fatalf("ws2 history unmarshal: %v", err)
-	}
-	if hist.Type != "history" {
-		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
-	}
-	if len(hist.Messages) != 2 {
-		t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
-	}
-
-	// Verify snapshot is embedded in the metadata frame — d0..d4 accumulated
-	// into a single text block.
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
-	if len(snapBlocks) != 1 {
-		t.Fatalf("snapshot should have 1 text block (accumulated d0..d4), got %d", len(snapBlocks))
-	}
-	if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0d1d2d3d4" {
-		t.Errorf("snapshot text = kind=%s text=%q, want text 'd0d1d2d3d4'", snapBlocks[0].Kind, snapBlocks[0].Text)
-	}
-
-	// Now send live events d5, d6, d7. These arrive as plain event frames
-	// (snapshot was already in metadata).
-	for i := 5; i < 8; i++ {
-		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
-	}
-
-	// Read from ws2: 3 event frames (snapshot was in metadata, already drained).
-	var got2 []string
-	for range 3 {
-		msg := readWSMessage(t, ws2)
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(msg, &head) != nil {
-			continue
-		}
-		if head.Type == "event" {
+		// Assert ws1 received exactly d0..d4 (as 5 individual event frames).
+		var got1 []string
+		for i := range 5 {
+			msg := readWSMessage(t, ws1)
 			var env struct {
 				Event struct {
 					Text string `json:"text"`
 				} `json:"event"`
 			}
 			if err := json.Unmarshal(msg, &env); err != nil {
+				t.Fatalf("ws1 delta %d unmarshal: %v", i, err)
+			}
+			got1 = append(got1, env.Event.Text)
+		}
+		want1 := []string{"d0", "d1", "d2", "d3", "d4"}
+		if !reflect.DeepEqual(got1, want1) {
+			t.Fatalf("ws1 deltas = %v, want %v", got1, want1)
+		}
+
+		// Conn2 connects → takeover. Drain the metadata frame which contains
+		// connect, config, engines, history, stats.
+		ws2 := hs.dialWS(t)
+		meta := readMetadata(t, ws2)
+		hs.awaitTakeover(t)
+
+		// Verify history is inside the metadata frame.
+		var hist struct {
+			Type     string `json:"type"`
+			Messages []struct {
+				Role string `json:"role"`
+				Text string `json:"text"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(meta.History, &hist); err != nil {
+			t.Fatalf("ws2 history unmarshal: %v", err)
+		}
+		if hist.Type != "history" {
+			t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
+		}
+		if len(hist.Messages) != 2 {
+			t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
+		}
+
+		// Verify snapshot is embedded in the metadata frame — d0..d4 accumulated
+		// into a single text block.
+		snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+		if len(snapBlocks) != 1 {
+			t.Fatalf("snapshot should have 1 text block (accumulated d0..d4), got %d", len(snapBlocks))
+		}
+		if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0d1d2d3d4" {
+			t.Errorf("snapshot text = kind=%s text=%q, want text 'd0d1d2d3d4'", snapBlocks[0].Kind, snapBlocks[0].Text)
+		}
+
+		// Now send live events d5, d6, d7. These arrive as plain event frames
+		// (snapshot was already in metadata).
+		for i := 5; i < 8; i++ {
+			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
+		}
+
+		// Read from ws2: 3 event frames (snapshot was in metadata, already drained).
+		var got2 []string
+		for range 3 {
+			msg := readWSMessage(t, ws2)
+			var head struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(msg, &head) != nil {
 				continue
 			}
-			if env.Event.Text != "" {
-				got2 = append(got2, env.Event.Text)
+			if head.Type == "event" {
+				var env struct {
+					Event struct {
+						Text string `json:"text"`
+					} `json:"event"`
+				}
+				if err := json.Unmarshal(msg, &env); err != nil {
+					continue
+				}
+				if env.Event.Text != "" {
+					got2 = append(got2, env.Event.Text)
+				}
 			}
 		}
-	}
-	want2 := []string{"d5", "d6", "d7"}
-	if !reflect.DeepEqual(got2, want2) {
-		t.Fatalf("ws2 live deltas = %v, want %v", got2, want2)
-	}
+		want2 := []string{"d5", "d6", "d7"}
+		if !reflect.DeepEqual(got2, want2) {
+			t.Fatalf("ws2 live deltas = %v, want %v", got2, want2)
+		}
 
-	// ws1 (invalidated) receives a close frame with code 1000 + reason
-	// "taken_over" from the server, then the connection closes. No other
-	// data messages should arrive.
-	_ = ws1.SetReadDeadline(time.Now().Add(200 * time.Millisecond)) // REAL-TIME
-	if _, data, err := ws1.ReadMessage(); err == nil {
-		t.Errorf("ws1 received unexpected data message after takeover: %s", string(data))
-	}
+		// ws1 (invalidated) receives a close frame with code 1000 + reason
+		// "taken_over" from the server, then the connection closes. No other
+		// data messages should arrive. The 200ms observation span runs on the
+		// bubble's virtual clock, so "nothing but the close frame within 200ms"
+		// is proven deterministically.
+		_ = ws1.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if _, data, err := ws1.ReadMessage(); err == nil {
+			t.Errorf("ws1 received unexpected data message after takeover: %s", string(data))
+		}
+	})
 }
 
 // TestWSWriter_FailureMarksInactive verifies that when wsWriter's
 // WriteMessage fails (closed TCP), it clears activeWS so subsequent writes
 // are no-ops.
 func TestWSWriter_FailureMarksInactive(t *testing.T) {
-	c := newTestConnector(t)
+	inBubble(t, func(t *testing.T) {
+		c := newTestConnector(t)
+		defer c.Stop()
 
-	srvWSCh := make(chan *websocket.Conn, 1)
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r, nil)
+		srvWSCh := make(chan *websocket.Conn, 1)
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			srvWSCh <- ws
+		})
+		srv := startHermeticServer(mux)
+		defer srv.close()
+
+		cc := srv.newClientConn()
+		d := websocket.Dialer{NetDial: func(_, _ string) (net.Conn, error) { return cc, nil }}
+		clientWS, _, err := d.Dial("ws://wui-hermetic/ws", nil)
 		if err != nil {
-			return
+			t.Fatalf("dial: %v", err)
 		}
-		srvWSCh <- ws
+		srvWS := <-srvWSCh
+		c.activeWS.Store(srvWS)
+
+		if uc := srvWS.UnderlyingConn(); uc != nil {
+			_ = uc.Close()
+		}
+
+		c.sendWS([]byte(`{"type":"event"}`))
+
+		if !waitFor(time.Second, func() bool { return c.activeWS.Load() == nil }) {
+			t.Fatal("activeWS not nil after wsWriter write failure — wsWriter should Store(nil) on error")
+		}
+		_ = clientWS.Close()
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	clientWS, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	t.Cleanup(func() { _ = clientWS.Close() })
-	srvWS := <-srvWSCh
-	c.activeWS.Store(srvWS)
-
-	if uc := srvWS.UnderlyingConn(); uc != nil {
-		_ = uc.Close()
-	}
-
-	c.sendWS([]byte(`{"type":"event"}`))
-
-	if !waitFor(time.Second, func() bool { return c.activeWS.Load() == nil }) {
-		t.Fatal("activeWS not nil after wsWriter write failure — wsWriter should Store(nil) on error")
-	}
 }
 
 // TestSendWS_NoActiveWSIsNoOp verifies that sendWS with nil activeWS
@@ -196,40 +201,41 @@ func TestSendWS_NoActiveWSIsNoOp(t *testing.T) {
 // readLoop goroutine (from an older connection exiting after a newer takeover)
 // does NOT clear activeWS when its cleanup runs with the old ws.
 func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
-	c := newTestConnector(t)
-	ws1 := dialAndStore(t, c)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		ws1 := hs.dialDrained(t)
 
-	// ws2 connects → takeover → activeWS now points to ws2.
-	ws2 := dialAndStore(t, c)
-	// serveChatWS runs takeover asynchronously. Wait for ws2 to become
-	// active before simulating ws1's exit — otherwise CompareAndSwap(ws1)
-	// races with ws2's pending Store and clears the nil left by ws2's takeover.
-	waitFor(2*time.Second, func() bool { return c.activeWS.Load() == ws2 })
-	if c.activeWS.Load() == nil {
-		t.Fatal("activeWS nil after ws2 takeover")
-	}
+		// ws2 connects → takeover → activeWS now points to ws2.
+		ws2 := hs.dialDrained(t)
+		// serveChatWS runs takeover asynchronously. Wait for ws2 to become
+		// active before simulating ws1's exit — otherwise CompareAndSwap(ws1)
+		// races with ws2's pending Store and clears the nil left by ws2's takeover.
+		waitFor(2*time.Second, func() bool { return c.activeWS.Load() == ws2 })
+		if c.activeWS.Load() == nil {
+			t.Fatal("activeWS nil after ws2 takeover")
+		}
 
-	// Simulate ws1's readLoop finally exiting. Its cleanup must NOT clear
-	// activeWS because ws1 != ws2.
-	c.activeWS.CompareAndSwap(ws1, nil)
-	if c.activeWS.Load() == nil {
-		t.Fatal("ws1 stale exit cleared activeWS — should only clear if it equals the exiting ws")
-	}
+		// Simulate ws1's readLoop finally exiting. Its cleanup must NOT clear
+		// activeWS because ws1 != ws2.
+		c.activeWS.CompareAndSwap(ws1, nil)
+		if c.activeWS.Load() == nil {
+			t.Fatal("ws1 stale exit cleared activeWS — should only clear if it equals the exiting ws")
+		}
 
-	// ws2 still receives events after the stale cleanup.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "post-stale"})
-	msg := readWSMessage(t, ws2)
-	var env struct {
-		Event struct {
-			Text string `json:"text"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("ws2 post-stale unmarshal: %v", err)
-	}
-	if env.Event.Text != "post-stale" {
-		t.Fatalf("ws2 post-stale text = %q, want \"post-stale\"", env.Event.Text)
-	}
+		// ws2 still receives events after the stale cleanup.
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "post-stale"})
+		msg := readWSMessage(t, ws2)
+		var env struct {
+			Event struct {
+				Text string `json:"text"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Fatalf("ws2 post-stale unmarshal: %v", err)
+		}
+		if env.Event.Text != "post-stale" {
+			t.Fatalf("ws2 post-stale text = %q, want \"post-stale\"", env.Event.Text)
+		}
+	})
 }
 
 // TestWritePayloadAndClear_ClearsBufferOnDisconnect verifies that
@@ -315,49 +321,54 @@ func TestSubAgentTurnEnd_DoesNotClearBuffer(t *testing.T) {
 //
 // Run with: go test -race -run TestTakeoverConcurrent
 func TestTakeoverConcurrent_NoRaceOnBufferLen(t *testing.T) {
-	c := newTestConnector(t)
-	_ = dialAndStore(t, c)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
 
-	// Concurrently pump Handle events while repeatedly dialing new WS
-	// connections (triggering takeover). If c.activeStreamBufLen() is read
-	// outside slotsMu, the race detector fires.
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
+		// Concurrently pump Handle events while repeatedly dialing new WS
+		// connections (triggering takeover). If c.activeStreamBufLen() is read
+		// outside slotsMu, the race detector fires.
+		//
+		// No wall/virtual sleeps anywhere: inside a synctest bubble the clock
+		// only advances when every goroutine is durably blocked, and this
+		// flood is runnable in stretches (era flips reset the backlog; a nil
+		// activeWS makes the writer drop frames), so any sleep here would
+		// deadlock. Termination is purely channel-driven: the takeover
+		// goroutine's dials synchronize with the server via the pipe, and
+		// Stop releases a flood pusher parked on a full queue.
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
 
-	// Writer goroutine: continuously append to buffer via Handle.
-	wg.Go(func() {
-		i := 0
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
-				i++
+		// Writer goroutine: continuously append to buffer via Handle.
+		wg.Go(func() {
+			i := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("d%d", i)})
+					i++
+				}
 			}
-		}
-	})
+		})
 
-	// Takeover goroutine: repeatedly dial new WS to trigger serveChatWS.
-	wg.Go(func() {
-		mux := http.NewServeMux()
-		RegisterChatWS(mux, c)
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-		url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/chat"
-		for range 20 {
-			conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-			if err != nil {
-				continue
+		// Takeover goroutine: repeatedly dial new WS to trigger serveChatWS.
+		takeoverDone := make(chan struct{})
+		wg.Go(func() {
+			defer close(takeoverDone)
+			for range 20 {
+				conn := hs.dialWS(t)
+				_ = conn.Close()
 			}
-			time.Sleep(2 * time.Millisecond) // REAL-TIME
-			_ = conn.Close()
-		}
-	})
+		})
 
-	time.Sleep(100 * time.Millisecond) // REAL-TIME — let race window open
-	close(stop)
-	wg.Wait()
+		<-takeoverDone
+		close(stop)
+		// Release a flood pusher parked on a full queue (idempotent — the
+		// deferred Stop after the bubble is a no-op).
+		c.Stop()
+		wg.Wait()
+	})
 }
 
 // TestWritePayloadAndClear_ClearsBufferWithActiveWS verifies that
@@ -403,46 +414,51 @@ func TestWritePayloadAndClear_ClearsBufferWithActiveWS(t *testing.T) {
 // query_end clears the buffer even when the write fails
 // (e.g. broken pipe). The turn is committed regardless of delivery.
 func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
-	c := newTestConnector(t)
-	_ = dialAndStore(t, c)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
 
-	// Break the WS so writes fail and activeWS becomes nil. After that,
-	// events go to streamState (since activeWS is nil).
-	srvWS := c.activeWS.Load()
-	if srvWS == nil {
-		t.Fatal("activeWS nil")
-	}
-	_ = srvWS.UnderlyingConn().Close()
-
-	// Pump until write fails (kernel buffer drains).
-	for range 10 {
-		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
-	}
-	// activeWS should now be nil (wsWriter marked inactive on failure).
-	if c.activeWS.Load() != nil {
-		// Keep pumping until it clears.
-		for i := 0; i < 50 && c.activeWS.Load() != nil; i++ {
-			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
-			time.Sleep(10 * time.Millisecond) // REAL-TIME
+		// Break the WS so writes fail and activeWS becomes nil. After that,
+		// events go to streamState (since activeWS is nil).
+		srvWS := c.activeWS.Load()
+		if srvWS == nil {
+			t.Fatal("activeWS nil")
 		}
-	}
+		_ = srvWS.UnderlyingConn().Close()
 
-	// Now activeWS is nil, so events go to streamState. Send some events
-	// to populate the buffer.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
+		// Pump until write fails (pipe write errors immediately once the
+		// underlying conn is closed).
+		for range 10 {
+			c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
+		}
+		// activeWS should now be nil (wsWriter marked inactive on failure).
+		if c.activeWS.Load() != nil {
+			// Keep pumping until it clears. The 10ms gaps run on the virtual
+			// clock: they elapse exactly when the wsWriter has drained the
+			// queue and parked on notify, so each round deterministically
+			// gives the writer a chance to observe the failed write.
+			for i := 0; i < 50 && c.activeWS.Load() != nil; i++ {
+				c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "fill"})
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 
-	// 2 text_deltas accumulate into one text block (count=1).
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
-	}
+		// Now activeWS is nil, so events go to streamState. Send some events
+		// to populate the buffer.
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta1"})
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "delta2"})
 
-	// query_end clears streamState.
-	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+		// 2 text_deltas accumulate into one text block (count=1).
+		if c.activeStreamBufLen() != 1 {
+			t.Fatalf("buffer should have 1 entry (accumulated text), got %d", c.activeStreamBufLen())
+		}
 
-	if c.activeStreamBufLen() != 0 {
-		t.Fatalf("buffer should be empty after query_end even on write failure, got %d", c.activeStreamBufLen())
-	}
+		// query_end clears streamState.
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+
+		if c.activeStreamBufLen() != 0 {
+			t.Fatalf("buffer should be empty after query_end even on write failure, got %d", c.activeStreamBufLen())
+		}
+	})
 }
 
 // TestTakeover_DoesNotClearBuffer verifies that takeover replay does NOT
@@ -458,81 +474,82 @@ func TestWritePayloadAndClear_WriteFailureStillClearsBuffer(t *testing.T) {
 // New counting: root blocks = [tool(Agent)] = 1. Sub-agent events nest
 // inside Agent's children, so root count stays at 1.
 func TestTakeover_DoesNotClearBuffer(t *testing.T) {
-	c := newTestConnector(t)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+		c.Handle(types.QueryEvent{
+			Type:    types.EventToolStart,
+			ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+		})
+		agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub-agent text", Agent: agent})
+		c.Handle(types.QueryEvent{
+			Type:    types.EventToolStart,
+			ToolUse: &types.ToolUseEvent{ID: "tu2", Name: "Grep"},
+			Agent:   agent,
+		})
+		c.Handle(types.QueryEvent{
+			Type:       types.EventToolEnd,
+			ToolResult: &types.ToolResultEvent{ToolUseID: "tu2", DisplayOutput: "grep result"},
+			Agent:      agent,
+		})
 
-	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
-	c.Handle(types.QueryEvent{
-		Type:    types.EventToolStart,
-		ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+		// Root has 1 block: Agent tool. Sub-agent events nest in children.
+		if c.activeStreamBufLen() != 1 {
+			t.Fatalf("buffer should have 1 root block (Agent), got %d", c.activeStreamBufLen())
+		}
+
+		// ── First takeover ──
+		ws1 := hs.dialDrained(t)
+
+		if c.activeStreamBufLen() != 1 {
+			t.Fatalf("buffer should still have 1 root block after first takeover, got %d", c.activeStreamBufLen())
+		}
+
+		// Send a live event — nests in children.
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
+
+		// Root block count unchanged (live event nests in children).
+		if c.activeStreamBufLen() != 1 {
+			t.Fatalf("buffer should still have 1 root block after new event, got %d", c.activeStreamBufLen())
+		}
+
+		// ws1 receives event frame (more text). Snapshot was in metadata (drained).
+		ws1GotMoreText := false
+		msg := readWSMessage(t, ws1)
+		if strings.Contains(string(msg), "more text") {
+			ws1GotMoreText = true
+		}
+		if !ws1GotMoreText {
+			t.Error("ws1 did not receive 'more text' in event frame")
+		}
+
+		// ── Second takeover ──
+		_ = ws1.Close()
+		// The virtual 100ms gap elapses exactly when every goroutine is
+		// durably blocked — i.e. the old connection's readLoop has fully
+		// unwound — so the second takeover starts from a quiesced server.
+		time.Sleep(100 * time.Millisecond)
+
+		ws2 := hs.dialDrained(t)
+
+		if c.activeStreamBufLen() != 1 {
+			t.Fatalf("buffer should still have 1 root block after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
+		}
+
+		// Send a live event.
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "final", Agent: agent})
+
+		// ws2 receives event frame (final). Snapshot (with grep result) was in metadata.
+		ws2GotFinal := false
+		msg = readWSMessage(t, ws2)
+		if strings.Contains(string(msg), "final") {
+			ws2GotFinal = true
+		}
+		if !ws2GotFinal {
+			t.Error("ws2 did not receive 'final' in event frame")
+		}
 	})
-	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
-	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub-agent text", Agent: agent})
-	c.Handle(types.QueryEvent{
-		Type:    types.EventToolStart,
-		ToolUse: &types.ToolUseEvent{ID: "tu2", Name: "Grep"},
-		Agent:   agent,
-	})
-	c.Handle(types.QueryEvent{
-		Type:       types.EventToolEnd,
-		ToolResult: &types.ToolResultEvent{ToolUseID: "tu2", DisplayOutput: "grep result"},
-		Agent:      agent,
-	})
-
-	// Root has 1 block: Agent tool. Sub-agent events nest in children.
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("buffer should have 1 root block (Agent), got %d", c.activeStreamBufLen())
-	}
-
-	// ── First takeover ──
-	ws1 := dialAndStore(t, c)
-	defer ws1.Close()
-
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("buffer should still have 1 root block after first takeover, got %d", c.activeStreamBufLen())
-	}
-
-	// Send a live event — nests in children.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "more text", Agent: agent})
-
-	// Root block count unchanged (live event nests in children).
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("buffer should still have 1 root block after new event, got %d", c.activeStreamBufLen())
-	}
-
-	// ws1 receives event frame (more text). Snapshot was in metadata (drained).
-	ws1GotMoreText := false
-	msg := readWSMessage(t, ws1)
-	if strings.Contains(string(msg), "more text") {
-		ws1GotMoreText = true
-	}
-	if !ws1GotMoreText {
-		t.Error("ws1 did not receive 'more text' in event frame")
-	}
-
-	// ── Second takeover ──
-	_ = ws1.Close()
-	time.Sleep(100 * time.Millisecond) // REAL-TIME
-
-	ws2 := dialAndStore(t, c)
-	defer ws2.Close()
-
-	if c.activeStreamBufLen() != 1 {
-		t.Fatalf("buffer should still have 1 root block after second takeover, got %d — repeated reconnects must not shrink buffer", c.activeStreamBufLen())
-	}
-
-	// Send a live event.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "final", Agent: agent})
-
-	// ws2 receives event frame (final). Snapshot (with grep result) was in metadata.
-	ws2GotFinal := false
-	msg = readWSMessage(t, ws2)
-	if strings.Contains(string(msg), "final") {
-		ws2GotFinal = true
-	}
-	if !ws2GotFinal {
-		t.Error("ws2 did not receive 'final' in event frame")
-	}
 }
 
 // TestBufferClearedOnQueryEnd verifies that takeover replay does not
@@ -541,92 +558,89 @@ func TestTakeover_DoesNotClearBuffer(t *testing.T) {
 // Full integration test through WS connections — no internal buffer checks,
 // no direct query_end calls. Tests observable behavior only.
 func TestBufferClearedOnQueryEnd(t *testing.T) {
-	c := newTestConnector(t)
-
-	// History: main agent's assistant response (committed to engine.Messages).
-	agentResponse := types.Message{
-		ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
-		Content: []types.ContentBlock{{
-			Type: types.ContentTypeText, Text: "committed response",
-		}},
-	}
-	c.mock().messagesFn = func() []types.Message {
-		return []types.Message{agentResponse}
-	}
-
-	// Mock engine: when Query runs, it dispatches streaming events,
-	// then query_end clears streamState. After commit, tool execution
-	// dispatches sub-agent events. This mirrors the real engine lifecycle.
-	c.mock().queryFn = func(ctx context.Context, userMessage, systemPrompt string) {
-		// LLM streaming: main agent response events.
-		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
-		c.Handle(types.QueryEvent{Type: types.EventThinkingStart})
-		c.Handle(types.QueryEvent{Type: types.EventThinkingEnd})
-		c.Handle(types.QueryEvent{
-			Type:    types.EventToolStart,
-			ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
-		})
-		// query_end clears streamState after the LLM turn finishes.
-		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
-	}
-
-	// Trigger the full lifecycle: query → streaming → query_end (streamState cleared).
-	c.mock().Query(context.Background(), "test", "")
-
-	// Sub-agent events arrive AFTER query_end (tool execution phase).
-	// With the new tree model, tu1 was cleared by query_end.
-	// These sub-agent events target tu1's children but tu1 doesn't exist,
-	// so they are dropped (matching the "unknown parent" behavior).
-	agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
-	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
-	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
-
-	// Connect WS2 → takeover → read metadata frame.
-	mux2 := http.NewServeMux()
-	RegisterChatWS(mux2, c)
-	srv2 := httptest.NewServer(mux2)
-	t.Cleanup(srv2.Close)
-	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	// The metadata frame contains history (with the committed response).
-	meta := readMetadata(t, ws2)
-	var hist struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(meta.History, &hist); err != nil {
-		t.Fatalf("ws2 history unmarshal: %v", err)
-	}
-	if hist.Type != "history" {
-		t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
-	}
-
-	// Send a live event. Since tu1 was cleared, the event targets a
-	// non-existent parent and is dropped. No snapshot is sent.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub output", Agent: agent})
-
-	// Read from ws2: just the event frame (no snapshot since blocks is empty).
-	var gotEvents []replayEvent
-	for range 1 {
-		_ = ws2.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // REAL-TIME
-		_, payload, err := ws2.ReadMessage()
-		if err != nil {
-			break
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		// History: main agent's assistant response (committed to engine.Messages).
+		agentResponse := types.Message{
+			ID: "a1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0),
+			Content: []types.ContentBlock{{
+				Type: types.ContentTypeText, Text: "committed response",
+			}},
 		}
-		var env struct {
-			Event replayEvent `json:"event"`
+		c.mock().messagesFn = func() []types.Message {
+			return []types.Message{agentResponse}
 		}
-		if json.Unmarshal(payload, &env) == nil && env.Event.Type != "" {
-			gotEvents = append(gotEvents, env.Event)
-		}
-	}
 
-	// ws2 should see NO main agent events — they were committed to history
-	// and cleared from streamState by query_end.
-	for _, ev := range gotEvents {
-		if ev.Agent == nil {
-			t.Errorf("unexpected main agent event %q after snapshot — leaked into buffer after commit", ev.Type)
+		// Mock engine: when Query runs, it dispatches streaming events,
+		// then query_end clears streamState. After commit, tool execution
+		// dispatches sub-agent events. This mirrors the real engine lifecycle.
+		c.mock().queryFn = func(ctx context.Context, userMessage, systemPrompt string) {
+			// LLM streaming: main agent response events.
+			c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+			c.Handle(types.QueryEvent{Type: types.EventThinkingStart})
+			c.Handle(types.QueryEvent{Type: types.EventThinkingEnd})
+			c.Handle(types.QueryEvent{
+				Type:    types.EventToolStart,
+				ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Agent"},
+			})
+			// query_end clears streamState after the LLM turn finishes.
+			c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 		}
-	}
+
+		// Trigger the full lifecycle: query → streaming → query_end (streamState cleared).
+		c.mock().Query(context.Background(), "test", "")
+
+		// Sub-agent events arrive AFTER query_end (tool execution phase).
+		// With the new tree model, tu1 was cleared by query_end.
+		// These sub-agent events target tu1's children but tu1 doesn't exist,
+		// so they are dropped (matching the "unknown parent" behavior).
+		agent := &types.AgentMeta{ParentToolUseID: "tu1", AgentType: "Reviewer"}
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+		c.Handle(types.QueryEvent{Type: types.EventThinkingStart, Agent: agent})
+		c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: agent})
+
+		// Connect WS2 → takeover → read metadata frame.
+		ws2 := hs.dialWS(t)
+		// The metadata frame contains history (with the committed response).
+		meta := readMetadata(t, ws2)
+		hs.awaitTakeover(t)
+		var hist struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(meta.History, &hist); err != nil {
+			t.Fatalf("ws2 history unmarshal: %v", err)
+		}
+		if hist.Type != "history" {
+			t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
+		}
+
+		// Send a live event. Since tu1 was cleared, the event targets a
+		// non-existent parent and is dropped. No snapshot is sent.
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "sub output", Agent: agent})
+
+		// Read from ws2: just the event frame (no snapshot since blocks is empty).
+		var gotEvents []replayEvent
+		for range 1 {
+			_ = ws2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			_, payload, err := ws2.ReadMessage()
+			if err != nil {
+				break
+			}
+			var env struct {
+				Event replayEvent `json:"event"`
+			}
+			if json.Unmarshal(payload, &env) == nil && env.Event.Type != "" {
+				gotEvents = append(gotEvents, env.Event)
+			}
+		}
+
+		// ws2 should see NO main agent events — they were committed to history
+		// and cleared from streamState by query_end.
+		for _, ev := range gotEvents {
+			if ev.Agent == nil {
+				t.Errorf("unexpected main agent event %q after snapshot — leaked into buffer after commit", ev.Type)
+			}
+		}
+	})
 }
 
 type replayEvent struct {
@@ -1061,56 +1075,54 @@ func TestTakeover_PrefillReplaysQueryStart(t *testing.T) {
 // TestTakeover_IdleEngineNoReplay verifies that a takeover of an idle engine
 // (no query in flight) sends nothing after the metadata frame.
 func TestTakeover_IdleEngineNoReplay(t *testing.T) {
-	c := newTestConnector(t)
-	_ = dialAndStore(t, c) // mock default queryStartMsgIdxFn → -1
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t) // mock default queryStartMsgIdxFn → -1
 
-	mux2 := http.NewServeMux()
-	RegisterChatWS(mux2, c)
-	srv2 := httptest.NewServer(mux2)
-	t.Cleanup(srv2.Close)
-	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	readMetadata(t, ws2)
+		ws2 := hs.dialWS(t)
+		readMetadata(t, ws2)
 
-	// If an idle engine also gets a replay, this read returns a frame and fails.
-	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
-	if _, data, err := ws2.ReadMessage(); err == nil {
-		t.Fatalf("idle engine received unexpected frame after metadata: %s", string(data))
-	}
+		// If an idle engine also gets a replay, this read returns a frame and
+		// fails. The 300ms observation span runs on the bubble's virtual clock.
+		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, data, err := ws2.ReadMessage(); err == nil {
+			t.Fatalf("idle engine received unexpected frame after metadata: %s", string(data))
+		}
+	})
 }
 
 // TestTakeover_SnapshotPresentNoReplay verifies that when streamed blocks
 // exist (snapshot channel populated), the replay is suppressed — query_start's
 // client-side cleanup would otherwise discard snapshot-rendered content.
 func TestTakeover_SnapshotPresentNoReplay(t *testing.T) {
-	c := newTestConnector(t)
-	_ = dialAndStore(t, c)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
 
-	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
-	// Stream one block into streamState while ws1 is active.
-	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "d0"})
+		c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+		// Stream one block into streamState while ws1 is active.
+		c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "d0"})
 
-	mux2 := http.NewServeMux()
-	RegisterChatWS(mux2, c)
-	srv2 := httptest.NewServer(mux2)
-	t.Cleanup(srv2.Close)
-	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	meta := readMetadata(t, ws2)
+		ws2 := hs.dialWS(t)
+		meta := readMetadata(t, ws2)
 
-	// Anchor the snapshot channel: it must still carry the streamed block.
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
-	if len(snapBlocks) != 1 {
-		t.Fatalf("snapshot should have 1 text block, got %d", len(snapBlocks))
-	}
-	if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0" {
-		t.Fatalf("snapshot block = kind=%s text=%q, want text \"d0\"", snapBlocks[0].Kind, snapBlocks[0].Text)
-	}
+		// Anchor the snapshot channel: it must still carry the streamed block.
+		snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+		if len(snapBlocks) != 1 {
+			t.Fatalf("snapshot should have 1 text block, got %d", len(snapBlocks))
+		}
+		if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0" {
+			t.Fatalf("snapshot block = kind=%s text=%q, want text \"d0\"", snapBlocks[0].Kind, snapBlocks[0].Text)
+		}
 
-	// Snapshot present → replay suppressed: no frame may follow the metadata.
-	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
-	if _, data, err := ws2.ReadMessage(); err == nil {
-		t.Fatalf("snapshot-present takeover must not replay query_start (would discard snapshot content), got: %s", string(data))
-	}
+		// Snapshot present → replay suppressed: no frame may follow the metadata.
+		// The 300ms observation span runs on the bubble's virtual clock: it
+		// advances only when every goroutine is durably blocked, so "no frame
+		// within 300ms" is proven deterministically and in zero real time.
+		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, data, err := ws2.ReadMessage(); err == nil {
+			t.Fatalf("snapshot-present takeover must not replay query_start (would discard snapshot content), got: %s", string(data))
+		}
+	})
 }
 
 // TestTakeover_ReplayIdxPastMessagesNoReplay covers the stale-index guard:
@@ -1118,29 +1130,28 @@ func TestTakeover_SnapshotPresentNoReplay(t *testing.T) {
 // message list (messages shrank between the engine's two reads), so the
 // replay must be dropped rather than synthesize a phantom message.
 func TestTakeover_ReplayIdxPastMessagesNoReplay(t *testing.T) {
-	c := newTestConnector(t)
-	_ = dialAndStore(t, c)
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
 
-	// One message on record, index pointing one past its end.
-	c.mock().SetMessagesFn(func() []types.Message {
-		return []types.Message{
-			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
-				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
+		// One message on record, index pointing one past its end.
+		c.mock().SetMessagesFn(func() []types.Message {
+			return []types.Message{
+				{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
+					Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
+			}
+		})
+		c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
+
+		ws2 := hs.dialWS(t)
+		readMetadata(t, ws2)
+
+		// Stale index → no replay: the 300ms observation span proves no frame
+		// follows the metadata, on the bubble's virtual clock.
+		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, data, err := ws2.ReadMessage(); err == nil {
+			t.Fatalf("stale query start index must not replay, got: %s", string(data))
 		}
 	})
-	c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
-
-	mux2 := http.NewServeMux()
-	RegisterChatWS(mux2, c)
-	srv2 := httptest.NewServer(mux2)
-	t.Cleanup(srv2.Close)
-	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	readMetadata(t, ws2)
-
-	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
-	if _, data, err := ws2.ReadMessage(); err == nil {
-		t.Fatalf("stale query start index must not replay, got: %s", string(data))
-	}
 }
 
 // TestBuildQueryStartReplay unit-covers the helper's guard paths. The

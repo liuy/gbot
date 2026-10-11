@@ -393,6 +393,19 @@ func TestHandleEngineNew_Success(t *testing.T) {
 		t.Fatal("createEngine was not called")
 	}
 
+	// Wire order is deterministic: switchEngine's metadata first (the era
+	// flip drops anything pushed before it), then the engine_list frame.
+	meta := readWSMessage(t, ws)
+	var metaEnv struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(meta, &metaEnv); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if metaEnv.Type != "metadata" {
+		t.Errorf("first message type = %q, want \"metadata\"", metaEnv.Type)
+	}
+
 	msg := readWSMessage(t, ws)
 	var env struct {
 		Type     string `json:"type"`
@@ -406,18 +419,6 @@ func TestHandleEngineNew_Success(t *testing.T) {
 	}
 	if env.ActiveID != "main" {
 		t.Errorf("activeID = %q, want \"main\"", env.ActiveID)
-	}
-
-	// switchEngine sends a metadata frame after engine_list.
-	meta := readWSMessage(t, ws)
-	var metaEnv struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(meta, &metaEnv); err != nil {
-		t.Fatalf("unmarshal metadata: %v", err)
-	}
-	if metaEnv.Type != "metadata" {
-		t.Errorf("second message type = %q, want \"metadata\"", metaEnv.Type)
 	}
 	if c.ActiveID() != "main" {
 		t.Errorf("ActiveID after switch = %q, want \"main\"", c.ActiveID())

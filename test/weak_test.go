@@ -102,22 +102,22 @@ type checkPattern struct {
 
 var checkPatterns = []checkPattern{
 	{
-			Name:     "discarded variable in test (_ = identifier)",
-			Regex:    regexp.MustCompile(`^\s*_ = [a-zA-Z_][a-zA-Z0-9_]*\s*(//.*)?$`),
-			Level:    "P1",
-			TestOnly: true,
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				// Exempt: defer cleanup
-				if isInDefer(lines, lineIdx) || isInCleanup(lines, lineIdx) {
-					return true
-				}
-				// Exempt: goroutine cleanup
-				if isInGoroutine(lines, lineIdx) {
-					return true
-				}
-				return false
-			},
+		Name:     "discarded variable in test (_ = identifier)",
+		Regex:    regexp.MustCompile(`^\s*_ = [a-zA-Z_][a-zA-Z0-9_]*\s*(//.*)?$`),
+		Level:    "P1",
+		TestOnly: true,
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			// Exempt: defer cleanup
+			if isInDefer(lines, lineIdx) || isInCleanup(lines, lineIdx) {
+				return true
+			}
+			// Exempt: goroutine cleanup
+			if isInGoroutine(lines, lineIdx) {
+				return true
+			}
+			return false
 		},
+	},
 	{
 		Name:  "discarded setup error (_ = xxx.Method())",
 		Regex: regexp.MustCompile(`^\s*_ = .*\.(Scan|Exec|Close|Unmarshal|Marshal|Query|Open|Begin|Commit|Write|Read|Insert|Delete|Update|WriteTokens|ReadTokens|WriteClientConfig|ReadClientConfig|SaveTokens|Release|Wait)\(`),
@@ -164,9 +164,9 @@ var checkPatterns = []checkPattern{
 	},
 	{
 		Name:     "len > 0 without exact count",
-				TestOnly: true,
-		Regex: regexp.MustCompile(`len\([^)]+\)\s*>\s*0`),
-		Level: "P3",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`len\([^)]+\)\s*>\s*0`),
+		Level:    "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
 			// Exempt: comments — same as other patterns in this file.
 			trimmed := strings.TrimSpace(lines[lineIdx])
@@ -197,9 +197,9 @@ var checkPatterns = []checkPattern{
 	},
 	{
 		Name:     "t.Skip without message",
-				TestOnly: true,
-		Regex: regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
-		Level: "P3",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
+		Level:    "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
 			return false
 		},
@@ -238,9 +238,9 @@ var checkPatterns = []checkPattern{
 	},
 	{
 		Name:     "test result compared only to 0 (use exact value)",
-				TestOnly: true,
-		Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
-		Level: "P3",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
+		Level:    "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
 			// Exempt: float comparisons (0.0, 0.5, etc.) — these are precise
 			if regexp.MustCompile(`\b0\.\d`).MatchString(lines[lineIdx]) {
@@ -317,127 +317,127 @@ var checkPatterns = []checkPattern{
 			return false
 		},
 	},
-		{
-			Name:     "error-path test without content verification",
-				TestOnly: true,
-			Regex: regexp.MustCompile(`(t\.Fatal|t\.Error)\(.*"expected error`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				for i := lineIdx + 1; i < len(lines) && i <= lineIdx+10; i++ {
-					line := lines[i]
-					if strings.Contains(line, ".Error()") {
-						return true
-					}
-					if strings.Contains(line, "result.Error") {
-						return true
-					}
-					if strings.Contains(line, "errors.Is(") || strings.Contains(line, "errors.As(") {
-						return true
-					}
-					if strings.Contains(line, "errMsg") || strings.Contains(line, "errStr") {
-						return true
-					}
-					if strings.Contains(line, "json.Unmarshal") {
-						return true
-					}
+	{
+		Name:     "error-path test without content verification",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`(t\.Fatal|t\.Error)\(.*"expected error`),
+		Level:    "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			for i := lineIdx + 1; i < len(lines) && i <= lineIdx+10; i++ {
+				line := lines[i]
+				if strings.Contains(line, ".Error()") {
+					return true
 				}
-				return false
-			},
+				if strings.Contains(line, "result.Error") {
+					return true
+				}
+				if strings.Contains(line, "errors.Is(") || strings.Contains(line, "errors.As(") {
+					return true
+				}
+				if strings.Contains(line, "errMsg") || strings.Contains(line, "errStr") {
+					return true
+				}
+				if strings.Contains(line, "json.Unmarshal") {
+					return true
+				}
+			}
+			return false
 		},
-			{
-				Name:  "TODO/FIXME/HACK/XXX comment in production code",
-				Regex: regexp.MustCompile(`//\s*(TODO|FIXME|HACK|XXX)\b`),
-				Level: "P3",
-				Exempt: func(match string, lines []string, lineIdx int) bool {
-					// Exempt: inside string literals (test data)
-					line := lines[lineIdx]
-					idx := strings.Index(line, match)
-					if idx > 0 && line[idx-1] == '"' {
-						return true
-					}
-					return false
-				},
-			},
-		{
-			Name:  "//nolint suppressions — fix the issue, not hide it",
-			Regex: regexp.MustCompile(`//nolint:`),
-			Level: "P1",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
-					return true
-				}
-				return false
-			},
+	},
+	{
+		Name:  "TODO/FIXME/HACK/XXX comment in production code",
+		Regex: regexp.MustCompile(`//\s*(TODO|FIXME|HACK|XXX)\b`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			// Exempt: inside string literals (test data)
+			line := lines[lineIdx]
+			idx := strings.Index(line, match)
+			if idx > 0 && line[idx-1] == '"' {
+				return true
+			}
+			return false
 		},
-		{
-			Name:     "time.Sleep in test - use synctest.Test or channels",
-			TestOnly: true,
-			Regex:    regexp.MustCompile(`time\.Sleep\(`),
-			Level:    "P2",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				if isInSynctestBubble(lines, lineIdx) {
-					return true
-				}
-				if isInComment(match, lines, lineIdx) {
-					return true
-				}
-				if hasREALTIMEComment(lines, lineIdx) {
-					return true
-				}
-				if isInGoleakCleanup(lines, lineIdx) {
-					return true
-				}
-				return false
-			},
+	},
+	{
+		Name:  "//nolint suppressions — fix the issue, not hide it",
+		Regex: regexp.MustCompile(`//nolint:`),
+		Level: "P1",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
+				return true
+			}
+			return false
 		},
-		{
-			Name:     "time.Now in test - use synctest.Test",
-			TestOnly: true,
-			Regex:    regexp.MustCompile(`time\.Now\(\)`),
-			Level:    "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				if isInSynctestBubble(lines, lineIdx) {
-					return true
-				}
-				if isInComment(match, lines, lineIdx) {
-					return true
-				}
-				if hasREALTIMEComment(lines, lineIdx) {
-					return true
-				}
-				return false
-			},
+	},
+	{
+		Name:     "time.Sleep in test - use synctest.Test or channels",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`time\.Sleep\(`),
+		Level:    "P2",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			if isInSynctestBubble(lines, lineIdx) {
+				return true
+			}
+			if isInComment(match, lines, lineIdx) {
+				return true
+			}
+			if hasREALTIMEComment(lines, lineIdx) {
+				return true
+			}
+			if isInGoleakCleanup(lines, lineIdx) {
+				return true
+			}
+			return false
 		},
-		{
-			Name:     "PID 0 in test - use real PID or two competing managers",
-			TestOnly: true,
-			Regex:    regexp.MustCompile(`\[\]byte\("0"\)`),
-			Level:    "P1",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				if strings.HasPrefix(trimmed, "//") {
-					return true
-				}
-				// Only flag WriteFile/Write calls (PID simulation in lock files)
-				if !strings.Contains(trimmed, "WriteFile") && !strings.Contains(trimmed, ".Write(") {
-					return true // not a file write - likely data content
-				}
-				return false
-			},
+	},
+	{
+		Name:     "time.Now in test - use synctest.Test",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`time\.Now\(\)`),
+		Level:    "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			if isInSynctestBubble(lines, lineIdx) {
+				return true
+			}
+			if isInComment(match, lines, lineIdx) {
+				return true
+			}
+			if hasREALTIMEComment(lines, lineIdx) {
+				return true
+			}
+			return false
 		},
-			{
-				Name:     "verbose TDD/BUG/Fix story comment",
-				Regex:    regexp.MustCompile(`(?i)(TDD\s*(RED|GREEN|:)|\bBug:\s|//\s*(RED|GREEN):\s|\bFix:\s|//\s*-+\s*(RED|GREEN)\s+PHASE)`),
-				Level:    "P3",
-			},
-			{
-				Name:     "verbose em-dash phrase in test",
-				TestOnly: true,
-				Regex:    regexp.MustCompile(`\x{2014}\s*(cannot|broken|empty|nothing|duplicates?|shows?)`),
-				Level:    "P3",
-			},
-	}
+	},
+	{
+		Name:     "PID 0 in test - use real PID or two competing managers",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`\[\]byte\("0"\)`),
+		Level:    "P1",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			// Only flag WriteFile/Write calls (PID simulation in lock files)
+			if !strings.Contains(trimmed, "WriteFile") && !strings.Contains(trimmed, ".Write(") {
+				return true // not a file write - likely data content
+			}
+			return false
+		},
+	},
+	{
+		Name:  "verbose TDD/BUG/Fix story comment",
+		Regex: regexp.MustCompile(`(?i)(TDD\s*(RED|GREEN|:)|\bBug:\s|//\s*(RED|GREEN):\s|\bFix:\s|//\s*-+\s*(RED|GREEN)\s+PHASE)`),
+		Level: "P3",
+	},
+	{
+		Name:     "verbose em-dash phrase in test",
+		TestOnly: true,
+		Regex:    regexp.MustCompile(`\x{2014}\s*(cannot|broken|empty|nothing|duplicates?|shows?)`),
+		Level:    "P3",
+	},
+}
 
 // isInComment checks if the match is inside a // comment.
 func isInComment(match string, lines []string, lineIdx int) bool {
@@ -519,33 +519,45 @@ func scanFile(t *testing.T, path, projectRoot string) int {
 		}
 	}
 
-		// Structural check: consecutive blank lines in test files only.
-		// Skip the last element (trailing empty from Split on "\n").
-		if strings.HasSuffix(path, ".go") {
-			end := len(lines)
-			if end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-				end--
-			}
-			for i := 1; i < end; i++ {
-				if strings.TrimSpace(lines[i]) == "" && strings.TrimSpace(lines[i-1]) == "" {
-					t.Errorf("%s:%d P3: consecutive blank line", rel, i+1)
-					issues++
-				}
+	// Structural check: consecutive blank lines in test files only.
+	// Skip the last element (trailing empty from Split on "\n").
+	if strings.HasSuffix(path, ".go") {
+		end := len(lines)
+		if end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+			end--
+		}
+		for i := 1; i < end; i++ {
+			if strings.TrimSpace(lines[i]) == "" && strings.TrimSpace(lines[i-1]) == "" {
+				t.Errorf("%s:%d P3: consecutive blank line", rel, i+1)
+				issues++
 			}
 		}
+	}
 
 	return issues
 }
 
 // isInSynctestBubble checks if the line is inside a synctest.Test() callback.
 func isInSynctestBubble(lines []string, lineIdx int) bool {
-	for i := lineIdx; i >= 0 && i >= lineIdx-50; i-- {
+	// Window must span long test closures (a bubble-wrapped body can be
+	// hundreds of lines); the function-boundary break below keeps the scan
+	// inside the enclosing function or closure, so the wide window cannot
+	// leak into other functions.
+	for i := lineIdx; i >= 0 && i >= lineIdx-300; i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if strings.Contains(trimmed, "synctest.Test(") {
 			return true
 		}
+		// Project bubble helpers (pkg/connector/wui/hermetic_test.go) wrap
+		// synctest.Test; time use inside their closures is virtual-clock and
+		// exempt for the same reason as a direct synctest.Test call.
+		if strings.Contains(trimmed, "hermeticWUI(") ||
+			strings.Contains(trimmed, "hermeticWUIHub(") ||
+			strings.Contains(trimmed, "inBubble(") {
+			return true
+		}
 		// Stop at function boundary
-		if strings.HasPrefix(trimmed, "func Test") || strings.HasPrefix(trimmed, "func (") {
+		if strings.HasPrefix(trimmed, "func ") {
 			break
 		}
 	}

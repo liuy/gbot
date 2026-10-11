@@ -54,6 +54,12 @@ type mockEngine struct {
 	rewindToFn         func(idx int) error
 	systemPromptFn     func() string
 	taskListFn         func() *task.List
+	// projectDir is the fallback returned by ProjectDir when projectDirFn is
+	// nil. newTestConnector* gives each mock its own t.TempDir(); a bare
+	// &mockEngine{} has "" which disables input-history file I/O entirely.
+	// The historical fixed "/tmp/test" made every metadata send re-read a
+	// JSONL file that earlier test runs had appended thousands of lines to.
+	projectDir string
 	// onQueryDoneFn simulates engine committing an assistant response.
 	// Called after queryFn finishes — mirrors real engine's appendMessage.
 	onQueryDoneFn func()
@@ -317,7 +323,7 @@ func (m *mockEngine) ProjectDir() string {
 	if m.projectDirFn != nil {
 		return m.projectDirFn()
 	}
-	return "/tmp/test"
+	return m.projectDir
 }
 
 func (m *mockEngine) ContextWindow() int    { return 200000 }
@@ -445,7 +451,7 @@ func newTestConnectorWithHub(t *testing.T, h *hub.Hub) *WUIConnector {
 // to reset streamState so tests that trigger Query get realistic buffer cleanup.
 func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]llm.Provider, providerConfigs map[string]*config.Provider) *WUIConnector {
 	t.Helper()
-	mock := &mockEngine{}
+	mock := &mockEngine{projectDir: t.TempDir()}
 	const engineID = "main"
 	c := &WUIConnector{
 		mgr:             nil,

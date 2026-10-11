@@ -263,48 +263,55 @@ func TestRegisterArtifactRoutes_EncodedTraversal400(t *testing.T) {
 }
 
 func TestRegisterArtifactRoutes_LiteralTraversalRedirectedByMux(t *testing.T) {
-	dir := t.TempDir()
-	markerPath := filepath.Join(dir, "..", "secret")
-	if err := os.WriteFile(markerPath, []byte("TOP-SECRET-MARKER"), 0644); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Remove(markerPath); err != nil {
-			t.Logf("remove marker: %v", err)
+	inBubble(t, func(t *testing.T) {
+		dir := t.TempDir()
+		markerPath := filepath.Join(dir, "..", "secret")
+		if err := os.WriteFile(markerPath, []byte("TOP-SECRET-MARKER"), 0644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Remove(markerPath); err != nil {
+				t.Logf("remove marker: %v", err)
+			}
+		})
+		mux := http.NewServeMux()
+		RegisterArtifactRoutes(mux, dir, observeStubFn(nil, "", false))
+		RegisterStaticRoutes(mux)
+		srv := startHermeticServer(mux)
+		defer srv.close()
+
+		noFollow := srv.client()
+		noFollow.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		resp, err := noFollow.Get("http://wui-hermetic/artifacts/../secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			t.Fatalf("status = %d, want 3xx (mux clean-path redirect, handler never reached)", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Location"); got != "/secret" {
+			t.Errorf("Location = %q, want /secret", got)
+		}
+
+		// Following the redirect lands on the SPA catch-all, never on the file.
+		follow, err := srv.client().Get("http://wui-hermetic/artifacts/../secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer follow.Body.Close()
+		body, err := io.ReadAll(follow.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "TOP-SECRET-MARKER") {
+			t.Error("followed redirect leaked content above the artifacts dir")
 		}
 	})
-	srv := newArtifactTestServer(t, dir)
-
-	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := noFollow.Get(srv.URL + "/artifacts/../secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := resp.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-		t.Fatalf("status = %d, want 3xx (mux clean-path redirect, handler never reached)", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Location"); got != "/secret" {
-		t.Errorf("Location = %q, want /secret", got)
-	}
-
-	// Following the redirect lands on the SPA catch-all, never on the file.
-	follow, err := http.Get(srv.URL + "/artifacts/../secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer follow.Body.Close()
-	body, err := io.ReadAll(follow.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(body), "TOP-SECRET-MARKER") {
-		t.Error("followed redirect leaked content above the artifacts dir")
-	}
 }
 
 func TestRegisterArtifactRoutes_Directory404(t *testing.T) {

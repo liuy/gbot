@@ -51,16 +51,27 @@ func TestChatWS_CompressedRoundTripIntact(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Close() })
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
+	// The dial's takeover handshake pushes a metadata frame that races the
+	// probe below; a frame sent before the handshake completes is dropped by
+	// the era swap. Drain the metadata first so the probe lands on the live
+	// connection deterministically.
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME — handshake timing, not logic
+	if _, _, err := ws.ReadMessage(); err != nil {
+		t.Fatalf("read metadata frame: %v", err)
+	}
+
 	// Drive one write from the server side and read it back: the connector
 	// sends an error frame when the engine is unknown, which exercises the
 	// compressed write path without needing a live engine.
 	c.sendWS(buildError(errors.New("compression round-trip probe")))
-	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME — handshake timing, not logic
-	_, raw, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatalf("read compressed frame: %v", err)
-	}
-	if !strings.Contains(string(raw), "compression round-trip probe") {
-		t.Fatalf("frame payload mangled under compression: %.120s", raw)
+	for {
+		_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second)) // REAL-TIME — handshake timing, not logic
+		_, raw, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("read compressed frame: %v", err)
+		}
+		if strings.Contains(string(raw), "compression round-trip probe") {
+			break
+		}
 	}
 }

@@ -40,6 +40,13 @@ var gzipETagRe = regexp.MustCompile(`^"gz-[0-9a-f]+-[0-9a-f]+"$`)
 // never fail).
 func probeArtifact(t *testing.T, url, acceptEncoding string, headers map[string]string) (int, http.Header, []byte, int64) {
 	t.Helper()
+	return probeArtifactClient(t, http.DefaultClient, url, acceptEncoding, headers)
+}
+
+// probeArtifactClient is probeArtifact over an explicit client — the hermetic
+// pipe-transport client passes here in synctest-based route tests.
+func probeArtifactClient(t *testing.T, client *http.Client, url, acceptEncoding string, headers map[string]string) (int, http.Header, []byte, int64) {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +55,7 @@ func probeArtifact(t *testing.T, url, acceptEncoding string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

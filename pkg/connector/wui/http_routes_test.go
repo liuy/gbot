@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -28,13 +27,13 @@ func gzipBody(t *testing.T, body io.Reader) string {
 // gzip transport disabled (so the raw Content-Encoding header survives and
 // the body is not transparently decoded), then decompresses the body. The
 // /assets/ routes negotiate; the explicit header is what selects gzip here.
-func getDecompressed(t *testing.T, url string) (*http.Response, string) {
+// All callers run inside a synctest bubble and pass the hermetic pipe
+// transport client — these tests moved off real loopback TCP because under
+// -race each request's accept+serve round trip cost ~100ms of real time.
+func getDecompressed(t *testing.T, client *http.Client, url string) (*http.Response, string) {
 	t.Helper()
-	client := &http.Client{
-		Transport: &http.Transport{
-			DisableCompression: true,
-		},
-	}
+	transport := client.Transport.(*http.Transport)
+	transport.DisableCompression = true
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatalf("new request %s: %v", url, err)
@@ -52,137 +51,148 @@ func getDecompressed(t *testing.T, url string) (*http.Response, string) {
 	return resp, body
 }
 
+// staticHermetic starts the static routes on the in-memory transport inside
+// the current synctest bubble and returns the pipe-transport client. Close
+// via defer before the bubble exits.
+func staticHermetic(t *testing.T) (*chatServer, *http.Client) {
+	t.Helper()
+	mux := http.NewServeMux()
+	RegisterStaticRoutes(mux)
+	srv := startHermeticServer(mux)
+	return srv, srv.client()
+}
+
 // TestRegisterStaticRoutes_ServesGzipIndexHTML verifies the root path serves
 // gzip-compressed index.html with correct headers.
 func TestRegisterStaticRoutes_ServesGzipIndexHTML(t *testing.T) {
-	mux := http.NewServeMux()
-	RegisterStaticRoutes(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	inBubble(t, func(t *testing.T) {
+		srv, client := staticHermetic(t)
+		defer srv.close()
 
-	resp, body := getDecompressed(t, srv.URL+"/")
+		resp, body := getDecompressed(t, client, "http://wui-hermetic/")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if !strings.Contains(body, "<!DOCTYPE html>") && !strings.Contains(body, "<html") {
-		t.Errorf("body does not contain HTML: first 200 chars = %q", truncBody(body, 200))
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("Content-Type = %q, want text/html", ct)
-	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache, no-store, must-revalidate" {
-		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache, no-store, must-revalidate")
-	}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if !strings.Contains(body, "<!DOCTYPE html>") && !strings.Contains(body, "<html") {
+			t.Errorf("body does not contain HTML: first 200 chars = %q", truncBody(body, 200))
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("Content-Type = %q, want text/html", ct)
+		}
+		if cc := resp.Header.Get("Cache-Control"); cc != "no-cache, no-store, must-revalidate" {
+			t.Errorf("Cache-Control = %q, want %q", cc, "no-cache, no-store, must-revalidate")
+		}
+	})
 }
 
 // TestRegisterStaticRoutes_SPAFallback verifies that any path serves the
 // same single-file index.html (SPA client-side routing).
 func TestRegisterStaticRoutes_SPAFallback(t *testing.T) {
-	mux := http.NewServeMux()
-	RegisterStaticRoutes(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	inBubble(t, func(t *testing.T) {
+		srv, client := staticHermetic(t)
+		defer srv.close()
 
-	_, body1 := getDecompressed(t, srv.URL+"/")
-	_, body2 := getDecompressed(t, srv.URL+"/some/deep/nonexistent/route")
-	_, body3 := getDecompressed(t, srv.URL+"/index.css")
-	_, body4 := getDecompressed(t, srv.URL+"/assets/")
+		_, body1 := getDecompressed(t, client, "http://wui-hermetic/")
+		_, body2 := getDecompressed(t, client, "http://wui-hermetic/some/deep/nonexistent/route")
+		_, body3 := getDecompressed(t, client, "http://wui-hermetic/index.css")
+		_, body4 := getDecompressed(t, client, "http://wui-hermetic/assets/")
 
-	if body1 != body2 || body2 != body3 || body3 != body4 {
-		t.Error("all paths should serve identical content (single-file mode)")
-	}
+		if body1 != body2 || body2 != body3 || body3 != body4 {
+			t.Error("all paths should serve identical content (single-file mode)")
+		}
+	})
 }
 
 // TestRegisterStaticRoutes_ServesPrebundledNovnc verifies the exact-path
 // noVNC prebundle route: it must NOT fall through to the SPA catch-all.
 func TestRegisterStaticRoutes_ServesPrebundledNovnc(t *testing.T) {
-	mux := http.NewServeMux()
-	RegisterStaticRoutes(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	inBubble(t, func(t *testing.T) {
+		srv, client := staticHermetic(t)
+		defer srv.close()
 
-	resp, body := getDecompressed(t, srv.URL+"/assets/novnc.esm.js")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
-		t.Errorf("Content-Type = %q, want text/javascript", ct)
-	}
-	if len(body) < 1000 {
-		t.Errorf("body length = %d, want a real bundle", len(body))
-	}
-	if !strings.Contains(body, "prefer-software") {
-		t.Error("body lacks the software-decode patch")
-	}
-	if strings.Contains(body, "<!DOCTYPE html>") {
-		t.Error("body is the SPA fallback, not the prebundle")
-	}
+		resp, body := getDecompressed(t, client, "http://wui-hermetic/assets/novnc.esm.js")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("Content-Type = %q, want text/javascript", ct)
+		}
+		if len(body) < 1000 {
+			t.Errorf("body length = %d, want a real bundle", len(body))
+		}
+		if !strings.Contains(body, "prefer-software") {
+			t.Error("body lacks the software-decode patch")
+		}
+		if strings.Contains(body, "<!DOCTYPE html>") {
+			t.Error("body is the SPA fallback, not the prebundle")
+		}
 
-	// Query strings (cache-busting) must select the same route.
-	respQ, bodyQ := getDecompressed(t, srv.URL+"/assets/novnc.esm.js?v=1")
-	if respQ.StatusCode != http.StatusOK || bodyQ != body {
-		t.Errorf("query variant served differently: status=%d same=%v", respQ.StatusCode, bodyQ == body)
-	}
+		// Query strings (cache-busting) must select the same route.
+		respQ, bodyQ := getDecompressed(t, client, "http://wui-hermetic/assets/novnc.esm.js?v=1")
+		if respQ.StatusCode != http.StatusOK || bodyQ != body {
+			t.Errorf("query variant served differently: status=%d same=%v", respQ.StatusCode, bodyQ == body)
+		}
+	})
 }
 
 // TestRegisterStaticRoutes_ServesModelViewer verifies the exact-path
 // model-viewer prebundle route: it must NOT fall through to the SPA catch-all.
 func TestRegisterStaticRoutes_ServesModelViewer(t *testing.T) {
-	mux := http.NewServeMux()
-	RegisterStaticRoutes(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	inBubble(t, func(t *testing.T) {
+		srv, client := staticHermetic(t)
+		defer srv.close()
 
-	resp, body := getDecompressed(t, srv.URL+"/assets/model-viewer.esm.js")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
-		t.Errorf("Content-Type = %q, want text/javascript", ct)
-	}
-	if len(body) < 100_000 {
-		t.Errorf("body length = %d, want a real model-viewer bundle", len(body))
-	}
-	if strings.Contains(body, "<!DOCTYPE html>") {
-		t.Error("body is the SPA fallback, not the prebundle")
-	}
+		resp, body := getDecompressed(t, client, "http://wui-hermetic/assets/model-viewer.esm.js")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("Content-Type = %q, want text/javascript", ct)
+		}
+		if len(body) < 100_000 {
+			t.Errorf("body length = %d, want a real model-viewer bundle", len(body))
+		}
+		if strings.Contains(body, "<!DOCTYPE html>") {
+			t.Error("body is the SPA fallback, not the prebundle")
+		}
 
-	// Query strings (cache-busting) must select the same route.
-	respQ, bodyQ := getDecompressed(t, srv.URL+"/assets/model-viewer.esm.js?v=1")
-	if respQ.StatusCode != http.StatusOK || bodyQ != body {
-		t.Errorf("query variant served differently: status=%d same=%v", respQ.StatusCode, bodyQ == body)
-	}
+		// Query strings (cache-busting) must select the same route.
+		respQ, bodyQ := getDecompressed(t, client, "http://wui-hermetic/assets/model-viewer.esm.js?v=1")
+		if respQ.StatusCode != http.StatusOK || bodyQ != body {
+			t.Errorf("query variant served differently: status=%d same=%v", respQ.StatusCode, bodyQ == body)
+		}
 
-	respH, err := http.Head(srv.URL + "/assets/model-viewer.esm.js")
-	if err != nil {
-		t.Fatalf("HEAD: %v", err)
-	}
-	defer respH.Body.Close()
-	if respH.StatusCode != http.StatusOK {
-		t.Errorf("HEAD status = %d, want %d", respH.StatusCode, http.StatusOK)
-	}
+		respH, err := client.Head("http://wui-hermetic/assets/model-viewer.esm.js")
+		if err != nil {
+			t.Fatalf("HEAD: %v", err)
+		}
+		defer respH.Body.Close()
+		if respH.StatusCode != http.StatusOK {
+			t.Errorf("HEAD status = %d, want %d", respH.StatusCode, http.StatusOK)
+		}
+	})
 }
 
 // TestRegisterStaticRoutes_NovncHead verifies HEAD reaches the route (Go 1.22
 // "GET" patterns also match HEAD) rather than the catch-all.
 func TestRegisterStaticRoutes_NovncHead(t *testing.T) {
-	mux := http.NewServeMux()
-	RegisterStaticRoutes(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	inBubble(t, func(t *testing.T) {
+		srv, client := staticHermetic(t)
+		defer srv.close()
 
-	resp, err := http.Head(srv.URL + "/assets/novnc.esm.js")
-	if err != nil {
-		t.Fatalf("HEAD: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
-		t.Errorf("Content-Type = %q, want text/javascript (SPA catch-all?)", ct)
-	}
+		resp, err := client.Head("http://wui-hermetic/assets/novnc.esm.js")
+		if err != nil {
+			t.Fatalf("HEAD: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+			t.Errorf("Content-Type = %q, want text/javascript (SPA catch-all?)", ct)
+		}
+	})
 }
 
 func truncBody(s string, n int) string {
