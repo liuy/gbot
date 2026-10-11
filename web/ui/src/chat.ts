@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder } from './utils'
+import { classifyTool, countStreamBlocks, isCollapsibleBlock, streamTextChars, timeDividerLabel, unwrapQueuedReminder } from './utils'
 import { createCopyButton } from './utils/copy_button'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -523,7 +523,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   // Takeover/session-switch loading bar: 2px fill pinned to the header's
   // bottom edge. start() fires when the switch request leaves, finish()
-  // when the answering metadata frame renders the new session.
+  // when the session is fully rendered — synchronously with the metadata
+  // frame for small sessions, after snapshot hydration completes for
+  // large ones.
   const takeoverBar = createTakeoverBar()
 
   const header = createHeader({
@@ -811,6 +813,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const progressAnchor = (): Node | null => progressHandles?.root ?? null
 
   const cleanupStreamingRefs = () => {
+    cancelStreamHydration()
     if (refreshInterval !== null) {
       clearInterval(refreshInterval)
       refreshInterval = null
@@ -1276,21 +1279,154 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  function renderStreamStateBlocks(blocks: Block[]) {
+  // Hydration slicing thresholds: above either bound the snapshot render is
+  // spread across rAF frames instead of running as one task (multi-second
+  // freeze on long-query takeover). Block count bounds DOM-wiring cost,
+  // char volume bounds markdown-parse cost; a snapshot is chunked when
+  // EITHER is exceeded.
+  const HYDRATE_SYNC_BLOCKS = 24
+  const HYDRATE_SYNC_CHARS = 50_000
+  // Tail = blocks rendered synchronously in the metadata task (live content
+  // visible immediately); chunk = blocks backfilled per rAF frame afterwards.
+  const HYDRATE_TAIL_BLOCKS = 8
+  const HYDRATE_CHUNK_BLOCKS = 8
+
+  // Renders blocks[from..to) in forward order, each inserted before the
+  // streaming progress anchor. Shared by the sync path, the hydration tail,
+  // and the query_end flush so all three produce identical DOM.
+  function renderStreamBlocksRange(blocks: Block[], from: number, to: number) {
+    const anchor = progressAnchor()
+    for (let i = from; i < to; i++) {
+      renderStreamBlock(streamContainer!, blocks[i], anchor, null)
+    }
+  }
+
+  interface StreamHydration {
+    raf: number
+    next: number              // lowest not-yet-rendered backfill index
+    firstRendered: Node | null
+    container: HTMLElement
+    blocks: Block[]
+    onDone: (() => void) | undefined
+    finished: boolean
+  }
+  let streamHydration: StreamHydration | null = null
+
+  // Invalidates an in-flight hydration without flushing. Used where the
+  // streaming DOM is about to be replaced (resetAllState / new metadata):
+  // rendering into doomed nodes would be wasted work.
+  function cancelStreamHydration() {
+    if (!streamHydration) return
+    if (streamHydration.raf) cancelAnimationFrame(streamHydration.raf)
+    streamHydration = null
+  }
+
+  // query_end / error keep the streaming DOM: flush the un-rendered backfill
+  // synchronously so the snapshot stays complete, then close the hydration.
+  function finishStreamHydration() {
+    const h = streamHydration
+    if (!h) return
+    if (h.raf) cancelAnimationFrame(h.raf)
+    streamHydration = null
+    if (h.next > 0 && h.container.isConnected) {
+      insertBackfillChunk(h, 0)
+    }
+    completeStreamHydration(h)
+  }
+
+  function completeStreamHydration(h: StreamHydration) {
+    if (h.finished) return
+    h.finished = true
+    h.onDone?.()
+  }
+
+  // Renders blocks[end..h.next) forward into a fragment, inserts it before
+  // the oldest rendered node, and compensates scrollTop when the user is
+  // scrolled away from the bottom (same compensation loadHistory uses).
+  function insertBackfillChunk(h: StreamHydration, end: number) {
+    const frag = createFragment()
+    const anchor = null as Node | null
+    for (let i = end; i < h.next; i++) {
+      renderStreamBlock(frag as unknown as HTMLElement, h.blocks[i], anchor, null)
+    }
+    const chunkFirst = frag.firstChild
+    const prevTop = scroll.scrollTop
+    const prevH = scroll.scrollHeight
+    h.container.insertBefore(frag, h.firstRendered)
+    if (!isNearBottom) {
+      scroll.scrollTop = prevTop + (scroll.scrollHeight - prevH)
+    }
+    // The oldest rendered node advances to this chunk's first node — the
+    // next (older) chunk must land ABOVE it, not between it and the tail.
+    // Skipped blocks (empty text) render nothing, keeping the old ref.
+    if (chunkFirst) h.firstRendered = chunkFirst
+    h.next = end
+  }
+
+  function hydrationStep(h: StreamHydration) {
+    if (streamHydration !== h) return
+    const end = Math.max(0, h.next - HYDRATE_CHUNK_BLOCKS)
+    if (end < h.next) insertBackfillChunk(h, end)
+    if (h.next > 0) {
+      h.raf = requestAnimationFrame(() => hydrationStep(h))
+    } else {
+      streamHydration = null
+      completeStreamHydration(h)
+    }
+  }
+
+  function startStreamHydration(blocks: Block[], onDone: (() => void) | undefined) {
+    cancelStreamHydration()
+    const container = streamContainer!
+    const prevFirst = container.firstChild
+    // The tail renders above the current bottom anchor, so it starts at the
+    // index prevFirst occupied. childNodes[prevIndex] after the render is
+    // the oldest node this hydration owns (container.firstChild when it was
+    // empty) — prevFirst.nextSibling would be null here because the anchor
+    // ends up BELOW the tail, not above it.
+    const prevIndex = prevFirst
+      ? Array.prototype.indexOf.call(container.childNodes, prevFirst)
+      : 0
+    const tailFrom = Math.max(0, blocks.length - HYDRATE_TAIL_BLOCKS)
+    renderStreamBlocksRange(blocks, tailFrom, blocks.length)
+    const firstRendered = (container.childNodes[prevIndex] as Node | undefined) ?? null
+    const h: StreamHydration = {
+      raf: 0,
+      next: tailFrom,
+      firstRendered,
+      container,
+      blocks,
+      onDone,
+      finished: false,
+    }
+    streamHydration = h
+    h.raf = requestAnimationFrame(() => hydrationStep(h))
+  }
+
+  function renderStreamStateBlocks(blocks: Block[], onHydrated?: () => void) {
     if (!streamContainer) return
     pendingBlocks.length = 0
     pendingBlocks.push(...blocks)
     registerBlocksForStreamState(blocks, null)
-    const anchor = progressAnchor()
-    for (const b of blocks) {
-      renderStreamBlock(streamContainer, b, anchor, null)
+    const large =
+      countStreamBlocks(blocks) > HYDRATE_SYNC_BLOCKS ||
+      streamTextChars(blocks) > HYDRATE_SYNC_CHARS
+    if (!large) {
+      renderStreamBlocksRange(blocks, 0, blocks.length)
+      onHydrated?.()
+      return
     }
+    startStreamHydration(blocks, onHydrated)
   }
 
   function handleEvent(e: QueryEvent) {
     switch (e.type) {
       case 'query_start': {
         if (e.agent) return
+        // The cleanup below cancels an in-flight snapshot hydration without
+        // firing its onDone — the bar's only completion path — so close the
+        // switch window here instead. Idle-guarded: no-op outside a takeover.
+        takeoverBar.finish()
         cleanupStreamingRefs()
         initStreaming('query_start')
         return
@@ -1431,6 +1567,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
             committedToolCount, accumulatedThinkingMs)
         }
+        // Flush any in-flight snapshot hydration before cleanup: the
+        // streaming DOM survives query_end (commit and abort-commit paths),
+        // so the remaining backfill must land now, synchronously. On the
+        // abort-rewind path the container is already detached; the
+        // isConnected guard skips the wasted render but onDone still fires.
+        finishStreamHydration()
         cleanupStreamingRefs()
         resetProgressUsage()
         knownToolIDs.clear()
@@ -1696,6 +1838,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (pending) {
           pending.state = tr.is_error ? 'error' : 'done'
+          // entry undefined (unrendered tool_end mid-backfill) → durationNs 0: cosmetic 0s stamp; backfill renders from state.
           pending.timingNs = durationNs
           pending.displayOutput = output
           if (tr.is_search !== undefined) pending.isSearch = tr.is_search
@@ -2073,9 +2216,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
     switch (msg.type) {
       case 'metadata': {
-        // The metadata frame is what ends a switch's loading window —
-        // complete the takeover bar before rendering the new session.
-        takeoverBar.finish()
+        // The takeover bar is NOT finished here: it completes when the
+        // snapshot finishes hydrating (or immediately, below, when there
+        // is nothing to hydrate).
         const c = msg.connect
         // Bundle staleness check before state reset: on reload the rest of
         // this handler is wasted work. First frame per page lifetime only
@@ -2115,7 +2258,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           if (!streamContainer) {
             initStreaming('snapshot')
           }
-          renderStreamStateBlocks(msg.snapshot.blocks)
+          renderStreamStateBlocks(msg.snapshot.blocks, () => takeoverBar.finish())
+        } else {
+          // No snapshot: the switch window ends with this frame — small
+          // snapshots also finish synchronously inside renderStreamStateBlocks.
+          takeoverBar.finish()
         }
 
         if (msg.queuedMsgs && msg.queuedMsgs.length > 0) {
@@ -2262,6 +2409,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // server answers e.g. an unknown engine with an error frame
         // instead of metadata. Idle-guarded, so unrelated errors no-op.
         takeoverBar.finish()
+        // Error boxes attach to the surviving streaming message, so an
+        // in-flight hydration must flush before the box is appended.
+        finishStreamHydration()
         appendError(msg.message)
         return
       case 'ask': {

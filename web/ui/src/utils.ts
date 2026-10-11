@@ -432,3 +432,30 @@ export function unwrapQueuedReminder(text: string): string | null {
     text.length - QUEUED_REMINDER_SUFFIX.length,
   )
 }
+
+// Snapshot hydration cost estimate: recursive block count and parseable
+// character volume. Image src excluded — base64 data URLs are huge but
+// never markdown-parsed.
+export function countStreamBlocks(blocks: Block[]): number {
+  let n = 0
+  for (const b of blocks) {
+    n++
+    if (b.kind === 'tool' && b.children && b.children.length > 0) {
+      n += countStreamBlocks(b.children)
+    }
+  }
+  return n
+}
+
+export function streamTextChars(blocks: Block[]): number {
+  let n = 0
+  for (const b of blocks) {
+    if (b.kind === 'text' || b.kind === 'user') n += (b.text || '').length
+    else if (b.kind === 'thinking') n += (b.text || '').length
+    else if (b.kind === 'tool') {
+      n += (b.displayOutput || '').length
+      if (b.children && b.children.length > 0) n += streamTextChars(b.children)
+    }
+  }
+  return n
+}

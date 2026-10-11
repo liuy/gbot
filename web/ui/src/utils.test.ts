@@ -9,6 +9,8 @@ import {
   bindLongPress,
   createPopupHost,
   unwrapQueuedReminder,
+  countStreamBlocks,
+  streamTextChars,
 } from './utils'
 import type { Block } from './model'
 
@@ -699,5 +701,80 @@ describe('unwrapQueuedReminder', () => {
     expect(unwrapQueuedReminder(
       '[2026-10-05 11:00:00 CST] ' + envelope,
     )).toBeNull()
+  })
+})
+describe('countStreamBlocks', () => {
+  it('counts an empty array as 0', () => {
+    expect(countStreamBlocks([])).toBe(0)
+  })
+  it('counts top-level blocks of every kind', () => {
+    const blocks: Block[] = [
+      { kind: 'text', id: '', text: 'a' },
+      { kind: 'user', id: '', text: 'b' },
+      { kind: 'image', id: '', src: 'data:image/png;base64,xxx' },
+      {
+        kind: 'thinking', id: '', text: 'c', durationNs: 0, active: false, startedAt: 0,
+      },
+    ]
+    expect(countStreamBlocks(blocks)).toBe(4)
+  })
+  it('counts nested tool children recursively', () => {
+    const blocks: Block[] = [
+      { kind: 'text', id: '', text: 'a' },
+      {
+        kind: 'tool', id: 't1', name: 'Agent', summary: '', isSearch: false,
+        isRead: false, isList: false, isLsp: false, isWeb: false, isTask: false,
+        state: 'running', timingNs: 0, displayOutput: '', startedAt: 0,
+        children: [
+          { kind: 'text', id: '', text: 'sub' },
+          {
+            kind: 'tool', id: 't2', name: 'Read', summary: '', isSearch: false,
+            isRead: true, isList: false, isLsp: false, isWeb: false, isTask: false,
+            state: 'done', timingNs: 0, displayOutput: 'out', startedAt: 0,
+            children: [
+              { kind: 'text', id: '', text: 'deep' },
+            ],
+          },
+        ],
+      },
+    ]
+    expect(countStreamBlocks(blocks)).toBe(5)
+  })
+})
+
+describe('streamTextChars', () => {
+  it('counts an empty array as 0', () => {
+    expect(streamTextChars([])).toBe(0)
+  })
+  it('sums text/user/thinking text and tool displayOutput, images contribute 0', () => {
+    const blocks: Block[] = [
+      { kind: 'text', id: '', text: 'abc' },
+      { kind: 'user', id: '', text: 'de' },
+      { kind: 'image', id: '', src: 'data:image/png;base64,xxxxxx' },
+      { kind: 'document', id: '', name: 'f.pdf', size: 10 },
+      { kind: 'thinking', id: '', text: 'ghi', durationNs: 0, active: false, startedAt: 0 },
+      {
+        kind: 'tool', id: 't1', name: 'Bash', summary: '', isSearch: false,
+        isRead: false, isList: false, isLsp: false, isWeb: false, isTask: false,
+        state: 'done', timingNs: 0, displayOutput: 'jkl', startedAt: 0,
+        children: [
+          { kind: 'thinking', id: '', text: 'mn', durationNs: 0, active: false, startedAt: 0 },
+          {
+            kind: 'tool', id: 't2', name: 'Read', summary: '', isSearch: false,
+            isRead: true, isList: false, isLsp: false, isWeb: false, isTask: false,
+            state: 'done', timingNs: 0, displayOutput: 'opq', startedAt: 0, children: [],
+          },
+        ],
+      },
+    ]
+    expect(streamTextChars(blocks)).toBe(3 + 2 + 3 + 3 + 2 + 3)
+  })
+  it('treats omitted wire fields (JSON omitempty) as empty, never throws', () => {
+    const sparse = [
+      { kind: 'thinking', id: '', durationNs: 0, active: false, startedAt: 0 },
+      { kind: 'tool', id: 't1', name: 'Agent', state: 'running', children: undefined },
+    ] as unknown as Block[]
+    expect(streamTextChars(sparse)).toBe(0)
+    expect(countStreamBlocks(sparse)).toBe(2)
   })
 })
