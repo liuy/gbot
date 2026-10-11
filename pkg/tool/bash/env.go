@@ -160,7 +160,16 @@ func execTmux(args []string) tmuxResult {
 
 // getClaudeSocketName returns "claude-<PID>", created lazily.
 // Source: tmuxSocket.ts:91-96
+// All tmux* state is guarded by tmuxMu: getEnvironmentOverrides runs per Bash
+// spawn (concurrent tool calls) while ensureSocketInitialized writes the
+// socket fields — the TS original is single-threaded, Go is not.
 func getClaudeSocketName() string {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
+	return getClaudeSocketNameLocked()
+}
+
+func getClaudeSocketNameLocked() string {
 	if tmuxSocketName == "" {
 		tmuxSocketName = fmt.Sprintf("claude-%d", os.Getpid())
 	}
@@ -170,12 +179,20 @@ func getClaudeSocketName() string {
 // getClaudeSocketPath returns the socket path if initialized, else "".
 // Source: tmuxSocket.ts:102-104
 func getClaudeSocketPath() string {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
 	return tmuxSocketPath
 }
 
 // isSocketInitialized returns true if socket path and PID are set.
 // Source: tmuxSocket.ts:118-120
 func isSocketInitialized() bool {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
+	return isSocketInitializedLocked()
+}
+
+func isSocketInitializedLocked() bool {
 	return tmuxSocketPath != "" && tmuxServerPID != 0
 }
 
@@ -186,6 +203,8 @@ func isSocketInitialized() bool {
 // CRITICAL: This value overrides the user's TMUX env var in ALL child processes,
 // ensuring any tmux command run via the Bash tool operates on Claude's socket.
 func getClaudeTmuxEnv() string {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
 	if tmuxSocketPath == "" || tmuxServerPID == 0 {
 		return ""
 	}
@@ -195,18 +214,28 @@ func getClaudeTmuxEnv() string {
 // markTmuxToolUsed marks that the Tmux tool was used at least once.
 // Source: tmuxSocket.ts:187-189
 func markTmuxToolUsed() {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
 	tmuxToolUsed = true
 }
 
 // hasTmuxToolBeenUsed returns whether Tmux tool was used.
 // Source: tmuxSocket.ts:195-197
 func hasTmuxToolBeenUsed() bool {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
 	return tmuxToolUsed
 }
 
 // checkTmuxAvailable checks if tmux is installed. Result is cached.
 // Source: tmuxSocket.ts:151-171
 func checkTmuxAvailable() bool {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
+	return checkTmuxAvailableLocked()
+}
+
+func checkTmuxAvailableLocked() bool {
 	if tmuxAvailChecked {
 		return tmuxAvailable
 	}
@@ -230,11 +259,11 @@ func ensureSocketInitialized() error {
 	tmuxMu.Lock()
 	defer tmuxMu.Unlock()
 
-	if isSocketInitialized() {
+	if isSocketInitializedLocked() {
 		return nil
 	}
 
-	if !checkTmuxAvailable() {
+	if !checkTmuxAvailableLocked() {
 		return nil // graceful degradation
 	}
 
@@ -264,7 +293,7 @@ func ensureSocketInitialized() error {
 // doInitialize performs the actual tmux socket initialization.
 // Source: tmuxSocket.ts:268-415 — doInitialize()
 func doInitialize() error {
-	socket := getClaudeSocketName()
+	socket := getClaudeSocketNameLocked()
 
 	// Create new session with custom socket
 	// Source: tmuxSocket.ts:282-295
@@ -335,7 +364,9 @@ func doInitialize() error {
 // killTmuxServer kills the Claude tmux server. Call on session end.
 // Source: tmuxSocket.ts:252-266
 func killTmuxServer() error {
-	socket := getClaudeSocketName()
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
+	socket := getClaudeSocketNameLocked()
 	result := execTmux([]string{"-L", socket, "kill-server"})
 	if result.Code == 0 {
 		return nil
@@ -375,6 +406,8 @@ func getEnvironmentOverrides(cmd string) map[string]string {
 // resetSocketState resets all socket state (for testing).
 // Source: tmuxSocket.ts:418-427
 func resetSocketState() {
+	tmuxMu.Lock()
+	defer tmuxMu.Unlock()
 	tmuxSocketName = ""
 	tmuxSocketPath = ""
 	tmuxServerPID = 0

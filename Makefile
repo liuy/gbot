@@ -1,4 +1,4 @@
-.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate flaky check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -123,7 +123,24 @@ MUTATE_MAX ?= 400
 # The tool's own default is all 72 CPUs on this box; 16 caps contention, it is not a
 # speed win. Tunable: make mutate MUTATE_WORKERS=8.
 MUTATE_WORKERS ?= 16
+# MUTATE_PKG=<pkg> switches mutate from diff mode to a whole-package health check
+# (periodic: ~35 min for pkg/llm). The awk collapses the ~1000-line ESCAPED dump
+# into top hotspots (line -> survivor count) plus the tool's own score line; the
+# raw dump is unreadable at that volume.
 mutate:
+ifdef MUTATE_PKG
+	@command -v go-mutesting >/dev/null 2>&1 || { \
+	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
+	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
+	  exit 0; }; \
+	log=$$(mktemp /tmp/mutate_pkg.XXXXXX); \
+	go-mutesting --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1 \
+	  | tee $$log \
+	  | awk '/^ESCAPED/{n[$$2]++} END{for(l in n) printf "%4d %s\n", n[l], l}' | sort -rn | head -20; \
+	grep -i 'mutation score' $$log \
+	  || { echo "no score line — go-mutesting errored, full output:"; cat $$log; }; \
+	rm -f $$log
+else
 	@command -v go-mutesting >/dev/null 2>&1 || { \
 	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
 	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
@@ -145,6 +162,39 @@ mutate:
 	go-mutesting --git-diff-lines --git-diff-base='$(MUTATE_BASE)' \
 	  --workers $(MUTATE_WORKERS) --no-diffs --quiet \
 	  --timeout-coefficient=3 $(PKG)
+endif
+
+# flaky amplifies runs to separate flakes from real failures: same binary, many
+# runs, a test whose outcomes are not all-pass is flaky (all-fail is a real
+# failure and reported as FAIL). Diagnostic only, never in CHECK_TARGETS.
+# Default = diff mode: only test functions changed since FLAKY_BASE, xFLAKY_COUNT
+# — iteration guard, seconds to minutes. git's Go diff driver puts the enclosing
+# func in the @@ hunk header; newly added funcs come from the +func lines.
+# Like make mutate: git add first — untracked test files are invisible to the diff.
+# FLAKY_PKG=<pkg> = package mode: whole package x FLAKY_COUNT per shuffle seed —
+# the order-interaction sweep diff mode cannot see (the victim test is often not
+# the one you changed). The -json stream at that volume is unreadable, so a
+# jq/awk pipe reduces it to per-test verdicts.
+FLAKY_BASE ?= HEAD
+FLAKY_COUNT ?= 5
+FLAKY_SEEDS ?= 1 2 3
+flaky:
+	@command -v jq >/dev/null 2>&1 || { echo "NOTE: jq not installed, skipping"; exit 0; }; \
+	if [ -n "$(FLAKY_PKG)" ]; then \
+	  for seed in $(FLAKY_SEEDS); do \
+	    echo "== $(FLAKY_PKG) seed $$seed =="; \
+	    go test $(FLAKY_PKG) -race -count=$(FLAKY_COUNT) -shuffle=$$seed -timeout 600s -json 2>&1 \
+	    | jq -r 'select(.Test and (.Action=="pass" or .Action=="fail")) | "\(.Action) \(.Test)"' \
+	    | sort -u \
+	    | awk '{a[$$2]=a[$$2]" "$$1} END{for(t in a){n=split(a[t],p," "); if(n>1) print "FLAKY",t,a[t]; else if(p[1]=="fail") print "FAIL",t}}'; \
+	  done; \
+	  exit 0; \
+	fi; \
+	tests=$$( { git diff --unified=0 $(FLAKY_BASE) -- '*_test.go' | sed -n 's/.*@@ func \(Test[A-Za-z0-9_]*\).*/\1/p'; \
+	            git diff --unified=0 $(FLAKY_BASE) -- '*_test.go' | sed -n 's/^+func \(Test[A-Za-z0-9_]*\).*/\1/p'; } | sort -u | paste -sd'|' - ); \
+	if [ -z "$$tests" ]; then echo "no test-function changes since $(FLAKY_BASE)"; exit 0; fi; \
+	echo "amplifying x$(FLAKY_COUNT): $$tests"; \
+	go test ./pkg/... -race -count=$(FLAKY_COUNT) -run "^($$tests)$$" -timeout 600s
 
 check: $(CHECK_TARGETS)
 	@echo "✓ ALL CHECKS PASSED"

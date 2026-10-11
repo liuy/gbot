@@ -110,8 +110,9 @@ func Start(opts Options) (*Instance, error) {
 		logLevel = slog.LevelDebug
 	}
 	logPath := filepath.Join(projectDir, "gbot.log")
-	f := setupLogFile(logPath, logLevel)
-	_ = f
+	if f := setupLogFile(logPath); f != nil {
+		installLogHandler(f, logLevel)
+	}
 	// The Android app passes the last cold-cycle exit reason here via
 	// ApplicationExitInfo (GBOT_PREV_EXIT): OOM/ANR/signal — answers
 	// "why did the previous instance die" right at the top of the log.

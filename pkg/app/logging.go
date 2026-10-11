@@ -9,7 +9,10 @@ const maxLogSize = 20 * 1024 * 1024 // 20MB
 
 // setupLogFile opens logPath in append mode, rotating to .old if it exceeds maxLogSize.
 // Returns the file handle for writing, or nil on error.
-func setupLogFile(logPath string, logLevel slog.Level) *os.File {
+// SetDefault lives in installLogHandler, not here: a test that exercises
+// rotation must not hijack the process-wide slog default — concurrent tests'
+// log output then cannot land in (and size-pollute) the freshly rotated file.
+func setupLogFile(logPath string) *os.File {
 	if info, err := os.Stat(logPath); err == nil && info.Size() > maxLogSize {
 		_ = os.Rename(logPath, logPath+".old")
 	}
@@ -17,6 +20,10 @@ func setupLogFile(logPath string, logLevel slog.Level) *os.File {
 	if err != nil {
 		return nil
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})))
 	return f
+}
+
+// installLogHandler points the global slog default at f. Production entry only.
+func installLogHandler(f *os.File, logLevel slog.Level) {
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})))
 }

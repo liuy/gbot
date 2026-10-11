@@ -1,17 +1,46 @@
 package app
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestInstallLogHandler_WritesToHandle: the default slog must route to the
+// opened handle — this is the only observation of the Start wiring target.
+func TestInstallLogHandler_WritesToHandle(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "gbot.log")
+	f := setupLogFile(logPath)
+	if f == nil {
+		t.Fatal("setupLogFile returned nil")
+	}
+	defer f.Close()
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+	installLogHandler(f, slog.LevelError)
+	slog.Info("info-should-be-dropped")
+	slog.Error("error-marker")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), "error-marker") {
+		t.Errorf("slog output not routed to handle, got %q", string(data))
+	}
+	if strings.Contains(string(data), "info-should-be-dropped") {
+		t.Errorf("handler level not honored, got %q", string(data))
+	}
+}
 
 // TestSetupLogFile_NewFile: no existing log → creates file, returns non-nil
 func TestSetupLogFile_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "gbot.log")
 
-	f := setupLogFile(logPath, 0)
+	f := setupLogFile(logPath)
 
 	if f == nil {
 		t.Fatal("expected non-nil file handle")
@@ -38,7 +67,7 @@ func TestSetupLogFile_AppendExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := setupLogFile(logPath, 0)
+	f := setupLogFile(logPath)
 	if f == nil {
 		t.Fatal("expected non-nil file handle")
 	}
@@ -70,7 +99,7 @@ func TestSetupLogFile_RotateOnLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := setupLogFile(logPath, 0)
+	f := setupLogFile(logPath)
 	if f == nil {
 		t.Fatal("expected non-nil file handle")
 	}
@@ -107,7 +136,7 @@ func TestSetupLogFile_NoRotateUnderLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := setupLogFile(logPath, 0)
+	f := setupLogFile(logPath)
 	if f == nil {
 		t.Fatal("expected non-nil file handle")
 	}
@@ -145,7 +174,7 @@ func TestSetupLogFile_RotateReplacesOldBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f1 := setupLogFile(logPath, 0)
+	f1 := setupLogFile(logPath)
 	if f1 == nil {
 		t.Fatal("expected non-nil file handle on first rotation")
 	}
@@ -163,7 +192,7 @@ func TestSetupLogFile_RotateReplacesOldBackup(t *testing.T) {
 	if err := os.WriteFile(logPath, bigContent, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f2 := setupLogFile(logPath, 0)
+	f2 := setupLogFile(logPath)
 	if f2 == nil {
 		t.Fatal("expected non-nil file handle on second rotation")
 	}

@@ -24,11 +24,28 @@ func freeTCPPort(t *testing.T) string {
 	return port
 }
 
+// pinSharedCaches redirects the build/cache/config dirs that Start's async
+// LSP discovery (gopls + go-list children) writes into for seconds after a
+// test ends — racing TempDir RemoveAll on the isolated HOME ("unlinkat
+// .../.cache/go-build: directory not empty"). These dirs are content-addressed
+// and meant to be shared, so pin them to the real user cache; the config dir
+// (gopls telemetry queue) goes to a scratch dir under it — stable, never
+// RemoveAll'd, and the user's real ~/.config stays untouched.
+func pinSharedCaches(t *testing.T) {
+	t.Helper()
+	if cache, err := os.UserCacheDir(); err == nil {
+		t.Setenv("GOCACHE", filepath.Join(cache, "go-build"))
+		t.Setenv("XDG_CACHE_HOME", cache)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(cache, "gbot-test-config"))
+	}
+}
+
 // minimalHome isolates the daemon state (PID guard, memory store, config)
 // from the real HOME and provides one offline provider so config resolution
 // succeeds without any network access.
 func minimalHome(t *testing.T) string {
 	t.Helper()
+	pinSharedCaches(t)
 	home := t.TempDir()
 	settings := `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"t/m"}}`
 	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0o755); err != nil {

@@ -72,6 +72,9 @@ const (
 	stopReasonContextWindowExceeded = "model_context_window_exceeded"
 	stopReasonMaxTokens             = "max_tokens"
 	maxTokensRecoveryLimit          = 3
+	// closeJoinTimeout bounds Close's wait for in-flight query goroutines;
+	// a stuck goroutine must not hang Close (sequential session cleanup).
+	closeJoinTimeout = 5 * time.Second
 
 	// continuationPrompt is appended as a meta user message when stop_reason
 	// signals truncated output. Source: TS query.ts:1226 — identical text.
@@ -147,6 +150,18 @@ type Engine struct {
 	activeCancelMu sync.Mutex
 	activeCancel   context.CancelFunc
 	activeGen      uint64
+	// closing flips at the top of Close. Without it, the endQuery tail of a
+	// cancelled query can still kick attachment processing (beginQueryIfIdle
+	// sees idle, spawns, and the new cancel has no owner) — Close's join then
+	// waits on work it can no longer cancel (observed: 12 close_join_timeout
+	// warnings in one shuffled engine run).
+	closing bool
+	// queryWg tracks every goroutine this engine spawns that can reach the
+	// turn loop or persistence (Query, RunSkill, attachment processing, exit
+	// jobs). Close cancels them and then joins: an unjoined runTurns defer
+	// calls PersistNewMessages → time.Now() after its test ended, racing
+	// another test's time.Local write (observed as DATA RACE under shuffle).
+	queryWg sync.WaitGroup
 
 	// isSubagent is true for sub-agent engines created by AgentTool.
 	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
@@ -750,11 +765,19 @@ func (e *Engine) beginQueryIfIdle(cancel context.CancelFunc) (uint64, bool) {
 	if e.queryActive.Load() != 0 {
 		return 0, false
 	}
-	return e.beginLocked(cancel), true
+	tok := e.beginLocked(cancel)
+	if tok == 0 {
+		return 0, false
+	}
+	return tok, true
 }
 
 // beginLocked mutates the active-query state; caller must hold activeCancelMu.
+// Token 0 means "engine is closing" — callers must not spawn the goroutine.
 func (e *Engine) beginLocked(cancel context.CancelFunc) uint64 {
+	if e.closing {
+		return 0
+	}
 	e.activeGen++
 	e.activeCancel = cancel
 	e.queryActive.Store(1)
@@ -782,7 +805,12 @@ func (e *Engine) endQuery(token uint64) {
 func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
-	go func() {
+	if token == 0 {
+		cancel()
+		e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("engine: query on closed engine")})
+		return
+	}
+	e.goRun(func() {
 		defer e.endQuery(token)
 		defer cancel()
 		defer func() {
@@ -792,7 +820,7 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt str
 			}
 		}()
 		e.queryLoop(ctx, userMessage, systemPrompt)
-	}()
+	})
 }
 
 // ProcessAttachments drains pending attachments and runs the turn loop.
@@ -800,7 +828,7 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt str
 // Registers no cancel (Abort does not target it), so its run carries no
 // ownership token — processAttachments manages only the busy flag for it.
 func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
-	go e.processAttachments(ctx, 0, systemPrompt)
+	e.goRun(func() { e.processAttachments(ctx, 0, systemPrompt) })
 }
 
 // SetSharedDeps injects the tool creation dependencies for RunAgent.
@@ -1047,8 +1075,12 @@ func (e *Engine) SetSkillRegistry(reg *skills.Registry) {
 func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
-
-	go func() {
+	if token == 0 {
+		cancel()
+		e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("engine: skill on closed engine")})
+		return
+	}
+	e.goRun(func() {
 		defer e.endQuery(token)
 		defer cancel()
 		defer func() {
@@ -1143,7 +1175,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 			e.runTurns(ctx, systemPrompt)
 		}
-	}()
+	})
 }
 
 // startProcessAttachmentsIfIdle checks whether the attachment queue has items
@@ -1167,10 +1199,10 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 		cancel() // release the WithCancel resources; someone else is running
 		return
 	}
-	go func() {
+	e.goRun(func() {
 		defer cancel()
 		e.processAttachments(ctx, token, systemPrompt)
-	}()
+	})
 }
 
 // processAttachments is the internal implementation shared by EnqueueAttachment
@@ -1919,6 +1951,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					SessionID:     e.sessionID,
 					Reason:        errText,
 				}
+				// Deliberately not goRun-tracked: the hook runs under
+				// context.Background() and cannot be cancelled by Close;
+				// joining it would stall Close (sequential session cleanup
+				// would pay the join cap per engine). Fire-and-forget by design.
 				go func() {
 					// runAsyncHook precedent: a panicking hook executor must
 					// never take down the engine goroutine.
@@ -4053,14 +4089,50 @@ func (e *Engine) pendingMCPServerNames() []string {
 }
 
 // Close shuts down the engine and its MCP registry.
-func (e *Engine) Close() {
-	// Cancel any in-flight attachment processing goroutine.
+// goRun spawns an engine-owned background goroutine and tracks it in queryWg
+// so Close can join it. Add happens on the caller side: a racing Close must
+// never Wait an unregistered spawn.
+func (e *Engine) goRun(f func()) {
 	e.activeCancelMu.Lock()
+	if e.closing {
+		e.activeCancelMu.Unlock()
+		return
+	}
+	e.queryWg.Add(1)
+	e.activeCancelMu.Unlock()
+	go func() {
+		defer e.queryWg.Done()
+		f()
+	}()
+}
+
+func (e *Engine) Close() {
+	// Cancel any in-flight attachment processing goroutine. closing flips
+	// first: after this point beginQueryIfIdle refuses and goRun skips, so
+	// the cancelled queries' endQuery tails cannot spawn unowned work.
+	e.activeCancelMu.Lock()
+	e.closing = true
 	if e.activeCancel != nil {
 		e.activeCancel()
 		e.activeCancel = nil
 	}
 	e.activeCancelMu.Unlock()
+	// Join the cancelled goroutines: their exit defers (PersistNewMessages)
+	// must land before Close returns, or they outlive the caller — usually a
+	// test, where the stray time.Now() then races an unrelated test's
+	// time.Local pin. Bounded: a stuck goroutine must not hang Close.
+	joined := make(chan struct{})
+	go func() {
+		e.queryWg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(closeJoinTimeout):
+		// The waiter goroutine stays parked until the stuck work finishes —
+		// bounded by how many Closes time out, accepted trade-off.
+		e.logger.Warn("engine:close_join_timeout", "session", e.sessionID, "cap", closeJoinTimeout)
+	}
 
 	if e.onCloseFn != nil {
 		e.onCloseFn(e.sessionID)
@@ -4716,7 +4788,10 @@ func (e *Engine) SetSessionMemory(sm *session.SessionMemory) {
 			}
 			sm.RecordToolCalls(toolCalls)
 
-			// Run extraction asynchronously — TS: extractSessionMemory runs in background via runForkedAgent
+			// Run extraction asynchronously — TS: extractSessionMemory runs in background via runForkedAgent.
+			// Deliberately not goRun-tracked: it runs under WithoutCancel by
+			// design (survives ESC) and Close cannot cancel it; joining would
+			// stall Close on an unbounded forked agent.
 			go func() {
 				if err := sm.Extract(context.WithoutCancel(ctx), messages, currentTokens); err != nil {
 					e.logger.Warn("session memory extraction failed", "error", err)
@@ -5006,6 +5081,10 @@ func (e *Engine) querySource() string {
 func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt string) QueryResult {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
+	if token == 0 {
+		cancel()
+		return QueryResult{Error: errors.New("engine: query on closed engine")}
+	}
 	defer e.endQuery(token)
 	defer cancel()
 	result := e.queryLoop(ctx, userMessage, systemPrompt)
@@ -5021,6 +5100,10 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 func (e *Engine) QuerySyncWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) QueryResult {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
+	if token == 0 {
+		cancel()
+		return QueryResult{Error: errors.New("engine: query on closed engine")}
+	}
 	defer e.endQuery(token)
 	defer cancel()
 	result := e.queryLoopWithContent(ctx, content, systemPrompt)
@@ -5036,7 +5119,12 @@ func (e *Engine) QuerySyncWithContent(ctx context.Context, content []types.Conte
 func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
-	go func() {
+	if token == 0 {
+		cancel()
+		e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("engine: query on closed engine")})
+		return
+	}
+	e.goRun(func() {
 		defer e.endQuery(token)
 		defer cancel()
 		defer func() {
@@ -5046,7 +5134,7 @@ func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBl
 			}
 		}()
 		e.queryLoopWithContent(ctx, content, systemPrompt)
-	}()
+	})
 }
 
 // RunForkedQuery executes the agentic turn loop starting from
@@ -5055,6 +5143,10 @@ func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBl
 func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt string) QueryResult {
 	ctx, cancel := context.WithCancel(ctx)
 	token := e.beginQuery(cancel)
+	if token == 0 {
+		cancel()
+		return QueryResult{Error: errors.New("engine: query on closed engine")}
+	}
 	defer e.endQuery(token)
 	defer cancel()
 	e.setMessages(messages)

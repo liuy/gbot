@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/project"
 	"github.com/liuy/gbot/pkg/reload"
 )
 
@@ -21,6 +22,7 @@ import (
 // so provider-specific factory resolution is observable.
 func reloadHome(t *testing.T, maxTokens string) string {
 	t.Helper()
+	pinSharedCaches(t)
 	home := t.TempDir()
 	settings := `{"providers":[` +
 		`{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{"max_tokens":"` + maxTokens + `","context":"128k","thinking":"high"}}},` +
@@ -49,6 +51,16 @@ func TestStart_ReloadSwapsEnvForNewEnginesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Start spawns gopls via the LSP registry; it keeps writing its env cache
+	// under $HOME (t.TempDir) for seconds after boot, racing RemoveAll cleanup
+	// (observed: "TempDir RemoveAll cleanup: unlinkat .../.cache/goimports:
+	// directory not empty"). Registered after the TempDir cleanups, so LIFO
+	// runs it first.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		inst.LSPReg.Shutdown(ctx)
+	})
 	if inst.Reloader == nil || inst.EnvHolder == nil {
 		t.Fatalf("Instance must expose Reloader and EnvHolder, got %+v %+v", inst.Reloader, inst.EnvHolder)
 	}
@@ -157,14 +169,22 @@ func TestStart_ReloadSwapsEnvForNewEnginesOnly(t *testing.T) {
 // exactly what Start computed — the reload baseline and every post-reload
 // factory build start from a faithful snapshot.
 func TestStart_EnvHolderMirrorsStartupState(t *testing.T) {
-	t.Setenv("HOME", reloadHome(t, "32k"))
+	home := reloadHome(t, "32k")
+	t.Setenv("HOME", home)
 	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:0")
+	// Deterministic startup log line to prove the gbot.log handler wiring.
+	t.Setenv("GBOT_PREV_EXIT", "test-previous-exit")
 	startInTempProject(t)
 
 	inst, err := Start(Options{NoTUI: true})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		inst.LSPReg.Shutdown(ctx)
+	})
 	env := inst.EnvHolder.Load()
 	if inst.SystemPrompt == "" || !strings.Contains(inst.SystemPrompt, "workspace=") {
 		t.Errorf("startup SystemPrompt must be the built prompt, got %.200s", inst.SystemPrompt)
@@ -204,6 +224,17 @@ func TestStart_EnvHolderMirrorsStartupState(t *testing.T) {
 	if env.PermissionChecker != nil {
 		t.Errorf("env.PermissionChecker = %v, want nil (no rules configured)", env.PermissionChecker)
 	}
+	// Start must wire the slog default to the project's gbot.log
+	// (project.Dir layout: $HOME/.gbot/projects/<slug cwd>/gbot.log).
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(home, ".gbot", "projects", project.Slug(cwd), "gbot.log")
+	logData, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(logData), "previous instance exit") {
+		t.Errorf("gbot.log must carry startup logging, got err=%v content=%.120q", err, logData)
+	}
 }
 
 // TestStart_ReloadRouteRegistered proves the wui face end to end: the route
@@ -216,11 +247,35 @@ func TestStart_ReloadRouteRegistered(t *testing.T) {
 	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+port)
 	startInTempProject(t)
 
-	startErr := make(chan error, 1)
+	// Start returns as soon as the listener is up; the instance is captured
+	// so its LSP registry (gopls, writing under $HOME = t.TempDir) is shut
+	// down before TempDir RemoveAll races it.
+	type startResult struct {
+		inst *Instance
+		err  error
+	}
+	res := make(chan startResult, 1)
 	go func() {
-		_, err := Start(Options{NoTUI: true})
-		startErr <- err
+		inst, err := Start(Options{NoTUI: true})
+		res <- startResult{inst, err}
 	}()
+	var started *Instance
+	t.Cleanup(func() {
+		inst := started
+		if inst == nil {
+			select {
+			case r := <-res:
+				inst = r.inst
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if inst == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		inst.LSPReg.Shutdown(ctx)
+	})
 	base := "http://127.0.0.1:" + port
 	timeout := time.After(5 * time.Second)
 	for {
@@ -264,10 +319,11 @@ func TestStart_ReloadRouteRegistered(t *testing.T) {
 		select {
 		case <-timeout:
 			t.Fatalf("route never answered: %v", err)
-		case serr := <-startErr:
-			if serr != nil {
-				t.Fatalf("Start failed: %v", serr)
+		case r := <-res:
+			if r.err != nil {
+				t.Fatalf("Start failed: %v", r.err)
 			}
+			started = r.inst
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
