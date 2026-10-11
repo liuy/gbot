@@ -422,7 +422,7 @@ func TestJobAdapter_NonNilForkReg(t *testing.T) {
 	}
 }
 
-func TestForkAgentJobAdapter_Prefix(t *testing.T) {
+func TestBackgroundAgentJobAdapter_Prefix(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	a := NewBackgroundAgentJobAdapter(reg)
 	if got := a.Prefix(); got != "fork-" {
@@ -1655,6 +1655,12 @@ func TestCallSubagent_BackgroundReturnsImmediately(t *testing.T) {
 	}
 	if opts.ParentToolUseID != "call_1" {
 		t.Errorf("opts.ParentToolUseID = %q, want %q", opts.ParentToolUseID, "call_1")
+	}
+	if opts.ForkMessages != nil {
+		t.Errorf("opts.ForkMessages = %v, want nil (no fork context on the subagent path)", opts.ForkMessages)
+	}
+	if opts.SystemPrompt != "" {
+		t.Errorf("opts.SystemPrompt = %q, want empty (subagent renders its own system prompt)", opts.SystemPrompt)
 	}
 }
 
