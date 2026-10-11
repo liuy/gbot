@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -642,6 +643,21 @@ func TestReadMcpResource_Description_ServerOnly(t *testing.T) {
 	}
 }
 
+// URI without a server is not enough to build the "server uri" label: the
+// generic description must be used, not a label with a leading space.
+func TestReadMcpResource_Description_URIOnly(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewReadMcpResource(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{"uri":"test://x"}`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != readMcpResourceDescription {
+		t.Errorf("Description(uri-only) = %q, want %q", desc, readMcpResourceDescription)
+	}
+}
+
 func TestReadMcpResource_Description_ServerAndURI(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	tt := NewReadMcpResource(reg)
@@ -741,17 +757,13 @@ func TestRenderListResourcesTUI_WithMimeType(t *testing.T) {
 		{URI: "test://2", Name: "res2", Server: "s1"},
 	}
 	got := renderListResourcesTUI(resources)
-	if !strings.Contains(got, "test://1 (text/plain)") {
-		t.Errorf("should show MimeType for res1, got: %q", got)
-	}
-	// res2 has no MimeType — should NOT have parentheses
-	_, after, found := strings.Cut(got, "test://2")
-	if !found {
-		t.Fatalf("should contain test://2, got: %q", got)
-	}
-	// After test://2, next char should be newline, not space+paren
-	if strings.HasPrefix(after, " (") {
-		t.Errorf("res2 should not have MimeType, got: %q", got)
+	// The MIME suffix appears only for the resource that has one.
+	want := "s1 (2 resources):\n" +
+		"  test://1 (text/plain)\n" +
+		"  test://2\n" +
+		"(2 resources from 1 servers)"
+	if got != want {
+		t.Errorf("renderListResourcesTUI =\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -761,17 +773,15 @@ func TestRenderListResourcesTUI_MultipleServers(t *testing.T) {
 		{URI: "test://a", Name: "ra", Server: "srv-a"},
 	}
 	got := renderListResourcesTUI(resources)
-	// Servers should be sorted alphabetically
-	idxA := strings.Index(got, "srv-a")
-	idxB := strings.Index(got, "srv-b")
-	if idxA == -1 || idxB == -1 {
-		t.Fatalf("should contain both servers, got: %q", got)
-	}
-	if idxA > idxB {
-		t.Errorf("srv-a should appear before srv-b, got: %q", got)
-	}
-	if !strings.Contains(got, "2 resources from 2 servers") {
-		t.Errorf("should show total count, got: %q", got)
+	// Servers sorted alphabetically regardless of arrival order, per-server
+	// counts, and the totals footer.
+	want := "srv-a (1 resources):\n" +
+		"  test://a\n" +
+		"srv-b (1 resources):\n" +
+		"  test://b\n" +
+		"(2 resources from 2 servers)"
+	if got != want {
+		t.Errorf("renderListResourcesTUI =\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -785,24 +795,24 @@ func TestRenderReadResourceTUI_MultipleContents(t *testing.T) {
 		{URI: "test://2", Text: "second"},
 	}
 	got := renderReadResourceTUI(contents)
-	if !strings.Contains(got, "first") || !strings.Contains(got, "second") {
-		t.Errorf("should contain both texts, got: %q", got)
+	// Exactly one separator newline between entries, none before the first.
+	want := "[test://1]\nfirst\n[test://2]\nsecond"
+	if got != want {
+		t.Errorf("renderReadResourceTUI =\n%q\nwant:\n%q", got, want)
 	}
-	if !strings.Contains(got, "test://1") || !strings.Contains(got, "test://2") {
-		t.Errorf("should contain both URIs, got: %q", got)
-	}
-	// Verify separator: there should be a newline between the two entries
-	// Pattern: "first\ntest://2" — the separator is the \n between entries
-	parts := strings.Split(got, "\n")
-	// Should have: [test://1], first, [test://2], second, at minimum
-	found := 0
-	for _, p := range parts {
-		if strings.Contains(p, "first") || strings.Contains(p, "second") {
-			found++
-		}
-	}
-	if found != 2 {
-		t.Errorf("expected 2 content lines, found %d in: %q", found, got)
+}
+
+// A MIME-bearing entry with neither text nor a saved blob still renders its
+// header line, and the blob branch only fires when Text is empty.
+func TestRenderReadResourceTUI_HeaderAndBlob(t *testing.T) {
+	got := renderReadResourceTUI([]gbotmcp.ResourceContent{
+		{URI: "test://img", MimeType: "image/png"},
+		{URI: "test://bin", MimeType: "application/octet-stream", Text: "ignored", BlobSavedTo: "/tmp/x.bin"},
+	})
+	want := "[test://img] (image/png)\n" +
+		"\n[test://bin] (application/octet-stream)\nignored"
+	if got != want {
+		t.Errorf("renderReadResourceTUI =\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -811,8 +821,9 @@ func TestRenderReadResourceTUI_BlobSavedTo(t *testing.T) {
 		{URI: "test://binary", BlobSavedTo: "/tmp/saved.bin"},
 	}
 	got := renderReadResourceTUI(contents)
-	if !strings.Contains(got, "(binary content saved to /tmp/saved.bin)") {
-		t.Errorf("should show BlobSavedTo path, got: %q", got)
+	want := "[test://binary]\n(binary content saved to /tmp/saved.bin)"
+	if got != want {
+		t.Errorf("renderReadResourceTUI =\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -937,6 +948,156 @@ func TestReadMcpResource_FormatWireBlocks(t *testing.T) {
 	}
 	if !strings.Contains(blocks[0].Text, "test://1") {
 		t.Errorf("FormatWireBlocks with content should contain URI, got: %q", blocks[0].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolDef contract: every declared field must survive BuildTool's defaults
+// ---------------------------------------------------------------------------
+
+func TestMcpToolContracts(t *testing.T) {
+	t.Parallel()
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+
+	cases := []struct {
+		name       string
+		tt         tool.Tool
+		searchHint string
+		prompt     string
+		schema     string
+	}{
+		{
+			name:       "ListMcpResources",
+			tt:         NewListMcpResources(reg),
+			searchHint: "list resources from connected MCP servers",
+			prompt:     listMcpResourcesPrompt(),
+			schema:     string(listMcpResourcesInputSchema),
+		},
+		{
+			name:       "ReadMcpResource",
+			tt:         NewReadMcpResource(reg),
+			searchHint: "read a specific MCP resource by URI",
+			prompt:     readMcpResourcePrompt(),
+			schema:     string(readMcpResourceInputSchema),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hint, ok := tc.tt.(tool.ToolWithSearchHint)
+			if !ok {
+				t.Fatal("tool must implement ToolWithSearchHint")
+			}
+			if got := hint.SearchHint(); got != tc.searchHint {
+				t.Errorf("SearchHint() = %q, want %q", got, tc.searchHint)
+			}
+			deferred, ok := tc.tt.(tool.IsDeferredTool)
+			if !ok {
+				t.Fatal("tool must implement IsDeferredTool")
+			}
+			if !deferred.IsDeferred() {
+				t.Error("IsDeferred() = false, want true (both MCP tools are ToolSearch-deferred)")
+			}
+			if got := tc.tt.MaxResultSize(); got != 100_000 {
+				t.Errorf("MaxResultSize() = %d, want 100000", got)
+			}
+			if got := tc.tt.InterruptBehavior(); got != tool.InterruptCancel {
+				t.Errorf("InterruptBehavior() = %v, want InterruptCancel", got)
+			}
+			if !tc.tt.IsReadOnly(nil) || tc.tt.IsDestructive(nil) || !tc.tt.IsConcurrencySafe(nil) || !tc.tt.IsEnabled() {
+				t.Errorf("flags = readOnly:%v destructive:%v concurrencySafe:%v enabled:%v, want true/false/true/true",
+					tc.tt.IsReadOnly(nil), tc.tt.IsDestructive(nil), tc.tt.IsConcurrencySafe(nil), tc.tt.IsEnabled())
+			}
+			if got := tc.tt.Prompt(); got != tc.prompt {
+				t.Errorf("Prompt() = %q, want %q", got, tc.prompt)
+			}
+			if got := string(tc.tt.InputSchema()); got != tc.schema {
+				t.Errorf("InputSchema() = %q, want %q", got, tc.schema)
+			}
+			if got := tc.tt.CheckPermissions(nil, nil).Behavior(); got != types.BehaviorAllow {
+				t.Errorf("CheckPermissions().Behavior() = %q, want allow", got)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Call_ input validation: the JSON error must be reported, not swallowed
+// ---------------------------------------------------------------------------
+
+func TestMcpCall_InvalidInputErrors(t *testing.T) {
+	t.Parallel()
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+
+	cases := []struct {
+		name string
+		tt   tool.Tool
+	}{
+		{"ListMcpResources", NewListMcpResources(reg)},
+		{"ReadMcpResource", NewReadMcpResource(reg)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A one-character body is still input: it must fail to parse
+			// rather than be treated as "no input given".
+			_, err := tc.tt.Call(context.Background(), json.RawMessage(`{`), nil)
+			if err == nil {
+				t.Fatal("Call with truncated JSON: got nil error, want a parse failure")
+			}
+			if !strings.HasPrefix(err.Error(), "mcp: invalid input: ") {
+				t.Errorf("error = %q, want the \"mcp: invalid input: \" prefix", err.Error())
+			}
+			if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+				t.Errorf("error = %v, want it to wrap *json.SyntaxError", err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DecodeResult: both failure stages must surface their own error
+// ---------------------------------------------------------------------------
+
+func TestMcpDecodeResult_Errors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		tt   tool.Tool
+	}{
+		{"ListMcpResources", NewListMcpResources(nil)},
+		{"ReadMcpResource", NewReadMcpResource(nil)},
+	}
+	for _, tc := range cases {
+		dec := tc.tt.(tool.ToolWithDecodeResult)
+
+		// Array form but no text block → the block extractor's error.
+		_, err := dec.DecodeResult(json.RawMessage(`[{"uri":"test://1"}]`))
+		if err == nil {
+			t.Fatalf("%s: DecodeResult(array without text block): got nil error", tc.name)
+		}
+		if err.Error() != "tool: UnmarshalSingleBlock found no text block in array" {
+			t.Errorf("%s: error = %q, want the no-text-block message", tc.name, err.Error())
+		}
+
+		// Bare object (not array form) → the extractor's shape error.
+		_, err = dec.DecodeResult(json.RawMessage(`{"uri":"x"}`))
+		if err == nil {
+			t.Fatalf("%s: DecodeResult(bare object): got nil error", tc.name)
+		}
+		if err.Error() != `tool: UnmarshalSingleBlock expects array-form content, got "{\"uri\":\"x\"}"` {
+			t.Errorf("%s: error = %q, want the array-form message", tc.name, err.Error())
+		}
+
+		// Valid text block whose payload is not an array → the payload
+		// decode's error, unwrappable.
+		_, err = dec.DecodeResult(json.RawMessage(`[{"type":"text","text":"{\"uri\":\"x\"}"}]`))
+		if err == nil {
+			t.Fatalf("%s: DecodeResult(object payload): got nil error", tc.name)
+		}
+		if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+			t.Errorf("%s: error = %v, want it to wrap *json.UnmarshalTypeError", tc.name, err)
+		}
 	}
 }
 

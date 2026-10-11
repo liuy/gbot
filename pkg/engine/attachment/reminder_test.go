@@ -18,7 +18,9 @@ type mockTaskList struct {
 
 func (m *mockTaskList) ListPending() ([]TaskItem, error) {
 	if m.err != nil {
-		return nil, m.err
+		// A failed read returns whatever the store handed back alongside
+		// the error, so callers can be tested against (tasks, err).
+		return m.tasks, m.err
 	}
 	return m.tasks, nil
 }

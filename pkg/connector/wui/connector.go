@@ -144,8 +144,16 @@ func (a *engineAdapter) PendingAttachments() []types.QueuedItem {
 func (a *engineAdapter) SystemPrompt() string { return a.eng.SystemPrompt() }
 func (a *engineAdapter) TaskList() *task.List { return a.eng.TaskList() }
 func (a *engineAdapter) RewindTo(idx int) error {
-	_, err := a.eng.RewindTo(idx)
-	return err
+	res, err := a.eng.RewindTo(idx)
+	if err != nil {
+		return err
+	}
+	// Partial restore (lost backup): the rewind itself succeeded — do not
+	// fail the caller, but leave a trace for diagnosis.
+	if res != nil && res.RestoreErr != nil {
+		slog.Warn("wui:rewind:partial_restore", "idx", idx, "error", res.RestoreErr)
+	}
+	return nil
 }
 func (a *engineAdapter) SwitchSession(sessionID string) error {
 	_, err := a.eng.SwitchSession(sessionID)

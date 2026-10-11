@@ -269,21 +269,10 @@ func (t *Tracker) MakeSnapshot(messageID string) error {
 
 	allSnapshots := append(t.state.Snapshots, newSnapshot)
 	if len(allSnapshots) > MAX_SNAPSHOTS {
-		// Evict oldest snapshots from memory AND disk.
-		// Previously only the in-memory slice was trimmed, leaving orphan
-		// backup files on disk that accumulate to GBs over long sessions.
-		evicted := allSnapshots[:len(allSnapshots)-MAX_SNAPSHOTS]
-		for _, snap := range evicted {
-			for _, backup := range snap.TrackedFileBackups {
-				if backup.BackupFileName == "" {
-					continue
-				}
-				backupPath := filepath.Join(t.dir, backup.BackupFileName)
-				if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-					slog.Warn("filehistory:evict:remove_failed", "file", backupPath, "err", err)
-				}
-			}
-		}
+		// Trim the in-memory slice only (TS fileHistory.ts:305-311). Backup
+		// files are shared: MakeSnapshot reuses the previous reference for an
+		// unchanged file, so an evicted snapshot's backup is routinely still
+		// referenced by survivors. Disk reclamation is CleanupOldBackups' job.
 		allSnapshots = allSnapshots[len(allSnapshots)-MAX_SNAPSHOTS:]
 	}
 
@@ -312,8 +301,8 @@ func (t *Tracker) Rewind(messageID string) ([]string, error) {
 		return nil, fmt.Errorf("filehistory: snapshot for %s not found", messageID)
 	}
 
-	restored := t.applySnapshotLocked(targetSnapshot)
-	return restored, nil
+	restored, err := t.applySnapshotLocked(targetSnapshot)
+	return restored, err
 }
 
 // RewindFilesOnly restores files to their state at the snapshot for messageID
@@ -327,7 +316,7 @@ func (t *Tracker) RewindFilesOnly(messageID string) ([]string, error) {
 		return nil, fmt.Errorf("filehistory: snapshot for %s not found", messageID)
 	}
 
-	return t.applySnapshotLocked(targetSnapshot), nil
+	return t.applySnapshotLocked(targetSnapshot)
 }
 
 // HasChangesAtMessage returns true if rewinding to the snapshot for messageID
@@ -455,11 +444,14 @@ func (t *Tracker) findLastSnapshotLocked(messageID string) *FileHistorySnapshot 
 }
 
 // applySnapshotLocked applies the given snapshot to all tracked files on disk.
-// Returns list of file paths that were changed.
+// Returns list of file paths that were changed, plus the first restore failure.
+// The failure is surfaced rather than swallowed: a missing backup means the
+// rewind did not happen, and callers must be able to tell.
 // Source: TS fileHistory.ts:537-591 — applySnapshot
 // Must be called with t.mu held.
-func (t *Tracker) applySnapshotLocked(targetSnapshot *FileHistorySnapshot) []string {
+func (t *Tracker) applySnapshotLocked(targetSnapshot *FileHistorySnapshot) ([]string, error) {
 	var filesChanged []string
+	var firstErr error
 
 	for filePath := range t.state.TrackedFiles {
 		targetBackup := targetSnapshot.TrackedFileBackups[filePath]
@@ -475,6 +467,9 @@ func (t *Tracker) applySnapshotLocked(targetSnapshot *FileHistorySnapshot) []str
 			bf, found := t.getBackupFileNameFirstVersionLocked(filePath)
 			if !found {
 				// Cannot determine backup state — don't touch the file.
+				// Intentionally NOT recorded as firstErr: no backup ever
+				// existed for this path (nothing to restore), matching the
+				// TS shape; a future edit must not "fix" this into an error.
 				slog.Error("filehistory:apply:backup_not_found", "file", filePath)
 				continue
 			}
@@ -503,17 +498,27 @@ func (t *Tracker) applySnapshotLocked(targetSnapshot *FileHistorySnapshot) []str
 		// Restore file from backup only if it differs from backup.
 		// Source: TS fileHistory.ts:575-577 — conditional restore via checkOriginFileChanged.
 		changed, checkErr := t.checkOriginFileChanged(filePath, backupFileName, nil)
-		if checkErr != nil || !changed {
+		if checkErr != nil {
+			slog.Error("filehistory:apply:check_changed_failed", "file", filePath, "err", checkErr)
+			if firstErr == nil {
+				firstErr = checkErr
+			}
+			continue
+		}
+		if !changed {
 			continue
 		}
 		if err := t.restoreBackup(filePath, backupFileName); err != nil {
 			slog.Error("filehistory:apply:restore_failed", "file", filePath, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		filesChanged = append(filesChanged, filePath)
 	}
 
-	return filesChanged
+	return filesChanged, firstErr
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -418,5 +419,68 @@ func TestParseShellCommandVarExpansionInInterpreter(t *testing.T) {
 	}
 	if len(cmds) < 1 {
 		t.Errorf("expected at least 1 command, got %d: %v", len(cmds), cmds)
+	}
+}
+
+// mvdan/sh Parser and Printer carry mutable parse state; sharing one instance
+// across concurrent permission checks (parallel tool execution, sub-agents)
+// corrupts that state. Pinned here so the instances stay per-call.
+func TestParseShellCommandConcurrent(t *testing.T) {
+	const goroutines = 8
+	const iterations = 200
+
+	cases := []struct {
+		command string
+		want    []string
+	}{
+		{"git status; git diff --stat", []string{"git status", "git diff --stat"}},
+		{"if [ -x /bin/ls ]; then ls; fi", []string{"[ -x /bin/ls ]", "ls"}},
+		{`bash -c "echo hi"`, []string{"echo hi"}},
+	}
+
+	var wg sync.WaitGroup
+	failures := make(chan string, goroutines*iterations)
+	for range goroutines {
+		wg.Go(func() {
+			for i := range iterations {
+				tc := cases[i%len(cases)]
+				got, err := ParseShellCommand(tc.command)
+				if err != nil {
+					failures <- fmt.Sprintf("%q: unexpected error: %v", tc.command, err)
+					continue
+				}
+				if !slices.Equal(got, tc.want) {
+					failures <- fmt.Sprintf("%q: got %q, want %q", tc.command, got, tc.want)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(failures)
+	var msgs []string
+	for m := range failures {
+		msgs = append(msgs, m)
+	}
+	if len(msgs) != 0 {
+		limit := min(len(msgs), 10)
+		t.Fatalf("%d/%d concurrent parses wrong:\n%s", len(msgs), goroutines*iterations,
+			strings.Join(msgs[:limit], "\n"))
+	}
+}
+
+// Membership of shellInterpreters is what makes `<shell> -c '<cmd>'` reach the
+// checker as <cmd> instead of as the opaque wrapper call. Dropping an entry
+// turns that shell into a bypass, so the whole set is pinned.
+func TestParseShellCommandShellInterpretersDecomposeDashC(t *testing.T) {
+	t.Parallel()
+	for _, shell := range []string{"sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh", "dash"} {
+		cmd := shell + ` -c "rm -rf /"`
+		got, err := ParseShellCommand(cmd)
+		if err != nil {
+			t.Fatalf("%s: ParseShellCommand(%q) error: %v", shell, cmd, err)
+		}
+		if !slices.Equal(got, []string{"rm -rf /"}) {
+			t.Errorf("%s: ParseShellCommand(%q) = %q, want [\"rm -rf /\"]", shell, cmd, got)
+		}
 	}
 }

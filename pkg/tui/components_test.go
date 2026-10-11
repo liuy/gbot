@@ -3822,17 +3822,18 @@ func TestChain_SingleLineOutput(t *testing.T) {
 	// Search with 1 match.
 	srk = tool.SearchReadKind{IsSearch: true}
 	summary = collapseSummary("main.go:5:match\n", srk)
-	// PluralWord(1, "matches") = TrimSuffix("matches", "s") = "matche" — known issue
+	// PluralWord(1, "matches") trims the trailing "s" the way TS GrepTool/UI.tsx:36
+	// does (countLabel.slice(0, -1)), so "matche" is faithful upstream output.
 	if summary != "Found 1 matche" {
-		t.Fatalf("collapseSummary(1 match) = %q, want %q (PluralWord issue)", summary, "Found 1 matche")
+		t.Fatalf("collapseSummary(1 match) = %q, want %q", summary, "Found 1 matche")
 	}
 
 	// List with 1 entry.
 	srk = tool.SearchReadKind{IsList: true}
 	summary = collapseSummary("file.go\n", srk)
-	// PluralWord(1, "entries") = TrimSuffix("entries", "s") = "entrie" — known issue
+	// Same upstream rule: "entries" -> "entrie".
 	if summary != "Listed 1 entrie" {
-		t.Fatalf("collapseSummary(1 entry) = %q, want %q (PluralWord issue)", summary, "Listed 1 entrie")
+		t.Fatalf("collapseSummary(1 entry) = %q, want %q", summary, "Listed 1 entrie")
 	}
 }
 

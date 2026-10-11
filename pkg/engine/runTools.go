@@ -799,8 +799,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// ── Permission check (before hooks) ──
 	// Source: toolExecution.ts — hasPermissionsToUseTool runs before hooks.
 	// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
-	// The checker is a system component — if it panics (e.g. nil interface trap),
-	// silently disable it and let the tool execute, rather than failing the tool.
+	// A panic inside the checker is treated as a denial (fail-secure).
 
 	// Memory path bypass: auto-allow writes to the memory directory.
 	// TS: isAutoMemPath (filesystem.ts:1572-1581) — write carve-out for auto-memory.
@@ -811,9 +810,11 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("engine: permChecker.Check panicked, disabling", "tool", tt.Name, "error", r)
-					e.permChecker = nil
-					decision = permission.Decision{Action: permission.ActionAllow}
+					// Fail secure: a broken checker must not become a licence to
+					// run the tool, and it must stay installed so later calls are
+					// still checked rather than silently unpoliced.
+					slog.Error("engine: permChecker.Check panicked, denying", "tool", tt.Name, "error", r)
+					decision = permission.Decision{Action: permission.ActionDeny}
 				}
 			}()
 			decision = e.permChecker.Check(tt.Name, tt.Input)

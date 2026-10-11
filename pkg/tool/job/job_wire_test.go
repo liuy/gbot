@@ -176,8 +176,46 @@ func TestJobDecodeResult_RejectsJSONObjectWire(t *testing.T) {
 	if err == nil {
 		t.Fatal("DecodeResult must reject JSON-object wire without identifying fields")
 	}
-	if !strings.Contains(err.Error(), "identifying fields") {
-		t.Errorf("err = %v, want it to mention identifying fields", err)
+	want := "job: decoded output lacks identifying fields (not a legacy JSON result)"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
+}
+
+// Each segment alone must survive the "all three nil" guard: the guard is a
+// conjunction, so any single populated field means the wire is a real result.
+func TestJobDecodeResult_SingleSegmentWireAccepted(t *testing.T) {
+	t.Parallel()
+	tl := NewJob(newMockRegistry())
+	for _, tc := range []struct {
+		raw  string
+		want func(*JobOutput) bool
+		desc string
+	}{
+		{`{"stop":{"status":"killed","job_id":"bg-1","job_type":"local_bash","command":"sleep 5"}}`,
+			func(o *JobOutput) bool {
+				return o.Stop != nil && o.Stop.JobID == "bg-1" && o.Poll == nil && o.List == nil
+			},
+			"stop-only"},
+		{`{"list":{"jobs":[{"job_id":"bg-2","status":"running"}]}}`,
+			func(o *JobOutput) bool {
+				return o.List != nil && len(o.List.Jobs) == 1 && o.List.Jobs[0].ID == "bg-2" && o.Poll == nil && o.Stop == nil
+			},
+			"list-only"},
+	} {
+		v, err := tl.(tool.ToolWithDecodeResult).DecodeResult(tool.WrapSingleBlock(tc.raw))
+		if err != nil {
+			t.Errorf("DecodeResult(%s): %v", tc.desc, err)
+			continue
+		}
+		o, ok := v.(*JobOutput)
+		if !ok {
+			t.Errorf("DecodeResult(%s) returned %T, want *JobOutput", tc.desc, v)
+			continue
+		}
+		if !tc.want(o) {
+			t.Errorf("DecodeResult(%s) = %+v, shape mismatch", tc.desc, o)
+		}
 	}
 }
 

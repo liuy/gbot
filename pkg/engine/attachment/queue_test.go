@@ -94,12 +94,48 @@ func TestQueue_UnknownPriority(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items (unknown + next), got %d", len(items))
 	}
-	if items[0].Value != "next" && items[1].Value != "unknown" && items[0].Value != "unknown" && items[1].Value != "next" {
-		t.Errorf("unexpected order: %q, %q", items[0].Value, items[1].Value)
+	// FIFO order is preserved among the matched items.
+	if items[0].Value != "unknown" || items[1].Value != "next" {
+		t.Errorf("drained order = %q, %q, want unknown, next", items[0].Value, items[1].Value)
 	}
 	items2 := q.DrainAll()
 	if len(items2) != 1 || items2[0].Value != "later" {
 		t.Errorf("expected later to remain, got %v", items2)
+	}
+}
+
+// The priority ladder must be exactly Now < Next <= unknown <= Later: a
+// drain at Now may only take the Now item.
+func TestQueue_DrainByPriority_NowTakesOnlyNow(t *testing.T) {
+	q := &Queue{}
+	q.Enqueue(types.QueuedItem{Value: "later", Priority: types.PriorityLater})
+	q.Enqueue(types.QueuedItem{Value: "next", Priority: types.PriorityNext})
+	q.Enqueue(types.QueuedItem{Value: "now", Priority: types.PriorityNow})
+	q.Enqueue(types.QueuedItem{Value: "unknown", Priority: types.QueuePriority("bogus")})
+	q.Enqueue(types.QueuedItem{Value: "empty", Priority: ""})
+
+	items := q.DrainByPriority(types.PriorityNow)
+	if len(items) != 1 || items[0].Value != "now" {
+		got := make([]string, len(items))
+		for i, it := range items {
+			got[i] = it.Value
+		}
+		t.Fatalf("DrainByPriority(Now) = %v, want [now]", got)
+	}
+
+	remaining := q.Snapshot()
+	var order []string
+	for _, it := range remaining {
+		order = append(order, it.Value)
+	}
+	want := []string{"later", "next", "unknown", "empty"}
+	if len(order) != len(want) {
+		t.Fatalf("remaining = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("remaining[%d] = %q, want %q (full: %v)", i, order[i], want[i], order)
+		}
 	}
 }
 

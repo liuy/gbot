@@ -3,7 +3,6 @@ package attachment
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -188,6 +187,116 @@ func pendingTasks() []TaskItem {
 	}
 }
 
+// The TS defaults are the shipped tuning; a silent change to either number
+// changes how often the reminder interrupts the model.
+func TestDefaultTaskReminderConfig(t *testing.T) {
+	want := TaskReminderConfig{TurnsSinceTaskAction: 10, TurnsSinceLastReminder: 10}
+	if DefaultTaskReminderConfig != want {
+		t.Errorf("DefaultTaskReminderConfig = %+v, want %+v", DefaultTaskReminderConfig, want)
+	}
+	if got := NewTaskReminderProvider().Config; got != want {
+		t.Errorf("NewTaskReminderProvider().Config = %+v, want %+v", got, want)
+	}
+}
+
+// firingCtx clears both turn thresholds for a provider configured {1,1}, so
+// the guard under test is the only thing that can suppress the reminder.
+func firingCtx(tasks []TaskItem, err error) ReminderContext {
+	return ReminderContext{
+		Messages: []types.Message{
+			makeAssistantMsg(types.NewToolUseBlock("id", "Task", json.RawMessage(`{}`))),
+			makeAssistantMsg(types.NewTextBlock("turn 1")),
+		},
+		TaskList: &mockTaskList{tasks: tasks, err: err},
+	}
+}
+
+func TestTaskReminder_ShouldFire_GuardBaselineFires(t *testing.T) {
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 1, TurnsSinceLastReminder: 1}}
+	if !p.ShouldFire(firingCtx(pendingTasks(), nil)) {
+		t.Fatal("baseline context with thresholds {1,1} must fire — the guard tests below depend on it")
+	}
+}
+
+func TestTaskReminder_ShouldFire_SubagentBeatsEverythingElse(t *testing.T) {
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 1, TurnsSinceLastReminder: 1}}
+	ctx := firingCtx(pendingTasks(), nil)
+	ctx.IsSubagent = true
+	if p.ShouldFire(ctx) {
+		t.Error("ShouldFire = true for a subagent, want false regardless of turn counts")
+	}
+}
+
+func TestTaskReminder_ShouldFire_ErrorSuppressesReturnedTasks(t *testing.T) {
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 1, TurnsSinceLastReminder: 1}}
+	// (tasks, err) together: the error alone must suppress the reminder.
+	if p.ShouldFire(firingCtx(pendingTasks(), errors.New("db error"))) {
+		t.Error("ShouldFire = true when ListPending errors, want false even if it returned tasks")
+	}
+}
+
+func TestTaskReminder_ShouldFire_EmptyTaskSlice(t *testing.T) {
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 1, TurnsSinceLastReminder: 1}}
+	if p.ShouldFire(firingCtx(nil, nil)) {
+		t.Error("ShouldFire = true with an empty pending list, want false")
+	}
+}
+
+// Threshold boundaries: the comparison is `<`, so a count exactly equal to the
+// configured minimum passes.
+func TestTaskReminder_ShouldFire_ExactlyAtTaskActionThreshold(t *testing.T) {
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 3, TurnsSinceLastReminder: 3}}
+	ctx := ReminderContext{
+		Messages: []types.Message{
+			makeAssistantMsg(types.NewToolUseBlock("id", "Task", json.RawMessage(`{}`))),
+			makeAssistantMsg(types.NewTextBlock("turn 1")),
+			makeAssistantMsg(types.NewTextBlock("turn 2")),
+			makeAssistantMsg(types.NewTextBlock("turn 3")),
+		},
+		TaskList: &mockTaskList{tasks: pendingTasks()},
+	}
+	if !p.ShouldFire(ctx) {
+		t.Error("3 turns since the last Task action with a threshold of 3 must fire")
+	}
+}
+
+func TestTaskReminder_ShouldFire_ExactlyAtReminderThreshold(t *testing.T) {
+	ctx := ReminderContext{
+		Messages: []types.Message{
+			makeAssistantMsg(types.NewToolUseBlock("id", "Task", json.RawMessage(`{}`))),
+			makeAssistantMsg(types.NewTextBlock("turn 1")),
+			makeAssistantMsg(types.NewTextBlock("turn 2")),
+			makeAssistantMsg(types.NewTextBlock("turn 3")),
+		},
+		TaskList: &mockTaskList{tasks: pendingTasks()},
+	}
+	// 4 assistant turns since the last reminder: threshold 4 passes, 5 blocks.
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 3, TurnsSinceLastReminder: 4}}
+	if !p.ShouldFire(ctx) {
+		t.Error("4 turns since the last reminder with a threshold of 4 must fire")
+	}
+	p.Config.TurnsSinceLastReminder = 5
+	if p.ShouldFire(ctx) {
+		t.Error("4 turns since the last reminder with a threshold of 5 must not fire")
+	}
+}
+
+func TestTaskReminder_ShouldFire_OneTurnBelowTaskActionThreshold(t *testing.T) {
+	ctx := ReminderContext{
+		Messages: []types.Message{
+			makeAssistantMsg(types.NewToolUseBlock("id", "Task", json.RawMessage(`{}`))),
+			makeAssistantMsg(types.NewTextBlock("turn 1")),
+			makeAssistantMsg(types.NewTextBlock("turn 2")),
+			makeAssistantMsg(types.NewTextBlock("turn 3")),
+		},
+		TaskList: &mockTaskList{tasks: pendingTasks()},
+	}
+	p := &TaskReminderProvider{Config: TaskReminderConfig{TurnsSinceTaskAction: 4, TurnsSinceLastReminder: 3}}
+	if p.ShouldFire(ctx) {
+		t.Error("3 turns since the last Task action with a threshold of 4 must not fire")
+	}
+}
+
 func TestTaskReminder_ShouldFire_Subagent(t *testing.T) {
 	p := NewTaskReminderProvider()
 	ctx := ReminderContext{
@@ -301,6 +410,9 @@ func TestTaskReminder_ShouldFire_RecentReminderBlocks(t *testing.T) {
 // TaskReminderProvider — Render
 // ---------------------------------------------------------------------------
 
+// The TS-aligned reminder sentence, asserted verbatim by every Render test.
+const wantReminderBody = "The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using Task to add new tasks and Task to update task status (set to in_progress when starting, completed when done). Consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. Make sure that you NEVER mention this reminder to the user"
+
 func TestTaskReminder_Render_WrappedInSystemReminder(t *testing.T) {
 	p := NewTaskReminderProvider()
 	ctx := ReminderContext{
@@ -317,18 +429,15 @@ func TestTaskReminder_Render_WrappedInSystemReminder(t *testing.T) {
 	if msg.Flags&types.FlagMeta == 0 {
 		t.Error("FlagMeta not set")
 	}
-	text := msg.Content[0].Text
-	if !strings.Contains(text, "<system-reminder>") {
-		t.Error("Rendered message should be wrapped in <system-reminder>")
-	}
-	if !strings.Contains(text, "</system-reminder>") {
-		t.Error("Rendered message should have closing </system-reminder>")
-	}
-	if !strings.Contains(text, "The task tools haven't been used recently") {
-		t.Error("Rendered message should contain TS-aligned reminder text")
-	}
-	if !strings.Contains(text, "#1. [in_progress] Fix bug") {
-		t.Error("Rendered message should contain formatted task list")
+	// The whole rendered body, exactly: the wrapper, the TS-aligned sentence,
+	// the task-list separator, and the formatted entry with its newline.
+	want := "<system-reminder>\n" +
+		wantReminderBody +
+		"\n\nHere are the existing tasks:\n\n" +
+		"#1. [in_progress] Fix bug\n" +
+		"\n</system-reminder>"
+	if got := msg.Content[0].Text; got != want {
+		t.Errorf("Render text =\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -363,9 +472,16 @@ func TestTaskReminder_Render_TaskWithDescription(t *testing.T) {
 		TaskList: &mockTaskList{tasks: tasks},
 	}
 	msgs := p.Render(ctx)
-	text := msgs[0].Content[0].Text
-	if !strings.Contains(text, "#5. [pending] Add tests: unit + integration") {
-		t.Errorf("Render should include description, got: %s", text)
+	if len(msgs) != 1 {
+		t.Fatalf("Render = %d messages, want 1", len(msgs))
+	}
+	want := "<system-reminder>\n" +
+		wantReminderBody +
+		"\n\nHere are the existing tasks:\n\n" +
+		"#5. [pending] Add tests: unit + integration\n" +
+		"\n</system-reminder>"
+	if got := msgs[0].Content[0].Text; got != want {
+		t.Errorf("Render text =\n%q\nwant:\n%q", got, want)
 	}
 }
 

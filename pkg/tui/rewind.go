@@ -161,6 +161,9 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 	if len(result.RestoredFiles) > 0 {
 		slog.Info("tui:rewind:files_restored", "count", len(result.RestoredFiles), "files", result.RestoredFiles)
 	}
+	if result.RestoreErr != nil {
+		slog.Warn("tui:rewind:partial_restore", "err", result.RestoreErr)
+	}
 
 	// Sync persistence for message-affecting scopes
 	if scope == engine.RewindAll || scope == engine.RewindMessagesOnly {

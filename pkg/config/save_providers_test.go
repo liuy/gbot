@@ -351,6 +351,8 @@ func compactJSON(t *testing.T, raw json.RawMessage) string {
 }
 
 func TestSaveDefaultModel_SetsDefaultKeepsTiers(t *testing.T) {
+	// Load() reads .gbot/settings.json relative to CWD.
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0755); err != nil {

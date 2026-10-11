@@ -4525,6 +4525,11 @@ func (e *Engine) PruneEmptySessions() ([]string, error) {
 type RewindResult struct {
 	MessageCount  int      // number of messages after rewind
 	RestoredFiles []string // files restored to pre-edit state
+	// RestoreErr is a file-restore failure that did not abort the rewind
+	// (e.g. a backup file was lost to the pre-fix eviction bug). The message
+	// truncation succeeded either way; callers/UI must surface this to
+	// distinguish a partial restore from a clean one.
+	RestoreErr error
 }
 
 // RewindScope controls what RewindToScoped affects.
@@ -4590,6 +4595,7 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 			restored, err := e.fileHistory.Rewind(snapshotID)
 			if err != nil {
 				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
+				result.RestoreErr = err
 			} else {
 				result.RestoredFiles = restored
 			}
@@ -4597,6 +4603,7 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 			restored, err := e.fileHistory.RewindFilesOnly(snapshotID)
 			if err != nil {
 				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
+				result.RestoreErr = err
 			} else {
 				result.RestoredFiles = restored
 			}

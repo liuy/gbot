@@ -3,6 +3,7 @@ package job
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,11 @@ func (m *mockRegistry) Get(id string) (*JobInfo, bool) {
 	t, ok := m.tasks[id]
 	if !ok {
 		return nil, false
+	}
+	if t == nil {
+		// Models a registry that reports found=true with a nil snapshot,
+		// which executePoll's ticker loop guards against.
+		return nil, true
 	}
 	cp := *t
 	return &cp, true
@@ -306,7 +312,13 @@ func TestJob_PollBlockTimeout(t *testing.T) {
 
 	out := result.Data.(*JobOutput)
 	if out.Poll.RetrievalStatus != "timeout" {
-		t.Errorf("RetrievalStatus = %q, want timeout", out.Poll.RetrievalStatus)
+		t.Fatalf("RetrievalStatus = %q, want timeout", out.Poll.RetrievalStatus)
+	}
+	if out.Poll.Task == nil {
+		t.Fatal("timeout result must still carry the job snapshot")
+	}
+	if out.Poll.Task.ID != "bg-3" || out.Poll.Task.Status != "running" {
+		t.Errorf("timeout task = (%q, %q), want (bg-3, running)", out.Poll.Task.ID, out.Poll.Task.Status)
 	}
 }
 
@@ -490,10 +502,11 @@ func TestJob_MissingAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when action is missing")
 	}
-	for _, want := range []string{"list", "poll", "stop"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want containing %q", err.Error(), want)
-		}
+	// Exact text: the empty-action branch must not degrade into the
+	// "unknown action" branch, which would echo an empty %q.
+	want := `action is required — valid actions are "list", "poll", "stop" (run {"action":"list"} to see jobs)`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -568,10 +581,13 @@ func TestJob_InvalidJSON(t *testing.T) {
 	tl := NewJob(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`invalid`), nil)
 	if err == nil {
-		t.Error("expected error for invalid JSON")
+		t.Fatal("expected error for invalid JSON")
 	}
-	if !strings.Contains(err.Error(), "parse input") {
-		t.Errorf("error = %q, want containing 'parse input'", err.Error())
+	if err.Error() != "parse input: invalid character 'i' looking for beginning of value" {
+		t.Errorf("error = %q, want %q", err.Error(), "parse input: invalid character 'i' looking for beginning of value")
+	}
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("error %v must wrap *json.SyntaxError", err)
 	}
 }
 
@@ -1147,7 +1163,366 @@ func TestJob_DecodeResult_RejectsBareStruct(t *testing.T) {
 	tl := NewJob(reg)
 	_, err := tl.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"poll":{"task":{"job_id":"bg-1"}}}`))
 	if err == nil {
-		t.Error("DecodeResult must reject bare struct form")
+		t.Fatal("DecodeResult must reject bare struct form")
+	}
+	// The block-extractor error, not the later JSON error: dropping the
+	// extractor's guard would surface "unexpected end of JSON input" instead.
+	want := `tool: UnmarshalSingleBlock expects array-form content, got "{\"poll\":{\"task\":{\"job_id\":\"bg-1\"}}}"`
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestJob_IsTerminalStatuses(t *testing.T) {
+	t.Parallel()
+	// Each status pins one disjunct of isTerminal: dropping or negating any
+	// comparison flips exactly one row.
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{"completed", true},
+		{"failed", true},
+		{"killed", true},
+		{"running", false},
+		{"pending", false},
+		{"cancelled", false},
+		{"", false},
+		{"Completed", false},
+	} {
+		if got := isTerminal(tc.status); got != tc.want {
+			t.Errorf("isTerminal(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestJob_PollTimeoutDefaultAndTickerInterval(t *testing.T) {
+	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
+	type tc struct{ in, wantMs int }
+	for _, c := range []tc{{0, 30000}, {-1, 30000}, {1, 1}, {250, 250}} {
+		reg := newMockRegistry()
+		reg.add(&JobInfo{ID: "bg-td", Type: "local_bash", Status: "running"})
+
+		var gotMs int
+		var gotInterval time.Duration
+		savedAfter, savedTicker := timeAfter, timeNewTicker
+		timeAfter = func(ms int) <-chan time.Time {
+			gotMs = ms
+			ch := make(chan time.Time, 1)
+			ch <- time.Time{}
+			return ch
+		}
+		timeNewTicker = func(d time.Duration) *time.Ticker {
+			gotInterval = d
+			return &time.Ticker{C: make(chan time.Time)}
+		}
+
+		res, err := executePoll(context.Background(), reg, "bg-td", nil, c.in)
+		timeAfter, timeNewTicker = savedAfter, savedTicker
+
+		if err != nil {
+			t.Fatalf("executePoll(timeout=%d): %v", c.in, err)
+		}
+		if res.RetrievalStatus != "timeout" {
+			t.Errorf("timeout=%d RetrievalStatus = %q, want timeout", c.in, res.RetrievalStatus)
+		}
+		if gotMs != c.wantMs {
+			t.Errorf("executePoll(timeout=%d) armed deadline with %dms, want %dms", c.in, gotMs, c.wantMs)
+		}
+		if gotInterval != 100*time.Millisecond {
+			t.Errorf("poll ticker interval = %v, want 100ms", gotInterval)
+		}
+	}
+}
+
+func TestJob_PollTickerDetectsTerminal(t *testing.T) {
+	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
+	reg := newMockRegistry()
+	reg.add(&JobInfo{ID: "bg-tk", Type: "local_bash", Status: "running", Command: "sleep 30"})
+
+	ticks := make(chan time.Time, 4)
+	savedAfter, savedTicker := timeAfter, timeNewTicker
+	timeNewTicker = func(time.Duration) *time.Ticker { return &time.Ticker{C: ticks} }
+	timeAfter = func(int) <-chan time.Time { return time.After(300 * time.Millisecond) }
+	defer func() { timeAfter, timeNewTicker = savedAfter, savedTicker }()
+
+	// First tick lands while the job is still running: the loop must keep
+	// waiting instead of reporting success for a running job.
+	// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+	ticks <- time.Now()
+	go func() {
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		time.Sleep(30 * time.Millisecond)
+		reg.mu.Lock()
+		reg.tasks["bg-tk"].Status = "completed"
+		reg.tasks["bg-tk"].ExitCode = 0
+		reg.mu.Unlock()
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		ticks <- time.Now()
+	}()
+
+	res, err := executePoll(context.Background(), reg, "bg-tk", nil, 5000)
+	if err != nil {
+		t.Fatalf("executePoll: %v", err)
+	}
+	if res.RetrievalStatus != "success" {
+		t.Fatalf("RetrievalStatus = %q, want success — a terminal job seen by the ticker must not fall through to the deadline", res.RetrievalStatus)
+	}
+	if res.Task.Status != "completed" {
+		t.Errorf("Status = %q, want completed — the running-job tick must not have returned", res.Task.Status)
+	}
+	if res.Task.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", res.Task.ExitCode)
+	}
+}
+
+// A terminal job answers immediately, even with block=false: the terminal
+// check precedes the not_ready shortcut, so "not_ready" here is a bug.
+func TestJob_PollTerminalBeatsNotReady(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	reg.add(&JobInfo{ID: "bg-t2", Type: "local_bash", Status: "killed", ExitCode: 137})
+
+	res, err := executePoll(context.Background(), reg, "bg-t2", ptrFalse(), 60000)
+	if err != nil {
+		t.Fatalf("executePoll: %v", err)
+	}
+	if res.RetrievalStatus != "success" {
+		t.Fatalf("RetrievalStatus = %q, want success", res.RetrievalStatus)
+	}
+	if res.Task == nil || res.Task.ID != "bg-t2" || res.Task.Status != "killed" {
+		t.Errorf("task = %+v, want bg-t2/killed", res.Task)
+	}
+}
+
+func ptrFalse() *bool { b := false; return &b }
+
+// The deadline branch re-reads the job so the snapshot it returns is current.
+func TestJob_PollDeadlineRefetchesInfo(t *testing.T) {
+	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
+	reg := newMockRegistry()
+	reg.add(&JobInfo{ID: "bg-dr", Type: "local_bash", Status: "running"})
+
+	savedAfter, savedTicker := timeAfter, timeNewTicker
+	timeAfter = func(int) <-chan time.Time { return time.After(100 * time.Millisecond) }
+	timeNewTicker = func(time.Duration) *time.Ticker { return &time.Ticker{C: make(chan time.Time)} }
+	defer func() { timeAfter, timeNewTicker = savedAfter, savedTicker }()
+
+	go func() {
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		time.Sleep(30 * time.Millisecond)
+		reg.mu.Lock()
+		reg.tasks["bg-dr"].Status = "completed"
+		reg.mu.Unlock()
+	}()
+
+	res, err := executePoll(context.Background(), reg, "bg-dr", nil, 5000)
+	if err != nil {
+		t.Fatalf("executePoll: %v", err)
+	}
+	if res.RetrievalStatus != "timeout" {
+		t.Fatalf("RetrievalStatus = %q, want timeout", res.RetrievalStatus)
+	}
+	if res.Task == nil || res.Task.Status != "completed" {
+		t.Errorf("deadline snapshot = %+v, want the refreshed completed job", res.Task)
+	}
+}
+
+// A registry that answers with a nil snapshot must not be dereferenced by the
+// ticker: the poll keeps waiting and ends on the deadline.
+func TestJob_PollTickerNilSnapshotKeepsWaiting(t *testing.T) {
+	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
+	reg := newMockRegistry()
+	reg.add(&JobInfo{ID: "bg-nl", Type: "local_bash", Status: "running"})
+
+	ticks := make(chan time.Time, 4)
+	savedAfter, savedTicker := timeAfter, timeNewTicker
+	timeNewTicker = func(time.Duration) *time.Ticker { return &time.Ticker{C: ticks} }
+	timeAfter = func(int) <-chan time.Time { return time.After(300 * time.Millisecond) }
+	defer func() { timeAfter, timeNewTicker = savedAfter, savedTicker }()
+
+	go func() {
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		ticks <- time.Now() // first tick: still running
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		time.Sleep(30 * time.Millisecond)
+		reg.mu.Lock()
+		reg.tasks["bg-nl"] = nil // registry now hands back a nil snapshot
+		reg.mu.Unlock()
+		// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+		ticks <- time.Now() // second tick: must not dereference nil
+	}()
+
+	res, err := executePoll(context.Background(), reg, "bg-nl", nil, 5000)
+	if err != nil {
+		t.Fatalf("executePoll: %v", err)
+	}
+	if res.RetrievalStatus != "timeout" {
+		t.Errorf("RetrievalStatus = %q, want timeout", res.RetrievalStatus)
+	}
+	if res.Task != nil {
+		t.Errorf("Task = %+v, want nil for the vanished job", res.Task)
+	}
+}
+
+// The default timeAfter arms a millisecond-scale deadline: a unit mix-up would
+// either return instantly or hang the poll.
+func TestJob_PollRealDeadlineIsMillisecondScale(t *testing.T) {
+	// NOT parallel: swaps the package-level timeNewTicker var.
+	reg := newMockRegistry()
+	reg.add(&JobInfo{ID: "bg-ms", Type: "local_bash", Status: "running"})
+
+	savedTicker := timeNewTicker
+	timeNewTicker = func(time.Duration) *time.Ticker { return &time.Ticker{C: make(chan time.Time)} }
+	defer func() { timeNewTicker = savedTicker }()
+
+	// REAL-TIME: wall-clock fixture; the code under test compares against the system clock.
+	start := time.Now()
+	res, err := executePoll(context.Background(), reg, "bg-ms", nil, 150)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("executePoll: %v", err)
+	}
+	if res.RetrievalStatus != "timeout" {
+		t.Fatalf("RetrievalStatus = %q, want timeout", res.RetrievalStatus)
+	}
+	if elapsed < 100*time.Millisecond || elapsed > 3*time.Second {
+		t.Errorf("150ms timeout took %v — deadline is not millisecond-scale", elapsed)
+	}
+}
+
+func TestJob_ToolContractFields(t *testing.T) {
+	t.Parallel()
+	tl := NewJob(newMockRegistry())
+	if got := tl.InterruptBehavior(); got != tool.InterruptCancel {
+		t.Errorf("InterruptBehavior() = %v, want InterruptCancel", got)
+	}
+	if got := tool.SearchHint(tl); got != "manage background jobs -- poll output or stop a running job" {
+		t.Errorf("SearchHint() = %q, want the job search hint", got)
+	}
+	if got := tl.Prompt(); got != jobPrompt() {
+		t.Errorf("Prompt() = %q, want jobPrompt()", got)
+	}
+	if got := tool.IsDeferred(tl); got != false {
+		t.Errorf("IsDeferred() = %v, want false", got)
+	}
+}
+
+func TestJob_PromptText(t *testing.T) {
+	t.Parallel()
+	want := `Manages background jobs (background shell, agent, or remote session).
+
+Actions (one per call, set via the "action" parameter):
+- list: list all background jobs and their statuses
+- poll: retrieve output from a running or completed job (requires job_id)
+  - block=true (default): wait for job completion before returning
+  - block=false: non-blocking check of current status
+  - timeout: max wait time in ms (default 30000)
+- stop: terminate a running job by its ID (requires job_id)
+
+job_id values come from Job list output (e.g. "bg-1"); do not guess them.
+
+Returns a retrieval_status for poll: success, timeout, or not_ready
+Returns a status for stop: killed (with the original command/description)
+Returns one line per job for list: job_id=... status=... command=...
+
+Works with all job types: background shells, async agents, and remote sessions`
+	if got := jobPrompt(); got != want {
+		t.Errorf("jobPrompt() = %q, want the pinned prompt", got)
+	}
+}
+
+type wrappedKillRegistry struct {
+	*mockRegistry
+	cause error
+}
+
+func (w *wrappedKillRegistry) Kill(id string) error {
+	return fmt.Errorf("registry refused: %w", w.cause)
+}
+
+func TestJob_StopKillErrorWrapsCause(t *testing.T) {
+	t.Parallel()
+	base := newMockRegistry()
+	base.add(&JobInfo{ID: "bg-22", Type: "local_bash", Status: "running"})
+	cause := errors.New("eperm")
+	reg := &wrappedKillRegistry{mockRegistry: base, cause: cause}
+
+	_, err := executeStop(reg, "bg-22")
+	if err == nil {
+		t.Fatal("executeStop must fail when Kill fails")
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("error %v must keep the Kill cause reachable via errors.Is", err)
+	}
+}
+
+func TestJob_MaxResultSize(t *testing.T) {
+	t.Parallel()
+	if got := NewJob(newMockRegistry()).MaxResultSize(); got != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", got)
+	}
+}
+
+func TestJob_RenderListSeparatorCount(t *testing.T) {
+	t.Parallel()
+	// Exact strings: an off-by-one in the "i > 0" guard adds or drops a
+	// newline, and removing the separator write collapses the rows.
+	two := renderListResult(&ListResult{Jobs: []*JobInfo{
+		{ID: "a", Status: "running", Command: "echo a"},
+		{ID: "b", Status: "completed", Command: "echo b"},
+	}})
+	wantTwo := "job_id=a status=running command=\"echo a\"\njob_id=b status=completed command=\"echo b\""
+	if two != wantTwo {
+		t.Errorf("renderListResult(2 jobs) = %q, want %q", two, wantTwo)
+	}
+	three := renderListResult(&ListResult{Jobs: []*JobInfo{
+		{ID: "a", Status: "running", Command: "a"},
+		{ID: "b", Status: "running", Command: "b"},
+		{ID: "c", Status: "running", Command: "c"},
+	}})
+	if n := strings.Count(three, "\n"); n != 2 {
+		t.Errorf("renderListResult(3 jobs) has %d newlines, want 2: %q", n, three)
+	}
+	if strings.HasPrefix(three, "\n") {
+		t.Errorf("renderListResult(3 jobs) starts with a separator: %q", three)
+	}
+}
+
+func TestJob_RenderStopFallbackExact(t *testing.T) {
+	t.Parallel()
+	if got := renderStopResult(&StopResult{JobID: "bg-9", Command: "sleep 60"}); got != "Stop bg-9: killed (was: sleep 60)" {
+		t.Errorf("renderStopResult = %q, want %q", got, "Stop bg-9: killed (was: sleep 60)")
+	}
+	if got := renderStopResult(&StopResult{JobID: "bg-9", Command: ""}); got != "Stop bg-9: killed (was: bg-9)" {
+		t.Errorf("renderStopResult(empty command) = %q, want %q", got, "Stop bg-9: killed (was: bg-9)")
+	}
+}
+
+func TestJob_RenderPollExactShapes(t *testing.T) {
+	t.Parallel()
+	running := renderPollResult(&PollResult{RetrievalStatus: "not_ready", Task: &JobInfo{ID: "bg-1", Status: "running", Output: "line1\nline2"}})
+	if running != "Poll bg-1: not_ready\nline1\nline2" {
+		t.Errorf("renderPollResult(running) = %q, want %q", running, "Poll bg-1: not_ready\nline1\nline2")
+	}
+	terminal := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Status: "failed", ExitCode: 2}})
+	if terminal != "Poll bg-1: success (exit: 2)" {
+		t.Errorf("renderPollResult(terminal) = %q, want %q", terminal, "Poll bg-1: success (exit: 2)")
+	}
+}
+
+func TestJob_StopKillErrorExact(t *testing.T) {
+	t.Parallel()
+	base := newMockRegistry()
+	base.add(&JobInfo{ID: "bg-21", Type: "local_bash", Status: "running", Command: "sleep 60"})
+	reg := &killErrorRegistry{mockRegistry: base}
+
+	_, err := executeStop(reg, "bg-21")
+	if err == nil {
+		t.Fatal("executeStop must fail when Kill fails")
+	}
+	if err.Error() != "failed to stop job bg-21: kill failed: permission denied" {
+		t.Errorf("error = %q, want %q", err.Error(), "failed to stop job bg-21: kill failed: permission denied")
 	}
 }
 

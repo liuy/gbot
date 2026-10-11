@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/permission"
@@ -155,8 +157,9 @@ func TestConcurrentToolLoop_PanicRecovery_DoesNotCrashOtherTools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Nil interface trap test — verifies that a nil *Checker passed as
-// PermissionChecker interface doesn't break tool execution.
+// Nil interface trap tests — verifies that a nil *Checker passed as
+// PermissionChecker interface denies the tool call rather than crashing
+// the executor or running the tool unchecked.
 // This is the classic Go nil interface trap:
 //   var p *Checker // nil
 //   var i PermissionChecker = p // non-nil interface wrapping nil pointer
@@ -164,8 +167,8 @@ func TestConcurrentToolLoop_PanicRecovery_DoesNotCrashOtherTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestSetPermissionChecker_NilInterfaceTrap tests that passing a nil *Checker
-// as a PermissionChecker interface doesn't cause tool panics.
-// This verifies the fix at the executor level, independent of main.go.
+// as a PermissionChecker interface denies the tool call instead of crashing
+// the executor or letting the tool run unchecked.
 func TestSetPermissionChecker_NilInterfaceTrap(t *testing.T) {
 	t.Parallel()
 
@@ -187,7 +190,7 @@ func TestSetPermissionChecker_NilInterfaceTrap(t *testing.T) {
 
 	result := executor.ExecuteAll(blocks)
 
-	// Tool must execute successfully — permChecker nil trap should be handled.
+	// The broken checker must fail secure: the call is denied, not executed.
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result block, got %d", len(result.ToolResultBlocks))
 	}
@@ -195,17 +198,15 @@ func TestSetPermissionChecker_NilInterfaceTrap(t *testing.T) {
 	if rb.ToolUseID != "tu_1" {
 		t.Errorf("ToolUseID = %q, want tu_1", rb.ToolUseID)
 	}
-	if rb.IsError {
-		var errMsg string
-		if err := json.Unmarshal(rb.Content, &errMsg); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		t.Errorf("tool should succeed (broken permChecker should be ignored), got error: %q", errMsg)
+	if !rb.IsError {
+		t.Fatalf("nil-interface-trap checker must deny, got non-error: %s", rb.Content)
 	}
+	assertDenyText(t, rb.Content, "echo")
 }
 
-// TestSetPermissionChecker_NilInterfaceTrap_SecondTool verifies that after
-// a nil interface trap permChecker is set, multiple tool calls all succeed.
+// TestSetPermissionChecker_NilInterfaceTrap_SecondTool verifies that a nil
+// interface trap checker keeps denying across turns — the panic must not
+// uninstall the checker and leave later turns unpoliced.
 func TestSetPermissionChecker_NilInterfaceTrap_SecondTool(t *testing.T) {
 	t.Parallel()
 
@@ -227,11 +228,11 @@ func TestSetPermissionChecker_NilInterfaceTrap_SecondTool(t *testing.T) {
 	if len(result1.ToolResultBlocks) != 1 {
 		t.Fatalf("first call: expected 1 result, got %d", len(result1.ToolResultBlocks))
 	}
-	if result1.ToolResultBlocks[0].IsError {
-		t.Error("first call should succeed")
+	if !result1.ToolResultBlocks[0].IsError {
+		t.Fatalf("first call must be denied, got non-error: %s", result1.ToolResultBlocks[0].Content)
 	}
 
-	// Second tool call (simulates LLM's next turn)
+	// Second tool call (simulates LLM's next turn) — still denied
 	blocks2 := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
@@ -242,9 +243,10 @@ func TestSetPermissionChecker_NilInterfaceTrap_SecondTool(t *testing.T) {
 	if len(result2.ToolResultBlocks) != 1 {
 		t.Fatalf("second call: expected 1 result, got %d", len(result2.ToolResultBlocks))
 	}
-	if result2.ToolResultBlocks[0].IsError {
-		t.Error("second call should succeed")
+	if !result2.ToolResultBlocks[0].IsError {
+		t.Fatalf("second call must be denied, got non-error: %s", result2.ToolResultBlocks[0].Content)
 	}
+	assertDenyText(t, result2.ToolResultBlocks[0].Content, "echo")
 }
 
 // TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds verifies that
@@ -346,11 +348,26 @@ func TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds(t *testing.T) {
 	}
 }
 
-// TestBrokenPermChecker_ToolStillExecutes verifies that a broken
-// permChecker (nil interface trap) does NOT prevent tools from executing.
-// The permChecker is a system component — if it panics, the tool should
-// still run (with the checker silently disabled), not return an error.
-func TestBrokenPermChecker_ToolStillExecutes(t *testing.T) {
+// assertDenyText checks a tool_result carries the rule-deny message for name.
+func assertDenyText(t *testing.T, content json.RawMessage, name string) {
+	t.Helper()
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		t.Fatalf("content is not a JSON array: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	want := fmt.Sprintf("Permission to use %s has been denied", name)
+	if !strings.Contains(blocks[0].Text, want) {
+		t.Errorf("expected %q, got %q", want, blocks[0].Text)
+	}
+}
+
+// TestBrokenPermChecker_DeniesTool verifies that a broken permChecker (nil
+// interface trap) denies the tool call on every turn rather than letting it
+// run unchecked.
+func TestBrokenPermChecker_DeniesTool(t *testing.T) {
 	t.Parallel()
 
 	tools := map[string]tool.Tool{
@@ -361,7 +378,7 @@ func TestBrokenPermChecker_ToolStillExecutes(t *testing.T) {
 	var nilChecker *permission.Checker
 	var trap permission.PermissionChecker = nilChecker
 
-	// Turn 1: tool should SUCCEED despite broken permChecker
+	// Turn 1: tool must be DENIED by the broken permChecker
 	blocks1 := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
@@ -372,15 +389,12 @@ func TestBrokenPermChecker_ToolStillExecutes(t *testing.T) {
 	if len(result1.ToolResultBlocks) != 1 {
 		t.Fatalf("turn 1: expected 1 result, got %d", len(result1.ToolResultBlocks))
 	}
-	if result1.ToolResultBlocks[0].IsError {
-		var msg string
-		if err := json.Unmarshal(result1.ToolResultBlocks[0].Content, &msg); err != nil {
-			t.Fatalf("turn 1: unmarshal error: %v", err)
-		}
-		t.Errorf("turn 1: tool should succeed (broken permChecker must be transparent), got error: %q", msg)
+	if !result1.ToolResultBlocks[0].IsError {
+		t.Fatalf("turn 1: broken permChecker must deny, got non-error: %s", result1.ToolResultBlocks[0].Content)
 	}
+	assertDenyText(t, result1.ToolResultBlocks[0].Content, "echo")
 
-	// Turn 2: same broken permChecker, different tool — should also succeed
+	// Turn 2: same broken permChecker, different executor — also denied
 	blocks2 := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
@@ -391,11 +405,90 @@ func TestBrokenPermChecker_ToolStillExecutes(t *testing.T) {
 	if len(result2.ToolResultBlocks) != 1 {
 		t.Fatalf("turn 2: expected 1 result, got %d", len(result2.ToolResultBlocks))
 	}
-	if result2.ToolResultBlocks[0].IsError {
-		var msg string
-		if err := json.Unmarshal(result2.ToolResultBlocks[0].Content, &msg); err != nil {
-			t.Fatalf("turn 2: unmarshal error: %v", err)
-		}
-		t.Errorf("turn 2: tool should succeed, got error: %q", msg)
+	if !result2.ToolResultBlocks[0].IsError {
+		t.Fatalf("turn 2: broken permChecker must deny, got non-error: %s", result2.ToolResultBlocks[0].Content)
+	}
+	assertDenyText(t, result2.ToolResultBlocks[0].Content, "echo")
+}
+
+// ---------------------------------------------------------------------------
+// Permission-checker panic must fail secure: the tool call is denied and the
+// checker stays installed, so enforcement survives a parse-level panic.
+// ---------------------------------------------------------------------------
+
+// countingPanickingChecker mimics the nil-interface trap: every Check panics.
+// The counter proves whether later calls still consult the checker.
+type countingPanickingChecker struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingPanickingChecker) Check(_ string, _ json.RawMessage) permission.Decision {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	panic("permission checker exploded")
+}
+
+func (c *countingPanickingChecker) HasRules() bool { return true }
+
+func (c *countingPanickingChecker) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func TestPermCheckerPanic_DeniesAndKeepsChecker(t *testing.T) {
+	t.Parallel()
+
+	tools := map[string]tool.Tool{
+		"echo": &concurrentTool{name: "echo", isSafe: true},
+	}
+
+	checker := &countingPanickingChecker{}
+	executor := NewStreamingToolExecutor(tools, nil, func(types.QueryEvent) {}, context.Background())
+	executor.SetPermissionChecker(checker)
+
+	result1 := executor.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(result1.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result block, got %d", len(result1.ToolResultBlocks))
+	}
+	rb := result1.ToolResultBlocks[0]
+	if !rb.IsError {
+		t.Fatalf("panicking permission check must deny, got non-error result: %s", rb.Content)
+	}
+	var content []types.ContentBlock
+	if err := json.Unmarshal(rb.Content, &content); err != nil {
+		t.Fatalf("unmarshal deny content: %v", err)
+	}
+	if len(content) != 1 || content[0].Type != types.ContentTypeText {
+		t.Fatalf("expected single text block, got %+v", content)
+	}
+	if !strings.Contains(content[0].Text, "Permission to use echo has been denied") {
+		t.Errorf("expected deny message, got %q", content[0].Text)
+	}
+	if checker.callCount() != 1 {
+		t.Errorf("checker should have been consulted once, got %d calls", checker.callCount())
+	}
+
+	// The checker must survive the panic: a later call on the same executor
+	// still goes through it, so enforcement is not silently disabled.
+	if executor.permChecker == nil {
+		t.Fatal("permChecker must not be nilled by a panicking check")
+	}
+	result2 := executor.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "echo", Input: json.RawMessage(`{}`)},
+	})
+	if len(result2.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 result blocks, got %d", len(result2.ToolResultBlocks))
+	}
+	if !result2.ToolResultBlocks[1].IsError {
+		t.Errorf("second call must also be denied, got non-error: %s", result2.ToolResultBlocks[1].Content)
+	}
+	if checker.callCount() != 2 {
+		t.Errorf("checker must still be consulted after a panic, got %d calls", checker.callCount())
 	}
 }

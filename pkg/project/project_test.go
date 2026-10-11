@@ -90,8 +90,12 @@ func TestDir_HomeFallback(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
 	got := Dir("/test")
-	if !strings.Contains(got, ".gbot") || !strings.Contains(got, "projects") {
-		t.Errorf("Dir should contain .gbot/projects, got %q", got)
+	// os.UserHomeDir fails, so the literal "~" stands in for the home
+	// segment; anything else (empty string, cwd) would silently relocate
+	// the project directory.
+	want := filepath.Join("~", ".gbot", "projects", "-test")
+	if got != want {
+		t.Errorf("Dir(%q) = %q, want %q", "/test", got, want)
 	}
 }
 
@@ -140,6 +144,121 @@ func TestSlug_NonASCII(t *testing.T) {
 	want := "-home-user---"
 	if got != want {
 		t.Errorf("Slug(%q) = %q, want %q", "/home/user/项目", got, want)
+	}
+}
+
+// The pass-through class is exactly [A-Za-z0-9]; each of the six boundary
+// characters sits one code point outside a range, so an off-by-one in any
+// comparison flips one of these.
+func TestSlug_CharacterClasses(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   rune
+		want string
+	}{
+		{'a', "a"}, {'z', "z"}, {'m', "m"},
+		{'A', "A"}, {'Z', "Z"}, {'M', "M"},
+		{'0', "0"}, {'9', "9"}, {'5', "5"},
+		{'`', "-"}, // 'a' - 1
+		{'{', "-"}, // 'z' + 1
+		{'@', "-"}, // 'A' - 1
+		{'[', "-"}, // 'Z' + 1
+		{'/', "-"}, // '0' - 1
+		{':', "-"}, // '9' + 1
+		{'-', "-"}, {'_', "-"}, {'.', "-"}, {'/', "-"},
+		{'\xe9', "-"}, // é is alphanumeric to Unicode but not to the slug
+	}
+	for _, tc := range tests {
+		got := Slug(string(tc.in))
+		if got != tc.want {
+			t.Errorf("Slug(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// maxSlugLength is the boundary itself: at exactly the limit the slug is
+// returned untouched, one over it gets the hash suffix.
+func TestSlug_TruncationBoundary(t *testing.T) {
+	t.Parallel()
+	if maxSlugLength != 200 {
+		t.Fatalf("maxSlugLength = %d, want 200", maxSlugLength)
+	}
+
+	at := Slug(strings.Repeat("a", maxSlugLength))
+	if at != strings.Repeat("a", maxSlugLength) {
+		t.Errorf("Slug(200 chars) = %q, want the input unchanged (no hash suffix)", at)
+	}
+
+	over := Slug(strings.Repeat("a", maxSlugLength+1))
+	want := strings.Repeat("a", maxSlugLength) + "-h42roy"
+	if over != want {
+		t.Errorf("Slug(201 chars) = %q, want %q", over, want)
+	}
+}
+
+func TestSlug_LongPathExact(t *testing.T) {
+	t.Parallel()
+	input := strings.Repeat("/very-long-path-component", 20)
+	want := "-very-long-path-component-very-long-path-component-very-long-path-component-very-long-path-component-very-long-path-component-very-long-path-component-very-long-path-component-very-long-path-component-gttdor"
+	got := Slug(input)
+	if got != want {
+		t.Errorf("Slug(%d-char path) = %q, want %q", len(input), got, want)
+	}
+	if len(got) != 207 {
+		t.Errorf("len(Slug) = %d, want 207 (200 prefix + '-' + 6-char hash)", len(got))
+	}
+}
+
+// Reference values computed independently (32-bit unsigned DJB2, then
+// abs(int32), then base 36). "daemon" is the case whose hash has the sign bit
+// set, so it exercises the negation branch.
+func TestDjb2Hash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", "45h"},
+		{"a", "3t3a"},
+		{"/home/user/go", "1fs4fk"},
+		{"/test", "37lsxg"},
+		{"daemon", "25qw93"},
+		// Sign-boundary preimages found by meet-in-the-middle over 32-bit
+		// DJB2: the only inputs where the `signed < 0` comparison's
+		// off-by-one variants can be observed at all.
+		{"glk$0(", "1"}, // hash = 0xFFFFFFFF -> int32 -1 -> abs 1
+		{"glk$0)", "0"}, // hash = 0
+	}
+	for _, tc := range tests {
+		got := djb2Hash(tc.in)
+		if got != tc.want {
+			t.Errorf("djb2Hash(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestUintToString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		n    uint64
+		want string
+	}{
+		{0, "0"},
+		{1, "1"},
+		{9, "9"},
+		{10, "a"},
+		{35, "z"},
+		{36, "10"},
+		{1295, "zz"},
+		{1296, "100"},
+		{130585287, "25qw93"},
+		{18446744073709551615, "3w5e11264sgsf"},
+	}
+	for _, tc := range tests {
+		got := uintToString(tc.n, 36)
+		if got != tc.want {
+			t.Errorf("uintToString(%d, 36) = %q, want %q", tc.n, got, tc.want)
+		}
 	}
 }
 

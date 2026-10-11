@@ -134,7 +134,7 @@ ifdef MUTATE_PKG
 	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
 	  exit 0; }; \
 	log=$$(mktemp /tmp/mutate_pkg.XXXXXX); \
-	go-mutesting --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1 \
+	go-mutesting --config test/mutesting.yaml --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1 \
 	  | tee $$log \
 	  | awk '/^ESCAPED/{n[$$2]++} END{for(l in n) printf "%4d %s\n", n[l], l}' | sort -rn | head -20; \
 	grep -i 'mutation score' $$log \

@@ -2,10 +2,12 @@ package context_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/context"
+	"github.com/liuy/gbot/pkg/memory/long"
 )
 
 func TestNewBuilder(t *testing.T) {
@@ -20,6 +22,91 @@ func TestNewBuilder(t *testing.T) {
 	if len(b.ToolPrompts) != 0 {
 		t.Errorf("ToolPrompts should be empty, got %d items", len(b.ToolPrompts))
 	}
+	if b.MaxTokens != 100000 {
+		t.Errorf("MaxTokens = %d, want 100000", b.MaxTokens)
+	}
+}
+
+// The typed-memory section is appended after a blank-line separator; the
+// MemoryFiles fallback only fires when there is no typed prompt.
+func TestBuild_TypedMemorySeparator(t *testing.T) {
+	setTempHome(t)
+	workingDir := t.TempDir()
+	memDir := long.GetMemoryPath(workingDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "note.md"), []byte("typed note"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := context.NewBuilder(workingDir)
+	// The fallback section must not be reachable while a typed prompt exists.
+	b.MemoryFiles = []context.MemoryFile{{Path: "/fallback/only.md", Content: "fallback only"}}
+
+	got, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	typed := long.BuildMemoryPrompt(workingDir, "")
+	if typed == "" {
+		t.Fatal("expected a non-empty typed-memory prompt with auto memory enabled")
+	}
+	if !strings.HasSuffix(got, "\n\n"+typed) {
+		t.Errorf("Build must append the typed-memory prompt after a blank line; tail=%q", truncateForTest(got, 200))
+	}
+	if strings.Contains(got, "fallback only") {
+		t.Error("MemoryFiles section must not be emitted when the typed-memory prompt is present")
+	}
+}
+
+// With typed memory off, the MemoryFiles section is appended verbatim —
+// including its leading "\n\n## Memory" header.
+func TestBuild_MemoryFilesSectionExact(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+
+	b := context.NewBuilder("/work")
+	b.MemoryFiles = []context.MemoryFile{
+		{Path: "/tmp/.gbot/memory/notes.md", Content: "Use strict mode"},
+	}
+
+	got, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	want := "\n\n## Memory\n\n- [notes.md](/tmp/.gbot/memory/notes.md)\nUse strict mode\n"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("Build tail = %q, want %q", tail(got, len(want)+40), want)
+	}
+}
+
+func TestBuild_SkillListingExact(t *testing.T) {
+	t.Parallel()
+	b := context.NewBuilder("/work")
+	b.SkillListing = "- build — runs make check"
+
+	got, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	want := "\n\n## Available Skills\n\n- build — runs make check"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("Build tail = %q, want %q", tail(got, len(want)+40), want)
+	}
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-n:]
+}
+
+func truncateForTest(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func TestBuild_Basic(t *testing.T) {

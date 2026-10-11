@@ -16,16 +16,18 @@ const (
 )
 
 // IsAutoMemoryEnabled checks if the memory system is enabled.
-// Priority: GBOT_AUTO_MEMORY_ENABLED env var (1/true → OFF, 0/false → ON,
+// Priority: GBOT_AUTO_MEMORY_ENABLED env var (1/true → ON, 0/false → OFF,
 // unset → ON default enabled).
-// TS: isAutoMemoryEnabled (paths.ts:30-55)
+// TS: isAutoMemoryEnabled (paths.ts:30-55) gated a DISABLE variable
+// (CLAUDE_CODE_DISABLE_AUTO_MEMORY); the port renamed the var to ENABLED but
+// kept the inverted test, so truthy values switched memory off.
 func IsAutoMemoryEnabled() bool {
 	val := os.Getenv("GBOT_AUTO_MEMORY_ENABLED")
 	if val == "1" || strings.EqualFold(val, "true") {
-		return false
+		return true
 	}
 	if val == "0" || strings.EqualFold(val, "false") {
-		return true
+		return false
 	}
 	return true // default: enabled
 }

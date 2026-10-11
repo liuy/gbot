@@ -1,0 +1,8 @@
+# go-mutesting config for `make mutate MUTATE_PKG=...`.
+# v2.10.21 defaults to pairing source files with same-named _test.go files
+# (skip_without_test). gbot organizes tests per concern (one N_test.go for
+# several files), so the default silently skips whole packages (pkg/quota:
+# 0 mutants, pkg/memory/long: 0). Each mutant runs the package's full test
+# suite anyway, so pairing adds no relevance — disable both skip policies.
+skip_without_test: false
+skip_with_build_tags: false

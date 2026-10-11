@@ -183,6 +183,7 @@ func TestSaveRemoteDevices_MalformedExistingIsReplaced(t *testing.T) {
 }
 
 func TestSaveRemoteDevices_LoadRoundTrip(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
 	if err := config.SaveRemoteDevices([]config.RemoteDevice{
@@ -211,6 +212,7 @@ func TestSaveRemoteDevices_LoadRoundTrip(t *testing.T) {
 }
 
 func TestLoadMigratesLegacyRemoteDesktopKey(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	seedSettingsFile(t, `{"model":{"default":"zhipu/glm-5.3"},"remote_desktop":[{"name":"win11","addr":"ws://127.0.0.1:8006"},{"name":"nas","addr":"wss://nas.local:8006","pass":"pw"}]}`, 0600)
 
@@ -252,6 +254,7 @@ func TestLoadMigratesLegacyRemoteDesktopKey(t *testing.T) {
 
 // A file carrying both keys must honor desktops, not the legacy one.
 func TestLoadPrefersDesktopsOverLegacyKey(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	seedSettingsFile(t, `{"desktops":[{"name":"new","addr":"ws://127.0.0.1:6080"}],"remote_desktop":[{"name":"old","addr":"ws://127.0.0.1:1"}]}`, 0600)
 
@@ -269,6 +272,7 @@ func TestLoadPrefersDesktopsOverLegacyKey(t *testing.T) {
 // choice — it must not fall back to a stale legacy key. Guards the nil-vs-
 // len==0 distinction in the load fallback.
 func TestLoad_EmptyDesktopsDoesNotFallBackToLegacyKey(t *testing.T) {
+	t.Chdir(t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	seedSettingsFile(t, `{"desktops":[],"remote_desktop":[{"name":"old","addr":"ws://127.0.0.1:1"}]}`, 0600)
 

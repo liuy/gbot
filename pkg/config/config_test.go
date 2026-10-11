@@ -27,13 +27,11 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoad_InvalidTimeoutEnv(t *testing.T) {
-	_ = os.Setenv("HOME", t.TempDir())
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	_ = os.Unsetenv("API_TIMEOUT_MS")
-	defer func() { _ = os.Unsetenv("API_TIMEOUT_MS") }()
-
-	_ = os.Setenv("API_TIMEOUT_MS", "abc")
+	// Load() reads .gbot/settings.json relative to CWD, so an isolated CWD is
+	// required or the repo's own project config leaks into the result.
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("API_TIMEOUT_MS", "abc")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -49,8 +47,7 @@ func TestLoad_InvalidTimeoutEnv(t *testing.T) {
 func TestConfigDir(t *testing.T) {
 	// Not parallel because we modify HOME
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	configDir, err := config.ConfigDir()
 	if err != nil {
@@ -69,8 +66,7 @@ func TestLoad_ProjectConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	// Set HOME to temp dir to avoid reading real config
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	// Create .gbot dir in current working directory
 	projectGbotDir := filepath.Join(dir, ".gbot")
@@ -85,9 +81,7 @@ func TestLoad_ProjectConfig(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(projectGbotDir, "settings.json"), data, 0644)
 
 	// Change to project dir
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -101,6 +95,9 @@ func TestLoad_ProjectConfig(t *testing.T) {
 
 func TestLoad_UserConfig(t *testing.T) {
 	dir := t.TempDir()
+	// Isolated CWD: Load() would otherwise pick up a .gbot/settings.json next
+	// to the test binary and merge it over the user config under test.
+	t.Chdir(t.TempDir())
 
 	// Create user config
 	userGbotDir := filepath.Join(dir, ".gbot")
@@ -116,8 +113,7 @@ func TestLoad_UserConfig(t *testing.T) {
 	data, _ := json.Marshal(userSettings)
 	_ = os.WriteFile(filepath.Join(userGbotDir, "settings.json"), data, 0644)
 
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -141,8 +137,7 @@ func TestLoad_UserConfigFileError(t *testing.T) {
 	dir := t.TempDir()
 
 	// Set HOME to our temp dir
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	// Create .gbot dir with an invalid settings.json (malformed JSON)
 	userGbotDir := filepath.Join(dir, ".gbot")
@@ -154,17 +149,10 @@ func TestLoad_UserConfigFileError(t *testing.T) {
 	}
 
 	// Change to a different dir so there's no project config to interfere
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	// Clear env vars that might interfere
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	_, err := config.Load()
 	if err == nil {
@@ -182,8 +170,7 @@ func TestLoad_ProjectConfigFileError(t *testing.T) {
 	// Set HOME to temp dir with no user config
 	homeDir := filepath.Join(dir, "home")
 	_ = os.MkdirAll(homeDir, 0755)
-	_ = os.Setenv("HOME", homeDir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", homeDir)
 
 	// Create .gbot dir in project (working dir) with malformed JSON
 	projectGbotDir := filepath.Join(dir, ".gbot")
@@ -194,17 +181,10 @@ func TestLoad_ProjectConfigFileError(t *testing.T) {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	// Clear env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	_, err := config.Load()
 	if err == nil {
@@ -241,20 +221,12 @@ func TestLoadFromFile_PermissionError(t *testing.T) {
 	restrictedSettings := filepath.Join(userGbotDir, "settings.json")
 	_ = os.WriteFile(restrictedSettings, []byte(`{"model":"test"}`), 0000)
 
-	_ = os.Setenv("HOME", homeDir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", homeDir)
 
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	// Clear env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	_, err := config.Load()
 	if err == nil {
@@ -273,20 +245,12 @@ func TestLoadFromFile_FileNotFound(t *testing.T) {
 
 	homeDir := filepath.Join(dir, "home")
 	_ = os.MkdirAll(homeDir, 0755)
-	_ = os.Setenv("HOME", homeDir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", homeDir)
 
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	// Clear env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -303,22 +267,11 @@ func TestLoad_MissingHomeDir(t *testing.T) {
 	// so user config is skipped, but project config still loads
 	dir := t.TempDir()
 
-	_ = os.Unsetenv("HOME")
-	// On Linux, UserHomeDir also checks $HOME; on some systems it may
-	// fall back to passwd lookup. We force it to fail by unsetting HOME
-	// and ensuring no fallback. This test is best-effort.
-
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
-
-	// Clear env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-		"HOME",
-	} {
-		_ = os.Unsetenv(k)
-	}
+	// Empty HOME makes os.UserHomeDir fail on Linux; t.Setenv restores it
+	// afterwards instead of leaving the variable destroyed.
+	t.Setenv("HOME", "")
+	t.Setenv("API_TIMEOUT_MS", "")
+	t.Chdir(dir)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -327,17 +280,13 @@ func TestLoad_MissingHomeDir(t *testing.T) {
 	} else {
 		t.Logf("Load succeeded: Model=%q", cfg.Model)
 	}
-
-	// Restore HOME
-	_ = os.Setenv("HOME", originalDir)
 }
 
 func TestConfigDir_GBOTConfigDirEnvOverride(t *testing.T) {
 	// Note: Current implementation doesn't check GBOT_CONFIG_DIR env var,
 	// but this test exercises the ConfigDir function thoroughly
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	configDir, err := config.ConfigDir()
 	if err != nil {
@@ -352,16 +301,10 @@ func TestConfigDir_GBOTConfigDirEnvOverride(t *testing.T) {
 func TestConfigDir_HomeError(t *testing.T) {
 	// Test ConfigDir when UserHomeDir fails
 	// On most systems, setting HOME to empty causes UserHomeDir to fail
-	originalHome := os.Getenv("HOME")
-	_ = os.Unsetenv("HOME")
-	defer func() {
-		if originalHome != "" {
-			_ = os.Setenv("HOME", originalHome)
-		}
-	}()
+	t.Setenv("HOME", "")
 
 	// Also try to break passwd lookup by setting USERPROFILE (Windows) empty
-	_ = os.Unsetenv("USERPROFILE")
+	t.Setenv("USERPROFILE", "")
 
 	configDir, err := config.ConfigDir()
 	if err == nil {
@@ -380,20 +323,12 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 
 	homeDir := filepath.Join(dir, "home")
 	_ = os.MkdirAll(homeDir, 0755)
-	_ = os.Setenv("HOME", homeDir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", homeDir)
 
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	// Clear all relevant env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -409,13 +344,9 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 func TestLoad_NegativeTimeoutEnv(t *testing.T) {
 	//fmt.Sscanf with %d parses negative values like "-1" successfully.
 	// A negative timeout is nonsensical and should be rejected or clamped.
-	_ = os.Setenv("HOME", t.TempDir())
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	_ = os.Unsetenv("API_TIMEOUT_MS")
-	defer func() { _ = os.Unsetenv("API_TIMEOUT_MS") }()
-
-	_ = os.Setenv("API_TIMEOUT_MS", "-1")
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("API_TIMEOUT_MS", "-1")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -432,13 +363,9 @@ func TestLoad_NegativeTimeoutEnv(t *testing.T) {
 func TestLoad_ZeroTimeoutEnv(t *testing.T) {
 	// Zero timeout means "no timeout" in most HTTP clients, which is
 	// almost certainly a mistake. Should be rejected or clamped.
-	_ = os.Setenv("HOME", t.TempDir())
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	_ = os.Unsetenv("API_TIMEOUT_MS")
-	defer func() { _ = os.Unsetenv("API_TIMEOUT_MS") }()
-
-	_ = os.Setenv("API_TIMEOUT_MS", "0")
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("API_TIMEOUT_MS", "0")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -690,19 +617,11 @@ func TestLoad_ProviderConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	// Set env vars for key resolution
-	_ = os.Setenv("TEST_GBOT_PROVIDER_KEY", "test-api-key-789")
-	defer func() { _ = os.Unsetenv("TEST_GBOT_PROVIDER_KEY") }()
-
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("TEST_GBOT_PROVIDER_KEY", "test-api-key-789")
+	t.Setenv("HOME", dir)
 
 	// Clear env vars
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
+	t.Setenv("API_TIMEOUT_MS", "")
 
 	// Create user config with provider structure
 	userGbotDir := filepath.Join(dir, ".gbot")
@@ -733,9 +652,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 		t.Fatalf("write settings: %v", err)
 	}
 
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
+	t.Chdir(dir)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -1046,8 +963,8 @@ func TestSave_NoTmpFileLeft(t *testing.T) {
 
 func TestLoad_APITimeoutEnv(t *testing.T) {
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", dir)
 
 	gbotDir := filepath.Join(dir, ".gbot")
 	if err := os.MkdirAll(gbotDir, 0755); err != nil {
@@ -1057,9 +974,7 @@ func TestLoad_APITimeoutEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	origEnv := os.Getenv("API_TIMEOUT_MS")
-	_ = os.Setenv("API_TIMEOUT_MS", "5000")
-	defer func() { _ = os.Setenv("API_TIMEOUT_MS", origEnv) }()
+	t.Setenv("API_TIMEOUT_MS", "5000")
 
 	cfg, err := config.Load()
 	if err != nil {

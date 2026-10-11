@@ -3,8 +3,12 @@ package quota
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +71,9 @@ func TestZhipuFetcher_Fetch_OK(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer testkey" {
 			t.Errorf("Authorization = %q, want 'Bearer testkey'", got)
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept = %q, want application/json", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
@@ -193,6 +200,14 @@ func TestZhipuFetcher_DefaultBaseURL(t *testing.T) {
 	if f.BaseURL != "https://open.bigmodel.cn" {
 		t.Errorf("BaseURL = %q, want default", f.BaseURL)
 	}
+	// The quota call runs on the TUI's async path: an unbounded or shifted
+	// client timeout stalls the status bar.
+	if f.Client == nil {
+		t.Fatal("Client is nil")
+	}
+	if f.Client.Timeout != 10*time.Second {
+		t.Errorf("Client.Timeout = %v, want 10s", f.Client.Timeout)
+	}
 }
 
 func TestMinimaxFetcher_Fetch_OK(t *testing.T) {
@@ -225,6 +240,9 @@ func TestMinimaxFetcher_Fetch_OK(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer mmxkey" {
 			t.Errorf("Authorization = %q, want 'Bearer mmxkey'", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 		_, _ = w.Write([]byte(body))
 	}))
@@ -430,6 +448,9 @@ func TestMinimaxFetcher_Fetch_RealResponseShape(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer mmxkey" {
 			t.Errorf("Authorization = %q, want 'Bearer mmxkey'", got)
 		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
@@ -603,6 +624,9 @@ func TestNewMinimaxFetcher_DefaultsAndTrims(t *testing.T) {
 	if f2.BaseURL != "https://api.minimax.io" {
 		t.Errorf("BaseURL = %q, want trailing slashes trimmed", f2.BaseURL)
 	}
+	if f.Client.Timeout != 10*time.Second {
+		t.Errorf("Client.Timeout = %v, want 10s", f.Client.Timeout)
+	}
 }
 
 func TestMinimaxFetcher_Fetch_HTTPError(t *testing.T) {
@@ -632,6 +656,9 @@ func TestMinimaxFetcher_Fetch_InvalidJSON(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "parse JSON") {
 		t.Fatalf("Fetch invalid JSON error = %v, want parse JSON", err)
 	}
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("Fetch invalid JSON error = %v, want it to wrap *json.SyntaxError", err)
+	}
 }
 
 func TestMinimaxFetcher_Fetch_APIError(t *testing.T) {
@@ -655,6 +682,12 @@ func TestMinimaxFetcher_Fetch_RequestError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Fetch malformed URL: got nil error, want request error")
 	}
+	if !strings.HasPrefix(err.Error(), "minimax quota: build request: ") {
+		t.Errorf("Fetch malformed URL error = %q, want the \"minimax quota: build request: \" prefix", err.Error())
+	}
+	if _, ok := errors.AsType[*url.Error](err); !ok {
+		t.Errorf("Fetch malformed URL error = %v, want it to wrap *url.Error", err)
+	}
 }
 
 func TestZhipuFetcher_Fetch_InvalidJSON(t *testing.T) {
@@ -669,6 +702,33 @@ func TestZhipuFetcher_Fetch_InvalidJSON(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "parse JSON") {
 		t.Fatalf("Fetch invalid JSON = %v, want parse JSON", err)
 	}
+	// The cause must stay unwrappable, not merely be printed into the text.
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("Fetch invalid JSON error = %v, want it to wrap *json.SyntaxError", err)
+	}
+}
+
+// The read-body failure must be reported for minimax too: a truncated
+// response would otherwise fall through as an empty quota record.
+func TestMinimaxFetcher_Fetch_ReadBodyError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("Fetch with a short body: got nil error, want a read-body failure")
+	}
+	if !strings.HasPrefix(err.Error(), "minimax quota: read body: ") {
+		t.Errorf("Fetch read-body error = %q, want the \"minimax quota: read body: \" prefix", err.Error())
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("Fetch read-body error = %v, want it to wrap io.ErrUnexpectedEOF", err)
+	}
 }
 
 func TestZhipuFetcher_Fetch_RequestError(t *testing.T) {
@@ -677,6 +737,275 @@ func TestZhipuFetcher_Fetch_RequestError(t *testing.T) {
 	_, err := f.Fetch(context.Background())
 	if err == nil {
 		t.Fatalf("Fetch malformed URL: got nil error, want request error")
+	}
+	if !strings.HasPrefix(err.Error(), "zhipu quota: build request: ") {
+		t.Errorf("Fetch malformed URL error = %q, want the \"zhipu quota: build request: \" prefix", err.Error())
+	}
+	if _, ok := errors.AsType[*url.Error](err); !ok {
+		t.Errorf("Fetch malformed URL error = %v, want it to wrap *url.Error", err)
+	}
+}
+
+// A cancelled context must abort the in-flight request, not the request build.
+func TestZhipuFetcher_Fetch_CancelledContext(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":200,"success":true}`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(ctx)
+	if err == nil {
+		t.Fatal("Fetch with a cancelled context: got nil error")
+	}
+	if !strings.HasPrefix(err.Error(), "zhipu quota: request: ") {
+		t.Errorf("Fetch cancelled error = %q, want the \"zhipu quota: request: \" prefix", err.Error())
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Fetch cancelled error = %v, want it to wrap context.Canceled", err)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_CancelledContext(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0}}`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(ctx)
+	if err == nil {
+		t.Fatal("Fetch with a cancelled context: got nil error")
+	}
+	if !strings.HasPrefix(err.Error(), "minimax quota: request: ") {
+		t.Errorf("Fetch cancelled error = %q, want the \"minimax quota: request: \" prefix", err.Error())
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Fetch cancelled error = %v, want it to wrap context.Canceled", err)
+	}
+}
+
+// The error body is truncated at 200 bytes so a huge HTML error page cannot
+// flood the status bar; the boundary is exact.
+func TestZhipuFetcher_Fetch_HTTPErrorBodyTruncation(t *testing.T) {
+	t.Parallel()
+	body200 := strings.Repeat("x", 200)
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"exactly 200", body200, "zhipu quota: HTTP 500: " + body200},
+		{"201 truncated", body200 + "y", "zhipu quota: HTTP 500: " + body200 + "..."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+			_, err := f.Fetch(context.Background())
+			if err == nil {
+				t.Fatal("Fetch HTTP 500: got nil error")
+			}
+			if err.Error() != tc.want {
+				t.Errorf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestMinimaxFetcher_Fetch_HTTPErrorBodyTruncation(t *testing.T) {
+	t.Parallel()
+	body200 := strings.Repeat("z", 200)
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"exactly 200", body200, "minimax quota: HTTP 500: " + body200},
+		{"201 truncated", body200 + "y", "minimax quota: HTTP 500: " + body200 + "..."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+			_, err := f.Fetch(context.Background())
+			if err == nil {
+				t.Fatal("Fetch HTTP 500: got nil error")
+			}
+			if err.Error() != tc.want {
+				t.Errorf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The API-level guard rejects either failure shape on its own.
+func TestZhipuFetcher_Fetch_APIFailureShapes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"success false", `{"code":200,"success":false,"msg":"nope"}`, `zhipu quota: API returned code=200 success=false msg="nope"`},
+		{"code not 200", `{"code":500,"success":true,"msg":"boom"}`, `zhipu quota: API returned code=500 success=true msg="boom"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+			_, err := f.Fetch(context.Background())
+			if err == nil {
+				t.Fatal("got nil error, want the API failure")
+			}
+			if err.Error() != tc.want {
+				t.Errorf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The 5h window is identified by all three discriminators together: every
+// wrong combination appears in the response before the exact match, so any
+// dropped or shifted condition selects a different entry.
+func TestZhipuFetcher_Fetch_ExactWindowMatch(t *testing.T) {
+	t.Parallel()
+	const resetMs = 1800000000000
+	body := mustJSON(t, map[string]any{
+		"code":    200,
+		"success": true,
+		"data": map[string]any{
+			"limits": []map[string]any{
+				{"type": "TOKENS_LIMIT", "unit": 6, "number": 5, "percentage": 40},
+				{"type": "TIME_LIMIT", "unit": 3, "number": 5, "percentage": 45},
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 7, "percentage": 50},
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 15, "nextResetTime": resetMs},
+			},
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	info, err := f.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if info.Used != 15 {
+		t.Errorf("Used = %d, want 15 (the unit=3 number=5 TOKENS_LIMIT entry)", info.Used)
+	}
+	if !info.ResetAt.Equal(time.UnixMilli(resetMs)) {
+		t.Errorf("ResetAt = %v, want %v", info.ResetAt, time.UnixMilli(resetMs))
+	}
+}
+
+// If the response repeats the 5h entry, the first one wins: the scan stops at
+// the first match rather than at the last.
+func TestZhipuFetcher_Fetch_FirstExactMatchWins(t *testing.T) {
+	t.Parallel()
+	body := mustJSON(t, map[string]any{
+		"code":    200,
+		"success": true,
+		"data": map[string]any{
+			"limits": []map[string]any{
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 15},
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 99},
+			},
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	info, err := f.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if info.Used != 15 {
+		t.Errorf("Used = %d, want 15 (first matching entry, not the last)", info.Used)
+	}
+}
+
+// With no exact 5h entry the fallback takes the FIRST TOKENS_LIMIT entry.
+func TestZhipuFetcher_Fetch_FallbackTakesFirstTokensLimit(t *testing.T) {
+	t.Parallel()
+	body := mustJSON(t, map[string]any{
+		"code":    200,
+		"success": true,
+		"data": map[string]any{
+			"limits": []map[string]any{
+				{"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 70},
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 9, "percentage": 80},
+			},
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	info, err := f.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if info.Used != 70 {
+		t.Errorf("Used = %d, want 70 (first TOKENS_LIMIT entry)", info.Used)
+	}
+}
+
+// Detect matches on provider name OR host; each of the four name/host
+// conditions must be able to fire on its own.
+func TestDetect_NameOrHostAlone(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"MiniMax", "https://example.com", "*quota.MinimaxFetcher"},
+		{"x", "https://minimax.example.com", "*quota.MinimaxFetcher"},
+		{"zhipu", "https://example.com", "*quota.ZhipuFetcher"},
+		{"x", "https://zhipu.example.com", "*quota.ZhipuFetcher"},
+		{"z.ai", "https://example.com", "*quota.ZhipuFetcher"},
+		{"x", "https://api.z.ai/v1", "*quota.ZhipuFetcher"},
+	}
+	for _, tc := range cases {
+		p := &config.Provider{Name: tc.name, URL: tc.url, Keys: []string{"k"}}
+		if got := fmt.Sprintf("%T", Detect(p)); got != tc.want {
+			t.Errorf("Detect(name=%q url=%q) = %s, want %s", tc.name, tc.url, got, tc.want)
+		}
 	}
 }
 
@@ -690,8 +1019,14 @@ func TestZhipuFetcher_Fetch_ReadBodyError(t *testing.T) {
 
 	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
 	_, err := f.Fetch(context.Background())
-	if err != nil && !strings.Contains(err.Error(), "read") && !strings.Contains(err.Error(), "parse") {
-		t.Errorf("Fetch read-body error = %v, want 'read' or 'parse'", err)
+	if err == nil {
+		t.Fatal("Fetch with a short body: got nil error, want a read-body failure")
+	}
+	if !strings.HasPrefix(err.Error(), "zhipu quota: read body: ") {
+		t.Errorf("Fetch read-body error = %q, want the \"zhipu quota: read body: \" prefix", err.Error())
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("Fetch read-body error = %v, want it to wrap io.ErrUnexpectedEOF", err)
 	}
 }
 

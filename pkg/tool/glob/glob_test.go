@@ -40,6 +40,21 @@ func TestNew(t *testing.T) {
 	if !tt.IsEnabled() {
 		t.Error("IsEnabled() = false, want true")
 	}
+	aliases := tt.Aliases()
+	if len(aliases) != 1 || aliases[0] != "glob" {
+		t.Errorf("Aliases() = %v, want [glob]", aliases)
+	}
+	if got := tt.MaxResultSize(); got != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", got)
+	}
+	// Call_ must be wired to Execute, not left to BuildTool's default.
+	res, err := tt.Call(context.Background(), json.RawMessage(`{"pattern":"*.go","path":"."}`), nil)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	if res == nil || res.Data == nil {
+		t.Fatal("Call() returned an empty result")
+	}
 }
 
 func TestNewInputSchema(t *testing.T) {

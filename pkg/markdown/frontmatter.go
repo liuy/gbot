@@ -24,7 +24,10 @@ type ParsedMarkdown struct {
 
 // frontmatterRegex matches YAML frontmatter between --- delimiters.
 // Source: frontmatterParser.ts:123 — FRONTMATTER_REGEX = /^---\s*\n([\s\S]*?)---\s*\n?/
-var frontmatterRegex = regexp.MustCompile(`(?s)^---\s*\n(.*?)\n---\s*\n?`)
+// The closing delimiter is not preceded by a newline requirement: the captured
+// group swallows the newline before `---`, which is what makes `---\n---\n`
+// parse as empty frontmatter instead of leaking the delimiters into Content.
+var frontmatterRegex = regexp.MustCompile(`(?s)^---\s*\n(.*?)---\s*\n?`)
 
 // yamlSpecialChars matches characters that require quoting in YAML values.
 // Source: frontmatterParser.ts:77 — YAML_SPECIAL_CHARS

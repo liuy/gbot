@@ -145,31 +145,44 @@ func TestParseFrontmatter_MultilineBody(t *testing.T) {
 
 // --- paths.go tests ---
 
-func TestIsAutoMemoryEnabled_Default(t *testing.T) {
+// The env var is named ENABLED, so truthy values must enable the memory
+// system. The port inherited the TS DISABLE-variable polarity, which made
+// GBOT_AUTO_MEMORY_ENABLED=1 switch memory OFF — the opposite of the name.
+func TestIsAutoMemoryEnabled(t *testing.T) {
+	tests := []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{value: "", set: false, want: true}, // unset → default enabled
+		{value: "1", set: true, want: true},
+		{value: "true", set: true, want: true},
+		{value: "TRUE", set: true, want: true},
+		{value: "0", set: true, want: false},
+		{value: "false", set: true, want: false},
+		{value: "False", set: true, want: false},
+	}
+	for _, tt := range tests {
+		name := "unset"
+		if tt.set {
+			name = "value=" + tt.value
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("GBOT_AUTO_MEMORY_ENABLED", tt.value)
+			if !tt.set {
+				_ = os.Unsetenv("GBOT_AUTO_MEMORY_ENABLED")
+			}
+			if got := IsAutoMemoryEnabled(); got != tt.want {
+				t.Errorf("IsAutoMemoryEnabled() = %v, want %v (env=%q set=%v)", got, tt.want, tt.value, tt.set)
+			}
+		})
+	}
+}
+
+func TestIsAutoMemoryEnabled_EmptyString(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "")
 	if !IsAutoMemoryEnabled() {
 		t.Error("expected enabled by default")
-	}
-}
-
-func TestIsAutoMemoryEnabled_Disabled(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
-	if IsAutoMemoryEnabled() {
-		t.Error("expected disabled when env=1")
-	}
-}
-
-func TestIsAutoMemoryEnabled_TrueString(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "true")
-	if IsAutoMemoryEnabled() {
-		t.Error("expected disabled when env=true")
-	}
-}
-
-func TestIsAutoMemoryEnabled_ExplicitEnable(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
-	if !IsAutoMemoryEnabled() {
-		t.Error("expected enabled when env=0")
 	}
 }
 
@@ -508,7 +521,7 @@ func TestLoadAllMemoryFiles_NonexistentDir(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_Disabled(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
 	prompt := BuildMemoryPrompt(t.TempDir(), "")
 	if prompt != "" {
 		t.Errorf("expected empty prompt when disabled, got %q", prompt)
@@ -516,7 +529,7 @@ func TestBuildMemoryPrompt_Disabled(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_EmptyDir(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	tmp := t.TempDir()
 	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
@@ -531,7 +544,7 @@ func TestBuildMemoryPrompt_EmptyDir(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_WithContent(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	tmp := t.TempDir()
 
@@ -559,7 +572,7 @@ func TestBuildMemoryPrompt_WithContent(t *testing.T) {
 // The Archive section is a pure consumption guide — archiving RULES live in
 // the dream engine's prompt, so the two must not drift into overlap.
 func TestBuildMemoryPrompt_ArchiveSection(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	prompt := BuildMemoryPrompt(t.TempDir(), "")
 	for _, want := range []string{
 		"## Archive",
@@ -672,7 +685,7 @@ func TestGetMemoryPath_HomeFallback(t *testing.T) {
 // prompt.go coverage
 
 func TestBuildMemoryPrompt_WithContentAtComputedPath(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	tmp := t.TempDir()
 
@@ -699,7 +712,7 @@ func TestBuildMemoryPrompt_WithContentAtComputedPath(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_WithTruncation(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	tmp := t.TempDir()
 
@@ -727,7 +740,7 @@ func TestBuildMemoryPrompt_WithTruncation(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_ReadFileError(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	tmp := t.TempDir()
 
@@ -750,7 +763,7 @@ func TestBuildMemoryPrompt_ReadFileError(t *testing.T) {
 }
 
 func TestBuildMemoryPrompt_EmptyContent(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	tmp := t.TempDir()
 
@@ -1494,7 +1507,7 @@ func TestChain_UpdateContentThenLoad(t *testing.T) {
 // Observable output: BuildMemoryPrompt returns a prompt with the MEMORY.md
 // section containing our index entries.
 func TestChain_WriteIndexPrompt(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	setTempHome(t)
 	workingDir := t.TempDir()
 

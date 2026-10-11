@@ -3937,6 +3937,55 @@ func TestRewindTo_WithFileRestore(t *testing.T) {
 	}
 }
 
+func TestRewindTo_RestoreErrSurfaced(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+	backupDir := t.TempDir()
+	tracker := filehistory.NewTracker(backupDir)
+	eng.SetFileHistory(tracker)
+	tmpFile := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmpFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.TrackEdit(tmpFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("rewind-uuid-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Destroy the backups: the rewind must still truncate messages but
+	// surface the file-restore failure instead of reporting success.
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one backup file")
+	}
+	for _, ent := range entries {
+		if err := os.Remove(filepath.Join(backupDir, ent.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eng.SetMessages([]types.Message{
+		{ID: "rewind-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+	})
+	result, err := eng.RewindTo(0)
+	if err != nil {
+		t.Fatalf("RewindTo failed: %v", err)
+	}
+	if result.RestoreErr == nil {
+		t.Error("RestoreErr = nil, want the surfaced backup_not_found restore failure")
+	}
+	if len(result.RestoredFiles) != 0 {
+		t.Errorf("RestoredFiles = %v, want empty", result.RestoredFiles)
+	}
+}
+
 func TestRewindTo_InvalidIndex(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 	t.Cleanup(func() { eng.Close() })

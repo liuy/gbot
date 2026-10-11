@@ -244,17 +244,202 @@ func TestFormatMemorySection_WithFiles(t *testing.T) {
 	}
 	result := context.FormatMemorySection(files)
 
-	if !strings.Contains(result, "## Memory") {
-		t.Error("missing Memory section header")
+	// Exact layout: header, then per file a link line, the content, and the
+	// trailing newline that separates it from the next entry.
+	want := "\n\n## Memory\n" +
+		"\n- [notes.md](/tmp/.gbot/memory/notes.md)\nUse strict mode\n" +
+		"\n- [style.md](/tmp/.gbot/memory/style.md)\nNo tabs\n"
+	if result != want {
+		t.Errorf("FormatMemorySection =\n%q\nwant:\n%q", result, want)
 	}
-	if !strings.Contains(result, "notes.md") {
-		t.Error("missing notes.md reference")
+}
+
+// A directory listed before the first markdown file must be skipped, not
+// abort the scan.
+func TestLoadMemoryFiles_ScanSkipsDirectoryFirst(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(result, "Use strict mode") {
-		t.Error("missing notes.md content")
+
+	// ReadDir returns entries sorted by name: "a_dir" precedes "z_note.md".
+	if err := os.MkdirAll(filepath.Join(memDir, "a_dir"), 0755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(result, "No tabs") {
-		t.Error("missing style.md content")
+	if err := os.WriteFile(filepath.Join(memDir, "z_note.md"), []byte("after dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir, "")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file after the leading directory, got %d", len(files))
+	}
+	if files[0].Content != "after dir" {
+		t.Errorf("content = %q, want 'after dir'", files[0].Content)
+	}
+}
+
+// An unreadable file listed first must be skipped, not abort the scan.
+func TestLoadMemoryFiles_ScanUnreadableFirst(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	blocker := filepath.Join(memDir, "a_unreadable.md")
+	if err := os.WriteFile(blocker, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocker, 0000); err != nil {
+		t.Skipf("cannot chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(blocker, 0644) }()
+
+	if err := os.WriteFile(filepath.Join(memDir, "z_note.md"), []byte("after blocker"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir, "")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file after the unreadable one, got %d", len(files))
+	}
+	if files[0].Content != "after blocker" {
+		t.Errorf("content = %q, want 'after blocker'", files[0].Content)
+	}
+}
+
+// A broken symlink is listed by ReadDir but fails ReadFile: it must be
+// skipped without dropping the entries after it.
+func TestLoadMemoryFiles_ScanBrokenSymlink(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(filepath.Join(memDir, "does-not-exist.md"), filepath.Join(memDir, "a_broken.md")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "z_note.md"), []byte("real content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir, "")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file past the broken symlink, got %d", len(files))
+	}
+	if files[0].Content != "real content" {
+		t.Errorf("content = %q, want 'real content'", files[0].Content)
+	}
+}
+
+// The index path wins over the scan: an unindexed .md file stays out.
+func TestLoadMemoryFiles_IndexPreferredOverScan(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("- [One](one.md) — indexed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "one.md"), []byte("indexed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "unindexed.md"), []byte("not indexed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir, "")
+	if len(files) != 1 {
+		t.Fatalf("expected only the indexed file, got %d: %v", len(files), files)
+	}
+	if files[0].Content != "indexed" {
+		t.Errorf("content = %q, want 'indexed'", files[0].Content)
+	}
+}
+
+// A missing/empty entry in the middle of the index must not stop the loop.
+func TestLoadMemoryFiles_IndexSkipsLeadingMissingAndEmpty(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	index := "- [Gone](a_gone.md) — missing\n- [Blank](b_blank.md) — blank file\n- [Real](c_real.md) — kept\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(index), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "b_blank.md"), []byte("  \n "), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "c_real.md"), []byte("kept"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir, "")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file past the missing and empty entries, got %d", len(files))
+	}
+	if files[0].Content != "kept" {
+		t.Errorf("content = %q, want 'kept'", files[0].Content)
+	}
+}
+
+// memoryDirOverride replaces the workingDir-derived memory path entirely.
+func TestLoadMemoryFiles_DirOverride(t *testing.T) {
+	setTempHome(t)
+	workingDir := t.TempDir()
+	overrideDir := t.TempDir()
+
+	// A file under the default path that must NOT be picked up.
+	defaultMem := long.GetMemoryPath(workingDir)
+	if err := os.MkdirAll(defaultMem, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultMem, "default.md"), []byte("wrong dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overrideDir, "override.md"), []byte("override dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(workingDir, overrideDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file from the override dir, got %d: %v", len(files), files)
+	}
+	if files[0].Content != "override dir" {
+		t.Errorf("content = %q, want 'override dir'", files[0].Content)
+	}
+	if !strings.Contains(files[0].Path, overrideDir) {
+		t.Errorf("path = %q, want it under the override dir %q", files[0].Path, overrideDir)
+	}
+}
+
+// Disabled auto-memory returns nil even when a populated memory dir exists.
+func TestLoadMemoryFiles_DisabledIgnoresPopulatedDir(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "note.md"), []byte("should not load"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if files := context.LoadMemoryFiles(tmpDir, ""); files != nil {
+		t.Errorf("LoadMemoryFiles with auto-memory disabled = %d files, want nil", len(files))
 	}
 }
 
@@ -277,7 +462,7 @@ func TestFormatMemorySection_HomePathTilde(t *testing.T) {
 
 func TestBuild_WithMemoryFiles(t *testing.T) {
 	// Disable typed-memory to test the MemoryFiles path
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
 	b := context.NewBuilder("/work")
 	b.MemoryFiles = []context.MemoryFile{
 		{Path: "/work/.gbot/memory/test.md", Content: "Remember this"},
@@ -297,8 +482,8 @@ func TestBuild_WithMemoryFiles(t *testing.T) {
 }
 
 func TestBuild_WithTypedMemory(t *testing.T) {
-	// Enable typed-memory (env=0 means enabled)
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	// Enable typed-memory (env=1 means enabled)
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	b := context.NewBuilder("/work")
 
 	result, err := b.Build()
@@ -315,7 +500,7 @@ func TestBuild_WithTypedMemory(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_Disabled(t *testing.T) {
-	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
 	files := context.LoadMemoryFiles(t.TempDir(), "")
 	if files != nil {
 		t.Errorf("expected nil when disabled, got %d files", len(files))

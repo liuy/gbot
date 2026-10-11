@@ -45,13 +45,6 @@ var safeEnvVarPattern = regexp.MustCompile(`^([A-Za-z_]\w*)=([A-Za-z0-9_./:\-]+)
 var allEnvVarPattern = regexp.MustCompile(
 	`^([A-Za-z_]\w*(?:\[[^\]]*\])?)\+?=(?:'[^'\n\r]*'|"(?:\\.|[^"$` + "`" + `\\\n\r])*"|\\.|[^ \t\n\r$` + "`" + `;|&()<>'"])*[\t ]+`)
 
-// bashParser is a package-level parser instance safe for concurrent use.
-// Avoids allocating a new parser on every call.
-var bashParser = syntax.NewParser(syntax.KeepComments(false), syntax.Variant(syntax.LangBash))
-
-// bashPrinter is a package-level printer instance safe for concurrent use.
-var bashPrinter = syntax.NewPrinter()
-
 // ParseShellCommand uses mvdan/sh AST to extract all executable commands.
 //
 // Source: AST-based extraction replacing manual string splitting.
@@ -64,7 +57,11 @@ func ParseShellCommand(command string) ([]string, error) {
 		return nil, nil
 	}
 
-	parser := bashParser
+	// Parser holds mutable per-parse state and is not concurrency safe;
+	// permission checks run in parallel (parallel tool execution, sub-agents
+	// share the checker), so it must be per-call. Allocation is irrelevant
+	// next to parse cost.
+	parser := syntax.NewParser(syntax.KeepComments(false), syntax.Variant(syntax.LangBash))
 	prog, err := parser.Parse(strings.NewReader(command), "")
 	if err != nil {
 		// Parse failure → error → deny (fail-secure)
@@ -175,7 +172,8 @@ func reconstructCommand(call *syntax.CallExpr) string {
 	// Build a Stmt containing just this CallExpr for printing
 	var b strings.Builder
 	stmt := &syntax.Stmt{Cmd: call}
-	if err := bashPrinter.Print(&b, stmt); err != nil {
+	// Printer is not concurrency safe either — per-call instance.
+	if err := syntax.NewPrinter().Print(&b, stmt); err != nil {
 		// Fallback: join word literals
 		parts := make([]string, 0, len(call.Args))
 		for _, w := range call.Args {
@@ -208,7 +206,7 @@ func wordLiteral(w *syntax.Word) string {
 // printWord uses syntax.Printer to render a Word as a string.
 func printWord(w *syntax.Word) string {
 	var b strings.Builder
-	_ = bashPrinter.Print(&b, &syntax.Stmt{Cmd: &syntax.CallExpr{Args: []*syntax.Word{w}}})
+	_ = syntax.NewPrinter().Print(&b, &syntax.Stmt{Cmd: &syntax.CallExpr{Args: []*syntax.Word{w}}})
 	s := strings.TrimSpace(b.String())
 	return strings.TrimRight(s, "\n")
 }

@@ -6,6 +6,56 @@ import (
 	"testing"
 )
 
+// isBlankJSON is the guard that keeps json.Marshal from aborting on a blank
+// RawMessage; its emptiness test is `len(trim) == 0`, so both the empty and
+// the single-character case must be pinned.
+func TestIsBlankJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{"", true},
+		{" ", true},
+		{"\t\n ", true},
+		{"x", false},
+		{"{}", false},
+		{"null", false},
+		{`{"a":1}`, false},
+	}
+	for _, tc := range tests {
+		if got := isBlankJSON(json.RawMessage(tc.raw)); got != tc.want {
+			t.Errorf("isBlankJSON(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// needsStorageNull covers both shapes: blank bytes and non-blank-but-invalid
+// JSON. Dropping either operand leaves one shape unnormalized.
+func TestNeedsStorageNull(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{"", true},
+		{"   ", true},
+		{`{"args":"trunc`, true},
+		{`}{not json`, true},
+		{`{}`, false},
+		{`{"a":1}`, false},
+		{"null", false},
+		{"[]", false},
+	}
+	for _, tc := range tests {
+		if got := needsStorageNull(json.RawMessage(tc.raw)); got != tc.want {
+			t.Errorf("needsStorageNull(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
 // TestMarshalContentBlocksForStorage_BlankRawMessageAsNull reproduces the
 // 2026-09-22 incident class: a stream cut-off finalized a tool_use whose Input
 // RawMessage never got valid JSON, json.Marshal aborted with "unexpected end

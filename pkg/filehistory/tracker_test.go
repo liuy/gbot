@@ -885,11 +885,13 @@ func TestRestoreBackup_BackupNotFound(t *testing.T) {
 	}
 
 	// Rewind to initial snapshot triggers restoreBackup with missing backup.
-	// applySnapshotLocked logs the error but does not propagate it to Rewind.
-	// Instead, the file is not in the changed list because restore failed.
+	// The failure is surfaced so callers can tell the rewind did not happen.
 	changed, err := tr.Rewind("")
-	if err != nil {
-		t.Fatalf("rewind should not return error (errors are logged), got: %v", err)
+	if err == nil {
+		t.Fatal("rewind must surface a missing backup, got nil error")
+	}
+	if !strings.Contains(err.Error(), "backup file not found") {
+		t.Errorf("error = %v, want it to mention backup file not found", err)
 	}
 
 	// File should NOT be in changed list since backup was missing.
@@ -1800,8 +1802,11 @@ func TestRestoreBackup_StatNonENOENTError(t *testing.T) {
 	_ = os.WriteFile(filePath, []byte("modified"), 0o644)
 
 	changed, err := tr.Rewind("msg-1")
-	if err != nil {
-		t.Fatalf("rewind should not error: %v", err)
+	if err == nil {
+		t.Fatal("rewind must surface a failed backup stat, got nil error")
+	}
+	if !strings.Contains(err.Error(), "too many levels of symbolic links") {
+		t.Errorf("error = %v, want it to mention the symlink loop", err)
 	}
 	// Restore fails (stat on symlink loop), so file should not be in changed.
 	for _, f := range changed {
@@ -1837,8 +1842,11 @@ func TestRestoreBackup_CopyFail(t *testing.T) {
 	_ = os.WriteFile(filePath, []byte("modified"), 0o644)
 
 	changed, err := tr.Rewind("msg-1")
-	if err != nil {
-		t.Fatalf("rewind should not error: %v", err)
+	if err == nil {
+		t.Fatal("rewind must surface a failed restore copy, got nil error")
+	}
+	if !strings.Contains(err.Error(), "restore copy") {
+		t.Errorf("error = %v, want it to mention restore copy", err)
 	}
 	for _, f := range changed {
 		if f == filePath {

@@ -267,4 +267,27 @@ func TestIndexLineCount(t *testing.T) {
 	if got := IndexLineCount(dir); got != 3 {
 		t.Errorf("IndexLineCount(3 lines) = %d, want 3", got)
 	}
+
+	// An empty or newline-only index is 0, not 1: the trailing-newline trim
+	// must happen before the count, and the count's +1 only applies to a
+	// non-empty body.
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"empty", "", 0},
+		{"newlines only", "\n\n\n", 0},
+		{"single line", "a", 1},
+		{"single line with newline", "a\n", 1},
+		{"no trailing newline", "a\nb", 2},
+		{"blank line inside", "a\n\nb\n", 3},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(tc.body), 0o644); err != nil {
+			t.Fatalf("write MEMORY.md (%s): %v", tc.name, err)
+		}
+		if got := IndexLineCount(dir); got != tc.want {
+			t.Errorf("IndexLineCount(%s=%q) = %d, want %d", tc.name, tc.body, got, tc.want)
+		}
+	}
 }

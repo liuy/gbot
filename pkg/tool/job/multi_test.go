@@ -1,7 +1,7 @@
 package job
 
 import (
-	"strings"
+	"errors"
 	"testing"
 	"time"
 )
@@ -100,10 +100,13 @@ func TestMulti_KillNotFound(t *testing.T) {
 
 	err := m.Kill("nonexistent")
 	if err == nil {
-		t.Error("Kill should return error for nonexistent")
+		t.Fatal("Kill should return error for nonexistent")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want not found", err.Error())
+	if err.Error() != `kill "nonexistent": job not found` {
+		t.Errorf("error = %q, want %q", err.Error(), `kill "nonexistent": job not found`)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("error %v must wrap ErrNotFound", err)
 	}
 }
 
@@ -143,14 +146,20 @@ func TestMulti_WaitNotFound(t *testing.T) {
 	m := NewMultiRegistry(r1)
 
 	start := time.Now() // REAL-TIME: unique ID generation
-	_, err := m.Wait("nonexistent")
+	code, err := m.Wait("nonexistent")
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Error("Wait should return error for nonexistent")
+		t.Fatal("Wait should return error for nonexistent")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want not found", err.Error())
+	if code != -1 {
+		t.Errorf("Wait exit code = %d, want -1", code)
+	}
+	if err.Error() != `wait "nonexistent": job not found` {
+		t.Errorf("error = %q, want %q", err.Error(), `wait "nonexistent": job not found`)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("error %v must wrap ErrNotFound", err)
 	}
 	// Must not block — Get-first should fail fast
 	if elapsed > 500*time.Millisecond {
@@ -167,8 +176,60 @@ func TestMulti_KillNonErrNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("Kill should return error")
 	}
-	if !strings.Contains(err.Error(), "permission denied") {
-		t.Errorf("error = %q, want permission denied", err.Error())
+	// A non-ErrNotFound error short-circuits the scan and is returned verbatim,
+	// not wrapped and not swallowed into ErrNotFound.
+	if err.Error() != "permission denied" {
+		t.Errorf("error = %q, want %q", err.Error(), "permission denied")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("error %v must not be reported as ErrNotFound", err)
+	}
+}
+
+func TestMulti_KillPrefixWrap(t *testing.T) {
+	t.Parallel()
+	prefixed := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-7", Status: "running"}), prefix: "bg-"}
+	m := NewMultiRegistry(prefixed)
+
+	// "bg-9" routes to the prefix registry, which has no such job: the raw
+	// registry error must be wrapped with the id.
+	err := m.Kill("bg-9")
+	if err == nil {
+		t.Fatal("Kill bg-9 should fail")
+	}
+	if err.Error() != `kill "bg-9": kill "bg-9": job not found` {
+		t.Errorf("error = %q, want %q", err.Error(), `kill "bg-9": kill "bg-9": job not found`)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("error %v must wrap ErrNotFound", err)
+	}
+}
+
+func TestMulti_NilRegistriesFiltered(t *testing.T) {
+	t.Parallel()
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
+	m := NewMultiRegistry(nil, r1, nil)
+
+	if got := len(m.List()); got != 1 {
+		t.Errorf("List() after nil-filter = %d jobs, want 1", got)
+	}
+	if _, ok := m.Get("bg-1"); !ok {
+		t.Error("Get bg-1 must still route to the surviving registry")
+	}
+
+	empty := NewMultiRegistry(nil, nil)
+	if got := len(empty.List()); got != 0 {
+		t.Errorf("List() of all-nil registry = %d jobs, want 0", got)
+	}
+	if _, ok := empty.Get("bg-1"); ok {
+		t.Error("Get on all-nil registry must return false")
+	}
+	if err := empty.Kill("bg-1"); err == nil || err.Error() != `kill "bg-1": job not found` {
+		t.Errorf("Kill on all-nil registry = %v, want %q", err, `kill "bg-1": job not found`)
+	}
+	code, err := empty.Wait("bg-1")
+	if code != -1 || err == nil || err.Error() != `wait "bg-1": job not found` {
+		t.Errorf("Wait on all-nil registry = (%d, %v), want (-1, %q)", code, err, `wait "bg-1": job not found`)
 	}
 }
 
@@ -190,6 +251,21 @@ func TestMulti_CleanupCompleted_NoCleanupAware(t *testing.T) {
 	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
 	m := NewMultiRegistry(r1)
 
-	// Should not panic — stubRegistry does not implement cleanupAware
+	// stubRegistry does not implement cleanupAware, so the call must be a no-op
+	// rather than a panic — and it must not drop anything from the registry.
 	m.CleanupCompleted()
+
+	if _, ok := m.Get("bg-1"); !ok {
+		t.Error("bg-1 must still be reachable after a no-op cleanup")
+	}
+	got := m.List()
+	if len(got) != 1 {
+		t.Fatalf("List() = %d jobs, want 1 (nothing is cleanup-eligible)", len(got))
+	}
+	if got[0].ID != "bg-1" || got[0].Status != "running" {
+		t.Errorf("List()[0] = %+v, want {ID:bg-1 Status:running}", got[0])
+	}
+	if len(r1.tasks) != 1 {
+		t.Errorf("underlying registry holds %d jobs, want 1", len(r1.tasks))
+	}
 }

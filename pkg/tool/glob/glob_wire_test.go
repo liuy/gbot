@@ -1,6 +1,8 @@
 package glob_test
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -84,6 +86,72 @@ func TestGlobDecodeResult_LegacyJSONWire(t *testing.T) {
 	}
 	if o.Count != 2 {
 		t.Errorf("Count = %d, want 2", o.Count)
+	}
+}
+
+// Any single identifying field is enough to accept the legacy JSON wire:
+// dropping one conjunct of the all-zero guard rejects these valid results.
+func TestGlobDecodeResult_SingleIdentifyingField(t *testing.T) {
+	t.Parallel()
+	dec := glob.New().(tool.ToolWithDecodeResult)
+
+	cases := []struct {
+		name string
+		wire string
+	}{
+		{"files", `{"filenames":["a.go"],"numFiles":0,"durationMs":0,"truncated":false}`},
+		{"count", `{"filenames":[],"numFiles":3,"durationMs":0,"truncated":false}`},
+		{"durationMs", `{"filenames":[],"numFiles":0,"durationMs":7,"truncated":false}`},
+		{"truncated", `{"filenames":[],"numFiles":0,"durationMs":0,"truncated":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := dec.DecodeResult(tool.WrapSingleBlock(tc.wire))
+			if err != nil {
+				t.Fatalf("DecodeResult(%s wire %s) error: %v", tc.name, tc.wire, err)
+			}
+			if _, ok := v.(*glob.Output); !ok {
+				t.Fatalf("DecodeResult returned %T, want *glob.Output", v)
+			}
+		})
+	}
+}
+
+// The block-extractor's failure must be reported as itself: swallowing it
+// would report the payload decode's error instead.
+func TestGlobDecodeResult_BlockExtractorErrors(t *testing.T) {
+	t.Parallel()
+	dec := glob.New().(tool.ToolWithDecodeResult)
+
+	_, err := dec.DecodeResult(json.RawMessage(`[{"uri":"x"}]`))
+	if err == nil {
+		t.Fatal("DecodeResult(array without a text block): got nil error")
+	}
+	if err.Error() != "tool: UnmarshalSingleBlock found no text block in array" {
+		t.Errorf("error = %q, want the no-text-block message", err.Error())
+	}
+
+	_, err = dec.DecodeResult(json.RawMessage(`{"filenames":["a.go"]}`))
+	if err == nil {
+		t.Fatal("DecodeResult(bare object): got nil error")
+	}
+	if !strings.HasPrefix(err.Error(), `tool: UnmarshalSingleBlock expects array-form content, got `) {
+		t.Errorf("error = %q, want the array-form message", err.Error())
+	}
+}
+
+// A well-formed block whose payload is not an Output must surface the
+// payload decode error, unwrappable.
+func TestGlobDecodeResult_PayloadTypeError(t *testing.T) {
+	t.Parallel()
+	dec := glob.New().(tool.ToolWithDecodeResult)
+
+	_, err := dec.DecodeResult(tool.WrapSingleBlock(`{"filenames":"not-an-array"}`))
+	if err == nil {
+		t.Fatal("DecodeResult with a mistyped payload: got nil error")
+	}
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+		t.Errorf("error = %v, want it to wrap *json.UnmarshalTypeError", err)
 	}
 }
 

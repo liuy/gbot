@@ -1,6 +1,7 @@
 package context
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,6 +165,103 @@ func TestRuntimeInfo_IncludesAllFields(t *testing.T) {
 	// reshuffled every restart and invalidated the prompt prefix cache.
 	if strings.Contains(info, "lsp=") {
 		t.Errorf("RuntimeInfo must not list lsp servers, got %q", info)
+	}
+}
+
+// The Environment line is the prompt's cache-sensitive prefix: field order,
+// the conditional repo/workspace/projectspace entries and the two trailing
+// placeholders are all part of the shipped shape.
+func TestRuntimeInfo_Exact(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	osName := detectOS()
+	head := "\n\n# Environment\n\nRuntime: host=" + host + " | os=" + osName + " | go=" + runtime.Version() + " | shell=/bin/zsh"
+
+	gitDir := t.TempDir()
+	if err := exec.Command("git", "init", gitDir).Run(); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	repo := detectRepoRoot(gitDir)
+	if repo == "" {
+		t.Skip("git init did not report a repo root")
+	}
+	nonGit := t.TempDir()
+
+	// git -C "" falls back to the process cwd, so an empty WorkingDir still
+	// reports the repository the tests run inside.
+	selfRepoPart := ""
+	if r := detectRepoRoot(""); r != "" {
+		selfRepoPart = " | repo=" + r
+	}
+
+	const tail = " | model={{MODEL}} | modalities={{MODALITIES}}"
+	bullets := "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n" +
+		"- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (message transcripts); also session_notes/, file-history/, history/, plans/\n" +
+		fmt.Sprintf("- artifacts: interactive HTML pages shown to the user in wui (card + full view). Write them to the projectspace artifacts directory (%s/artifacts/, absolute paths) via Write/Edit; they are served in the chat as cards. Good artifacts are self-contained single-file pages (inline CSS/JS, no external scripts — the CSP blocks all cross-origin resources; localStorage works). When iterating, Edit the same file. Prefer in-line content in chat when the page adds nothing — err on the side of not creating one.", "/p")
+
+	tests := []struct {
+		name string
+		b    *Builder
+		want string
+	}{
+		{
+			name: "workspace and projectspace",
+			b:    &Builder{WorkingDir: "/w", ProjectDir: "/p"},
+			want: head + " | workspace=/w | projectspace=/p" + tail + bullets,
+		},
+		{
+			name: "workspace only",
+			b:    &Builder{WorkingDir: nonGit},
+			want: head + " | workspace=" + nonGit + tail,
+		},
+		{
+			name: "projectspace only",
+			b:    &Builder{ProjectDir: "/p"},
+			want: head + selfRepoPart + " | projectspace=/p" + tail,
+		},
+		{
+			name: "neither",
+			b:    &Builder{},
+			want: head + selfRepoPart + tail,
+		},
+		{
+			name: "git repo adds the repo field",
+			b:    &Builder{WorkingDir: gitDir},
+			want: head + " | repo=" + repo + " | workspace=" + gitDir + tail,
+		},
+	}
+	for _, tc := range tests {
+		if got := tc.b.RuntimeInfo(); got != tc.want {
+			t.Errorf("RuntimeInfo(%s) =\n%q\nwant:\n%q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// On Linux the OS label comes from /etc/os-release's PRETTY_NAME, not the
+// runtime.GOOS fallback.
+func TestDetectOS_MatchesOsRelease(t *testing.T) {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		t.Skipf("no /etc/os-release: %v", err)
+	}
+	var pretty string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if after, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
+			pretty = strings.Trim(after, `"`)
+			break
+		}
+	}
+	if pretty == "" {
+		t.Skip("/etc/os-release has no PRETTY_NAME")
+	}
+
+	want := fmt.Sprintf("%s (%s)", pretty, runtime.GOARCH)
+	if got := detectOS(); got != want {
+		t.Errorf("detectOS = %q, want %q", got, want)
 	}
 }
 

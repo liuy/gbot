@@ -1,9 +1,11 @@
 package dream
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -62,6 +64,110 @@ func TestWriteWatermark_CreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(nested, watermarkFileName)); err != nil {
 		t.Errorf("watermark file should exist after write: %v", err)
+	}
+}
+
+// writeWatermarkRaw writes the watermark file with exact bytes.
+func writeWatermarkRaw(t *testing.T, memoryDir, content string) {
+	t.Helper()
+	path := filepath.Join(memoryDir, watermarkFileName)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The file holds decimal epoch milliseconds: base 10 and the full int64 width
+// are both part of the contract.
+func TestReadWatermark_ExactEpochMillis(t *testing.T) {
+	dir := t.TempDir()
+	writeWatermarkRaw(t, dir, "1700000000000")
+
+	got, err := ReadWatermark(dir)
+	if err != nil {
+		t.Fatalf("ReadWatermark: %v", err)
+	}
+	want := time.UnixMilli(1700000000000)
+	if !got.Equal(want) {
+		t.Errorf("ReadWatermark = %v, want %v", got, want)
+	}
+}
+
+func TestReadWatermark_MaxInt64Millis(t *testing.T) {
+	dir := t.TempDir()
+	writeWatermarkRaw(t, dir, "9223372036854775807")
+
+	got, err := ReadWatermark(dir)
+	if err != nil {
+		t.Fatalf("ReadWatermark: %v", err)
+	}
+	want := time.UnixMilli(9223372036854775807)
+	if !got.Equal(want) {
+		t.Errorf("ReadWatermark = %v, want %v (int64 width must not be narrowed)", got, want)
+	}
+}
+
+// A failing MkdirAll must surface as the mkdir error: swallowing the guard
+// would report the downstream WriteFile failure instead and send the operator
+// looking at the wrong path.
+func TestWriteWatermark_MkdirFailureReported(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	err := WriteWatermark(filepath.Join(blocker, "memory"))
+	if err == nil {
+		t.Fatal("WriteWatermark should fail when the parent is a regular file")
+	}
+	var pe *os.PathError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error = %T (%v), want *os.PathError", err, err)
+	}
+	if pe.Op != "mkdir" {
+		t.Errorf("error Op = %q, want \"mkdir\" (got %v)", pe.Op, err)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("error = %v, want ENOTDIR", err)
+	}
+}
+
+// effectivePerm accounts for the process umask, which the kernel applies to
+// the mode argument of mkdir/open.
+func effectivePerm(t *testing.T, mode os.FileMode) os.FileMode {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(probe, []byte("x"), 0o777); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	info, err := os.Stat(probe)
+	if err != nil {
+		t.Fatalf("stat probe: %v", err)
+	}
+	umask := 0o777 & ^info.Mode().Perm()
+	return mode & ^umask & 0o777
+}
+
+func TestWriteWatermark_Modes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	if err := WriteWatermark(dir); err != nil {
+		t.Fatalf("WriteWatermark: %v", err)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got, want := dirInfo.Mode().Perm(), effectivePerm(t, 0o755); got != want {
+		t.Errorf("created dir perm = %o, want %o", got, want)
+	}
+
+	fileInfo, err := os.Stat(filepath.Join(dir, watermarkFileName))
+	if err != nil {
+		t.Fatalf("stat watermark: %v", err)
+	}
+	if got, want := fileInfo.Mode().Perm(), effectivePerm(t, 0o644); got != want {
+		t.Errorf("watermark file perm = %o, want %o", got, want)
 	}
 }
 

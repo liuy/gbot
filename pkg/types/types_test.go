@@ -690,6 +690,70 @@ func TestMetadataToJSON_OnlyUsage(t *testing.T) {
 	}
 }
 
+// The flags are a bitmask stored in the DB metadata column: a shifted value
+// silently collides with its neighbour and mislabels stored messages.
+func TestMessageFlagValues(t *testing.T) {
+	tests := []struct {
+		name string
+		got  types.MessageFlag
+		want uint
+	}{
+		{"FlagCompactSummary", types.FlagCompactSummary, 1},
+		{"FlagMeta", types.FlagMeta, 2},
+		{"FlagVisibleInTranscriptOnly", types.FlagVisibleInTranscriptOnly, 4},
+		{"FlagAPIError", types.FlagAPIError, 8},
+	}
+	for _, tc := range tests {
+		if uint(tc.got) != tc.want {
+			t.Errorf("%s = %d, want %d", tc.name, uint(tc.got), tc.want)
+		}
+	}
+}
+
+func TestHasFlag(t *testing.T) {
+	msg := types.Message{Flags: types.FlagMeta}
+	if !msg.HasFlag(types.FlagMeta) {
+		t.Error("HasFlag(FlagMeta) = false, want true")
+	}
+	// Disjoint bits: an OR/XOR instead of AND would report true here.
+	if msg.HasFlag(types.FlagCompactSummary) {
+		t.Error("HasFlag(FlagCompactSummary) = true for a FlagMeta-only message, want false")
+	}
+	if msg.HasFlag(types.MessageFlag(0)) {
+		t.Error("HasFlag(0) = true, want false (the zero mask matches nothing)")
+	}
+	var zero types.Message
+	if zero.HasFlag(types.FlagAPIError) {
+		t.Error("HasFlag on a zero Flags message = true, want false")
+	}
+}
+
+// Each metadata field alone must survive the "nothing set" short-circuit and
+// be serialized: dropping any conjunct from that guard makes a single-field
+// message serialize as "".
+func TestMetadataToJSON_SingleField(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  types.Message
+		want string
+	}{
+		{"usage", types.Message{Usage: &types.Usage{InputTokens: 1000}}, `{"usage":{"input_tokens":1000,"output_tokens":0}}`},
+		{"model", types.Message{Model: "sonnet"}, `{"model":"sonnet"}`},
+		{"stop_reason", types.Message{StopReason: "end_turn"}, `{"stop_reason":"end_turn"}`},
+		{"flags", types.Message{Flags: types.FlagMeta}, `{"flags":2}`},
+		{"message_type", types.Message{MessageType: types.MessageTypeAttachment}, `{"message_type":"attachment"}`},
+		{"attachment", types.Message{Attachment: &types.Attachment{Type: "queued_command", Prompt: "hi", IsMeta: true}}, `{"attachment":{"type":"queued_command","prompt":"hi","is_meta":true}}`},
+		{"toolUseResult", types.Message{ToolResultData: map[string]any{"k": "v"}}, `{"toolUseResult":{"k":"v"}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.msg.MetadataToJSON(); got != tc.want {
+				t.Errorf("MetadataToJSON(%s) = %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMetadataRoundTrip(t *testing.T) {
 	original := types.Message{
 		Usage:      &types.Usage{InputTokens: 80000, OutputTokens: 200, CacheReadInputTokens: 50000, CacheCreationInputTokens: 1000},
