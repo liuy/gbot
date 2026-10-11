@@ -112,6 +112,14 @@ type engineClient interface {
 	ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error)
 	// Jobs snapshots the engine's background jobs for the restart busy probe.
 	Jobs() []*job.JobInfo
+	// KillJob terminates a background job by ID (prefix-routed by the
+	// MultiRegistry to the bash/agent registry).
+	KillJob(id string) error
+	// JobTail returns the rolling tail of a background bash job's output.
+	JobTail(id string) (string, bool)
+	// JobSummaries lists background jobs without materializing per-job
+	// output buffers — the watcher polls this at 2Hz. See job.SummaryLister.
+	JobSummaries() []*job.JobInfo
 }
 
 // engineAdapter wraps *engine.Engine so it satisfies engineClient. The only
@@ -218,6 +226,38 @@ func (a *engineAdapter) Jobs() []*job.JobInfo {
 		return nil
 	}
 	return refs.JobReg.List()
+}
+
+func (a *engineAdapter) KillJob(id string) error {
+	refs := a.eng.ToolRefs()
+	if refs.JobReg == nil {
+		return fmt.Errorf("job registry not available")
+	}
+	return refs.JobReg.Kill(id)
+}
+
+func (a *engineAdapter) JobTail(id string) (string, bool) {
+	refs := a.eng.ToolRefs()
+	if refs.BashReg == nil {
+		return "", false
+	}
+	bt, ok := refs.BashReg.Get(id)
+	if !ok {
+		return "", false
+	}
+	return bt.Tail(), true
+}
+
+// JobSummaries calls ListSummaries directly: ToolRefs().JobReg is a concrete
+// *job.MultiRegistry, which always implements SummaryLister, so an
+// assertion-with-fallback here would be dead code. The fallback lives inside
+// MultiRegistry where sub-registries are interface values.
+func (a *engineAdapter) JobSummaries() []*job.JobInfo {
+	refs := a.eng.ToolRefs()
+	if refs.JobReg == nil {
+		return nil
+	}
+	return refs.JobReg.ListSummaries()
 }
 
 // queryStats accumulates per-query stats (usage + start time + tool count +
@@ -341,6 +381,18 @@ type engineSlot struct {
 	// Both feed the restart busy report (system engines are excluded there).
 	name   string
 	system bool
+
+	// Background-jobs panel state, guarded by jobsMu (written by the watcher
+	// goroutine, readLoop handlers, and onEngineEvent's capture). Lock order
+	// is ssMu → jobsMu: captureJobEvent and buildJobsMetadata run inside an
+	// ssMu section and take jobsMu; no path may hold jobsMu and then touch
+	// ssMu. Maps are nil on slots built directly by tests (guarded).
+	jobsMu             sync.Mutex
+	jobView            map[string]*jobViewEntry       // id → display snapshot (terminal kept until cleared)
+	jobFeeds           map[string]*jobFeedState       // key = parentToolUseID (agent jobs)
+	innerToolToFeed    map[string]string              // tool id inside a feed → feed key
+	pendingAgentEvents map[string]*pendingAgentEvents // events parked before job discovery
+	lastJobsPush       string                         // last job_list JSON, diff baseline
 }
 
 // wsMsg carries one outbound WS frame through the outbound queue. isBinary
@@ -746,18 +798,27 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 		return
 	}
 	slot := &engineSlot{
-		engineID:    vs.ID,
-		engine:      &engineAdapter{eng: vs.Engine},
-		hub:         h,
-		taskToolIDs: map[string]bool{},
-		name:        vs.Name,
-		system:      vs.System,
+		engineID:           vs.ID,
+		engine:             &engineAdapter{eng: vs.Engine},
+		hub:                h,
+		taskToolIDs:        map[string]bool{},
+		name:               vs.Name,
+		system:             vs.System,
+		jobView:            make(map[string]*jobViewEntry),
+		jobFeeds:           make(map[string]*jobFeedState),
+		innerToolToFeed:    make(map[string]string),
+		pendingAgentEvents: make(map[string]*pendingAgentEvents),
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
 
 	c.slotsMu.Lock()
 	c.slots[vs.ID] = slot
 	c.slotsMu.Unlock()
+
+	// Jobs watcher per slot — started here (not in New) because slots are
+	// registered dynamically (engine_new flow); the register-twice guard
+	// above keeps it single. Exits via c.done in Stop.
+	c.startJobsWatcher(slot)
 }
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
@@ -1340,6 +1401,10 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 
 	slot.ssMu.Lock()
 	updateStreamState(&slot.streamState, event)
+	// Feed cache for the jobs panel: runs under ssMu and takes jobsMu
+	// itself (order ssMu → jobsMu). Before the isQueryEnd reset so a
+	// query's last blocks still land in any live job feed.
+	c.captureJobEvent(slot, event)
 	var q *outQueue
 	if slot.active.Load() && c.activeWS.Load() != nil {
 		// Capture decision MUST be under the lock: active flips false→true
@@ -2714,6 +2779,14 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	if slot == nil {
 		return
 	}
+	// The previous session's finished jobs are view residue — drop them
+	// before the metadata push below renders the new session's panel.
+	// Running jobs belong to the engine and survive the switch.
+	if slot.jobView != nil {
+		slot.jobsMu.Lock()
+		c.clearTerminalJobsLocked(slot)
+		slot.jobsMu.Unlock()
+	}
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(slot)
 	}
@@ -2748,6 +2821,14 @@ func (c *WUIConnector) handleSessionNew() {
 	slot := c.activeSlot()
 	if slot == nil {
 		return
+	}
+	// Defensive clear — a brand-new session's view should start empty; any
+	// terminal entries here are residue from the session this engine just
+	// left (engine switch without session switch leaves them behind).
+	if slot.jobView != nil {
+		slot.jobsMu.Lock()
+		c.clearTerminalJobsLocked(slot)
+		slot.jobsMu.Unlock()
 	}
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(slot)
@@ -2929,6 +3010,9 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Snapshot   json.RawMessage `json:"snapshot,omitempty"`
 		QueuedMsgs []queuedMsgJSON `json:"queuedMsgs,omitempty"`
 		Stats      json.RawMessage `json:"stats"`
+		// Jobs embeds the background-jobs snapshot (feeds + tails) so a
+		// reconnecting client hydrates the panel from this one frame.
+		Jobs json.RawMessage `json:"jobs,omitempty"`
 	}
 
 	slot.ssMu.Lock()
@@ -2950,6 +3034,7 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Snapshot:   snapshot,
 		QueuedMsgs: buildQueuedMsgs(slot.engine.PendingAttachments()),
 		Stats:      c.buildStats(slot),
+		Jobs:       c.buildJobsMetadata(slot),
 	})
 	// Era flip: any frame already queued belongs to a view this metadata
 	// frame replaces (client resetAllState) — drop it so metadata is first.

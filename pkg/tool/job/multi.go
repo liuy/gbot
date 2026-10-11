@@ -97,6 +97,27 @@ func (m *MultiRegistry) List() []*JobInfo {
 	return result
 }
 
+// ListSummaries returns output-free snapshots from all registries.
+// Sub-registries implementing SummaryLister use it directly; the rest fall
+// back to List() with Output cleared so the SummaryLister contract (Output
+// always empty) holds for every entry. The dynamic assertion is a real branch
+// here: registries is an interface slice, unlike the concrete *MultiRegistry
+// callers get via ToolRefs.
+func (m *MultiRegistry) ListSummaries() []*JobInfo {
+	var result []*JobInfo
+	for _, reg := range m.registries {
+		if sl, ok := reg.(SummaryLister); ok {
+			result = append(result, sl.ListSummaries()...)
+			continue
+		}
+		for _, info := range reg.List() {
+			info.Output = ""
+			result = append(result, info)
+		}
+	}
+	return result
+}
+
 // Wait blocks until the task finishes.
 // Prefix-matched IDs go directly to the owning registry.
 // Others fall back to Get-first-then-Wait to avoid blocking on wrong registry.

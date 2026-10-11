@@ -436,7 +436,7 @@ func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, disp
 	// to avoid deleting agents before TaskOutput can query them.
 	detachedCtx := context.Background()
 
-	state, err := t.bgReg.Spawn(detachedCtx, runFn, notifyFn, input.Description, parentToolUseID, idPrefix)
+	state, err := t.bgReg.Spawn(detachedCtx, runFn, notifyFn, input.Description, parentToolUseID, idPrefix, displayType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn background agent: %w", err)
 	}

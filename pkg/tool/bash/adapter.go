@@ -14,6 +14,8 @@ type JobInfoAdapter struct {
 	reg *BackgroundJobRegistry
 }
 
+var _ job.SummaryLister = (*JobInfoAdapter)(nil)
+
 // NewJobInfoAdapter creates an adapter wrapping a BackgroundJobRegistry.
 func NewJobInfoAdapter(reg *BackgroundJobRegistry) *JobInfoAdapter {
 	return &JobInfoAdapter{reg: reg}
@@ -73,12 +75,14 @@ func backgroundJobToInfo(bt *BackgroundJob) *job.JobInfo {
 	defer bt.mu.Unlock()
 
 	info := &job.JobInfo{
-		ID:          bt.ID,
-		Type:        "local_bash",
-		Status:      string(bt.Status),
-		Command:     bt.Command,
-		Description: bt.Description,
-		ExitCode:    bt.ExitCode,
+		ID:           bt.ID,
+		Type:         "local_bash",
+		Status:       string(bt.Status),
+		Command:      bt.Command,
+		Description:  bt.Description,
+		ExitCode:     bt.ExitCode,
+		Backgrounded: bt.IsBackgrounded,
+		StartedMs:    bt.StartTime.UnixMilli(),
 	}
 
 	if bt.Output != nil {
@@ -86,6 +90,38 @@ func backgroundJobToInfo(bt *BackgroundJob) *job.JobInfo {
 	}
 
 	return info
+}
+
+// backgroundJobToSummary copies scalar fields only. It deliberately skips
+// bt.Output.String() — that materializes the whole buffer under bt.mu (a
+// bounded disk read after spill), which the wui watcher would trigger twice
+// per second per job while also blocking the job's Write path.
+func backgroundJobToSummary(bt *BackgroundJob) *job.JobInfo {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+
+	return &job.JobInfo{
+		ID:           bt.ID,
+		Type:         "local_bash",
+		Status:       string(bt.Status),
+		Command:      bt.Command,
+		Description:  bt.Description,
+		ExitCode:     bt.ExitCode,
+		Backgrounded: bt.IsBackgrounded,
+		StartedMs:    bt.StartTime.UnixMilli(),
+	}
+}
+
+// ListSummaries implements job.SummaryLister: same shape and lazy cleanup as
+// List(), but never materializes output buffers.
+func (a *JobInfoAdapter) ListSummaries() []*job.JobInfo {
+	a.reg.CleanupCompleted()
+	tasks := a.reg.List()
+	result := make([]*job.JobInfo, len(tasks))
+	for i, bt := range tasks {
+		result[i] = backgroundJobToSummary(bt)
+	}
+	return result
 }
 
 // Prefix returns the ID prefix for bash background jobs.

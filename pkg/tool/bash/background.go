@@ -608,6 +608,16 @@ func (t *BackgroundJob) SetStallCancel(cancel func()) {
 // List / Wait / Get / Remove
 // ---------------------------------------------------------------------------
 
+// Tail returns the rolling 20-line output window. Minimal exported accessor
+// for high-frequency pollers (wui jobs watcher): bounded work under
+// StreamingOutput's own lock, unlike Output.String() materialization.
+func (t *BackgroundJob) Tail() string {
+	if t.Output == nil {
+		return ""
+	}
+	return t.Output.LastLines()
+}
+
 // List returns all background jobs.
 // Source: framework.ts:149-152 — getRunningTasks()
 func (r *BackgroundJobRegistry) List() []*BackgroundJob {

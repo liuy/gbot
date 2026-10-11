@@ -5,6 +5,7 @@ package bash
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -1513,4 +1514,73 @@ func TestAdapter_List_E2E_Eviction(t *testing.T) {
 			t.Error("job should be evicted from registry after 3s")
 		}
 	})
+}
+
+// TestJobInfoAdapter_PanelFieldsAndSummaries pins the wui-jobs-panel fields
+// (Backgrounded/StartedMs) on both List and ListSummaries, plus the
+// SummaryLister contract: Output stays empty even when the job has output.
+func TestJobInfoAdapter_PanelFieldsAndSummaries(t *testing.T) {
+	r := NewBackgroundJobRegistry()
+	s := NewStreamingOutput(nil)
+	if _, err := s.Write([]byte("line 1\nline 2\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	bt := r.Spawn("echo panel", 0, s)
+	bt.Complete(0, false)
+
+	adapter := NewJobInfoAdapter(r)
+	info, ok := adapter.Get(bt.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", bt.ID)
+	}
+	if !info.Backgrounded {
+		t.Error("Backgrounded = false, want true (Spawn registers backgrounded)")
+	}
+	if info.StartedMs <= 0 {
+		t.Errorf("StartedMs = %d, want > 0", info.StartedMs)
+	}
+	if info.Output == "" {
+		t.Error("Get().Output empty, want materialized output on the List path")
+	}
+
+	summaries := adapter.ListSummaries()
+	if len(summaries) != 1 {
+		t.Fatalf("ListSummaries len = %d, want 1", len(summaries))
+	}
+	sum := summaries[0]
+	if sum.ID != bt.ID || sum.Status != "completed" {
+		t.Errorf("summary = {id:%s status:%s}, want {%s completed}", sum.ID, sum.Status, bt.ID)
+	}
+	if !sum.Backgrounded || sum.StartedMs != info.StartedMs {
+		t.Errorf("summary panel fields = {bg:%v started:%d}, want {true %d}", sum.Backgrounded, sum.StartedMs, info.StartedMs)
+	}
+	if sum.Output != "" {
+		t.Errorf("summary Output = %q, want empty (SummaryLister contract — no materialization)", sum.Output)
+	}
+}
+
+// TestBackgroundJob_Tail verifies the minimal tail accessor: bounded window,
+// nil-output safe.
+func TestBackgroundJob_Tail(t *testing.T) {
+	r := NewBackgroundJobRegistry()
+
+	nilJob := r.Spawn("no output", 0, nil)
+	if got := nilJob.Tail(); got != "" {
+		t.Errorf("Tail on nil output = %q, want empty", got)
+	}
+
+	s := NewStreamingOutput(nil)
+	for i := 1; i <= 30; i++ {
+		if _, err := s.Write([]byte(fmt.Sprintf("line %d\n", i))); err != nil {
+			t.Fatalf("Write() error: %v", err)
+		}
+	}
+	bt := r.Spawn("tail me", 0, s)
+	got := bt.Tail()
+	if !strings.Contains(got, "line 30") {
+		t.Errorf("Tail missing newest line: %q", got)
+	}
+	if strings.Contains(got, "line 10\n") {
+		t.Errorf("Tail exceeds the 20-line window: %q", got)
+	}
 }

@@ -8,6 +8,7 @@ import (
 
 // Compile-time interface check.
 var _ job.Registry = (*BackgroundAgentJobAdapter)(nil)
+var _ job.SummaryLister = (*BackgroundAgentJobAdapter)(nil)
 
 // BackgroundAgentJobAdapter adapts BackgroundAgentRegistry to the job.Registry interface.
 // This enables TaskOutput/TaskStop to manage background agent tasks alongside bash tasks.
@@ -65,6 +66,18 @@ func (a *BackgroundAgentJobAdapter) List() []*job.JobInfo {
 	return result
 }
 
+// ListSummaries implements job.SummaryLister. Reuses List()'s body (terminal
+// lazy cleanup included); convertState's Output is a string reference with no
+// copy cost, but it is cleared anyway so the SummaryLister contract (Output
+// always empty) is uniform across registries.
+func (a *BackgroundAgentJobAdapter) ListSummaries() []*job.JobInfo {
+	infos := a.List()
+	for _, info := range infos {
+		info.Output = ""
+	}
+	return infos
+}
+
 // Wait blocks until the background agent completes, returning an exit code.
 // BackgroundAgentRegistry.Wait blocks on <-state.done which is closed after the
 // goroutine updates Status and Result, so the copy reflects the final state.
@@ -84,9 +97,13 @@ func (a *BackgroundAgentJobAdapter) Wait(id string) (int, error) {
 // AgentCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
 func convertState(s *BackgroundAgentState) *job.JobInfo {
 	info := &job.JobInfo{
-		ID:          s.ID,
-		Type:        "local_agent",
-		Description: s.Description,
+		ID:              s.ID,
+		Type:            "local_agent",
+		Description:     s.Description,
+		AgentType:       s.AgentType, // populated while running too, not only on results
+		ParentToolUseID: s.ParentToolUseID,
+		Backgrounded:    true,
+		StartedMs:       s.StartTime.UnixMilli(),
 	}
 	switch s.Status {
 	case AgentCompleted:
@@ -103,7 +120,11 @@ func convertState(s *BackgroundAgentState) *job.JobInfo {
 	}
 	if s.Result != nil {
 		info.Output = s.Result.Content
-		info.AgentType = s.Result.AgentType
+		// Result's type wins only when the engine actually resolved one —
+		// a bare result must not clobber the spawn-time display type.
+		if s.Result.AgentType != "" {
+			info.AgentType = s.Result.AgentType
+		}
 		info.Tokens = s.Result.TotalTokens
 		info.DurationMs = s.Result.TotalDurationMs
 	} else if s.Status == AgentFailed {

@@ -318,6 +318,15 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleEngineNew(msg.Name)
 			}
+		case "job_stop":
+			var msg struct {
+				JobID string `json:"jobID"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.JobID != "" {
+				c.handleJobStop(msg.JobID)
+			}
+		case "jobs_clear":
+			c.handleJobsClear()
 		case "context_request":
 			c.handleContextRequest()
 		case "compact_request":

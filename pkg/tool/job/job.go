@@ -45,6 +45,12 @@ type JobInfo struct {
 	AgentType  string `json:"agent_type,omitempty"`
 	Tokens     int    `json:"tokens,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+
+	// Panel metadata for the wui background-jobs view. Deliberately excluded
+	// from wireText: the LLM-visible Job tool output stays unchanged.
+	Backgrounded    bool   `json:"backgrounded,omitempty"`
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	StartedMs       int64  `json:"started_ms,omitempty"`
 }
 
 // Registry is the interface for querying and managing background jobs.
@@ -65,6 +71,14 @@ type Registry interface {
 // cross-registry iteration.
 type Prefixer interface {
 	Prefix() string
+}
+
+// SummaryLister is an optional Registry extension for high-frequency polling:
+// identical to List() except Output is always empty. List() implementations
+// materialize per-job output buffers under their locks (an 8MB-class copy for
+// spilled bash output), which no poller should trigger at 2Hz.
+type SummaryLister interface {
+	ListSummaries() []*JobInfo
 }
 
 // JobInput is the input schema for the Job tool. Exactly one action per call.

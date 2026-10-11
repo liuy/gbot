@@ -152,12 +152,12 @@ func TestAdminRestartPOST_BusyQuery409(t *testing.T) {
 
 func TestAdminRestartPOST_BusyJob409(t *testing.T) {
 	c := newTestConnector(t)
-	c.mock().jobsFn = func() []*job.JobInfo {
+	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{
 			{ID: "j1", Status: "running", Command: "npm run build"},
 			{ID: "j2", Status: "completed", Command: "make test"},
 		}
-	}
+	})
 
 	srv := newAdminTestServer(t, c, func() error { return nil })
 

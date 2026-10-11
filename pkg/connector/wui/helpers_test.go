@@ -86,6 +86,9 @@ type mockEngine struct {
 	preCompactFn       func(delivered, limit int) ([]*short.TranscriptMessage, int, bool)
 	manualCompactFn    func(ctx context.Context, userMsg types.Message, instructions string) (*short.CompactResult, error)
 	jobsFn             func() []*job.JobInfo
+	killJobFn          func(id string) error
+	jobTailFn          func(id string) (string, bool)
+	jobSummariesFn     func() []*job.JobInfo
 
 	// Recorded calls for assertions.
 	queryCalls            []queryCall
@@ -107,6 +110,8 @@ type mockEngine struct {
 	setInputModCalls      [][]string
 	updateAutoCalls       int
 	setThinkingCalls      []llm.Effort
+
+	killJobCalls []string
 }
 
 type queryCall struct {
@@ -432,10 +437,74 @@ func (m *mockEngine) ManualCompact(ctx context.Context, userMsg types.Message, i
 }
 
 func (m *mockEngine) Jobs() []*job.JobInfo {
-	if m.jobsFn != nil {
-		return m.jobsFn()
+	m.mu.RLock()
+	fn := m.jobsFn
+	m.mu.RUnlock()
+	if fn != nil {
+		return fn()
 	}
 	return nil
+}
+
+// SetJobsFn sets jobsFn under the mock's lock: the jobs watcher goroutine
+// (started by newTestConnectorWithConfig) polls JobSummaries, which reads
+// this field — an unlocked write would race under -test -race.
+func (m *mockEngine) SetJobsFn(fn func() []*job.JobInfo) {
+	m.mu.Lock()
+	m.jobsFn = fn
+	m.mu.Unlock()
+}
+
+func (m *mockEngine) KillJob(id string) error {
+	m.mu.Lock()
+	m.killJobCalls = append(m.killJobCalls, id)
+	fn := m.killJobFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(id)
+	}
+	return nil
+}
+
+// SetKillJobFn sets killJobFn under the mock's lock (see SetJobsFn).
+func (m *mockEngine) SetKillJobFn(fn func(id string) error) {
+	m.mu.Lock()
+	m.killJobFn = fn
+	m.mu.Unlock()
+}
+
+func (m *mockEngine) JobTail(id string) (string, bool) {
+	m.mu.RLock()
+	fn := m.jobTailFn
+	m.mu.RUnlock()
+	if fn != nil {
+		return fn(id)
+	}
+	return "", false
+}
+
+// SetJobTailFn sets jobTailFn under the mock's lock (see SetJobsFn).
+func (m *mockEngine) SetJobTailFn(fn func(id string) (string, bool)) {
+	m.mu.Lock()
+	m.jobTailFn = fn
+	m.mu.Unlock()
+}
+
+func (m *mockEngine) JobSummaries() []*job.JobInfo {
+	m.mu.RLock()
+	fn := m.jobSummariesFn
+	m.mu.RUnlock()
+	if fn != nil {
+		return fn()
+	}
+	return m.Jobs()
+}
+
+// SetJobSummariesFn sets jobSummariesFn under the mock's lock (see SetJobsFn).
+func (m *mockEngine) SetJobSummariesFn(fn func() []*job.JobInfo) {
+	m.mu.Lock()
+	m.jobSummariesFn = fn
+	m.mu.Unlock()
 }
 
 // newTestConnectorWithHub builds a WUIConnector with a mockEngine and the
@@ -469,10 +538,14 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 	activeID := engineID
 	c.active.Store(&activeID)
 	slot := &engineSlot{
-		engineID:    engineID,
-		engine:      mock,
-		hub:         h,
-		taskToolIDs: make(map[string]bool),
+		engineID:           engineID,
+		engine:             mock,
+		hub:                h,
+		taskToolIDs:        make(map[string]bool),
+		jobView:            make(map[string]*jobViewEntry),
+		jobFeeds:           make(map[string]*jobFeedState),
+		innerToolToFeed:    make(map[string]string),
+		pendingAgentEvents: make(map[string]*pendingAgentEvents),
 	}
 	slot.active.Store(true)
 	if h != nil {
@@ -483,6 +556,9 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 		slot.taskToolIDs = make(map[string]bool)
 	}
 	go c.wsWriter()
+	// Without the watcher, TestJobTick_* would hang waiting for frames: the
+	// mock slot bypasses registerEngine. Exits via c.done (t.Cleanup(c.Stop)).
+	c.startJobsWatcher(slot)
 	t.Cleanup(c.Stop)
 	return c
 }

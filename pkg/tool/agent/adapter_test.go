@@ -137,7 +137,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 				TotalDurationMs: 200,
 			}, nil
 		},
-		nil, "test task", "call_1", "fork",
+		nil, "test task", "call_1", "fork", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -172,7 +172,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 			<-blockCh // block until test has read the status
 			return &types.SubQueryResult{Content: "slow"}, nil
 		},
-		nil, "slow task", "call_1", "fork",
+		nil, "slow task", "call_1", "fork", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -198,7 +198,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
-		nil, "failing task", "call_1", "fork",
+		nil, "failing task", "call_1", "fork", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -232,13 +232,13 @@ func TestAdapter_List(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
-		nil, "task a", "call_1", "fork",
+		nil, "task a", "call_1", "fork", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
-		nil, "task b", "call_2", "fork",
+		nil, "task b", "call_2", "fork", "fork",
 	)
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
@@ -267,7 +267,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "cleanup test", "call_1", "fork",
+		nil, "cleanup test", "call_1", "fork", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -292,7 +292,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		nil, "killable task", "call_1", "fork",
+		nil, "killable task", "call_1", "fork", "fork",
 	)
 	<-started
 
@@ -323,7 +323,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "wait test", "call_1", "fork",
+		nil, "wait test", "call_1", "fork", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -343,7 +343,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
 		},
-		nil, "fail test", "call_1", "fork",
+		nil, "fail test", "call_1", "fork", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -390,5 +390,54 @@ func TestAdapter_NilRegistry(t *testing.T) {
 	_, err := adapter.Wait("any")
 	if err == nil {
 		t.Error("Wait should return error for nil registry")
+	}
+}
+
+func TestConvertState_ExposesParentToolUseIDAndAgentType(t *testing.T) {
+	t.Parallel()
+	reg := NewBackgroundAgentRegistry()
+	blockCh := make(chan struct{})
+	state, _ := reg.Spawn(context.Background(),
+		func(ctx context.Context) (*types.SubQueryResult, error) {
+			<-blockCh
+			return &types.SubQueryResult{Content: "done"}, nil
+		},
+		nil, "explore stuff", "toolu_9", "agent", "Explore",
+	)
+
+	adapter := NewBackgroundAgentJobAdapter(reg)
+	info, ok := adapter.Get(state.ID)
+	if !ok {
+		t.Fatal("Get returned false")
+	}
+	// AgentType must be populated while STILL RUNNING (spawn-time field), not
+	// only from the eventual Result.
+	if info.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want Explore (running state)", info.AgentType)
+	}
+	if info.ParentToolUseID != "toolu_9" {
+		t.Errorf("ParentToolUseID = %q, want toolu_9", info.ParentToolUseID)
+	}
+	if !info.Backgrounded {
+		t.Error("Backgrounded = false, want true for registry agents")
+	}
+	if info.StartedMs <= 0 {
+		t.Errorf("StartedMs = %d, want > 0", info.StartedMs)
+	}
+
+	close(blockCh)
+	reg.Wait(state.ID)
+
+	// SummaryLister contract: same fields, Output always empty.
+	summaries := adapter.ListSummaries()
+	if len(summaries) != 1 {
+		t.Fatalf("ListSummaries len = %d, want 1", len(summaries))
+	}
+	s := summaries[0]
+	if s.ID != state.ID || s.AgentType != "Explore" || s.ParentToolUseID != "toolu_9" || !s.Backgrounded {
+		t.Errorf("summary = {id:%s type:%s parent:%s bg:%v}, want full panel fields", s.ID, s.AgentType, s.ParentToolUseID, s.Backgrounded)
+	}
+	if s.Output != "" {
+		t.Errorf("summary Output = %q, want empty (SummaryLister contract)", s.Output)
 	}
 }
