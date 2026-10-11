@@ -118,6 +118,30 @@ body {
   50% { opacity: 0.3; }
 }
 
+/* Background-job heartbeat on the task button's rim (design spec: beat,
+   1.6s, opacity+scale). Border matches the chat background so the dot reads
+   as punched out of the button edge. */
+@keyframes beat {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .4; transform: scale(.8); }
+}
+
+.rim-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-blue);
+  border: 2px solid var(--color-ink2);
+  animation: beat 1.6s ease-in-out infinite;
+  display: none;
+  pointer-events: none;
+}
+
+.rim-dot.on { display: block; }
+
 .blink-green {
   animation: blink-green 2s ease-in-out infinite;
 }

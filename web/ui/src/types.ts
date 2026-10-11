@@ -41,6 +41,8 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
   | { type: 'task_list'; tasks: TaskWireItem[] }
+  | { type: 'job_list'; jobs: JobWireItem[] }
+  | { type: 'job_output'; jobID: string; tail: string }
   | { type: 'engine_list'; engines: EngineListItem[]; activeID: string }
   | { type: 'session_list'; sessions: SessionListItem[] }
   | {
@@ -55,6 +57,7 @@ export type ServerMessage =
       config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string }
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
+      jobs?: { jobs: (JobWireItem & { blocks?: Block[]; tail?: string })[] }
       history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
       snapshot?: { blocks: Block[] }
       queuedMsgs?: { uuid: string; text: string; attachments?: { name?: string; mime: string }[] }[]
@@ -109,6 +112,18 @@ export type TaskWireItem = {
   activeForm?: string
 }
 
+export type JobWireItem = {
+  id: string
+  kind: 'bash' | 'agent'
+  status: 'running' | 'completed' | 'failed' | 'killed'
+  command?: string
+  description?: string
+  agentType?: string
+  parentToolUseID?: string
+  exitCode?: number
+  startedMs: number
+}
+
 export type HistoryBlockTool = {
   id: string
   name: string
@@ -159,6 +174,20 @@ export type QueryEvent = {
   type: string
   text?: string
   session_id?: string
+  /** Attachment/query_start payload (Go types.Message JSON tags). Attachment
+   * mode "prompt" carries the original user text in prompt; queued-message
+   * events carry the envelope in content. */
+  message?: {
+    attachment?: { prompt?: string; source_uuid?: string; mode?: string }
+    content?: {
+      type: string
+      text?: string
+      source?: { media_type?: string; data?: string }
+      name?: string
+      mime?: string
+      size?: number
+    }[]
+  }
   tool_use?: {
     id: string
     name: string

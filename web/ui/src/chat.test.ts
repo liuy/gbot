@@ -1503,6 +1503,123 @@ describe('chat integration', () => {
     expect(ring.style.display).toBe('none')
   })
 
+  it('job_list message shows the task panel with background job rows', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [
+        { id: 'bg-1', kind: 'bash', status: 'running', command: 'make check', startedMs: 1 },
+        { id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: '修 wui 分页 bug', parentToolUseID: 'p1', startedMs: 2 },
+      ],
+    })
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    expect(ring.style.display).not.toBe('none')
+    // Jobs-only mode: label is the running count, rim dot heartbeat is on.
+    expect((document.querySelector('.task-label') as SVGTextElement).textContent).toBe('2')
+    expect(ring.querySelector('.rim-dot.on')).not.toBeNull()
+    ring.click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)
+    expect(popover.textContent).toContain('make check')
+    expect(popover.textContent).toContain('Executor · 修 wui 分页 bug')
+  })
+
+  it('job_output lands in the jobs store tail', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [{ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check', startedMs: 1 }],
+    })
+    dispatch({ type: 'job_output', jobID: 'bg-1', tail: 'ok  pkg/engine  1.2s\n' })
+    expect(chat.jobsStore.feed('bg-1')?.tail).toBe('ok  pkg/engine  1.2s\n')
+  })
+
+  it('agent event frames accumulate into the job feed while chat renders normally', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [{ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: 'fix bug', parentToolUseID: 'p1', startedMs: 1 }],
+    })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't-1', name: 'Read', input: {} }, agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 } },
+      { type: 'text_delta', text: 'found it', agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 } },
+    ])
+    const blocks = chat.jobsStore.feed('agent-1')?.blocks
+    expect(blocks).toHaveLength(2)
+    expect(blocks?.[0]).toMatchObject({ kind: 'tool', id: 't-1', name: 'Read' })
+    expect(blocks?.[1]).toMatchObject({ kind: 'text', text: 'found it' })
+  })
+
+  it('metadata with jobs hydrates the store (blocks + tail)', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      jobs: {
+        jobs: [
+          { id: 'bg-1', kind: 'bash', status: 'running', command: 'go test ./...', startedMs: 1, tail: 'ok pkg/a\n' },
+          {
+            id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor',
+            description: 'scan logs', parentToolUseID: 'p1', startedMs: 2,
+            blocks: [{ kind: 'text', id: '', text: 'halfway report' }],
+          },
+        ],
+      },
+    })
+    expect(chat.jobsStore.jobs().map((j) => j.id)).toEqual(['bg-1', 'agent-1'])
+    expect(chat.jobsStore.feed('bg-1')?.tail).toBe('ok pkg/a\n')
+    expect(chat.jobsStore.feed('agent-1')?.blocks[0]).toMatchObject({ kind: 'text', text: 'halfway report' })
+    // Panel chrome reflects the hydrated view.
+    expect((document.querySelector('.task-label') as SVGTextElement).textContent).toBe('2')
+  })
+
+  it('metadata without jobs clears the previous engine view (A→B switch)', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const metaWithJobs = {
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'a' },
+      history: { messages: [], nextCursor: '', hasMore: false },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      jobs: { jobs: [{ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check', startedMs: 1 }] },
+    } as const
+    dispatch(metaWithJobs)
+    expect(chat.jobsStore.hasAny()).toBe(true)
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    expect(ring.style.display).not.toBe('none')
+
+    // Engine B's metadata carries no jobs field — the view must swap to
+    // empty, not keep engine A's residue.
+    dispatch({ ...metaWithJobs, engines: { engines: [], activeID: 'b' }, jobs: undefined })
+    expect(chat.jobsStore.jobs()).toEqual([])
+    expect(chat.jobsStore.feed('bg-1')).toBeUndefined()
+    expect(ring.style.display).toBe('none')
+  })
+
+  it('clear-done button sends jobs_clear over the wire', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [{ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build', startedMs: 1 }],
+    })
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    ring.click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    ;(popover.querySelector('.clear-done-jobs') as HTMLButtonElement).click()
+    expect(sent.some((m) => (m as { type: string }).type === 'jobs_clear')).toBe(true)
+  })
+
   it('takeover does not reset cumulative usage for the whole query', () => {
     // The engine emits per-turn usage deltas; the frontend accumulates
     // across the whole query. On takeover (reconnect), connect_status

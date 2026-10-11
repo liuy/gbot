@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createTaskPanel } from './task_panel'
-import type { TaskWireItem } from './types'
+import type { TaskWireItem, JobWireItem } from './types'
 
 function mount() {
   document.body.innerHTML = ''
@@ -167,5 +167,205 @@ describe('taskPanel', () => {
     // Title row should appear exactly once.
     const titleRows = reopened.querySelectorAll('.px-3.pt-2\\.5')
     expect(titleRows.length).toBe(1)
+  })
+})
+
+function jw(partial: Partial<JobWireItem> & Pick<JobWireItem, 'id' | 'kind' | 'status'>): JobWireItem {
+  return { startedMs: 1000, ...partial }
+}
+
+describe('taskPanel — background jobs section', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  function openPopover(panel: ReturnType<typeof createTaskPanel>) {
+    ;(panel.root as HTMLButtonElement).click()
+    return document.getElementById('task-popover') as HTMLElement
+  }
+
+  it('renders no jobs section when there are no jobs', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
+    const popover = openPopover(panel)
+    expect(popover.querySelector('.jobs-section')).toBeNull()
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(0)
+    expect(popover.textContent).not.toContain('Background')
+  })
+
+  it('renders the section and one row per job', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
+      jw({ id: 'agent-1', kind: 'agent', status: 'completed', agentType: 'executor', description: '修 wui 分页 bug' }),
+    ])
+    const popover = openPopover(panel)
+    expect(popover.querySelector('.jobs-section')).not.toBeNull()
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)
+  })
+
+  it('shows root with running count label when only jobs exist (no tasks)', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'go build' }),
+    ])
+    expect(panel.root.style.display).toBe('')
+    const label = panel.root.querySelector('.task-label') as SVGTextElement
+    expect(label.textContent).toBe('1')
+    // Ring progress is task-only: no tasks means an empty ring.
+    const ring = panel.root.querySelector('.task-ring') as SVGCircleElement
+    const circumference = 2 * Math.PI * 18
+    const offset = parseFloat(ring.getAttribute('stroke-dashoffset') ?? 'NaN')
+    expect(Math.abs(offset - circumference)).toBeLessThan(0.01)
+  })
+
+  it('label falls back to total job count when none are running', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'make lint', exitCode: 2 }),
+    ])
+    const label = panel.root.querySelector('.task-label') as SVGTextElement
+    expect(label.textContent).toBe('2')
+  })
+
+  it('rim dot is on while a job runs and off when all jobs are terminal', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
+    expect(panel.root.querySelector('.rim-dot.on')).not.toBeNull()
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
+    expect(panel.root.querySelector('.rim-dot.on')).toBeNull()
+    expect(panel.root.querySelector('.rim-dot')).not.toBeNull()
+  })
+
+  it('bash row shows the command in mono, agent row shows type · description', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
+      jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: '修 wui 分页 bug', parentToolUseID: 'p1' }),
+    ])
+    const popover = openPopover(panel)
+    const rows = popover.querySelectorAll('.jobs-row')
+    const bashName = rows[0].querySelector('.mono')
+    expect(bashName?.textContent).toBe('make check')
+    expect(rows[1].textContent).toContain('Executor · 修 wui 分页 bug')
+    // Status chip is English mono (existing task panel language).
+    expect(rows[0].querySelector('.mono.text-blue')?.textContent).toBe('Running')
+  })
+
+  it('fork agent row uses the fork kind label', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'fork', description: 'long task', parentToolUseID: 'p1' }),
+    ])
+    const popover = openPopover(panel)
+    expect(popover.querySelector('.jobs-row')?.textContent).toContain('Fork · long task')
+  })
+
+  it('terminal chips: Done / Exit code / Stopped', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'b', exitCode: 130 }),
+      jw({ id: 'agent-1', kind: 'agent', status: 'killed', agentType: 'executor', description: 'c', parentToolUseID: 'p1' }),
+    ])
+    const popover = openPopover(panel)
+    const chips = Array.from(popover.querySelectorAll('.jobs-row')).map((r) => {
+      const chip = Array.from(r.querySelectorAll('span')).find((s) => s.className.includes('text-[10px]'))
+      return chip?.textContent
+    })
+    expect(chips).toEqual(['Done', 'Exit 130', 'Stopped'])
+  })
+
+  it('terminal rows carry the dimmed opacity class, running rows do not', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'a' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' }),
+    ])
+    const popover = openPopover(panel)
+    const rows = popover.querySelectorAll('.jobs-row')
+    expect(rows[0].classList.contains('opacity-60')).toBe(false)
+    expect(rows[1].classList.contains('opacity-60')).toBe(true)
+  })
+
+  it('setJobs keeps an open popover open and refreshes row content', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
+    const popover = openPopover(panel)
+    expect(popover.querySelector('.jobs-row')?.textContent).toContain('Running')
+
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'make check' })])
+    // A job finishing must not yank the popover shut.
+    const popoverAfter = document.getElementById('task-popover')
+    expect(popoverAfter).not.toBeNull()
+    expect(popoverAfter?.querySelector('.jobs-row')?.textContent).toContain('Done')
+  })
+
+  it('setTasks still unconditionally closes an open popover (jobs present)', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
+    openPopover(panel)
+    panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
+    expect(document.getElementById('task-popover')).toBeNull()
+  })
+
+  it('clear-done removes terminal jobs, hides root when nothing remains, and notifies the caller', () => {
+    const onClearDone = vi.fn()
+    const onStopJob = vi.fn()
+    const panel = createTaskPanel({ onClearDone, onStopJob })
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'running', command: 'b' }),
+    ])
+    const popover = openPopover(panel)
+    const clr = popover.querySelector('.clear-done-jobs') as HTMLButtonElement
+    clr.click()
+    expect(onClearDone).toHaveBeenCalledTimes(1)
+    // Terminal job gone, running job stays: root still visible.
+    expect(panel.root.style.display).toBe('')
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(1)
+    expect(panel.jobsStore.jobs().map((j) => j.id)).toEqual(['bg-2'])
+
+    // All-terminal now: clearing hides the root entirely.
+    panel.setJobs([jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' })])
+    // Popover is still open from the first clear (setJobs must not close
+    // it) — toggle it closed and reopen to exercise the fresh build.
+    ;(panel.root as HTMLButtonElement).click()
+    const popover2 = openPopover(panel)
+    ;(popover2.querySelector('.clear-done-jobs') as HTMLButtonElement).click()
+    expect(panel.root.style.display).toBe('none')
+    expect(document.getElementById('task-popover')).toBeNull()
+  })
+
+  it('popover title aggregates background jobs', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'a' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'running', command: 'b' }),
+    ])
+    const popover = openPopover(panel)
+    const title = popover.querySelector('.px-3.pt-2\\.5') as HTMLElement
+    expect(title.textContent).toBe('Background 2 Running')
+    panel.setJobs([
+      jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' }),
+    ])
+    expect((popover.querySelector('.px-3.pt-2\\.5') as HTMLElement).textContent).toBe('Background idle')
   })
 })

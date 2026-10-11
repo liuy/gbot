@@ -805,6 +805,32 @@ describe('createFloatButton', () => {
     h.root.click()
     expect(spy).toHaveBeenCalledTimes(1)
   })
+
+  it('rimDot option renders a hidden rim dot without .on', () => {
+    const h = createFloatButton({ position: 'right', rimDot: true })
+    const dot = h.root.querySelector('.rim-dot') as HTMLElement | null
+    expect(dot).not.toBeNull()
+    expect(dot!.classList.contains('on')).toBe(false)
+  })
+
+  it('rim dot is absent unless requested', () => {
+    const h = createFloatButton({ position: 'right' })
+    expect(h.root.querySelector('.rim-dot')).toBeNull()
+  })
+
+  it('setRunning toggles the rim dot .on class', () => {
+    const h = createFloatButton({ position: 'right', rimDot: true })
+    const dot = h.root.querySelector('.rim-dot') as HTMLElement
+    h.setRunning(true)
+    expect(dot.classList.contains('on')).toBe(true)
+    h.setRunning(false)
+    expect(dot.classList.contains('on')).toBe(false)
+  })
+
+  it('setRunning is a no-op when no rimDot configured', () => {
+    const h = createFloatButton({ position: 'right' })
+    expect(() => h.setRunning(true)).not.toThrow()
+  })
 })
 
 // ── createIconButton setIcon (2-state toggle) ────────────────

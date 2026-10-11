@@ -334,6 +334,7 @@ export interface FloatButtonHandle {
   root: HTMLButtonElement
   setProgress: (pct: number) => void
   setLabel: (text: string) => void
+  setRunning: (on: boolean) => void
 }
 
 export function createFloatButton(opts: {
@@ -351,6 +352,9 @@ export function createFloatButton(opts: {
   labelClassName?: string
   innerIcon?: IconName
   innerLabel?: string
+  // rimDot appends the job heartbeat indicator (blue dot on the button's
+  // rim, shown while a background job runs — task panel only).
+  rimDot?: boolean
   onClick?: () => void
 }): FloatButtonHandle {
   const root = createNode('button', {
@@ -389,6 +393,12 @@ export function createFloatButton(opts: {
   parts.push('</svg>')
   root.innerHTML = parts.join('')
 
+  let rimDotEl: HTMLElement | null = null
+  if (opts.rimDot) {
+    rimDotEl = createNode('span', { className: 'rim-dot' })
+    root.appendChild(rimDotEl)
+  }
+
   if (opts.onClick) {
     root.addEventListener('click', opts.onClick)
   }
@@ -407,6 +417,9 @@ export function createFloatButton(opts: {
     },
     setLabel: (text: string) => {
       if (labelEl) labelEl.textContent = text
+    },
+    setRunning: (on: boolean) => {
+      rimDotEl?.classList.toggle('on', on)
     },
   }
 }

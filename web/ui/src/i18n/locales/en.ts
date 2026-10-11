@@ -217,6 +217,9 @@ export const dict = {
   configBadgeReloaded: 'Reloaded',
   configBadgeUnchanged: 'Unchanged',
   configBadgeFailed: 'Failed',
+  jobsSectionTitle: 'Background',
+  clearDoneJobs: 'Clear done',
+  jobKindFork: 'Fork',
 } as const
 
 export const endonym = 'English'

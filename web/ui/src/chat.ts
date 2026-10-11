@@ -56,6 +56,7 @@ import { createTakeoverBar } from './takeover_bar'
 import { createSidebar } from './sidebar'
 import { createInputBar, type InputBarHandles, type AttachmentRef, type QueuedMsg } from './input_bar'
 import { createTaskPanel } from './task_panel'
+import type { JobsStoreHandle } from './jobs_store'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
 import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList, formatArtifactSize } from './artifact'
@@ -133,6 +134,9 @@ export interface ChatHandles {
   root: HTMLElement
   scrollEl: HTMLElement
   inputBar: InputBarHandles
+  // Exposed for integration tests (Phase 2 asserts job feed state at the
+  // store layer before the Phase 3 expansion UI renders it).
+  jobsStore: JobsStoreHandle
   cleanup: () => void
 }
 
@@ -582,7 +586,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.root.className = 'px-5 pb-3 pt-1'
   inputBar.onThinkingSelect((effort) => conn.send({ type: 'thinking_switch', effort }))
 
-  const taskPanel = createTaskPanel()
+  const taskPanel = createTaskPanel({
+    // conn is assigned below the panel construction; the closures only run
+    // on user interaction, long after initialization.
+    onStopJob: (jobID) => conn.send({ type: 'job_stop', jobID }),
+    onClearDone: () => conn.send({ type: 'jobs_clear' }),
+  })
 
   const inputWrapper = createElement('div', 'absolute bottom-0 inset-x-0 z-10')
   inputWrapper.appendChild(inputBar.bubbles)
@@ -2244,6 +2253,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         resetAllState()
         if (c.inputHistory) inputHistory.load(c.inputHistory)
         taskPanel.setTasks([])
+        // Unconditional clear mirrors setTasks([]) above: a metadata frame
+        // for an engine whose jobs field is absent must not leak the
+        // previous engine's view (A→B switch residue).
+        taskPanel.setJobs([])
         scrollBtn.classList.add('opacity-0', 'pointer-events-none')
         if (c.sessionID) currentSessionID = c.sessionID
         conn.send({ type: 'session_list_request' })
@@ -2252,6 +2265,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setEngines(msg.engines.engines, msg.engines.activeID)
         inputBar.setThinking(msg.config.thinking ?? 'auto')
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
+        if (msg.jobs) {
+          const hydrated = new Map<string, { blocks?: Block[]; tail?: string }>()
+          const items = msg.jobs.jobs.map((j) => {
+            const { blocks, tail, ...item } = j
+            hydrated.set(j.id, { blocks, tail })
+            return item
+          })
+          taskPanel.setJobs(items, hydrated)
+        }
         loadHistory({ type: 'history', ...msg.history })
 
         if (msg.snapshot && msg.snapshot.blocks.length > 0) {
@@ -2470,9 +2492,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       }
       case 'event':
         handleEvent(msg.event)
+        // Background-agent feeds accumulate in the jobs store in parallel
+        // with chat rendering; routing drops events that belong to no job.
+        taskPanel.jobsStore.applyEvent(msg.event)
         return
       case 'task_list':
         taskPanel.setTasks(msg.tasks)
+        return
+      case 'job_list':
+        taskPanel.setJobs(msg.jobs)
+        return
+      case 'job_output':
+        taskPanel.jobsStore.applyOutput(msg.jobID, msg.tail)
         return
       case 'engine_list':
         header.setEngines(msg.engines, msg.activeID)
@@ -2501,5 +2532,5 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (refreshInterval !== null) clearInterval(refreshInterval)
   }
 
-  return { root, scrollEl: scroll, inputBar, cleanup }
+  return { root, scrollEl: scroll, inputBar, jobsStore: taskPanel.jobsStore, cleanup }
 }

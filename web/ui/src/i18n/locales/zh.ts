@@ -192,6 +192,9 @@ export const dict: Dict = {
   configBadgeReloaded: '已重载',
   configBadgeUnchanged: '未变更',
   configBadgeFailed: '失败',
+  jobsSectionTitle: '后台',
+  clearDoneJobs: '清已完成',
+  jobKindFork: 'Fork',
 }
 
 export const endonym = '简体中文'

@@ -32,7 +32,9 @@ func jobsWatcherInterval() time.Duration { return time.Duration(jobsWatcherInter
 func jobsPendingTTL() time.Duration      { return time.Duration(jobsPendingTTLNS.Load()) }
 
 // View/feed bounds. Over-cap actions log: they indicate either a runaway
-// spawn loop or a stuck pending parent id.
+// spawn loop or a stuck pending parent id. jobFeedMaxBlocks is mirrored
+// client-side by JOB_FEED_MAX_BLOCKS in web/ui/src/jobs_store.ts — the live
+// feed must stay byte-identical to this cache or hydration diverges.
 const (
 	jobsViewCap      = 200
 	jobFeedMaxBlocks = 400
