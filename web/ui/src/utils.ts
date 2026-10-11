@@ -10,6 +10,7 @@ export interface ToolClassification {
   isList: boolean
   isLsp: boolean
   isWeb: boolean
+  isTask: boolean
 }
 
 // Pure name→flags lookup. isList is never set here — list-ness only comes
@@ -19,16 +20,18 @@ export interface ToolClassification {
 export function classifyTool(name: string): ToolClassification {
   switch (name) {
     case 'Read':
-      return { isRead: true, isSearch: false, isList: false, isLsp: false, isWeb: false }
+      return { isRead: true, isSearch: false, isList: false, isLsp: false, isWeb: false, isTask: false }
     case 'Grep':
     case 'Glob':
-      return { isSearch: true, isRead: false, isList: false, isLsp: false, isWeb: false }
+      return { isSearch: true, isRead: false, isList: false, isLsp: false, isWeb: false, isTask: false }
     case 'Lsp':
-      return { isLsp: true, isSearch: false, isRead: false, isList: false, isWeb: false }
+      return { isLsp: true, isSearch: false, isRead: false, isList: false, isWeb: false, isTask: false }
     case 'Web':
-      return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false }
+      return { isWeb: true, isSearch: false, isRead: false, isList: false, isLsp: false, isTask: false }
+    case 'Task':
+      return { isTask: true, isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
     default:
-      return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false }
+      return { isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false, isTask: false }
   }
 }
 
@@ -120,7 +123,7 @@ export function parseDurationFromOutput(output: unknown): number {
 // Delegates to classifyTool so the name list has one source of truth.
 export function isCollapsibleToolName(name: string): boolean {
   const c = classifyTool(name)
-  return c.isSearch || c.isRead || c.isList || c.isLsp || c.isWeb
+  return c.isSearch || c.isRead || c.isList || c.isLsp || c.isWeb || c.isTask
 }
 
 // Whether a block should group with adjacent collapsible tool blocks.
@@ -131,7 +134,7 @@ export function isCollapsibleToolName(name: string): boolean {
 export function isCollapsibleBlock(b: Block): boolean {
   if (b.kind !== 'tool') return false
   return (
-    b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb || isCollapsibleToolName(b.name)
+    b.isSearch || b.isRead || b.isList || b.isLsp || b.isWeb || b.isTask || isCollapsibleToolName(b.name)
   )
 }
 

@@ -1243,3 +1243,49 @@ func TestConvertEventToMsg_Attachment_JobModeBackwardCompat(t *testing.T) {
 		t.Errorf("UserText should be empty for job mode, got %q", am.UserText)
 	}
 }
+
+func TestConvertEventToMsg_CarriesIsTask(t *testing.T) {
+	h := NewTUIHandler()
+
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{
+			ID: "tu_1", Name: "Task", IsTask: true,
+		},
+	})
+	ts, ok := msg.(toolStartMsg)
+	if !ok {
+		t.Fatalf("expected toolStartMsg, got %T", msg)
+	}
+	if !ts.IsTask {
+		t.Error("toolStartMsg should carry IsTask=true")
+	}
+
+	msg = h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{
+			ID: "tu_1", Name: "Task", Delta: `{"`, IsTask: true,
+		},
+	})
+	pd, ok := msg.(toolParamDeltaMsg)
+	if !ok {
+		t.Fatalf("expected toolParamDeltaMsg, got %T", msg)
+	}
+	if !pd.IsTask {
+		t.Error("toolParamDeltaMsg should carry IsTask=true")
+	}
+
+	msg = h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID: "tu_1", IsTask: true,
+		},
+	})
+	te, ok := msg.(toolEndMsg)
+	if !ok {
+		t.Fatalf("expected toolEndMsg, got %T", msg)
+	}
+	if !te.IsTask {
+		t.Error("toolEndMsg should carry IsTask=true")
+	}
+}

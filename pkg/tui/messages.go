@@ -43,6 +43,7 @@ type toolStartMsg struct {
 	IsRead   bool
 	IsList   bool
 	IsLsp    bool
+	IsTask   bool
 }
 
 // toolParamDeltaMsg carries incremental input updates for a pending tool.
@@ -56,6 +57,7 @@ type toolParamDeltaMsg struct {
 	IsRead   bool
 	IsList   bool
 	IsLsp    bool
+	IsTask   bool
 }
 
 // toolOutputDeltaMsg carries streaming output lines from a tool in progress.
@@ -77,6 +79,7 @@ type toolEndMsg struct {
 	IsRead    bool
 	IsList    bool
 	IsLsp     bool
+	IsTask    bool
 	Duration  time.Duration
 }
 

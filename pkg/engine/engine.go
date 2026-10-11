@@ -1531,6 +1531,7 @@ func (e *Engine) flushParamBuf() {
 			pi.IsRead = m.IsRead
 			pi.IsList = m.IsList
 			pi.IsLsp = m.IsLsp
+			pi.IsTask = m.IsTask
 		}
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:         types.EventToolParamDelta,
@@ -1552,6 +1553,7 @@ func (e *Engine) flushOutputBuf() {
 			tr.IsRead = m.IsRead
 			tr.IsList = m.IsList
 			tr.IsLsp = m.IsLsp
+			tr.IsTask = m.IsTask
 		}
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:       types.EventToolOutputDelta,
@@ -2884,6 +2886,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							IsRead:   srk.IsRead,
 							IsList:   srk.IsList,
 							IsLsp:    srk.IsLsp,
+							IsTask:   srk.IsTask,
 						},
 					})
 				case types.ContentTypeThinking:
@@ -2926,6 +2929,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 								IsRead:   srk.IsRead,
 								IsList:   srk.IsList,
 								IsLsp:    srk.IsLsp,
+								IsTask:   srk.IsTask,
 							},
 						})
 					}

@@ -5137,3 +5137,105 @@ func TestSubAgentToolRunning_ShowsLiveElapsed(t *testing.T) {
 		t.Errorf("sub-agent Write tool in running state shows frozen 0.0s:\n%s", clean)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task tool grouping (Task calls fold into the collapsed group)
+// ---------------------------------------------------------------------------
+
+func TestDetectToolGroups_TaskFoldsIntoGroup(t *testing.T) {
+	t.Parallel()
+	srTask := tool.SearchReadKind{IsTask: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+	srNone := tool.SearchReadKind{}
+
+	// 3 Task + 1 Grep → 1 mixed group of 4.
+	blocks := []ContentBlock{
+		makeBlockTool(srTask, true), makeBlockTool(srTask, true),
+		makeBlockTool(srTask, true), makeBlockTool(srSearch, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("3 Task + Grep: got %d groups, want 1", len(groups))
+	}
+	if len(groups[0].indices) != 4 {
+		t.Fatalf("3 Task + Grep: group size = %d, want 4", len(groups[0].indices))
+	}
+	if groups[0].taskCount != 3 || groups[0].searchCount != 1 {
+		t.Fatalf("counts: task=%d search=%d, want task=3 search=1", groups[0].taskCount, groups[0].searchCount)
+	}
+
+	// Task + Edit + Task → Edit breaks the group.
+	blocks = []ContentBlock{
+		makeBlockTool(srTask, true), makeBlockTool(srNone, true), makeBlockTool(srTask, true),
+	}
+	if groups = detectToolGroups(blocks); len(groups) != 0 {
+		t.Fatalf("Task+Edit+Task: got %d groups, want 0", len(groups))
+	}
+}
+
+func TestGroupSummaryText_Task(t *testing.T) {
+	t.Parallel()
+
+	if text := groupSummaryText(toolGroup{taskCount: 3}, false); text != "Managed 3 tasks" {
+		t.Fatalf("task-only plural: %q, want %q", text, "Managed 3 tasks")
+	}
+	if text := groupSummaryText(toolGroup{taskCount: 1}, false); text != "Managed 1 task" {
+		t.Fatalf("task-only single: %q, want %q", text, "Managed 1 task")
+	}
+	if text := groupSummaryText(toolGroup{searchCount: 1, taskCount: 3}, false); text != "Searched for 1 pattern, managed 3 tasks" {
+		t.Fatalf("mixed: %q, want %q", text, "Searched for 1 pattern, managed 3 tasks")
+	}
+	if text := groupSummaryText(toolGroup{taskCount: 2, anyRunning: true}, true); text != "Managing 2 tasks…" {
+		t.Fatalf("active: %q, want %q", text, "Managing 2 tasks…")
+	}
+}
+
+func TestRenderGroup_TaskAndGrepCollapsed(t *testing.T) {
+	t.Parallel()
+
+	srTask := tool.SearchReadKind{IsTask: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Task", Summary: "Fix login", Done: true, Output: "Created: #1 Fix login", SearchRead: srTask}},
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Task", Summary: "Fix logout", Done: true, Output: "Created: #2 Fix logout", SearchRead: srTask}},
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Task", Summary: "Task 1", Done: true, Output: "Updated: #1 status", SearchRead: srTask}},
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Grep", Summary: "todo", Done: true, Output: "file.go:1:todo", SearchRead: srSearch}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(rendered, "Searched for 1 pattern, managed 3 tasks") {
+		t.Fatalf("collapsed group missing mixed summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("collapsed group missing 'ctrl+o to expand':\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Task(Fix login)") {
+		t.Fatalf("collapsed group shows individual Task header:\n%s", rendered)
+	}
+}
+
+func TestRenderSingleTaskNoGroup(t *testing.T) {
+	t.Parallel()
+
+	srTask := tool.SearchReadKind{IsTask: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Task", Summary: "Fix login", Done: true, Output: "Created: #1 Fix login", SearchRead: srTask}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if strings.Contains(rendered, "Managed 1 task") {
+		t.Fatalf("single Task shows group summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("single Task missing 'ctrl+o to expand':\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Created: #1") {
+		t.Fatalf("single Task missing Phase 1 output summary:\n%s", rendered)
+	}
+}

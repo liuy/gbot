@@ -232,6 +232,7 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
             isList: srk.isList || !!t.is_list,
             isLsp: srk.isLsp || !!t.is_lsp,
             isWeb: srk.isWeb,
+            isTask: srk.isTask || !!t.is_task,
             state: (t.isError ? 'error' : t.isRunning ? 'running' : 'done') as 'error' | 'running' | 'done',
             timingNs: t.durationNs ?? 0,
             displayOutput: t.displayOutput ?? '',
@@ -885,6 +886,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     is_read?: boolean
     is_list?: boolean
     is_lsp?: boolean
+    is_task?: boolean
   }): ToolBlock {
     return {
       kind: 'tool',
@@ -896,6 +898,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       isList: !!tu.is_list,
       isLsp: !!tu.is_lsp,
       isWeb: tu.name === 'Web',
+      isTask: !!tu.is_task,
       state: 'running',
       timingNs: 0,
       displayOutput: '',
@@ -1653,6 +1656,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           if (e.partial_input.is_read !== undefined) pending.isRead = e.partial_input.is_read
           if (e.partial_input.is_list !== undefined) pending.isList = e.partial_input.is_list
           if (e.partial_input.is_lsp !== undefined) pending.isLsp = e.partial_input.is_lsp
+          if (e.partial_input.is_task !== undefined) pending.isTask = e.partial_input.is_task
         }
         return
       }
@@ -1698,6 +1702,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           if (tr.is_read !== undefined) pending.isRead = tr.is_read
           if (tr.is_list !== undefined) pending.isList = tr.is_list
           if (tr.is_lsp !== undefined) pending.isLsp = tr.is_lsp
+          if (tr.is_task !== undefined) pending.isTask = tr.is_task
         }
         if (
           entry &&

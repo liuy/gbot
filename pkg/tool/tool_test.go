@@ -681,3 +681,26 @@ func TestToolUseContext(t *testing.T) {
 		t.Error("Options.Verbose = false, want true")
 	}
 }
+
+// Each flag must independently mark the call collapsible, and an empty kind
+// must not be collapsible — detectToolGroups and the TS isCollapsibleBlock
+// twin both branch on this.
+func TestSearchReadKind_IsCollapsible(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		srk  tool.SearchReadKind
+		want bool
+	}{
+		{tool.SearchReadKind{}, false},
+		{tool.SearchReadKind{IsSearch: true}, true},
+		{tool.SearchReadKind{IsRead: true}, true},
+		{tool.SearchReadKind{IsList: true}, true},
+		{tool.SearchReadKind{IsLsp: true}, true},
+		{tool.SearchReadKind{IsTask: true}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.srk.IsCollapsible(); got != tc.want {
+			t.Errorf("IsCollapsible(%+v) = %v, want %v", tc.srk, got, tc.want)
+		}
+	}
+}

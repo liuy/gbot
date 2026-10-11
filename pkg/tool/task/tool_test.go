@@ -1492,3 +1492,29 @@ func TestTask_DecodeResult_RejectsBareStruct(t *testing.T) {
 		t.Error("DecodeResult must reject bare struct form")
 	}
 }
+
+func TestTasks_IsSearchOrRead(t *testing.T) {
+	t.Parallel()
+	tl := New(newTestListForTool(t), nil)
+	ts, ok := tl.(tool.ToolWithSearchOrRead)
+	if !ok {
+		t.Fatal("Task tool must implement ToolWithSearchOrRead")
+	}
+	inputs := []string{
+		`{"action":"create","subject":"A","description":"a"}`,
+		`{"action":"update","taskId":"1","status":"completed"}`,
+		`{"action":"delete","taskIds":["1"]}`,
+		`{"action":"get","taskId":"1"}`,
+		`{"action":"list"}`,
+		`{}`,
+	}
+	for _, in := range inputs {
+		srk := ts.IsSearchOrRead(json.RawMessage(in))
+		if !srk.IsTask {
+			t.Errorf("IsSearchOrRead(%s).IsTask = false, want true", in)
+		}
+		if srk.IsSearch || srk.IsRead || srk.IsList || srk.IsLsp {
+			t.Errorf("IsSearchOrRead(%s) = %+v, want only IsTask set", in, srk)
+		}
+	}
+}

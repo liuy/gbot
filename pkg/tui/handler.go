@@ -211,6 +211,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				IsRead:   evt.ToolUse.IsRead,
 				IsList:   evt.ToolUse.IsList,
 				IsLsp:    evt.ToolUse.IsLsp,
+				IsTask:   evt.ToolUse.IsTask,
 			}
 		}
 
@@ -234,6 +235,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				IsRead:    evt.ToolResult.IsRead,
 				IsList:    evt.ToolResult.IsList,
 				IsLsp:     evt.ToolResult.IsLsp,
+				IsTask:    evt.ToolResult.IsTask,
 				Duration:  evt.ToolResult.Duration,
 			}
 		}
@@ -286,6 +288,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				IsRead:   evt.PartialInput.IsRead,
 				IsList:   evt.PartialInput.IsList,
 				IsLsp:    evt.PartialInput.IsLsp,
+				IsTask:   evt.PartialInput.IsTask,
 			}
 		}
 		return nil

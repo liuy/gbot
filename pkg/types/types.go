@@ -633,6 +633,7 @@ type PartialInputEvent struct {
 	IsRead   bool   `json:"is_read,omitempty"`
 	IsList   bool   `json:"is_list,omitempty"`
 	IsLsp    bool   `json:"is_lsp,omitempty"`
+	IsTask   bool   `json:"is_task,omitempty"`
 }
 
 // ToolUseEvent represents a tool invocation event.
@@ -645,6 +646,7 @@ type ToolUseEvent struct {
 	IsRead   bool            `json:"is_read,omitempty"`   // tool is a read operation (Read, cat)
 	IsList   bool            `json:"is_list,omitempty"`   // tool is a list operation (ls, tree)
 	IsLsp    bool            `json:"is_lsp,omitempty"`    // tool is an LSP operation
+	IsTask   bool            `json:"is_task,omitempty"`   // tool is a Task (todo list) operation
 }
 
 // ToolResultEvent represents a tool execution result event.
@@ -658,6 +660,7 @@ type ToolResultEvent struct {
 	IsRead        bool            `json:"is_read,omitempty"`
 	IsList        bool            `json:"is_list,omitempty"`
 	IsLsp         bool            `json:"is_lsp,omitempty"`
+	IsTask        bool            `json:"is_task,omitempty"`
 	Duration      time.Duration   `json:"duration,omitempty"`
 }
 

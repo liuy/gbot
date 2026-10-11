@@ -14,6 +14,7 @@ export type Block =
 			isList: boolean
 			isLsp: boolean
 			isWeb: boolean
+			isTask: boolean
 			state: 'running' | 'done' | 'error'
 			timingNs: number
 			displayOutput: string

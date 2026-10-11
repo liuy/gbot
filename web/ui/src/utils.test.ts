@@ -5,6 +5,7 @@ import {
   classifyTool,
   isCollapsibleToolName,
   isCollapsibleBlock,
+  summarize,
   bindLongPress,
   createPopupHost,
   unwrapQueuedReminder,
@@ -221,6 +222,7 @@ describe('classifyTool', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 		})
 	})
 
@@ -231,6 +233,7 @@ describe('classifyTool', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 		})
 		expect(classifyTool('Glob')).toEqual({
 			isSearch: true,
@@ -238,6 +241,7 @@ describe('classifyTool', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 		})
 	})
 
@@ -249,6 +253,7 @@ describe('classifyTool', () => {
 			isRead: false,
 			isList: false,
 			isWeb: false,
+			isTask: false,
 		})
 	})
 
@@ -259,6 +264,7 @@ describe('classifyTool', () => {
 			isRead: false,
 			isList: false,
 			isLsp: false,
+			isTask: false,
 		})
 	})
 
@@ -269,6 +275,7 @@ describe('classifyTool', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 		})
 		expect(classifyTool('Unknown')).toEqual({
 			isSearch: false,
@@ -276,9 +283,21 @@ describe('classifyTool', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 		})
 		// isList is backend-only (Bash ls/tree/du). No name maps to it.
 		expect(classifyTool('Bash').isList).toBe(false)
+	})
+
+	it('classifies Task as isTask-only', () => {
+		expect(classifyTool('Task')).toEqual({
+			isTask: true,
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+		})
 	})
 })
 
@@ -287,12 +306,13 @@ describe('isCollapsibleToolName', () => {
 		expect(isCollapsibleToolName('Bash')).toBe(false)
 	})
 
-	it('returns true for Read, Grep, Glob, Lsp, Web', () => {
+	it('returns true for Read, Grep, Glob, Lsp, Web, Task', () => {
 		expect(isCollapsibleToolName('Read')).toBe(true)
 		expect(isCollapsibleToolName('Grep')).toBe(true)
 		expect(isCollapsibleToolName('Glob')).toBe(true)
 		expect(isCollapsibleToolName('Lsp')).toBe(true)
 		expect(isCollapsibleToolName('Web')).toBe(true)
+		expect(isCollapsibleToolName('Task')).toBe(true)
 	})
 })
 
@@ -312,6 +332,7 @@ describe('isCollapsibleBlock', () => {
 			isList: true,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 			state: 'done',
 			timingNs: 0,
 			displayOutput: '',
@@ -332,6 +353,7 @@ describe('isCollapsibleBlock', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 			state: 'done',
 			timingNs: 0,
 			displayOutput: '',
@@ -352,6 +374,7 @@ describe('isCollapsibleBlock', () => {
 			isList: false,
 			isLsp: false,
 			isWeb: false,
+			isTask: false,
 			state: 'done',
 			timingNs: 0,
 			displayOutput: '',
@@ -359,6 +382,37 @@ describe('isCollapsibleBlock', () => {
 			children: [],
 		}
 		expect(isCollapsibleBlock(b)).toBe(true)
+	})
+
+	it('returns true for Task block with all flags false (name fallback)', () => {
+		const b: Block = {
+			kind: 'tool',
+			id: '',
+			name: 'Task',
+			summary: '',
+			isSearch: false,
+			isRead: false,
+			isList: false,
+			isLsp: false,
+			isWeb: false,
+			isTask: false,
+			state: 'done',
+			timingNs: 0,
+			displayOutput: '',
+			startedAt: 0,
+			children: [],
+		}
+		expect(isCollapsibleBlock(b)).toBe(true)
+	})
+})
+
+describe('summarize', () => {
+	it('summarizes task-only group', () => {
+		expect(summarize([{ name: 'Task' }, { name: 'Task' }, { name: 'Task' }])).toBe('3 Tasks')
+	})
+
+	it('summarizes mixed Grep + Task group', () => {
+		expect(summarize([{ name: 'Grep' }, { name: 'Task' }, { name: 'Task' }, { name: 'Task' }])).toBe('1 Search, 3 Tasks')
 	})
 })
 

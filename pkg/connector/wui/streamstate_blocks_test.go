@@ -462,3 +462,58 @@ func TestTargetList_SubAgentUnknownParent(t *testing.T) {
 		t.Fatal("expected nil for unknown parent")
 	}
 }
+
+func TestUpdateStreamState_TaskFlagPlumbing(t *testing.T) {
+	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Task", IsTask: true},
+	})
+	if !ss.blocks[0].IsTask {
+		t.Fatal("expected IsTask=true on block after tool_start")
+	}
+	if raw := string(buildPendingBlocks(ss)); !strings.Contains(raw, `"isTask":true`) {
+		t.Fatalf("expected \"isTask\":true in JSON, got: %s", raw)
+	}
+
+	// omitempty: a Grep block must NOT carry an isTask field.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t2", Name: "Grep", IsSearch: true},
+	})
+	if ss.blocks[0].IsTask {
+		t.Fatal("expected IsTask=false for Grep block")
+	}
+	if raw := string(buildPendingBlocks(ss)); strings.Contains(raw, "isTask") {
+		t.Fatalf("expected no isTask field in Grep JSON (omitempty), got: %s", raw)
+	}
+
+	// param_delta sets the flag on an existing block.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t3", Name: "Task"},
+	})
+	updateStreamState(&ss, types.QueryEvent{
+		Type:         types.EventToolParamDelta,
+		PartialInput: &types.PartialInputEvent{ID: "t3", Name: "Task", IsTask: true},
+	})
+	if !ss.blocks[0].IsTask {
+		t.Fatal("expected IsTask=true after tool_param_delta")
+	}
+
+	// tool_end sets the flag on an existing block.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t4", Name: "Task"},
+	})
+	updateStreamState(&ss, types.QueryEvent{
+		Type:       types.EventToolEnd,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "t4", IsTask: true},
+	})
+	if !ss.blocks[0].IsTask {
+		t.Fatal("expected IsTask=true after tool_end")
+	}
+}

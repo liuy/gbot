@@ -320,6 +320,11 @@ func New(list *List, hk *hooks.Hooks) tool.Tool {
 			}
 			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
 		},
+		// All Task actions are lightweight metadata ops with a one-line display
+		// output, so every call folds into the collapsed group regardless of action.
+		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
+			return tool.SearchReadKind{IsTask: true}
+		},
 	})
 }
 

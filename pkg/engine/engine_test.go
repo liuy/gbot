@@ -27,6 +27,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/repl"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1387,6 +1388,98 @@ func TestQuery_ToolStartIncludesIsSearch(t *testing.T) {
 	}
 	if !found {
 		t.Error("search_tool tool_start event not found")
+	}
+}
+
+func TestQuery_TaskToolStartEndIncludesIsTask(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_1", "Task", `{"action":"create","subject":"Fix login","description":"x"}`), nil)
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_2", "Grep", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	ec := newEventCollector()
+	mt := &mockTool{name: "Grep", enabled: true, isSearch: true}
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Task": task.New(task.NewList(t.TempDir()), nil),
+				"Grep": mt,
+			}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	var taskStart, grepStart *types.ToolUseEvent
+	for _, evt := range ec.FindEvents(types.EventToolStart) {
+		if evt.ToolUse == nil {
+			continue
+		}
+		switch evt.ToolUse.Name {
+		case "Task":
+			taskStart = evt.ToolUse
+		case "Grep":
+			grepStart = evt.ToolUse
+		}
+	}
+	if taskStart == nil {
+		t.Fatal("Task tool_start event not found")
+	}
+	if !taskStart.IsTask {
+		t.Error("tool_start for Task should have IsTask=true, got false")
+	}
+	if taskStart.IsSearch {
+		t.Error("tool_start for Task should have IsSearch=false, got true")
+	}
+	if grepStart == nil {
+		t.Fatal("Grep tool_start event not found")
+	}
+	if grepStart.IsTask {
+		t.Error("tool_start for Grep should have IsTask=false, got true")
+	}
+	if !grepStart.IsSearch {
+		t.Error("tool_start for Grep should have IsSearch=true, got false")
+	}
+
+	foundTaskEnd := false
+	for _, evt := range ec.FindEvents(types.EventToolEnd) {
+		if evt.ToolResult != nil && evt.ToolResult.ToolUseID == "tu_1" {
+			if !evt.ToolResult.IsTask {
+				t.Error("tool_end for Task (tu_1) should have IsTask=true, got false")
+			}
+			foundTaskEnd = true
+		}
+	}
+	if !foundTaskEnd {
+		t.Fatal("Task tool_end event not found")
+	}
+
+	// input_json_delta stamping: the streamed param deltas for the Task call
+	// carry IsTask (coalesced and flushed by the next turn's events).
+	foundTaskParam := false
+	for _, evt := range ec.FindEvents(types.EventToolParamDelta) {
+		if evt.PartialInput != nil && evt.PartialInput.ID == "tu_1" {
+			if !evt.PartialInput.IsTask {
+				t.Errorf("tool_param_delta for Task (tu_1) should have IsTask=true, got %+v", evt.PartialInput)
+			}
+			foundTaskParam = true
+		}
+	}
+	if !foundTaskParam {
+		t.Fatal("Task tool_param_delta event not found")
 	}
 }
 

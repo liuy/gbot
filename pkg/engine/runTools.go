@@ -1091,6 +1091,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			IsRead:        srk.IsRead,
 			IsList:        srk.IsList,
 			IsLsp:         srk.IsLsp,
+			IsTask:        srk.IsTask,
 			Duration:      elapsed,
 		},
 	})

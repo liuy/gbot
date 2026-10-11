@@ -1068,6 +1068,57 @@ describe('chat integration', () => {
     expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
   })
 
+  it('Task in history is classified as collapsible via is_task', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'a1', role: 'assistant', text: '',
+          thinking: [],
+          tools: [],
+          blocks: [
+            {
+              kind: 'tool',
+              tool: {
+                id: 't1', name: 'Task', summary: 'create task',
+                displayOutput: 'Created: #1 Fix login', isError: false, isRunning: false,
+                durationNs: 1_000_000_000,
+                is_task: true,
+              },
+            },
+          ],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const all = document.querySelectorAll('[data-tool-root]')
+    expect(all.length).toBe(1)
+    expect(all[0].getAttribute('data-collapsible')).toBe('1')
+  })
+
+  it('tool_start with is_task groups consecutive Task tools', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Task', input: { action: 'list' }, is_task: true } },
+      { type: 'tool_start', tool_use: { id: 't2', name: 'Task', input: { action: 'get', taskId: '1' }, is_task: true } },
+    ])
+    const toolRoots = document.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(2)
+    expect(toolRoots[0].getAttribute('data-collapsible')).toBe('1')
+    expect(toolRoots[1].getAttribute('data-collapsible')).toBe('1')
+    const group = document.querySelector('[data-tool-group]')
+    expect(group).toBeTruthy()
+    expect(group!.querySelectorAll('[data-tool-root]').length).toBe(2)
+    const summary = group!.querySelector('[data-group-summary]')
+    expect(summary).toBeTruthy()
+    expect(summary!.textContent).toContain('2 Tasks')
+  })
+
   it('tool_start with is_search renders Bash as collapsible', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

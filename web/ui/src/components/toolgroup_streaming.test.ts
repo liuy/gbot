@@ -94,3 +94,19 @@ describe('ToolGroup streaming rendering', () => {
 		expect(dot!.textContent).toBe('●')
 	})
 })
+
+describe('ToolGroup streaming rendering (Task)', () => {
+	it('Task tools group with search tools and mixed summary', () => {
+		const container = setup()
+		appendToolBlock(container, 'Task', null, true)
+		appendToolBlock(container, 'Task', null, true)
+		appendToolBlock(container, 'Grep', null, true)
+		const groups = container.querySelectorAll('[data-tool-group]')
+		expect(groups.length).toBe(1)
+		expect(groups[0].querySelectorAll('[data-tool-root]').length).toBe(3)
+		const summary = groups[0].querySelector('[data-group-summary]')
+		expect(summary).toBeTruthy()
+		expect(summary!.textContent).toContain('2 Tasks')
+		expect(summary!.textContent).toContain('1 Search')
+	})
+})

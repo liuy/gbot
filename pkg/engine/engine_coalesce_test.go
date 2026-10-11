@@ -262,17 +262,19 @@ func TestEmitEvent_CoalescesToolParamDeltas(t *testing.T) {
 	eng.emitEvent(types.QueryEvent{
 		Type: types.EventToolParamDelta,
 		PartialInput: &types.PartialInputEvent{
-			ID:    "tool_1",
-			Name:  "Bash",
-			Delta: `{"command":"`,
+			ID:     "tool_1",
+			Name:   "Bash",
+			Delta:  `{"command":"`,
+			IsTask: true,
 		},
 	})
 	eng.emitEvent(types.QueryEvent{
 		Type: types.EventToolParamDelta,
 		PartialInput: &types.PartialInputEvent{
-			ID:    "tool_1",
-			Name:  "Bash",
-			Delta: `echo hi"}`,
+			ID:     "tool_1",
+			Name:   "Bash",
+			Delta:  `echo hi"}`,
+			IsTask: true,
 		},
 	})
 
@@ -301,6 +303,9 @@ func TestEmitEvent_CoalescesToolParamDeltas(t *testing.T) {
 	if md.events[0].PartialInput.Delta != wantDelta {
 		t.Errorf("coalesced param delta = %q, want %q", md.events[0].PartialInput.Delta, wantDelta)
 	}
+	if !md.events[0].PartialInput.IsTask {
+		t.Error("coalesced param delta lost IsTask metadata")
+	}
 	if md.events[1].Type != types.EventToolStart {
 		t.Fatalf("second event should be tool_start, got %s", md.events[1].Type)
 	}
@@ -325,6 +330,7 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 			ToolUseID:     "tool_1",
 			DisplayOutput: "line1\n",
 			IsSearch:      true,
+			IsTask:        true,
 		},
 	})
 	eng.emitEvent(types.QueryEvent{
@@ -333,6 +339,7 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 			ToolUseID:     "tool_1",
 			DisplayOutput: "line2\n",
 			IsSearch:      true,
+			IsTask:        true,
 		},
 	})
 
@@ -360,6 +367,9 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 	}
 	if !md.events[0].ToolResult.IsSearch {
 		t.Error("coalesced output lost IsSearch metadata")
+	}
+	if !md.events[0].ToolResult.IsTask {
+		t.Error("coalesced output lost IsTask metadata")
 	}
 	if md.events[1].Type != types.EventToolEnd {
 		t.Fatalf("second event should be tool_end, got %s", md.events[1].Type)

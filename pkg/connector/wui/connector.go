@@ -289,6 +289,7 @@ type streamBlock struct {
 	IsRead        bool          `json:"isRead,omitempty"`        // kind == "tool"
 	IsList        bool          `json:"isList,omitempty"`        // kind == "tool"
 	IsLsp         bool          `json:"isLsp,omitempty"`         // kind == "tool"
+	IsTask        bool          `json:"isTask,omitempty"`        // kind == "tool"
 	IsWeb         bool          `json:"isWeb,omitempty"`         // kind == "tool"
 	State         string        `json:"state,omitempty"`         // kind == "tool": "running" | "done" | "error"
 	DisplayOutput string        `json:"displayOutput,omitempty"` // kind == "tool"
@@ -1092,6 +1093,7 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			IsRead:    event.ToolUse.IsRead,
 			IsList:    event.ToolUse.IsList,
 			IsLsp:     event.ToolUse.IsLsp,
+			IsTask:    event.ToolUse.IsTask,
 			IsWeb:     event.ToolUse.Name == "Web",
 			State:     "running",
 			StartedAt: time.Now().UnixMilli(),
@@ -1135,6 +1137,9 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		}
 		if event.PartialInput.IsLsp {
 			b.IsLsp = true
+		}
+		if event.PartialInput.IsTask {
+			b.IsTask = true
 		}
 
 	case types.EventAttachment:
@@ -1190,6 +1195,9 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		}
 		if event.ToolResult.IsLsp {
 			b.IsLsp = true
+		}
+		if event.ToolResult.IsTask {
+			b.IsTask = true
 		}
 		b.TimingNs = int64(event.ToolResult.Duration)
 		// Agent tool: children were populated by sub-agent streaming events
@@ -1750,6 +1758,7 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 					entry.IsRead = srk.IsRead
 					entry.IsList = srk.IsList
 					entry.IsLsp = srk.IsLsp
+					entry.IsTask = srk.IsTask
 				}
 			}
 			if result, ok := toolResults[cb.ID]; ok {
@@ -2270,6 +2279,7 @@ type historyToolEntry struct {
 	IsRead        bool   `json:"is_read,omitempty"`
 	IsList        bool   `json:"is_list,omitempty"`
 	IsLsp         bool   `json:"is_lsp,omitempty"`
+	IsTask        bool   `json:"is_task,omitempty"`
 }
 
 type historyUsage struct {

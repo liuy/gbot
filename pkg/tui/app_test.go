@@ -8874,6 +8874,47 @@ func TestResume_ToolGroupCollapses(t *testing.T) {
 	}
 }
 
+func TestResume_TaskGroupCollapses(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Task", Input: json.RawMessage(`{"action":"create","subject":"Fix login","description":"x"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"Created: #1 Fix login"}]`)},
+			{Type: types.ContentTypeToolUse, ID: "toolu_2", Name: "Task", Input: json.RawMessage(`{"action":"create","subject":"Fix logout","description":"y"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_2", Content: json.RawMessage(`[{"type":"text","text":"Created: #2 Fix logout"}]`)},
+			{Type: types.ContentTypeToolUse, ID: "toolu_3", Name: "Task", Input: json.RawMessage(`{"action":"update","taskId":"1","status":"completed"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_3", Content: json.RawMessage(`[{"type":"text","text":"Updated: #1 status"}]`)},
+			{Type: types.ContentTypeToolUse, ID: "toolu_4", Name: "Grep", Input: json.RawMessage(`{"pattern":"todo"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_4", Content: json.RawMessage(`[{"type":"text","text":"file.go:1:todo"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	if len(views[0].Blocks) != 4 {
+		t.Fatalf("blocks = %d, want 4 (3 Task + 1 Grep)", len(views[0].Blocks))
+	}
+	for i, b := range views[0].Blocks {
+		if b.Type != BlockTool {
+			t.Errorf("block[%d] = %v, want BlockTool", i, b.Type)
+		}
+	}
+	for i := range 3 {
+		srk := views[0].Blocks[i].ToolCall.SearchRead
+		if !srk.IsTask {
+			t.Errorf("Task block[%d] should have IsTask=true, got %+v", i, srk)
+		}
+	}
+	if views[0].Blocks[3].ToolCall.SearchRead.IsTask {
+		t.Error("Grep block should have IsTask=false")
+	}
+	rendered := renderMessagesFull(views, 80, false, "", false, false, 0)
+	if !strings.Contains(rendered, "Searched for 1 pattern, managed 3 tasks") {
+		t.Errorf("rendered should show mixed group summary, got:\n%s", rendered)
+	}
+}
+
 func TestResume_ToolResultError(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -9471,4 +9512,75 @@ func TestApp_SubAgentToolEnd_UsesEngineDuration(t *testing.T) {
 			t.Errorf("sub-agent Write Elapsed = %v, want exactly 90s (engine-reported Duration)", writeTool.Elapsed)
 		}
 	})
+}
+
+// TestApp_UpdateRepl_TaskMsgsCarryAllFlags drives the live streaming
+// message path with every SearchReadKind flag set and verifies the full
+// struct survives each copy site (tool_start / tool_param_delta / tool_end).
+// Each site is exercised with the flags arriving at THAT message (tool_start
+// with empty input classifies nothing), so a broken copy cannot be masked by
+// an earlier one.
+func TestApp_UpdateRepl_TaskMsgsCarryAllFlags(t *testing.T) {
+	t.Parallel()
+	allFlags := tool.SearchReadKind{IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true}
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+
+	// tool_start classification (repl.go top-level literal).
+	app.updateRepl(toolStartMsg{ID: "t1", Name: "Task", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	tcv, ok := app.repl.pendingTool["t1"]
+	if !ok {
+		t.Fatal("pendingTool should have entry for t1")
+	}
+	if tcv.SearchRead != allFlags {
+		t.Errorf("tool_start: SearchRead = %+v, want %+v", tcv.SearchRead, allFlags)
+	}
+
+	// tool_param_delta classification: flags first arrive here (empty start).
+	app.updateRepl(toolStartMsg{ID: "t2", Name: "Task"})
+	app.updateRepl(toolParamDeltaMsg{ID: "t2", Delta: `{"action"`, Summary: "create", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	if tcv = app.repl.pendingTool["t2"]; tcv.SearchRead != allFlags {
+		t.Errorf("param_delta: SearchRead = %+v, want %+v", tcv.SearchRead, allFlags)
+	}
+
+	// tool_end classification: flags first arrive here (empty start).
+	app.updateRepl(toolStartMsg{ID: "t3", Name: "Task"})
+	app.updateRepl(toolEndMsg{ToolUseID: "t3", Output: "Created: #1 Fix login", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	if tcv = app.repl.FindToolView("t3"); tcv == nil {
+		t.Fatal("tool view for t3 not found after tool_end")
+	} else if tcv.SearchRead != allFlags {
+		t.Errorf("tool_end: SearchRead = %+v, want %+v", tcv.SearchRead, allFlags)
+	}
+}
+
+// TestApp_UpdateRepl_AgentTaskMsgsCarryAllFlags covers the sub-agent
+// branches: tool calls nested under a parent Agent block keep every
+// SearchReadKind flag, with each message site introducing the flags itself.
+func TestApp_UpdateRepl_AgentTaskMsgsCarryAllFlags(t *testing.T) {
+	t.Parallel()
+	allFlags := tool.SearchReadKind{IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true}
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	// Sub-agent tool_start carries the flags directly.
+	app.updateRepl(toolStartMsg{ID: "sub-1", Name: "Task", Agent: agent, IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	parent := app.repl.findToolView("call_abc")
+	if parent == nil || len(parent.Blocks) == 0 {
+		t.Fatal("parent Agent tool view missing after sub-agent tool_start")
+	}
+	sub := parent.Blocks[len(parent.Blocks)-1].ToolCall
+	if sub.SearchRead != allFlags {
+		t.Errorf("sub-agent tool_start: SearchRead = %+v, want %+v", sub.SearchRead, allFlags)
+	}
+
+	// Sub-agent tool_end: flags first arrive here (start was unclassified).
+	app.updateRepl(toolStartMsg{ID: "sub-2", Name: "Task", Agent: agent})
+	app.updateRepl(toolEndMsg{ToolUseID: "sub-2", Output: "Created: #1", Agent: agent, IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	parent = app.repl.findToolView("call_abc")
+	sub = parent.Blocks[len(parent.Blocks)-1].ToolCall
+	if sub.SearchRead != allFlags {
+		t.Errorf("sub-agent tool_end: SearchRead = %+v, want %+v", sub.SearchRead, allFlags)
+	}
 }

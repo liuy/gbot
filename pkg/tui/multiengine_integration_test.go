@@ -584,3 +584,45 @@ func TestMultiEngine_BackgroundStreaming_StatusAndAccumulatedOutput(t *testing.T
 		}
 	}
 }
+
+// TestMultiEngine_BackgroundFlagPlumbing feeds tool messages with every
+// SearchReadKind flag set through the background-engine drain path and
+// verifies each copy site (tool_start / tool_param_delta / tool_end) lands
+// the full struct on the background engine's tool views. Each message
+// introduces the flags itself so a broken copy cannot be masked by an
+// earlier one.
+func TestMultiEngine_BackgroundFlagPlumbing(t *testing.T) {
+	t.Parallel()
+	allFlags := tool.SearchReadKind{IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true}
+	a, _, _ := newMultiEngineIntegrationApp(t)
+	e2VS := a.engineMgr.Get("e2")
+	if e2VS == nil {
+		t.Fatal("e2 view state not found")
+	}
+	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
+	drain := a.buildBackgroundDrainFn(e2VS)
+
+	drain(turnStartMsg{})
+
+	// tool_start copy carries every flag.
+	drain(toolStartMsg{ID: "t-bg-1", Name: "Task", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	if tcv := e2Repl.FindToolView("t-bg-1"); tcv == nil || tcv.SearchRead != allFlags {
+		t.Errorf("tool_start: background flags lost, view=%+v", tcv)
+	}
+
+	// tool_param_delta copy: flags first arrive here.
+	drain(toolStartMsg{ID: "t-bg-2", Name: "Task"})
+	drain(toolParamDeltaMsg{ID: "t-bg-2", Delta: `{"`, Summary: "create", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	if tcv := e2Repl.FindToolView("t-bg-2"); tcv == nil || tcv.SearchRead != allFlags {
+		t.Errorf("param_delta: background flags lost, view=%+v", tcv)
+	}
+
+	// tool_end copy: flags first arrive here.
+	drain(toolStartMsg{ID: "t-bg-3", Name: "Task"})
+	drain(toolEndMsg{ToolUseID: "t-bg-3", Output: "Created: #1", IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true})
+	if tcv := e2Repl.FindToolView("t-bg-3"); tcv == nil || tcv.SearchRead != allFlags {
+		t.Errorf("tool_end: background flags lost, view=%+v", tcv)
+	} else if !tcv.Done {
+		t.Error("tool_end: background tool should be Done")
+	}
+}

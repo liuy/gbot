@@ -989,7 +989,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			slog.Info("tui:tool_start_subagent", "id", m.ID, "name", m.Name, "parentID", m.Agent.ParentToolUseID, "depth", m.Agent.Depth, "agentType", m.Agent.AgentType, "parentFound", parent != nil)
 			if parent != nil {
-				srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}
+				srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 				parent.Blocks = append(parent.Blocks, ContentBlock{
 					Type: BlockTool,
 					ToolCall: ToolCallView{
@@ -1006,7 +1006,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}
+			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 			a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input, srk)
 			if m.Name == "Agent" {
 				a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
@@ -1029,7 +1029,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}
+			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
 		a.repl.AddResponseChars(m.Delta)
@@ -1064,7 +1064,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						parent.Blocks[i].ToolCall.IsError = m.IsError
 						parent.Blocks[i].ToolCall.Output = m.Output
 						parent.Blocks[i].ToolCall.Elapsed = m.Duration
-						srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}
+						srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 						if srk.IsCollapsible() {
 							parent.Blocks[i].ToolCall.SearchRead = srk
 						}
@@ -1074,7 +1074,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}, m.Duration)
+			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}, m.Duration)
 			// Bash shortcut virtual tools drive their own stream lifecycle —
 			// no engine queryEndMsg follows — so FinishStream to stop
 			// streaming/spinner here, detected by ID prefix. /compact does
