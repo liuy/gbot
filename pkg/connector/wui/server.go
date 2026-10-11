@@ -97,6 +97,8 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	// the new session's live streaming until the next takeover. (Comparing
 	// activeWS alone is not enough: the writer's failed-write CAS can nil it
 	// for either connection.)
+	// Accepted delta: a genuine disconnect after a mid-connection session/model
+	// switch (newer era) skips deactivation — benign, switchEngine re-deactivates on the next dial.
 	if myEra == c.outQ.Load() {
 		c.slotsMu.RLock()
 		if slot := c.slots[c.ActiveID()]; slot != nil {

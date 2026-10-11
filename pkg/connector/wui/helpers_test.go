@@ -23,8 +23,10 @@ import (
 )
 
 // waitFor polls cond until it returns true or the timeout elapses.
-// The wui WS tests use real TCP connections (httptest.Server + gorilla
-// dialer), so there is no channel to select on — polling is the only option.
+// There is no channel to select on (the production side pushes without one),
+// so polling is the only option. Inside synctest bubbles (hermeticWUI and
+// hermeticWUIHub) time.Now and time.Sleep below run on the virtual clock;
+// outside bubbles they poll in real time.
 func waitFor(timeout time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(timeout) // REAL-TIME
 	for time.Now().Before(deadline) {   // REAL-TIME
@@ -507,7 +509,9 @@ func (c *WUIConnector) mock() *mockEngine {
 	panic("mock() called on connector without a mockEngine")
 }
 
-// firstPendingAskIDTest returns the id of the first stored pending ask.
+// firstPendingAskIDTest returns the id of the first stored pending ask,
+// polling until one appears (virtual time inside synctest bubbles, real
+// time otherwise).
 func (c *WUIConnector) firstPendingAskIDTest(t *testing.T) string {
 	t.Helper()
 	deadline := time.Now().Add(time.Second) // REAL-TIME

@@ -40,7 +40,6 @@ func TestCleanupConn_DoesNotAbortActiveQuery(t *testing.T) {
 		// Cleanup: cancel the query to let the goroutine exit
 		c.mock().abortFn = func() {}
 		c.activeEngineTest().Abort()
-		waitFor(time.Second, func() bool { return c.mock().abortCount >= 2 })
 	})
 }
 
@@ -49,7 +48,7 @@ func TestCleanupConn_DoesNotAbortActiveQuery(t *testing.T) {
 // must be deactivated (no live client to stream to) and pending asks must be
 // unblocked with Aborted=true. Its counterpart — a STALE readLoop exiting
 // after a takeover doing neither — is pinned by
-// TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover.
+// TestServeChatWS_EraGuard_PreventsClobberOnManualSwap.
 func TestDisconnect_DeactivatesSlotAndAbortsAsks(t *testing.T) {
 	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
 		ws := hs.dialDrained(t)

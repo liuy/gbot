@@ -197,10 +197,11 @@ func TestSendWS_NoActiveWSIsNoOp(t *testing.T) {
 	}
 }
 
-// TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover verifies that a stale
-// readLoop goroutine (from an older connection exiting after a newer takeover)
-// does NOT clear activeWS when its cleanup runs with the old ws.
-func TestServeChatWS_StaleReadLoopDoesNotClobberNewTakeover(t *testing.T) {
+// TestServeChatWS_EraGuard_PreventsClobberOnManualSwap verifies that a stale
+// connection exiting after a newer takeover does NOT clear activeWS: the test
+// drives the cleanup CAS itself (not the production stale-exit path), pinning
+// that CompareAndSwap only clears when it still holds the exiting ws.
+func TestServeChatWS_EraGuard_PreventsClobberOnManualSwap(t *testing.T) {
 	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
 		ws1 := hs.dialDrained(t)
 

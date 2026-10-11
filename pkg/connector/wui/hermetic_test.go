@@ -144,7 +144,10 @@ func (s *chatServer) dialWSAt(t *testing.T, path string) *websocket.Conn {
 	d := websocket.Dialer{NetDial: func(_, _ string) (net.Conn, error) { return cc, nil }}
 	ws, _, err := d.Dial("ws://wui-hermetic"+path, nil)
 	if err != nil {
-		t.Fatalf("hermetic ws dial %s: %v", path, err)
+		// Errorf, not Fatalf: dialWS also runs on wg.Go goroutines (takeover
+		// stress loop), where Fatalf's runtime.Goexit is illegal.
+		t.Errorf("hermetic ws dial %s: %v", path, err)
+		return nil
 	}
 	return ws
 }
