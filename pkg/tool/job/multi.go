@@ -114,7 +114,7 @@ func (m *MultiRegistry) Wait(id string) (int, error) {
 
 // CleanupCompleted calls CleanupCompleted on all sub-registries that implement it.
 // This is the single entry point for cleaning up terminal jobs from all registries.
-// cleanupAware is implemented by bash adapter and fork adapter.
+// cleanupAware is implemented by bash adapter and background agent adapter.
 type cleanupAware interface {
 	CleanupCompleted()
 }

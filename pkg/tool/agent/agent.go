@@ -74,8 +74,8 @@ type AgentOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	engine      SubagentEngine     // shared sub-agent engine (engine.Engine)
-	forkReg     *ForkAgentRegistry // nil = fork disabled
+	engine      SubagentEngine           // shared sub-agent engine (engine.Engine)
+	bgReg       *BackgroundAgentRegistry // nil = background agents disabled
 	notifyFn    func(xml string)
 	sysPromptFn func() string
 	workingDir  string
@@ -108,12 +108,12 @@ func (t *AgentTool) SubagentDeps() *SubagentDeps {
 	}
 }
 
-// SetNotifyFn enables fork agent support.
+// SetNotifyFn enables background agent support.
 func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() string) {
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
-	if t.forkReg == nil {
-		t.forkReg = NewForkAgentRegistry()
+	if t.bgReg == nil {
+		t.bgReg = NewBackgroundAgentRegistry()
 	}
 }
 
@@ -132,13 +132,13 @@ func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
 // McpConnectFn returns the MCP connector (for testing).
 func (t *AgentTool) McpConnectFn() McpConnectFunc { return t.mcpConnect }
 
-// JobAdapter returns a job.Registry wrapping the fork agent registry.
-// Returns nil if fork is not enabled (SetNotifyFn not called).
+// JobAdapter returns a job.Registry wrapping the background agent registry.
+// Returns nil if background agents are not enabled (SetNotifyFn not called).
 func (t *AgentTool) JobAdapter() job.Registry {
-	if t.forkReg == nil {
+	if t.bgReg == nil {
 		return nil
 	}
-	return NewForkAgentJobAdapter(t.forkReg)
+	return NewBackgroundAgentJobAdapter(t.bgReg)
 }
 
 // Name returns the tool name.
@@ -205,7 +205,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 
 	// Step 1.6: Fork routing — inherit parent context
 	if agentInput.Fork {
-		if t.forkReg == nil {
+		if t.bgReg == nil {
 			return nil, fmt.Errorf("fork mode is not available: fork agent registry not initialized")
 		}
 		return t.callFork(ctx, agentInput, tctx)
@@ -399,7 +399,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Build the notifyFn closure
 	forkNotifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
-		xml := buildForkNotificationXML(agentID, toolUseID, result, err, input.Description, input.Name)
+		xml := buildAgentNotificationXML(agentID, toolUseID, result, err, input.Description, input.Name)
 		if t.notifyFn != nil {
 			t.notifyFn(xml)
 		}
@@ -410,7 +410,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	// to avoid deleting agents before TaskOutput can query them.
 	detachedCtx := context.Background()
 
-	state, err := t.forkReg.Spawn(detachedCtx, runFn, forkNotifyFn, input.Description, parentToolUseID)
+	state, err := t.bgReg.Spawn(detachedCtx, runFn, forkNotifyFn, input.Description, parentToolUseID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn fork agent: %w", err)
 	}

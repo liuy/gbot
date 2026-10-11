@@ -88,7 +88,7 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	if deps.Cfg != nil {
 		at.SetResolveTierFn(deps.Cfg.ResolveTier)
 	}
-	// Stub SetNotifyFn — must be called before JobAdapter() so forkReg is initialized.
+	// Stub SetNotifyFn — must be called before JobAdapter() so bgReg is initialized.
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	reg.MustRegister(at)
 
@@ -147,7 +147,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		})
 	}
 
-	// Fork agent notifications → engine's attachment queue (overrides stub from CreateTools).
+	// Background agent notifications → engine's attachment queue (overrides stub from CreateTools).
 	refs.Agent.SetNotifyFn(
 		func(xml string) {
 			eng.EnqueueAttachment(types.QueuedItem{

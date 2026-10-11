@@ -7,22 +7,22 @@ import (
 )
 
 // Compile-time interface check.
-var _ job.Registry = (*ForkAgentJobAdapter)(nil)
+var _ job.Registry = (*BackgroundAgentJobAdapter)(nil)
 
-// ForkAgentJobAdapter adapts ForkAgentRegistry to the job.Registry interface.
-// This enables TaskOutput/TaskStop to manage fork agent tasks alongside bash tasks.
-type ForkAgentJobAdapter struct {
-	reg *ForkAgentRegistry
+// BackgroundAgentJobAdapter adapts BackgroundAgentRegistry to the job.Registry interface.
+// This enables TaskOutput/TaskStop to manage background agent tasks alongside bash tasks.
+type BackgroundAgentJobAdapter struct {
+	reg *BackgroundAgentRegistry
 }
 
-// NewForkAgentJobAdapter creates an adapter wrapping a ForkAgentRegistry.
+// NewBackgroundAgentJobAdapter creates an adapter wrapping a BackgroundAgentRegistry.
 // If reg is nil, all methods return not-found.
-func NewForkAgentJobAdapter(reg *ForkAgentRegistry) *ForkAgentJobAdapter {
-	return &ForkAgentJobAdapter{reg: reg}
+func NewBackgroundAgentJobAdapter(reg *BackgroundAgentRegistry) *BackgroundAgentJobAdapter {
+	return &BackgroundAgentJobAdapter{reg: reg}
 }
 
 // Get returns task info by ID.
-func (a *ForkAgentJobAdapter) Get(id string) (*job.JobInfo, bool) {
+func (a *BackgroundAgentJobAdapter) Get(id string) (*job.JobInfo, bool) {
 	if a.reg == nil {
 		return nil, false
 	}
@@ -33,8 +33,8 @@ func (a *ForkAgentJobAdapter) Get(id string) (*job.JobInfo, bool) {
 	return convertState(state), true
 }
 
-// Kill cancels a running fork agent by ID.
-func (a *ForkAgentJobAdapter) Kill(id string) error {
+// Kill cancels a running background agent by ID.
+func (a *BackgroundAgentJobAdapter) Kill(id string) error {
 	if a.reg == nil {
 		return fmt.Errorf("kill %q: %w", id, job.ErrNotFound)
 	}
@@ -44,9 +44,9 @@ func (a *ForkAgentJobAdapter) Kill(id string) error {
 	return nil
 }
 
-// List returns all fork agent tasks as TaskInfo snapshots.
+// List returns all background agent tasks as TaskInfo snapshots.
 // Triggers lazy cleanup for any terminal-state agents.
-func (a *ForkAgentJobAdapter) List() []*job.JobInfo {
+func (a *BackgroundAgentJobAdapter) List() []*job.JobInfo {
 	if a.reg == nil {
 		return nil
 	}
@@ -55,7 +55,7 @@ func (a *ForkAgentJobAdapter) List() []*job.JobInfo {
 	hasTerminal := false
 	for i, s := range states {
 		result[i] = convertState(s)
-		if s.Status != ForkRunning {
+		if s.Status != AgentRunning {
 			hasTerminal = true
 		}
 	}
@@ -65,10 +65,10 @@ func (a *ForkAgentJobAdapter) List() []*job.JobInfo {
 	return result
 }
 
-// Wait blocks until the fork agent completes, returning an exit code.
-// ForkAgentRegistry.Wait blocks on <-state.done which is closed after the
+// Wait blocks until the background agent completes, returning an exit code.
+// BackgroundAgentRegistry.Wait blocks on <-state.done which is closed after the
 // goroutine updates Status and Result, so the copy reflects the final state.
-func (a *ForkAgentJobAdapter) Wait(id string) (int, error) {
+func (a *BackgroundAgentJobAdapter) Wait(id string) (int, error) {
 	if a.reg == nil {
 		return -1, fmt.Errorf("wait %q: %w", id, job.ErrNotFound)
 	}
@@ -80,25 +80,25 @@ func (a *ForkAgentJobAdapter) Wait(id string) (int, error) {
 	return info.ExitCode, nil
 }
 
-// convertState maps a ForkAgentState snapshot to a job.JobInfo.
-// ForkCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
-func convertState(s *ForkAgentState) *job.JobInfo {
+// convertState maps a BackgroundAgentState snapshot to a job.JobInfo.
+// AgentCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
+func convertState(s *BackgroundAgentState) *job.JobInfo {
 	info := &job.JobInfo{
 		ID:          s.ID,
 		Type:        "local_agent",
 		Description: s.Description,
 	}
 	switch s.Status {
-	case ForkCompleted:
+	case AgentCompleted:
 		info.Status = "completed"
 		info.ExitCode = 0
-	case ForkFailed:
+	case AgentFailed:
 		info.Status = "failed"
 		info.ExitCode = 1
-	case ForkCancelled:
+	case AgentCancelled:
 		info.Status = "killed"
 		info.ExitCode = -1
-	case ForkRunning:
+	case AgentRunning:
 		info.Status = "running"
 	}
 	if s.Result != nil {
@@ -106,12 +106,14 @@ func convertState(s *ForkAgentState) *job.JobInfo {
 		info.AgentType = s.Result.AgentType
 		info.Tokens = s.Result.TotalTokens
 		info.DurationMs = s.Result.TotalDurationMs
-	} else if s.Status == ForkFailed {
+	} else if s.Status == AgentFailed {
 		// Failed but no Result — provide a generic error message.
 		info.Output = "agent failed with no result"
 	}
 	return info
 }
 
-// Prefix returns the ID prefix for fork agent tasks.
-func (a *ForkAgentJobAdapter) Prefix() string { return "fork-" }
+// Prefix returns the ID prefix the adapter routes directly (fork agents).
+// Background subagent IDs ("agent-N") miss this prefix and fall through to
+// MultiRegistry's linear scan.
+func (a *BackgroundAgentJobAdapter) Prefix() string { return "fork-" }

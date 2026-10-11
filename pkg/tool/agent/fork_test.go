@@ -13,7 +13,7 @@ import (
 
 func TestForkRegistry_SpawnAndWait(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
@@ -24,16 +24,16 @@ func TestForkRegistry_SpawnAndWait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn returned error: %v", err)
 	}
-	if state.Status != ForkRunning {
-		t.Errorf("initial Status = %q, want %q", state.Status, ForkRunning)
+	if state.Status != AgentRunning {
+		t.Errorf("initial Status = %q, want %q", state.Status, AgentRunning)
 	}
 
 	final, ok := reg.Wait(state.ID)
 	if !ok {
 		t.Fatal("Wait returned false")
 	}
-	if final.Status != ForkCompleted {
-		t.Errorf("final Status = %q, want %q", final.Status, ForkCompleted)
+	if final.Status != AgentCompleted {
+		t.Errorf("final Status = %q, want %q", final.Status, AgentCompleted)
 	}
 	if final.Result.Content != "done" {
 		t.Errorf("Result.Content = %q, want %q", final.Result.Content, "done")
@@ -42,7 +42,7 @@ func TestForkRegistry_SpawnAndWait(t *testing.T) {
 
 func TestForkRegistry_SpawnWithError(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
@@ -52,14 +52,14 @@ func TestForkRegistry_SpawnWithError(t *testing.T) {
 	)
 
 	final, _ := reg.Wait(state.ID)
-	if final.Status != ForkFailed {
-		t.Errorf("Status = %q, want %q", final.Status, ForkFailed)
+	if final.Status != AgentFailed {
+		t.Errorf("Status = %q, want %q", final.Status, AgentFailed)
 	}
 }
 
 func TestForkRegistry_Cancel(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
@@ -78,14 +78,14 @@ func TestForkRegistry_Cancel(t *testing.T) {
 	}
 
 	final, _ := reg.Wait(state.ID)
-	if final.Status != ForkCancelled {
-		t.Errorf("Status = %q, want %q", final.Status, ForkCancelled)
+	if final.Status != AgentCancelled {
+		t.Errorf("Status = %q, want %q", final.Status, AgentCancelled)
 	}
 }
 
 func TestForkRegistry_CancelNonexistent(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	if reg.Cancel("nonexistent") {
 		t.Error("Cancel should return false for nonexistent agent")
 	}
@@ -93,7 +93,7 @@ func TestForkRegistry_CancelNonexistent(t *testing.T) {
 
 func TestForkRegistry_Get(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
@@ -118,7 +118,7 @@ func TestForkRegistry_Get(t *testing.T) {
 
 func TestForkRegistry_List(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	// Block agents on channels so they stay running until we check List
 	unblockA := make(chan struct{})
@@ -156,7 +156,7 @@ func TestForkRegistry_List(t *testing.T) {
 
 func TestForkRegistry_NotifyCalled(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	var mu sync.Mutex
 	var notifiedID, notifiedToolUseID string
@@ -198,7 +198,7 @@ func TestForkRegistry_NotifyCalled(t *testing.T) {
 
 func TestForkRegistry_NotifyOnError(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	var mu sync.Mutex
 	var notifiedErr error
@@ -229,7 +229,7 @@ func TestForkRegistry_NotifyOnError(t *testing.T) {
 
 func TestForkRegistry_ContextCancellation(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -245,8 +245,8 @@ func TestForkRegistry_ContextCancellation(t *testing.T) {
 	cancel()
 
 	final, _ := reg.Wait(state.ID)
-	if final.Status != ForkCancelled {
-		t.Errorf("Status = %q, want %q", final.Status, ForkCancelled)
+	if final.Status != AgentCancelled {
+		t.Errorf("Status = %q, want %q", final.Status, AgentCancelled)
 	}
 }
 
@@ -256,7 +256,7 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 		TotalDurationMs: 1234,
 		TotalTokens:     5000,
 	}
-	xml := buildForkNotificationXML("fork-1", "call_abc", result, nil, "search code", "ship-audit")
+	xml := buildAgentNotificationXML("fork-1", "call_abc", result, nil, "search code", "ship-audit")
 
 	if !strings.Contains(xml, "<job-notification>") {
 		t.Error("should contain <job-notification>")
@@ -288,7 +288,7 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 }
 
 func TestBuildForkNotificationXML_Error(t *testing.T) {
-	xml := buildForkNotificationXML("fork-2", "call_err", nil, errors.New("timeout"), "test", "")
+	xml := buildAgentNotificationXML("fork-2", "call_err", nil, errors.New("timeout"), "test", "")
 
 	if !strings.Contains(xml, "<status>failed</status>") {
 		t.Error("should contain failed status")
@@ -305,7 +305,7 @@ func TestBuildForkNotificationXML_EscapesSpecialChars(t *testing.T) {
 		TotalDurationMs: 100,
 		TotalTokens:     200,
 	}
-	xml := buildForkNotificationXML("fork-1", "call_xss", result, nil, `search "code" & <stuff>`, "")
+	xml := buildAgentNotificationXML("fork-1", "call_xss", result, nil, `search "code" & <stuff>`, "")
 
 	// Raw <script> should NOT appear — must be escaped to &lt;script&gt;
 	if strings.Contains(xml, "<script>") {
@@ -333,7 +333,7 @@ func TestBuildForkNotificationXML_EscapesSpecialChars(t *testing.T) {
 
 func TestForkRegistry_SpawnNilRunFn(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	_, err := reg.Spawn(context.Background(), nil, nil, "test", "call_1")
 	if err == nil {
 		t.Fatal("expected error for nil runFn, got nil")
@@ -345,7 +345,7 @@ func TestForkRegistry_SpawnNilRunFn(t *testing.T) {
 
 func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	unblock := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
@@ -362,13 +362,13 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 		t.Fatal("Get returned false")
 	}
 	// Modifying the returned copy should not affect the registry's internal state
-	got.Status = ForkCompleted
+	got.Status = AgentCompleted
 	got.Result = &types.SubQueryResult{Content: "tampered"}
 
 	// Get again — internal state should be unchanged (still Running)
 	got2, _ := reg.Get(state.ID)
-	if got2.Status != ForkRunning {
-		t.Errorf("internal state was mutated via returned pointer: Status = %q, want %q", got2.Status, ForkRunning)
+	if got2.Status != AgentRunning {
+		t.Errorf("internal state was mutated via returned pointer: Status = %q, want %q", got2.Status, AgentRunning)
 	}
 	if got2.Result != nil {
 		t.Error("internal Result was mutated via returned pointer")
@@ -381,7 +381,7 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 
 func TestForkRegistry_CleanupCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	// Spawn two agents that complete quickly
 	s1, _ := reg.Spawn(context.Background(),
@@ -482,7 +482,7 @@ func TestIsInForkChild_EmptyMessages(t *testing.T) {
 
 func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	var notified bool
 	var notifyErr error
@@ -503,8 +503,8 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 	if !ok {
 		t.Fatal("Wait should find the agent")
 	}
-	if final.Status != ForkFailed {
-		t.Errorf("expected ForkFailed, got %s", final.Status)
+	if final.Status != AgentFailed {
+		t.Errorf("expected AgentFailed, got %s", final.Status)
 	}
 	if !notified {
 		t.Error("notifyFn should be called on panic")
@@ -519,7 +519,7 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 
 func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -540,8 +540,8 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 	if !ok {
 		t.Fatal("Wait should find the agent")
 	}
-	if final.Status != ForkCancelled {
-		t.Errorf("expected ForkCancelled, got %s", final.Status)
+	if final.Status != AgentCancelled {
+		t.Errorf("expected AgentCancelled, got %s", final.Status)
 	}
 	if final.Result == nil {
 		t.Error("partial result should be preserved on cancellation")
@@ -553,8 +553,8 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 
 func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentJobAdapter(reg)
+	reg := NewBackgroundAgentRegistry()
+	adapter := NewBackgroundAgentJobAdapter(reg)
 
 	// Spawn and complete a fork agent
 	state, _ := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {

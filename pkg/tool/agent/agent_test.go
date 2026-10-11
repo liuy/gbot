@@ -408,7 +408,7 @@ func TestSetMcpConnect(t *testing.T) {
 func TestJobAdapter_NilForkReg(t *testing.T) {
 	at := New()
 	if got := at.JobAdapter(); got != nil {
-		t.Error("JobAdapter() should return nil when forkReg is nil")
+		t.Error("JobAdapter() should return nil when bgReg is nil")
 	}
 }
 
@@ -416,13 +416,13 @@ func TestJobAdapter_NonNilForkReg(t *testing.T) {
 	at := New()
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	if got := at.JobAdapter(); got == nil {
-		t.Error("JobAdapter() should return non-nil when forkReg is set")
+		t.Error("JobAdapter() should return non-nil when bgReg is set")
 	}
 }
 
 func TestForkAgentJobAdapter_Prefix(t *testing.T) {
-	reg := NewForkAgentRegistry()
-	a := NewForkAgentJobAdapter(reg)
+	reg := NewBackgroundAgentRegistry()
+	a := NewBackgroundAgentJobAdapter(reg)
 	if got := a.Prefix(); got != "fork-" {
 		t.Errorf("Prefix() = %q, want %q", got, "fork-")
 	}
@@ -666,7 +666,7 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	}
 
 	// Wait for fork agent to complete via registry
-	at.forkReg.Wait(sqr.AgentID)
+	at.bgReg.Wait(sqr.AgentID)
 
 	// Verify factory received fork messages
 	mu.Lock()
@@ -704,7 +704,7 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 	input := json.RawMessage(`{"description":"explore","prompt":"search","fork":true,"run_in_background":true,"subagent_type":"Explore"}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_exp"})
 	sqr := result.Data.(*types.SubQueryResult)
-	at.forkReg.Wait(sqr.AgentID)
+	at.bgReg.Wait(sqr.AgentID)
 
 	mu.Lock()
 	opts := capturedOpts
@@ -734,7 +734,7 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 	input := json.RawMessage(`{"description":"audit","prompt":"check","fork":true,"run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_audit"})
 	sqr := result.Data.(*types.SubQueryResult)
-	at.forkReg.Wait(sqr.AgentID)
+	at.bgReg.Wait(sqr.AgentID)
 
 	mu.Lock()
 	opts := capturedOpts
@@ -802,7 +802,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 
 	// Wait for fork to complete via registry
 	sqr := result.Data.(*types.SubQueryResult)
-	at.forkReg.Wait(sqr.AgentID)
+	at.bgReg.Wait(sqr.AgentID)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -820,12 +820,12 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 func TestSetNotifyFn_EnablesFork(t *testing.T) {
 	t.Parallel()
 	at := New()
-	if at.forkReg != nil {
-		t.Error("forkReg should be nil before SetNotifyFn")
+	if at.bgReg != nil {
+		t.Error("bgReg should be nil before SetNotifyFn")
 	}
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
-	if at.forkReg == nil {
-		t.Error("forkReg should be non-nil after SetNotifyFn")
+	if at.bgReg == nil {
+		t.Error("bgReg should be non-nil after SetNotifyFn")
 	}
 }
 
@@ -1535,7 +1535,7 @@ func TestForkSync_InheritsContext(t *testing.T) {
 }
 
 func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
-	// fork=false + run_in_background=true without forkReg → falls through to normal sync path
+	// fork=false + run_in_background=true without bgReg → falls through to normal sync path
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return &types.SubQueryResult{
 			AgentType: "General",
@@ -1546,7 +1546,7 @@ func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
 	_ = makeTestTools("Bash", "Read")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	// No SetNotifyFn → forkReg is nil
+	// No SetNotifyFn → bgReg is nil
 
 	input := json.RawMessage(`{"description":"bg without fork","prompt":"do something","run_in_background":true}`)
 	result, err := at.Call(context.Background(), input, nil)
@@ -1560,7 +1560,7 @@ func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
 	}
 	// Falls through to sync path (no fork, no registry for background)
 	if sqr.AsyncLaunched {
-		t.Error("should not be async — no forkReg to manage background agents")
+		t.Error("should not be async — no bgReg to manage background agents")
 	}
 	if sqr.Content != "done" {
 		t.Errorf("Content = %q, want %q", sqr.Content, "done")
@@ -1568,7 +1568,7 @@ func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
 }
 
 func TestForkTrue_NoForkReg_ReturnsError(t *testing.T) {
-	// fork=true but forkReg is nil → error
+	// fork=true but bgReg is nil → error
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return nil, fmt.Errorf("should not be called")
 	}
@@ -1576,12 +1576,12 @@ func TestForkTrue_NoForkReg_ReturnsError(t *testing.T) {
 	_ = makeTestTools("Bash")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	// No SetNotifyFn → forkReg is nil
+	// No SetNotifyFn → bgReg is nil
 
 	input := json.RawMessage(`{"description":"fork no reg","prompt":"test","fork":true}`)
 	_, err := at.Call(context.Background(), input, nil)
 	if err == nil {
-		t.Fatal("expected error when fork=true but forkReg is nil")
+		t.Fatal("expected error when fork=true but bgReg is nil")
 	}
 	if !strings.Contains(err.Error(), "fork mode is not available") {
 		t.Errorf("error = %q, want mention of fork mode not available", err.Error())

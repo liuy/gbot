@@ -13,54 +13,54 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Fork agent lifecycle types
+// Background agent lifecycle types
 // ---------------------------------------------------------------------------
 
-// ForkAgentStatus represents the current state of a fork agent.
-type ForkAgentStatus string
+// BackgroundAgentStatus represents the current state of a background agent.
+type BackgroundAgentStatus string
 
 const (
-	ForkRunning   ForkAgentStatus = "running"
-	ForkCompleted ForkAgentStatus = "completed"
-	ForkFailed    ForkAgentStatus = "failed"
-	ForkCancelled ForkAgentStatus = "cancelled"
+	AgentRunning   BackgroundAgentStatus = "running"
+	AgentCompleted BackgroundAgentStatus = "completed"
+	AgentFailed    BackgroundAgentStatus = "failed"
+	AgentCancelled BackgroundAgentStatus = "cancelled"
 )
 
-// ForkAgentState tracks the lifecycle of a single fork agent.
-type ForkAgentState struct {
+// BackgroundAgentState tracks the lifecycle of a single background agent.
+type BackgroundAgentState struct {
 	ID          string
 	Description string
-	Status      ForkAgentStatus
+	Status      BackgroundAgentStatus
 	StartTime   time.Time
 	Result      *types.SubQueryResult
 	done        chan struct{}
 	cancel      context.CancelFunc
 }
 
-// ForkAgentRegistry manages fork agent lifecycle.
-type ForkAgentRegistry struct {
+// BackgroundAgentRegistry manages background agent lifecycle.
+type BackgroundAgentRegistry struct {
 	mu     sync.Mutex
-	agents map[string]*ForkAgentState
+	agents map[string]*BackgroundAgentState
 	nextID int
 }
 
-// NewForkAgentRegistry creates a new registry for fork agents.
-func NewForkAgentRegistry() *ForkAgentRegistry {
-	return &ForkAgentRegistry{
-		agents: make(map[string]*ForkAgentState),
+// NewBackgroundAgentRegistry creates a new registry for background agents.
+func NewBackgroundAgentRegistry() *BackgroundAgentRegistry {
+	return &BackgroundAgentRegistry{
+		agents: make(map[string]*BackgroundAgentState),
 	}
 }
 
-// Spawn starts a new fork agent in a background goroutine.
+// Spawn starts a new background agent in a goroutine.
 // The runFn is called in a goroutine with a derived context.
 // On completion, notifyFn is called with the result.
-func (r *ForkAgentRegistry) Spawn(
+func (r *BackgroundAgentRegistry) Spawn(
 	ctx context.Context,
 	runFn func(ctx context.Context) (*types.SubQueryResult, error),
 	notifyFn func(agentID string, toolUseID string, result *types.SubQueryResult, err error),
 	description string,
 	parentToolUseID string,
-) (*ForkAgentState, error) {
+) (*BackgroundAgentState, error) {
 	if runFn == nil {
 		return nil, fmt.Errorf("runFn is required")
 	}
@@ -70,10 +70,10 @@ func (r *ForkAgentRegistry) Spawn(
 	r.mu.Lock()
 	r.nextID++
 	id := fmt.Sprintf("fork-%d", r.nextID)
-	state := &ForkAgentState{
+	state := &BackgroundAgentState{
 		ID:          id,
 		Description: description,
-		Status:      ForkRunning,
+		Status:      AgentRunning,
 		StartTime:   time.Now(),
 		done:        make(chan struct{}),
 		cancel:      cancel,
@@ -91,7 +91,7 @@ func (r *ForkAgentRegistry) Spawn(
 		defer func() {
 			if p := recover(); p != nil {
 				r.mu.Lock()
-				state.Status = ForkFailed
+				state.Status = AgentFailed
 				r.mu.Unlock()
 				if notifyFn != nil {
 					notifyFn(id, parentToolUseID, nil, fmt.Errorf("panic: %v", p))
@@ -104,7 +104,7 @@ func (r *ForkAgentRegistry) Spawn(
 		r.mu.Lock()
 		if err != nil {
 			if childCtx.Err() != nil {
-				state.Status = ForkCancelled
+				state.Status = AgentCancelled
 				// Preserve partial result on cancellation so the notification
 				// can include what the agent accomplished before being killed.
 				// Source: AgentTool.tsx:1006 + agentToolUtils.ts:658
@@ -112,10 +112,10 @@ func (r *ForkAgentRegistry) Spawn(
 					state.Result = result
 				}
 			} else {
-				state.Status = ForkFailed
+				state.Status = AgentFailed
 			}
 		} else {
-			state.Status = ForkCompleted
+			state.Status = AgentCompleted
 			state.Result = result
 		}
 		r.mu.Unlock()
@@ -128,8 +128,8 @@ func (r *ForkAgentRegistry) Spawn(
 	return &snapshot, nil
 }
 
-// Wait blocks until the fork agent with the given ID completes.
-func (r *ForkAgentRegistry) Wait(id string) (*ForkAgentState, bool) {
+// Wait blocks until the background agent with the given ID completes.
+func (r *BackgroundAgentRegistry) Wait(id string) (*BackgroundAgentState, bool) {
 	r.mu.Lock()
 	state, ok := r.agents[id]
 	r.mu.Unlock()
@@ -149,8 +149,8 @@ func (r *ForkAgentRegistry) Wait(id string) (*ForkAgentState, bool) {
 	return &cp, true
 }
 
-// Cancel cancels the fork agent with the given ID.
-func (r *ForkAgentRegistry) Cancel(id string) bool {
+// Cancel cancels the background agent with the given ID.
+func (r *BackgroundAgentRegistry) Cancel(id string) bool {
 	r.mu.Lock()
 	state, ok := r.agents[id]
 	r.mu.Unlock()
@@ -161,9 +161,9 @@ func (r *ForkAgentRegistry) Cancel(id string) bool {
 	return true
 }
 
-// Get returns a snapshot of the fork agent state with the given ID.
+// Get returns a snapshot of the background agent state with the given ID.
 // Returns a copy — callers can safely read fields without mutex concerns.
-func (r *ForkAgentRegistry) Get(id string) (*ForkAgentState, bool) {
+func (r *BackgroundAgentRegistry) Get(id string) (*BackgroundAgentState, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	state, ok := r.agents[id]
@@ -178,12 +178,12 @@ func (r *ForkAgentRegistry) Get(id string) (*ForkAgentState, bool) {
 	return &cp, true
 }
 
-// List returns snapshots of all fork agents.
+// List returns snapshots of all background agents.
 // Returns copies — callers can safely read fields without mutex concerns.
-func (r *ForkAgentRegistry) List() []*ForkAgentState {
+func (r *BackgroundAgentRegistry) List() []*BackgroundAgentState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	result := make([]*ForkAgentState, 0, len(r.agents))
+	result := make([]*BackgroundAgentState, 0, len(r.agents))
 	for _, state := range r.agents {
 		cp := *state
 		if state.Result != nil {
@@ -197,11 +197,11 @@ func (r *ForkAgentRegistry) List() []*ForkAgentState {
 
 // CleanupCompleted removes all agents in terminal states (completed, failed, cancelled).
 // Call after processing results to prevent unbounded memory growth.
-func (r *ForkAgentRegistry) CleanupCompleted() {
+func (r *BackgroundAgentRegistry) CleanupCompleted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, state := range r.agents {
-		if state.Status == ForkCompleted || state.Status == ForkFailed || state.Status == ForkCancelled {
+		if state.Status == AgentCompleted || state.Status == AgentFailed || state.Status == AgentCancelled {
 			delete(r.agents, id)
 		}
 	}
@@ -211,9 +211,9 @@ func (r *ForkAgentRegistry) CleanupCompleted() {
 // Notification XML builder
 // ---------------------------------------------------------------------------
 
-// buildForkNotificationXML generates the job-notification XML for a background
+// buildAgentNotificationXML generates the job-notification XML for a background
 // agent completion. Injected as a user message into the parent conversation.
-func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryResult, err error, description, agentName string) string {
+func buildAgentNotificationXML(agentID, toolUseID string, result *types.SubQueryResult, err error, description, agentName string) string {
 	status := "completed"
 	if err != nil {
 		status = "failed"

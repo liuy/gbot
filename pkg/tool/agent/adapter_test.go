@@ -15,10 +15,10 @@ import (
 
 func TestConvertState_Completed(t *testing.T) {
 	t.Parallel()
-	s := &ForkAgentState{
+	s := &BackgroundAgentState{
 		ID:          "fork-1",
 		Description: "search code",
-		Status:      ForkCompleted,
+		Status:      AgentCompleted,
 		Result: &types.SubQueryResult{
 			Content:         "found 3 files",
 			AgentType:       "fork",
@@ -56,9 +56,9 @@ func TestConvertState_Completed(t *testing.T) {
 
 func TestConvertState_Running(t *testing.T) {
 	t.Parallel()
-	s := &ForkAgentState{
+	s := &BackgroundAgentState{
 		ID:     "fork-2",
-		Status: ForkRunning,
+		Status: AgentRunning,
 	}
 	info := convertState(s)
 	if info.Status != "running" {
@@ -71,9 +71,9 @@ func TestConvertState_Running(t *testing.T) {
 
 func TestConvertState_Failed(t *testing.T) {
 	t.Parallel()
-	s := &ForkAgentState{
+	s := &BackgroundAgentState{
 		ID:     "fork-3",
-		Status: ForkFailed,
+		Status: AgentFailed,
 		Result: &types.SubQueryResult{
 			Content: "context canceled",
 		},
@@ -92,9 +92,9 @@ func TestConvertState_Failed(t *testing.T) {
 
 func TestConvertState_Failed_NilResult(t *testing.T) {
 	t.Parallel()
-	s := &ForkAgentState{
+	s := &BackgroundAgentState{
 		ID:     "fork-4",
-		Status: ForkFailed,
+		Status: AgentFailed,
 		Result: nil,
 	}
 	info := convertState(s)
@@ -108,9 +108,9 @@ func TestConvertState_Failed_NilResult(t *testing.T) {
 
 func TestConvertState_Cancelled_MapsToKilled(t *testing.T) {
 	t.Parallel()
-	s := &ForkAgentState{
+	s := &BackgroundAgentState{
 		ID:     "fork-5",
-		Status: ForkCancelled,
+		Status: AgentCancelled,
 	}
 	info := convertState(s)
 	if info.Status != "killed" {
@@ -127,7 +127,7 @@ func TestConvertState_Cancelled_MapsToKilled(t *testing.T) {
 
 func TestAdapter_GetCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{
@@ -141,7 +141,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -165,7 +165,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 
 func TestAdapter_GetRunning(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
@@ -175,7 +175,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 		nil, "slow task", "call_1",
 	)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -193,7 +193,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 
 func TestAdapter_GetFailed(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
@@ -202,7 +202,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -217,8 +217,8 @@ func TestAdapter_GetFailed(t *testing.T) {
 
 func TestAdapter_GetNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentJobAdapter(reg)
+	reg := NewBackgroundAgentRegistry()
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	_, ok := adapter.Get("nonexistent")
 	if ok {
 		t.Error("Get should return false for nonexistent ID")
@@ -227,7 +227,7 @@ func TestAdapter_GetNotFound(t *testing.T) {
 
 func TestAdapter_List(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	s1, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
@@ -243,7 +243,7 @@ func TestAdapter_List(t *testing.T) {
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	list := adapter.List()
 	if len(list) != 2 {
 		t.Fatalf("List returned %d tasks, want 2", len(list))
@@ -262,7 +262,7 @@ func TestAdapter_List(t *testing.T) {
 
 func TestAdapter_List_TriggerCleanup(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
@@ -271,7 +271,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	// List triggers cleanup of terminal agents
 	adapter.List()
 
@@ -284,7 +284,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 
 func TestAdapter_KillSuccess(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
@@ -296,7 +296,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 	)
 	<-started
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	if err := adapter.Kill(state.ID); err != nil {
 		t.Errorf("Kill returned error: %v", err)
 	}
@@ -305,8 +305,8 @@ func TestAdapter_KillSuccess(t *testing.T) {
 
 func TestAdapter_KillNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentJobAdapter(reg)
+	reg := NewBackgroundAgentRegistry()
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	err := adapter.Kill("nonexistent")
 	if err == nil {
 		t.Error("Kill should return error for nonexistent ID")
@@ -318,7 +318,7 @@ func TestAdapter_KillNotFound(t *testing.T) {
 
 func TestAdapter_WaitCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
@@ -326,7 +326,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 		nil, "wait test", "call_1",
 	)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	code, err := adapter.Wait(state.ID)
 	if err != nil {
 		t.Fatalf("Wait error: %v", err)
@@ -338,7 +338,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 
 func TestAdapter_WaitFailed(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
+	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
@@ -346,7 +346,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 		nil, "fail test", "call_1",
 	)
 
-	adapter := NewForkAgentJobAdapter(reg)
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	code, err := adapter.Wait(state.ID)
 	if err != nil {
 		t.Fatalf("Wait error: %v", err)
@@ -358,8 +358,8 @@ func TestAdapter_WaitFailed(t *testing.T) {
 
 func TestAdapter_WaitNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentJobAdapter(reg)
+	reg := NewBackgroundAgentRegistry()
+	adapter := NewBackgroundAgentJobAdapter(reg)
 	_, err := adapter.Wait("nonexistent")
 	if err == nil {
 		t.Error("Wait should return error for nonexistent ID")
@@ -371,7 +371,7 @@ func TestAdapter_WaitNotFound(t *testing.T) {
 
 func TestAdapter_NilRegistry(t *testing.T) {
 	t.Parallel()
-	adapter := NewForkAgentJobAdapter(nil)
+	adapter := NewBackgroundAgentJobAdapter(nil)
 
 	_, ok := adapter.Get("any")
 	if ok {

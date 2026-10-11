@@ -41,7 +41,7 @@ type JobInfo struct {
 	Output      string `json:"output,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
 
-	// Agent-specific fields (populated by ForkAgentTaskAdapter).
+	// Agent-specific fields (populated by BackgroundAgentJobAdapter).
 	AgentType  string `json:"agent_type,omitempty"`
 	Tokens     int    `json:"tokens,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
