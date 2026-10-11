@@ -22,7 +22,6 @@
     "dompurify": "^3.4.11",
     "fuzzysearch": "^1.0.3",
     "highlight.js": "^11.10.0",
-    "idiomorph": "^0.7.4",
     "katex": "^0.16.47",
     "lit": "3.3.3",
     "markdown-it": "^14.1.0",

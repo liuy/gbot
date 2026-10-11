@@ -1,4 +1,5 @@
-import { Idiomorph } from 'idiomorph'
+// Vendored copy (patched for the strong-drop bug, see vendor header):
+import { Idiomorph } from './idiomorph/esm/index.js'
 
 // idiomorph patches only the DOM nodes that actually changed between the
 // existing tree and the new HTML. During streaming, markdown is re-parsed
@@ -10,8 +11,8 @@ export function morphHtml(el: HTMLElement, html: string): void {
   Idiomorph.morph(el, html, {
     morphStyle: 'innerHTML',
     callbacks: {
-      beforeNodeMorphed(oldNode: Node): boolean | void {
-        if (!(oldNode instanceof HTMLElement)) return
+      beforeNodeMorphed(oldNode: Node): boolean {
+        if (!(oldNode instanceof HTMLElement)) return true
         // copy-btn is injected at runtime by wireCopyButtons; it does not
         // exist in the rendered markdown HTML. Prevent idiomorph from
         // removing it during morph so the button survives across deltas.
@@ -21,6 +22,7 @@ export function morphHtml(el: HTMLElement, html: string): void {
         // preserving the header prevents copy-btn from being removed as
         // a "disappeared" child.
         if (oldNode.classList.contains('code-header')) return false
+        return true
       },
     },
   })
