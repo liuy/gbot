@@ -1620,6 +1620,63 @@ describe('chat integration', () => {
     expect(sent.some((m) => (m as { type: string }).type === 'jobs_clear')).toBe(true)
   })
 
+  it('expanded bash feed streams job_output frames and the stop button sends job_stop', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [{ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check', startedMs: 1 }],
+    })
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    ring.click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    ;(popover.querySelector('.jobs-row') as HTMLElement).click()
+    expect((popover.querySelector('.jobs-cmd') as HTMLElement).textContent).toBe('$ make check')
+
+    dispatch({ type: 'job_output', jobID: 'bg-1', tail: 'ok  pkg/engine  1.2s\n' })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    const feed = popover.querySelector('.jobs-feed') as HTMLElement
+    expect(feed.querySelectorAll('.f-line')).toHaveLength(1)
+    expect(feed.textContent).toContain('ok  pkg/engine  1.2s')
+
+    ;(popover.querySelector('.jobs-stop') as HTMLButtonElement).click()
+    expect(sent).toContainEqual({ type: 'job_stop', jobID: 'bg-1' })
+    // The stop click must not collapse the expansion it lives in.
+    expect(popover.querySelector('.jobs-exp')).not.toBeNull()
+  })
+
+  it('expanded agent feed renders live tool cards and text through the full wiring', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'job_list',
+      jobs: [{ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: 'fix bug', parentToolUseID: 'p1', startedMs: 1 }],
+    })
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    ring.click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    ;(popover.querySelector('.jobs-row') as HTMLElement).click()
+
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 't-1', name: 'Read', input: {} }, agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 } },
+      {
+        type: 'tool_end',
+        tool_result: { tool_use_id: 't-1', output: 'done', is_error: false, display_output: '1 file' },
+        agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 },
+      },
+      { type: 'text_delta', text: 'found it', agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 } },
+    ])
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    const feed = popover.querySelector('.jobs-feed') as HTMLElement
+    const tools = feed.querySelectorAll('.f-tool')
+    expect(tools).toHaveLength(1)
+    expect(tools[0].querySelector('.tn')?.textContent).toBe('Read')
+    expect(tools[0].querySelector('.f-mark.ok')?.textContent).toBe('✓')
+    expect(feed.textContent).toContain('found it')
+    // Stop affordance present while the agent runs.
+    expect(popover.querySelector('.jobs-stop')).not.toBeNull()
+  })
+
   it('takeover does not reset cumulative usage for the whole query', () => {
     // The engine emits per-turn usage deltas; the frontend accumulates
     // across the whole query. On takeover (reconnect), connect_status

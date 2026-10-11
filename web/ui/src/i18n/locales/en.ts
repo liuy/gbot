@@ -220,6 +220,8 @@ export const dict = {
   jobsSectionTitle: 'Background',
   clearDoneJobs: 'Clear done',
   jobKindFork: 'Fork',
+  stopJob: 'Stop',
+  backToBottom: 'Back to bottom',
 } as const
 
 export const endonym = 'English'

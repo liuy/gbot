@@ -195,6 +195,8 @@ export const dict: Dict = {
   jobsSectionTitle: '後台',
   clearDoneJobs: '清已完成',
   jobKindFork: 'Fork',
+  stopJob: '停止',
+  backToBottom: '回到底部',
 }
 
 export const endonym = '繁體中文'

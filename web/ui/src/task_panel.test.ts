@@ -369,3 +369,78 @@ describe('taskPanel — background jobs section', () => {
     expect((popover.querySelector('.px-3.pt-2\\.5') as HTMLElement).textContent).toBe('Background idle')
   })
 })
+
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+describe('taskPanel — job expansion (Phase 3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  function openPopover(panel: ReturnType<typeof createTaskPanel>) {
+    ;(panel.root as HTMLButtonElement).click()
+    return document.getElementById('task-popover') as HTMLElement
+  }
+
+  function expandFirstRow(popover: HTMLElement) {
+    ;(popover.querySelector('.jobs-row') as HTMLElement).click()
+  }
+
+  it('expansion survives status-change rebuilds, close/reopen, and hides the terminal stop button', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
+    const popover = openPopover(panel)
+    expandFirstRow(popover)
+    const feed1 = popover.querySelector('.jobs-feed') as HTMLElement
+    expect(popover.querySelector('.jobs-stop')).not.toBeNull()
+
+    // Running → completed flips the row but must not collapse the reading
+    // nor recreate the feed (scroll position lives on that node).
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'make check' })])
+    expect(document.getElementById('task-popover')).toBe(popover)
+    expect(popover.querySelector('.jobs-exp')).not.toBeNull()
+    expect(popover.querySelector('.jobs-feed')).toBe(feed1)
+    expect(popover.querySelector('.jobs-stop')).toBeNull()
+
+    // Close and reopen: expansion state and the carried feed element both
+    // persist.
+    ;(panel.root as HTMLButtonElement).click()
+    const popover2 = openPopover(panel)
+    expect(popover2.querySelector('.jobs-exp')).not.toBeNull()
+    expect(popover2.querySelector('.jobs-feed')).toBe(feed1)
+  })
+
+  it('tail-only updates refresh the feed in place without rebuilding rows', async () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
+    const popover = openPopover(panel)
+    expandFirstRow(popover)
+    const row1 = popover.querySelector('.jobs-row') as HTMLElement
+    const feed1 = popover.querySelector('.jobs-feed') as HTMLElement
+
+    panel.jobsStore.applyOutput('bg-1', 'ok  pkg/engine  1.2s\n')
+    await nextFrame()
+    // Same row and feed nodes — a 2Hz tail frame must not swap the DOM the
+    // user is looking at (hover/selection/scroll all live on these nodes).
+    expect(popover.querySelector('.jobs-row')).toBe(row1)
+    expect(popover.querySelector('.jobs-feed')).toBe(feed1)
+    expect(popover.querySelector('.jobs-exp')).not.toBeNull()
+    expect(feed1.textContent).toContain('ok  pkg/engine  1.2s')
+  })
+
+  it('stop button routes to the onStopJob option', () => {
+    const onStopJob = vi.fn()
+    const panel = createTaskPanel({ onStopJob, onClearDone: vi.fn() })
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
+    const popover = openPopover(panel)
+    expandFirstRow(popover)
+    ;(popover.querySelector('.jobs-stop') as HTMLButtonElement).click()
+    expect(onStopJob).toHaveBeenCalledTimes(1)
+    expect(onStopJob).toHaveBeenCalledWith('bg-1')
+    // Stop is not a toggle: the row stays expanded.
+    expect(popover.querySelector('.jobs-exp')).not.toBeNull()
+  })
+})

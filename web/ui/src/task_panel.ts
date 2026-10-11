@@ -5,6 +5,7 @@ import { createElement } from './dom'
 import { renderIcon } from './icons'
 import { createFloatButton } from './buttons'
 import { createJobsStore, type JobsStoreHandle } from './jobs_store'
+import { createJobsSection } from './jobs_render'
 import { t } from './i18n'
 
 export interface TaskPanelOptions {
@@ -38,6 +39,16 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
   root.style.display = 'none'
 
   const jobsStore = createJobsStore()
+  const jobsSection = createJobsSection()
+  // Expansion state outlives popover rebuilds: a 2Hz job frame must not
+  // collapse a row the user is reading.
+  const expanded = new Set<string>()
+  // Rows only rebuild when the job list identity changes (new/removed/status
+  // flip). Pure content updates (bash tail, agent blocks) refresh the feed
+  // in place via jobsSection.scheduleRender — full row rebuilds at frame
+  // rate would eat hover state and swap the stop button mid-click.
+  let lastJobsSig = ''
+  const jobsSig = () => jobsStore.jobs().map((j) => `${j.id}:${j.status}`).join('|')
   let currentTasks: TaskWireItem[] = []
 
   // Panel is built once; onOpen clears and rebuilds content so each open
@@ -71,6 +82,7 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     }
     appendJobsSection(list, jobs)
     popover.appendChild(list)
+    lastJobsSig = jobsSig()
   }
 
   const host = createPopupHost({
@@ -137,55 +149,14 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     })
     sec.append(label, clr)
     list.appendChild(sec)
-    for (const j of jobs) list.appendChild(renderJobRow(j))
-  }
-
-  function renderJobRow(j: JobWireItem): HTMLElement {
-    const row = createElement('div', 'jobs-row flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px]')
-    if (j.status !== 'running') row.className += ' opacity-60 hover:opacity-100'
-
-    const icon = createElement('span', 'flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center')
-    if (j.status === 'running') {
-      const ring = createElement('span', 'w-3.5 h-3.5 rounded-full border-2 border-blue/25 border-t-blue spin')
-      icon.replaceChildren(ring)
-    } else if (j.status === 'completed') {
-      icon.className += ' bg-green/20 text-green'
-      icon.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>'
-    } else {
-      icon.className += ' bg-red/20 text-red'
-      icon.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg>'
-    }
-
-    const name = createElement('span', 'flex-1 min-w-0 truncate')
-    if (j.kind === 'bash') {
-      name.className += ' mono text-[12px]'
-      name.textContent = j.command ?? ''
-    } else {
-      const label = j.agentType === 'fork' ? t('jobKindFork') : (j.agentType ?? '')
-      name.textContent = j.description ? `${label} · ${j.description}` : label
-    }
-    row.append(icon, name, renderJobChip(j))
-    return row
-  }
-
-  // Chips are English mono by design (Running/Done — same language as the
-  // existing task rows); the surrounding UI text is i18n'd.
-  function renderJobChip(j: JobWireItem): HTMLElement {
-    const chip = createElement('span', 'mono text-[10px] flex-shrink-0')
-    if (j.status === 'running') {
-      chip.className += ' text-blue pulse'
-      chip.textContent = 'Running'
-    } else if (j.status === 'completed') {
-      chip.className += ' text-green'
-      chip.textContent = 'Done'
-    } else if (j.status === 'failed') {
-      chip.className += ' text-red'
-      chip.textContent = j.exitCode ? `Exit ${j.exitCode}` : 'Failed'
-    } else {
-      chip.className += ' text-red'
-      chip.textContent = 'Stopped'
-    }
-    return chip
+    // Rows (and expansion boxes) render through jobs_render; expansion
+    // state and feed elements survive this rebuild by design.
+    const rows = createElement('div')
+    list.appendChild(rows)
+    jobsSection.rebuild(rows, jobsStore, {
+      expanded,
+      onStop: (id) => opts?.onStopJob?.(id),
+    })
   }
 
   const updateChrome = () => {
@@ -238,7 +209,12 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
 
   jobsStore.onChange(() => {
     updateChrome()
-    if (host.isOpen()) rebuildPopover()
+    if (!host.isOpen()) return
+    if (jobsSig() !== lastJobsSig) {
+      rebuildPopover()
+    } else {
+      jobsSection.scheduleRender()
+    }
   })
 
   // Cleanup popover if root is removed from DOM.
