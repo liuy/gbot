@@ -1,10 +1,11 @@
-import type { Block } from './model'
 import type { JobWireItem } from './types'
 import type { JobFeedState, JobsStoreHandle } from './jobs_store'
 import { createElement } from './dom'
-import { nounFor } from './utils'
-import { renderMarkdown } from './markdown'
 import { t } from './i18n'
+import { renderStreamBlock, wireCopyButtons } from './components/stream_blocks'
+import { renderToolOutput } from './tool_render'
+import { createFloatButton } from './buttons'
+import { toolBody } from './styles/recipes'
 
 // Follow threshold shared by bash tail feeds and agent block feeds: within
 // 40px of the bottom means "pinned". Parameterized (not read off an element)
@@ -32,106 +33,47 @@ export interface JobsSectionHandles {
   scheduleRender(): void
 }
 
-// Flatten the block tree in document order: the server cache keeps sub-agent
-// events nested under their parent tool, but the feed displays one flat
-// sequence (design spec: flat order, tree is cache-only).
-function flattenFeedBlocks(blocks: Block[], out: Block[]): void {
-  for (const b of blocks) {
-    out.push(b)
-    if (b.kind === 'tool' && b.children.length > 0) flattenFeedBlocks(b.children, out)
-  }
-}
-
-// Bash tail: full replacement each render (the wire always carries the whole
-// 20-line window, so there is nothing to append onto).
-function bashTailLines(tail: string): string[] {
-  const lines = tail.split('\n')
-  // A trailing newline is the window's terminator, not a blank output line.
-  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
-  return lines
+// Feed element trio per expanded job: the wrap is the positioning context
+// for the back-to-bottom overlay button (a sibling of the scroll container,
+// not a child, so it never scrolls away), the feed is the scroll container
+// whose content is fully re-rendered on every store change, and the button
+// is the chat-scrollBtn-style follow affordance.
+interface FeedView {
+  wrap: HTMLElement
+  feed: HTMLElement
+  btn: HTMLButtonElement
 }
 
 export function createJobsSection(): JobsSectionHandles {
-  // Feed element per expanded job. Entries live exactly as long as the job
+  // Feed view per expanded job. Entries live exactly as long as the job
   // stays expanded and present — collapse or removal drops (and therefore
   // scroll-resets) the feed, which is the intended fresh-follow behavior.
-  const feedEls = new Map<string, HTMLElement>()
+  const feedEls = new Map<string, FeedView>()
   let curStore: JobsStoreHandle | null = null
   let unsub: (() => void) | null = null
   let rafId = 0
 
-  const buildPin = (el: HTMLElement, feed: JobFeedState): HTMLElement => {
-    const pin = createElement('div', 'f-pin')
-    const btn = createElement('button') as HTMLButtonElement
-    btn.type = 'button'
-    btn.textContent = '↓ ' + t('backToBottom')
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      feed.follow = true
-      el.scrollTop = el.scrollHeight
-      el.classList.remove('up')
-    })
-    pin.appendChild(btn)
-    return pin
-  }
-
-  const renderBashFeed = (el: HTMLElement, feed: JobFeedState): void => {
-    const frag = document.createDocumentFragment()
-    for (const line of bashTailLines(feed.tail)) {
-      const d = createElement('div', 'f-line')
-      d.textContent = line
-      frag.appendChild(d)
+  const renderFeedContent = (view: FeedView, feed: JobFeedState): void => {
+    const el = view.feed
+    if (el.dataset.kind === 'bash') {
+      // Same pipeline as a chat Bash tool card's output body; the row label
+      // already carries the command so the feed shows output only.
+      const body = createElement('div', toolBody())
+      body.classList.remove('ml-6', 'hidden')
+      body.innerHTML = renderToolOutput(feed.tail)
+      wireCopyButtons(body)
+      el.replaceChildren(body)
+    } else {
+      const frag = document.createDocumentFragment()
+      for (const b of feed.blocks) renderStreamBlock(frag as unknown as HTMLElement, b, null, null)
+      el.replaceChildren(frag)
     }
-    frag.appendChild(buildPin(el, feed))
-    el.replaceChildren(frag)
-  }
-
-  const renderAgentFeed = (el: HTMLElement, feed: JobFeedState): void => {
-    const flat: Block[] = []
-    flattenFeedBlocks(feed.blocks, flat)
-    const frag = document.createDocumentFragment()
-    for (const b of flat) {
-      if (b.kind === 'tool') {
-        const card = createElement('div', 'f-tool')
-        // Shared chat tool language: classifyTool-derived noun (Grep →
-        // "Search", ls → "List") instead of the raw wire name.
-        const tn = createElement('span', 'tn')
-        tn.textContent = nounFor(b.name, b.isList)
-        const sum = createElement('span')
-        sum.textContent = b.summary
-        card.append(tn, sum)
-        if (b.state === 'done' || b.state === 'error') {
-          const mark = createElement('span', 'f-mark ' + (b.state === 'done' ? 'ok' : 'err'))
-          mark.textContent = b.state === 'done' ? '✓' : '✗'
-          card.appendChild(mark)
-        }
-        frag.appendChild(card)
-      } else if (b.kind === 'thinking') {
-        const th = createElement('div', 'f-think')
-        th.textContent = b.text
-        frag.appendChild(th)
-      } else if (b.kind === 'text') {
-        const tx = createElement('div', 'f-text')
-        tx.innerHTML = renderMarkdown(b.text)
-        frag.appendChild(tx)
-      } else if (b.kind === 'user') {
-        const ln = createElement('div', 'f-line')
-        ln.textContent = b.text
-        frag.appendChild(ln)
-      }
-    }
-    frag.appendChild(buildPin(el, feed))
-    el.replaceChildren(frag)
-  }
-
-  const renderFeedContent = (el: HTMLElement, feed: JobFeedState): void => {
-    if (el.dataset.kind === 'bash') renderBashFeed(el, feed)
-    else renderAgentFeed(el, feed)
     // Pin when following; when the user scrolled up, leave scrollTop alone —
     // re-rendered content must not yank the viewport (that is the whole
     // reason feeds are carried over instead of rebuilt).
     if (feed.follow) el.scrollTop = el.scrollHeight
-    el.classList.toggle('up', !feed.follow)
+    view.btn.classList.toggle('opacity-0', feed.follow)
+    view.btn.classList.toggle('pointer-events-none', feed.follow)
   }
 
   // Renders every tracked feed, connected or not: the section host is built
@@ -139,9 +81,9 @@ export function createJobsSection(): JobsSectionHandles {
   // while the popover was closed must still refresh on the next rebuild.
   const renderAllFeeds = () => {
     if (!curStore) return
-    for (const [id, el] of feedEls) {
+    for (const [id, view] of feedEls) {
       const feed = curStore.feed(id)
-      if (feed) renderFeedContent(el, feed)
+      if (feed) renderFeedContent(view, feed)
     }
   }
 
@@ -153,30 +95,35 @@ export function createJobsSection(): JobsSectionHandles {
     })
   }
 
-  const createFeedEl = (job: JobWireItem): HTMLElement => {
-    const el = createElement('div', 'jobs-feed mt-1.5')
+  const createFeedView = (job: JobWireItem): FeedView => {
+    const wrap = createElement('div', 'relative mt-1.5')
+    const el = createElement('div', 'jobs-feed')
     el.dataset.kind = job.kind
     el.dataset.jobId = job.id
+    const btn = createFloatButton({
+      position: 'center',
+      innerIcon: 'scroll-to-bottom',
+      onClick: () => {
+        const feed = curStore?.feed(job.id)
+        if (feed) feed.follow = true
+        el.scrollTop = el.scrollHeight
+        btn.classList.add('opacity-0', 'pointer-events-none')
+      },
+    }).root
+    btn.setAttribute('aria-label', t('backToBottom'))
+    // Inline bottom overrides the recipe's bottom-24 (chat's main-area
+    // offset): the button must hug a 180px feed, not the viewport chrome.
+    // Inline style wins over the class, so no CSS surgery is needed.
+    btn.style.bottom = '4px'
     el.addEventListener('scroll', () => {
       const feed = curStore?.feed(job.id)
       if (!feed) return
       feed.follow = nearBottom(el.scrollHeight, el.scrollTop, el.clientHeight)
-      el.classList.toggle('up', !feed.follow)
+      btn.classList.toggle('opacity-0', feed.follow)
+      btn.classList.toggle('pointer-events-none', feed.follow)
     })
-    return el
-  }
-
-  const buildCmdBlock = (j: JobWireItem): HTMLElement => {
-    const cmd = createElement(
-      'div',
-      'jobs-cmd mono text-[12px] leading-relaxed text-t2 bg-black/30 border border-hairline rounded-lg px-2.5 py-2 whitespace-pre-wrap break-all',
-    )
-    const dollar = createElement('span', 'text-t3')
-    dollar.textContent = '$ '
-    const text = createElement('span')
-    text.textContent = j.command ?? ''
-    cmd.append(dollar, text)
-    return cmd
+    wrap.append(el, btn)
+    return { wrap, feed: el, btn }
   }
 
   // Stop affordance per design spec: bare 28px red icon button, solid
@@ -206,17 +153,16 @@ export function createJobsSection(): JobsSectionHandles {
   ): HTMLElement => {
     const box = createElement('div', 'jobs-exp pl-[34px] pr-2 pt-0.5 pb-2.5')
     box.dataset.jobId = j.id
-    if (j.kind === 'bash') box.appendChild(buildCmdBlock(j))
-    let feedEl = feedEls.get(j.id)
-    if (!feedEl) {
-      feedEl = createFeedEl(j)
-      feedEls.set(j.id, feedEl)
+    let view = feedEls.get(j.id)
+    if (!view) {
+      view = createFeedView(j)
+      feedEls.set(j.id, view)
       // A fresh feed always starts pinned: re-expanding a row must not
       // inherit the released-follow state of the element it replaced.
       const feed = curStore?.feed(j.id)
       if (feed) feed.follow = true
     }
-    box.appendChild(feedEl)
+    box.appendChild(view.wrap)
     if (j.status === 'running') {
       const actions = createElement('div', 'row-actions flex gap-2 mt-1.5 items-center justify-end')
       actions.appendChild(buildStopButton(j, onStop))

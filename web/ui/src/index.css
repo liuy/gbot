@@ -143,59 +143,15 @@ body {
 .rim-dot.on { display: block; }
 
 /* ── Background-job expansion feeds (design spec: bg-jobs-panel.html) ── */
+/* Frame only — feed content uses the chat stream recipes (md-body & co.),
+   and the content sits on the popover's own background, same as chat content
+   sitting on the page background. */
 .jobs-feed {
   max-height: 180px;
   overflow-y: auto;
   border: 1px solid var(--color-hairline);
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.22);
   padding: 8px 10px;
-  position: relative;
-  scroll-behavior: smooth;
-}
-.f-line {
-  font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--color-t3);
-  word-break: break-all;
-  white-space: pre-wrap;
-}
-.f-tool {
-  font: 11px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-  border: 1px solid var(--color-hairline);
-  border-radius: 7px;
-  padding: 4px 8px;
-  margin: 5px 0;
-  color: var(--color-t2);
-  display: flex;
-  gap: 6px;
-  align-items: baseline;
-}
-.f-tool .tn { color: var(--color-blue); font-weight: 600; flex-shrink: 0; }
-.f-tool .f-mark { margin-left: auto; font-size: 10px; flex-shrink: 0; }
-.f-tool .f-mark.ok { color: var(--color-green); }
-.f-tool .f-mark.err { color: var(--color-red); }
-.f-think {
-  font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--color-t3);
-  padding: 2px 0;
-}
-.f-think::before { content: '◆ '; color: var(--color-amber); font-size: 9px; }
-.f-text {
-  font: 11px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--color-t2);
-  margin: 4px 0;
-}
-.f-text p { margin: 0.25em 0; }
-.f-pin { position: sticky; bottom: 0; display: none; justify-content: center; padding: 2px; }
-.jobs-feed.up .f-pin { display: flex; }
-.f-pin button {
-  border: 1px solid rgba(120, 180, 255, 0.14);
-  background: var(--color-card);
-  color: var(--color-t2);
-  font-size: 10px;
-  border-radius: 99px;
-  padding: 2px 10px;
-  cursor: pointer;
 }
 
 .blink-green {

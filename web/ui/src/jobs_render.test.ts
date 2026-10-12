@@ -109,7 +109,7 @@ describe('jobs section — bash expansion', () => {
     document.body.innerHTML = ''
   })
 
-  it('shows the full command block and streams tail lines into the feed', async () => {
+  it('bash expansion shows only the output feed', async () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'running')])
     ctx.rerender()
@@ -118,16 +118,26 @@ describe('jobs section — bash expansion', () => {
     // The toggle rebuilds the section: re-query, the clicked node is stale.
     expect(rowFor(ctx.host, 'bg-1').classList.contains('exp')).toBe(true)
     expect(rowFor(ctx.host, 'bg-1').querySelector('.jobs-chev')?.classList.contains('rotate-90')).toBe(true)
-    const cmd = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-cmd') as HTMLElement
-    expect(cmd.textContent).toBe('$ make check')
+    // The row label already carries the command: no command block.
+    expect(expFor(ctx.host, 'bg-1')?.querySelector('.jobs-cmd')).toBeNull()
 
+    // Empty tail: feed present, no exception, and the body is not created
+    // yet — renderToolOutput('') defers until the first output arrives.
+    await nextFrame()
+    const emptyFeed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    expect(emptyFeed).not.toBeNull()
+    expect(emptyFeed.querySelectorAll('.md-body')).toHaveLength(0)
     ctx.store.applyOutput('bg-1', 'go vet ./...\nok  pkg/engine  1.2s\n')
     await nextFrame()
     const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
-    const lines = Array.from(feed.querySelectorAll('.f-line')).map((l) => l.textContent)
-    expect(lines).toEqual(['go vet ./...', 'ok  pkg/engine  1.2s'])
-    // Following by default: no jump-to-bottom pill shown.
-    expect(feed.classList.contains('up')).toBe(false)
+    // Output goes through the chat Bash-card pipeline: a single md-body.
+    const bodies = feed.querySelectorAll('.md-body')
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].textContent).toContain('go vet ./...')
+    expect(bodies[0].textContent).toContain('ok  pkg/engine  1.2s')
+    // Following by default: the back-to-bottom button stays hidden.
+    const btn = feed.parentElement?.querySelector('button') as HTMLButtonElement
+    expect(btn.classList.contains('opacity-0')).toBe(true)
   })
 
   it('stop button calls onStop with the job id and does not toggle the row', () => {
@@ -165,7 +175,7 @@ describe('jobs section — agent feed', () => {
     document.body.innerHTML = ''
   })
 
-  it('renders tool cards (classifyTool noun + summary + mark), thinking, and markdown text in order', () => {
+  it('renders tool cards (chat stream semantics), thinking, and markdown text in order', () => {
     const ctx = mount()
     const blocks: Block[] = [
       toolBlock('t-1', 'Grep'),
@@ -178,24 +188,30 @@ describe('jobs section — agent feed', () => {
     rowFor(ctx.host, 'agent-1').click()
     const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
 
-    const tools = Array.from(feed.querySelectorAll('.f-tool'))
+    const tools = Array.from(feed.querySelectorAll('[data-tool-root]'))
     expect(tools).toHaveLength(2)
-    // classifyTool language: Grep renders as its chat noun "Search".
-    expect(tools[0].querySelector('.tn')?.textContent).toBe('Search')
-    expect(tools[0].querySelector('.tn + span')?.textContent).toBe('Grep summary')
-    expect(tools[0].querySelector('.f-mark.ok')?.textContent).toBe('✓')
-    expect(tools[1].querySelector('.f-mark.err')?.textContent).toBe('✗')
+    // Raw wire tool name — chat stream rendering never applies classifyTool.
+    expect(tools[0].dataset.toolName).toBe('Grep')
+    expect(tools[0].querySelector('.text-green')).not.toBeNull()
+    // toolName is text-sm; the duration label is the only font-mono text-xs.
+    const durEl = tools[1].querySelector('.font-mono.text-xs') as HTMLElement
+    expect(durEl.textContent).toBe(' FAIL · 0s')
+    expect(tools[1].querySelector('.text-red')).not.toBeNull()
 
-    const think = feed.querySelectorAll('.f-think')
+    const think = feed.querySelectorAll('[data-thinking]')
     expect(think).toHaveLength(1)
-    expect(think[0].textContent).toBe('先复现')
+    expect(think[0].textContent).toContain('先复现')
+    expect(think[0].textContent).toContain('Thought for 0s')
 
-    const texts = Array.from(feed.querySelectorAll('.f-text'))
+    // textBlock is .text-t1; thinkingText is .text-t2 — sizes apart.
+    const texts = Array.from(feed.querySelectorAll('.md-body.text-t1'))
     expect(texts).toHaveLength(2)
     expect(texts[0].innerHTML).toContain('<strong>1335</strong>')
-    // Nested sub-agent output flattens after its parent card (markdown-it
-    // leaves a trailing newline inside <p>).
-    expect(texts[1].textContent?.trim()).toBe('nested report')
+    // Chat nesting semantics: sub-agent output lives in the parent card's
+    // children container (collapsed on done, but present in the DOM).
+    const children = tools[1].querySelector('[data-tool-children]') as HTMLElement
+    expect(children.classList.contains('hidden')).toBe(true)
+    expect(children.textContent?.trim()).toBe('nested report')
   })
 
   it('live events grow the expanded feed via the rAF-coalesced render', async () => {
@@ -204,7 +220,7 @@ describe('jobs section — agent feed', () => {
     ctx.rerender()
     rowFor(ctx.host, 'agent-1').click()
     const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
-    expect(feed.querySelectorAll('.f-tool')).toHaveLength(0)
+    expect(feed.querySelectorAll('[data-tool-root]')).toHaveLength(0)
 
     ctx.store.applyEvent({
       type: 'tool_start',
@@ -217,7 +233,7 @@ describe('jobs section — agent feed', () => {
       agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 },
     })
     await nextFrame()
-    expect(feed.querySelectorAll('.f-tool')).toHaveLength(1)
+    expect(feed.querySelectorAll('[data-tool-root]')).toHaveLength(1)
     expect(feed.textContent).toContain('found it')
   })
 
@@ -233,10 +249,14 @@ describe('jobs section — agent feed', () => {
     })
     await nextFrame()
     const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
-    // User blocks render as bare feed lines (f-line), not markdown f-text.
-    const lines = Array.from(feed.querySelectorAll('.f-line')).map((l) => l.textContent)
-    expect(lines).toEqual(['继续跑压测并记录 p99'])
-    expect(feed.querySelectorAll('.f-text')).toHaveLength(0)
+    // 'user' blocks render as the chat queued-message echo (gray), not
+    // markdown text.
+    const spans = Array.from(feed.querySelectorAll('span')).filter(
+      (s) => s.textContent === '继续跑压测并记录 p99',
+    )
+    expect(spans).toHaveLength(1)
+    expect(spans[0].className).toContain('text-t3')
+    expect(feed.querySelectorAll('.md-body.text-t1')).toHaveLength(0)
   })
 })
 
@@ -261,12 +281,12 @@ describe('jobs section — expansion lifecycle', () => {
     expect(ctx.expanded.size).toBe(0)
   })
 
-  it('rebuild carries the expanded feed element over instead of recreating it', () => {
+  it('rebuild carries the expanded feed view over instead of recreating it', () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'running')])
     ctx.rerender()
     rowFor(ctx.host, 'bg-1').click()
-    const feedBefore = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    const before = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
 
     // Status flip forces a full row rebuild (task_panel signature change).
     ctx.store.setJobs([bashJob('bg-1', 'completed')])
@@ -274,10 +294,16 @@ describe('jobs section — expansion lifecycle', () => {
 
     const rowAfter = rowFor(ctx.host, 'bg-1')
     expect(rowAfter.classList.contains('exp')).toBe(true)
-    const feedAfter = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
-    // Same node re-attached: scrollTop and listeners survive, so a rebuild
+    const after = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    // Same nodes re-attached: scrollTop and listeners survive, so a rebuild
     // can neither collapse the row nor jump its scroll.
-    expect(feedAfter).toBe(feedBefore)
+    expect(after).toBe(before)
+    // The whole view trio (wrap positioning context + follow button) is
+    // carried with the feed, not just the scroll container.
+    const wrapBefore = before.parentElement as HTMLElement
+    const wrapAfter = after.parentElement as HTMLElement
+    expect(wrapAfter).toBe(wrapBefore)
+    expect(wrapAfter.querySelector('button')).toBe(wrapBefore.querySelector('button'))
     // Terminal now: the stop affordance is gone from the rebuilt box.
     expect(expFor(ctx.host, 'bg-1')?.querySelector('.jobs-stop')).toBeNull()
   })
@@ -301,7 +327,9 @@ describe('jobs section — expansion lifecycle', () => {
     const second = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
     expect(second).not.toBe(first)
     expect(ctx.store.feed('bg-1')?.follow).toBe(true)
-    expect(second.classList.contains('up')).toBe(false)
+    // Fresh follow state: the re-expanded view's button starts hidden.
+    const btn = second.parentElement?.querySelector('button') as HTMLButtonElement
+    expect(btn.classList.contains('opacity-0')).toBe(true)
   })
 
   it('prunes expansion state for jobs that left the snapshot', () => {
@@ -316,7 +344,7 @@ describe('jobs section — expansion lifecycle', () => {
   })
 })
 
-describe('jobs section — follow pill', () => {
+describe('jobs section — follow button', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
   })
@@ -335,35 +363,38 @@ describe('jobs section — follow pill', () => {
     return { ctx, feed }
   }
 
-  it('scrolling up releases follow and shows the pill; the pill re-pins', async () => {
+  it('scrolling up releases follow and shows the back-to-bottom button; the button re-pins', async () => {
     const { ctx, feed } = await expandedBashFeed()
     feed.scrollTop = 100 // 500 - 100 - 200 = 200 > 40
     feed.dispatchEvent(new Event('scroll'))
     expect(ctx.store.feed('bg-1')?.follow).toBe(false)
-    expect(feed.classList.contains('up')).toBe(true)
-    const pill = feed.querySelector('.f-pin button') as HTMLButtonElement
-    expect(pill.textContent).toBe('↓ Back to bottom')
+    // The wrap holds exactly one button: the follow affordance.
+    const btn = feed.parentElement?.querySelector('button') as HTMLButtonElement
+    expect(btn.getAttribute('aria-label')).toBe('Back to bottom')
+    expect(btn.classList.contains('opacity-0')).toBe(false)
 
-    pill.click()
+    btn.click()
     expect(ctx.store.feed('bg-1')?.follow).toBe(true)
-    expect(feed.classList.contains('up')).toBe(false)
+    expect(btn.classList.contains('opacity-0')).toBe(true)
     expect(feed.scrollTop).toBe(500)
   })
 
-  it('scrolling near the bottom keeps follow and never shows the pill', async () => {
+  it('scrolling near the bottom keeps follow and never shows the button', async () => {
     const { ctx, feed } = await expandedBashFeed()
     feed.scrollTop = 269 // 500 - 269 - 200 = 31 < 40
     feed.dispatchEvent(new Event('scroll'))
     expect(ctx.store.feed('bg-1')?.follow).toBe(true)
-    expect(feed.classList.contains('up')).toBe(false)
+    expect((feed.parentElement?.querySelector('button') as HTMLButtonElement).classList.contains('opacity-0')).toBe(true)
   })
 
   it('re-render pins scrollTop to the stubbed bottom while following and holds it when scrolled up', async () => {
     const { ctx, feed } = await expandedBashFeed()
+    const btn = feed.parentElement?.querySelector('button') as HTMLButtonElement
     // Following: new output scrolls the feed to the bottom.
     ctx.store.applyOutput('bg-1', 'd\n')
     await nextFrame()
     expect(feed.scrollTop).toBe(500)
+    expect(btn.classList.contains('opacity-0')).toBe(true)
 
     // Scrolled up (500 - 100 - 200 = 200 > 40): a re-render must not yank
     // the viewport back to the bottom.
@@ -373,6 +404,6 @@ describe('jobs section — follow pill', () => {
     ctx.store.applyOutput('bg-1', 'e\n')
     await nextFrame()
     expect(feed.scrollTop).toBe(100)
-    expect(feed.classList.contains('up')).toBe(true)
+    expect(btn.classList.contains('opacity-0')).toBe(false)
   })
 })

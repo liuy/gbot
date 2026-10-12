@@ -1631,12 +1631,13 @@ describe('chat integration', () => {
     ring.click()
     const popover = document.getElementById('task-popover') as HTMLElement
     ;(popover.querySelector('.jobs-row') as HTMLElement).click()
-    expect((popover.querySelector('.jobs-cmd') as HTMLElement).textContent).toBe('$ make check')
+    // The row label already carries the command: no command block.
+    expect(popover.querySelector('.jobs-cmd')).toBeNull()
 
     dispatch({ type: 'job_output', jobID: 'bg-1', tail: 'ok  pkg/engine  1.2s\n' })
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     const feed = popover.querySelector('.jobs-feed') as HTMLElement
-    expect(feed.querySelectorAll('.f-line')).toHaveLength(1)
+    expect(feed.querySelectorAll('.md-body')).toHaveLength(1)
     expect(feed.textContent).toContain('ok  pkg/engine  1.2s')
 
     ;(popover.querySelector('.jobs-stop') as HTMLButtonElement).click()
@@ -1668,10 +1669,10 @@ describe('chat integration', () => {
     ])
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     const feed = popover.querySelector('.jobs-feed') as HTMLElement
-    const tools = feed.querySelectorAll('.f-tool')
+    const tools = feed.querySelectorAll('[data-tool-root]')
     expect(tools).toHaveLength(1)
-    expect(tools[0].querySelector('.tn')?.textContent).toBe('Read')
-    expect(tools[0].querySelector('.f-mark.ok')?.textContent).toBe('✓')
+    expect(tools[0].dataset.toolName).toBe('Read')
+    expect(tools[0].querySelector('.text-green')).not.toBeNull()
     expect(feed.textContent).toContain('found it')
     // Stop affordance present while the agent runs.
     expect(popover.querySelector('.jobs-stop')).not.toBeNull()

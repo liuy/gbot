@@ -6,25 +6,17 @@ import {
   newUserMessage,
 } from './model'
 import { classifyTool, countStreamBlocks, isCollapsibleBlock, streamTextChars, timeDividerLabel, unwrapQueuedReminder } from './utils'
-import { createCopyButton } from './utils/copy_button'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
-
-// wireCopyButtons must be called after every innerHTML assignment that may
-// contain rendered markdown — innerHTML wipes prior DOM, so the injected
-// buttons do not survive a re-render.
-function wireCopyButtons(container: HTMLElement) {
-  const wrappers = container.querySelectorAll<HTMLElement>('.code-block-wrapper')
-  for (const wrapper of wrappers) {
-    const header = wrapper.querySelector('.code-header')
-    const code = wrapper.querySelector('code')
-    if (!header || !code) continue
-    if (header.querySelector('.copy-btn')) continue
-    const btn = createCopyButton(() => code.textContent ?? '')
-    btn.classList.add('ml-auto')
-    header.appendChild(btn)
-  }
-}
+import {
+  renderStreamBlock,
+  wireCopyButtons,
+  showImageLightbox,
+  createAttachmentImage,
+  buildDocumentChip,
+  appendUserAttachment,
+  type LiveStreamSink,
+} from './components/stream_blocks'
 import {
   type ToolDomHandles,
   type ProgressDomHandles,
@@ -59,7 +51,7 @@ import { createTaskPanel } from './task_panel'
 import type { JobsStoreHandle } from './jobs_store'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
-import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList, formatArtifactSize } from './artifact'
+import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
 import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
@@ -86,7 +78,6 @@ import {
   avatarU,
   disconnectBannerClass,
   disconnectText,
-  userEchoBlock,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
 import { renderIcon } from './icons'
@@ -138,31 +129,6 @@ export interface ChatHandles {
   // store layer before the Phase 3 expansion UI renders it).
   jobsStore: JobsStoreHandle
   cleanup: () => void
-}
-
-// Lightweight lightbox: clicking any user-message thumbnail overlays a
-// full-screen, scrollable, click-to-close view of the original image. No
-// zoom/pan gestures — keeps the implementation under 30 lines and avoids
-// pulling in a library. The overlay is created lazily on first click and
-// reused across clicks.
-let lightboxOverlay: HTMLDivElement | null = null
-function showImageLightbox(src: string): void {
-  if (!lightboxOverlay) {
-    const overlay = createElement(
-      'div',
-      'fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-zoom-out p-4',
-    )
-    overlay.addEventListener('click', () => {
-      overlay.style.display = 'none'
-    })
-    const img = createElement('img', 'max-w-full max-h-full object-contain rounded-lg')
-    overlay.appendChild(img)
-    document.body.appendChild(overlay)
-    lightboxOverlay = overlay
-  }
-  const img = lightboxOverlay.querySelector('img')!
-  img.src = src
-  lightboxOverlay.style.display = 'flex'
 }
 
 export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
@@ -298,25 +264,6 @@ function buildShell(
   return { outer, content }
 }
 
-// buildDocumentChip renders a display-only chip for a document reference
-// block: `[name size]` mono chip — byte-identical to the input bar's
-// pending upload chip, so upload and history render the same (the legacy
-// regex chip shares the shape minus size, which old text blocks never
-// carried). Deliberately NO click behavior (user decision) and never the
-// parsed markdown.
-function buildDocumentChip(name: string, size: number | undefined): HTMLElement {
-  const chip = createElement(
-    'span',
-    'font-mono text-[12px] bg-ink2 text-t2 rounded-md px-2 py-1 mr-1',
-  )
-  let label = `[${name}`
-  if (size !== undefined && size > 0) {
-    label += ` ${formatArtifactSize(size)}`
-  }
-  chip.textContent = label + ']'
-  return chip
-}
-
 // Wire shape of the attachment event's Message payload. QueryEvent.message is
 // untyped in types.ts; this narrows it to the fields the attachment handler
 // reads. Content blocks mirror Go types.ContentBlock JSON tags: image data is
@@ -331,25 +278,6 @@ type AttachmentEventMessage = {
     mime?: string
     size?: number
   }[]
-}
-
-// createAttachmentImage mirrors the committed-history image visual exactly
-// (class + lightbox click), so a drained queued attachment looks the same as
-// the same image replayed from history.
-function createAttachmentImage(src: string): HTMLImageElement {
-  const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
-  img.src = src
-  img.addEventListener('click', () => showImageLightbox(src))
-  return img
-}
-
-// Attachment echo nodes get their own userEchoBlock container as siblings of
-// the queued-text echo, matching what renderStreamBlock rebuilds from
-// pendingBlocks on rewind/takeover — same block, same DOM shape.
-function appendUserAttachment(parent: HTMLElement, node: HTMLElement, before: Node | null): void {
-  const wrap = createElement('div', userEchoBlock())
-  wrap.appendChild(node)
-  parent.insertBefore(wrap, before)
 }
 
 // Build committed message DOM by replaying blocks through streamDom appenders.
@@ -499,6 +427,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const pendingToolByID = new Map<string, ToolBlock>()
   const currentSubAgentTextDiv = new Map<string, HTMLDivElement>()
   const currentSubAgentThinking = new Map<string, ThinkingEntry>()
+  // The shared block renderer reports running tools / active thinking so chat's
+  // incremental-delta registries stay wired across snapshot renders; job feeds
+  // render with no sink and never touch these.
+  const liveSink: LiveStreamSink = {
+    onToolRunning: (handles, block, parentID) => {
+      toolEntries.set(block.id, { handles, startedAt: block.startedAt || Date.now(), parentID, pendingBlock: block })
+    },
+    onThinkingActive: (entry, parentID) => {
+      if (parentID) currentSubAgentThinking.set(parentID, entry)
+      else currentThinking = entry
+    },
+  }
   let queuedMsgs: QueuedMsg[] = []
   // Local metas for the attachment blocks of the last abort-rewound user
   // message, awaiting the server's restore_result. Holds what only the
@@ -1224,70 +1164,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  function renderStreamBlock(
-    parent: HTMLElement,
-    block: Block,
-    before: Node | null,
-    parentID: string | null,
-  ) {
-    if (block.kind === 'user') {
-      if (!block.text) return
-      // 'user' stream blocks are mid-turn queued message echoes (the engine
-      // persists them immediately in reminder form; text is already
-      // unwrapped) — rendered gray, matching history replay.
-      appendQueuedMessageBlock(parent, block.text, before)
-    } else if (block.kind === 'image') {
-      appendUserAttachment(parent, createAttachmentImage(block.src), before)
-    } else if (block.kind === 'document') {
-      appendUserAttachment(parent, buildDocumentChip(block.name, block.size), before)
-    } else if (block.kind === 'text') {
-      if (!block.text) return
-      const div = appendTextBlock(parent, before)
-      div.innerHTML = renderMarkdown(block.text)
-      wireCopyButtons(div)
-    } else if (block.kind === 'thinking') {
-      const startedAt = block.startedAt || Date.now()
-      const { p, labelEl } = appendThinkingBlock(parent, startedAt, before)
-      if (block.text) writeThinkingText(p, block.text)
-      if (block.active) {
-        const entry: ThinkingEntry = { p, labelEl, startedAt, pendingBlock: block }
-        if (parentID) {
-          currentSubAgentThinking.set(parentID, entry)
-        } else {
-          currentThinking = entry
-        }
-      } else {
-        finishThinking(p, labelEl, block.durationNs)
-      }
-    } else if (block.kind === 'tool') {
-      const handles = appendToolBlock(parent, block.name, before, isCollapsibleBlock(block))
-      if (block.summary) setToolSummary(handles, block.summary, block.name)
-      if (block.state === 'running') {
-        toolEntries.set(block.id, {
-          handles,
-          startedAt: block.startedAt || Date.now(),
-          parentID,
-          pendingBlock: block,
-        })
-        if (block.children && block.children.length > 0) {
-          expandToolChildrenForRunning(handles)
-        }
-      } else {
-        finishTool(handles, {
-          isError: block.state === 'error',
-          durationNs: block.timingNs,
-          output: block.displayOutput,
-        })
-      }
-      if (block.children && block.children.length > 0) {
-        const childContainer = appendToolChildrenContainer(handles)
-        for (const child of block.children) {
-          renderStreamBlock(childContainer, child, null, block.id)
-        }
-      }
-    }
-  }
-
   // Hydration slicing thresholds: above either bound the snapshot render is
   // spread across rAF frames instead of running as one task (multi-second
   // freeze on long-query takeover). Block count bounds DOM-wiring cost,
@@ -1306,7 +1182,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   function renderStreamBlocksRange(blocks: Block[], from: number, to: number) {
     const anchor = progressAnchor()
     for (let i = from; i < to; i++) {
-      renderStreamBlock(streamContainer!, blocks[i], anchor, null)
+      renderStreamBlock(streamContainer!, blocks[i], anchor, null, liveSink)
     }
   }
 
@@ -1356,7 +1232,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     const frag = createFragment()
     const anchor = null as Node | null
     for (let i = end; i < h.next; i++) {
-      renderStreamBlock(frag as unknown as HTMLElement, h.blocks[i], anchor, null)
+      renderStreamBlock(frag as unknown as HTMLElement, h.blocks[i], anchor, null, liveSink)
     }
     const chunkFirst = frag.firstChild
     const prevTop = scroll.scrollTop
