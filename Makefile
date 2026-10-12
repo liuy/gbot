@@ -220,7 +220,9 @@ package-windows: $(CMD)icon.ico
 
 # package-android builds the self-contained Android APK. Requires Android
 # SDK + NDK 26.3.x + JDK 21. Sideload only (targetSdk 28 for W^X exemption).
-package-android: build-android
+# The script owns the whole pipeline (WUI build + NDK cross-compile + assemble);
+# build-android is a Termux on-device target and must not run on the desktop host.
+package-android:
 	bash scripts/package-android.sh $(VERSION)
 
 wails-build: web-build
