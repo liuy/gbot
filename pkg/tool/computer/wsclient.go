@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,26 +46,11 @@ type deviceClient struct {
 	closed  atomic.Bool
 }
 
-// newDeviceClient constructs an unconnected client for the given target.
-// authToken is sent as Authorization: Bearer <token> when non-empty.
-func newDeviceClient(host string, port int, authToken string) (*deviceClient, error) {
-	header := http.Header{}
-	if authToken != "" {
-		header.Set("Authorization", "Bearer "+authToken)
-	}
-	url := fmt.Sprintf("ws://%s:%d", host, port)
-	ws, _, err := websocket.DefaultDialer.Dial(url, header)
-	if err != nil {
-		return nil, fmt.Errorf("computer: dial %s: %w", url, err)
-	}
-	return newDeviceClientFromConn(ws), nil
-}
-
-// newDeviceClientFromConn wraps an already-established *websocket.Conn (whether
-// obtained by Dialing out or by a server-side Upgrade) in a *deviceClient and
-// starts its read loop. Extracted from newDeviceClient so the WS server's
-// registry can wrap an accepted conn the same way the dialer wraps a dialed
-// one — the request/response matching is connection-direction-agnostic.
+// newDeviceClientFromConn wraps an already-established *websocket.Conn
+// (server-side Upgrade of an inbound dial) in a *deviceClient and starts
+// its read loop. The request/response matching is
+// connection-direction-agnostic, so tests can also wrap a client-side dial
+// with it.
 func newDeviceClientFromConn(ws *websocket.Conn) *deviceClient {
 	c := &deviceClient{
 		ws:      ws,
@@ -75,13 +59,6 @@ func newDeviceClientFromConn(ws *websocket.Conn) *deviceClient {
 	go c.readLoop()
 	return c
 }
-
-// connect is a hook mirroring the AndroidClient.connect() lifecycle. The
-// production newDeviceClient dials inline (so the call site gets a synchronous
-// failure), so connect is a no-op kept for API symmetry with the plan's
-// dialer seam. It exists so a future lazy-connect implementation can swap in
-// without changing callers.
-func (c *deviceClient) connect(_ context.Context) error { return nil }
 
 // readLoop runs in a background goroutine, reading one text message per loop,
 // decoding rpcResponse, and fulfilling the matching pending request. On read

@@ -17,7 +17,8 @@ import (
 )
 
 // newTestTool builds a Computer tool over a backend with an injectable fake
-// dialer, plus the recorded dialer so tests can inspect connect args.
+// dialer, plus the recorder so tests can inspect dialed clients and fail
+// dials on demand.
 func newTestTool() (tool.Tool, *AndroidBackend, *dialRecorder) {
 	rec, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
@@ -45,14 +46,25 @@ func TestComputer_NameAndAliases(t *testing.T) {
 	}
 }
 
-func TestComputer_PromptNonEmpty(t *testing.T) {
+func TestComputer_PromptLocalOnly(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	if tt.Prompt() == "" {
-		t.Error("Prompt is empty")
-	}
-	if !contains(tt.Prompt(), "connect") {
+	p := tt.Prompt()
+	if !contains(p, "connect") {
 		t.Errorf("Prompt missing 'connect' keyword")
+	}
+	if !contains(p, "8765") {
+		t.Errorf("Prompt missing '8765' port")
+	}
+	if !contains(p, `{"action":"connect"}`) {
+		t.Errorf("Prompt missing zero-parameter connect example")
+	}
+	// connect is local-only: teaching host/password would push the model to
+	// invent a target address that no longer exists.
+	for _, legacy := range []string{"password", "host"} {
+		if contains(p, legacy) {
+			t.Errorf("Prompt still teaches %q", legacy)
+		}
 	}
 }
 
@@ -155,7 +167,7 @@ func TestComputer_Description_PerAction(t *testing.T) {
 func TestComputer_Execute_MissingAction(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
-	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"host": "1.2.3.4"}), &tool.ToolUseContext{})
+	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"coordinate": []int{1, 2}}), &tool.ToolUseContext{})
 	if err == nil {
 		t.Fatal("Call returned nil for missing action, want error")
 	}
@@ -170,10 +182,65 @@ func TestComputer_Execute_UnknownAction(t *testing.T) {
 	}
 }
 
-func TestComputer_Execute_ConnectMissingHost(t *testing.T) {
+func TestComputer_Execute_ConnectSuccess(t *testing.T) {
 	t.Parallel()
-	tt, _, _ := newTestTool()
-	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
+	tt, b, rec := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	ar, ok := res.Data.(*ActionResult)
+	if !ok {
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
+	}
+	if ar.Action != "connect" {
+		t.Errorf("action = %q, want connect", ar.Action)
+	}
+	if !ar.OK {
+		t.Error("ok = false, want true")
+	}
+	if !b.IsConnected() {
+		t.Error("backend not connected after connect")
+	}
+	if rec.clientCount() != 1 {
+		t.Errorf("clients dialed = %d, want 1", rec.clientCount())
+	}
+}
+
+// ConnectIgnoresLegacyFields: models trained on the old schema may still
+// emit host/port/password; they must be ignored, not rejected.
+func TestComputer_Execute_ConnectIgnoresLegacyFields(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action":   "connect",
+		"host":     "1.2.3.4",
+		"port":     9999,
+		"password": "pw",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	ar, ok := res.Data.(*ActionResult)
+	if !ok {
+		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
+	}
+	if ar.Action != "connect" || !ar.OK {
+		t.Errorf("ActionResult = {%q, %v}, want {connect, true}", ar.Action, ar.OK)
+	}
+	if !b.IsConnected() {
+		t.Error("backend not connected despite legacy fields")
+	}
+}
+
+func TestComputer_Execute_ConnectNotConnectedHint(t *testing.T) {
+	t.Parallel()
+	tt := New(NewAndroidBackendWithRegistry(NewConnectionRegistry()))
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect",
+	}), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -181,60 +248,56 @@ func TestComputer_Execute_ConnectMissingHost(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if er.Error == "" {
-		t.Errorf("Error = %q, want non-empty for missing host", er.Error)
+	if !contains(er.Error, "no GBot app connected") {
+		t.Errorf("error = %q, want 'no GBot app connected'", er.Error)
 	}
-	if !contains(er.Error, "host") {
-		t.Errorf("error = %q, want mention of 'host'", er.Error)
+	if !contains(er.Error, "8765") {
+		t.Errorf("error = %q, want it to contain '8765'", er.Error)
 	}
 }
 
-func TestComputer_Execute_ConnectDefaultsPort8765(t *testing.T) {
+// LegacyConnectResultReplay: sessions recorded with the old
+// {"action":"connect","host":...,"ok":true} result must replay as a plain
+// ActionResult and render identically.
+func TestComputer_DecodeResult_LegacyConnectResultReplay(t *testing.T) {
 	t.Parallel()
-	tt, b, rec := newTestTool()
-	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
-		"action": "connect",
-		"host":   "1.2.3.4",
-	}), &tool.ToolUseContext{})
+	tt, _, _ := newTestTool()
+	innerJSON := mustMarshal(t, map[string]any{"action": "connect", "host": "1.2.3.4", "port": 8765, "ok": true})
+	doubleWrapped := mustMarshal(t, string(innerJSON))
+	raw := json.RawMessage(`[{"type":"text","text":` + string(doubleWrapped) + `}]`)
+	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
-		t.Fatalf("Call: %v", err)
+		t.Fatalf("DecodeResult: %v", err)
 	}
-	if !b.IsConnected() {
-		t.Error("not connected after connect")
-	}
-	lc := rec.lastConnect()
-	if lc.host != "1.2.3.4" {
-		t.Errorf("connect host = %q, want 1.2.3.4", lc.host)
-	}
-	if lc.port != 8765 {
-		t.Errorf("connect port = %d, want 8765 (default)", lc.port)
-	}
-	cr, ok := res.Data.(*ConnectResult)
+	ar, ok := v.(*ActionResult)
 	if !ok {
-		t.Fatalf("Data type = %T, want *ConnectResult", res.Data)
+		t.Fatalf("DecodeResult returned %T, want *ActionResult", v)
 	}
-	if cr.Host != "1.2.3.4" {
-		t.Errorf("result host = %q, want 1.2.3.4", cr.Host)
+	if ar.Action != "connect" || !ar.OK {
+		t.Errorf("decoded = {%q, %v}, want {connect, true}", ar.Action, ar.OK)
 	}
-	if cr.Port != 8765 {
-		t.Errorf("result port = %d, want 8765", cr.Port)
+	if got := tt.RenderResult(v); got != "connect: ok" {
+		t.Errorf("RenderResult = %q, want %q", got, "connect: ok")
 	}
 }
 
-func TestComputer_Execute_ConnectExplicitPort(t *testing.T) {
+// ConnectPassesCtx pins the tool-level ctx path (execute → doConnect →
+// backend dialer): the dial seam must see the tool caller's ctx, not a
+// synthesized one.
+func TestComputer_Execute_ConnectPassesCtx(t *testing.T) {
 	t.Parallel()
-	tt, _, rec := newTestTool()
-	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
-		"action": "connect",
-		"host":   "1.2.3.4",
-		"port":   9999,
-	}), &tool.ToolUseContext{})
-	if err != nil {
+	var gotCtx context.Context
+	b := newAndroidBackendForTest(func(ctx context.Context) (rpcCaller, error) {
+		gotCtx = ctx
+		return &fakeCaller{}, nil
+	})
+	tt := New(b)
+	ctx := context.Background()
+	if _, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{}); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	lc := rec.lastConnect()
-	if lc.port != 9999 {
-		t.Errorf("connect port = %d, want 9999", lc.port)
+	if gotCtx != ctx {
+		t.Error("dialer did not receive the tool caller's ctx")
 	}
 }
 
@@ -243,7 +306,7 @@ func TestComputer_Execute_Disconnect(t *testing.T) {
 	tt, b, _ := newTestTool()
 	// Connect first so disconnect has something to close.
 	_, _ = tt.Call(context.Background(), mustMarshal(t, map[string]any{
-		"action": "connect", "host": "h",
+		"action": "connect",
 	}), &tool.ToolUseContext{})
 	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "disconnect"}), &tool.ToolUseContext{})
 	if err != nil {
@@ -300,7 +363,7 @@ func TestComputer_Execute_ScreenRenders(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
 		"get_ui_tree": json.RawMessage(`{"tree":{
 			"className":"root","children":[
@@ -330,7 +393,7 @@ func TestComputer_FormatWireBlocks_Screenshot(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	// Use a real base64-encoded JPEG so the resize pipeline in doScreenshot
 	// can decode it. A 4x4 solid-color JPEG is well under every cap, so the
 	// resizer returns it byte-identical and MediaType stays image/jpeg.
@@ -459,7 +522,7 @@ func TestComputer_Screenshot_DataB64_IsResized(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 
 	// Oversized JPEG: 2500x2500 forces the resizer to shrink it below the
 	// 2000x2000 threshold. The returned Screenshot.DataB64 must carry the
@@ -504,7 +567,7 @@ func TestComputer_Execute_TypeEmptyText(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	callsBefore := fc.callCount()
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "type", "text": ""}), &tool.ToolUseContext{})
@@ -527,7 +590,7 @@ func TestComputer_Execute_TypeBlockedText(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "type",
@@ -554,7 +617,7 @@ func TestComputer_Execute_TypeSuccess(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "type", "text": "hello",
@@ -579,7 +642,7 @@ func TestComputer_Execute_SendKeyUnknown(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	callsBefore := fc.callCount()
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
@@ -604,7 +667,7 @@ func TestComputer_Execute_SendKeyValid(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "send_key", "key": "BACK",
@@ -685,7 +748,7 @@ func TestComputer_Execute_DeviceInfo(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
 		"get_device_info": json.RawMessage(`{"manufacturer":"Google","model":"Pixel 8","sdk":34,"release":"14","screenWidth":1080,"screenHeight":2400,"density":2.625,"densityDpi":420}`),
 	}
@@ -710,7 +773,7 @@ func TestComputer_Execute_ClickWithCoordinate(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "click", "coordinate": []int{100, 200},
@@ -831,7 +894,7 @@ func TestComputer_Execute_ClickElementSuccess(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
 		"get_ui_tree": json.RawMessage(`{"tree":{
 			"className":"root","children":[
@@ -862,7 +925,7 @@ func TestComputer_Execute_ScrollSuccess(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "scroll", "direction": "down",
 	}), &tool.ToolUseContext{})
@@ -890,7 +953,7 @@ func TestComputer_Execute_ZoomSuccess(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "zoom", "coordinate": []int{540, 1200}, "scale": 2.0,
 	}), &tool.ToolUseContext{})
@@ -910,7 +973,7 @@ func TestComputer_Execute_OpenMenuSuccess(t *testing.T) {
 	t.Parallel()
 	tt, _, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "open_menu", "coordinate": []int{10, 20},
 	}), &tool.ToolUseContext{})
@@ -933,7 +996,7 @@ func TestComputer_Execute_ConnectBackendError(t *testing.T) {
 	tt := New(b)
 	rec.failNext = context.DeadlineExceeded
 	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
-		"action": "connect", "host": "h",
+		"action": "connect",
 	}), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -944,17 +1007,6 @@ func TestComputer_Execute_ConnectBackendError(t *testing.T) {
 	}
 	if er.Error == "" {
 		t.Errorf("Error = %q, want non-empty for dial failure", er.Error)
-	}
-}
-
-func TestComputer_PortOr(t *testing.T) {
-	t.Parallel()
-	p := 9000
-	if got := portOr(&p, 8765); got != 9000 {
-		t.Errorf("portOr(&9000) = %d, want 9000", got)
-	}
-	if got := portOr(nil, 8765); got != 8765 {
-		t.Errorf("portOr(nil) = %d, want 8765", got)
 	}
 }
 
@@ -1045,7 +1097,7 @@ func TestComputer_Execute_ScreenBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"get_ui_tree": context.DeadlineExceeded,
 	}
@@ -1066,7 +1118,7 @@ func TestComputer_Execute_ScreenshotBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"screenshot": context.DeadlineExceeded,
 	}
@@ -1087,7 +1139,7 @@ func TestComputer_Execute_DeviceInfoBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"get_device_info": context.DeadlineExceeded,
 	}
@@ -1108,7 +1160,7 @@ func TestComputer_Execute_ClickElementBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
 		"get_ui_tree": json.RawMessage(`{"tree":{"className":"root","children":[{"className":"B","isClickable":true,"bounds":{"left":0,"top":0,"right":10,"bottom":10}}]}}`),
 	}
@@ -1133,7 +1185,7 @@ func TestComputer_Execute_ScrollBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"scroll": context.DeadlineExceeded,
 	}
@@ -1154,7 +1206,7 @@ func TestComputer_Execute_TypeBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"set_text": context.DeadlineExceeded,
 	}
@@ -1175,7 +1227,7 @@ func TestComputer_Execute_SendKeyBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"press_key": context.DeadlineExceeded,
 	}
@@ -1196,7 +1248,7 @@ func TestComputer_Execute_ClickBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"tap": context.DeadlineExceeded,
 	}
@@ -1217,7 +1269,7 @@ func TestComputer_Execute_OpenAppSuccess(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
 		"action": "open_app", "package": "com.android.chrome",
 	}), &tool.ToolUseContext{})
@@ -1267,7 +1319,7 @@ func TestComputer_Execute_OpenAppBackendError(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	b.client.(*fakeCaller).errs = map[string]error{
 		"open_app": context.DeadlineExceeded,
 	}
@@ -1310,7 +1362,7 @@ func TestComputer_Execute_SendFileSuccess(t *testing.T) {
 	t.Parallel()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	tmpPath := writeSendFileTemp(t, 512)
 	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{

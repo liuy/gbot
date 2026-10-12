@@ -3,14 +3,18 @@ package computer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // dialWSClient dials url, reads one rpcRequest, replies via respFn (echoing
@@ -95,6 +99,28 @@ type dialResult struct {
 	err  error
 }
 
+// dialAcceptConnPinned dials url via dialAcceptConnAsync and pins the
+// client-side conn for the test's whole lifetime. The dialer goroutine's
+// only reference to that conn is the value buffered in resCh, and the
+// compiler may treat a never-read-again channel as unreachable — Go's
+// netFD finalizer then closes the conn on the next GC, the server-side
+// readLoop hits EOF, and Sole's IsClosed filter reports the just-registered
+// conn as dead. Draining resCh at cleanup keeps the conn referenced during
+// the test and closes it deterministically after.
+func dialAcceptConnPinned(t *testing.T, url string, resCh chan dialResult) {
+	t.Helper()
+	dialAcceptConnAsync(url, resCh)
+	t.Cleanup(func() {
+		select {
+		case r := <-resCh:
+			if r.conn != nil {
+				_ = r.conn.Close()
+			}
+		default:
+		}
+	})
+}
+
 // makeAcceptConnServer starts an httptest WS server that upgrades any conn
 // and returns the accepted *websocket.Conn on a channel so the test can wrap
 // it in a *deviceClient and Register it. The server holds the conn open
@@ -162,7 +188,7 @@ func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 	url, accepted := makeAcceptConnServer(t)
 	resCh := make(chan dialResult, 4)
 	// Dial from a gorilla client to obtain a server-accepted *websocket.Conn.
-	dialAcceptConnAsync(url, resCh)
+	dialAcceptConnPinned(t, url, resCh)
 	select {
 	case ws := <-accepted:
 		reg := NewConnectionRegistry()
@@ -179,7 +205,7 @@ func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 		}
 		// Host collision: register a second conn for the same host, the old
 		// client must be closed and replaced.
-		dialAcceptConnAsync(url, resCh)
+		dialAcceptConnPinned(t, url, resCh)
 		var ws2 *websocket.Conn
 		select {
 		case ws2 = <-accepted:
@@ -207,7 +233,7 @@ func TestConnectionRegistry_Close(t *testing.T) {
 	reg := NewConnectionRegistry()
 	registered := make([]*deviceClient, 0, 2)
 	for i := range 2 {
-		dialAcceptConnAsync(url, resCh)
+		dialAcceptConnPinned(t, url, resCh)
 		select {
 		case ws := <-accepted:
 			registered = append(registered, reg.Register(hostKey(i), ws))
@@ -226,6 +252,288 @@ func TestConnectionRegistry_Close(t *testing.T) {
 // hostKey returns a deterministic host string for index i.
 func hostKey(i int) string {
 	return string(rune('a'+i)) + ".b.c.d"
+}
+
+func TestConnectionRegistry_Sole_Empty(t *testing.T) {
+	t.Parallel()
+	reg := NewConnectionRegistry()
+	c, ok := reg.Sole()
+	if ok || c != nil {
+		t.Errorf("Sole on empty registry = (%p, %v), want (nil, false)", c, ok)
+	}
+}
+
+func TestConnectionRegistry_Sole_SingleLiveEntry(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		reg := NewConnectionRegistry()
+		c := reg.Register("1.2.3.4", ws)
+		got, ok := reg.Sole()
+		if !ok {
+			t.Fatal("Sole ok = false, want true")
+		}
+		if got != c {
+			t.Error("Sole returned a different *deviceClient than Register")
+		}
+		// Sole must release its read lock: a leaked RLock would block every
+		// later Close/Register forever. Probe with a short-timeout write-lock
+		// acquire instead of deadlocking on Close, so a regression fails in
+		// 2s rather than hanging the suite.
+		acquired := make(chan struct{})
+		go func() {
+			reg.mu.Lock()
+			close(acquired)
+			reg.mu.Unlock()
+		}()
+		select {
+		case <-acquired:
+		case <-time.After(2 * time.Second):
+			t.Fatal("write lock not acquired within 2s; Sole leaked its read lock")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accepted conn")
+	}
+}
+
+func TestConnectionRegistry_Sole_AllDead(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		reg := NewConnectionRegistry()
+		c := reg.Register("1.2.3.4", ws)
+		if err := c.close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		got, ok := reg.Sole()
+		if ok || got != nil {
+			t.Errorf("Sole with only dead entries = (%p, %v), want (nil, false)", got, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accepted conn")
+	}
+}
+
+// SkipsDead pins the phone-changed-IP recovery: the corpse under the
+// sort-earlier key must not shadow the live conn behind it.
+func TestConnectionRegistry_Sole_SkipsDead(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	reg := NewConnectionRegistry()
+	dialAcceptConnPinned(t, url, resCh)
+	var deadWS *websocket.Conn
+	select {
+	case deadWS = <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first accepted conn")
+	}
+	dead := reg.Register("a.a.a.a", deadWS)
+	if err := dead.close(); err != nil {
+		t.Fatalf("close dead: %v", err)
+	}
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		live := reg.Register("b.b.b.b", ws)
+		got, ok := reg.Sole()
+		if !ok {
+			t.Fatal("Sole ok = false with a live entry present")
+		}
+		if got != live {
+			t.Error("Sole returned the dead conn, want the live one under b.b.b.b")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second accepted conn")
+	}
+}
+
+// MultipleDeterministicFirst catches unsorted map iteration: Sole must hand
+// out the same client every call, not a random entry per connect.
+func TestConnectionRegistry_Sole_MultipleDeterministicFirst(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 4)
+	reg := NewConnectionRegistry()
+	clients := map[string]*deviceClient{}
+	for _, host := range []string{"b.b.b.b", "a.a.a.a"} {
+		dialAcceptConnPinned(t, url, resCh)
+		select {
+		case ws := <-accepted:
+			clients[host] = reg.Register(host, ws)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for accepted conn for %s", host)
+		}
+	}
+	want := clients["a.a.a.a"]
+	for i := range 20 {
+		got, ok := reg.Sole()
+		if !ok {
+			t.Fatalf("Sole call %d ok = false, want true", i)
+		}
+		if got != want {
+			t.Fatalf("Sole call %d did not return the a.a.a.a client; map iteration leaked into selection", i)
+		}
+	}
+}
+
+// HoldsReadLockDuringScan kills an early-released read lock (e.g. the deferred
+// RUnlock executed immediately): Sole would iterate r.clients unguarded while
+// the daemon's accept loop Registers. go-mutesting runs without -race, so the
+// detector is Go's own runtime — a write overlapping an unlocked map iteration
+// throws "fatal error: concurrent map iteration and map write" and fails the
+// binary. Under correct locking the fatal is impossible, so this test cannot
+// false-fail; under the mutant, a spinning writer overlapping any of the many
+// full dead-map scans throws within milliseconds. The writer mirrors what
+// Register does to the map (store under the write lock) without needing a real
+// websocket.Conn.
+func TestConnectionRegistry_Sole_HoldsReadLockDuringScan(t *testing.T) {
+	t.Parallel()
+	reg := NewConnectionRegistry()
+	// Dead entries only: Sole must sweep all of them per call, giving the
+	// writer a long overlap window. Direct struct literals are safe — Sole
+	// only reads the closed flag, no conn or read loop is involved.
+	for i := range 10_000 {
+		c := &deviceClient{}
+		c.closed.Store(true)
+		reg.clients[fmt.Sprintf("h%05d", i)] = c
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+	wg.Go(func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c := &deviceClient{}
+			c.closed.Store(true)
+			reg.mu.Lock()
+			reg.clients[fmt.Sprintf("w%04d", i%2_000)] = c
+			reg.mu.Unlock()
+		}
+	})
+	for range 100 {
+		if c, ok := reg.Sole(); ok || c != nil {
+			t.Fatalf("Sole with only dead entries = (%p, %v), want (nil, false)", c, ok)
+		}
+	}
+}
+
+// TestRegDial_AttachesSoleInboundConn covers the production hot path with a
+// real accepted conn: registry → Connect → active client pointer.
+func TestRegDial_AttachesSoleInboundConn(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		reg := NewConnectionRegistry()
+		c := reg.Register("1.2.3.4", ws)
+		b := NewAndroidBackendWithRegistry(reg)
+		if err := b.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect via registry: %v", err)
+		}
+		if !b.IsConnected() {
+			t.Error("IsConnected = false after Connect, want true")
+		}
+		if b.client != rpcCaller(c) {
+			t.Error("b.client is not the registered *deviceClient")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accepted conn")
+	}
+}
+
+func TestRegDial_EmptyRegistry_Hints8765(t *testing.T) {
+	t.Parallel()
+	b := NewAndroidBackendWithRegistry(NewConnectionRegistry())
+	err := b.Connect(context.Background())
+	if err == nil {
+		t.Fatal("Connect on empty registry returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no GBot app connected") {
+		t.Errorf("error = %q, want 'no GBot app connected'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "8765") {
+		t.Errorf("error = %q, want it to contain '8765'", err.Error())
+	}
+}
+
+func TestRegDial_DeadConnInRegistry(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		reg := NewConnectionRegistry()
+		c := reg.Register("1.2.3.4", ws)
+		if err := c.close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		b := NewAndroidBackendWithRegistry(reg)
+		err := b.Connect(context.Background())
+		if err == nil {
+			t.Fatal("Connect with only dead conns returned nil, want error")
+		}
+		if !strings.Contains(err.Error(), "no GBot app connected") {
+			t.Errorf("error = %q, want 'no GBot app connected'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "8765") {
+			t.Errorf("error = %q, want it to contain '8765'", err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accepted conn")
+	}
+}
+
+// TestComputerTool_ConnectViaRegistry is the integration test: tool.Call
+// entry → parseInput/dispatch → AndroidBackend.Connect → registry.Sole →
+// ToolResult, all against a real accepted WS conn.
+func TestComputerTool_ConnectViaRegistry(t *testing.T) {
+	t.Parallel()
+	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 2)
+	dialAcceptConnPinned(t, url, resCh)
+	select {
+	case ws := <-accepted:
+		reg := NewConnectionRegistry()
+		c := reg.Register("1.2.3.4", ws)
+		b := NewAndroidBackendWithRegistry(reg)
+		tt := New(b)
+		res, err := tt.Call(context.Background(), json.RawMessage(`{"action":"connect"}`), &tool.ToolUseContext{})
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		ar, ok := res.Data.(*ActionResult)
+		if !ok {
+			t.Fatalf("Data type = %T, want *ActionResult", res.Data)
+		}
+		if ar.Action != "connect" || !ar.OK {
+			t.Errorf("ActionResult = {%q, %v}, want {connect, true}", ar.Action, ar.OK)
+		}
+		if !b.IsConnected() {
+			t.Error("backend not connected after tool-level connect")
+		}
+		if b.client != rpcCaller(c) {
+			t.Error("backend client is not the registered *deviceClient")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accepted conn")
+	}
 }
 
 func TestStartWSServer_RouteByRemoteIP(t *testing.T) {
@@ -354,7 +662,7 @@ func TestRegDial_NoRegistry(t *testing.T) {
 	// constructor, which overrides dial with a fake).
 	b := NewAndroidBackend()
 	ctx := context.Background()
-	err := b.Connect(ctx, "1.2.3.4", DefaultWSPort, "")
+	err := b.Connect(ctx)
 	if err == nil {
 		t.Fatal("Connect returned nil with nil registry, want error")
 	}

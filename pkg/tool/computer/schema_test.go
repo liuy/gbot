@@ -70,7 +70,7 @@ func TestInputSchema_CoordinateMinMaxItems(t *testing.T) {
 	}
 }
 
-func TestInputSchema_ConnectFieldsPresentButNotRequired(t *testing.T) {
+func TestInputSchema_ConnectFieldsRemoved(t *testing.T) {
 	t.Parallel()
 	var s struct {
 		Required   []string                   `json:"required"`
@@ -80,16 +80,26 @@ func TestInputSchema_ConnectFieldsPresentButNotRequired(t *testing.T) {
 		t.Fatalf("Unmarshal schema: %v", err)
 	}
 	for _, field := range []string{"host", "port", "password"} {
-		if _, ok := s.Properties[field]; !ok {
-			t.Errorf("properties missing %q", field)
+		if _, ok := s.Properties[field]; ok {
+			t.Errorf("properties still contains %q; connect is local-only", field)
 		}
 	}
-	// host/port/password must NOT be in required — they are validated in
-	// dispatch, not by the schema.
-	for _, r := range s.Required {
-		if r == "host" || r == "port" || r == "password" {
-			t.Errorf("required contains %q, want only 'action'", r)
-		}
+}
+
+func TestInputSchema_ActionDescriptionLocalOnly(t *testing.T) {
+	t.Parallel()
+	var s struct {
+		Properties struct {
+			Action struct {
+				Description string `json:"description"`
+			} `json:"action"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(inputSchema(), &s); err != nil {
+		t.Fatalf("Unmarshal schema: %v", err)
+	}
+	if !contains(s.Properties.Action.Description, "no parameters") {
+		t.Errorf("action description = %q, want it to mention \"no parameters\" for connect", s.Properties.Action.Description)
 	}
 }
 
@@ -102,7 +112,7 @@ func TestInputSchema_AllPropertiesPresent(t *testing.T) {
 		t.Fatalf("Unmarshal schema: %v", err)
 	}
 	want := []string{
-		"action", "host", "port", "password", "max_depth",
+		"action", "max_depth",
 		"ref", "coordinate", "direction", "text", "key", "scale", "package", "path",
 	}
 	for _, p := range want {

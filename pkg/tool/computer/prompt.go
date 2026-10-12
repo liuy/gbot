@@ -10,12 +10,12 @@ You drive a remote Android device through the Computer tool, which talks to the 
 ## Lifecycle
 
 Your FIRST computer action is always ` + "`connect`" + `:
-{"action":"connect","host":"192.168.1.100","port":8765}
-Port defaults to 8765; supply ` + "`password`" + ` if the device requires a bearer token. Until connect succeeds, every other action returns "not connected; call connect first".
+{"action":"connect"}
+connect takes no parameters. The GBot app on the phone dials into this daemon's WebSocket (port 8765) by itself; connect attaches to that already-dialed app. Until connect succeeds, every other action returns "not connected; call connect first".
 
 Right after connect, call ` + "`device_info`" + ` to confirm which device you are driving (manufacturer, model, screen size).
 
-Call ` + "`disconnect`" + ` when done, or to switch devices — connecting a new device auto-disconnects the previous one.
+Call ` + "`disconnect`" + ` when done. If the connection drops mid-session, the next action returns "not connected; call connect first" — reopen the GBot app (it re-dials the daemon) and call connect again to recover.
 
 ## Perceiving the screen
 

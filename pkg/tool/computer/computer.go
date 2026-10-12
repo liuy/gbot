@@ -163,12 +163,6 @@ func New(b *AndroidBackend) tool.Tool {
 						return &d, nil
 					}
 				}
-				if _, ok := probe["host"]; ok {
-					var c ConnectResult
-					if err := json.Unmarshal(probeRaw, &c); err == nil {
-						return &c, nil
-					}
-				}
 				if _, ok := probe["error"]; ok {
 					var e ErrorResult
 					if err := json.Unmarshal(probeRaw, &e); err == nil {
@@ -251,20 +245,14 @@ func dispatch(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResul
 	}
 }
 
-// doConnect handles the connect action. host is required; port defaults to
-// DefaultWSPort when absent so the model can send just host.
-func doConnect(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResult, error) {
-	if strings.TrimSpace(in.Host) == "" {
-		return errorResponse("connect requires a host"), nil
-	}
-	port := DefaultWSPort
-	if in.Port != nil {
-		port = *in.Port
-	}
-	if err := b.Connect(ctx, in.Host, port, in.Password); err != nil {
+// doConnect handles the connect action: attach to the GBot app that has
+// dialed this daemon's WS server. Legacy host/port/password fields in the
+// input are tolerated and ignored.
+func doConnect(ctx context.Context, b *AndroidBackend, _ Input) (*tool.ToolResult, error) {
+	if err := b.Connect(ctx); err != nil {
 		return errorResponse(err.Error()), nil
 	}
-	return &tool.ToolResult{Data: &ConnectResult{Action: ActionConnect, Host: in.Host, Port: port, OK: true}}, nil
+	return okResponse(ActionConnect), nil
 }
 
 // doDisconnect is idempotent — it returns ok regardless of prior state.
@@ -466,14 +454,6 @@ type ActionResult struct {
 	OK     bool   `json:"ok"`
 }
 
-// ConnectResult extends ActionResult with host/port for connect responses.
-type ConnectResult struct {
-	Action string `json:"action"`
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
-	OK     bool   `json:"ok"`
-}
-
 // ErrorResult is the error response for failed tool calls.
 type ErrorResult struct {
 	Error string `json:"error"`
@@ -495,7 +475,7 @@ func errorResponse(msg string) *tool.ToolResult {
 func summarizeAction(in Input) string {
 	switch strings.TrimSpace(strings.ToLower(in.Action)) {
 	case ActionConnect:
-		return fmt.Sprintf("connect to %s:%d", in.Host, portOr(in.Port, DefaultWSPort))
+		return "connect to the dialed-in GBot app"
 	case ActionDisconnect:
 		return "disconnect from device"
 	case ActionScreen:
@@ -529,14 +509,6 @@ func summarizeAction(in Input) string {
 	}
 }
 
-// portOr returns *p when non-nil, else def.
-func portOr(p *int, def int) int {
-	if p == nil {
-		return def
-	}
-	return *p
-}
-
 // refOr returns *r when non-nil, else 0 (for display only).
 func refOr(r *int) int {
 	if r == nil {
@@ -555,11 +527,6 @@ func renderResult(data any) string {
 	case *DeviceInfo:
 		return renderDeviceInfo(v)
 	case *ActionResult:
-		if v.OK {
-			return v.Action + ": ok"
-		}
-		return v.Action
-	case *ConnectResult:
 		if v.OK {
 			return v.Action + ": ok"
 		}

@@ -48,6 +48,20 @@ func startWSServer(t *testing.T, respFn func(req rpcRequest) rpcResponse) string
 	return "ws" + strings.TrimPrefix(server.URL, "http")
 }
 
+// dialTestDeviceClient dials url with a plain gorilla client and wraps the
+// client-side conn in a *deviceClient. deviceClient mechanics are
+// connection-direction-agnostic (newDeviceClientFromConn), so tests drive
+// them from either end; the production outbound dial path is gone.
+func dialTestDeviceClient(t *testing.T, url string) *deviceClient {
+	t.Helper()
+	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial %s: %v", url, err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	return newDeviceClientFromConn(ws)
+}
+
 func TestDeviceClient_Call_RequestEnvelope(t *testing.T) {
 	t.Parallel()
 	var captured rpcRequest
@@ -55,10 +69,7 @@ func TestDeviceClient_Call_RequestEnvelope(t *testing.T) {
 		captured = req
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -82,15 +93,12 @@ func TestDeviceClient_Call_SuccessFalseReturnsError(t *testing.T) {
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: false, Error: "device busy"}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = c.call(ctx, "tap", nil)
+	_, err := c.call(ctx, "tap", nil)
 	if err == nil {
 		t.Fatal("call returned nil error, want error for success=false")
 	}
@@ -109,15 +117,12 @@ func TestDeviceClient_Call_CtxCancel(t *testing.T) {
 		// Block forever; the connection close on cleanup ends the handler.
 		select {}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err = c.call(ctx, "tap", nil)
+	_, err := c.call(ctx, "tap", nil)
 	if err == nil {
 		t.Fatal("call returned nil, want ctx deadline error")
 	}
@@ -131,10 +136,7 @@ func TestDeviceClient_IsClosed_AfterClose(t *testing.T) {
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	if c.IsClosed() {
 		t.Fatal("IsClosed = true on a fresh client, want false")
 	}
@@ -143,54 +145,6 @@ func TestDeviceClient_IsClosed_AfterClose(t *testing.T) {
 	}
 	if !c.IsClosed() {
 		t.Error("IsClosed = false after close, want true")
-	}
-}
-
-func TestDeviceClient_AuthHeader(t *testing.T) {
-	t.Parallel()
-	var gotAuth string
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-	}))
-	t.Cleanup(server.Close)
-	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "secret-token")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
-	defer connClose(c)
-	if gotAuth != "Bearer secret-token" {
-		t.Errorf("Authorization header = %q, want 'Bearer secret-token'", gotAuth)
-	}
-}
-
-func TestDeviceClient_AuthHeader_EmptyToken(t *testing.T) {
-	t.Parallel()
-	var gotAuth string
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-	}))
-	t.Cleanup(server.Close)
-	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
-	defer connClose(c)
-	if gotAuth != "" {
-		t.Errorf("Authorization header = %q, want empty for empty token", gotAuth)
 	}
 }
 
@@ -372,31 +326,6 @@ func TestDecodeDeviceInfo_EmptyDataError(t *testing.T) {
 
 // --- helpers used to keep the test bodies free of weak patterns ---
 
-// hostFromURL extracts the host portion from a ws://host:port URL.
-func hostFromURL(wsURL string) string {
-	s := strings.TrimPrefix(wsURL, "ws://")
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
-// portFromURL extracts the numeric port from a ws://host:port URL.
-func portFromURL(wsURL string) int {
-	s := strings.TrimPrefix(wsURL, "ws://")
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		n := 0
-		for _, c := range s[i+1:] {
-			if c < '0' || c > '9' {
-				break
-			}
-			n = n*10 + int(c-'0')
-		}
-		return n
-	}
-	return 0
-}
-
 // connClose closes the deviceClient, wrapped so the test body doesn't use a bare
 // `_ = c.close()` that the weak-test scanner would flag.
 func connClose(c *deviceClient) {
@@ -413,35 +342,16 @@ func errorsIsDeadline(err error) bool {
 	return strings.Contains(s, "deadline exceeded") || strings.Contains(s, "context canceled")
 }
 
-func TestDeviceClient_Connect_NoOp(t *testing.T) {
-	t.Parallel()
-	url := startWSServer(t, func(req rpcRequest) rpcResponse {
-		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
-	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
-	defer connClose(c)
-	// connect is a no-op kept for API symmetry; it must return nil.
-	if err := c.connect(context.Background()); err != nil {
-		t.Errorf("connect returned %v, want nil (no-op)", err)
-	}
-}
-
 func TestDeviceClient_Call_SuccessFalseNoError(t *testing.T) {
 	t.Parallel()
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: false} // no Error string
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = c.call(ctx, "tap", nil)
+	_, err := c.call(ctx, "tap", nil)
 	if err == nil {
 		t.Fatal("call returned nil, want error for success=false with no error string")
 	}
@@ -455,14 +365,11 @@ func TestDeviceClient_Call_AfterClose(t *testing.T) {
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = c.call(ctx, "tap", nil)
+	_, err := c.call(ctx, "tap", nil)
 	if err == nil {
 		t.Fatal("call after close returned nil, want error")
 	}
@@ -497,10 +404,7 @@ func TestDeviceClient_SendBinary_WritesBinaryFrame(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 
 	payload := []byte{1, 2, 3, 250, 0, 7}
@@ -527,10 +431,7 @@ func TestDeviceClient_SendBinary_AfterClose(t *testing.T) {
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	connClose(c)
 	if err := c.sendBinary([]byte{1, 2, 3}); err == nil {
 		t.Fatal("sendBinary after close returned nil, want errConnectionClosed")
@@ -597,10 +498,7 @@ func TestDeviceClient_ReadLoop_DropsUnparseableFrame(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -628,14 +526,11 @@ func TestDeviceClient_Shutdown_FailsPendingRequests(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	defer connClose(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = c.call(ctx, "tap", nil)
+	_, err := c.call(ctx, "tap", nil)
 	if err == nil {
 		t.Fatal("call returned nil after server close, want error")
 	}
@@ -646,10 +541,7 @@ func TestDeviceClient_Close_Idempotent(t *testing.T) {
 	url := startWSServer(t, func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
 	})
-	c, err := newDeviceClient(hostFromURL(url), portFromURL(url), "")
-	if err != nil {
-		t.Fatalf("newDeviceClient: %v", err)
-	}
+	c := dialTestDeviceClient(t, url)
 	if err := c.close(); err != nil {
 		t.Fatalf("first close: %v", err)
 	}

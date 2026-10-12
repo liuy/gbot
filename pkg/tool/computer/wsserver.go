@@ -2,8 +2,10 @@ package computer
 
 import (
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -54,6 +56,25 @@ func (r *ConnectionRegistry) Get(host string) (*deviceClient, bool) {
 	defer r.mu.RUnlock()
 	c, ok := r.clients[host]
 	return c, ok
+}
+
+// Sole returns the registry's single connection for regDial's local-only
+// connect: it scans host keys in sorted order and returns the first client
+// whose read loop is still alive, skipping corpses left behind by dropped
+// phones (a dead conn is indistinguishable from "no device" for the
+// caller). (nil, false) when the registry is empty or every entry is dead.
+// Sorted order exists because map iteration is randomized — "first" must
+// be deterministic. The product has exactly one phone, so the tie-break
+// among multiple live entries is arbitrary but stable.
+func (r *ConnectionRegistry) Sole() (*deviceClient, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, host := range slices.Sorted(maps.Keys(r.clients)) {
+		if c := r.clients[host]; !c.IsClosed() {
+			return c, true
+		}
+	}
+	return nil, false
 }
 
 // Close drops and closes every client (daemon shutdown). Idempotent.

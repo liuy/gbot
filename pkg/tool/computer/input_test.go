@@ -7,43 +7,20 @@ import (
 
 func TestParseInput_RequiresAction(t *testing.T) {
 	t.Parallel()
-	_, err := parseInput(json.RawMessage(`{"host":"1.2.3.4"}`))
+	_, err := parseInput(json.RawMessage(`{"coordinate":[1,2]}`))
 	if err == nil {
 		t.Fatal("parseInput returned nil error for missing action, want error")
 	}
 }
 
-func TestParseInput_DecodesConnectFields(t *testing.T) {
+func TestParseInput_DecodesConnectAction(t *testing.T) {
 	t.Parallel()
-	in, err := parseInput(json.RawMessage(`{"action":"connect","host":"1.2.3.4","port":9000,"password":"pw"}`))
+	in, err := parseInput(json.RawMessage(`{"action":"connect"}`))
 	if err != nil {
 		t.Fatalf("parseInput: %v", err)
 	}
 	if in.Action != "connect" {
 		t.Errorf("Action = %q, want connect", in.Action)
-	}
-	if in.Host != "1.2.3.4" {
-		t.Errorf("Host = %q, want 1.2.3.4", in.Host)
-	}
-	if in.Port == nil {
-		t.Fatal("Port = nil, want non-nil")
-	}
-	if *in.Port != 9000 {
-		t.Errorf("Port = %d, want 9000", *in.Port)
-	}
-	if in.Password != "pw" {
-		t.Errorf("Password = %q, want pw", in.Password)
-	}
-}
-
-func TestParseInput_PortAbsent(t *testing.T) {
-	t.Parallel()
-	in, err := parseInput(json.RawMessage(`{"action":"connect","host":"1.2.3.4"}`))
-	if err != nil {
-		t.Fatalf("parseInput: %v", err)
-	}
-	if in.Port != nil {
-		t.Errorf("Port = %v, want nil when absent (dispatch defaults to 8765)", in.Port)
 	}
 }
 

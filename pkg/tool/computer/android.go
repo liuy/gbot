@@ -26,26 +26,25 @@ type rpcCaller interface {
 	close() error
 }
 
-// dialer builds a connected rpcCaller for the given target. Production uses
-// the registry-backed regDial method; tests pass a fake that returns a fake
+// dialer builds a connected rpcCaller. Production resolves the registry's
+// sole inbound conn via regDial; tests pass a fake that returns a fake
 // rpcCaller without touching the network.
-type dialer func(ctx context.Context, host string, port int, password string) (rpcCaller, error)
+type dialer func(ctx context.Context) (rpcCaller, error)
 
 // Compile-time check that the production client satisfies the seam.
 var _ rpcCaller = (*deviceClient)(nil)
 
-// regDial is the production connection source for the reversed architecture:
-// instead of dialing out, it looks up an already-established *deviceClient in the
-// registry by the host the model passed to connect(host). The registry is
-// populated by the daemon's WS server (wsserver.go). port/password are
-// ignored (kept in the signature for dialer-type compatibility).
-func (b *AndroidBackend) regDial(_ context.Context, host string, _ int, _ string) (rpcCaller, error) {
+// regDial is the production connection source for the local-only
+// architecture: the GBot app dials the daemon's WS server itself, and
+// connect resolves the registry's sole live conn (wsserver.go populates
+// it). There is no outbound dial anywhere.
+func (b *AndroidBackend) regDial(_ context.Context) (rpcCaller, error) {
 	if b.registry == nil {
 		return nil, errors.New("computer: daemon not running; start gbot with -d")
 	}
-	c, ok := b.registry.Get(host)
-	if !ok || c.IsClosed() {
-		return nil, fmt.Errorf("computer: no device connected from %s; ensure the GBot app is running and dialed this host", host)
+	c, ok := b.registry.Sole()
+	if !ok {
+		return nil, fmt.Errorf("computer: no GBot app connected; open the GBot app on your phone so it dials this daemon's /ws endpoint (default port %d)", DefaultWSPort)
 	}
 	return c, nil
 }
@@ -66,9 +65,6 @@ type AndroidBackend struct {
 	client   rpcCaller // nil == not connected; *deviceClient in prod, fake in tests
 	dial     dialer
 	registry *ConnectionRegistry // nil in TUI mode/tests → regDial returns "daemon not running"
-	host     string              // last connected host (diagnostics only)
-	port     int                 // last connected port
-	password string              // retained so a manual reconnect needs no re-prompt
 	refs     *refRegistry
 }
 
@@ -86,7 +82,7 @@ func NewAndroidBackend() *AndroidBackend {
 }
 
 // NewAndroidBackendWithRegistry returns a disconnected backend whose regDial
-// resolves connect(host) against reg. reg may be nil (TUI mode / sub-agent
+// resolves connect against reg. reg may be nil (TUI mode / sub-agent
 // contexts with no daemon) — regDial then returns "daemon not running".
 func NewAndroidBackendWithRegistry(reg *ConnectionRegistry) *AndroidBackend {
 	b := &AndroidBackend{
@@ -113,36 +109,28 @@ func (b *AndroidBackend) IsConnected() bool {
 	return b.client != nil && !b.client.IsClosed()
 }
 
-// Connect resolves an already-established client (via b.dial — regDial in
-// production) for the given host. The dial runs BEFORE b.mu is taken so a
-// slow lookup does not block in-flight actions on the current connection. On
-// dial success the old client POINTER is swapped out under b.mu but NOT
-// closed — registry-owned conns outlive one backend's connect cycle and stay
-// live in the registry for their source host. On dial failure the old
-// connection is left untouched. So Connect leaves the backend either on the
-// new device or still on the old one — never half-open and never accidentally
+// Connect resolves the current inbound conn (via b.dial — regDial in
+// production) and swaps it in. The dial runs BEFORE b.mu is taken so a slow
+// lookup does not block in-flight actions on the current connection.
+// Connect ALWAYS re-dials — the "dial" is an in-memory registry lookup, so
+// skipping it when already connected saves nothing, while always re-taking
+// lets a phone that re-dialed (registry slot already replaced, old conn not
+// yet detected dead) be picked up by the very next connect. On dial failure
+// the old connection is left untouched. On success the old client POINTER
+// is swapped out under b.mu but NOT closed — registry-owned conns outlive
+// one backend's connect cycle. So Connect leaves the backend either on the
+// new conn or still on the old one — never half-open and never accidentally
 // disconnected.
-func (b *AndroidBackend) Connect(ctx context.Context, host string, port int, password string) error {
-	// Already connected to the same device — skip the dial and return immediately.
-	if b.IsConnected() && b.host == host && b.port == port {
-		return nil
-	}
-
-	newClient, err := b.dial(ctx, host, port, password)
+func (b *AndroidBackend) Connect(ctx context.Context) error {
+	newClient, err := b.dial(ctx)
 	if err != nil {
-		// Old connection stays live — the model is still driving the prior device.
 		return err
 	}
 
 	b.mu.Lock()
 	b.client = newClient
-	b.host = host
-	b.port = port
-	b.password = password
 	b.refs.clear()
 	b.mu.Unlock()
-	// Do NOT close the old client: registry-owned (reversed arch). The old
-	// client stays live in the registry for its source host.
 	return nil
 }
 

@@ -100,25 +100,17 @@ func (f *fakeCaller) setClosed(v bool) {
 	f.closed = v
 }
 
-// dialRecorder is a fake dialer that returns fakeCallers and records the
-// connect arguments for assertion.
+// dialRecorder is a fake dialer that returns fakeCallers, optionally failing
+// the next dial.
 type dialRecorder struct {
 	mu       sync.Mutex
-	connects []connectArgs
 	clients  []*fakeCaller
 	failNext error
 }
 
-type connectArgs struct {
-	host     string
-	port     int
-	password string
-}
-
-func (d *dialRecorder) dial(_ context.Context, host string, port int, password string) (rpcCaller, error) {
+func (d *dialRecorder) dial(_ context.Context) (rpcCaller, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.connects = append(d.connects, connectArgs{host: host, port: port, password: password})
 	if d.failNext != nil {
 		err := d.failNext
 		d.failNext = nil
@@ -127,15 +119,6 @@ func (d *dialRecorder) dial(_ context.Context, host string, port int, password s
 	c := &fakeCaller{}
 	d.clients = append(d.clients, c)
 	return c, nil
-}
-
-func (d *dialRecorder) lastConnect() connectArgs {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.connects) == 0 {
-		return connectArgs{}
-	}
-	return d.connects[len(d.connects)-1]
 }
 
 func (d *dialRecorder) clientCount() int {
@@ -157,25 +140,61 @@ func TestAndroidBackend_FreshIsDisconnected(t *testing.T) {
 	}
 }
 
+// TestAndroidBackend_ConnectAlwaysReDials pins the always-re-dial decision:
+// even when already connected, Connect re-resolves the (cheap, in-memory)
+// dial source, so a phone that re-dialed is picked up without waiting for
+// the old conn to be detected dead.
+func TestAndroidBackend_ConnectAlwaysReDials(t *testing.T) {
+	t.Parallel()
+	rec, dial := newFakeDialer()
+	b := newAndroidBackendForTest(dial)
+	ctx := context.Background()
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect 1: %v", err)
+	}
+	if b.client != rpcCaller(rec.clients[0]) {
+		t.Fatal("first Connect did not use the first dialed client")
+	}
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect 2: %v", err)
+	}
+	if b.client != rpcCaller(rec.clients[1]) {
+		t.Error("second Connect kept the old client; want the freshly dialed one")
+	}
+	if !b.IsConnected() {
+		t.Error("IsConnected = false after re-dial, want true")
+	}
+}
+
+// ConnectPassesCtxToDialer pins the seam contract: the dialer runs under the
+// caller's ctx, so a cancellable connect stays possible at the tool layer
+// without the backend re-deriving it.
+func TestAndroidBackend_ConnectPassesCtxToDialer(t *testing.T) {
+	t.Parallel()
+	var got context.Context
+	b := newAndroidBackendForTest(func(ctx context.Context) (rpcCaller, error) {
+		got = ctx
+		return &fakeCaller{}, nil
+	})
+	ctx := context.Background()
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if got != ctx {
+		t.Error("dialer did not receive Connect's caller ctx")
+	}
+}
+
 func TestAndroidBackend_ConnectFlipsConnected(t *testing.T) {
 	t.Parallel()
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "1.2.3.4", 8765, "pw"); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	if !b.IsConnected() {
 		t.Error("IsConnected = false after Connect, want true")
-	}
-	if b.host != "1.2.3.4" {
-		t.Errorf("host = %q, want 1.2.3.4", b.host)
-	}
-	if b.port != 8765 {
-		t.Errorf("port = %d, want 8765", b.port)
-	}
-	if b.password != "pw" {
-		t.Errorf("password = %q, want pw", b.password)
 	}
 }
 
@@ -184,7 +203,7 @@ func TestAndroidBackend_DisconnectFlipsDisconnected(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "1.2.3.4", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	if err := b.Disconnect(); err != nil {
@@ -204,7 +223,7 @@ func TestAndroidBackend_DisconnectIdempotent(t *testing.T) {
 		t.Fatalf("Disconnect (never connected): %v", err)
 	}
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 1, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	if err := b.Disconnect(); err != nil {
@@ -275,38 +294,39 @@ func TestAndroidBackend_AutoDisconnectOnReconnect(t *testing.T) {
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
 
-	// Connect device A, capture a screen so refs populate.
-	if err := b.Connect(ctx, "deviceA", 8765, ""); err != nil {
-		t.Fatalf("Connect A: %v", err)
+	// First connect, capture a screen so refs populate.
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect first: %v", err)
 	}
-	clientA := rec.clients[0]
-	clientA.responses = map[string]json.RawMessage{
+	firstClient := rec.clients[0]
+	firstClient.responses = map[string]json.RawMessage{
 		"get_ui_tree": json.RawMessage(`{"tree":{"className":"android.widget.Button","isClickable":true,"bounds":{"left":0,"top":0,"right":100,"bottom":100}}}`),
 	}
 	screenRes, err := b.Screen(ctx, 15)
 	if err != nil {
-		t.Fatalf("Screen A: %v", err)
+		t.Fatalf("Screen first: %v", err)
 	}
 	if len(screenRes.Elements) != 1 {
-		t.Fatalf("Screen A elements = %d, want 1", len(screenRes.Elements))
+		t.Fatalf("Screen first elements = %d, want 1", len(screenRes.Elements))
 	}
-	refFromA := screenRes.Elements[0].Ref
-	if refFromA != 1 {
-		t.Fatalf("refFromA = %d, want 1", refFromA)
+	staleRef := screenRes.Elements[0].Ref
+	if staleRef != 1 {
+		t.Fatalf("staleRef = %d, want 1", staleRef)
 	}
 
-	// Connect device B — must auto-close A and clear A's refs.
-	if err := b.Connect(ctx, "deviceB", 8765, ""); err != nil {
-		t.Fatalf("Connect B: %v", err)
+	// Second connect (always re-dials) must swap the client, clear the old
+	// refs, and NOT close the old client — registry owns conn lifetime.
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect second: %v", err)
 	}
-	if clientA.closedCount != 0 {
-		t.Errorf("client A close count = %d, want 0 (registry owns conn lifetime)", clientA.closedCount)
+	if firstClient.closedCount != 0 {
+		t.Errorf("first client close count = %d, want 0 (registry owns conn lifetime)", firstClient.closedCount)
 	}
 	if !b.IsConnected() {
 		t.Error("IsConnected = false after reconnect, want true")
 	}
-	// A's ref must be gone — ClickElement(refFromA) returns ref-not-found.
-	err = b.ClickElement(ctx, refFromA)
+	// The old ref must be gone — ClickElement(staleRef) returns ref-not-found.
+	err = b.ClickElement(ctx, staleRef)
 	if err == nil {
 		t.Fatal("ClickElement with stale ref returned nil, want ref-not-found error")
 	}
@@ -321,16 +341,16 @@ func TestAndroidBackend_AsyncDropSelfHeals(t *testing.T) {
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
 
-	if err := b.Connect(ctx, "deviceA", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	clientA := rec.clients[0]
+	fc := rec.clients[0]
 	// Simulate an async peer close: the read loop would have flipped closed.
-	clientA.setClosed(true)
+	fc.setClosed(true)
 
 	// Next action must report not-connected, self-heal b.client to nil, and
 	// record ZERO call() invocations for that action.
-	beforeCalls := clientA.callCount()
+	beforeCalls := fc.callCount()
 	_, err := b.Screen(ctx, 15)
 	if err == nil {
 		t.Fatal("Screen after async drop returned nil, want error")
@@ -341,8 +361,8 @@ func TestAndroidBackend_AsyncDropSelfHeals(t *testing.T) {
 	if b.IsConnected() {
 		t.Error("IsConnected = true after async drop, want false")
 	}
-	if clientA.callCount() != beforeCalls {
-		t.Errorf("call count changed from %d to %d (wire traffic during self-heal is wrong)", beforeCalls, clientA.callCount())
+	if fc.callCount() != beforeCalls {
+		t.Errorf("call count changed from %d to %d (wire traffic during self-heal is wrong)", beforeCalls, fc.callCount())
 	}
 }
 
@@ -352,28 +372,28 @@ func TestAndroidBackend_ConnectDialFailureLeavesOldLive(t *testing.T) {
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
 
-	if err := b.Connect(ctx, "A", 8765, ""); err != nil {
-		t.Fatalf("Connect A: %v", err)
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
 	}
-	clientA := rec.clients[0]
+	firstClient := rec.clients[0]
 	// Next dial fails.
 	rec.failNext = errors.New("dial failed")
-	if err := b.Connect(ctx, "B", 9999, ""); err == nil {
-		t.Fatal("Connect B returned nil, want dial error")
+	if err := b.Connect(ctx); err == nil {
+		t.Fatal("second Connect returned nil, want dial error")
 	}
-	// Old client A must still be the active one.
+	// The first client must still be the active one.
 	if !b.IsConnected() {
 		t.Error("IsConnected = false after dial failure, want true (old stays live)")
 	}
-	// A screen call must still reach client A.
-	clientA.responses = map[string]json.RawMessage{
+	// A screen call must still reach the first client.
+	firstClient.responses = map[string]json.RawMessage{
 		"get_ui_tree": json.RawMessage(`{"tree":null}`),
 	}
 	if _, err := b.Screen(ctx, 15); err != nil {
 		t.Fatalf("Screen after failed reconnect: %v", err)
 	}
-	if clientA.callCount() != 1 {
-		t.Errorf("client A calls = %d, want 1 (still active)", clientA.callCount())
+	if firstClient.callCount() != 1 {
+		t.Errorf("first client calls = %d, want 1 (still active)", firstClient.callCount())
 	}
 }
 
@@ -382,7 +402,7 @@ func TestAndroidBackend_Screen_AssignsRefs(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
@@ -411,7 +431,7 @@ func TestAndroidBackend_Screen_DefaultMaxDepth15(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -435,7 +455,7 @@ func TestAndroidBackend_ClickElement_ResolvesCenter(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -471,7 +491,7 @@ func TestAndroidBackend_ClickElement_RefNotFound(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -495,7 +515,7 @@ func TestAndroidBackend_ClickElement_NoScreen(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	err := b.ClickElement(ctx, 1)
@@ -512,7 +532,7 @@ func TestAndroidBackend_Type_IssuesSetText(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -533,7 +553,7 @@ func TestAndroidBackend_SendKey_IssuesPressKey(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -554,7 +574,7 @@ func TestAndroidBackend_Scroll_IssuesScrollWithAmount(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -578,7 +598,7 @@ func TestAndroidBackend_Zoom_IssuesPinch(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -605,7 +625,7 @@ func TestAndroidBackend_Screenshot_Decodes(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -629,7 +649,7 @@ func TestAndroidBackend_DeviceInfo_Decodes(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -653,7 +673,7 @@ func TestAndroidBackend_OpenApp_IssuesOpenApp(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -710,7 +730,7 @@ func TestAndroidBackend_SendFile_StreamsBinaryFrames(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -760,7 +780,7 @@ func TestAndroidBackend_SendFile_MissingFile(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -782,7 +802,7 @@ func TestAndroidBackend_SendFile_EmptyFile(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -804,7 +824,7 @@ func TestAndroidBackend_SendFile_Directory(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -830,7 +850,7 @@ func TestAndroidBackend_SendFile_BeginError(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -865,7 +885,7 @@ func TestAndroidBackend_OpenMenu_IssuesLongPress(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -886,7 +906,7 @@ func TestAndroidBackend_Click_IssuesTapWithDuration(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -907,7 +927,7 @@ func TestAndroidBackend_CloseAliasForDisconnect(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	if err := b.Close(); err != nil {
@@ -1001,7 +1021,7 @@ func TestAndroidBackend_OpenMenuElement_ResolvesCenter(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -1033,7 +1053,7 @@ func TestAndroidBackend_OpenMenuElement_NoScreen(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	err := b.OpenMenuElement(ctx, 1)
@@ -1050,7 +1070,7 @@ func TestAndroidBackend_CallErrorPropagates(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -1071,7 +1091,7 @@ func TestAndroidBackend_Screen_DecodeError(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -1089,7 +1109,7 @@ func TestAndroidBackend_Screenshot_DecodeError(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -1107,7 +1127,7 @@ func TestAndroidBackend_DeviceInfo_DecodeError(t *testing.T) {
 	_, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	if err := b.Connect(ctx, "h", 8765, ""); err != nil {
+	if err := b.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
@@ -1125,23 +1145,26 @@ func TestAndroidBackend_ConnectLockDiscipline(t *testing.T) {
 	rec, dial := newFakeDialer()
 	b := newAndroidBackendForTest(dial)
 	ctx := context.Background()
-	// Connect A first.
-	if err := b.Connect(ctx, "A", 8765, ""); err != nil {
-		t.Fatalf("Connect A: %v", err)
+	// First connect.
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect first: %v", err)
 	}
-	clientA := rec.clients[0]
-	// A slow second dial to B must NOT block in-flight actions on A. We
-	// verify the lock discipline by checking that after a successful
-	// reconnect, client A is closed exactly once and refs are cleared.
-	if err := b.Connect(ctx, "B", 8765, ""); err != nil {
-		t.Fatalf("Connect B: %v", err)
+	firstClient := rec.clients[0]
+	// A slow second dial must NOT block in-flight actions on the first
+	// client. After a successful reconnect the first client is NOT closed
+	// (registry owns conn lifetime) and refs are cleared.
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("Connect second: %v", err)
 	}
-	if clientA.closedCount != 0 {
-		t.Errorf("client A close count = %d, want 0 (registry owns conn lifetime, never closed)", clientA.closedCount)
+	if firstClient.closedCount != 0 {
+		t.Errorf("first client close count = %d, want 0 (registry owns conn lifetime, never closed)", firstClient.closedCount)
 	}
-	// B must be the active client.
+	// The freshly dialed client must be the active one.
 	if len(rec.clients) != 2 {
 		t.Fatalf("client count = %d, want 2", len(rec.clients))
+	}
+	if b.client != rpcCaller(rec.clients[1]) {
+		t.Error("active client is not the freshly dialed one")
 	}
 	if !b.IsConnected() {
 		t.Error("not connected after reconnect")

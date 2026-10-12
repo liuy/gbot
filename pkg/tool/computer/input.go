@@ -7,15 +7,11 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 )
 
-// Input is the parsed tool input. The connect fields (Host/Port/Password)
-// use plain types — Port is *int so "absent" (default-to-8765 in dispatch) is
-// distinguishable from "explicitly 0". Coordinate uses json.RawMessage so
-// callers can distinguish absent from [0,0].
+// Input is the parsed tool input. Coordinate uses json.RawMessage so callers
+// can distinguish absent from [0,0]; scalar pointer fields use the same
+// absent-vs-zero distinction.
 type Input struct {
 	Action     string          `json:"action"`
-	Host       string          `json:"host,omitempty"`       // [connect]
-	Port       *int            `json:"port,omitempty"`       // [connect] default 8765
-	Password   string          `json:"password,omitempty"`   // [connect]
 	MaxDepth   *int            `json:"max_depth,omitempty"`  // [screen]
 	Ref        *int            `json:"ref,omitempty"`        // [click_element, open_menu_element]
 	Coordinate json.RawMessage `json:"coordinate,omitempty"` // [click, open_menu, zoom] [x,y]
