@@ -256,12 +256,22 @@ func TruncateStringLines(s string, maxLines int) string {
 	return strings.Join(lines[:maxLines], "\n") + "\n" + FormatMoreLines(hidden)
 }
 
-// pluralWord returns "word" or "words" based on count.
+// singularForms overrides the trailing-"s" rule for plurals whose singular is
+// not the plural minus "s" ("matches"→"match", "entries"→"entry").
+var singularForms = map[string]string{"matches": "match", "entries": "entry"}
+
 // PluralWord returns the singular form when n==1 by stripping the trailing "s"
 // from word. Otherwise returns word as-is. Callers pass the plural form
 // (e.g. "files", "matches") and the function trims it for n==1.
+//
+// The TS upstream singularises the same way (GrepTool/UI.tsx countLabel.slice(0,
+// -1)) and so prints "matche"/"entrie"; gbot diverges deliberately — user
+// approved correct English here rather than bug-for-bug parity.
 func PluralWord(n int, word string) string {
 	if n == 1 {
+		if s, ok := singularForms[word]; ok {
+			return s
+		}
 		return strings.TrimSuffix(word, "s")
 	}
 	return word

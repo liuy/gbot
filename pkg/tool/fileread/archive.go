@@ -95,17 +95,58 @@ func tryArchivePath(ctx context.Context, in Input) (*tool.ToolResult, bool, erro
 		if err != nil || info.IsDir() {
 			continue
 		}
-		fsys, err := archives.FileSystem(ctx, ap, nil)
-		if err != nil {
-			return nil, true, fmt.Errorf("open archive: %w", err)
-		}
-		result, err := readArchiveFS(fsys, c.subPath, in)
+		result, err := openAndReadArchive(ctx, ap, c.subPath, in)
 		if err != nil {
 			return nil, true, err
 		}
 		return result, true, nil
 	}
 	return nil, false, nil
+}
+
+// openAndReadArchive opens the archive and reads the requested member, giving
+// up as soon as ctx is done. mholt/archives only polls ctx between archive
+// entries, and a corrupt .rar parks rardecode/v2 in a channel receive before
+// the first entry is ever visited — without this handoff a Read on such a
+// file would wedge the tool indefinitely.
+//
+// Trade-off: the losing goroutine stays parked on the wedged decoder (and
+// keeps its file handle open) until the process exits, so N hung reads cost
+// N parked goroutines and N handles. No production caller sets a deadline on
+// the Read context, so what the handoff buys is the cancel path: ESC/cancelling
+// the query unblocks the tool instead of leaving the user waiting on a wedge.
+//
+// The read runs off-stack, so runTools' panic recovery is no longer above it;
+// the recover below is what keeps a decoder panic on a hostile archive a tool
+// error rather than a process crash.
+func openAndReadArchive(ctx context.Context, archivePath, subPath string, in Input) (*tool.ToolResult, error) {
+	type outcome struct {
+		result *tool.ToolResult
+		err    error
+	}
+	// Buffered so the goroutine can always finish its read without a receiver.
+	done := make(chan outcome, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- outcome{err: fmt.Errorf("open archive %s: panic: %v", archivePath, r)}
+			}
+		}()
+		fsys, err := archives.FileSystem(ctx, archivePath, nil)
+		if err != nil {
+			done <- outcome{err: fmt.Errorf("open archive: %w", err)}
+			return
+		}
+		result, err := readArchiveFS(fsys, subPath, in)
+		done <- outcome{result: result, err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.result, o.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("open archive %s: %w", archivePath, ctx.Err())
+	}
 }
 
 // readArchiveFS reads a directory listing or a member file from the archive.

@@ -445,6 +445,7 @@ func Start(opts Options) (*Instance, error) {
 					MaxTurns:        0,
 					Model:           "",
 					ParentToolUseID: "",
+					WorkingDir:      "",
 					AgentType:       "session_memory",
 				})
 				defer subEng.Close()
@@ -908,10 +909,11 @@ func resumeDreamSession(eng *engine.Engine, store *short.Store, projectDir strin
 	}
 }
 
-// startSessionCleanup periodically deletes sessions older than 30 days and
-// prunes empty orphan sessions for projectDir. The goroutine is cheap; no
-// activity check needed (unlike TS single-thread). firstDelay separates the
-// first pass from startup I/O; the loop then repeats every interval.
+// startSessionCleanup periodically deletes sessions older than 30 days for
+// projectDir; empty orphan sessions are deliberately left to the on-demand
+// path (see the loop body). The goroutine is cheap; no activity check needed
+// (unlike TS single-thread). firstDelay separates the first pass from startup
+// I/O; the loop then repeats every interval.
 func startSessionCleanup(store *short.Store, firstDelay, interval time.Duration) {
 	go func() {
 		time.Sleep(firstDelay)

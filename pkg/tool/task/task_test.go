@@ -1899,3 +1899,222 @@ func TestAutoReset_SessionResume(t *testing.T) {
 		t.Errorf("expected 0 tasks after reset, got %d", len(tasks2))
 	}
 }
+
+// --- Mutation-sweep additions ---
+
+// Each character class in sanitizePathComponent is a four-sided range
+// comparison; only boundary characters kill an off-by-one in any side.
+func TestSanitize_CharacterClassBoundaries(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"`a{", "-a-"},   // just below 'a' and just above 'z'
+		{"@AZ[", "-AZ-"}, // just below 'A' and just above 'Z'
+		{"/09:", "-09-"}, // just below '0' and just above '9'
+		{"^_`", "-_-"},   // '_' kept; '^' and '`' are its neighbours
+		{" +,", "---"},   // space, '+' and ',' all collapse
+		{".-/", "---"},
+	} {
+		if got := sanitizePathComponent(tc.in); got != tc.want {
+			t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Task files carry task data in a shared home directory: the mode is part
+// of the contract.
+func TestAtomicWrite_TaskFileMode0600(t *testing.T) {
+	l := newTestList(t)
+	id, err := l.CreateTask("mode check", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(l.Dir(), id+".json"))
+	if err != nil {
+		t.Fatalf("stat task file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("task file mode = %04o, want 0600", got)
+	}
+	if err := l.writeHighWaterMark(7); err != nil {
+		t.Fatalf("writeHighWaterMark: %v", err)
+	}
+	info, err = os.Stat(filepath.Join(l.Dir(), highWaterMarkFile))
+	if err != nil {
+		t.Fatalf("stat high water mark: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("high water mark mode = %04o, want 0600", got)
+	}
+}
+
+// Init and SetDir create the session directory; its mode is observable.
+func TestInit_SetDir_DirMode0755(t *testing.T) {
+	root := t.TempDir()
+
+	initDir := filepath.Join(root, "initsub")
+	l := NewList(initDir)
+	if err := l.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	info, err := os.Stat(initDir)
+	if err != nil {
+		t.Fatalf("stat init dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("Init created %04o, want 0755", got)
+	}
+
+	setDir := filepath.Join(root, "set", "deep")
+	l2 := NewList("")
+	if err := l2.SetDir(setDir); err != nil {
+		t.Fatalf("SetDir: %v", err)
+	}
+	info, err = os.Stat(setDir)
+	if err != nil {
+		t.Fatalf("stat set dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("SetDir created %04o, want 0755", got)
+	}
+}
+
+// AddBlocks alone must count as work: the no-changes early return keys off
+// all three lengths, and a mutated guard would skip the relationship.
+func TestUpdateTask_OnlyAddBlocks_WritesRelationship(t *testing.T) {
+	l := newTestList(t)
+	a, err := l.CreateTask("blocker", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask a: %v", err)
+	}
+	b, err := l.CreateTask("blocked", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask b: %v", err)
+	}
+
+	task, fields, err := l.UpdateTask(a, TaskUpdates{AddBlocks: []string{b}})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if task == nil {
+		t.Fatal("UpdateTask returned nil task")
+	}
+	if !slices.Contains(fields, "addBlocks") {
+		t.Errorf("updatedFields = %v, want it to contain addBlocks", fields)
+	}
+	got, err := l.GetTask(a)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !slices.Contains(got.Blocks, b) {
+		t.Errorf("blocks = %v, want it to contain %s", got.Blocks, b)
+	}
+	got, err = l.GetTask(b)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !slices.Contains(got.BlockedBy, a) {
+		t.Errorf("blockedBy = %v, want it to contain %s", got.BlockedBy, a)
+	}
+}
+
+// CleanupCompleted must leave the high water mark behind (IDs never
+// reused) and must only remove task .json files.
+func TestCleanupCompleted_PreservesMarkAndNonJSON(t *testing.T) {
+	l := newTestList(t)
+	for _, s := range []string{"one", "two", "three"} {
+		id, err := l.CreateTask(s, "", "", nil)
+		if err != nil {
+			t.Fatalf("CreateTask %s: %v", s, err)
+		}
+		completed := StatusCompleted
+		if _, _, err := l.UpdateTask(id, TaskUpdates{Status: &completed}); err != nil {
+			t.Fatalf("UpdateTask %s: %v", id, err)
+		}
+	}
+	stray := filepath.Join(l.Dir(), "notes.txt")
+	if err := os.WriteFile(stray, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+
+	if err := l.CleanupCompleted(); err != nil {
+		t.Fatalf("CleanupCompleted: %v", err)
+	}
+	tasks, err := l.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("tasks after cleanup = %d, want 0", len(tasks))
+	}
+	mark, err := l.readHighWaterMark()
+	if err != nil {
+		t.Fatalf("readHighWaterMark: %v", err)
+	}
+	if mark != 3 {
+		t.Errorf("high water mark after cleanup = %d, want 3", mark)
+	}
+	data, err := os.ReadFile(stray)
+	if err != nil {
+		t.Fatalf("stray file must survive cleanup: %v", err)
+	}
+	if string(data) != "keep me" {
+		t.Errorf("stray content = %q, want %q", data, "keep me")
+	}
+	next, err := l.CreateTask("after", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask after cleanup: %v", err)
+	}
+	if next != "4" {
+		t.Errorf("next ID = %q, want 4 (high water mark must survive cleanup)", next)
+	}
+}
+
+// The no-changes early return must not touch the disk: with the storage
+// directory read-only a real write attempt fails, while the early return
+// succeeds. This is what separates the guard from a mutated comparison
+// that always falls through to the write path.
+func TestUpdateTask_NoChangesSkipsWriteEvenWhenDirReadOnly(t *testing.T) {
+	l := newTestList(t)
+	id, err := l.CreateTask("Same", "desc", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := os.Chmod(l.Dir(), 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Registered after newTestList's: cleanups run LIFO, so the mode is
+	// restored before TempDir tries to unlink the task file.
+	t.Cleanup(func() {
+		if err := os.Chmod(l.Dir(), 0o700); err != nil {
+			t.Errorf("restore dir mode: %v", err)
+		}
+	})
+
+	task, fields, err := l.UpdateTask(id, TaskUpdates{})
+	if err != nil {
+		t.Fatalf("no-change UpdateTask must not attempt a write: %v", err)
+	}
+	if task == nil || task.Subject != "Same" {
+		t.Errorf("returned task = %+v, want the unchanged task with subject Same", task)
+	}
+	if len(fields) != 0 {
+		t.Errorf("updatedFields = %v, want empty", fields)
+	}
+}
+
+// With no home directory resolvable, TasksDir must surface the wrapped
+// lookup failure rather than building a path around an empty home.
+func TestTasksDir_HomeLookupFailure(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USER", "")
+
+	dir, err := TasksDir("session")
+	if err == nil {
+		t.Fatalf("TasksDir = %q, want the home-lookup error", dir)
+	}
+	if err.Error() != "get home dir: $HOME is not defined" {
+		t.Errorf("TasksDir error = %q, want %q", err.Error(), "get home dir: $HOME is not defined")
+	}
+	if dir != "" {
+		t.Errorf("TasksDir dir = %q, want empty on error", dir)
+	}
+}

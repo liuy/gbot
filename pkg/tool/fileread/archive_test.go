@@ -1,10 +1,15 @@
 package fileread
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -322,6 +327,92 @@ func TestTryArchivePath_AllFormats(t *testing.T) {
 				t.Errorf("%s content missing %q; got:\n%s", c.fixture, c.want, text)
 			}
 		})
+	}
+}
+
+// A corrupt .rar sends rardecode/v2 into a permanent channel receive, so the
+// archive-open path must abort on the caller's context instead of wedging the
+// Read tool forever.
+func TestExecute_CorruptRarHonorsContextDeadline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken.rar")
+
+	// RAR5 magic + garbage: enough for the format sniff to accept the file and
+	// for the decoder to start walking a bogus block chain.
+	fixture := append([]byte("Rar!\x1a\x07\x01"), bytes.Repeat([]byte{0xFF, 0x00, 'A', 0x7F}, 512)...)
+	if err := os.WriteFile(path, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	input, err := json.Marshal(Input{FilePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Execute(ctx, input, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Execute returned nil error for a corrupt .rar")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error = %v, want it to wrap context.DeadlineExceeded", err)
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("error %q does not mention the archive path %q", err.Error(), path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return within 5s — hang")
+	}
+}
+
+// rardecode/v2 slices out of range on a zero-filled RAR5 block chain. The
+// archive read runs off-stack, so the recover in openAndReadArchive is the only
+// thing between that panic and a dead process.
+func TestExecute_DecoderPanicBecomesToolError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "panic.rar")
+
+	fixture := append([]byte("Rar!\x1a\x07\x01"), make([]byte, 96)...)
+	if err := os.WriteFile(path, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	input, err := json.Marshal(Input{FilePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Execute(ctx, input, nil)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Execute returned nil error for a panic-inducing .rar")
+		}
+		if !strings.Contains(err.Error(), "panic:") {
+			t.Errorf("error = %q, want it to report the decoder panic", err.Error())
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("error %q does not mention the archive path %q", err.Error(), path)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute did not return within 10s")
 	}
 }
 

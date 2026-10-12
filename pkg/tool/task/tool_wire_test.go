@@ -189,3 +189,67 @@ func TestTaskDecodeResult_RejectsPlainTextWire(t *testing.T) {
 		t.Errorf("err = %v, want json syntax error", err)
 	}
 }
+
+// The Get segment's dependency lines are guarded independently: an empty
+// slice must render NEITHER line, and each line must appear only for its
+// own list.
+func TestTaskWire_GetDependencyLinesIndependent(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		task *GetOutputTask
+		want string
+	}{
+		{
+			name: "no dependencies renders neither line",
+			task: &GetOutputTask{ID: "1", Subject: "Solo", Status: StatusPending, Description: "d"},
+			want: "Task #1: Solo\nStatus: pending\nDescription: d",
+		},
+		{
+			name: "blockedBy only",
+			task: &GetOutputTask{ID: "1", Subject: "Solo", Status: StatusPending, Description: "d", BlockedBy: []string{"9"}},
+			want: "Task #1: Solo\nStatus: pending\nDescription: d\nBlocked by: #9",
+		},
+		{
+			name: "blocks only",
+			task: &GetOutputTask{ID: "1", Subject: "Solo", Status: StatusPending, Description: "d", Blocks: []string{"9"}},
+			want: "Task #1: Solo\nStatus: pending\nDescription: d\nBlocks: #9",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := taskWireText(t, &TasksOutput{Get: &GetResult{Task: tc.task}})
+			if got != tc.want {
+				t.Errorf("wire text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The Task tool raises the persistence cap to 100000; the value reaches
+// the engine through MaxResultSize, so pin it exactly.
+func TestTaskTool_MaxResultSize(t *testing.T) {
+	t.Parallel()
+	if got := New(NewList(""), nil).MaxResultSize(); got != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", got)
+	}
+}
+
+// An empty JSON array leaves its slice field nil, so a wire whose only
+// section is an empty array carries no identifying field and must fall back
+// rather than replay as "No changes".
+func TestTaskDecodeResult_EmptySectionsFallBack(t *testing.T) {
+	t.Parallel()
+	tt := New(NewList(""), nil)
+	for _, wire := range []string{
+		`{"created":[]}`,
+		`{"updated":[]}`,
+		`{"deleted":[]}`,
+	} {
+		_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(tool.WrapSingleBlock(wire))
+		if err == nil {
+			t.Errorf("DecodeResult(%s) = nil error, want the identifying-fields rejection", wire)
+		}
+	}
+}

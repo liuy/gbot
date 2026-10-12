@@ -130,10 +130,13 @@ func startWeChatConnector(d startWeChatDeps) error {
 		}
 	}
 
-	wcEng := d.engineMgr.Get(engineID).Engine
-	if wcEng == nil {
+	// The engine can be deleted (TUI/daemon "remove engine") between the branch
+	// above and this lookup; Get returns nil for a removed id.
+	view := d.engineMgr.Get(engineID)
+	if view == nil || view.Engine == nil {
 		return fmt.Errorf("engine not found after creation: %s", engineID)
 	}
+	wcEng := view.Engine
 	// The connector needs the same *hub.Hub the engine dispatches to
 	// so it sees the engine's events. In the fresh-build branch wcHub
 	// is set directly. In the restore branch the hub only exists as

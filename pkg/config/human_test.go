@@ -45,6 +45,31 @@ func TestParseIntOrHuman(t *testing.T) {
 	}
 }
 
+// The error text is user-facing (settings validation surfaces it verbatim),
+// so pin it exactly per branch — including the whitespace-only case, which
+// proves the TrimSpace runs before the empty check.
+func TestParseIntOrHuman_ExactErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ input, want string }{
+		{"", `IntOrHuman: empty string`},
+		{"   ", `IntOrHuman: empty string`},
+		{"xM", `IntOrHuman: invalid number "x" before M`},
+		{"yK", `IntOrHuman: invalid number "y" before k`},
+		{"abc", `IntOrHuman: invalid number "abc"`},
+	} {
+		value, err := ParseIntOrHuman(tc.input)
+		if err == nil {
+			t.Fatalf("ParseIntOrHuman(%q) = %d, want error %q", tc.input, value, tc.want)
+		}
+		if err.Error() != tc.want {
+			t.Errorf("ParseIntOrHuman(%q) error = %q, want %q", tc.input, err.Error(), tc.want)
+		}
+		if value != 0 {
+			t.Errorf("ParseIntOrHuman(%q) value on error = %d, want 0", tc.input, value)
+		}
+	}
+}
+
 func TestIntOrHuman_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -97,6 +122,12 @@ func TestIntOrHuman_MarshalJSON(t *testing.T) {
 		{200 * 1024, `"200k"`},
 		{1024 * 1024, `"1M"`},
 		{3 * 1024 * 1024, `"3M"`},
+		// M-boundary neighbours: an off-by-one in the M divisor turns
+		// 1048575 into "1023k" or 1048577 into "1M".
+		{1024*1024 - 1, "1048575"},
+		{1024*1024 + 1, "1048577"},
+		{2 * 1024 * 1024, `"2M"`},
+		{1023 * 1024, `"1023k"`},
 	}
 	for _, tt := range tests {
 		got, err := json.Marshal(tt.in)

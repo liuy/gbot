@@ -1518,3 +1518,40 @@ func TestTasks_IsSearchOrRead(t *testing.T) {
 		}
 	}
 }
+
+// TasksInput.UnmarshalJSON must surface the decoder error itself, not let
+// the call fall through to the dispatch-time "unknown action" message.
+func TestTasksInput_UnmarshalJSON_Malformed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ in, want string }{
+		{`{bad}`, "invalid character 'b' looking for beginning of object key string"},
+		{`{"action":`, "unexpected end of JSON input"},
+		{`{"action":5}`, "json: cannot unmarshal number into Go struct field"},
+	} {
+		var in TasksInput
+		err := json.Unmarshal([]byte(tc.in), &in)
+		if err == nil {
+			t.Fatalf("unmarshal %s: got nil error, want %q", tc.in, tc.want)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("unmarshal %s error = %q, want it to contain %q", tc.in, err.Error(), tc.want)
+		}
+	}
+}
+
+// The list section reports the exact task count, including the singular
+// boundary between zero and one.
+func TestTasks_RenderResult_ListCounts(t *testing.T) {
+	t.Parallel()
+	one := &TasksOutput{List: &ListResult{Tasks: []ListOutputTask{{ID: "1", Subject: "A", Status: "pending"}}}}
+	if got := tasksRenderResult(one); got != "Listed: 1 tasks" {
+		t.Errorf("got %q, want %q", got, "Listed: 1 tasks")
+	}
+	two := &TasksOutput{List: &ListResult{Tasks: []ListOutputTask{
+		{ID: "1", Subject: "A", Status: "pending"},
+		{ID: "2", Subject: "B", Status: "completed"},
+	}}}
+	if got := tasksRenderResult(two); got != "Listed: 2 tasks" {
+		t.Errorf("got %q, want %q", got, "Listed: 2 tasks")
+	}
+}

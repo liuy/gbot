@@ -282,6 +282,148 @@ func TestCreateAllProviders_FreeRefreshReplacesStale(t *testing.T) {
 	}
 }
 
+// A failing free fetch is logged and skipped: it must not abort the loop,
+// must not wipe the provider's ledger/models, and must not stop later
+// providers from being created or refreshed.
+func TestCreateAllProviders_FreeFetchFailureIsolated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bad/models" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":                   "good:free",
+				"context_length":       65536,
+				"pricing":              map[string]string{"prompt": "0", "completion": "0"},
+				"supported_parameters": []string{"tools"},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Providers: []Provider{
+			{
+				Name:        "bad-free",
+				URL:         srv.URL + "/bad",
+				Type:        ProviderTypeOpenAI,
+				Keys:        []string{"k1"},
+				FreeFetched: []string{"old:free"},
+				Models:      modelsFromJSON(t, `{"old:free":{}}`),
+			},
+			{
+				Name:        "good-free",
+				URL:         srv.URL,
+				Type:        ProviderTypeOpenAI,
+				Keys:        []string{"k2"},
+				FreeFetched: []string{"old:free"},
+				Models:      modelsFromJSON(t, `{"old:free":{}}`),
+			},
+		},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("providers = %d, want 2 (a failed fetch must not drop the provider)", len(m))
+	}
+	if _, ok := cfg.Providers[0].Models.Get("old:free"); !ok {
+		t.Error("bad-free: old:free must survive a failed fetch")
+	}
+	if got := cfg.Providers[0].FreeFetched; len(got) != 1 || got[0] != "old:free" {
+		t.Errorf("bad-free FreeFetched = %v, want [old:free]", got)
+	}
+	if _, ok := cfg.Providers[1].Models.Get("good:free"); !ok {
+		t.Error("good-free must still be refreshed despite the earlier failure")
+	}
+	if got := cfg.Providers[1].FreeFetched; len(got) != 1 || got[0] != "good:free" {
+		t.Errorf("good-free FreeFetched = %v, want [good:free]", got)
+	}
+}
+
+// A 0-model response must be skipped wholesale: applying it would clear the
+// ledger and delete every previously fetched model.
+func TestCreateAllProviders_FreeFetchEmptyKeepsLedger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Providers: []Provider{{
+			Name:        "free",
+			URL:         srv.URL,
+			Type:        ProviderTypeOpenAI,
+			Keys:        []string{"k"},
+			FreeFetched: []string{"kept:free"},
+			Models:      modelsFromJSON(t, `{"kept:free":{}}`),
+		}},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	if len(m) != 1 {
+		t.Fatalf("providers = %d, want 1", len(m))
+	}
+	if _, ok := cfg.Providers[0].Models.Get("kept:free"); !ok {
+		t.Error("kept:free must survive an empty fetch result")
+	}
+	if got := cfg.Providers[0].FreeFetched; len(got) != 1 || got[0] != "kept:free" {
+		t.Errorf("FreeFetched = %v, want [kept:free] (empty result must not clear the ledger)", got)
+	}
+}
+
+// Hand-managed providers (no fetch ledger) must be passed over, not
+// skipped-to-end: a free provider listed after them still refreshes.
+func TestCreateAllProviders_HandManagedThenFree(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":                   "fetched:free",
+				"context_length":       32768,
+				"pricing":              map[string]string{"prompt": "0", "completion": "0"},
+				"supported_parameters": []string{"tools"},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Providers: []Provider{
+			{Name: "hand", URL: "https://hand.example", Type: ProviderTypeOpenAI, Keys: []string{"k1"}, Models: modelsFromJSON(t, `{"hand-model":{}}`)},
+			{Name: "free", URL: srv.URL, Type: ProviderTypeOpenAI, Keys: []string{"k2"}, FreeFetched: []string{"gone:free"}, Models: modelsFromJSON(t, `{"gone:free":{}}`)},
+		},
+	}
+
+	m, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("providers = %d, want 2", len(m))
+	}
+	if got := cfg.Providers[0].Models.Ordered(); len(got) != 1 || got[0] != "hand-model" {
+		t.Errorf("hand models = %v, want [hand-model]", got)
+	}
+	if got := cfg.Providers[1].Models.Ordered(); len(got) != 1 || got[0] != "fetched:free" {
+		t.Errorf("free models = %v, want [fetched:free]", got)
+	}
+}
+
+func modelsFromJSON(t *testing.T, s string) Models {
+	t.Helper()
+	var m Models
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("models fixture %s: %v", s, err)
+	}
+	return m
+}
+
 // ---------------------------------------------------------------------------
 // Per-provider microcompact switch
 // ---------------------------------------------------------------------------

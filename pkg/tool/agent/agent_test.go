@@ -390,14 +390,6 @@ func TestPermissionMethods(t *testing.T) {
 	}
 }
 
-func TestSetSkillRegistry(t *testing.T) {
-	at := New()
-	reg := &testSkillRegistry{}
-	at.SetSkillRegistry(reg)
-	// SkillReg now flows through Engine.RunAgent via sharedDeps;
-	// the runner no longer holds it. This just verifies no panic.
-}
-
 func TestSetMcpConnect(t *testing.T) {
 	at := New()
 	var fn McpConnectFunc = func(ctx context.Context, name string, specs []json.RawMessage) (*McpConnectResult, error) {
@@ -429,10 +421,6 @@ func TestBackgroundAgentJobAdapter_Prefix(t *testing.T) {
 		t.Errorf("Prefix() = %q, want %q", got, "fork-")
 	}
 }
-
-type testSkillRegistry struct{}
-
-func (t *testSkillRegistry) GetAllSkills() []types.SkillCommand { return nil }
 
 func TestRenderResultNonSubQueryResult(t *testing.T) {
 	at := New()
@@ -1055,7 +1043,6 @@ func TestCall_SkillPreloading_EmptySkills(t *testing.T) {
 	_ = makeTestTools("Bash")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetWorkingDir(t.TempDir())
 
 	// General agent has no Skills defined — no skill messages
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)

@@ -44,12 +44,6 @@ type McpConnectResult struct {
 // Source: runAgent.ts:95-218 — initializeAgentMcpServers
 type McpConnectFunc func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*McpConnectResult, error)
 
-// SkillRegistry provides skill lookup for agent skill preloading.
-// Interface avoids circular import (agent → skills → types).
-type SkillRegistry interface {
-	GetAllSkills() []types.SkillCommand
-}
-
 // AgentOpts passes parameters to SubagentEngine.RunAgent.
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
@@ -65,6 +59,7 @@ type AgentOpts struct {
 	ResolveTierFn       func(string) string  // model tier resolver (nil = identity)
 	McpConnect          McpConnectFunc       // agent-specific MCP server connector (nil = skip)
 	AllowedTools        []string             // further restrict tools to this list (nil = use agent def)
+	Cwd                 string               // absolute cwd override for the sub-agent ("" = inherit parent)
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +73,6 @@ type AgentTool struct {
 	bgReg       *BackgroundAgentRegistry // nil = background agents disabled
 	notifyFn    func(xml string)
 	sysPromptFn func() string
-	workingDir  string
-	skillReg    SkillRegistry
 	mcpConnect  McpConnectFunc
 	resolveTier func(string) string
 }
@@ -117,14 +110,8 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 	}
 }
 
-// SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
-func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
-
 // SetResolveTierFn injects a tier-name resolver for agent model selection.
 func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTier = fn }
-
-// SetSkillRegistry sets the skill registry for agent skill preloading.
-func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
 func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
@@ -179,7 +166,8 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "name": {"type": "string", "description": "Name for the spawned agent. Makes it addressable via SendMessage while running."},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
     "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background. Returns immediately with an agent ID; the result arrives as a job notification when the agent finishes. Applies to both fork and subagent_type agents."},
-    "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"}
+    "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"},
+    "cwd": {"type": "string", "description": "Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent."}
   },
   "required": ["description","prompt"]
 }`)
@@ -229,6 +217,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		Model:           agentInput.Model,
 		ResolveTierFn:   t.resolveTier,
 		ParentToolUseID: parentToolUseID,
+		Cwd:             agentInput.Cwd,
 	}
 
 	if agentInput.RunInBackground {
@@ -405,6 +394,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		AgentType:       agentType,
 		ParentToolUseID: parentToolUseID,
 		ResolveTierFn:   t.resolveTier,
+		Cwd:             input.Cwd,
 	}
 
 	// Sync path: run fork in-process and return result directly
@@ -714,10 +704,11 @@ func FinalizeResult(messages []types.Message, agentType string, startTime time.T
 		for _, blk := range msg.Content {
 			if blk.Type == types.ContentTypeText && strings.Contains(blk.Text, types.InterruptMessage) {
 				return &types.SubQueryResult{
-					AgentType:       agentType,
-					Content:         "(agent interrupted by user)",
-					TotalDurationMs: time.Since(startTime).Milliseconds(),
-					TotalTokens:     totalUsage.InputTokens + totalUsage.OutputTokens,
+					AgentType:         agentType,
+					Content:           "(agent interrupted by user)",
+					TotalDurationMs:   time.Since(startTime).Milliseconds(),
+					TotalTokens:       totalUsage.InputTokens + totalUsage.OutputTokens,
+					TotalToolUseCount: toolUseCount,
 				}
 			}
 		}
@@ -725,9 +716,10 @@ func FinalizeResult(messages []types.Message, agentType string, startTime time.T
 
 	// Fallback: no text found in any assistant message
 	return &types.SubQueryResult{
-		AgentType:       agentType,
-		Content:         "(agent completed with no text output)",
-		TotalDurationMs: time.Since(startTime).Milliseconds(),
-		TotalTokens:     totalUsage.InputTokens + totalUsage.OutputTokens,
+		AgentType:         agentType,
+		Content:           "(agent completed with no text output)",
+		TotalDurationMs:   time.Since(startTime).Milliseconds(),
+		TotalTokens:       totalUsage.InputTokens + totalUsage.OutputTokens,
+		TotalToolUseCount: toolUseCount,
 	}
 }

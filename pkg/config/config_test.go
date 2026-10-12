@@ -833,8 +833,7 @@ func TestResolveModel_NoProviders(t *testing.T) {
 
 func TestSave_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	cfg := &config.Config{Model: config.ModelSpec{"default": "zhipu/pro"}}
 	if err := cfg.Save(); err != nil {
@@ -863,8 +862,7 @@ func TestSave_FieldLevelUpdate(t *testing.T) {
 	dir := t.TempDir()
 	gbotDir := filepath.Join(dir, ".gbot")
 	_ = os.MkdirAll(gbotDir, 0755)
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	// Pre-existing settings with other fields
 	existing := map[string]any{
@@ -908,8 +906,7 @@ func TestSave_CorruptedFile(t *testing.T) {
 	dir := t.TempDir()
 	gbotDir := filepath.Join(dir, ".gbot")
 	_ = os.MkdirAll(gbotDir, 0755)
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	// Write corrupted JSON
 	_ = os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte("{{broken}}"), 0644)
@@ -943,8 +940,7 @@ func TestSave_CorruptedFile(t *testing.T) {
 
 func TestSave_NoTmpFileLeft(t *testing.T) {
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	if err := cfg.Save(); err != nil {
@@ -986,21 +982,21 @@ func TestLoad_APITimeoutEnv(t *testing.T) {
 }
 
 func TestSave_ConfigDirError(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", "")
-	defer func() { _ = os.Setenv("HOME", origHome) }()
+	t.Setenv("HOME", "")
 
 	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	err := cfg.Save()
 	if err == nil {
 		t.Fatal("Save should fail when ConfigDir errors")
 	}
+	if err.Error() != "$HOME is not defined" {
+		t.Errorf("Save error = %q, want %q", err.Error(), "$HOME is not defined")
+	}
 }
 
 func TestSave_WriteTempError(t *testing.T) {
 	dir := t.TempDir()
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", dir)
 
 	gbotDir := filepath.Join(dir, ".gbot")
 	if err := os.MkdirAll(gbotDir, 0755); err != nil {
@@ -1026,8 +1022,7 @@ func TestSave_MkdirAllError(t *testing.T) {
 	if err := os.WriteFile(blockerPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("setup write: %v", err)
 	}
-	_ = os.Setenv("HOME", blockerPath)
-	defer func() { _ = os.Unsetenv("HOME") }()
+	t.Setenv("HOME", blockerPath)
 
 	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	err := cfg.Save()

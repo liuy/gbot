@@ -928,12 +928,19 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		}
 	}
 
+	// Agent cwd override (TS AgentTool input `cwd`): everything the sub-agent
+	// touches — prompt env block, tool set, shell cwd — resolves under it.
+	// Empty means inherit.
+	subWorkingDir := e.sharedDeps.WorkingDir
+	if opts.Cwd != "" {
+		subWorkingDir = opts.Cwd
+	}
+
 	// Build system prompt (if not pre-built)
 	systemPrompt := opts.SystemPrompt
 	if systemPrompt == "" {
 		basePrompt := agentDef.SystemPrompt()
-		workingDir := e.sharedDeps.WorkingDir
-		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, workingDir, model)
+		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, subWorkingDir, model)
 	}
 
 	// Build user context messages
@@ -949,7 +956,12 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	// ---- Sub-engine creation ----
 
-	subRefs := CreateTools(*e.sharedDeps, e.taskList)
+	// Per-call copy: CreateTools takes SharedDeps by value, so the cwd
+	// override reaches the sub-agent's tools without mutating the deps shared
+	// by every engine (a grandchild re-reads e.sharedDeps, not this copy).
+	subDeps := *e.sharedDeps
+	subDeps.WorkingDir = subWorkingDir
+	subRefs := CreateTools(subDeps, e.taskList)
 
 	if e.sharedDeps.McpReg != nil {
 		for _, dt := range e.sharedDeps.McpReg.GetTools() {
@@ -982,6 +994,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		Model:           model,
 		ParentToolUseID: opts.ParentToolUseID,
 		AgentType:       agentType,
+		WorkingDir:      opts.Cwd,
 	})
 
 	// Stamped after construction because only RunAgent has the agent definition
@@ -4924,6 +4937,7 @@ type SubEngineOptions struct {
 	Model           string               // "" = inherit from parent
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
 	AgentType       string               // "General", "Explore", "Planner", etc.
+	WorkingDir      string               // absolute cwd override; "" = inherit the parent's live dir
 }
 
 // NewSubEngine creates a new Engine that shares the Provider and Logger
@@ -4954,6 +4968,15 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 				Depth:           depth,
 			},
 		}
+	}
+
+	// Sub-engines inherit the parent's live dir at construction (their
+	// session-start dir) unless the caller pins an absolute override — the
+	// Agent tool's cwd parameter does, and the executor's working-dir supplier
+	// reads this field, so tools resolve relative paths under the override.
+	subWorkingDir := e.getWorkingDir()
+	if opts.WorkingDir != "" {
+		subWorkingDir = opts.WorkingDir
 	}
 
 	return &Engine{
@@ -5005,11 +5028,10 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		sessionID:               e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
 		onCloseFn:               e.onCloseFn,
 		fileHistory:             e.fileHistory, // share same Tracker — sub-agent edits tracked too
-		// Sub-engines inherit the parent's live dir at construction (their
-		// session-start dir) but never sync afterwards — a sub-agent's cd must
+		// The two engines never sync after construction — a sub-agent's cd must
 		// not move the parent's cwd. originalWorkingDir stays the session
 		// start, matching TS's single global originalCwd.
-		workingDir:         e.getWorkingDir(),
+		workingDir:         subWorkingDir,
 		originalWorkingDir: e.originalWorkingDir,
 		systemPrompt:       opts.SystemPrompt,
 		senders:            make(map[string]send.FileSender),
