@@ -234,16 +234,14 @@ describe('taskPanel — background jobs section', () => {
     expect(panel.root.style.display).toBe('none')
   })
 
-  it('rim dot is on while a job runs; all-terminal hides the root', () => {
+  it('running job keeps the root; all-terminal hides it', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
-    expect(panel.root.querySelector('.rim-dot.on')).not.toBeNull()
+    expect(panel.root.style.display).toBe('')
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
     // Terminal jobs no longer keep the trigger alive while the panel is shut.
     expect(panel.root.style.display).toBe('none')
-    expect(panel.root.querySelector('.rim-dot.on')).toBeNull()
-    expect(panel.root.querySelector('.rim-dot')).not.toBeNull()
   })
 
   it('bash row shows the command in mono, agent row shows type · description', () => {

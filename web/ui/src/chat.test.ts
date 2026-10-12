@@ -1515,9 +1515,8 @@ describe('chat integration', () => {
     })
     const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
     expect(ring.style.display).not.toBe('none')
-    // Jobs-only mode: label is the running count, rim dot heartbeat is on.
+    // Jobs-only mode: label is the running count.
     expect((document.querySelector('.task-label') as SVGTextElement).textContent).toBe('2')
-    expect(ring.querySelector('.rim-dot.on')).not.toBeNull()
     ring.click()
     const popover = document.getElementById('task-popover') as HTMLElement
     expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)

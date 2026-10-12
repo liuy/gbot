@@ -32,7 +32,6 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
       transitionEasing: 'ease',
     },
     labelClassName: 'task-label',
-    rimDot: true,
   })
   const root = floatBtn.root
   root.style.display = 'none'
@@ -173,7 +172,6 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     // shuts, so retention still ends with the close.
     if (!tasksActive && !jobsStore.hasRunning() && !host.isOpen()) {
       root.style.display = 'none'
-      floatBtn.setRunning(false)
       return
     }
     root.style.display = ''
@@ -193,7 +191,6 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
       floatBtn.setProgress(0)
       floatBtn.setLabel(String(jobs.filter(j => j.status === 'running').length))
     }
-    floatBtn.setRunning(jobsStore.hasRunning())
   }
 
   const setTasks = (tasks: TaskWireItem[]) => {
