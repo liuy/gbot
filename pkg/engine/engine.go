@@ -315,6 +315,12 @@ type Engine struct {
 	// contentReplacementState tracks per-message tool result budget decisions
 	// across turns for prompt cache stability.
 	// TS: ContentReplacementState (toolResultStorage.ts:390-393)
+	// contentReplacementMu serializes enforce (main turn writes) against clone
+	// (background sub-engine spawns, e.g. sessionMemory.Extract): the maps are
+	// plain, and concurrent iteration+write is a fatal runtime throw.
+	// The pointer itself is write-once after New() — applyBudget's bare nil
+	// check reads it outside the mutex and relies on that.
+	contentReplacementMu    sync.Mutex
 	contentReplacementState *toolresult.ContentReplacementState
 
 	// taskList provides access to file-backed task storage for context injection.
@@ -3739,7 +3745,9 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 
 	// Apply budget.
 	skipNames := map[string]bool{"Read": true} // Read results are the LLM's working set; preview would force a re-Read, and exec-time 50K persistence already caps disasters
+	e.contentReplacementMu.Lock()
 	result, records := toolresult.EnforceToolResultBudget(budgetMsgs, e.contentReplacementState, e.sessionID, skipNames)
+	e.contentReplacementMu.Unlock()
 
 	// Persist records to transcript for session resume stability.
 	if len(records) > 0 && e.recordWriter != nil {
@@ -4979,6 +4987,11 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		subWorkingDir = opts.WorkingDir
 	}
 
+	// Clone under the lock: a concurrent applyBudget on the parent would
+	// otherwise iterate+write the same maps (fatal throw, see field comment).
+	e.contentReplacementMu.Lock()
+	subBudgetState := toolresult.CloneContentReplacementState(e.contentReplacementState)
+	e.contentReplacementMu.Unlock()
 	return &Engine{
 		provider:        e.provider,
 		tools:           opts.Tools,
@@ -5023,7 +5036,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		mcpRegistry:             e.mcpRegistry,
 		hooks:                   e.hooks,
 		permissionChecker:       e.permissionChecker,
-		contentReplacementState: toolresult.CloneContentReplacementState(e.contentReplacementState),
+		contentReplacementState: subBudgetState,
 		toolSearch:              newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
 		sessionID:               e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
 		onCloseFn:               e.onCloseFn,
