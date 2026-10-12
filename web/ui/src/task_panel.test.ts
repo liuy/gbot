@@ -224,23 +224,24 @@ describe('taskPanel — background jobs section', () => {
     expect(Math.abs(offset - circumference)).toBeLessThan(0.01)
   })
 
-  it('label falls back to total job count when none are running', () => {
+  it('hides root when only terminal jobs remain (no tasks)', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'make lint', exitCode: 2 }),
     ])
-    const label = panel.root.querySelector('.task-label') as SVGTextElement
-    expect(label.textContent).toBe('2')
+    expect(panel.root.style.display).toBe('none')
   })
 
-  it('rim dot is on while a job runs and off when all jobs are terminal', () => {
+  it('rim dot is on while a job runs; all-terminal hides the root', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     expect(panel.root.querySelector('.rim-dot.on')).not.toBeNull()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
+    // Terminal jobs no longer keep the trigger alive while the panel is shut.
+    expect(panel.root.style.display).toBe('none')
     expect(panel.root.querySelector('.rim-dot.on')).toBeNull()
     expect(panel.root.querySelector('.rim-dot')).not.toBeNull()
   })
@@ -271,10 +272,11 @@ describe('taskPanel — background jobs section', () => {
     expect(popover.querySelector('.jobs-row')?.textContent).toContain('Fork · long task')
   })
 
-  it('terminal chips: Done / Exit code / Stopped', () => {
+  it('terminal chips: Running / Done / Exit code / Stopped', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([
+      jw({ id: 'bg-0', kind: 'bash', status: 'running', command: 'z' }),
       jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'b', exitCode: 130 }),
       jw({ id: 'agent-1', kind: 'agent', status: 'killed', agentType: 'executor', description: 'c', parentToolUseID: 'p1' }),
@@ -284,7 +286,7 @@ describe('taskPanel — background jobs section', () => {
       const chip = Array.from(r.querySelectorAll('span')).find((s) => s.className.includes('text-[10px]'))
       return chip?.textContent
     })
-    expect(chips).toEqual(['Done', 'Exit 130', 'Stopped'])
+    expect(chips).toEqual(['Running', 'Done', 'Exit 130', 'Stopped'])
   })
 
   it('terminal rows carry the dimmed opacity class, running rows do not', () => {
@@ -323,36 +325,53 @@ describe('taskPanel — background jobs section', () => {
     expect(document.getElementById('task-popover')).toBeNull()
   })
 
-  it('clear-done removes terminal jobs, hides root when nothing remains, and notifies the caller', () => {
-    const onClearDone = vi.fn()
-    const onStopJob = vi.fn()
-    const panel = createTaskPanel({ onClearDone, onStopJob })
+  it('all jobs terminal keeps an open panel readable; closing packs up the trigger', () => {
+    const panel = createTaskPanel()
     document.body.appendChild(panel.root)
-    panel.setJobs([
-      jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
-      jw({ id: 'bg-2', kind: 'bash', status: 'running', command: 'b' }),
-    ])
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     const popover = openPopover(panel)
-    const clr = popover.querySelector('.clear-done-jobs') as HTMLButtonElement
-    clr.click()
-    expect(onClearDone).toHaveBeenCalledTimes(1)
-    // Terminal job gone, running job stays: root still visible.
+
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
+    // Retention: rows must not be yanked while the user reads them, and the
+    // popover's anchor (the trigger) stays put.
+    expect(document.getElementById('task-popover')).toBe(popover)
     expect(panel.root.style.display).toBe('')
     expect(popover.querySelectorAll('.jobs-row')).toHaveLength(1)
-    expect(panel.jobsStore.jobs().map((j) => j.id)).toEqual(['bg-2'])
+    expect(popover.querySelector('.jobs-section')).not.toBeNull()
 
-    // All-terminal now: clearing hides the root entirely.
-    panel.setJobs([jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' })])
-    // Popover is still open from the first clear (setJobs must not close
-    // it) — toggle it closed and reopen to exercise the fresh build.
+    // Close ends retention: nothing left to show hides the trigger.
     ;(panel.root as HTMLButtonElement).click()
-    const popover2 = openPopover(panel)
-    ;(popover2.querySelector('.clear-done-jobs') as HTMLButtonElement).click()
-    expect(panel.root.style.display).toBe('none')
     expect(document.getElementById('task-popover')).toBeNull()
+    expect(panel.root.style.display).toBe('none')
+
+    // The sticky latch must have reset with the close: reopening (via a
+    // pending task, the only remaining trigger) shows no jobs section —
+    // terminal rows packed up with the previous session of the panel.
+    panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
+    ;(panel.root as HTMLButtonElement).click()
+    const reopened = document.getElementById('task-popover')
+    expect(reopened).not.toBeNull()
+    expect(reopened?.querySelectorAll('.jobs-row')).toHaveLength(0)
+    expect(reopened?.querySelector('.jobs-section')).toBeNull()
+    ;(panel.root as HTMLButtonElement).click()
+
+    // A new running job revives the trigger from the hidden state.
+    panel.setJobs([jw({ id: 'bg-2', kind: 'bash', status: 'running', command: 'y' })])
+    expect(panel.root.style.display).toBe('')
   })
 
-  it('popover title aggregates background jobs', () => {
+  it('a fresh open with only terminal jobs renders no jobs section', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build' })])
+    const popover = openPopover(panel)
+    expect(popover.querySelector('.jobs-section')).toBeNull()
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(0)
+    expect(popover.textContent).not.toContain('Background')
+  })
+
+  it('popover title aggregates background jobs only while they run', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([
@@ -364,9 +383,12 @@ describe('taskPanel — background jobs section', () => {
     expect(title.textContent).toBe('Background 2 Running')
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
-      jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' }),
+      jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'b' }),
     ])
-    expect((popover.querySelector('.px-3.pt-2\\.5') as HTMLElement).textContent).toBe('Background idle')
+    // Zero running: the aggregate goes fully silent — no idle line, no title
+    // row. The rows themselves stay until the panel closes (retention).
+    expect(popover.querySelector('.px-3.pt-2\\.5')).toBeNull()
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)
   })
 })
 
@@ -386,7 +408,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
     ;(popover.querySelector('.jobs-row') as HTMLElement).click()
   }
 
-  it('expansion survives status-change rebuilds, close/reopen, and hides the terminal stop button', () => {
+  it('expansion survives status-change rebuilds and hides the terminal stop button', () => {
     const panel = createTaskPanel()
     document.body.appendChild(panel.root)
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
@@ -396,15 +418,23 @@ describe('taskPanel — job expansion (Phase 3)', () => {
     expect(popover.querySelector('.jobs-stop')).not.toBeNull()
 
     // Running → completed flips the row but must not collapse the reading
-    // nor recreate the feed (scroll position lives on that node).
+    // nor recreate the feed (scroll position lives on that node). Retention
+    // keeps the row until the panel closes.
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'make check' })])
     expect(document.getElementById('task-popover')).toBe(popover)
     expect(popover.querySelector('.jobs-exp')).not.toBeNull()
     expect(popover.querySelector('.jobs-feed')).toBe(feed1)
     expect(popover.querySelector('.jobs-stop')).toBeNull()
+  })
 
-    // Close and reopen: expansion state and the carried feed element both
-    // persist.
+  it('expansion and the carried feed element persist across close/reopen while the job runs', () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
+    const popover = openPopover(panel)
+    expandFirstRow(popover)
+    const feed1 = popover.querySelector('.jobs-feed') as HTMLElement
+
     ;(panel.root as HTMLButtonElement).click()
     const popover2 = openPopover(panel)
     expect(popover2.querySelector('.jobs-exp')).not.toBeNull()
@@ -432,7 +462,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
 
   it('stop button routes to the onStopJob option', () => {
     const onStopJob = vi.fn()
-    const panel = createTaskPanel({ onStopJob, onClearDone: vi.fn() })
+    const panel = createTaskPanel({ onStopJob })
     document.body.appendChild(panel.root)
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     const popover = openPopover(panel)

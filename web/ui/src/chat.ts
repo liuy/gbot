@@ -530,7 +530,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // conn is assigned below the panel construction; the closures only run
     // on user interaction, long after initialization.
     onStopJob: (jobID) => conn.send({ type: 'job_stop', jobID }),
-    onClearDone: () => conn.send({ type: 'jobs_clear' }),
   })
 
   const inputWrapper = createElement('div', 'absolute bottom-0 inset-x-0 z-10')

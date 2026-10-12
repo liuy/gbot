@@ -307,7 +307,10 @@ func TestJobStop_KillsAndPushes(t *testing.T) {
 
 	ws := dialAndStore(t, c)
 	readJobList(t, ws) // warm the view so the forced push has content
-
+	// The mock keeps reporting bg-1 as running after the kill, so the ack
+	// frame's payload equals the baseline — only pushJobsSnapshot's "\x00"
+	// sentinel reset forces it through. A readJobList timeout below means
+	// the sentinel was lost.
 	sendJSON(t, ws, map[string]string{"type": "job_stop", "jobID": "bg-1"})
 	out := readJobList(t, ws)
 
@@ -345,47 +348,17 @@ func TestJobStop_KillErrorSendsErrorFrame(t *testing.T) {
 	}
 }
 
-func TestJobsClear_RemovesTerminalKeepsRunning(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{
-			bgBashJob("bg-1", "completed", "done cmd", 1000),
-			bgBashJob("bg-2", "running", "live cmd", 2000),
-			{ID: "bg-3", Type: "local_bash", Status: "killed", Command: "stopped cmd",
-				Backgrounded: true, StartedMs: 1500, ExitCode: 137},
-		}
-	})
-
-	ws := dialAndStore(t, c)
-	first := readJobList(t, ws)
-	if len(first.Jobs) != 3 {
-		t.Fatalf("initial jobs len = %d, want 3", len(first.Jobs))
-	}
-
-	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
-	second := readJobList(t, ws)
-	if len(second.Jobs) != 1 {
-		t.Fatalf("after clear jobs len = %d, want 1 (running only): %+v", len(second.Jobs), second.Jobs)
-	}
-	if second.Jobs[0].ID != "bg-2" || second.Jobs[0].Status != "running" {
-		t.Errorf("surviving job = {%s %s}, want {bg-2 running}", second.Jobs[0].ID, second.Jobs[0].Status)
-	}
-}
-
-// TestJobsClear_EmptyViewPushesEmptyList pins the acceptance scenario "after
-// clearing all done jobs the float button disappears": clearing an
-// all-terminal view must push an empty job_list. A diff-baseline reset to ""
-// would suppress exactly that frame (collect's never-pushed guard), leaving
-// the client rendering cleared jobs until reconnect.
-func TestJobsClear_EmptyViewPushesEmptyList(t *testing.T) {
+// TestJobTick_EmptyViewPushesEmptyList pins that a view transitioning to
+// empty still pushes the clearing frame: with jobs_clear retired, the live
+// trigger is the last running job vanishing from the registry. A diff
+// baseline reset to "" would suppress exactly that frame (collect's
+// never-pushed guard), leaving the client rendering gone jobs until
+// reconnect.
+func TestJobTick_EmptyViewPushesEmptyList(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	var jobsMu sync.Mutex
-	visible := []*job.JobInfo{
-		bgBashJob("bg-1", "completed", "finished cmd", 1000),
-		bgBashJob("bg-2", "failed", "dead cmd", 2000),
-	}
+	visible := []*job.JobInfo{bgBashJob("bg-1", "running", "doomed cmd", 1000)}
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobsMu.Lock()
 		defer jobsMu.Unlock()
@@ -394,19 +367,18 @@ func TestJobsClear_EmptyViewPushesEmptyList(t *testing.T) {
 
 	ws := dialAndStore(t, c)
 	first := readJobList(t, ws)
-	if len(first.Jobs) != 2 {
-		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
+	if len(first.Jobs) != 1 {
+		t.Fatalf("initial jobs len = %d, want 1", len(first.Jobs))
 	}
 
-	// The registry drops terminal jobs alongside the clear (bash evicts ~3s
-	// after completion), so the emptied view stays empty afterwards.
+	// The registry drops the job (engine restart / registry eviction): the
+	// emptied view must reach the wire as an empty job_list.
 	jobsMu.Lock()
 	visible = nil
 	jobsMu.Unlock()
-	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
 	second := readJobList(t, ws)
 	if len(second.Jobs) != 0 {
-		t.Fatalf("after clearing an all-terminal view, jobs len = %d, want 0: %+v", len(second.Jobs), second.Jobs)
+		t.Fatalf("after the last job vanishes, jobs len = %d, want 0: %+v", len(second.Jobs), second.Jobs)
 	}
 	// Baseline settled on the real empty-payload JSON: watcher stays silent.
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
@@ -1320,45 +1292,6 @@ func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
-// TestJobsClear_WatcherContinuesAfterClear pins that the clear handler
-// releases jobsMu before the forced push: the watcher must keep ticking (a
-// job registered after the clear still reaches the wire).
-func TestJobsClear_WatcherContinuesAfterClear(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	var jobsMu sync.Mutex
-	visible := []*job.JobInfo{bgBashJob("bg-1", "running", "live cmd", 1000)}
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		jobsMu.Lock()
-		defer jobsMu.Unlock()
-		return visible
-	})
-
-	ws := dialAndStore(t, c)
-	first := readJobList(t, ws)
-	if len(first.Jobs) != 1 || first.Jobs[0].ID != "bg-1" {
-		t.Fatalf("initial jobs = %+v, want [bg-1]", first.Jobs)
-	}
-
-	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
-	forced := readJobList(t, ws) // the forced ack frame (running job survives)
-	if len(forced.Jobs) != 1 || forced.Jobs[0].ID != "bg-1" {
-		t.Fatalf("post-clear jobs = %+v, want [bg-1] (running)", forced.Jobs)
-	}
-
-	jobsMu.Lock()
-	visible = append(visible, bgBashJob("bg-9", "running", "new after clear", 2000))
-	jobsMu.Unlock()
-	after := readJobList(t, ws)
-	ids := map[string]bool{}
-	for _, j := range after.Jobs {
-		ids[j.ID] = true
-	}
-	if !ids["bg-9"] || !ids["bg-1"] {
-		t.Fatalf("post-clear discovery frame = %v, want bg-1 and bg-9 — watcher stalled after jobs_clear", ids)
-	}
-}
-
 // TestMetadata_EmptyViewOmitsJobsField pins the empty-view guard: a slot with
 // no jobs must omit the metadata jobs field entirely (nil raw JSON), not emit
 // an empty {"jobs":[]} envelope.
@@ -1574,10 +1507,10 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	}
 }
 
-// TestHandleJobStopJobsClear_NilGuards pins the inbound handlers' nil guards
-// with hand-built slots: no active slot, and an active slot without an
-// engine — both must be silent no-ops, not panics.
-func TestHandleJobStopJobsClear_NilGuards(t *testing.T) {
+// TestHandleJobStop_NilGuards pins handleJobStop's nil guards with hand-built
+// slots: no active slot, and an active slot without an engine — both must be
+// silent no-ops, not panics.
+func TestHandleJobStop_NilGuards(t *testing.T) {
 	newBareConnector := func() *WUIConnector {
 		c := &WUIConnector{
 			slots:       make(map[string]*engineSlot),
@@ -1592,24 +1525,14 @@ func TestHandleJobStopJobsClear_NilGuards(t *testing.T) {
 	// No active slot at all.
 	c1 := newBareConnector()
 	c1.handleJobStop("bg-1")
-	c1.handleJobsClear()
 
-	// Active slot whose engine is nil (jobView present so the clear path
-	// walks past the map guard).
+	// Active slot whose engine is nil.
 	c2 := newBareConnector()
-	slot := &engineSlot{
-		engineID:           "s1",
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
-	}
+	slot := &engineSlot{engineID: "s1"}
 	c2.slots["s1"] = slot
 	activeID := "s1"
 	c2.active.Store(&activeID)
 	c2.handleJobStop("bg-1")
-	c2.handleJobsClear()
 }
 
 // TestApplyAgentEventLocked_Guards pins applyAgentEventLocked's defensive
@@ -1665,12 +1588,12 @@ func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
 	}
 }
 
-// TestJobsClear_RelistDoesNotReplayFlushedPending pins the pending-events
+// TestSessionNew_RelistDoesNotReplayFlushedPending pins the pending-events
 // bookkeeping: events flushed into a feed at discovery are consumed (deleted
-// from pendingAgentEvents). If they were left behind, jobs_clear on a
-// still-listed terminal agent would rebuild the feed's blocks on relist —
+// from pendingAgentEvents). If they were left behind, a terminal agent
+// relisted after the session-new clear would rebuild the feed's blocks —
 // replaying stale history into the fresh entry.
-func TestJobsClear_RelistDoesNotReplayFlushedPending(t *testing.T) {
+func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -1697,17 +1620,21 @@ func TestJobsClear_RelistDoesNotReplayFlushedPending(t *testing.T) {
 		t.Fatalf("pre-clear blocks = %+v, want the flushed tool+text", items)
 	}
 
-	// Terminal agent is still listed by the registry; clear drops the view
-	// entry (and must have consumed the pending events at discovery).
-	ws = dialJobsServer(t, c)
-	sendJSON(t, ws, map[string]string{"type": "jobs_clear"})
-	if out := readJobList(t, ws); len(out.Jobs) != 0 {
-		t.Fatalf("post-clear jobs = %+v, want empty", out.Jobs)
+	// Terminal agent is still listed by the registry; the session-new clear
+	// drops the view entry (and must have consumed the pending events at
+	// discovery). The cleared state is observable only on the metadata frame
+	// (jobs field omitted): the watcher's merge re-adds the still-listed
+	// entry within the same beat, so the job_list diff never sees the empty
+	// view and pushes no clearing frame on this path.
+	sendJSON(t, ws, map[string]string{"type": "session_new"})
+	if items = readMetadataJobs(t, ws); items != nil {
+		t.Fatalf("post-new metadata jobs = %+v, want the field omitted (terminal cleared)", items)
 	}
-	relisted := readJobList(t, ws) // registry still lists it — entry comes back
-	if len(relisted.Jobs) != 1 || relisted.Jobs[0].ID != "agent-1" {
-		t.Fatalf("relisted jobs = %+v, want the still-listed agent-1", relisted.Jobs)
-	}
+
+	// The relist lands on the next watcher beat and pushes no frame (the
+	// re-added entry marshals back to the pre-clear baseline), so the wire
+	// offers nothing to synchronize on — wait out a beat before the final dial.
+	time.Sleep(100 * time.Millisecond) // REAL-TIME
 
 	ws = dialJobsServer(t, c)
 	items = readMetadataJobs(t, ws)

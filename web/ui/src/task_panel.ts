@@ -12,7 +12,6 @@ export interface TaskPanelOptions {
   // Wired by chat.ts to conn.send; the stop button lands in Phase 3, the
   // interface is complete now so chat wiring does not churn twice.
   onStopJob: (jobID: string) => void
-  onClearDone: () => void
 }
 
 export interface TaskPanelHandles {
@@ -50,6 +49,11 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
   let lastJobsSig = ''
   const jobsSig = () => jobsStore.jobs().map((j) => `${j.id}:${j.status}`).join('|')
   let currentTasks: TaskWireItem[] = []
+  // Latches the first section render of an open popover session: a job going
+  // terminal mid-read must not yank its row out from under the user, so the
+  // section keeps rendering until the popover closes. A fresh open re-applies
+  // the running-only gate (terminal residue alone renders nothing).
+  let jobsSticky = false
 
   // Panel is built once; onOpen clears and rebuilds content so each open
   // reflects currentTasks at click time. onClose detaches so the hidden
@@ -63,18 +67,20 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     const running = currentTasks.filter(t => t.status === 'in_progress').length
     const pending = currentTasks.filter(t => t.status === 'pending').length
     const jobs = jobsStore.jobs()
+    const runningJobs = jobs.filter(j => j.status === 'running').length
     const parts: string[] = []
     if (currentTasks.length > 0) parts.push(`${done}/${currentTasks.length} Done`)
     if (running > 0) parts.push(`${running} Running`)
     if (pending > 0) parts.push(`${pending} Pending`)
-    if (jobs.length > 0) {
-      const runningJobs = jobs.filter(j => j.status === 'running').length
-      parts.push(runningJobs > 0 ? `Background ${runningJobs} Running` : 'Background idle')
-    }
+    // The background aggregate speaks only while work is live: zero running
+    // jobs means no background mention at all (no idle line).
+    if (runningJobs > 0) parts.push(`${t('jobsSectionTitle')} ${runningJobs} Running`)
 
-    const title = createElement('div', 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium')
-    title.textContent = parts.join(' · ')
-    popover.appendChild(title)
+    if (parts.length > 0) {
+      const title = createElement('div', 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium')
+      title.textContent = parts.join(' · ')
+      popover.appendChild(title)
+    }
 
     const list = createElement('div', 'px-2 pb-2 space-y-0.5 max-h-[200px] overflow-y-auto')
     for (const task of currentTasks) {
@@ -89,7 +95,13 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     trigger: root,
     panel: popover,
     onOpen: rebuildPopover,
-    onClose: () => { popover.remove() },
+    onClose: () => {
+      popover.remove()
+      // Retention ends with the close: re-evaluate so an all-terminal view
+      // releases the trigger immediately.
+      jobsSticky = false
+      updateChrome()
+    },
   })
 
   root.addEventListener('click', () => host.toggle())
@@ -133,21 +145,14 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
   }
 
   function appendJobsSection(list: HTMLElement, jobs: JobWireItem[]) {
-    if (jobs.length === 0) return
-    const sec = createElement('div', 'jobs-section flex items-center justify-between px-2 pt-2 pb-1')
+    // Render gate: live work only. jobsSticky covers the open-panel retention
+    // window (running→terminal flips must not yank rows mid-read).
+    if (jobs.length === 0 || (!jobsStore.hasRunning() && !jobsSticky)) return
+    jobsSticky = true
+    const sec = createElement('div', 'jobs-section px-2 pt-2 pb-1')
     const label = createElement('span', 'text-[10px] font-semibold tracking-wider uppercase text-t3')
     label.textContent = t('jobsSectionTitle')
-    const clr = createElement('button', 'clear-done-jobs text-[11px] text-t3 hover:text-t2 px-1.5 py-0.5 rounded-md') as HTMLButtonElement
-    clr.type = 'button'
-    clr.textContent = t('clearDoneJobs')
-    clr.addEventListener('click', (e) => {
-      e.stopPropagation()
-      // Optimistic clear for instant feedback; the server answers with a
-      // fresh job_list that re-confirms the same state.
-      jobsStore.clearDone()
-      opts?.onClearDone?.()
-    })
-    sec.append(label, clr)
+    sec.append(label)
     list.appendChild(sec)
     // Rows (and expansion boxes) render through jobs_render; expansion
     // state and feed elements survive this rebuild by design.
@@ -162,12 +167,13 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
   const updateChrome = () => {
     const jobs = jobsStore.jobs()
     const tasksActive = currentTasks.length > 0 && !currentTasks.every(t => t.status === 'completed')
-    if (!tasksActive && jobs.length === 0) {
+    // An open panel outranks hiding: it may be showing retained terminal
+    // rows, and the popover is anchored to this trigger — hiding it would
+    // strand an orphaned panel. onClose re-runs this the moment the panel
+    // shuts, so retention still ends with the close.
+    if (!tasksActive && !jobsStore.hasRunning() && !host.isOpen()) {
       root.style.display = 'none'
       floatBtn.setRunning(false)
-      // The popover anchors to the button: hiding the trigger would strand
-      // an orphaned panel in the DOM.
-      host.close()
       return
     }
     root.style.display = ''
@@ -176,7 +182,7 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     })
 
     // Ring and label stay task-only while tasks exist; jobs-only mode shows
-    // the running count (or total when idle-but-kept).
+    // the running count (terminal jobs never keep the trigger alive).
     if (currentTasks.length > 0) {
       const done = currentTasks.filter(t => t.status === 'completed').length
       floatBtn.setProgress(done / currentTasks.length)
@@ -185,8 +191,7 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
       floatBtn.setLabel(`${doneStr}/${totalStr}`)
     } else {
       floatBtn.setProgress(0)
-      const runningJobs = jobs.filter(j => j.status === 'running').length
-      floatBtn.setLabel(String(runningJobs || jobs.length))
+      floatBtn.setLabel(String(jobs.filter(j => j.status === 'running').length))
     }
     floatBtn.setRunning(jobsStore.hasRunning())
   }

@@ -1606,20 +1606,6 @@ describe('chat integration', () => {
     expect(ring.style.display).toBe('none')
   })
 
-  it('clear-done button sends jobs_clear over the wire', () => {
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatch({
-      type: 'job_list',
-      jobs: [{ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build', startedMs: 1 }],
-    })
-    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
-    ring.click()
-    const popover = document.getElementById('task-popover') as HTMLElement
-    ;(popover.querySelector('.clear-done-jobs') as HTMLButtonElement).click()
-    expect(sent.some((m) => (m as { type: string }).type === 'jobs_clear')).toBe(true)
-  })
-
   it('expanded bash feed streams job_output frames and the stop button sends job_stop', async () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

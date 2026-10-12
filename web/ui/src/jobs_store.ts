@@ -11,7 +11,6 @@ export interface JobsStoreHandle {
   setJobs(items: JobWireItem[], hydrated?: Map<string, { blocks?: Block[]; tail?: string }>): void
   applyOutput(jobID: string, tail: string): void
   applyEvent(e: QueryEvent): void
-  clearDone(): void
   jobs(): JobWireItem[]
   feed(jobID: string): JobFeedState | undefined
   hasRunning(): boolean
@@ -260,19 +259,6 @@ export function createJobsStore(): JobsStoreHandle {
         innerToolToJob.set(e.tool_use.id, jobID)
       }
       if (changed) notify()
-    },
-    clearDone: () => {
-      let removed = false
-      for (const [id, j] of items) {
-        if (j.status !== 'running') {
-          items.delete(id)
-          feeds.delete(id)
-          removed = true
-        }
-      }
-      if (!removed) return
-      dropRoutesForGoneJobs()
-      notify()
     },
     jobs: () => [...items.values()],
     feed: (jobID) => feeds.get(jobID),

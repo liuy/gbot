@@ -218,7 +218,6 @@ export const dict = {
   configBadgeUnchanged: 'Unchanged',
   configBadgeFailed: 'Failed',
   jobsSectionTitle: 'Background',
-  clearDoneJobs: 'Clear done',
   jobKindFork: 'Fork',
   stopJob: 'Stop',
   backToBottom: 'Back to bottom',

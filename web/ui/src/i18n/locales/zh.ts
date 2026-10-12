@@ -193,7 +193,6 @@ export const dict: Dict = {
   configBadgeUnchanged: '未变更',
   configBadgeFailed: '失败',
   jobsSectionTitle: '后台',
-  clearDoneJobs: '清已完成',
   jobKindFork: 'Fork',
   stopJob: '停止',
   backToBottom: '回到底部',

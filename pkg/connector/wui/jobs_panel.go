@@ -334,19 +334,19 @@ func (c *WUIConnector) collectJobFramesLocked(slot *engineSlot) []string {
 	return payloads
 }
 
-// pushJobsSnapshot force-pushes the current job_list (job_stop / jobs_clear
-// acks). Clears the diff baseline instead of re-fetching tails: the client
-// already holds each job's tail; a changed tail arrives on the next beat.
+// pushJobsSnapshot force-pushes the current job_list (job_stop ack). Clears
+// the diff baseline instead of re-fetching tails: the client already holds
+// each job's tail; a changed tail arrives on the next beat.
 func (c *WUIConnector) pushJobsSnapshot(slot *engineSlot) {
 	if slot.jobView == nil {
 		return
 	}
 	slot.jobsMu.Lock()
-	// Reset to a sentinel, not "": collect's guard suppresses pushes for an
-	// empty view with an empty baseline, and jobs_clear of an all-terminal
-	// view hits exactly that — the clearing frame would never reach the
-	// client. "\x00" can never equal a marshaled payload, so the frame is
-	// forced out and the baseline settles on the real JSON.
+	// Reset to a sentinel, not "": at stop time the cached view has usually
+	// not caught up with the kill yet, so the marshaled payload equals the
+	// baseline and collect's diff would swallow the ack. "\x00" can never
+	// equal a marshaled payload, so the frame is forced out and the baseline
+	// settles on the real JSON.
 	slot.lastJobsPush = "\x00"
 	payloads := c.collectJobFramesLocked(slot)
 	slot.jobsMu.Unlock()
@@ -416,8 +416,8 @@ func (c *WUIConnector) deleteJobEntryLocked(slot *engineSlot, id string) {
 
 // clearTerminalJobsLocked drops all terminal entries — session switch/new
 // semantics (the previous session's finished jobs must not leak into the new
-// session's panel) and the jobs_clear handler. Running entries belong to the
-// engine, not the session, and stay. Caller holds jobsMu.
+// session's panel). Running entries belong to the engine, not the session,
+// and stay. Caller holds jobsMu.
 func (c *WUIConnector) clearTerminalJobsLocked(slot *engineSlot) {
 	for id, entry := range slot.jobView {
 		if isTerminalJobStatus(entry.item.Status) {
@@ -534,18 +534,5 @@ func (c *WUIConnector) handleJobStop(jobID string) {
 		c.sendWS(buildError(err))
 		return
 	}
-	c.pushJobsSnapshot(slot)
-}
-
-// handleJobsClear drops terminal entries from the active slot's view. The
-// jobsMu section must end before pushJobsSnapshot — it takes the same lock.
-func (c *WUIConnector) handleJobsClear() {
-	slot := c.activeSlot()
-	if slot == nil || slot.jobView == nil {
-		return
-	}
-	slot.jobsMu.Lock()
-	c.clearTerminalJobsLocked(slot)
-	slot.jobsMu.Unlock()
 	c.pushJobsSnapshot(slot)
 }

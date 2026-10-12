@@ -257,7 +257,7 @@ describe('jobs store — applyEvent routing', () => {
   })
 })
 
-describe('jobs store — output / clearDone / predicates / onChange', () => {
+describe('jobs store — output / predicates / onChange', () => {
   it('applyOutput only touches the tail, never blocks', () => {
     const store = createJobsStore()
     store.setJobs([agentJob('agent-1', 'running', 'parent-1')])
@@ -277,19 +277,6 @@ describe('jobs store — output / clearDone / predicates / onChange', () => {
     store.applyOutput('unknown', 'x')
     expect(changes).toBe(1)
     expect(store.feed('unknown')).toBeUndefined()
-  })
-
-  it('clearDone keeps running jobs and their feeds, drops terminal ones', () => {
-    const store = createJobsStore()
-    store.setJobs([bashJob('bg-1', 'completed'), bashJob('bg-2', 'running'), bashJob('bg-3', 'failed')])
-    store.applyOutput('bg-2', 'still going\n')
-    store.clearDone()
-    expect(store.jobs().map((j) => j.id)).toEqual(['bg-2'])
-    expect(store.feed('bg-1')).toBeUndefined()
-    expect(store.feed('bg-2')?.tail).toBe('still going\n')
-    // Inner routes to cleared jobs must not survive: a later event with a
-    // stale parent id finds nothing.
-    expect(store.hasAny()).toBe(true)
   })
 
   it('hasRunning and hasAny reflect the current snapshot', () => {
@@ -314,7 +301,7 @@ describe('jobs store — output / clearDone / predicates / onChange', () => {
     store.setJobs([bashJob('bg-1', 'running')]) // a=1 b=1
     store.applyEvent({ type: 'text_delta', text: 'no agent' }) // ignored
     store.applyOutput('bg-1', 't') // a=2 b=2
-    store.clearDone() // nothing terminal — no fire
+    store.applyOutput('unknown', 'x') // unknown job — no fire
     expect(a).toBe(2)
     expect(b).toBe(2)
     off()
