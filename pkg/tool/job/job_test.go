@@ -117,7 +117,7 @@ func (m *mockRegistry) add(info *JobInfo) {
 func TestJobInfo_AgentFields(t *testing.T) {
 	info := &JobInfo{
 		ID:         "fork-1",
-		Type:       "local_agent",
+		Type:       "agent",
 		Status:     "completed",
 		ExitCode:   0,
 		AgentType:  "fork",
@@ -151,36 +151,23 @@ func TestJobInfo_AgentFields(t *testing.T) {
 	if parsed.DurationMs != 1234 {
 		t.Errorf("DurationMs = %d, want 1234", parsed.DurationMs)
 	}
-
-	// Old JSON without agent fields should unmarshal with zero values
-	oldJSON := `{"job_id":"bg-1","job_type":"local_bash","status":"completed"}`
-	var old JobInfo
-	if err := json.Unmarshal([]byte(oldJSON), &old); err != nil {
-		t.Fatalf("Unmarshal old JSON: %v", err)
-	}
-	if old.AgentType != "" {
-		t.Errorf("old AgentType = %q, want empty", old.AgentType)
-	}
-	if old.Tokens != 0 {
-		t.Errorf("old Tokens = %d, want 0", old.Tokens)
-	}
 }
 
-func TestJobInfo_TaskTypeRenamedToJobType(t *testing.T) {
+func TestJobInfo_TypeJSONKey(t *testing.T) {
 	info := &JobInfo{
 		ID:     "bg-1",
-		Type:   "local_bash",
+		Type:   "bash",
 		Status: "completed",
 	}
 	data, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if strings.Contains(string(data), "task_type") {
-		t.Errorf("JSON should not contain task_type, got: %s", data)
+	if strings.Contains(string(data), "task_type") || strings.Contains(string(data), "job_type") {
+		t.Errorf("JSON must use the unified type key, got: %s", data)
 	}
-	if !strings.Contains(string(data), "job_type") {
-		t.Errorf("JSON should contain job_type, got: %s", data)
+	if !strings.Contains(string(data), `"type":"bash"`) {
+		t.Errorf("JSON should contain \"type\":\"bash\", got: %s", data)
 	}
 }
 
@@ -202,7 +189,7 @@ func TestJob_PollCompleted(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:       "bg-1",
-		Type:     "local_bash",
+		Type:     "bash",
 		Status:   "completed",
 		Command:  "echo hello",
 		Output:   "hello\n",
@@ -255,7 +242,7 @@ func TestJob_PollBlockWait(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:      "bg-2",
-		Type:    "local_bash",
+		Type:    "bash",
 		Status:  "running",
 		Command: "sleep 1",
 	})
@@ -290,7 +277,7 @@ func TestJob_PollBlockTimeout(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:     "bg-3",
-		Type:   "local_bash",
+		Type:   "bash",
 		Status: "running",
 	})
 
@@ -327,7 +314,7 @@ func TestJob_PollNotReady(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:     "bg-4",
-		Type:   "local_bash",
+		Type:   "bash",
 		Status: "running",
 		Output: "partial output",
 	})
@@ -353,7 +340,7 @@ func TestJob_StopSuccess(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:      "bg-10",
-		Type:    "local_bash",
+		Type:    "bash",
 		Status:  "running",
 		Command: "sleep 60",
 	})
@@ -374,8 +361,8 @@ func TestJob_StopSuccess(t *testing.T) {
 	if out.Stop.JobID != "bg-10" {
 		t.Errorf("JobID = %q, want bg-10", out.Stop.JobID)
 	}
-	if out.Stop.JobType != "local_bash" {
-		t.Errorf("JobType = %q, want local_bash", out.Stop.JobType)
+	if out.Stop.Type != "bash" {
+		t.Errorf("Type = %q, want bash", out.Stop.Type)
 	}
 	if out.Stop.Command != "sleep 60" {
 		t.Errorf("Command = %q, want sleep 60", out.Stop.Command)
@@ -403,7 +390,7 @@ func TestJob_StopNotRunning(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:       "bg-11",
-		Type:     "local_bash",
+		Type:     "bash",
 		Status:   "completed",
 		ExitCode: 0,
 	})
@@ -423,7 +410,7 @@ func TestJob_StopKillError(t *testing.T) {
 	base := newMockRegistry()
 	base.add(&JobInfo{
 		ID:      "bg-20",
-		Type:    "local_bash",
+		Type:    "bash",
 		Status:  "running",
 		Command: "sleep 60",
 	})
@@ -444,7 +431,7 @@ func TestJob_PollThenStopSequentialCalls(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:       "bg-1",
-		Type:     "local_bash",
+		Type:     "bash",
 		Status:   "completed",
 		Command:  "echo hello",
 		Output:   "hello\n",
@@ -452,7 +439,7 @@ func TestJob_PollThenStopSequentialCalls(t *testing.T) {
 	})
 	reg.add(&JobInfo{
 		ID:      "bg-10",
-		Type:    "local_bash",
+		Type:    "bash",
 		Status:  "running",
 		Command: "sleep 60",
 	})
@@ -596,7 +583,7 @@ func TestJob_ContextCancelled(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:     "bg-30",
-		Type:   "local_bash",
+		Type:   "bash",
 		Status: "running",
 	})
 
@@ -819,7 +806,7 @@ func TestJob_RenderResultStop(t *testing.T) {
 		Stop: &StopResult{
 			JobID:   "bg-10",
 			Status:  "killed",
-			JobType: "local_bash",
+			Type:    "bash",
 			Command: "sleep 60",
 		},
 	})
@@ -846,7 +833,7 @@ func TestJob_RenderResultCombined(t *testing.T) {
 		Stop: &StopResult{
 			JobID:   "bg-10",
 			Status:  "killed",
-			JobType: "local_bash",
+			Type:    "bash",
 			Command: "sleep 60",
 		},
 	})
@@ -910,7 +897,7 @@ func TestJob_StopEmptyCommandUsesDescription(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:          "bg-21",
-		Type:        "local_bash",
+		Type:        "bash",
 		Status:      "running",
 		Command:     "",
 		Description: "my custom task",
@@ -933,7 +920,7 @@ func TestJob_StopEmptyJobAndEmptyCommandUsesJobID(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:          "bg-22",
-		Type:        "local_bash",
+		Type:        "bash",
 		Status:      "running",
 		Command:     "",
 		Description: "",
@@ -950,7 +937,7 @@ func TestJob_StopEmptyJobAndEmptyCommandUsesJobID(t *testing.T) {
 		Stop: &StopResult{
 			JobID:   out.Stop.JobID,
 			Status:  "killed",
-			JobType: "local_bash",
+			Type:    "bash",
 			Command: out.Stop.Command,
 		},
 	})
@@ -1019,8 +1006,8 @@ func TestJob_ExecuteStopEmptyJobID(t *testing.T) {
 func TestJob_ListSuccess(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running", Command: "sleep 10"})
-	reg.add(&JobInfo{ID: "bg-2", Type: "local_bash", Status: "completed", Command: "echo hi", ExitCode: 0})
+	reg.add(&JobInfo{ID: "bg-1", Type: "bash", Status: "running", Command: "sleep 10"})
+	reg.add(&JobInfo{ID: "bg-2", Type: "bash", Status: "completed", Command: "echo hi", ExitCode: 0})
 
 	tl := NewJob(reg)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"action":"list"}`), nil)
@@ -1101,6 +1088,32 @@ func TestJob_RenderResultListWithJobs(t *testing.T) {
 	}
 	if !strings.Contains(result, `job_id=bg-2 status=completed command="echo hi"`) {
 		t.Errorf("RenderResult = %q, want containing new format", result)
+	}
+}
+
+func TestRenderList_IncludesType(t *testing.T) {
+	t.Parallel()
+	got := renderListResult(&ListResult{Jobs: []*JobInfo{
+		{ID: "agent-1", Type: "agent", Status: "running", Command: "research"},
+		{ID: "bg-2", Type: "bash", Status: "completed", Command: "echo hi"},
+	}})
+	want := "job_id=agent-1 type=agent status=running command=\"research\"\n" +
+		"job_id=bg-2 type=bash status=completed command=\"echo hi\""
+	if got != want {
+		t.Errorf("renderListResult = %q, want %q", got, want)
+	}
+}
+
+// JobInfo built without Type (e.g. hand-constructed callers) keeps the old
+// line format — the type token appears only when Type is set.
+func TestJobListWire_EmptyTypeOmitsType(t *testing.T) {
+	t.Parallel()
+	got := jobWireText(t, &JobOutput{List: &ListResult{Jobs: []*JobInfo{
+		{ID: "bg-1", Status: "running", Command: "go test ./..."},
+	}}})
+	want := "job_id=bg-1 status=running command=\"go test ./...\""
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
 	}
 }
 
@@ -1201,7 +1214,7 @@ func TestJob_PollTimeoutDefaultAndTickerInterval(t *testing.T) {
 	type tc struct{ in, wantMs int }
 	for _, c := range []tc{{0, 30000}, {-1, 30000}, {1, 1}, {250, 250}} {
 		reg := newMockRegistry()
-		reg.add(&JobInfo{ID: "bg-td", Type: "local_bash", Status: "running"})
+		reg.add(&JobInfo{ID: "bg-td", Type: "bash", Status: "running"})
 
 		var gotMs int
 		var gotInterval time.Duration
@@ -1238,7 +1251,7 @@ func TestJob_PollTimeoutDefaultAndTickerInterval(t *testing.T) {
 func TestJob_PollTickerDetectsTerminal(t *testing.T) {
 	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-tk", Type: "local_bash", Status: "running", Command: "sleep 30"})
+	reg.add(&JobInfo{ID: "bg-tk", Type: "bash", Status: "running", Command: "sleep 30"})
 
 	ticks := make(chan time.Time, 4)
 	savedAfter, savedTicker := timeAfter, timeNewTicker
@@ -1281,7 +1294,7 @@ func TestJob_PollTickerDetectsTerminal(t *testing.T) {
 func TestJob_PollTerminalBeatsNotReady(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-t2", Type: "local_bash", Status: "killed", ExitCode: 137})
+	reg.add(&JobInfo{ID: "bg-t2", Type: "bash", Status: "killed", ExitCode: 137})
 
 	res, err := executePoll(context.Background(), reg, "bg-t2", ptrFalse(), 60000)
 	if err != nil {
@@ -1301,7 +1314,7 @@ func ptrFalse() *bool { b := false; return &b }
 func TestJob_PollDeadlineRefetchesInfo(t *testing.T) {
 	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-dr", Type: "local_bash", Status: "running"})
+	reg.add(&JobInfo{ID: "bg-dr", Type: "bash", Status: "running"})
 
 	savedAfter, savedTicker := timeAfter, timeNewTicker
 	timeAfter = func(int) <-chan time.Time { return time.After(100 * time.Millisecond) }
@@ -1333,7 +1346,7 @@ func TestJob_PollDeadlineRefetchesInfo(t *testing.T) {
 func TestJob_PollTickerNilSnapshotKeepsWaiting(t *testing.T) {
 	// NOT parallel: swaps the package-level timeAfter/timeNewTicker vars.
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-nl", Type: "local_bash", Status: "running"})
+	reg.add(&JobInfo{ID: "bg-nl", Type: "bash", Status: "running"})
 
 	ticks := make(chan time.Time, 4)
 	savedAfter, savedTicker := timeAfter, timeNewTicker
@@ -1370,7 +1383,7 @@ func TestJob_PollTickerNilSnapshotKeepsWaiting(t *testing.T) {
 func TestJob_PollRealDeadlineIsMillisecondScale(t *testing.T) {
 	// NOT parallel: swaps the package-level timeNewTicker var.
 	reg := newMockRegistry()
-	reg.add(&JobInfo{ID: "bg-ms", Type: "local_bash", Status: "running"})
+	reg.add(&JobInfo{ID: "bg-ms", Type: "bash", Status: "running"})
 
 	savedTicker := timeNewTicker
 	timeNewTicker = func(time.Duration) *time.Ticker { return &time.Ticker{C: make(chan time.Time)} }
@@ -1424,7 +1437,7 @@ job_id values come from Job list output (e.g. "bg-1"); do not guess them.
 
 Returns a retrieval_status for poll: success, timeout, or not_ready
 Returns a status for stop: killed (with the original command/description)
-Returns one line per job for list: job_id=... status=... command=...
+Returns one line per job for list: job_id=... type=... status=... command=...
 
 Works with all job types: background shells, async agents, and remote sessions`
 	if got := jobPrompt(); got != want {
@@ -1444,7 +1457,7 @@ func (w *wrappedKillRegistry) Kill(id string) error {
 func TestJob_StopKillErrorWrapsCause(t *testing.T) {
 	t.Parallel()
 	base := newMockRegistry()
-	base.add(&JobInfo{ID: "bg-22", Type: "local_bash", Status: "running"})
+	base.add(&JobInfo{ID: "bg-22", Type: "bash", Status: "running"})
 	cause := errors.New("eperm")
 	reg := &wrappedKillRegistry{mockRegistry: base, cause: cause}
 
@@ -1514,7 +1527,7 @@ func TestJob_RenderPollExactShapes(t *testing.T) {
 func TestJob_StopKillErrorExact(t *testing.T) {
 	t.Parallel()
 	base := newMockRegistry()
-	base.add(&JobInfo{ID: "bg-21", Type: "local_bash", Status: "running", Command: "sleep 60"})
+	base.add(&JobInfo{ID: "bg-21", Type: "bash", Status: "running", Command: "sleep 60"})
 	reg := &killErrorRegistry{mockRegistry: base}
 
 	_, err := executeStop(reg, "bg-21")
@@ -1531,7 +1544,7 @@ func TestJob_LegacyInputShapeRejected(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&JobInfo{
 		ID:       "bg-1",
-		Type:     "local_bash",
+		Type:     "bash",
 		Status:   "completed",
 		Command:  "echo hello",
 		Output:   "hello\n",

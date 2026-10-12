@@ -49,8 +49,8 @@ func (t *trackCallRegistry) String() string {
 
 func TestMulti_PrefixAutoDiscovery(t *testing.T) {
 	t.Parallel()
-	bash := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}
-	fork := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}
+	bash := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash", Status: "running"}), prefix: "bg-"}
+	fork := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "agent", Status: "running"}), prefix: "fork-"}
 
 	m := NewMultiRegistry(bash, fork)
 	// No manual RegisterPrefix needed — auto-discovered from Prefixer interface
@@ -59,15 +59,15 @@ func TestMulti_PrefixAutoDiscovery(t *testing.T) {
 	if !ok {
 		t.Fatal("Get fork-1 returned false")
 	}
-	if info.Type != "local_agent" {
-		t.Errorf("Type = %q, want local_agent", info.Type)
+	if info.Type != "agent" {
+		t.Errorf("Type = %q, want agent", info.Type)
 	}
 }
 
 func TestMulti_PrefixRouting_Get(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "agent", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -75,8 +75,8 @@ func TestMulti_PrefixRouting_Get(t *testing.T) {
 	if !ok {
 		t.Fatal("Get fork-1 returned false")
 	}
-	if info.Type != "local_agent" {
-		t.Errorf("Type = %q, want local_agent", info.Type)
+	if info.Type != "agent" {
+		t.Errorf("Type = %q, want agent", info.Type)
 	}
 	if len(bash.getCalls) != 0 {
 		t.Errorf("bash.Get should not be called for fork-1, got calls: %v", bash.getCalls)

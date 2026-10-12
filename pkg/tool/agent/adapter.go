@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/liuy/gbot/pkg/tool/job"
 )
@@ -96,9 +97,15 @@ func (a *BackgroundAgentJobAdapter) Wait(id string) (int, error) {
 // convertState maps a BackgroundAgentState snapshot to a job.JobInfo.
 // AgentCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
 func convertState(s *BackgroundAgentState) *job.JobInfo {
+	// fork-N ids route by prefix everywhere, so their type follows the id;
+	// agent-N ids are the background-subagent family.
+	jobType := "agent"
+	if strings.HasPrefix(s.ID, "fork-") {
+		jobType = "fork"
+	}
 	info := &job.JobInfo{
 		ID:              s.ID,
-		Type:            "local_agent",
+		Type:            jobType,
 		Description:     s.Description,
 		AgentType:       s.AgentType, // populated while running too, not only on results
 		ParentToolUseID: s.ParentToolUseID,

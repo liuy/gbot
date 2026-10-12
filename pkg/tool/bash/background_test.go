@@ -1139,6 +1139,20 @@ func TestJobInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 	}
 }
 
+func TestBashAdapterKind(t *testing.T) {
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("echo hi", 300, NewStreamingOutput(nil))
+
+	adapter := NewJobInfoAdapter(r)
+	info, ok := adapter.Get(job.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", job.ID)
+	}
+	if info.Type != "bash" {
+		t.Errorf("Type = %q, want %q", info.Type, "bash")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JobInfoAdapter — Kill, List, Wait, Get coverage
 // ---------------------------------------------------------------------------
@@ -1173,8 +1187,8 @@ func TestJobInfoAdapter_List(t *testing.T) {
 		if info.ID != t1.ID && info.ID != t2.ID {
 			t.Errorf("unexpected job ID %q", info.ID)
 		}
-		if info.Type != "local_bash" {
-			t.Errorf("Type = %q, want local_bash", info.Type)
+		if info.Type != "bash" {
+			t.Errorf("Type = %q, want bash", info.Type)
 		}
 		ids[info.ID] = true
 	}

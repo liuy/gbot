@@ -204,9 +204,10 @@ export function createJobsStore(): JobsStoreHandle {
       dropRoutesForGoneJobs()
       // Agent feeds exist from discovery (Go creates jobFeeds when the
       // watcher sees the job), so applyEvent never has to create one on the
-      // hot path and feed() is defined for every agent row.
+      // hot path and feed() is defined for every agent row. The agent family
+      // is agent-N and fork-N alike — everything that is not a bash tail.
       for (const j of items.values()) {
-        if (j.kind === 'agent' && j.parentToolUseID) ensureFeed(j.id)
+        if (j.kind !== 'bash' && j.parentToolUseID) ensureFeed(j.id)
       }
       if (hydrated) {
         for (const [id, h] of hydrated) {

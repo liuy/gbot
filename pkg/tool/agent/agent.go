@@ -55,11 +55,15 @@ type AgentOpts struct {
 	AgentType           string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
-	UserContextMessages []types.Message      // caller-supplied extras before userPrompt; no production caller sets it, RunAgent appends skill messages itself
+	UserContextMessages []types.Message      // caller-supplied extras before userPrompt; spawnBackground appends the spawn identity line, RunAgent adds skill messages after it
 	ResolveTierFn       func(string) string  // model tier resolver (nil = identity)
 	McpConnect          McpConnectFunc       // agent-specific MCP server connector (nil = skip)
 	AllowedTools        []string             // further restrict tools to this list (nil = use agent def)
 	Cwd                 string               // absolute cwd override for the sub-agent ("" = inherit parent)
+	// AgentID is the background agent's registry id ("agent-N"/"fork-N"), set
+	// by spawnBackground before the goroutine reads opts. Empty for sync
+	// spawns — RunAgent falls back to the parent engine id for those.
+	AgentID string
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +79,10 @@ type AgentTool struct {
 	sysPromptFn func() string
 	mcpConnect  McpConnectFunc
 	resolveTier func(string) string
+	// engineID is this tool's engine's messaging identity (engine id, or the
+	// sub-agent's own agent id after RunAgent re-injects). Used only for the
+	// spawn identity line.
+	engineID string
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -112,6 +120,19 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 
 // SetResolveTierFn injects a tier-name resolver for agent model selection.
 func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTier = fn }
+
+// SetEngineID injects the messaging identity used in the spawn identity line.
+// WireEngine passes eng.EngineID(); RunAgent re-injects the sub-agent's own id.
+func (t *AgentTool) SetEngineID(id string) { t.engineID = id }
+
+// EngineID returns the id injected by SetEngineID. Exported because
+// cross-package wiring tests (package engine) cannot read the unexported field.
+func (t *AgentTool) EngineID() string { return t.engineID }
+
+// SetBgRegistry shares the process-global background-agent registry so ids
+// stay unique and resolvable across engines. When never called, SetNotifyFn
+// keeps its create-if-nil fallback for unit tests and harvest-only toolsets.
+func (t *AgentTool) SetBgRegistry(reg *BackgroundAgentRegistry) { t.bgReg = reg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
 func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
@@ -163,7 +184,7 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
     "prompt": {"type": "string", "description": "The task for the agent to perform"},
     "subagent_type": {"type": "string", "description": "Agent type to use"},
-    "name": {"type": "string", "description": "Name for the spawned agent. Makes it addressable via SendMessage while running."},
+    "name": {"type": "string", "description": "Name for the spawned agent (display label in the TUI and in its completion notification)."},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
     "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background. Returns immediately with an agent ID; the result arrives as a job notification when the agent finishes. Applies to both fork and subagent_type agents."},
     "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"},
@@ -329,7 +350,7 @@ func (t *AgentTool) FormatWireBlocks(data any) []types.ContentBlock {
 	var sb strings.Builder
 	sb.WriteString(result.Content)
 	if result.AgentID != "" {
-		fmt.Fprintf(&sb, "\n\nagentId: %s (use SendMessage with to: '%s' to continue this agent)", result.AgentID, result.AgentID)
+		fmt.Fprintf(&sb, "\n\nagentId: %s (addressable via the message tool with to: '%s' while running)", result.AgentID, result.AgentID)
 	}
 	fmt.Fprintf(&sb, "\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", result.TotalTokens, result.TotalToolUseCount, result.TotalDurationMs)
 	return []types.ContentBlock{types.NewTextBlock(sb.String())}
@@ -414,7 +435,16 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 // AgentType and the notification label when input.Name is unset ("fork" for
 // forks, the resolved subagent type otherwise); idPrefix mints the registry ID.
 func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, displayType, idPrefix, parentToolUseID string) (*tool.ToolResult, error) {
-	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
+	runFn := func(runCtx context.Context, agentID string) (*types.SubQueryResult, error) {
+		// Identity must be complete before the goroutine below reads opts —
+		// mutating after Spawn returns would race the registry snapshot.
+		opts.AgentID = agentID
+		opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewTextBlock(spawnIdentityMessage(agentID, input.Name, t.engineID)),
+			},
+		})
 		return t.engine.RunAgent(runCtx, opts)
 	}
 
@@ -455,6 +485,18 @@ func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, disp
 			AsyncLaunched: true,
 		},
 	}, nil
+}
+
+// spawnIdentityMessage tells a spawned agent who it is (registry id), what it
+// is called, and which engine spawned it — all three are resolvable message
+// addresses. The name part drops entirely for unnamed agents. It opens a plain
+// sub-agent's conversation, but not a background fork's: RunAgent prepends the
+// inherited ForkMessages, so the line lands after that context.
+func spawnIdentityMessage(agentID, name, engineID string) string {
+	if name != "" {
+		return fmt.Sprintf("你是后台 %s（%s），由 engine:%s 派生", agentID, name, engineID)
+	}
+	return fmt.Sprintf("你是后台 %s，由 engine:%s 派生", agentID, engineID)
 }
 
 // ---------------------------------------------------------------------------

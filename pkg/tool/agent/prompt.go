@@ -135,7 +135,7 @@ Usage notes:
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first.
 - You can optionally specify a model for the agent: "sonnet" (default), "opus" (complex analysis), or "haiku" (quick lookups). If omitted, the agent inherits your current model.
-- If you specify "name": "foo", the agent can be addressed by that name while running.
+- If you specify "name": "foo", that name labels the agent in the TUI and its completion notification.
 - You can set "run_in_background": true on any agent (fork or subagent_type). The launch returns immediately with an agent ID; do NOT sleep or poll waiting for it — the result arrives on its own as a job notification in a later turn. Use the foreground default when you need results before proceeding; use background for genuinely independent parallel work.
 
 Writing the prompt:

@@ -15,7 +15,7 @@ job_id values come from Job list output (e.g. "bg-1"); do not guess them.
 
 Returns a retrieval_status for poll: success, timeout, or not_ready
 Returns a status for stop: killed (with the original command/description)
-Returns one line per job for list: job_id=... status=... command=...
+Returns one line per job for list: job_id=... type=... status=... command=...
 
 Works with all job types: background shells, async agents, and remote sessions`
 }

@@ -13,6 +13,12 @@ function agentJob(id: string, status: JobWireItem['status'], parent: string): Jo
     agentType: 'executor', description: '修 wui 分页 bug', startedMs: 2000,
   }
 }
+function forkJob(id: string, status: JobWireItem['status'], parent: string): JobWireItem {
+  return {
+    id, kind: 'fork', status, parentToolUseID: parent,
+    agentType: 'fork', description: 'audit the parser', startedMs: 2000,
+  }
+}
 
 function agentEvent(type: string, parent: string, fields: Partial<QueryEvent> = {}): QueryEvent {
   return {
@@ -75,6 +81,16 @@ describe('jobs store — applyEvent routing', () => {
     const blocks = store.feed('agent-1')?.blocks
     expect(blocks).toHaveLength(1)
     expect(blocks![0]).toMatchObject({ kind: 'tool', id: 'inner-1', name: 'Read', state: 'running' })
+  })
+
+  it('fork rows are agent-family: discovery creates the feed before any event lands', () => {
+    const store = createJobsStore()
+    store.setJobs([forkJob('fork-1', 'running', 'parent-f')])
+    expect(store.feed('fork-1')).toBeDefined()
+    expect(store.feed('fork-1')!.blocks).toHaveLength(0)
+    // Bash rows stay out of the feed set — their content arrives as tails.
+    store.setJobs([forkJob('fork-1', 'running', 'parent-f'), bashJob('bg-1', 'running')])
+    expect(store.feed('bg-1')).toBeUndefined()
   })
 
   it('nests events of an inner agent under the spawning tool block', () => {

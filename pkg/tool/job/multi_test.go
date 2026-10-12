@@ -12,31 +12,31 @@ import (
 
 func TestMulti_GetFirst(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
-	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "agent", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	info, ok := m.Get("bg-1")
 	if !ok {
 		t.Fatal("Get bg-1 returned false")
 	}
-	if info.Type != "local_bash" {
-		t.Errorf("Type = %q, want local_bash", info.Type)
+	if info.Type != "bash" {
+		t.Errorf("Type = %q, want bash", info.Type)
 	}
 }
 
 func TestMulti_GetSecond(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
-	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "agent", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	info, ok := m.Get("fork-1")
 	if !ok {
 		t.Fatal("Get fork-1 returned false")
 	}
-	if info.Type != "local_agent" {
-		t.Errorf("Type = %q, want local_agent", info.Type)
+	if info.Type != "agent" {
+		t.Errorf("Type = %q, want agent", info.Type)
 	}
 }
 
@@ -54,8 +54,8 @@ func TestMulti_GetNotFound(t *testing.T) {
 
 func TestMulti_List(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash"})
-	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "agent"})
 	m := NewMultiRegistry(r1, r2)
 
 	list := m.List()
@@ -66,7 +66,7 @@ func TestMulti_List(t *testing.T) {
 	for _, info := range list {
 		types[info.Type] = true
 	}
-	if !types["local_bash"] || !types["local_agent"] {
+	if !types["bash"] || !types["agent"] {
 		t.Errorf("List should contain both types, got: %v", types)
 	}
 }
@@ -207,7 +207,7 @@ func TestMulti_KillPrefixWrap(t *testing.T) {
 
 func TestMulti_NilRegistriesFiltered(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "bash", Status: "running"})
 	m := NewMultiRegistry(nil, r1, nil)
 
 	if got := len(m.List()); got != 1 {

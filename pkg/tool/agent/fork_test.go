@@ -16,7 +16,7 @@ func TestForkRegistry_SpawnAndWait(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 
 	state, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done", AgentType: "fork"}, nil
 		},
 		nil, "test task", "call_1", "fork", "fork",
@@ -45,7 +45,7 @@ func TestForkRegistry_SpawnWithError(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
 		nil, "failing task", "call_1", "fork", "fork",
@@ -63,7 +63,7 @@ func TestForkRegistry_Cancel(t *testing.T) {
 
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			close(started)
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -96,7 +96,7 @@ func TestForkRegistry_Get(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "ok"}, nil
 		},
 		nil, "test", "call_1", "fork", "fork",
@@ -125,7 +125,7 @@ func TestForkRegistry_List(t *testing.T) {
 	unblockB := make(chan struct{})
 
 	_, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-unblockA
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
@@ -135,7 +135,7 @@ func TestForkRegistry_List(t *testing.T) {
 		t.Fatalf("Spawn a: %v", err)
 	}
 	_, err = reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-unblockB
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
@@ -164,7 +164,7 @@ func TestForkRegistry_NotifyCalled(t *testing.T) {
 	var notifiedErr error
 
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "result text", AgentType: "fork"}, nil
 		},
 		func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
@@ -204,7 +204,7 @@ func TestForkRegistry_NotifyOnError(t *testing.T) {
 	var notifiedErr error
 
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("agent crashed")
 		},
 		func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
@@ -234,7 +234,7 @@ func TestForkRegistry_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	state, _ := reg.Spawn(ctx,
-		func(runCtx context.Context) (*types.SubQueryResult, error) {
+		func(runCtx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-runCtx.Done()
 			return nil, runCtx.Err()
 		},
@@ -349,7 +349,7 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 
 	unblock := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-unblock
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
@@ -385,13 +385,13 @@ func TestForkRegistry_CleanupCompleted(t *testing.T) {
 
 	// Spawn two agents that complete quickly
 	s1, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
 		nil, "task a", "call_1", "fork", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
 		nil, "task b", "call_2", "fork", "fork",
@@ -491,7 +491,7 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 		notifyErr = err
 	}
 
-	state, err := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
+	state, err := reg.Spawn(context.Background(), func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 		panic("something went terribly wrong")
 	}, notifyFn, "test panic", "tool-1", "fork", "fork")
 	if err != nil {
@@ -525,7 +525,7 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 
 	notifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {}
 
-	state, err := reg.Spawn(ctx, func(innerCtx context.Context) (*types.SubQueryResult, error) {
+	state, err := reg.Spawn(ctx, func(innerCtx context.Context, _ string) (*types.SubQueryResult, error) {
 		<-innerCtx.Done()
 		// Return partial result even though cancelled
 		return &types.SubQueryResult{Content: "partial work done", TotalTokens: 50}, ctx.Err()
@@ -557,7 +557,7 @@ func TestBackgroundAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T)
 	adapter := NewBackgroundAgentJobAdapter(reg)
 
 	// Spawn and complete a fork agent
-	state, _ := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
+	state, _ := reg.Spawn(context.Background(), func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 		return &types.SubQueryResult{Content: "done"}, nil
 	}, nil, "test", "tool-1", "fork", "fork")
 	reg.Wait(state.ID) // wait for completion
@@ -583,7 +583,7 @@ func TestSpawn_IDPrefixPerKind(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 
 	s1, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
 		nil, "task a", "call_1", "fork", "fork",
@@ -592,7 +592,7 @@ func TestSpawn_IDPrefixPerKind(t *testing.T) {
 		t.Fatalf("Spawn fork: %v", err)
 	}
 	s2, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
 		nil, "task b", "call_2", "agent", "agent",

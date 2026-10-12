@@ -31,8 +31,8 @@ func TestConvertState_Completed(t *testing.T) {
 	if info.ID != "fork-1" {
 		t.Errorf("ID = %q, want fork-1", info.ID)
 	}
-	if info.Type != "local_agent" {
-		t.Errorf("Type = %q, want local_agent", info.Type)
+	if info.Type != "fork" {
+		t.Errorf("Type = %q, want fork", info.Type)
 	}
 	if info.Status != "completed" {
 		t.Errorf("Status = %q, want completed", info.Status)
@@ -51,6 +51,18 @@ func TestConvertState_Completed(t *testing.T) {
 	}
 	if info.DurationMs != 1234 {
 		t.Errorf("DurationMs = %d, want 1234", info.DurationMs)
+	}
+}
+
+func TestConvertState_Type(t *testing.T) {
+	t.Parallel()
+	fork := convertState(&BackgroundAgentState{ID: "fork-7", Status: AgentRunning})
+	if fork.Type != "fork" {
+		t.Errorf("fork-7 Type = %q, want %q", fork.Type, "fork")
+	}
+	agent := convertState(&BackgroundAgentState{ID: "agent-3", Status: AgentRunning})
+	if agent.Type != "agent" {
+		t.Errorf("agent-3 Type = %q, want %q", agent.Type, "agent")
 	}
 }
 
@@ -129,7 +141,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{
 				Content:         "done",
 				AgentType:       "fork",
@@ -168,7 +180,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-blockCh // block until test has read the status
 			return &types.SubQueryResult{Content: "slow"}, nil
 		},
@@ -195,7 +207,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
 		nil, "failing task", "call_1", "fork", "fork",
@@ -229,13 +241,13 @@ func TestAdapter_List(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	s1, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
 		nil, "task a", "call_1", "fork", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
 		nil, "task b", "call_2", "fork", "fork",
@@ -251,8 +263,8 @@ func TestAdapter_List(t *testing.T) {
 	ids := map[string]bool{}
 	for _, info := range list {
 		ids[info.ID] = true
-		if info.Type != "local_agent" {
-			t.Errorf("Type = %q, want local_agent", info.Type)
+		if info.Type != "fork" {
+			t.Errorf("Type = %q, want fork", info.Type)
 		}
 	}
 	if !ids[s1.ID] || !ids[s2.ID] {
@@ -264,7 +276,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
 		nil, "cleanup test", "call_1", "fork", "fork",
@@ -287,7 +299,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			close(started)
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -320,7 +332,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
 		nil, "wait test", "call_1", "fork", "fork",
@@ -340,7 +352,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
 		},
 		nil, "fail test", "call_1", "fork", "fork",
@@ -398,7 +410,7 @@ func TestConvertState_ExposesParentToolUseIDAndAgentType(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-blockCh
 			return &types.SubQueryResult{Content: "done"}, nil
 		},

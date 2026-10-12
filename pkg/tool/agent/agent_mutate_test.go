@@ -278,7 +278,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 
 	release := make(chan struct{})
 	running, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
 		}, nil, "still running", "call_r", "agent", "agent")
@@ -287,7 +287,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 	}
 
 	completed, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "c"}, nil
 		}, nil, "completed", "call_c", "agent", "agent")
 	if err != nil {
@@ -296,7 +296,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 	reg.Wait(completed.ID)
 
 	failed, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("engine died")
 		}, nil, "failed", "call_f", "agent", "agent")
 	if err != nil {
@@ -305,7 +305,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 	reg.Wait(failed.ID)
 
 	cancelled, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
 			return &types.SubQueryResult{Content: "partial"}, ctx.Err()
 		}, nil, "cancelled", "call_x", "agent", "agent")
@@ -940,7 +940,7 @@ func TestSpawn_SnapshotReportsRunningState(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	release := make(chan struct{})
 	snapshot, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
 		}, nil, "my task", "call_p", "agent", "agent")
@@ -967,7 +967,7 @@ func TestWait_ResultCopyIsIndependent(t *testing.T) {
 	t.Parallel()
 	reg := NewBackgroundAgentRegistry()
 	state, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "original", TotalTokens: 7}, nil
 		}, nil, "copy test", "call_1", "agent", "agent")
 	if err != nil {
@@ -1073,7 +1073,7 @@ func TestJobAdapter_ListKeepsRunningAgents(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	release := make(chan struct{})
 	running, err := reg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
 		}, nil, "running", "call_r", "agent", "agent")
@@ -1086,8 +1086,8 @@ func TestJobAdapter_ListKeepsRunningAgents(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("List = %d entries, want 1", len(list))
 	}
-	if list[0].Status != "running" || list[0].ID != running.ID || list[0].Type != "local_agent" {
-		t.Errorf("List entry = %+v, want a running local_agent with ID %s", list[0], running.ID)
+	if list[0].Status != "running" || list[0].ID != running.ID || list[0].Type != "agent" {
+		t.Errorf("List entry = %+v, want a running agent with ID %s", list[0], running.ID)
 	}
 	if _, ok := reg.Get(running.ID); !ok {
 		t.Error("List dropped the running agent — cleanup must only remove terminal agents")

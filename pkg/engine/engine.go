@@ -1010,6 +1010,26 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	WireEngine(subEng, subRefs, *e.sharedDeps)
 
+	// Messaging identity: ALWAYS set — background agents address as their
+	// own registry id (opts.AgentID), sync subs fall back to this engine's
+	// id (NewSubEngine never sets engineID, so subEng.EngineID() is empty).
+	// The same id feeds the sub's Agent tool so grandchildren identity lines
+	// name a resolvable sender. A sync sub self-rejects messaging its own
+	// parent engine — intended: it IS that engine's context, and any queued
+	// delivery would only be read after the sub returns.
+	selfID := opts.AgentID
+	if selfID == "" {
+		selfID = e.EngineID()
+	}
+	subRefs.Message.SetSelfID(selfID)
+	subRefs.Agent.SetEngineID(selfID)
+	// The sub-engine is live and deliverable from this point on. No
+	// AgentID != "" guard: AttachSink is a documented no-op for unknown ids,
+	// which is exactly the sync-sub case ("" is never registered).
+	if e.sharedDeps.BgAgents != nil {
+		e.sharedDeps.BgAgents.AttachSink(opts.AgentID, subEng)
+	}
+
 	// Fire SubagentStart hook
 	if e.sharedDeps.Hooks != nil {
 		hookInput := &hooks.HookInput{

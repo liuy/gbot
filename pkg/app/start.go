@@ -273,6 +273,13 @@ func Start(opts Options) (*Instance, error) {
 		startSessionCleanup(store, 5*time.Second, 24*time.Hour)
 	}
 
+	// One process-global engine manager and background-agent registry: the
+	// message tool resolves flat ids against the FULL engine set and needs
+	// every producer (main, factory, dream, wechat) to share one registry —
+	// two registries would mint colliding agent-N ids.
+	engineMgr := engine.NewEngineManager()
+	bgAgents := agent.NewBackgroundAgentRegistry()
+
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
 		SkillReg:   skillReg,
@@ -282,6 +289,8 @@ func Start(opts Options) (*Instance, error) {
 		LSPReg:     lspReg,
 		WSRegistry: wsRegistry,
 		ShortStore: store,
+		EngineMgr:  engineMgr,
+		BgAgents:   bgAgents,
 	}
 
 	mainTaskList := task.NewList("")
@@ -381,6 +390,8 @@ func Start(opts Options) (*Instance, error) {
 			LSPReg:     lspReg,
 			WSRegistry: wsRegistry,
 			ShortStore: store,
+			EngineMgr:  engineMgr,
+			BgAgents:   bgAgents,
 		}
 		refs := engine.CreateTools(deps, engTaskList)
 		var providerCfg *config.Provider
@@ -482,8 +493,6 @@ func Start(opts Options) (*Instance, error) {
 		return newEng, handler, nil
 	}
 
-	engineMgr := engine.NewEngineManager()
-
 	// Orchestrator after the skills/hooks/agent wiring and the manager: its
 	// baseline snapshot reads the just-wired state. LSPReg/ShortStore match
 	// the boot-time deps so the ToolPrompts harvest reproduces the startup
@@ -527,6 +536,8 @@ func Start(opts Options) (*Instance, error) {
 			Store:              store,
 			Logger:             logger,
 			NoTUI:              opts.NoTUI,
+			EngineMgr:          engineMgr,
+			BgAgents:           bgAgents,
 		})
 		dreamEng.SetStore(store, projectDir)
 		resumeDreamSession(dreamEng, store, projectDir)
@@ -773,6 +784,16 @@ type dreamEngineDeps struct {
 	Store              *short.Store
 	Logger             *slog.Logger
 	NoTUI              bool
+	// EngineMgr and BgAgents are prerequisite wiring for the tool whitelist
+	// below being a config surface, not a runtime need of today's default
+	// whitelist (which omits Message): the resolver must already address every
+	// engine and background agent the moment a config adds Message to the list.
+	EngineMgr *engine.EngineManager
+	BgAgents  *agent.BackgroundAgentRegistry
+	// Tools overrides the dream tool whitelist (empty = the built-in default).
+	// The whitelist is a config surface — today's default is the current tool
+	// set, a future config may add Message/Agent.
+	Tools []string
 }
 
 // createDreamEngine builds a top-level engine for dream memory consolidation.
@@ -789,12 +810,20 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		LSPReg:     nil,
 		WSRegistry: nil,
 		ShortStore: d.Store,
+		// Message resolver substrate: the tool is registered unconditionally,
+		// so these decide what a whitelisted Message can reach. See
+		// dreamEngineDeps for why they stay wired under the default whitelist.
+		EngineMgr: d.EngineMgr,
+		BgAgents:  d.BgAgents,
 	}, task.NewList(""))
 
 	// Whitelist: only tools dream needs.
-	dreamWhitelist := []string{
-		"Read", "Write", "Edit", "Bash", "Grep", "Glob",
-		"Recall",
+	dreamWhitelist := d.Tools
+	if len(dreamWhitelist) == 0 {
+		dreamWhitelist = []string{
+			"Read", "Write", "Edit", "Bash", "Grep", "Glob",
+			"Recall",
+		}
 	}
 	dreamDef := types.AgentDefinition{Tools: dreamWhitelist}
 	dreamTools := agent.ResolveAgentTools(dreamRefs.Reg.ToolMapFn()(), &dreamDef)
@@ -867,6 +896,11 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		LSPReg:     nil,
 		WSRegistry: nil,
 		ShortStore: d.Store,
+		// Kept identical to the CreateTools literal above: WireEngine reads
+		// neither today, but the two literals describe one engine — letting
+		// them diverge would silently un-wire the resolver later.
+		EngineMgr: d.EngineMgr,
+		BgAgents:  d.BgAgents,
 	})
 	dreamEng.SetSystemPrompt(dream.SystemPrompt)
 	dreamEng.SetOnClose(func(sessionID string) {

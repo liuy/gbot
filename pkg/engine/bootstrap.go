@@ -27,6 +27,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/job"
 	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
 	"github.com/liuy/gbot/pkg/tool/memory/recall"
+	"github.com/liuy/gbot/pkg/tool/message"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -51,6 +52,14 @@ type SharedDeps struct {
 	// recall searches conversation history.
 	// nil = recall unavailable.
 	ShortStore *short.Store
+
+	// EngineMgr and BgAgents back the message tool's target resolver. Both
+	// come from the process-global instances created once in app/start.go so
+	// agent-N/fork-N ids stay unique and every engine is addressable from
+	// anywhere. nil for both (reload's harvest toolset) = resolver degraded,
+	// tool still registered for ToolPrompts collection.
+	EngineMgr *EngineManager
+	BgAgents  *agenttool.BackgroundAgentRegistry
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -60,6 +69,7 @@ type ToolRefs struct {
 	Agent   *agenttool.AgentTool
 	REPL    *repl.REPLTool
 	JobReg  *job.MultiRegistry
+	Message *message.MessageTool
 }
 
 // CreateTools creates a fresh, complete set of tool instances for one engine.
@@ -81,12 +91,24 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	if deps.Cfg != nil {
 		at.SetResolveTierFn(deps.Cfg.ResolveTier)
 	}
+	// Share the process-global registry BEFORE SetNotifyFn — SetNotifyFn's
+	// create-if-nil fallback must not mint a second registry (two registries
+	// would issue colliding agent-N ids).
+	if deps.BgAgents != nil {
+		at.SetBgRegistry(deps.BgAgents)
+	}
 	// Stub SetNotifyFn — must be called before JobAdapter() so bgReg is initialized.
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	reg.MustRegister(at)
 
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
 	reg.MustRegister(job.NewJob(jobReg))
+
+	// message: registered unconditionally — the ToolPrompts harvest (reload,
+	// boot) runs CreateTools with nil resolver deps and still needs the tool
+	// text; delivery degrades to "unknown target" until real deps arrive.
+	msgTool := message.New(&EngineMessageResolver{mgr: deps.EngineMgr, agents: deps.BgAgents})
+	reg.MustRegister(msgTool)
 
 	reg.MustRegister(task.New(taskList, deps.Hooks))
 
@@ -124,7 +146,7 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 		reg.MustRegister(recall.New(deps.ShortStore, long.GetMemoryPath(deps.WorkingDir)))
 	}
 
-	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
+	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg, Message: msgTool}
 }
 
 // WireEngine wires notification callbacks and injects the engine into tools.
@@ -156,6 +178,16 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	// Engine.RunAgent implements SubagentEngine and handles all business
 	// logic (agentDef resolution, system prompt building, tool filtering).
 	refs.Agent.SetEngine(eng)
+
+	// Messaging identity for this engine's tools: the message tool's
+	// from=/self-reject id and the Agent tool's spawn-identity attribution.
+	// RunAgent re-injects both on sub-engines (a sub-engine's EngineID() is
+	// empty — NewSubEngine never sets engineID). Guarded: the wiring above
+	// tolerates a nil eng (lazy closures), this read is eager.
+	if eng != nil {
+		refs.Agent.SetEngineID(eng.EngineID())
+		refs.Message.SetSelfID(eng.EngineID())
+	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).
 	if deps.McpReg != nil {

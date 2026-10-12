@@ -47,7 +47,7 @@ const (
 // jobWireItem is one background job row on the wire.
 type jobWireItem struct {
 	ID              string `json:"id"`
-	Kind            string `json:"kind"`   // "bash" | "agent"
+	Kind            string `json:"kind"`   // "bash" | "agent" | "fork"
 	Status          string `json:"status"` // running|completed|failed|killed
 	Command         string `json:"command,omitempty"`
 	Description     string `json:"description,omitempty"`
@@ -133,16 +133,10 @@ func (c *WUIConnector) watchJobsLoop(slot *engineSlot) {
 	}
 }
 
-// jobKind maps JobInfo.Type onto the wire vocabulary.
-func jobKind(t string) string {
-	switch t {
-	case "local_bash":
-		return "bash"
-	case "local_agent":
-		return "agent"
-	}
-	return t
-}
+// jobHasFeed reports whether a wire kind belongs to the agent family
+// (agent-N/fork-N registry jobs) — everything the panel streams a feed for,
+// i.e. everything that is not a bash tail.
+func jobHasFeed(kind string) bool { return kind != "bash" }
 
 func isTerminalJobStatus(status string) bool {
 	return status == "completed" || status == "failed" || status == "killed"
@@ -213,7 +207,7 @@ func (c *WUIConnector) mergeJobSummariesLocked(slot *engineSlot, summaries []*jo
 		}
 		item := jobWireItem{
 			ID:              j.ID,
-			Kind:            jobKind(j.Type),
+			Kind:            j.Type,
 			Status:          j.Status,
 			Command:         j.Command,
 			Description:     j.Description,
@@ -223,7 +217,7 @@ func (c *WUIConnector) mergeJobSummariesLocked(slot *engineSlot, summaries []*jo
 			StartedMs:       j.StartedMs,
 		}
 		slot.jobView[j.ID] = &jobViewEntry{item: item}
-		if item.Kind == "agent" && item.ParentToolUseID != "" {
+		if jobHasFeed(item.Kind) && item.ParentToolUseID != "" {
 			slot.jobFeeds[item.ParentToolUseID] = &jobFeedState{}
 			// Events that arrived before the watcher saw the job were parked
 			// in pendingAgentEvents; replay them now that the feed exists.
@@ -272,7 +266,7 @@ func (c *WUIConnector) mergeJobSummariesLocked(slot *engineSlot, summaries []*jo
 
 	var tailIDs []string
 	for _, j := range summaries {
-		if j == nil || !j.Backgrounded || jobKind(j.Type) != "bash" {
+		if j == nil || !j.Backgrounded || jobHasFeed(j.Type) {
 			continue
 		}
 		if _, ok := slot.jobView[j.ID]; ok {
@@ -370,12 +364,12 @@ func (c *WUIConnector) buildJobsMetadata(slot *engineSlot) json.RawMessage {
 	for _, entry := range slot.jobView {
 		h := jobWireItemHydrated{jobWireItem: entry.item}
 		switch entry.item.Kind {
-		case "agent":
+		case "bash":
+			h.Tail = entry.tail
+		default:
 			if feed, ok := slot.jobFeeds[entry.item.ParentToolUseID]; ok {
 				h.Blocks = feed.streamState.blocks
 			}
-		case "bash":
-			h.Tail = entry.tail
 		}
 		items = append(items, h)
 	}
@@ -402,7 +396,7 @@ func (c *WUIConnector) deleteJobEntryLocked(slot *engineSlot, id string) {
 		return
 	}
 	delete(slot.jobView, id)
-	if entry.item.Kind != "agent" || entry.item.ParentToolUseID == "" {
+	if !jobHasFeed(entry.item.Kind) || entry.item.ParentToolUseID == "" {
 		return
 	}
 	key := entry.item.ParentToolUseID

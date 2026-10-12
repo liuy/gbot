@@ -139,7 +139,7 @@ func assertOnlyJobListWithin(t *testing.T, ws *websocket.Conn, window time.Durat
 func bgBashJob(id, status, command string, startedMs int64) *job.JobInfo {
 	return &job.JobInfo{
 		ID:           id,
-		Type:         "local_bash",
+		Type:         "bash",
 		Status:       status,
 		Command:      command,
 		Backgrounded: true,
@@ -162,7 +162,7 @@ func TestJobTick_PushesJobListOnNewJob(t *testing.T) {
 			bgBashJob("bg-1", "running", "make check", started),
 			{
 				ID:           "bg-2",
-				Type:         "local_bash",
+				Type:         "bash",
 				Status:       "failed",
 				Command:      "make lint",
 				Backgrounded: true,
@@ -207,7 +207,7 @@ func TestJobTick_SkipsForegroundBash(t *testing.T) {
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
 			ID:           "bg-9",
-			Type:         "local_bash",
+			Type:         "bash",
 			Status:       "running",
 			Command:      "foreground cmd",
 			Backgrounded: false,
@@ -390,7 +390,7 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
 			ID:              "agent-1",
-			Type:            "local_agent",
+			Type:            "agent",
 			Status:          "running",
 			Description:     "explore the repo",
 			AgentType:       "Explore",
@@ -447,7 +447,7 @@ func TestCaptureJobEvent_MaskingAndNesting(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
-			ID: "agent-1", Type: "local_agent", Status: "running",
+			ID: "agent-1", Type: "agent", Status: "running",
 			Description: "nested test", ParentToolUseID: "toolu_p",
 			Backgrounded: true, StartedMs: 100,
 		}}
@@ -503,7 +503,7 @@ func TestPendingAgentEvents_FlushedOnDiscovery(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	agentJob := &job.JobInfo{
-		ID: "agent-1", Type: "local_agent", Status: "running",
+		ID: "agent-1", Type: "agent", Status: "running",
 		Description: "late discovery", ParentToolUseID: "toolu_late",
 		Backgrounded: true, StartedMs: 100,
 	}
@@ -529,6 +529,46 @@ func TestPendingAgentEvents_FlushedOnDiscovery(t *testing.T) {
 	}
 	if items[0].Blocks[1].Kind != "text" || items[0].Blocks[1].Text != "flushed text" {
 		t.Errorf("blocks[1] = %+v, want text %q", items[0].Blocks[1], "flushed text")
+	}
+}
+
+// Fork jobs are agent-family: the panel's family rule is "not bash", so a
+// fork-N entry must get a live feed exactly like an agent-N one, and must not
+// be routed down the bash tail path.
+func TestPendingAgentEvents_FlushedOnDiscovery_ForkKind(t *testing.T) {
+	withJobsWatcherInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	forkJob := &job.JobInfo{
+		ID: "fork-1", Type: "fork", Status: "running",
+		Description: "fork feed", ParentToolUseID: "toolu_fk",
+		Backgrounded: true, StartedMs: 100,
+	}
+	parent := &types.AgentMeta{ParentToolUseID: "toolu_fk"}
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: parent, Text: "fork text"})
+	c.mock().SetJobsFn(func() []*job.JobInfo { return []*job.JobInfo{forkJob} })
+
+	ws := dialJobsServer(t, c)
+	out := readJobList(t, ws)
+	if len(out.Jobs) != 1 {
+		t.Fatalf("wire jobs len = %d, want 1", len(out.Jobs))
+	}
+	if out.Jobs[0].Kind != "fork" {
+		t.Errorf("wire kind = %q, want fork (JobInfo.Type rides the wire verbatim)", out.Jobs[0].Kind)
+	}
+
+	ws2 := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws2)
+	if len(items) != 1 {
+		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	}
+	if len(items[0].Blocks) != 1 {
+		t.Fatalf("fork feed blocks len = %d, want 1 — fork kind must own a feed: %+v", len(items[0].Blocks), items[0].Blocks)
+	}
+	if items[0].Blocks[0].Kind != "text" || items[0].Blocks[0].Text != "fork text" {
+		t.Errorf("blocks[0] = %+v, want text %q", items[0].Blocks[0], "fork text")
+	}
+	if items[0].Tail != "" {
+		t.Errorf("fork Tail = %q, want empty (tail fetching is bash-only)", items[0].Tail)
 	}
 }
 
@@ -646,7 +686,7 @@ func TestCaptureJobEvent_FeedCapDropsHead(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
-			ID: "agent-1", Type: "local_agent", Status: "running",
+			ID: "agent-1", Type: "agent", Status: "running",
 			Description: "cap test", ParentToolUseID: "toolu_cap",
 			Backgrounded: true, StartedMs: 100,
 		}}
@@ -687,7 +727,7 @@ func TestPendingAgentEvents_TTLSwept(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // REAL-TIME
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
-			ID: "agent-ghost", Type: "local_agent", Status: "running",
+			ID: "agent-ghost", Type: "agent", Status: "running",
 			Description: "ghost", ParentToolUseID: "toolu_ghost",
 			Backgrounded: true, StartedMs: 100,
 		}}
@@ -822,7 +862,7 @@ func TestPendingAgentEvents_ShortDelayBeforeDiscoveryStillFlushes(t *testing.T) 
 	time.Sleep(100 * time.Millisecond) // REAL-TIME
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
-			ID: "agent-slow", Type: "local_agent", Status: "running",
+			ID: "agent-slow", Type: "agent", Status: "running",
 			Description: "late", ParentToolUseID: "toolu_slow",
 			Backgrounded: true, StartedMs: 100,
 		}}
@@ -892,10 +932,11 @@ func TestJobsWatcher_ExitsOnStop(t *testing.T) {
 	}
 }
 
-// TestJobKind_UnknownTypePassthrough pins jobKind's default branch: registry
-// types outside the bash/agent vocabulary ride the wire verbatim instead of
+// TestJobWire_UnknownTypePassthrough pins that JobInfo.Type rides the wire
+// verbatim: with the unified field there is no mapper left, so a type outside
+// the bash/agent/fork vocabulary reaches the client unchanged instead of
 // collapsing to "".
-func TestJobKind_UnknownTypePassthrough(t *testing.T) {
+func TestJobWire_UnknownTypePassthrough(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -948,9 +989,9 @@ func TestJobTick_MergeSkipsNilAndForegroundEntries(t *testing.T) {
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{
 			nil,
-			{ID: "bg-fg", Type: "local_bash", Status: "running", Command: "fg cmd",
+			{ID: "bg-fg", Type: "bash", Status: "running", Command: "fg cmd",
 				Backgrounded: false, StartedMs: 900},
-			{ID: "bg-1", Type: "local_bash", Status: "completed", Command: "done cmd",
+			{ID: "bg-1", Type: "bash", Status: "completed", Command: "done cmd",
 				Backgrounded: true, StartedMs: 7777, ExitCode: 3},
 		}
 	})
@@ -974,7 +1015,7 @@ func TestJobTick_TailsOnlyBashJobs(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{
-			{ID: "agent-1", Type: "local_agent", Status: "running",
+			{ID: "agent-1", Type: "agent", Status: "running",
 				Description: "no tails", ParentToolUseID: "toolu_p",
 				Backgrounded: true, StartedMs: 100},
 			bgBashJob("bg-1", "running", "make check", 200),
@@ -1415,7 +1456,7 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	t.Cleanup(func() { _ = bashReg.Kill(bt.ID) })
 	agentReg := agent.NewBackgroundAgentRegistry()
 	state, err := agentReg.Spawn(context.Background(),
-		func(ctx context.Context) (*types.SubQueryResult, error) {
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}, nil, "explore wiring", "toolu_p", "agent", "Explore")
@@ -1570,6 +1611,78 @@ func TestApplyAgentEventLocked_Guards(t *testing.T) {
 	}
 }
 
+// newBlankJobsSlot builds a slot with every jobs map initialised and nothing
+// in it, for the locked-function tests that drive the watcher's internals
+// directly.
+func newBlankJobsSlot(id string) *engineSlot {
+	return &engineSlot{
+		engineID:           id,
+		taskToolIDs:        map[string]bool{},
+		jobView:            map[string]*jobViewEntry{},
+		jobFeeds:           map[string]*jobFeedState{},
+		innerToolToFeed:    map[string]string{},
+		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	}
+}
+
+// TestMergeJobSummariesLocked_FeedAndTailGates pins both family gates: a feed
+// is created only for agent-family kinds that carry a parent tool-use id, and
+// tail fetching stays bash-only.
+func TestMergeJobSummariesLocked_FeedAndTailGates(t *testing.T) {
+	c := newTestConnector(t)
+	slot := newBlankJobsSlot("s1")
+	tailIDs := c.mergeJobSummariesLocked(slot, []*job.JobInfo{
+		nil,
+		{ID: "fork-1", Type: "fork", Status: "running", ParentToolUseID: "toolu_fk", Backgrounded: true, StartedMs: 1},
+		{ID: "agent-0", Type: "agent", Status: "running", Backgrounded: true, StartedMs: 2},
+		{ID: "bg-1", Type: "bash", Status: "running", ParentToolUseID: "toolu_b", Backgrounded: true, StartedMs: 3},
+	})
+	if _, ok := slot.jobFeeds["toolu_fk"]; !ok {
+		t.Error("fork job with a parent tool-use id must get a feed")
+	}
+	if len(slot.jobFeeds) != 1 {
+		t.Errorf("jobFeeds len = %d, want 1 — agent-0 has no parent id and bash never owns a feed", len(slot.jobFeeds))
+	}
+	if len(tailIDs) != 1 || tailIDs[0] != "bg-1" {
+		t.Errorf("tailIDs = %v, want [bg-1] — tail fetching is bash-only", tailIDs)
+	}
+}
+
+// TestDeleteJobEntryLocked_FamilyFeedReclaim pins the cleanup guard: an
+// agent-family row reclaims its feed and inner tool routes, while a bash row
+// (which never owns a feed) must leave the feed set untouched.
+func TestDeleteJobEntryLocked_FamilyFeedReclaim(t *testing.T) {
+	c := newTestConnector(t)
+	slot := newBlankJobsSlot("s1")
+	slot.jobView["fork-1"] = &jobViewEntry{item: jobWireItem{ID: "fork-1", Kind: "fork", ParentToolUseID: "toolu_fk"}}
+	slot.jobView["agent-0"] = &jobViewEntry{item: jobWireItem{ID: "agent-0", Kind: "agent"}}
+	slot.jobView["bg-1"] = &jobViewEntry{item: jobWireItem{ID: "bg-1", Kind: "bash", ParentToolUseID: "toolu_b"}}
+	slot.jobFeeds["toolu_fk"] = &jobFeedState{}
+	slot.jobFeeds["toolu_b"] = &jobFeedState{}
+	slot.innerToolToFeed["inner-1"] = "toolu_fk"
+
+	c.deleteJobEntryLocked(slot, "fork-1")
+	if _, ok := slot.jobFeeds["toolu_fk"]; ok {
+		t.Error("fork row must reclaim its feed")
+	}
+	if _, ok := slot.innerToolToFeed["inner-1"]; ok {
+		t.Error("fork row must reclaim its inner tool routes")
+	}
+
+	c.deleteJobEntryLocked(slot, "bg-1")
+	if _, ok := slot.jobFeeds["toolu_b"]; !ok {
+		t.Error("bash row must not touch the feed set")
+	}
+
+	c.deleteJobEntryLocked(slot, "agent-0")
+	if len(slot.jobView) != 0 {
+		t.Errorf("jobView len = %d, want 0", len(slot.jobView))
+	}
+	if len(slot.jobFeeds) != 1 {
+		t.Errorf("jobFeeds len = %d, want 1 (only the bash row's leftover entry)", len(slot.jobFeeds))
+	}
+}
+
 // TestDeleteJobEntryLocked_GhostIDNoPanic pins the not-found guard: deleting
 // an id the view never held must be a silent no-op, not a nil-entry deref.
 func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
@@ -1598,7 +1711,7 @@ func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
-			ID: "agent-1", Type: "local_agent", Status: "completed",
+			ID: "agent-1", Type: "agent", Status: "completed",
 			Description: "clear replay", ParentToolUseID: "toolu_234",
 			Backgrounded: true, StartedMs: 100,
 		}}

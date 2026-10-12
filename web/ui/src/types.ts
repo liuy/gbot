@@ -114,7 +114,7 @@ export type TaskWireItem = {
 
 export type JobWireItem = {
   id: string
-  kind: 'bash' | 'agent'
+  kind: 'bash' | 'agent' | 'fork'
   status: 'running' | 'completed' | 'failed' | 'killed'
   command?: string
   description?: string

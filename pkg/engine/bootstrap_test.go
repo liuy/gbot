@@ -39,7 +39,7 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 
 	expectedTools := []string{
 		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
-		"Agent", "Job",
+		"Agent", "Job", "Message",
 		"Task",
 		"Skill", "Repl",
 	}

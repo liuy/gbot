@@ -488,8 +488,8 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 	if !found {
 		t.Fatalf("JobInfoAdapter.Get(%q) not found — TaskStop would fail", outputID)
 	}
-	if taskInfo.Type != "local_bash" {
-		t.Errorf("taskInfo.Type = %q, want local_bash", taskInfo.Type)
+	if taskInfo.Type != "bash" {
+		t.Errorf("taskInfo.Type = %q, want bash", taskInfo.Type)
 	}
 
 	// Step 5: Verify Kill works via the adapter (TaskStop's path)

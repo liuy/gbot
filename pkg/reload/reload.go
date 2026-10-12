@@ -314,6 +314,11 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 		// inbound-device pool; a fresh engine build gets it from Start's deps.
 		WSRegistry: nil,
 		ShortStore: d.ShortStore,
+		// EngineMgr/BgAgents stay nil: this toolset is throwaway — only its
+		// Prompt() text feeds the ToolPrompts harvest. Production engines get
+		// real resolver deps from the Start factory closure.
+		EngineMgr: nil,
+		BgAgents:  nil,
 	}, task.NewList(""))
 	for _, tl := range refs.Reg.EnabledTools() {
 		if p := tl.Prompt(); p != "" {

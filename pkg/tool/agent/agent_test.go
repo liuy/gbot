@@ -723,7 +723,8 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 	at.SetEngine(&mockSubEngine{runFn: factory})
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
-	// name does NOT override subagent_type — name is only for SendMessage addressing
+	// name does NOT override subagent_type — name is only a display label
+	// (TUI + completion notification); addressing is by ID via the message tool
 	input := json.RawMessage(`{"description":"audit","prompt":"check","fork":true,"run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_audit"})
 	sqr := result.Data.(*types.SubQueryResult)
@@ -1755,8 +1756,8 @@ func TestCallSubagent_BackgroundJobListShowsAgent(t *testing.T) {
 	if j.ID != "agent-1" {
 		t.Errorf("job ID = %q, want %q", j.ID, "agent-1")
 	}
-	if j.Type != "local_agent" {
-		t.Errorf("job Type = %q, want %q", j.Type, "local_agent")
+	if j.Type != "agent" {
+		t.Errorf("job Type = %q, want %q", j.Type, "agent")
 	}
 	if j.Status != "running" {
 		t.Errorf("job Status = %q, want %q", j.Status, "running")
@@ -1813,8 +1814,8 @@ func TestCallSubagent_BackgroundStopKillsAgent(t *testing.T) {
 	if stop.Status != "killed" {
 		t.Errorf("stop status = %q, want %q", stop.Status, "killed")
 	}
-	if stop.JobType != "local_agent" {
-		t.Errorf("stop job_type = %q, want %q", stop.JobType, "local_agent")
+	if stop.Type != "agent" {
+		t.Errorf("stop type = %q, want %q", stop.Type, "agent")
 	}
 
 	final, ok := at.bgReg.Wait(sqr.AgentID)

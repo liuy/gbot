@@ -53,6 +53,15 @@ func (ec *eventCollector) Dispatch(event types.QueryEvent) {
 	// Sub-engine QueryEnds arrive via taggedDispatcher and must not close
 	// the channel before the main engine finishes.
 	if event.Type == types.EventQueryEnd && event.Agent == nil {
+		// First QueryEnd claims the result. A second query (e.g. the idle
+		// run after an abort) must not overwrite it — WaitForResult may wake
+		// only after that second event lands, and the aborted query's error
+		// would be lost.
+		select {
+		case <-ec.done:
+			return
+		default:
+		}
 		ec.result = QueryResult{Error: event.Error}
 		if event.Usage != nil {
 			ec.result.TotalUsage = types.Usage{
@@ -138,6 +147,10 @@ type mockProvider struct {
 	responses   []mockResponse
 	index       int
 	lastRequest *llm.Request // captured from the most recent Stream call
+	// allRequests is an append-only log of every Stream call. Multi-engine
+	// tests share one mockProvider, so per-engine attribution of lastRequest
+	// races; content scans over the full log are order-independent.
+	allRequests []*llm.Request
 }
 
 type mockResponse struct {
@@ -156,6 +169,7 @@ func (m *mockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Respons
 func (m *mockProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
 	m.mu.Lock()
 	m.lastRequest = req
+	m.allRequests = append(m.allRequests, req)
 	m.mu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -200,6 +214,41 @@ func (m *mockProvider) lastRequestMessages() []types.Message {
 		return nil
 	}
 	return m.lastRequest.Messages
+}
+
+// anyRequestContains reports whether SOME one recorded request carries ALL
+// the given substrings within a single content block (text block text, or a
+// tool_result's content JSON). Multi-engine tests share one mockProvider and
+// their Stream calls race for script slots, so assertions must not attribute
+// requests to engines — a sender's own conversation never sees its envelope,
+// making each scanned string unique to exactly one engine's request.
+func (m *mockProvider) anyRequestContains(subs ...string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, req := range m.allRequests {
+		if req == nil {
+			continue
+		}
+		for _, msg := range req.Messages {
+			for _, b := range msg.Content {
+				text := b.Text
+				if b.Type == types.ContentTypeToolResult {
+					text = string(b.Content)
+				}
+				all := true
+				for _, s := range subs {
+					if !strings.Contains(text, s) {
+						all = false
+						break
+					}
+				}
+				if all {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // waitForCallCount polls mp.callCount() until it reaches the target, using

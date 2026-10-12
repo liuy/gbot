@@ -34,8 +34,8 @@ var ErrNotFound = errors.New("job not found")
 // JobInfo is a snapshot of a background job's state.
 type JobInfo struct {
 	ID          string `json:"job_id"`
-	Type        string `json:"job_type"` // "local_bash"
-	Status      string `json:"status"`   // running, completed, failed, killed
+	Type        string `json:"type"`   // "bash" | "agent" | "fork"
+	Status      string `json:"status"` // running, completed, failed, killed
 	Command     string `json:"command,omitempty"`
 	Description string `json:"description,omitempty"`
 	Output      string `json:"output,omitempty"`
@@ -107,8 +107,8 @@ type PollResult struct {
 type StopResult struct {
 	Status  string `json:"status"` // "killed"
 	JobID   string `json:"job_id"`
-	JobType string `json:"job_type"` // "local_bash", "local_agent"
-	Command string `json:"command"`  // the command/description of the killed job
+	Type    string `json:"type"`    // "bash", "agent", "fork"
+	Command string `json:"command"` // the command/description of the killed job
 }
 
 // ListResult holds the result of a list operation.
@@ -340,7 +340,7 @@ func executeStop(reg Registry, jobID string) (*StopResult, error) {
 	return &StopResult{
 		Status:  "killed",
 		JobID:   jobID,
-		JobType: info.Type,
+		Type:    info.Type,
 		Command: cmd,
 	}, nil
 }
@@ -381,14 +381,16 @@ func wireText(out *JobOutput) string {
 	}
 	if out.Stop != nil {
 		sections = append(sections, fmt.Sprintf("Successfully stopped job %s (%s): %s",
-			out.Stop.JobID, out.Stop.JobType, out.Stop.Command))
+			out.Stop.JobID, out.Stop.Type, out.Stop.Command))
 	}
 	return strings.Join(sections, "\n\n")
 }
 
 // wirePollText mirrors TaskOutputTool.tsx:283-308 — XML-tag parts joined
-// with a blank line. Divergences, both deliberate:
+// with a blank line. Divergences, all deliberate:
 //   - no <error>: JobInfo has no Error field.
+//   - <task_type> carries gbot's job kinds (bash/agent/fork); TS emits its own
+//     kinds (local_bash/local_agent) and has no fork concept.
 //   - <output> content is not tail-truncated. TS truncates in the tool
 //     because it has no engine-level persistence; gbot's
 //     MaybePersistLargeToolResult runs after the wire is built and keeps
@@ -424,16 +426,26 @@ func wireListText(l *ListResult) string {
 	}
 	lines := make([]string, 0, len(l.Jobs))
 	for _, j := range l.Jobs {
-		cmd := j.Command
-		if cmd == "" {
-			cmd = j.Description
-		}
-		if cmd == "" {
-			cmd = j.ID
-		}
-		lines = append(lines, fmt.Sprintf("job_id=%s status=%s command=%q", j.ID, j.Status, cmd))
+		lines = append(lines, formatListLine(j))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// formatListLine is the single list-line format shared by wire and render.
+// The type token appears only when Type is set, so callers that never
+// populate it keep the pre-unification line shape.
+func formatListLine(j *JobInfo) string {
+	cmd := j.Command
+	if cmd == "" {
+		cmd = j.Description
+	}
+	if cmd == "" {
+		cmd = j.ID
+	}
+	if j.Type == "" {
+		return fmt.Sprintf("job_id=%s status=%s command=%q", j.ID, j.Status, cmd)
+	}
+	return fmt.Sprintf("job_id=%s type=%s status=%s command=%q", j.ID, j.Type, j.Status, cmd)
 }
 
 // jobRenderResult renders the unified JobOutput for TUI display.
@@ -496,14 +508,7 @@ func renderListResult(l *ListResult) string {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		cmd := j.Command
-		if cmd == "" {
-			cmd = j.Description
-		}
-		if cmd == "" {
-			cmd = j.ID
-		}
-		fmt.Fprintf(&sb, "job_id=%s status=%s command=%q", j.ID, j.Status, cmd)
+		sb.WriteString(formatListLine(j))
 	}
 	return sb.String()
 }

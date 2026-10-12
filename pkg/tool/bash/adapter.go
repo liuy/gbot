@@ -76,7 +76,7 @@ func backgroundJobToInfo(bt *BackgroundJob) *job.JobInfo {
 
 	info := &job.JobInfo{
 		ID:           bt.ID,
-		Type:         "local_bash",
+		Type:         "bash",
 		Status:       string(bt.Status),
 		Command:      bt.Command,
 		Description:  bt.Description,
@@ -102,7 +102,7 @@ func backgroundJobToSummary(bt *BackgroundJob) *job.JobInfo {
 
 	return &job.JobInfo{
 		ID:           bt.ID,
-		Type:         "local_bash",
+		Type:         "bash",
 		Status:       string(bt.Status),
 		Command:      bt.Command,
 		Description:  bt.Description,
