@@ -78,10 +78,8 @@ type Attachment struct {
 type MessageOriginKind string
 
 const (
-	OriginJob         MessageOriginKind = "job"
-	OriginHuman       MessageOriginKind = "human"
-	OriginCoordinator MessageOriginKind = "coordinator"
-	OriginChannel     MessageOriginKind = "channel"
+	OriginJob   MessageOriginKind = "job"
+	OriginHuman MessageOriginKind = "human"
 )
 
 // MessageOrigin describes the source of a message.

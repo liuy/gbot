@@ -29,9 +29,8 @@ func TestUnwrapQueuedReminder_NonMatches(t *testing.T) {
 		"plain user text",
 		"<system-reminder>\nThe user sent a new message while you were working:\nno suffix",
 		"prefix only\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>",
-		// Other origins share the envelope shape but different wrap text.
+		// The job origin shares the envelope shape but different wrap text.
 		"<system-reminder>\nA background agent completed a job:\ndone\n</system-reminder>",
-		"<system-reminder>\nThe coordinator sent a message while you were working:\nhi\n\nAddress this before completing your current task.\n</system-reminder>",
 		// Wrapped envelope with leading timestamp (injectTimestamp form) must
 		// NOT match — only the exact envelope does.
 		"[2026-10-05 11:00:00 CST] <system-reminder>\nThe user sent a new message while you were working:\nhi" +

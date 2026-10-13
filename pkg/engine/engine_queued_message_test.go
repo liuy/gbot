@@ -643,10 +643,10 @@ func TestQueuedMessage_IdleEnqueueKeepsQueuePath(t *testing.T) {
 	}
 }
 
-// TestQueuedMessage_OtherOriginsStillQueuedMidTurn pins the scope: only the
-// wrapOriginText default branch (user queued message) changes. Job, coordinator
-// and channel origins keep the ephemeral attachment queue mid-turn.
-func TestQueuedMessage_OtherOriginsStillQueuedMidTurn(t *testing.T) {
+// TestQueuedMessage_JobOriginStillQueuedMidTurn pins the scope: only the
+// wrapOriginText default branch (user queued message) changes. Job origins keep
+// the ephemeral attachment queue mid-turn.
+func TestQueuedMessage_JobOriginStillQueuedMidTurn(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "final"), nil)
@@ -671,26 +671,19 @@ func TestQueuedMessage_OtherOriginsStillQueuedMidTurn(t *testing.T) {
 		t.Fatal("tool never started")
 	}
 
-	origins := []*types.MessageOrigin{
-		{Kind: types.OriginJob},
-		{Kind: types.OriginCoordinator},
-		{Kind: types.OriginChannel},
-	}
-	for i, o := range origins {
-		eng.EnqueueAttachment(types.QueuedItem{
-			Value:     "not a user queued message",
-			Mode:      types.ItemModeJob,
-			UUID:      "job-" + string(rune('a'+i)),
-			Priority:  types.PriorityNext,
-			Origin:    o,
-			Timestamp: time.Date(2026, 10, 5, 11, 0, i, 0, time.UTC),
-		})
-	}
-	if got := eng.AttachmentsLen(); got != len(origins) {
-		t.Errorf("queue len = %d, want %d (non-human origins keep queueing)", got, len(origins))
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "not a user queued message",
+		Mode:      types.ItemModeJob,
+		UUID:      "job-a",
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
+	})
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Errorf("queue len = %d, want 1 (job origin keeps queueing)", got)
 	}
 	if len(findEnvelopeMessages(eng.Messages())) != 0 {
-		t.Error("non-human origins must not append history messages")
+		t.Error("job origin must not append history messages")
 	}
 
 	close(bt.releaseCh)
@@ -802,7 +795,7 @@ func TestQueuedMessage_PinsByteEqualityWithLegacyAssembledForm(t *testing.T) {
 }
 
 // TestIsUserQueuedMessageOrigin pins the branch predicate to wrapOriginText's
-// default branch: everything except job/coordinator/channel (nil included).
+// default branch: everything except job (nil included).
 func TestIsUserQueuedMessageOrigin(t *testing.T) {
 	cases := []struct {
 		origin *types.MessageOrigin
@@ -811,8 +804,6 @@ func TestIsUserQueuedMessageOrigin(t *testing.T) {
 		{nil, true},
 		{&types.MessageOrigin{Kind: types.OriginHuman}, true},
 		{&types.MessageOrigin{Kind: types.OriginJob}, false},
-		{&types.MessageOrigin{Kind: types.OriginCoordinator}, false},
-		{&types.MessageOrigin{Kind: types.OriginChannel}, false},
 	}
 	for _, tc := range cases {
 		if got := isUserQueuedOrigin(tc.origin); got != tc.want {

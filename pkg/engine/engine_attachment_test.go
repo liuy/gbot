@@ -83,29 +83,19 @@ func TestWrapOriginText_JobOrigin(t *testing.T) {
 
 func TestWrapOriginText_HumanOrigin(t *testing.T) {
 	got := wrapOriginText("hello", &types.MessageOrigin{Kind: types.OriginHuman})
-	if !strings.Contains(got, "hello") || !strings.Contains(got, "The user sent a new message") {
-		t.Errorf("wrapOriginText(human) = %q, want user message prefix", got)
+	want := "The user sent a new message while you were working:\nhello" +
+		"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it."
+	if got != want {
+		t.Errorf("wrapOriginText(human) = %q, want %q", got, want)
 	}
 }
 
 func TestWrapOriginText_NilOrigin(t *testing.T) {
 	got := wrapOriginText("raw text", nil)
-	if !strings.Contains(got, "raw text") || !strings.Contains(got, "The user sent a new message") {
-		t.Errorf("wrapOriginText(nil) = %q, want user message prefix (default)", got)
-	}
-}
-
-func TestWrapOriginText_CoordinatorOrigin(t *testing.T) {
-	got := wrapOriginText("coord msg", &types.MessageOrigin{Kind: types.OriginCoordinator})
-	if !strings.Contains(got, "coord msg") || !strings.Contains(got, "The coordinator sent a message") {
-		t.Errorf("wrapOriginText(coordinator) = %q, want coordinator prefix", got)
-	}
-}
-
-func TestWrapOriginText_ChannelOrigin(t *testing.T) {
-	got := wrapOriginText("chan msg", &types.MessageOrigin{Kind: types.OriginChannel})
-	if !strings.Contains(got, "chan msg") || !strings.Contains(got, "external channel") {
-		t.Errorf("wrapOriginText(channel) = %q, want channel prefix", got)
+	want := "The user sent a new message while you were working:\nraw text" +
+		"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it."
+	if got != want {
+		t.Errorf("wrapOriginText(nil) = %q, want %q", got, want)
 	}
 }
 
