@@ -274,12 +274,14 @@ func Start(opts Options) (*Instance, error) {
 		startSessionCleanup(store, 5*time.Second, 24*time.Hour)
 	}
 
-	// One process-global engine manager and background-agent registry: the
-	// message tool resolves flat ids against the FULL engine set and needs
-	// every producer (main, factory, dream, wechat) to share one registry —
-	// two registries would mint colliding agent-N ids.
+	// One process-global engine manager and background-agent registry sharing
+	// ONE id minter: engines, subagents and forks all mint agent-N ids from
+	// the same counter, so every producer (main, factory, dream, wechat)
+	// stays collision-free and resolvable in one flat namespace.
+	idMinter := agent.NewIDMinter()
 	engineMgr := engine.NewEngineManager()
-	bgAgents := agent.NewBackgroundAgentRegistry()
+	engineMgr.SetIDMinter(idMinter)
+	bgAgents := agent.NewBackgroundAgentRegistryWithMinter(idMinter)
 
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
@@ -517,6 +519,7 @@ func Start(opts Options) (*Instance, error) {
 			store:      store,
 			projectDir: projectDir,
 			model:      model,
+			minter:     idMinter,
 		})
 	}
 

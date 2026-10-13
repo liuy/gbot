@@ -379,14 +379,52 @@ func TestPrompt_Mechanics(t *testing.T) {
 	t.Parallel()
 	tl, _, _ := newTool(t)
 	prompt := tl.Prompt()
-	for _, want := range []string{`{"to": "agent-3", "message":`, `{"to": "e2"`, `Job tool with action "list"`} {
+	for _, want := range []string{
+		`{"to": "agent-3", "message":`,
+		`{"to": "agent-1"`,
+		`Job tool with action "list"`,
+		"agent-N",
+		"an engine's display name is its id",
+		"unless the user named it at creation",
+		"legacy e-N",
+	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("Prompt() = %q, want it to contain %q", prompt, want)
 		}
 	}
-	for _, banned := range []string{"engine:", "SendMessage", `"Message":`} {
+	for _, banned := range []string{"engine:", "SendMessage", `"Message":`, "fork-2", "chat-"} {
 		if strings.Contains(prompt, banned) {
 			t.Errorf("Prompt() contains banned text %q", banned)
+		}
+	}
+}
+
+func TestInputSchema_ToDescription(t *testing.T) {
+	t.Parallel()
+	tl, _, _ := newTool(t)
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(tl.InputSchema(), &schema); err != nil {
+		t.Fatalf("schema does not parse: %v", err)
+	}
+	desc := schema.Properties["to"].Description
+	for _, want := range []string{
+		"background agent ID (agent-3)",
+		"engine ID (main, dream, agent-1",
+		"an engine's display name is its ID unless the user named it at creation",
+		"legacy e2",
+		"Job tool's list output",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("to description = %q, want it to contain %q", desc, want)
+		}
+	}
+	for _, banned := range []string{"chat-", "fork-"} {
+		if strings.Contains(desc, banned) {
+			t.Errorf("to description contains banned text %q", banned)
 		}
 	}
 }

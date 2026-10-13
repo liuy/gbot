@@ -2,12 +2,15 @@ package app
 
 import (
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tui"
 )
 
@@ -20,6 +23,7 @@ type restoreEnginesDeps struct {
 	store      *short.Store
 	projectDir string
 	model      string
+	minter     *agenttool.IDMinter
 }
 
 // restoreEngines reads meta.json, migrates legacy format if needed, then
@@ -37,6 +41,19 @@ func restoreEngines(d restoreEnginesDeps) string {
 		slog.Warn("restore: read workspace meta failed, will synthesize default", "error", err)
 	}
 	enginesToRestore, activeID := planRestore(meta, d.model)
+
+	// Seed the process-global counter above every persisted agent-N suffix —
+	// engine ids AND display names — so a runtime mint can never clash with
+	// anything restored from meta.json (see maxAgentIDSuffix). A manager that
+	// mints from the shared counter must be paired with that counter here:
+	// skipping the seed is a wiring bug with a silent, ids-colliding failure
+	// mode, so it fails fast at boot instead.
+	if d.mgr.HasIDMinter() != (d.minter != nil) {
+		panic("restore: engine manager and restoreEnginesDeps.minter must carry the same ID minter — a mismatch either skips the boot seed (ids can collide with persisted names) or seeds a minter the manager never consults")
+	}
+	if d.minter != nil {
+		d.minter.Init(maxAgentIDSuffix(enginesToRestore))
+	}
 
 	for _, em := range enginesToRestore {
 		// em.Model is "provider/model" (e.g. "zhipu/glm-5.2"). The engine's
@@ -153,9 +170,11 @@ func restoreEngines(d restoreEnginesDeps) string {
 // active. Pure function over meta.json contents so it can be tested without
 // spinning up engines or a store.
 //
-// Two cases:
-//   - nil meta (first run or read error): synthesize a single main engine.
-//   - non-empty meta: restore every engine in Engines array, honor ActiveEngineID.
+// Persisted ids and names are returned verbatim: legacy e-N ids, legacy
+// display names that happen to match the agent-N grammar, the SQLite
+// sessions.engine_id bindings and the per-engine history files are all left
+// alone at boot. The unified agent-N namespace applies only to ids minted at
+// runtime, so nothing has to be rewritten — and nothing can half-migrate.
 func planRestore(meta *short.WorkspaceMeta, defaultModel string) ([]short.EngineMeta, string) {
 	if meta == nil || len(meta.Engines) == 0 {
 		return []short.EngineMeta{{
@@ -169,4 +188,36 @@ func planRestore(meta *short.WorkspaceMeta, defaultModel string) ([]short.Engine
 		activeID = meta.ActiveEngineID
 	}
 	return meta.Engines, activeID
+}
+
+var agentNSuffixRe = regexp.MustCompile(`^agent-(\d+)$`)
+
+// maxAgentIDSuffix returns the highest N over engine ids AND display names
+// matching agent-N, 0 if none. Names count because a restored engine keeps its
+// persisted name for the whole session: while an engine answers to agent-3, a
+// sub-agent must never mint agent-3, or the resolver's name fallback would be
+// shadowed by a live id collision.
+func maxAgentIDSuffix(engines []short.EngineMeta) int {
+	max := 0
+	for _, em := range engines {
+		for _, s := range []string{em.ID, em.Name} {
+			if n := agentIDSuffix(s); n > max {
+				max = n
+			}
+		}
+	}
+	return max
+}
+
+// agentIDSuffix parses the numeric suffix of an agent-N string, 0 on no match.
+func agentIDSuffix(s string) int {
+	m := agentNSuffixRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }

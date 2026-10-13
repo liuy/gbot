@@ -123,18 +123,48 @@ func TestHandleEngine_New_NoName_AutoNames(t *testing.T) {
 	if got := a.engineMgr.Count(); got != 2 {
 		t.Fatalf("Count = %d, want 2 after /engine new", got)
 	}
-	views := a.engineMgr.List()
-	var newName string
-	for _, vs := range views {
-		if vs.ID == "e2" {
-			newName = vs.Name
-		}
+	// "main" is seeded, never minted; the test app injects no minter so the
+	// manager's fallback counter applies. The minted id is BOTH the address
+	// and the display name — one mint per engine.
+	vs := a.engineMgr.Get("agent-1")
+	if vs == nil {
+		t.Fatal("new engine agent-1 not registered")
 	}
-	if newName != "agent-2" {
-		t.Errorf("new engine name = %q, want 'agent-2'", newName)
+	if vs.Name != "agent-1" {
+		t.Errorf("new engine name = %q, want agent-1 (name == id)", vs.Name)
 	}
-	if a.engineMgr.ActiveID() != "e2" {
-		t.Errorf("ActiveID after /engine new = %q, want e2 (auto-switch)", a.engineMgr.ActiveID())
+	if a.engineMgr.ActiveID() != "agent-1" {
+		t.Errorf("ActiveID after /engine new = %q, want agent-1 (auto-switch)", a.engineMgr.ActiveID())
+	}
+}
+
+func TestHandleEngine_New_RejectsReservedName(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+	})
+	a.SetEngineFactory(func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error) {
+		engineHub, handler := NewEngineHubWithHandler(id, nil)
+		eng := engine.New(&engine.Params{
+			Logger:     slog.Default(),
+			Model:      model,
+			EngineID:   id,
+			Dispatcher: engineHub,
+		})
+		return eng, handler, nil
+	})
+
+	cmd := a.handleEngine("new agent-3", nil)
+	msg := cmd()
+	info, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want infoMsg", msg)
+	}
+	if !strings.Contains(string(info), "Invalid engine name") || !strings.Contains(string(info), "agent-3") {
+		t.Errorf("info = %q, want 'Invalid engine name' mentioning agent-3", info)
+	}
+	if got := a.engineMgr.Count(); got != 1 {
+		t.Errorf("Count = %d, want 1 — no engine created for a reserved name", got)
 	}
 }
 
@@ -157,9 +187,9 @@ func TestHandleEngine_New_WithCustomName(t *testing.T) {
 	if got := a.engineMgr.Count(); got != 2 {
 		t.Fatalf("Count = %d, want 2", got)
 	}
-	target := a.engineMgr.Get("e2")
+	target := a.engineMgr.Get("agent-1")
 	if target == nil {
-		t.Fatal("new engine e2 not registered")
+		t.Fatal("new engine agent-1 not registered")
 	}
 	if target.Name != "research" {
 		t.Errorf("Name = %q, want 'research'", target.Name)

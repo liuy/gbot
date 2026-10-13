@@ -81,7 +81,7 @@ func newDreamMsgFixture(t *testing.T) *dreamMsgFixture {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-blocked
 			return &types.SubQueryResult{}, nil
-		}, nil, "bg agent", "call_1", "agent", "agent")
+		}, nil, "bg agent", "call_1", "agent")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

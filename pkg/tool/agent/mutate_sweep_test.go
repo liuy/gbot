@@ -94,7 +94,7 @@ func TestRegistry_GetResultCopyIsIndependent(t *testing.T) {
 	state, err := reg.Spawn(context.Background(),
 		func(context.Context, string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "original", TotalTokens: 5}, nil
-		}, nil, "get copy", "call_1", "agent", "agent")
+		}, nil, "get copy", "call_1", "agent")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRegistry_ConcurrentAccessIsSerialized(t *testing.T) {
 				if _, err := reg.Spawn(context.Background(),
 					func(context.Context, string) (*types.SubQueryResult, error) {
 						return &types.SubQueryResult{Content: "done"}, nil
-					}, nil, "hammer", "", "agent", "agent"); err != nil {
+					}, nil, "hammer", "", "agent"); err != nil {
 					t.Errorf("Spawn: %v", err)
 					return
 				}

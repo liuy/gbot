@@ -60,7 +60,7 @@ type AgentOpts struct {
 	McpConnect          McpConnectFunc       // agent-specific MCP server connector (nil = skip)
 	AllowedTools        []string             // further restrict tools to this list (nil = use agent def)
 	Cwd                 string               // absolute cwd override for the sub-agent ("" = inherit parent)
-	// AgentID is the background agent's registry id ("agent-N"/"fork-N"), set
+	// AgentID is the background agent's registry id ("agent-N"), set
 	// by spawnBackground before the goroutine reads opts. Empty for sync
 	// spawns — RunAgent falls back to the parent engine id for those.
 	AgentID string
@@ -252,7 +252,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 			// owns type resolution.
 			displayType = "General"
 		}
-		return t.spawnBackground(opts, agentInput, displayType, "agent", parentToolUseID)
+		return t.spawnBackground(opts, agentInput, displayType, parentToolUseID)
 	}
 
 	result, err := t.engine.RunAgent(ctx, opts)
@@ -427,14 +427,15 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		return &tool.ToolResult{Data: result}, nil
 	}
 
-	return t.spawnBackground(opts, input, "fork", "fork", parentToolUseID)
+	return t.spawnBackground(opts, input, "fork", parentToolUseID)
 }
 
 // spawnBackground launches a background agent in the shared registry and
 // returns the async-launched tool result. displayType is the launch result's
 // AgentType and the notification label when input.Name is unset ("fork" for
-// forks, the resolved subagent type otherwise); idPrefix mints the registry ID.
-func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, displayType, idPrefix, parentToolUseID string) (*tool.ToolResult, error) {
+// forks, the resolved subagent type otherwise); the registry mints the
+// agent-N id from the process-global counter.
+func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, displayType, parentToolUseID string) (*tool.ToolResult, error) {
 	runFn := func(runCtx context.Context, agentID string) (*types.SubQueryResult, error) {
 		// Identity must be complete before the goroutine below reads opts —
 		// mutating after Spawn returns would race the registry snapshot.
@@ -466,7 +467,7 @@ func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, disp
 	// to avoid deleting agents before TaskOutput can query them.
 	detachedCtx := context.Background()
 
-	state, err := t.bgReg.Spawn(detachedCtx, runFn, notifyFn, input.Description, parentToolUseID, idPrefix, displayType)
+	state, err := t.bgReg.Spawn(detachedCtx, runFn, notifyFn, input.Description, parentToolUseID, displayType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn background agent: %w", err)
 	}

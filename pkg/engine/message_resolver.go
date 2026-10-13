@@ -7,10 +7,17 @@ import (
 
 // EngineMessageResolver maps flat ids to message-deliverable targets.
 // Lookup order: the process-global background-agent registry first (its ids
-// are the flat agent-N/fork-N namespace), then the EngineManager.
+// are the flat agent-N namespace), then the EngineManager by id, then the
+// EngineManager by name.
+//
+// Registry-first is safe because the id counter is seeded at boot above every
+// persisted agent-N suffix — engine ids AND display names — so while an engine
+// answers to agent-3 no sub-agent can ever mint agent-3: a name-fallback
+// address can never be shadowed by a live id. Custom names in the agent-N
+// grammar are rejected at creation for the same reason.
 //
 // Every engine registered in the manager is addressable — the full
-// EngineManager set (main, e2, dream, wechat), not just main/e2. That is a
+// EngineManager set (main, dream, wechat), not just main. That is a
 // settled consequence of the flat namespace, not an accident: start.go
 // registers all of them in one manager.
 type EngineMessageResolver struct {
@@ -39,9 +46,12 @@ func (r *EngineMessageResolver) Resolve(id string) (message.Target, string, bool
 		return nil, "", false
 	}
 	vs := r.mgr.Get(id)
+	if vs == nil {
+		vs = r.mgr.GetByName(id)
+	}
 	if vs == nil || vs.Engine == nil {
 		// Lazy view states (meta.json entries before first switch) have a nil
-		// Engine — nothing to deliver to.
+		// Engine — nothing to deliver to, by id or by name.
 		return nil, "", false
 	}
 	return vs.Engine, "", true

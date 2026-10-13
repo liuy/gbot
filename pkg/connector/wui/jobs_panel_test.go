@@ -533,13 +533,13 @@ func TestPendingAgentEvents_FlushedOnDiscovery(t *testing.T) {
 }
 
 // Fork jobs are agent-family: the panel's family rule is "not bash", so a
-// fork-N entry must get a live feed exactly like an agent-N one, and must not
-// be routed down the bash tail path.
+// fork-kind entry must get a live feed exactly like an agent-kind one, and
+// must not be routed down the bash tail path.
 func TestPendingAgentEvents_FlushedOnDiscovery_ForkKind(t *testing.T) {
 	withJobsWatcherInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	forkJob := &job.JobInfo{
-		ID: "fork-1", Type: "fork", Status: "running",
+		ID: "agent-1", Type: "fork", Status: "running",
 		Description: "fork feed", ParentToolUseID: "toolu_fk",
 		Backgrounded: true, StartedMs: 100,
 	}
@@ -1459,7 +1459,7 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
-		}, nil, "explore wiring", "toolu_p", "agent", "Explore")
+		}, nil, "explore wiring", "toolu_p", "Explore")
 	if err != nil {
 		t.Fatalf("spawn bg agent: %v", err)
 	}
@@ -1633,7 +1633,7 @@ func TestMergeJobSummariesLocked_FeedAndTailGates(t *testing.T) {
 	slot := newBlankJobsSlot("s1")
 	tailIDs := c.mergeJobSummariesLocked(slot, []*job.JobInfo{
 		nil,
-		{ID: "fork-1", Type: "fork", Status: "running", ParentToolUseID: "toolu_fk", Backgrounded: true, StartedMs: 1},
+		{ID: "agent-1", Type: "fork", Status: "running", ParentToolUseID: "toolu_fk", Backgrounded: true, StartedMs: 1},
 		{ID: "agent-0", Type: "agent", Status: "running", Backgrounded: true, StartedMs: 2},
 		{ID: "bg-1", Type: "bash", Status: "running", ParentToolUseID: "toolu_b", Backgrounded: true, StartedMs: 3},
 	})
@@ -1654,14 +1654,14 @@ func TestMergeJobSummariesLocked_FeedAndTailGates(t *testing.T) {
 func TestDeleteJobEntryLocked_FamilyFeedReclaim(t *testing.T) {
 	c := newTestConnector(t)
 	slot := newBlankJobsSlot("s1")
-	slot.jobView["fork-1"] = &jobViewEntry{item: jobWireItem{ID: "fork-1", Kind: "fork", ParentToolUseID: "toolu_fk"}}
+	slot.jobView["agent-1"] = &jobViewEntry{item: jobWireItem{ID: "agent-1", Kind: "fork", ParentToolUseID: "toolu_fk"}}
 	slot.jobView["agent-0"] = &jobViewEntry{item: jobWireItem{ID: "agent-0", Kind: "agent"}}
 	slot.jobView["bg-1"] = &jobViewEntry{item: jobWireItem{ID: "bg-1", Kind: "bash", ParentToolUseID: "toolu_b"}}
 	slot.jobFeeds["toolu_fk"] = &jobFeedState{}
 	slot.jobFeeds["toolu_b"] = &jobFeedState{}
 	slot.innerToolToFeed["inner-1"] = "toolu_fk"
 
-	c.deleteJobEntryLocked(slot, "fork-1")
+	c.deleteJobEntryLocked(slot, "agent-1")
 	if _, ok := slot.jobFeeds["toolu_fk"]; ok {
 		t.Error("fork row must reclaim its feed")
 	}

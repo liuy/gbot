@@ -57,13 +57,25 @@ type BackgroundAgentState struct {
 type BackgroundAgentRegistry struct {
 	mu     sync.Mutex
 	agents map[string]*BackgroundAgentState
-	nextID int
+	minter *IDMinter
 }
 
 // NewBackgroundAgentRegistry creates a new registry for background agents.
 func NewBackgroundAgentRegistry() *BackgroundAgentRegistry {
+	return NewBackgroundAgentRegistryWithMinter(nil)
+}
+
+// NewBackgroundAgentRegistryWithMinter creates a registry that mints ids from
+// the given process-global minter (shared with the EngineManager so engine ids
+// and background agent ids can never collide). A nil minter falls back to a
+// private one — production wiring always shares via app/start.go.
+func NewBackgroundAgentRegistryWithMinter(m *IDMinter) *BackgroundAgentRegistry {
+	if m == nil {
+		m = NewIDMinter()
+	}
 	return &BackgroundAgentRegistry{
 		agents: make(map[string]*BackgroundAgentState),
+		minter: m,
 	}
 }
 
@@ -73,16 +85,15 @@ func NewBackgroundAgentRegistry() *BackgroundAgentRegistry {
 // sink attachment in runFn need it handed back (post-return mutation of the
 // returned snapshot would race the goroutine).
 // On completion, notifyFn is called with the result.
-// idPrefix mints the registry ID ("<idPrefix>-<n>"): "fork" keeps fork IDs
-// unchanged, subagent spawns pass their own prefix. agentType is the display
-// type surfaced in the jobs panel.
+// Ids are always "agent-N" from the shared process-global counter — forks and
+// subagents live in one namespace. agentType is the display type surfaced in
+// the jobs panel.
 func (r *BackgroundAgentRegistry) Spawn(
 	ctx context.Context,
 	runFn func(ctx context.Context, agentID string) (*types.SubQueryResult, error),
 	notifyFn func(agentID string, toolUseID string, result *types.SubQueryResult, err error),
 	description string,
 	parentToolUseID string,
-	idPrefix string,
 	agentType string,
 ) (*BackgroundAgentState, error) {
 	if runFn == nil {
@@ -92,8 +103,7 @@ func (r *BackgroundAgentRegistry) Spawn(
 	childCtx, cancel := context.WithCancel(ctx)
 
 	r.mu.Lock()
-	r.nextID++
-	id := fmt.Sprintf("%s-%d", idPrefix, r.nextID)
+	id := r.minter.Mint()
 	state := &BackgroundAgentState{
 		ID:              id,
 		Description:     description,

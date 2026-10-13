@@ -379,8 +379,8 @@ func TestMultiEngine_SwitchRendersCorrectHistory(t *testing.T) {
 		// Drain the batched cmd to materialize any internal side effects.
 		_ = cmd()
 	}
-	if a.engine == nil || a.engine.EngineID() != "e2" {
-		t.Fatalf("after /engine new, a.engine = %v, want e2", a.engine)
+	if a.engine == nil || a.engine.EngineID() != "agent-1" {
+		t.Fatalf("after /engine new, a.engine = %v, want agent-1", a.engine)
 	}
 	e2Eng := a.engine
 	// Seed e2's history. In production this would arrive via background
@@ -388,7 +388,7 @@ func TestMultiEngine_SwitchRendersCorrectHistory(t *testing.T) {
 	// that post-streaming state by writing to the view state's ReplState
 	// directly — bypassing Engine.SetMessages which would not sync the
 	// ReplState (an Engine↔ReplState drift that streaming normally hides).
-	e2VS := mgr.Get("e2")
+	e2VS := mgr.Get("agent-1")
 	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
 	e2Repl.messages = []MessageView{
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "e2-q1"}}},
@@ -408,8 +408,8 @@ func TestMultiEngine_SwitchRendersCorrectHistory(t *testing.T) {
 	} else {
 		_ = cmd()
 	}
-	if a.engine == nil || a.engine.EngineID() != "e3" {
-		t.Fatalf("after second /engine new, a.engine = %v, want e3", a.engine)
+	if a.engine == nil || a.engine.EngineID() != "agent-2" {
+		t.Fatalf("after second /engine new, a.engine = %v, want agent-2", a.engine)
 	}
 
 	// --- Step 3: Cycle through all engines and verify rendering state. ---
@@ -419,18 +419,18 @@ func TestMultiEngine_SwitchRendersCorrectHistory(t *testing.T) {
 		markers  []string
 	}{
 		{"main", []string{"main-q1", "main-a1", "main-q2", "main-a2"}},
-		{"e2", []string{"e2-q1", "e2-a1"}},
-		{"e3", nil}, // empty
+		{"agent-1", []string{"e2-q1", "e2-a1"}},
+		{"agent-2", nil}, // empty
 	}
-	// Cycle order exercises main → e2 → e3 → main → e3 → e2 so any stale
-	// pointer to the previous ReplState is caught.
+	// Cycle order exercises main → agent-1 → agent-2 → main → agent-2 →
+	// agent-1 so any stale pointer to the previous ReplState is caught.
 	for _, c := range []struct{ from, to string }{
-		{"e3", "main"},
-		{"main", "e2"},
-		{"e2", "e3"},
-		{"e3", "main"},
-		{"main", "e3"},
-		{"e3", "e2"},
+		{"agent-2", "main"},
+		{"main", "agent-1"},
+		{"agent-1", "agent-2"},
+		{"agent-2", "main"},
+		{"main", "agent-2"},
+		{"agent-2", "agent-1"},
 	} {
 		if _, cmd := a.switchEngine(c.to); cmd == nil {
 			t.Fatalf("switchEngine(%s→%s) returned nil cmd", c.from, c.to)

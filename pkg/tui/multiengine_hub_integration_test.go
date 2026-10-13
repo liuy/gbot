@@ -87,9 +87,9 @@ func TestMultiEngine_HubRouting_Isolation(t *testing.T) {
 	if got := mgr.Count(); got != 2 {
 		t.Fatalf("engine count = %d, want 2 after /engine new", got)
 	}
-	e2VS := mgr.Get("e2")
+	e2VS := mgr.Get("agent-1")
 	if e2VS == nil {
-		t.Fatal("e2 view state not registered")
+		t.Fatal("agent-1 view state not registered")
 	}
 	e2Eng := e2VS.Engine
 	if e2Eng == nil {
@@ -111,8 +111,8 @@ func TestMultiEngine_HubRouting_Isolation(t *testing.T) {
 	}
 
 	// At this point, switchEngine has made e2 active and main background.
-	if mgr.ActiveID() != "e2" {
-		t.Fatalf("ActiveID = %q, want e2 after /engine new auto-switch", mgr.ActiveID())
+	if mgr.ActiveID() != "agent-1" {
+		t.Fatalf("ActiveID = %q, want agent-1 after /engine new auto-switch", mgr.ActiveID())
 	}
 
 	mainRepl := mgr.Get("main").Repl.(replSnapshotAdapter).r

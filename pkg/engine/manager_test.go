@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/memory/short"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func newTestView(id, name string) *EngineViewState {
@@ -68,65 +71,152 @@ func TestEngineManager_Add_DuplicateIDPanics(t *testing.T) {
 	m.Add(newTestView("main", "dup"))
 }
 
-func TestEngineManager_NewEngineID_Sequence(t *testing.T) {
+func TestEngineManager_HasIDMinter(t *testing.T) {
 	m := NewEngineManager()
-	if got := m.NewEngineID(); got != "main" {
-		t.Errorf("first NewEngineID = %q, want main", got)
+	if m.HasIDMinter() {
+		t.Error("HasIDMinter = true before SetIDMinter, want false (fallback counter)")
 	}
-	m.Add(newTestView("main", "main"))
-	if got := m.NewEngineID(); got != "e2" {
-		t.Errorf("second NewEngineID = %q, want e2", got)
+	m.SetIDMinter(agenttool.NewIDMinter())
+	if !m.HasIDMinter() {
+		t.Error("HasIDMinter = false after SetIDMinter, want true")
 	}
-	m.Add(newTestView("e2", "engine-2"))
-	if got := m.NewEngineID(); got != "e3" {
-		t.Errorf("third NewEngineID = %q, want e3", got)
+}
+func TestEngineManager_HasIDMinter_ReleasesLock(t *testing.T) {
+	// A leaked read lock would wedge every later manager call, so the write
+	// path must proceed immediately after a read.
+	m := NewEngineManager()
+	m.HasIDMinter()
+	added := make(chan struct{})
+	go func() {
+		m.Add(newTestView("main", "main"))
+		close(added)
+	}()
+	select {
+	case <-added:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Add blocked after HasIDMinter — the read lock was not released")
+	}
+}
+func TestEngineManager_NewEngineID_MintsAgentN(t *testing.T) {
+	m := NewEngineManager()
+	m.SetIDMinter(agenttool.NewIDMinter())
+	if got := m.NewEngineID(); got != "agent-1" {
+		t.Errorf("first NewEngineID = %q, want agent-1", got)
+	}
+	if got := m.NewEngineID(); got != "agent-2" {
+		t.Errorf("second NewEngineID = %q, want agent-2", got)
 	}
 }
 
-func TestEngineManager_NewEngineID_AvoidsCollision(t *testing.T) {
-	// Pre-register "e2" before NewEngineID gets to allocate it.
-	// The counter-based allocation should bump past the collision.
+func TestEngineManager_NewEngineID_NilMinterFallback(t *testing.T) {
+	// No injection: a standalone manager (tests) falls back to its internal
+	// counter — same agent-N grammar, private to the manager.
 	m := NewEngineManager()
-	m.Add(newTestView("main", "main"))
-	m.Add(newTestView("e2", "engine-2"))
-	// counter starts at 0, first candidate is e(0+2)="e2" → collides,
-	// next iteration is e(1+2)="e3" → free.
-	got := m.NewEngineID()
-	if got != "e3" {
-		t.Errorf("NewEngineID after collision = %q, want e3", got)
+	if got := m.NewEngineID(); got != "agent-1" {
+		t.Errorf("first NewEngineID = %q, want agent-1", got)
+	}
+	if got := m.NewEngineID(); got != "agent-2" {
+		t.Errorf("second NewEngineID = %q, want agent-2", got)
 	}
 }
 
-func TestEngineManager_NewEngineName_Sequence(t *testing.T) {
+func TestEngineManager_NewEngineID_NilMinterSkipsRegisteredIDs(t *testing.T) {
+	// The fallback counter allocates, it does not merely advance: an id
+	// registered out-of-band (test setup, restored meta) must be bumped past,
+	// otherwise the mint hands back an id Add would panic on.
 	m := NewEngineManager()
-	if got := m.NewEngineName(); got != "main" {
-		t.Errorf("first NewEngineName = %q, want main", got)
+	m.Add(newTestView("agent-1", "agent-1"))
+	if got := m.NewEngineID(); got != "agent-2" {
+		t.Errorf("NewEngineID with agent-1 registered = %q, want agent-2", got)
 	}
+	m.Add(newTestView("agent-2", "agent-2"))
+	if got := m.NewEngineID(); got != "agent-3" {
+		t.Errorf("NewEngineID with agent-1..2 registered = %q, want agent-3", got)
+	}
+}
+func TestEngineManager_NewEngineID_SharesRegistryCounter(t *testing.T) {
+	idm := agenttool.NewIDMinter()
+	m := NewEngineManager()
+	m.SetIDMinter(idm)
+	reg := agenttool.NewBackgroundAgentRegistryWithMinter(idm)
+
+	engID := m.NewEngineID()
+	agentState, err := reg.Spawn(context.Background(),
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{Content: "x"}, nil
+		}, nil, "d", "c", "General")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// One counter, sequential across both consumers — no collision.
+	if engID != "agent-1" || agentState.ID != "agent-2" {
+		t.Errorf("ids = (%q, %q), want (agent-1, agent-2)", engID, agentState.ID)
+	}
+	reg.Wait(agentState.ID)
+}
+
+func TestEngineManager_ValidateName(t *testing.T) {
+	m := NewEngineManager()
 	m.Add(newTestView("main", "main"))
-	if got := m.NewEngineName(); got != "agent-2" {
-		t.Errorf("second NewEngineName = %q, want agent-2", got)
+	m.Add(newTestView("agent-1", "research"))
+	m.Add(newTestView("legacy-id", "other"))
+
+	for name, wantErr := range map[string]string{
+		"":          "engine name must not be empty",
+		"  ":        "engine name must not be empty",
+		"main":      `engine name "main" is reserved`,
+		"dream":     `engine name "dream" is reserved`,
+		"agent-3":   `engine name "agent-3" collides with the agent-N id namespace`,
+		"agent-42":  `engine name "agent-42" collides with the agent-N id namespace`,
+		"agent-1":   `engine name "agent-1" collides with the agent-N id namespace`,
+		"research":  `engine name "research" is already in use`,
+		"legacy-id": `engine name "legacy-id" collides with an existing engine id`,
+	} {
+		err := m.ValidateName(name)
+		if err == nil {
+			t.Errorf("ValidateName(%q) = nil, want error", name)
+			continue
+		}
+		if err.Error() != wantErr {
+			t.Errorf("ValidateName(%q) = %q, want %q", name, err.Error(), wantErr)
+		}
 	}
-	m.Add(newTestView("e2", "agent-2"))
-	if got := m.NewEngineName(); got != "agent-3" {
-		t.Errorf("third NewEngineName = %q, want agent-3", got)
+	for _, name := range []string{"research-2", "notes", "e2", "dream-x"} {
+		if err := m.ValidateName(name); err != nil {
+			t.Errorf("ValidateName(%q) = %v, want nil", name, err)
+		}
 	}
 }
 
-func TestEngineManager_NewEngineName_AvoidsCollision(t *testing.T) {
+func TestEngineManager_GetByName(t *testing.T) {
 	m := NewEngineManager()
-	m.Add(newTestView("main", "main"))
-	m.Add(newTestView("e2", "agent-2")) // name conflict at len+1=3? agent-3 still free
-	got := m.NewEngineName()
-	// len(engines)=2 → candidate agent-3, free → return agent-3
-	if got != "agent-3" {
-		t.Errorf("NewEngineName after collision = %q, want agent-3", got)
-	}
+	main := newTestView("main", "main")
+	m.Add(main)
+	r := newTestView("agent-1", "research")
+	m.Add(r)
+	dup := newTestView("agent-2", "dup")
+	m.Add(dup)
+	dup2 := newTestView("agent-3", "dup")
+	m.Add(dup2)
 
-	// Force a real collision: manually register "agent-3" then ask again.
-	m.Add(newTestView("e3", "agent-3"))
-	got2 := m.NewEngineName()
-	if got2 != "agent-4" {
-		t.Errorf("NewEngineName after second collision = %q, want agent-4", got2)
+	if got := m.GetByName("research"); got != r {
+		t.Errorf("GetByName(research) = %v, want the agent-1 view state", got)
+	}
+	if got := m.GetByName("missing"); got != nil {
+		t.Errorf("GetByName(missing) = %v, want nil", got)
+	}
+	if got := m.GetByName(""); got != nil {
+		t.Errorf("GetByName(empty) = %v, want nil", got)
+	}
+	// Duplicate legacy names: first in creation order wins.
+	if got := m.GetByName("dup"); got != dup {
+		t.Errorf("GetByName(dup) = %v, want the first-registered view state %v", got, dup)
+	}
+	// A view state with an EMPTY name must not make GetByName("") resolve:
+	// the empty address is a miss, not a name match.
+	m.Add(newTestView("agent-9", ""))
+	if got := m.GetByName(""); got != nil {
+		t.Errorf("GetByName(empty) = %v, want nil even with an empty-named engine registered", got)
 	}
 }
 

@@ -92,7 +92,7 @@ var messageSchema = json.RawMessage(`{
   "properties": {
     "to": {
       "type": "string",
-      "description": "Target ID — background agent ID (agent-3, fork-2) or engine ID (main, e2) from the Job tool's list output"
+      "description": "Target — background agent ID (agent-3) or engine ID (main, dream, agent-1, legacy e2); an engine's display name is its ID unless the user named it at creation; IDs come from the Job tool's list output"
     },
     "message": {
       "type": "string",
@@ -157,11 +157,14 @@ const messagePromptText = `Send a text message to another agent. Delivery lands 
 immediately if it is idle, otherwise at its next turn boundary.
 
 Use the Job tool with action "list" to see running agents (ID and description). Addresses are
-flat IDs: background agent IDs (agent-3, fork-2) or engine IDs (main, e2).
+flat and share one agent-N namespace: background agents and engines created at
+runtime both answer to agent-N ids, and an engine's display name is its id
+unless the user named it at creation. main and dream address the system engines;
+legacy e-N ids and custom names still resolve.
 
 Examples:
 {"to": "agent-3", "message": "Found it: the config lives at config/app.yaml"}
-{"to": "e2", "message": "Please summarize your progress so far."}`
+{"to": "agent-1", "message": "Please summarize your progress so far."}`
 
 func (t *MessageTool) call(input json.RawMessage) (*tool.ToolResult, error) {
 	var in messageInput

@@ -417,8 +417,8 @@ func TestJobAdapter_NonNilForkReg(t *testing.T) {
 func TestBackgroundAgentJobAdapter_Prefix(t *testing.T) {
 	reg := NewBackgroundAgentRegistry()
 	a := NewBackgroundAgentJobAdapter(reg)
-	if got := a.Prefix(); got != "fork-" {
-		t.Errorf("Prefix() = %q, want %q", got, "fork-")
+	if got := a.Prefix(); got != "agent-" {
+		t.Errorf("Prefix() = %q, want %q", got, "agent-")
 	}
 }
 

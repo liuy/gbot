@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/liuy/gbot/pkg/connector/wui"
@@ -41,10 +42,22 @@ func createEngineForWUI(
 	currentProvider string,
 	currentModel string,
 ) (string, error) {
-	if name == "" {
-		name = mgr.NewEngineName()
+	// Normalize before anything else: the name is stored and duplicate-checked
+	// as-is, so an untrimmed "  x  " would slip past ValidateName (which trims
+	// its own copy) and register a second engine that resolves to the same
+	// address. A whitespace-only name is an empty name — auto-named, not rejected.
+	name = strings.TrimSpace(name)
+	if name != "" {
+		if err := mgr.ValidateName(name); err != nil {
+			return "", err
+		}
 	}
+	// One mint per engine: the minted agent-N is both the address and the
+	// display name (see EngineManager.NewEngineID).
 	id := mgr.NewEngineID()
+	if name == "" {
+		name = id
+	}
 	eng, handler, err := factory(id, name, currentProvider, currentModel)
 	if err != nil {
 		return "", fmt.Errorf("factory: %w", err)

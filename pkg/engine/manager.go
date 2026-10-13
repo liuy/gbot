@@ -3,11 +3,13 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 )
 
 // ReplSnapshot is the minimal interface EngineManager needs from a ReplState.
@@ -71,12 +73,35 @@ type EngineManager struct {
 	engines  map[string]*EngineViewState
 	activeID string
 	order    []string // creation order, stable for picker display
-	nextID   int      // monotonically increasing counter for ID allocation
+	minter   *agenttool.IDMinter
+	// nextID backs the fallback counter when no minter was injected
+	// (standalone managers in tests); production always injects via
+	// app/start.go so engines and background agents share one sequence.
+	nextID int
 }
 
 // NewEngineManager returns an empty manager.
 func NewEngineManager() *EngineManager {
 	return &EngineManager{engines: make(map[string]*EngineViewState)}
+}
+
+// SetIDMinter injects the process-global id minter so runtime engine ids
+// come from the same agent-N counter as subagent and fork ids (no cross-
+// family collision). Must be called before the first NewEngineID.
+func (m *EngineManager) SetIDMinter(idm *agenttool.IDMinter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.minter = idm
+}
+
+// HasIDMinter reports whether the process-global minter was injected. The boot
+// restore path uses it to catch a wiring mismatch: a manager that mints from
+// the shared counter must be paired with that same counter when seeding, or a
+// runtime mint can shadow a persisted id.
+func (m *EngineManager) HasIDMinter() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.minter != nil
 }
 
 // Add registers a new view state. Panics on duplicate ID (programming error).
@@ -100,52 +125,79 @@ func (m *EngineManager) Add(vs *EngineViewState) {
 	}
 }
 
-// NewEngineID returns a fresh unique engine ID ("main" first, then "e2","e3",…).
-// Counter-based allocation with a single collision check for the rare case
-// where an ID was pre-registered out-of-band (test setup, future rename).
-// The counter is reset only by process restart — safe because IDs are never
-// persisted beyond meta.json, which stores whatever IDs the user has used.
-//
-// Caller is responsible for actually building the *Engine and ReplSnapshot
-// before calling Add — this helper only allocates the ID and reserves nothing.
+// NewEngineID returns a fresh engine ID from the agent-N sequence. Engines,
+// subagents and forks share one process-global counter (see
+// pkg/tool/agent/idminter.go), so an engine id can never collide with a
+// background agent id. Callers use the returned string as the engine's
+// display name too (name == id): one mint per engine, no second sequence to
+// keep in sync. The internal fallback counter exists only for a standalone
+// manager (tests) — app/start.go always injects the process-global minter.
+// "main" is never minted here; it is synthesized by the boot restore path
+// (planRestore).
 func (m *EngineManager) NewEngineID() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.engines) == 0 {
-		return "main"
+	if m.minter != nil {
+		return m.minter.Mint()
 	}
+	// Allocation, not just advancement: an id can already be registered
+	// out-of-band (restored meta, test setup), so the candidate must be
+	// bumped past anything the manager already holds — otherwise the mint
+	// hands back an id Add would reject as a duplicate.
 	for {
-		candidate := fmt.Sprintf("e%d", m.nextID+2) // e2, e3, ...
 		m.nextID++
+		candidate := fmt.Sprintf("agent-%d", m.nextID)
 		if _, ok := m.engines[candidate]; !ok {
 			return candidate
 		}
 	}
 }
 
-// NewEngineName returns "main" if no engines exist, else "agent-N" where
-// N=len+1, skipping any name already in use.
-func (m *EngineManager) NewEngineName() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.engines) == 0 {
-		return "main"
+// ValidateName reports whether name is acceptable as a CUSTOM engine name
+// (an auto-created engine's name is its minted id, which never passes through
+// here). The agent-N grammar is reserved for counter-minted ids — a hand-
+// picked name matching it could never be resolved unambiguously. "main" and
+// "dream" are reserved ids, and a new name must not duplicate an existing
+// engine's name or collide with its id.
+func (m *EngineManager) ValidateName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("engine name must not be empty")
 	}
-	for n := len(m.engines) + 1; ; n++ {
-		candidate := fmt.Sprintf("agent-%d", n)
-		if !m.nameExistsLocked(candidate) {
-			return candidate
+	if name == "main" || name == "dream" {
+		return fmt.Errorf("engine name %q is reserved", name)
+	}
+	if agenttool.IsReservedAgentID(name) {
+		return fmt.Errorf("engine name %q collides with the agent-N id namespace", name)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.order {
+		vs := m.engines[id]
+		if vs.Name == name {
+			return fmt.Errorf("engine name %q is already in use", name)
+		}
+		if vs.ID == name {
+			return fmt.Errorf("engine name %q collides with an existing engine id", name)
 		}
 	}
+	return nil
 }
 
-func (m *EngineManager) nameExistsLocked(name string) bool {
-	for _, vs := range m.engines {
-		if vs.Name == name {
-			return true
+// GetByName returns the first view state whose Name equals name (creation
+// order), or nil. Empty name returns nil.
+func (m *EngineManager) GetByName(name string) *EngineViewState {
+	if name == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.order {
+		if vs := m.engines[id]; vs.Name == name {
+			return vs
 		}
 	}
-	return false
+	return nil
 }
 
 // Get returns the view state for an ID, or nil if not found.

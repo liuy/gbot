@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/liuy/gbot/pkg/tool/job"
 )
@@ -97,10 +96,12 @@ func (a *BackgroundAgentJobAdapter) Wait(id string) (int, error) {
 // convertState maps a BackgroundAgentState snapshot to a job.JobInfo.
 // AgentCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
 func convertState(s *BackgroundAgentState) *job.JobInfo {
-	// fork-N ids route by prefix everywhere, so their type follows the id;
-	// agent-N ids are the background-subagent family.
+	// The id grammar no longer distinguishes forks (agent-N for everything),
+	// so the job family follows the spawn-time agent type. A user-defined
+	// agent type literally named "fork" classifies as a fork here —
+	// display-only (jobs panel label), accepted.
 	jobType := "agent"
-	if strings.HasPrefix(s.ID, "fork-") {
+	if s.AgentType == "fork" {
 		jobType = "fork"
 	}
 	info := &job.JobInfo{
@@ -141,7 +142,7 @@ func convertState(s *BackgroundAgentState) *job.JobInfo {
 	return info
 }
 
-// Prefix returns the ID prefix the adapter routes directly (fork agents).
-// Background subagent IDs ("agent-N") miss this prefix and fall through to
-// MultiRegistry's linear scan.
-func (a *BackgroundAgentJobAdapter) Prefix() string { return "fork-" }
+// Prefix returns the ID prefix the adapter routes directly. All agent-family
+// ids (subagents and forks) are agent-N from the shared counter, so they
+// route here directly; bg- ids are the bash adapter's and never reach it.
+func (a *BackgroundAgentJobAdapter) Prefix() string { return "agent-" }

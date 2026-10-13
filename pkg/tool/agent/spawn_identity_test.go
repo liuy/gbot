@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 
@@ -42,35 +41,35 @@ func identityTool(t *testing.T, engineID string) (*AgentTool, *mockSubEngine) {
 // before the goroutine reads it.
 func TestSpawnPassesIDToRunFn(t *testing.T) {
 	t.Parallel()
-	for _, prefix := range []string{"agent", "fork"} {
-		var mu sync.Mutex
-		var gotID string
-		reg := NewBackgroundAgentRegistry()
-		state, err := reg.Spawn(
-			context.Background(),
-			func(ctx context.Context, agentID string) (*types.SubQueryResult, error) {
-				mu.Lock()
-				gotID = agentID
-				mu.Unlock()
-				return &types.SubQueryResult{Content: "done"}, nil
-			},
-			nil,
-			"desc",
-			"call_1",
-			prefix,
-			prefix,
-		)
-		if err != nil {
-			t.Fatalf("prefix %s: Spawn: %v", prefix, err)
-		}
-		if _, ok := reg.Wait(state.ID); !ok {
-			t.Fatalf("prefix %s: Wait returned false", prefix)
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if gotID != state.ID {
-			t.Errorf("prefix %s: runFn agentID = %q, want the minted id %q", prefix, gotID, state.ID)
-		}
+	var mu sync.Mutex
+	var gotID string
+	reg := NewBackgroundAgentRegistry()
+	state, err := reg.Spawn(
+		context.Background(),
+		func(ctx context.Context, agentID string) (*types.SubQueryResult, error) {
+			mu.Lock()
+			gotID = agentID
+			mu.Unlock()
+			return &types.SubQueryResult{Content: "done"}, nil
+		},
+		nil,
+		"desc",
+		"call_1",
+		"fork",
+	)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if _, ok := reg.Wait(state.ID); !ok {
+		t.Fatal("Wait returned false")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotID != state.ID {
+		t.Errorf("runFn agentID = %q, want the minted id %q", gotID, state.ID)
+	}
+	if state.ID != "agent-1" {
+		t.Errorf("minted id = %q, want agent-1", state.ID)
 	}
 }
 
@@ -123,8 +122,8 @@ func TestSpawnBackground_IdentityInjected(t *testing.T) {
 		sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_id3"})
 		at.bgReg.Wait(sqr.AgentID)
 
-		if !strings.HasPrefix(sqr.AgentID, "fork-") {
-			t.Fatalf("AgentID = %q, want a fork- prefixed id", sqr.AgentID)
+		if sqr.AgentID != "agent-1" {
+			t.Fatalf("AgentID = %q, want agent-1 — forks share the agent-N grammar", sqr.AgentID)
 		}
 		msgs := eng.captured[0].UserContextMessages
 		if len(msgs) != 1 {
@@ -156,7 +155,6 @@ func TestAttachSink(t *testing.T) {
 		nil,
 		"desc",
 		"call_1",
-		"agent",
 		"agent",
 	)
 	if err != nil {
@@ -200,7 +198,7 @@ func TestAttachSink_ConcurrentWithCleanup(t *testing.T) {
 			func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 				return &types.SubQueryResult{}, nil
 			},
-			nil, "d", "c", "agent", "agent")
+			nil, "d", "c", "agent")
 		if err != nil {
 			t.Fatalf("Spawn: %v", err)
 		}

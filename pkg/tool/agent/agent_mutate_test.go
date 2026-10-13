@@ -281,7 +281,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
-		}, nil, "still running", "call_r", "agent", "agent")
+		}, nil, "still running", "call_r", "agent")
 	if err != nil {
 		t.Fatalf("Spawn running: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 	completed, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "c"}, nil
-		}, nil, "completed", "call_c", "agent", "agent")
+		}, nil, "completed", "call_c", "agent")
 	if err != nil {
 		t.Fatalf("Spawn completed: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 	failed, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("engine died")
-		}, nil, "failed", "call_f", "agent", "agent")
+		}, nil, "failed", "call_f", "agent")
 	if err != nil {
 		t.Fatalf("Spawn failed: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
 			return &types.SubQueryResult{Content: "partial"}, ctx.Err()
-		}, nil, "cancelled", "call_x", "agent", "agent")
+		}, nil, "cancelled", "call_x", "agent")
 	if err != nil {
 		t.Fatalf("Spawn cancelled: %v", err)
 	}
@@ -943,7 +943,7 @@ func TestSpawn_SnapshotReportsRunningState(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
-		}, nil, "my task", "call_p", "agent", "agent")
+		}, nil, "my task", "call_p", "agent")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -969,7 +969,7 @@ func TestWait_ResultCopyIsIndependent(t *testing.T) {
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "original", TotalTokens: 7}, nil
-		}, nil, "copy test", "call_1", "agent", "agent")
+		}, nil, "copy test", "call_1", "agent")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -1076,7 +1076,7 @@ func TestJobAdapter_ListKeepsRunningAgents(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-release
 			return &types.SubQueryResult{Content: "late"}, nil
-		}, nil, "running", "call_r", "agent", "agent")
+		}, nil, "running", "call_r", "agent")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

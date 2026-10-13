@@ -205,7 +205,9 @@ export function createJobsStore(): JobsStoreHandle {
       // Agent feeds exist from discovery (Go creates jobFeeds when the
       // watcher sees the job), so applyEvent never has to create one on the
       // hot path and feed() is defined for every agent row. The agent family
-      // is agent-N and fork-N alike — everything that is not a bash tail.
+      // is everything that is not a bash tail — background agents only:
+      // engines never appear in this feed, the Go MultiRegistry exposes the
+      // bash and background-agent adapters.
       for (const j of items.values()) {
         if (j.kind !== 'bash' && j.parentToolUseID) ensureFeed(j.id)
       }

@@ -364,10 +364,17 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 	if a.engineFactory == nil {
 		return a.showInfo("Engine factory not configured (multi-engine disabled)")
 	}
-	if name == "" {
-		name = a.engineMgr.NewEngineName()
+	if name != "" {
+		if err := a.engineMgr.ValidateName(name); err != nil {
+			return a.showInfo(fmt.Sprintf("Invalid engine name: %v", err))
+		}
 	}
+	// One mint per engine: the minted agent-N is both the address and the
+	// display name, so the name can never drift from the id it stands for.
 	id := a.engineMgr.NewEngineID()
+	if name == "" {
+		name = id
+	}
 
 	model := ""
 	if a.engine != nil {

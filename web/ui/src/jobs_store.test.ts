@@ -85,11 +85,11 @@ describe('jobs store — applyEvent routing', () => {
 
   it('fork rows are agent-family: discovery creates the feed before any event lands', () => {
     const store = createJobsStore()
-    store.setJobs([forkJob('fork-1', 'running', 'parent-f')])
-    expect(store.feed('fork-1')).toBeDefined()
-    expect(store.feed('fork-1')!.blocks).toHaveLength(0)
+    store.setJobs([forkJob('agent-1', 'running', 'parent-f')])
+    expect(store.feed('agent-1')).toBeDefined()
+    expect(store.feed('agent-1')!.blocks).toHaveLength(0)
     // Bash rows stay out of the feed set — their content arrives as tails.
-    store.setJobs([forkJob('fork-1', 'running', 'parent-f'), bashJob('bg-1', 'running')])
+    store.setJobs([forkJob('agent-1', 'running', 'parent-f'), bashJob('bg-1', 'running')])
     expect(store.feed('bg-1')).toBeUndefined()
   })
 

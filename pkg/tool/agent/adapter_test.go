@@ -16,8 +16,9 @@ import (
 func TestConvertState_Completed(t *testing.T) {
 	t.Parallel()
 	s := &BackgroundAgentState{
-		ID:          "fork-1",
+		ID:          "agent-1",
 		Description: "search code",
+		AgentType:   "fork",
 		Status:      AgentCompleted,
 		Result: &types.SubQueryResult{
 			Content:         "found 3 files",
@@ -28,8 +29,8 @@ func TestConvertState_Completed(t *testing.T) {
 	}
 	info := convertState(s)
 
-	if info.ID != "fork-1" {
-		t.Errorf("ID = %q, want fork-1", info.ID)
+	if info.ID != "agent-1" {
+		t.Errorf("ID = %q, want agent-1", info.ID)
 	}
 	if info.Type != "fork" {
 		t.Errorf("Type = %q, want fork", info.Type)
@@ -54,22 +55,79 @@ func TestConvertState_Completed(t *testing.T) {
 	}
 }
 
-func TestConvertState_Type(t *testing.T) {
+func TestConvertState_TypeFromAgentType(t *testing.T) {
 	t.Parallel()
-	fork := convertState(&BackgroundAgentState{ID: "fork-7", Status: AgentRunning})
+	fork := convertState(&BackgroundAgentState{ID: "agent-5", AgentType: "fork", Status: AgentRunning})
 	if fork.Type != "fork" {
-		t.Errorf("fork-7 Type = %q, want %q", fork.Type, "fork")
+		t.Errorf("agent-5 (AgentType fork) Type = %q, want %q", fork.Type, "fork")
 	}
-	agent := convertState(&BackgroundAgentState{ID: "agent-3", Status: AgentRunning})
-	if agent.Type != "agent" {
-		t.Errorf("agent-3 Type = %q, want %q", agent.Type, "agent")
+	gen := convertState(&BackgroundAgentState{ID: "agent-6", AgentType: "General", Status: AgentRunning})
+	if gen.Type != "agent" {
+		t.Errorf("agent-6 (AgentType General) Type = %q, want %q", gen.Type, "agent")
+	}
+}
+
+// bgStubRegistry stands in for the bash adapter in routing tests: it records
+// Get calls and declares the bg- prefix.
+type bgStubRegistry struct {
+	getCalls []string
+}
+
+func (s *bgStubRegistry) Get(id string) (*job.JobInfo, bool) {
+	s.getCalls = append(s.getCalls, id)
+	return nil, false
+}
+func (s *bgStubRegistry) Kill(id string) error        { return nil }
+func (s *bgStubRegistry) List() []*job.JobInfo        { return nil }
+func (s *bgStubRegistry) Wait(id string) (int, error) { return -1, nil }
+func (s *bgStubRegistry) Prefix() string              { return "bg-" }
+
+func TestJobAdapter_Prefix(t *testing.T) {
+	t.Parallel()
+	adapter := NewBackgroundAgentJobAdapter(nil)
+	if got := adapter.Prefix(); got != "agent-" {
+		t.Errorf("Prefix() = %q, want %q", got, "agent-")
+	}
+}
+
+// agent-N ids must route directly to the agent adapter without the bash
+// adapter ever seeing them.
+func TestJobAdapter_MultiRegistryRoutesAgentIDs(t *testing.T) {
+	t.Parallel()
+	reg := NewBackgroundAgentRegistry()
+	release := make(chan struct{})
+	state, err := reg.Spawn(context.Background(),
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
+			<-release
+			return &types.SubQueryResult{Content: "late"}, nil
+		}, nil, "routing", "call_r", "General")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() {
+		close(release)
+		reg.Wait(state.ID)
+	}()
+
+	bash := &bgStubRegistry{}
+	m := job.NewMultiRegistry(bash, NewBackgroundAgentJobAdapter(reg))
+
+	info, ok := m.Get(state.ID)
+	if !ok {
+		t.Fatal("Get returned false for a live agent")
+	}
+	if info.ID != state.ID || info.Type != "agent" {
+		t.Errorf("routed info = %+v, want the agent adapter entry for %s", info, state.ID)
+	}
+	if len(bash.getCalls) != 0 {
+		t.Errorf("bash adapter saw agent-N lookups: %v", bash.getCalls)
 	}
 }
 
 func TestConvertState_Running(t *testing.T) {
 	t.Parallel()
 	s := &BackgroundAgentState{
-		ID:     "fork-2",
+		ID:     "agent-2",
 		Status: AgentRunning,
 	}
 	info := convertState(s)
@@ -84,7 +142,7 @@ func TestConvertState_Running(t *testing.T) {
 func TestConvertState_Failed(t *testing.T) {
 	t.Parallel()
 	s := &BackgroundAgentState{
-		ID:     "fork-3",
+		ID:     "agent-3",
 		Status: AgentFailed,
 		Result: &types.SubQueryResult{
 			Content: "context canceled",
@@ -105,7 +163,7 @@ func TestConvertState_Failed(t *testing.T) {
 func TestConvertState_Failed_NilResult(t *testing.T) {
 	t.Parallel()
 	s := &BackgroundAgentState{
-		ID:     "fork-4",
+		ID:     "agent-4",
 		Status: AgentFailed,
 		Result: nil,
 	}
@@ -121,7 +179,7 @@ func TestConvertState_Failed_NilResult(t *testing.T) {
 func TestConvertState_Cancelled_MapsToKilled(t *testing.T) {
 	t.Parallel()
 	s := &BackgroundAgentState{
-		ID:     "fork-5",
+		ID:     "agent-5",
 		Status: AgentCancelled,
 	}
 	info := convertState(s)
@@ -149,7 +207,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 				TotalDurationMs: 200,
 			}, nil
 		},
-		nil, "test task", "call_1", "fork", "fork",
+		nil, "test task", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -184,7 +242,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 			<-blockCh // block until test has read the status
 			return &types.SubQueryResult{Content: "slow"}, nil
 		},
-		nil, "slow task", "call_1", "fork", "fork",
+		nil, "slow task", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -210,7 +268,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
 		},
-		nil, "failing task", "call_1", "fork", "fork",
+		nil, "failing task", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -244,13 +302,13 @@ func TestAdapter_List(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
-		nil, "task a", "call_1", "fork", "fork",
+		nil, "task a", "call_1", "fork",
 	)
 	s2, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
-		nil, "task b", "call_2", "fork", "fork",
+		nil, "task b", "call_2", "fork",
 	)
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
@@ -279,7 +337,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "cleanup test", "call_1", "fork", "fork",
+		nil, "cleanup test", "call_1", "fork",
 	)
 	reg.Wait(state.ID)
 
@@ -304,7 +362,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		nil, "killable task", "call_1", "fork", "fork",
+		nil, "killable task", "call_1", "fork",
 	)
 	<-started
 
@@ -335,7 +393,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "wait test", "call_1", "fork", "fork",
+		nil, "wait test", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -355,7 +413,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
 		},
-		nil, "fail test", "call_1", "fork", "fork",
+		nil, "fail test", "call_1", "fork",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)
@@ -414,7 +472,7 @@ func TestConvertState_ExposesParentToolUseIDAndAgentType(t *testing.T) {
 			<-blockCh
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
-		nil, "explore stuff", "toolu_9", "agent", "Explore",
+		nil, "explore stuff", "toolu_9", "Explore",
 	)
 
 	adapter := NewBackgroundAgentJobAdapter(reg)

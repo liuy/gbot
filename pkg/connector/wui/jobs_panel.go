@@ -134,8 +134,8 @@ func (c *WUIConnector) watchJobsLoop(slot *engineSlot) {
 }
 
 // jobHasFeed reports whether a wire kind belongs to the agent family
-// (agent-N/fork-N registry jobs) — everything the panel streams a feed for,
-// i.e. everything that is not a bash tail.
+// (agent-N registry jobs, forks included) — everything the panel streams a
+// feed for, i.e. everything that is not a bash tail.
 func jobHasFeed(kind string) bool { return kind != "bash" }
 
 func isTerminalJobStatus(status string) bool {

@@ -55,9 +55,10 @@ type SharedDeps struct {
 
 	// EngineMgr and BgAgents back the message tool's target resolver. Both
 	// come from the process-global instances created once in app/start.go so
-	// agent-N/fork-N ids stay unique and every engine is addressable from
-	// anywhere. nil for both (reload's harvest toolset) = resolver degraded,
-	// tool still registered for ToolPrompts collection.
+	// agent-N ids stay unique across engines and background agents, and
+	// every engine is addressable from anywhere. nil for both (reload's
+	// harvest toolset) = resolver degraded, tool still registered for
+	// ToolPrompts collection.
 	EngineMgr *EngineManager
 	BgAgents  *agenttool.BackgroundAgentRegistry
 }

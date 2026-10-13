@@ -49,7 +49,7 @@ func spawnRunningAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) str
 			<-blocked
 			return &types.SubQueryResult{}, nil
 		},
-		nil, "test agent", "call_1", "agent", "agent",
+		nil, "test agent", "call_1", "agent",
 	)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -151,7 +151,7 @@ func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 				return &types.SubQueryResult{}, nil
 			}
 		}
-		st, err := reg.Spawn(ctx, runFn, nil, "s", "call_1", "agent", "agent")
+		st, err := reg.Spawn(ctx, runFn, nil, "s", "call_1", "agent")
 		if cancel != nil {
 			cancel()
 		}
@@ -204,6 +204,102 @@ func TestEngineMessageResolver_UnknownID(t *testing.T) {
 	target, status, ok := r.Resolve("nobody")
 	if ok {
 		t.Error("ok=true for an unknown id")
+	}
+	if target != nil || status != "" {
+		t.Errorf("target = %v, status = %q, want zero values", target, status)
+	}
+}
+
+func TestEngineMessageResolver_NameFallback(t *testing.T) {
+	t.Parallel()
+	_, mgr, _ := msgDeps(t)
+	eng := New(&Params{Provider: &mockProvider{}, EngineID: "main"})
+	defer eng.Close()
+	mgr.Add(&EngineViewState{Engine: eng, ID: "main", Name: "research"})
+
+	r := &EngineMessageResolver{mgr: mgr}
+	target, status, ok := r.Resolve("research")
+	if !ok {
+		t.Fatal("Resolve by engine name returned ok=false")
+	}
+	if status != "" {
+		t.Errorf("status = %q, want empty for an engine target", status)
+	}
+	if target != message.Target(eng) {
+		t.Errorf("target = %v, want the engine named research", target)
+	}
+}
+
+func TestEngineMessageResolver_IDBeatsName(t *testing.T) {
+	t.Parallel()
+	_, mgr, _ := msgDeps(t)
+	a := New(&Params{Provider: &mockProvider{}, EngineID: "x1"})
+	defer a.Close()
+	b := New(&Params{Provider: &mockProvider{}, EngineID: "dup"})
+	defer b.Close()
+	mgr.Add(&EngineViewState{Engine: a, ID: "x1", Name: "dup"})
+	mgr.Add(&EngineViewState{Engine: b, ID: "dup"})
+
+	r := &EngineMessageResolver{mgr: mgr}
+	target, _, ok := r.Resolve("dup")
+	if !ok {
+		t.Fatal("Resolve(dup) returned ok=false")
+	}
+	if target != message.Target(b) {
+		t.Errorf("target = %v, want engine B (id match wins over name match)", target)
+	}
+}
+
+// A registry id beats an engine NAME that shadows it (legacy pre-validation
+// state where an engine could be named agent-1).
+func TestEngineMessageResolver_RegistryIDBeatsEngineName(t *testing.T) {
+	t.Parallel()
+	_, mgr, reg := msgDeps(t)
+	id := spawnRunningAgent(t, reg)
+	sink := &msgSpyTarget{}
+	reg.AttachSink(id, sink)
+
+	eng := New(&Params{Provider: &mockProvider{}, EngineID: "legacy"})
+	defer eng.Close()
+	mgr.Add(&EngineViewState{Engine: eng, ID: "legacy", Name: id})
+
+	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	target, status, ok := r.Resolve(id)
+	if !ok {
+		t.Fatal("Resolve returned ok=false")
+	}
+	if status != "running" {
+		t.Errorf("status = %q, want running (registry wins)", status)
+	}
+	if target != message.Target(sink) {
+		t.Errorf("target = %v, want the registry's sink", target)
+	}
+}
+
+// Lazy view states are undeliverable by name too — the same nil-Engine
+// check the id path applies.
+func TestEngineMessageResolver_NameOnLazyEngineNotDeliverable(t *testing.T) {
+	t.Parallel()
+	_, mgr, _ := msgDeps(t)
+	mgr.Add(&EngineViewState{ID: "x", Name: "lazy-name"}) // Engine nil
+
+	r := &EngineMessageResolver{mgr: mgr}
+	target, status, ok := r.Resolve("lazy-name")
+	if ok {
+		t.Error("ok=true for a lazy view state resolved by name")
+	}
+	if target != nil || status != "" {
+		t.Errorf("target = %v, status = %q, want zero values", target, status)
+	}
+}
+
+func TestEngineMessageResolver_UnknownName(t *testing.T) {
+	t.Parallel()
+	_, mgr, reg := msgDeps(t)
+	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	target, status, ok := r.Resolve("no-such-name")
+	if ok {
+		t.Error("ok=true for an unknown name")
 	}
 	if target != nil || status != "" {
 		t.Errorf("target = %v, status = %q, want zero values", target, status)

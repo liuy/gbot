@@ -11,6 +11,7 @@ import (
 	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
 )
@@ -163,6 +164,119 @@ func TestCreateEngineForWUI_SessionFailureClosesEngine(t *testing.T) {
 	}
 }
 
+func TestCreateEngineForWUI_RejectsReservedName(t *testing.T) {
+	projectDir := t.TempDir()
+	mgr := engine.NewEngineManager()
+	seedEng, _, err := wuiFactory(&spyProvider{})("main", "main", "", "m")
+	if err != nil {
+		t.Fatalf("seed factory: %v", err)
+	}
+	t.Cleanup(seedEng.Close)
+	mgr.Add(&engine.EngineViewState{Engine: seedEng, ID: "main", Name: "main"})
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+
+	id, err := createEngineForWUI("agent-3", mgr, wuiFactory(&spyProvider{}), nil, projectDir, wc, "", "")
+	if err == nil {
+		t.Fatal("createEngineForWUI must reject a name in the reserved agent-N grammar")
+	}
+	if !strings.Contains(err.Error(), "agent-N id namespace") {
+		t.Errorf("error = %q, want the namespace-collision message", err.Error())
+	}
+	if id != "" {
+		t.Errorf("engine ID = %q, want empty on a rejected name", id)
+	}
+	if n := len(mgr.List()); n != 1 {
+		t.Errorf("manager holds %d engines, want 1 (only the seeded main)", n)
+	}
+}
+
+func TestCreateEngineForWUI_MintsFromInjectedMinter(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	idm := agenttool.NewIDMinter()
+	mgr.SetIDMinter(idm)
+	seedEng, _, err := wuiFactory(&spyProvider{})("main", "main", "", "m")
+	if err != nil {
+		t.Fatalf("seed factory: %v", err)
+	}
+	t.Cleanup(seedEng.Close)
+	mgr.Add(&engine.EngineViewState{Engine: seedEng, ID: "main", Name: "main"})
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+
+	id, err := createEngineForWUI("", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	if err != nil {
+		t.Fatalf("createEngineForWUI: %v", err)
+	}
+	if id != "agent-1" {
+		t.Errorf("engine ID = %q, want agent-1 from the injected minter", id)
+	}
+	vs := mgr.Get(id)
+	if vs == nil {
+		t.Fatal("created engine missing from the manager")
+	}
+	if vs.Name != "agent-1" {
+		t.Errorf("auto name = %q, want agent-1 (name == id)", vs.Name)
+	}
+}
+
+func TestCreateEngineForWUI_TrimsNameBeforeValidationAndStorage(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+	id, err := createEngineForWUI("  x  ", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	if err != nil {
+		t.Fatalf("createEngineForWUI: %v", err)
+	}
+	vs := mgr.Get(id)
+	if vs == nil {
+		t.Fatal("created engine missing from the manager")
+	}
+	if vs.Name != "x" {
+		t.Errorf("stored name = %q, want the trimmed \"x\"", vs.Name)
+	}
+	_, err = createEngineForWUI("  x  ", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	if err == nil {
+		t.Fatal("second createEngineForWUI(\"  x  \") succeeded; want the duplicate-name error")
+	}
+	if err.Error() != `engine name "x" is already in use` {
+		t.Errorf("error = %q, want the duplicate-name message for the trimmed name", err.Error())
+	}
+}
+func TestCreateEngineForWUI_WhitespaceNameUsesMintedID(t *testing.T) {
+	// "   " is an empty name once trimmed: it takes the auto-name path
+	// (name == minted id) instead of the empty-name rejection.
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	idm := agenttool.NewIDMinter()
+	mgr.SetIDMinter(idm)
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+	id, err := createEngineForWUI("   ", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	if err != nil {
+		t.Fatalf("createEngineForWUI(whitespace name): %v", err)
+	}
+	vs := mgr.Get(id)
+	if vs == nil {
+		t.Fatal("created engine missing from the manager")
+	}
+	if id != "agent-1" || vs.Name != "agent-1" {
+		t.Errorf("id/name = (%q, %q), want (agent-1, agent-1)", id, vs.Name)
+	}
+}
 func TestRegisterWUISendTool_IsIdempotent(t *testing.T) {
 	eng, _, err := wuiFactory(&spyProvider{})("eng-1", "one", "", "m")
 	if err != nil {
