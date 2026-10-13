@@ -1286,3 +1286,109 @@ func TestIsOneShotAgent_EveryType(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fork paths — the caller's context must reach the engine
+// ---------------------------------------------------------------------------
+
+type parentCtxKey struct{}
+
+// A fork runs inside the parent's query: dropping ctx at the callFork hand-off
+// or at the engine call silently kills cancellation and per-call tracing.
+func TestCallFork_SyncPathPropagatesCallerContext(t *testing.T) {
+	t.Parallel()
+	var seen any
+	var sawNil bool
+	at := New()
+	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, _ AgentOpts) (*types.SubQueryResult, error) {
+		if ctx == nil {
+			sawNil = true
+			return &types.SubQueryResult{Content: "ok"}, nil
+		}
+		seen = ctx.Value(parentCtxKey{})
+		return &types.SubQueryResult{Content: "ok"}, nil
+	}})
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
+
+	ctx := context.WithValue(context.Background(), parentCtxKey{}, "parent-value")
+	if _, err := at.Call(ctx, json.RawMessage(`{"description":"d","prompt":"p","fork":true}`), nil); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if sawNil {
+		t.Fatal("the fork path handed a nil context to the engine")
+	}
+	if seen != "parent-value" {
+		t.Errorf("engine context value = %v, want %q", seen, "parent-value")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DecodeResult — the single-block decode error is the caller-facing error
+// ---------------------------------------------------------------------------
+
+func TestDecodeResult_SingleBlockErrorIsReturnedVerbatim(t *testing.T) {
+	t.Parallel()
+	at := New()
+	raw := json.RawMessage(`{"content":"not array form"}`)
+	got, err := at.DecodeResult(raw)
+	if got != nil {
+		t.Errorf("DecodeResult(%s) = %+v, want nil alongside the error", raw, got)
+	}
+	want := `tool: UnmarshalSingleBlock expects array-form content, got `
+	if err == nil {
+		t.Fatalf("DecodeResult(%s) returned no error, want the %q error", raw, want)
+	}
+	if !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("DecodeResult error = %q, want it to start with %q", err.Error(), want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FinalizeResult — duration is measured, and the interrupt marker is text-only
+// ---------------------------------------------------------------------------
+
+func TestFinalizeResult_DurationIsMeasuredFromStartTime(t *testing.T) {
+	t.Parallel()
+	start := time.Now().Add(-2 * time.Second) // REAL-TIME: a past start makes the measured duration distinguishable from zero
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}},
+	}
+	res := FinalizeResult(messages, "General", start, types.Usage{InputTokens: 3, OutputTokens: 4}, 2)
+	if res.TotalDurationMs < 1900 {
+		t.Errorf("TotalDurationMs = %d, want >= 1900 for a start time 2s in the past", res.TotalDurationMs)
+	}
+	if res.TotalTokens != 7 {
+		t.Errorf("TotalTokens = %d, want 7 (input+output)", res.TotalTokens)
+	}
+	if res.TotalToolUseCount != 2 {
+		t.Errorf("TotalToolUseCount = %d, want 2", res.TotalToolUseCount)
+	}
+}
+
+func TestFinalizeResult_InterruptMarkerCountsOnlyOnTextBlocks(t *testing.T) {
+	t.Parallel()
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "t1", Name: "Bash", Text: types.InterruptMessage},
+		}},
+	}
+	res := FinalizeResult(messages, "General", time.Now(), types.Usage{}, 1) // REAL-TIME: duration is not under test here
+	if res.Content != "(agent completed with no text output)" {
+		t.Errorf("Content = %q, want the no-text fallback — the marker sits on a tool_use block, not a text block", res.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExtractPartialResult — an empty text block must not end the backward walk
+// ---------------------------------------------------------------------------
+
+func TestExtractPartialResult_EmptyTextBlockKeepsWalkingBackward(t *testing.T) {
+	t.Parallel()
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("earlier report")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: ""}}},
+	}
+	if got := ExtractPartialResult(messages); got != "earlier report" {
+		t.Errorf("ExtractPartialResult = %q, want %q — the trailing empty text block must not count as content", got, "earlier report")
+	}
+}

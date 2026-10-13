@@ -39,7 +39,7 @@ type FailedFile struct {
 // Source: loadAgentsDir.ts:296-393 — getAgentDefinitionsWithOverrides (memoized)
 type Loader struct {
 	mu     sync.RWMutex
-	once   sync.Once
+	loaded bool
 	cwd    string
 	cached []*types.AgentDefinition // merged: built-in + custom + override-resolved
 	failed []FailedFile
@@ -53,12 +53,24 @@ func NewLoader(cwd string) *Loader {
 
 // ensureLoaded performs lazy loading on first access.
 // Source: analogous to TS memoize on getAgentDefinitionsWithOverrides
+//
+// The guard lives inside mu because Reload re-arms it under the write lock:
+// sampling it outside the lock races the re-arm.
 func (l *Loader) ensureLoaded() {
-	l.once.Do(func() {
-		l.mu.Lock()
-		l.load()
-		l.mu.Unlock()
-	})
+	l.mu.RLock()
+	loaded := l.loaded
+	l.mu.RUnlock()
+	if loaded {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.loaded {
+		return
+	}
+	l.load()
+	l.loaded = true
 }
 
 // Load discovers all agent files, parses them, and resolves overrides.
@@ -67,6 +79,7 @@ func (l *Loader) Load() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.load()
+	l.loaded = true
 }
 
 // load is the internal implementation (caller must hold write lock).
@@ -128,12 +141,16 @@ func (l *Loader) load() {
 }
 
 // Reload clears the cache and reloads.
+// The lazy guard is left disarmed on purpose: the next reader re-reads the disk,
+// which is what makes a Reload visible through Get/ListAll/FailedFiles.
+// The load() here is a warm-up for the window before that reader arrives — the
+// cache is already current when Reload returns — not a substitute for it.
 func (l *Loader) Reload() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.cached = nil
 	l.failed = nil
-	l.once = sync.Once{} // reset so ensureLoaded can re-trigger
+	l.loaded = false
 	l.load()
 }
 
@@ -878,13 +895,13 @@ func GlobalLoader() *Loader {
 // Appends to the internal list and re-resolves override priorities.
 //
 // Invariant: must be called after Load/ensureLoaded has populated l.cached.
-// The l.once.Do(func(){}) marks once as triggered so subsequent ensureLoaded()
-// calls won't re-read from disk and overwrite plugin agents. If l.cached is nil
+// Setting loaded marks the lazy guard spent so subsequent ensureLoaded() calls
+// won't re-read from disk and overwrite plugin agents. If l.cached is nil
 // (called before any Load), l.load() is called as a safety net under the write lock.
 func (l *Loader) RegisterPluginAgents(agents []types.AgentDefinition) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.once.Do(func() {}) // mark once as triggered (no-op if already done by Load/ensureLoaded)
+	l.loaded = true // mark loaded (no-op if already set by Load/ensureLoaded)
 	if l.cached == nil {
 		l.load() // safe: we hold the write lock
 	}

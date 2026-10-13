@@ -69,9 +69,11 @@ func renderEditResult(data any) string {
 }
 
 // renderEditError converts Edit error messages to short summaries for TUI.
-// Source: FileEditTool/UI.tsx — renderToolUseErrorMessage.
+// Source: FileEditTool/UI.tsx — renderToolUseErrorMessage. Match strings must
+// track Execute's error wording: the port lowercased those messages, so the
+// TS UI.tsx capitalised matchers would silently never fire.
 func renderEditError(msg string) string {
-	if strings.Contains(msg, "File has not been read yet") {
+	if strings.Contains(msg, "file has not been read yet") {
 		return "File must be read first"
 	}
 	if strings.Contains(msg, "not found") {

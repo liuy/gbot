@@ -872,12 +872,11 @@ func TestExecute_RelativePathWithWorkingDir(t *testing.T) {
 // Cover fileedit.go:291-297 — expandPath with ~/ prefix
 // ---------------------------------------------------------------------------
 
+// Not parallel: t.Setenv is process-global, and writing into the real $HOME
+// collided with the sibling tilde test when the package suite ran concurrently.
 func TestExecute_TildePathExpansion(t *testing.T) {
-	t.Parallel()
-	home := os.Getenv("HOME")
-	if home == "" {
-		t.Skip("HOME not set")
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
 	// Create a temp file directly under HOME so ~/ expansion resolves to it
 	fp := filepath.Join(home, ".gbot_test_tilde_expand.txt")

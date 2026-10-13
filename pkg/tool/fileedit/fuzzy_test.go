@@ -193,6 +193,8 @@ func TestIsGeneric(t *testing.T) {
 		{"{", true},
 		{"", true},
 		{"ab", true},
+		{"abc", true},
+		{"abcd", false},
 		{"func", false},
 		{"return", true},
 		{"return x", false},

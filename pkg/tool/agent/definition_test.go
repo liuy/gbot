@@ -195,7 +195,10 @@ func TestListAgentDefinitions_LoaderPathSorted(t *testing.T) {
 		{AgentType: "Alpha", WhenToUse: "a"},
 		{AgentType: "Mid", WhenToUse: "m"},
 	}
-	l.once.Do(func() {}) // mark loaded: keep the hand-seeded order
+	// Unlocked on purpose: nothing else can reach this loader until the
+	// globalLoader swap below publishes it, so "loaded is only touched under the
+	// write lock" stays mechanically checkable in loader.go.
+	l.loaded = true // mark loaded: keep the hand-seeded order
 	prev := globalLoader
 	globalLoader = l
 	t.Cleanup(func() { globalLoader = prev })
