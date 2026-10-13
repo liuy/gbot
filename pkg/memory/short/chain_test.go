@@ -1,6 +1,9 @@
 package short
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -788,13 +791,23 @@ func TestAppendMessages_Dedup_SkipsExistingUUID(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Try to append same UUID again — should skip, not error
+	// Try to append same UUID again — should skip, not error. The skip must
+	// be logged: a silent dedup masks persistence data loss (10-13 incident).
+	var logBuf bytes.Buffer
+	origLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	dupMsgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
 	}
 	if err := store.AppendMessages(sessionID, dupMsgs); err != nil {
+		slog.SetDefault(origLog)
 		t.Fatalf("AppendMessages with dedup: %v", err)
+	}
+	slog.SetDefault(origLog)
+	logOut := logBuf.String()
+	if !strings.Contains(logOut, "dedup skip existing uuid") || !strings.Contains(logOut, "uuid-1") {
+		t.Errorf("dedup skip not logged (want uuid-1 skip trail): %q", logOut)
 	}
 
 	chain, err := store.LoadChainMessages(sessionID)
@@ -885,13 +898,21 @@ func TestAppendMessagesWithForkPoint_Dedup(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Fork with a mix of existing and new UUIDs
+	// Fork with a mix of existing and new UUIDs — the skip must be logged.
+	var logBuf bytes.Buffer
+	origLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	forkMsgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`), // dup
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"new"}]`),
 	}
-	if err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, ""); err != nil {
+	err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, "")
+	slog.SetDefault(origLog)
+	if err != nil {
 		t.Fatalf("AppendMessagesWithForkPoint: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "dedup skip existing uuid") || !strings.Contains(logBuf.String(), "uuid-1") {
+		t.Errorf("fork dedup skip not logged (want uuid-1 skip trail): %q", logBuf.String())
 	}
 
 	chain, err := store.LoadChainMessages(sessionID)

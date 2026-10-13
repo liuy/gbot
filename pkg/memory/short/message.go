@@ -37,9 +37,13 @@ func (s *Store) AppendMessages(sessionID string, msgs []*TranscriptMessage) erro
 
 	// Track the last chain participant's UUID
 	lastChainUUID := s.getLastChainUUID(tx, sessionID)
-
 	for _, msg := range msgs {
 		if existing[msg.UUID] {
+			// Idempotent re-append (restart replay, retried persist). Logged so a
+			// dedup that hides real data loss — batch count in the engine's
+			// "persisted" log includes skipped messages — leaves a trail.
+			slog.Warn("AppendMessages: dedup skip existing uuid",
+				"session", sessionID, "uuid", msg.UUID, "type", msg.Type)
 			if isChainParticipant(msg) {
 				lastChainUUID = msg.UUID
 			}
@@ -697,6 +701,8 @@ func (s *Store) AppendMessagesWithForkPoint(sessionID string, msgs []*Transcript
 	lastChainUUID := forkParentUUID
 	for _, msg := range msgs {
 		if existing[msg.UUID] {
+			slog.Warn("AppendMessagesWithForkPoint: dedup skip existing uuid",
+				"session", sessionID, "uuid", msg.UUID, "type", msg.Type)
 			if isChainParticipant(msg) {
 				lastChainUUID = msg.UUID
 			}

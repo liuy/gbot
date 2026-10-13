@@ -50,6 +50,10 @@ type Instance struct {
 	LSPReg      *lsp.Registry
 	Logger      *slog.Logger
 	PIDCleanup  func()
+	// DreamDone closes when the dream timer goroutine returns; Cleanup and
+	// the upgrade exit join it (bounded) before closing the store so a
+	// mid-tick dream persist cannot race the close.
+	DreamDone chan struct{}
 	// Reloader drives the manual two-phase config reload; EnvHolder is the
 	// swap seam the engine factory and refresh closures read at call time.
 	Reloader  *reload.Orchestrator

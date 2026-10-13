@@ -39,6 +39,7 @@ func (e *Engine) PersistNewMessages() {
 		slog.Info("PersistNewMessages: nothing new",
 			"messages", len(e.messages),
 			"lastPersistedIdx", e.lastPersistedIdx,
+			"engine", e.engineID,
 			"session", fmt.Sprintf("%.8s", e.sessionID),
 		)
 		return // nothing new to persist
@@ -114,6 +115,7 @@ func (e *Engine) PersistNewMessages() {
 	slog.Info("PersistNewMessages: persisted messages",
 		"count", len(storeMsgs),
 		"total", e.lastPersistedIdx,
+		"engine", e.engineID,
 		"session", fmt.Sprintf("%.8s", e.sessionID),
 	)
 }

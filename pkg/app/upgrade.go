@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudflare/tableflip"
 	"github.com/liuy/gbot/pkg/connector/wui"
+	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // Upgrader is the tableflip surface Start needs. An interface keeps the
@@ -134,17 +135,38 @@ const drainTimeout = 3 * time.Second
 // process's liveness guard.
 var handedOver atomic.Bool
 
+// osExit is the seam tests intercept to observe pre-exit state: os.Exit
+// skips defers, so anything that must run before process death (final WAL
+// checkpoint) has to sit between the drain and this call.
+var osExit = os.Exit
+
+// dreamJoinTimeout bounds the wait for the dream timer goroutine after
+// dreamCancel: RunDreamTimer only checks ctx between ticks, so a mid-tick
+// dream Query outlives the cancel, and its final persist must not race
+// store.Close. A dream Query can legitimately run minutes, so past this
+// bound we accept a logged persist error rather than stall the upgrade.
+var dreamJoinTimeout = 3 * time.Second
+
 // watchUpgradeExit drains this process after it handed its listener to the
 // upgraded child. Order matters: the 1012 close frame must reach the
 // browser BEFORE teardown begins. The PID file is deliberately NOT
 // removed: the child rewrote it during boot and now owns it.
-func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, dreamCancel context.CancelFunc) {
+func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, dreamCancel context.CancelFunc, dreamDone <-chan struct{}, store *short.Store) {
 	<-upg.Exit()
 	handedOver.Store(true)
 	if dreamCancel != nil {
 		dreamCancel()
 	}
-	wc.CloseForUpgrade()
+	if dreamDone != nil {
+		select {
+		case <-dreamDone:
+		case <-time.After(dreamJoinTimeout):
+			slog.Warn("upgrade exit: dream timer still running; closing store under it")
+		}
+	}
+	if wc != nil {
+		wc.CloseForUpgrade()
+	}
 	// srv.Close() hard-cuts in-flight responses and Go's HTTP transport does
 	// NOT retry a partially received response — the continuous e2e probe
 	// (and real browser requests) would see sporadic failures. Shutdown
@@ -156,5 +178,14 @@ func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, drea
 		_ = srv.Close()
 	}
 	cancel()
-	os.Exit(0)
+	// os.Exit skips defers, so the final WAL checkpoint has to happen here:
+	// the upgraded child is already serving on the same database, and frames
+	// left un-checkpointed in this process's -wal are exactly what the
+	// 10-13 e3 incident lost (37 committed messages, rows vanished).
+	if store != nil {
+		if err := store.Close(); err != nil {
+			slog.Warn("upgrade exit: store close", "error", err)
+		}
+	}
+	osExit(0)
 }

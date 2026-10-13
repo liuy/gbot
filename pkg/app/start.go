@@ -87,6 +87,7 @@ func Start(opts Options) (*Instance, error) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	var dreamCancel context.CancelFunc
+	var dreamDone chan struct{}
 	// Late-wired: the connector that must receive the 1012 close exists
 	// only later in the boot; TERM before that just exits (nothing to
 	// notify yet — same as pre-existing behavior).
@@ -560,17 +561,21 @@ func Start(opts Options) (*Instance, error) {
 
 		dreamCtx, dreamCancelFn := context.WithCancel(context.Background())
 		dreamCancel = dreamCancelFn
+		dreamDone = make(chan struct{})
 		_, idle, cooldown, _ := cfg.Dream.Defaults()
-		go dream.RunDreamTimer(dreamCtx, dream.TimerParams{
-			Engine:        &dreamEngineAdapter{eng: dreamEng},
-			Store:         store,
-			IdleQuerier:   store,
-			MemoryDir:     memoryDir,
-			IdleThreshold: idle,
-			Cooldown:      cooldown,
-			TickInterval:  10 * time.Minute,
-			Logger:        logger,
-		})
+		go func() {
+			defer close(dreamDone)
+			dream.RunDreamTimer(dreamCtx, dream.TimerParams{
+				Engine:        &dreamEngineAdapter{eng: dreamEng},
+				Store:         store,
+				IdleQuerier:   store,
+				MemoryDir:     memoryDir,
+				IdleThreshold: idle,
+				Cooldown:      cooldown,
+				TickInterval:  10 * time.Minute,
+				Logger:        logger,
+			})
+		}()
 		slog.Info("dream: persistent engine started",
 			"model", dreamModel, "context_window", dreamCtxWindow)
 	}
@@ -722,7 +727,7 @@ func Start(opts Options) (*Instance, error) {
 			if err := upg.Ready(); err != nil {
 				return nil, fmt.Errorf("upgrade ready: %w", err)
 			}
-			go watchUpgradeExit(upg, srv, wc, dreamCancel)
+			go watchUpgradeExit(upg, srv, wc, dreamCancel, dreamDone, store)
 		}
 	}
 
@@ -751,6 +756,7 @@ func Start(opts Options) (*Instance, error) {
 		LSPReg:             lspReg,
 		Logger:             logger,
 		PIDCleanup:         pidCleanup,
+		DreamDone:          dreamDone,
 		Reloader:           orch,
 		EnvHolder:          holder,
 	}, nil

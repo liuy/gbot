@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -18,6 +19,22 @@ func (inst *Instance) Cleanup() {
 			if vs.Engine != nil {
 				vs.Engine.Close()
 			}
+		}
+	}
+	// Engines may final-persist on Close, so the store goes after them:
+	// Close() runs the final WAL checkpoint (read pool first, write conn
+	// last). Without it every exit path leaves committed frames only in
+	// the -wal sidecar.
+	if inst.DreamDone != nil {
+		select {
+		case <-inst.DreamDone:
+		case <-time.After(dreamJoinTimeout):
+			slog.Warn("cleanup: dream timer still running; closing store under it")
+		}
+	}
+	if inst.Store != nil {
+		if err := inst.Store.Close(); err != nil {
+			slog.Warn("cleanup: store close", "error", err)
 		}
 	}
 	for _, ms := range inst.MediaStores {
