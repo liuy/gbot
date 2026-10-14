@@ -32,11 +32,11 @@ func xmlUnescape(s string) string { return xmlUnescaper.Replace(s) }
 // when the tag is absent or never closed.
 func extractXMLTag(text, tag string) (string, bool) {
 	head := "<" + tag + ">"
-	i := strings.Index(text, head)
-	if i < 0 {
+	_, after, ok := strings.Cut(text, head)
+	if !ok {
 		return "", false
 	}
-	rest := text[i+len(head):]
+	rest := after
 	j := strings.Index(rest, "</"+tag+">")
 	if j < 0 {
 		return "", false

@@ -67,8 +67,8 @@ func jobNotificationSegment(text string) (string, bool) {
 	if segment, ok := strings.CutSuffix(inner, jobNotificationSuffix); ok {
 		return segment, true
 	}
-	if idx := strings.Index(inner, jobStallJoint); idx >= 0 {
-		return inner[:idx], true
+	if before, _, ok := strings.Cut(inner, jobStallJoint); ok {
+		return before, true
 	}
 	return "", false
 }
