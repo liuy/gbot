@@ -133,13 +133,7 @@ ifdef MUTATE_PKG
 	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
 	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
 	  exit 0; }; \
-	log=$$(mktemp /tmp/mutate_pkg.XXXXXX); \
-	go-mutesting --config test/mutesting.yaml --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1 \
-	  | tee $$log \
-	  | awk '/^ESCAPED/{n[$$2]++} END{for(l in n) printf "%4d %s\n", n[l], l}' | sort -rn | head -20; \
-	grep -i 'mutation score' $$log \
-	  || { echo "no score line — go-mutesting errored, full output:"; cat $$log; }; \
-	rm -f $$log
+	go-mutesting --config test/mutesting.yaml --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1
 else
 	@command -v go-mutesting >/dev/null 2>&1 || { \
 	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
