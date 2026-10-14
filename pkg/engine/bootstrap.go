@@ -158,6 +158,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		eng.EnqueueAttachment(types.QueuedItem{
 			Value:     n.FormatXML(),
 			Mode:      types.ItemModeJob,
+			Origin:    &types.MessageOrigin{Kind: types.OriginJobCommand},
 			Timestamp: time.Now(),
 		})
 	}
@@ -168,6 +169,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 			eng.EnqueueAttachment(types.QueuedItem{
 				Value:     xml,
 				Mode:      types.ItemModeJob,
+				Origin:    &types.MessageOrigin{Kind: types.OriginJob},
 				Timestamp: time.Now(),
 			})
 		},

@@ -1342,8 +1342,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			return true, a.readEvents()
 		}
 
-		// ItemModeJob drain: render notification
-		if m.JobID != "" {
+		// ItemModeJob / ItemModeMessage drain: render a live notification row.
+		if m.JobID != "" || m.From != "" {
 			var dotStr string
 			if m.Failed {
 				dotStr = styleDotError.Render("●")
@@ -1351,7 +1351,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				dotStr = styleDotSuccess.Render("●")
 			}
 			preview := m.Preview
-			if !m.Failed {
+			if m.From != "" {
+				// Message deliveries carry their own label, matching the wui
+				// Reminder row summary; the exit-code trim is job-only.
+				preview = "got a message from " + m.From
+			} else if !m.Failed {
 				preview = strings.TrimSuffix(preview, " (exit code 0)")
 			}
 			text := dotStr + " " + preview

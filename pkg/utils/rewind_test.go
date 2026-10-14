@@ -384,6 +384,75 @@ func TestIsSelectableUserMessage_TagInMiddleOfText(t *testing.T) {
 	}
 }
 
+// Falsifiability: the job-envelope cases below carry NO <job-notification>
+// tag — a plain-text body — so the legacy Contains guard cannot reject them;
+// only the IsInjectedReminderEnvelope/IsMessageDeliveryEnvelope predicates
+// make these false.
+func TestIsSelectableUserMessage_JobAndMessageEnvelopes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"job command envelope with plain body", "<system-reminder>\nA background command completed:\nplain text\n</system-reminder>"},
+		{"job agent envelope with plain body", "<system-reminder>\nA background agent completed a job:\nplain text\n</system-reminder>"},
+		{"message delivery envelope", "<message from=\"main\">\nhello from main\n</message>"},
+	}
+	for _, tc := range cases {
+		msg := types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(tc.text)},
+		}
+		if IsSelectableUserMessage(msg) {
+			t.Errorf("%s: IsSelectableUserMessage = true, want false", tc.name)
+		}
+	}
+
+	plain := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("a real user prompt")},
+	}
+	if !IsSelectableUserMessage(plain) {
+		t.Error("plain user message became non-selectable — predicate over-matches")
+	}
+	// The queued-message envelope's near sibling (same tags, different head)
+	// stays selectable: only exact envelope heads are rejected.
+	sibling := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(
+			"<system-reminder>\nSomething else entirely:\nreal user text\n</system-reminder>")},
+	}
+	if !IsSelectableUserMessage(sibling) {
+		t.Error("non-envelope system-reminder user message became non-selectable — predicate over-matches")
+	}
+
+	// FlagMeta still disqualifies independent of content.
+	meta := types.Message{
+		Role:  types.RoleUser,
+		Flags: types.FlagMeta,
+		Content: []types.ContentBlock{types.NewTextBlock(
+			"<system-reminder>\nA background command completed:\nplain text\n</system-reminder>")},
+	}
+	if IsSelectableUserMessage(meta) {
+		t.Error("FlagMeta message with job envelope is selectable, want false")
+	}
+
+	// The predicates read the FIRST text block only: an envelope in a later
+	// block (first block plain text) leaves the message selectable — pinned
+	// as the actual behaviour, matching how the TUI replay filter and the wui
+	// row renderer both inspect only the first block (plan D7).
+	secondBlock := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("first block plain"),
+			types.NewTextBlock("<message from=\"main\">\nhello\n</message>"),
+		},
+	}
+	if !IsSelectableUserMessage(secondBlock) {
+		t.Error("envelope in second block disqualified the message — first-block-only rule broken")
+	}
+}
+
 func TestIsSelectableUserMessage_EmptyContent(t *testing.T) {
 	t.Parallel()
 	msg := types.Message{Role: types.RoleUser}

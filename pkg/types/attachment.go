@@ -12,8 +12,9 @@ import (
 type ItemMode string
 
 const (
-	ItemModePrompt ItemMode = "prompt"
-	ItemModeJob    ItemMode = "job"
+	ItemModePrompt  ItemMode = "prompt"
+	ItemModeJob     ItemMode = "job"
+	ItemModeMessage ItemMode = "message"
 )
 
 // QueuePriority controls when a queued item is drained and injected into the LLM conversation:
@@ -40,7 +41,7 @@ const (
 // TS source: types/textInputTypes.ts:299-349 — QueuedCommand
 type QueuedItem struct {
 	Value     string         // XML or plain text
-	Mode      ItemMode       // prompt | job
+	Mode      ItemMode       // prompt | job | message
 	Priority  QueuePriority  // now | next | later
 	UUID      string         // unique identifier
 	IsMeta    bool           // true = system-generated, hidden from rewind/brief
@@ -78,8 +79,10 @@ type Attachment struct {
 type MessageOriginKind string
 
 const (
-	OriginJob   MessageOriginKind = "job"
-	OriginHuman MessageOriginKind = "human"
+	OriginJob        MessageOriginKind = "job"
+	OriginJobCommand MessageOriginKind = "job_command"
+	OriginMessage    MessageOriginKind = "message"
+	OriginHuman      MessageOriginKind = "human"
 )
 
 // MessageOrigin describes the source of a message.

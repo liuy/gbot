@@ -75,6 +75,13 @@ func IsSelectableUserMessage(msg types.Message) bool {
 	if IsQueuedEnvelope(text) {
 		return false
 	}
+	// Persisted job/message reminders are injected notifications the model
+	// must honour but the user never typed — a rewind target must be real
+	// input. Content sniffing, not a flag: the persisted rows are plain user
+	// messages by design (D3).
+	if IsInjectedReminderEnvelope(text) || IsMessageDeliveryEnvelope(text) {
+		return false
+	}
 	nonUserTags := []string{
 		"<local-command-stdout>", "<local-command-stderr>",
 		"<bash-stdout>", "<bash-stderr>",

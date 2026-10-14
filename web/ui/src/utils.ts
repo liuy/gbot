@@ -433,6 +433,108 @@ export function unwrapQueuedReminder(text: string): string | null {
   )
 }
 
+// Injected job/message reminder envelopes — byte-mirrors of
+// pkg/utils/queued_message.go. The Go predicates decide TUI replay and
+// rewind-selectability with the same rules, so a divergence renders a row the
+// TUI hides (or the reverse) for the same stored message.
+const JOB_COMMAND_REMINDER_PREFIX = '<system-reminder>\nA background command completed:\n'
+const JOB_AGENT_REMINDER_PREFIX = '<system-reminder>\nA background agent completed a job:\n'
+const REMINDER_SUFFIX = '\n</system-reminder>'
+const MESSAGE_DELIVERY_PREFIX = '<message from="'
+const MESSAGE_DELIVERY_SUFFIX = '</message>'
+
+// J1+J2: starts at index 0 with one of the two job heads, ends at the
+// reminder suffix. The index-0 rule keeps the assembled "[ts] <…" wire form
+// from matching.
+function isInjectedReminderEnvelope(text: string): boolean {
+  if (!text.endsWith(REMINDER_SUFFIX)) return false
+  return text.startsWith(JOB_COMMAND_REMINDER_PREFIX) || text.startsWith(JOB_AGENT_REMINDER_PREFIX)
+}
+
+// D7 ①-④: the sender must be an id-shaped non-empty string (real senders are
+// main / e2 / agent-3 / fork-2 — buildEnvelope XML-escapes from, so real
+// senders never carry excluded bytes), the text must end at </message>, and
+// it must contain no unescaped system-reminder tag (a real delivery's body is
+// escaped).
+function isMessageDeliveryEnvelope(text: string): boolean {
+  if (!text.startsWith(MESSAGE_DELIVERY_PREFIX)) return false
+  const quote = text.indexOf('"', MESSAGE_DELIVERY_PREFIX.length)
+  if (quote === -1) return false
+  const from = text.slice(MESSAGE_DELIVERY_PREFIX.length, quote)
+  if (from === '' || !/^[A-Za-z0-9._-]+$/.test(from)) return false
+  if (!text.endsWith(MESSAGE_DELIVERY_SUFFIX)) return false
+  return !text.includes('<system-reminder>')
+}
+
+// A collapsed job/message row derived from a stored envelope. No fallback for
+// a missing/empty from: D7 ② makes that state unreachable (the delivery
+// never classifies), and a fallback would be dead code.
+export type ReminderRow = { name: string; summary: string; raw: string }
+
+// &amp; decoded last so &amp;quot; cannot double-decode.
+function xmlUnescape(s: string): string {
+  return s
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&')
+}
+
+// Each field gets its OWN tag lookup, never a forward scan from a previously
+// matched tag: the bash shape (background.go FormatXML) has no <agent-type>
+// and can lack <status> entirely, while the agent shape (fork.go) puts
+// <status> BEFORE <agent-type> and <summary> seven tags further down.
+function extractTag(text: string, tag: string): string | null {
+  const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))
+  return m ? m[1] : null
+}
+
+function classifyCommandRow(inner: string, raw: string): ReminderRow {
+  // Field values are XML-escaped by both producers; unescape BEFORE the
+  // quoted-span search and the exit-code probe — searching for a literal '"'
+  // in escaped text finds nothing and the row degrades to command <job-id>.
+  const summaryTag = xmlUnescape(extractTag(inner, 'summary') ?? '')
+  const jobId = xmlUnescape(extractTag(inner, 'job-id') ?? '')
+  const status = extractTag(inner, 'status')
+  const quoted = summaryTag.match(/"([^"]*)"/)
+  const desc = quoted ? quoted[1] : jobId
+  if (!desc) return { name: 'Reminder', summary: 'command', raw }
+  const exit = summaryTag.match(/exit code (\d+)/)
+  if (exit) return { name: 'Reminder', summary: `command ${desc} · exit ${exit[1]}`, raw }
+  if (status) return { name: 'Reminder', summary: `command ${desc} · ${status}`, raw }
+  return { name: 'Reminder', summary: `command ${desc}`, raw }
+}
+
+function classifyAgentRow(inner: string, raw: string): ReminderRow {
+  const agentType = xmlUnescape(extractTag(inner, 'agent-type') ?? '')
+  const status = extractTag(inner, 'status')
+  const jobId = xmlUnescape(extractTag(inner, 'job-id') ?? '')
+  if (agentType) {
+    return { name: 'Reminder', summary: status ? `agent ${agentType} · ${status}` : `agent ${agentType}`, raw }
+  }
+  if (jobId) return { name: 'Reminder', summary: `agent ${jobId}`, raw }
+  return { name: 'Reminder', summary: 'agent', raw }
+}
+
+// classifyReminderMessage decides from content alone (no flag, no metadata):
+// a history user message whose single text block sniffs as one of the three
+// injected envelopes renders as a collapsed row instead of a user bubble.
+export function classifyReminderMessage(text: string): ReminderRow | null {
+  if (isInjectedReminderEnvelope(text)) {
+    const isCommand = text.startsWith(JOB_COMMAND_REMINDER_PREFIX)
+    const prefixLen = isCommand ? JOB_COMMAND_REMINDER_PREFIX.length : JOB_AGENT_REMINDER_PREFIX.length
+    const inner = text.slice(prefixLen, text.length - REMINDER_SUFFIX.length)
+    return isCommand ? classifyCommandRow(inner, text) : classifyAgentRow(inner, text)
+  }
+  if (isMessageDeliveryEnvelope(text)) {
+    const quote = text.indexOf('"', MESSAGE_DELIVERY_PREFIX.length)
+    const from = text.slice(MESSAGE_DELIVERY_PREFIX.length, quote)
+    return { name: 'Reminder', summary: `got a message from ${from}`, raw: text }
+  }
+  return null
+}
+
 // Snapshot hydration cost estimate: recursive block count and parseable
 // character volume. Image src excluded — base64 data URLs are huge but
 // never markdown-parsed.

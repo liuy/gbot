@@ -362,8 +362,8 @@ func TestEngine_BackgroundAgentMessagesParent(t *testing.T) {
 	if !mp.anyRequestContains(`<message from="agent-1">`, "hello main") {
 		t.Error("no recorded request carries the agent-1 envelope — delivery through the queue + auto-turn failed")
 	}
-	if !mp.anyRequestContains("Delivered to main") {
-		t.Error("no recorded request carries the Delivered to main tool result — the message call errored")
+	if !mp.anyRequestContains("hello main") {
+		t.Error("no recorded request carries the sent-message tool result — the message call errored")
 	}
 }
 

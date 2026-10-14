@@ -12,6 +12,9 @@ func TestItemModeConstants(t *testing.T) {
 	if ItemModeJob != "job" {
 		t.Errorf("ItemModeJob = %q, want %q", ItemModeJob, "job")
 	}
+	if ItemModeMessage != "message" {
+		t.Errorf("ItemModeMessage = %q, want %q", ItemModeMessage, "message")
+	}
 }
 
 func TestQueuePriorityConstants(t *testing.T) {
@@ -38,6 +41,35 @@ func TestMessageOriginSerialization(t *testing.T) {
 	}
 	if got.Kind != OriginJob {
 		t.Errorf("Kind = %q, want %q", got.Kind, OriginJob)
+	}
+}
+
+// The producer-split origins ride inside Attachment metadata through the
+// store's metadata column; a wrong wire value would silently misroute the
+// envelope head on reload.
+func TestMessageOriginSerialization_ProducerKinds(t *testing.T) {
+	if OriginJobCommand != "job_command" {
+		t.Errorf("OriginJobCommand = %q, want %q", OriginJobCommand, "job_command")
+	}
+	if OriginMessage != "message" {
+		t.Errorf("OriginMessage = %q, want %q", OriginMessage, "message")
+	}
+	for _, kind := range []MessageOriginKind{OriginJobCommand, OriginMessage} {
+		msg := Message{
+			Attachment: &Attachment{
+				Type:   AttachmentTypeQueued,
+				Mode:   ItemModeJob,
+				Origin: &MessageOrigin{Kind: kind},
+			},
+		}
+		var restored Message
+		restored.SetMetadataFromJSON(msg.MetadataToJSON())
+		if restored.Attachment == nil || restored.Attachment.Origin == nil {
+			t.Fatalf("kind %q: attachment/origin lost through metadata round-trip (%q)", kind, msg.MetadataToJSON())
+		}
+		if restored.Attachment.Origin.Kind != kind {
+			t.Errorf("round-trip Kind = %q, want %q", restored.Attachment.Origin.Kind, kind)
+		}
 	}
 }
 

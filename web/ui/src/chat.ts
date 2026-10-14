@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, countStreamBlocks, isCollapsibleBlock, streamTextChars, timeDividerLabel, unwrapQueuedReminder } from './utils'
+import { classifyTool, countStreamBlocks, isCollapsibleBlock, streamTextChars, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
 import {
@@ -15,6 +15,7 @@ import {
   createAttachmentImage,
   buildDocumentChip,
   appendUserAttachment,
+  appendReminderRow,
   type LiveStreamSink,
 } from './components/stream_blocks'
 import {
@@ -264,12 +265,24 @@ function buildShell(
   return { outer, content }
 }
 
+// reminderRowOfMessage classifies a history message as an injected reminder
+// row. Exactly-one-block, not "first of many": a message that carries an
+// image or document block next to the envelope renders as an ordinary
+// bubble, so a row can never hide content the user would otherwise see.
+function reminderRowOfMessage(m: ChatMessage): ReminderRow | null {
+  if (m.role !== 'user' || m.blocks.length !== 1) return null
+  const b = m.blocks[0]
+  if (b.kind !== 'text' && b.kind !== 'user') return null
+  return classifyReminderMessage((b as { text: string }).text)
+}
+
 // Wire shape of the attachment event's Message payload. QueryEvent.message is
 // untyped in types.ts; this narrows it to the fields the attachment handler
 // reads. Content blocks mirror Go types.ContentBlock JSON tags: image data is
 // base64 (data URL assembled client-side), documents carry reference metadata.
 type AttachmentEventMessage = {
   attachment?: { prompt?: string; source_uuid?: string }
+  timestamp?: string
   content?: {
     type: string
     text?: string
@@ -291,6 +304,16 @@ function renderCommittedMessageDOM(
 ): { outer: HTMLElement; content: HTMLDivElement; runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] } {
   const runningTools: { id: string; handles: ToolDomHandles; block: ToolBlock }[] = []
   if (m.role === 'user') {
+    // Injected job/message reminders render as a collapsed Reminder row inside
+    // the shared message shell grid — same indent and anatomy as tool rows —
+    // decided by content alone; the persisted rows are plain user messages
+    // with no flag to branch on.
+    const row = reminderRowOfMessage(m)
+    if (row) {
+      const { outer, content } = buildShell('assistant')
+      appendReminderRow(content, row, m.startedAt)
+      return { outer, content, runningTools }
+    }
     const { outer, content } = buildShell('user')
     // Render blocks in order. Image blocks land as <img>; document reference
     // blocks land as a display-only chip; text blocks are parsed for the
@@ -1794,6 +1817,40 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           text = att.prompt ?? ''
         }
         if (!text && imageSrcs.length === 0 && docs.length === 0) return
+        // Drained job/message reminders ride EventAttachment with the
+        // persisted envelope as content; render through the shared tool-row
+        // path (renderStreamBlock sniffs the envelope into a Reminder row)
+        // instead of a user echo. Reminder rows never touch the queued-pills
+        // filter below — job/message items are never queued pills — so the
+        // branch returns.
+        const reminder = classifyReminderMessage(text)
+        if (reminder) {
+          // Agent-tagged completions surface only in the jobs feed's
+          // parent-tool view (TUI parity) — the takeover snapshot nests them
+          // under the parent tool, so a main-stream row here would show the
+          // same event twice.
+          if (e.agent) return
+          const ts = msg?.timestamp ? Date.parse(msg.timestamp) : Date.now()
+          if (streaming) {
+            const block: Block = { kind: 'user', id: '', text, startedAt: ts }
+            pendingBlocks.push(block)
+            if (streamContainer) {
+              renderStreamBlock(streamContainer, block, progressAnchor(), null, liveSink)
+            }
+          } else {
+            const { outer, content } = buildShell('assistant')
+            appendReminderRow(content, reminder, ts)
+            const m: MessageState = {
+              ...newUserMessage('', [{ kind: 'user', id: '', text, startedAt: ts }]),
+              lastActivityAt: Date.now(),
+              domRoot: outer,
+              contentDiv: content,
+            }
+            appendMsgWithDivider(messagesContainer, m.role, ts, outer)
+            messages.push(m)
+          }
+          return
+        }
         // Queued-message events carry the reminder envelope in content; unwrap
         // to the original text and render the echo gray.
         const unwrapped = unwrapQueuedReminder(text)

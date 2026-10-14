@@ -564,7 +564,14 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 	var current *MessageView
 
 	for _, msg := range msgs {
-		if msg.Flags&types.FlagMeta != 0 {
+		// Persisted job/message reminders are injected notifications the user
+		// never typed; the raw envelope must not replay as a user bubble. The
+		// skip sits BEFORE the role switch so the accumulated assistant view
+		// is not flushed — replay stays identical to the no-reminder sequence.
+		reminderText := utils.FirstTextBlockContent(msg)
+		if msg.Flags&types.FlagMeta != 0 ||
+			utils.IsInjectedReminderEnvelope(reminderText) ||
+			utils.IsMessageDeliveryEnvelope(reminderText) {
 			continue
 		}
 

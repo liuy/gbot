@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -469,6 +470,11 @@ func TestApp_Attachment_NotificationRendering(t *testing.T) {
 	if !strings.Contains(text, `● Background command "npm test" completed`) {
 		t.Errorf("Text = %q, want to contain %q", text, `● Background command "npm test" completed`)
 	}
+	// A success row trims the redundant exit suffix — the live line must match
+	// the trimmed form, not the raw summary.
+	if strings.Contains(text, " (exit code 0)") {
+		t.Errorf("Text = %q, want the exit suffix trimmed for a success notification", text)
+	}
 	if strings.Contains(text, "\x1b") {
 		if !strings.Contains(text, "10m") {
 			t.Error("expected green (10) ANSI color for success dot")
@@ -517,6 +523,34 @@ func TestApp_Attachment_EmptyMsg_NoNotification(t *testing.T) {
 	}
 	if a.repl.messages[0].Role == "notification" {
 		t.Error("empty attachmentMsg should not create notification message")
+	}
+}
+
+// TestApp_Attachment_MessageDeliveryNotification: an ItemModeMessage drain
+// renders the live delivery row ("got a message from <sender>") — the TUI
+// counterpart of the wui Reminder row summary.
+func TestApp_Attachment_MessageDeliveryNotification(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	model, _ := app.Update(attachmentMsg{From: "main"})
+	a := model.(*App)
+
+	if len(a.repl.messages) != 2 {
+		t.Fatalf("expected 2 messages (assistant + delivery row), got %d", len(a.repl.messages))
+	}
+	m := a.repl.messages[1]
+	if m.Role != "notification" {
+		t.Errorf("Role = %q, want %q", m.Role, "notification")
+	}
+	if len(m.Blocks) != 1 || m.Blocks[0].Type != BlockText {
+		t.Fatalf("expected 1 text block, got %v", m.Blocks)
+	}
+	if text := m.Blocks[0].Text; !strings.Contains(text, "got a message from main") {
+		t.Errorf("Text = %q, want to contain %q", text, "got a message from main")
 	}
 }
 
@@ -8933,6 +8967,46 @@ func TestResume_ToolResultError(t *testing.T) {
 	}
 	if !strings.Contains(tc.Output, "exit code 1") {
 		t.Errorf("output = %q, want error content", tc.Output)
+	}
+}
+
+// Persisted job/message reminders replay invisible: they are injected
+// notifications, and the pre-role-switch skip keeps the accumulated assistant
+// view intact (a mid-loop flush would split one assistant turn into two views).
+func TestEngineMessagesToViews_SkipsInjectedReminderMessages(t *testing.T) {
+	jobEnvelope := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(
+		"<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-1</job-id>\n" +
+			"<status>completed</status>\n<summary>echo done</summary>\n</job-notification>\n</system-reminder>")}}
+	delivery := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(
+		"<message from=\"main\">\nreport in\n</message>")}}
+	base := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("run the check")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Bash", Input: json.RawMessage(`{"command":"make check"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"ok"}]`)},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("all green")}},
+	}
+	withInjected := append(slices.Clone(base), jobEnvelope, delivery)
+
+	got := engineMessagesToViews(withInjected, nil)
+	want := engineMessagesToViews(base, nil)
+	if len(got) != len(want) {
+		t.Fatalf("view count = %d with injected reminders, want %d (same as without)", len(got), len(want))
+	}
+	for i := range got {
+		if len(got[i].Blocks) != len(want[i].Blocks) {
+			t.Errorf("view[%d] block count = %d, want %d (assistant view must not split at the injected boundary)",
+				i, len(got[i].Blocks), len(want[i].Blocks))
+		}
+		for j, b := range got[i].Blocks {
+			text := b.Text
+			if strings.Contains(text, "<system-reminder>") || strings.Contains(text, "<message from=") {
+				t.Errorf("view[%d] block[%d] leaks raw envelope: %q", i, j, text)
+			}
+		}
 	}
 }
 

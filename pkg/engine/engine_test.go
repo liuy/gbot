@@ -2462,16 +2462,25 @@ func TestQuery_AttachmentDrainedAfterToolResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-	// Job-mode attachments no longer emit EventAttachment.
-	// Verify no EventAttachment was emitted for the job notification.
-	for _, evt := range ec.FindEvents(types.EventAttachment) {
-		if evt.Message != nil {
-			for _, block := range evt.Message.Content {
-				if strings.HasPrefix(block.Text, "<job-notification>") {
-					t.Error("job-mode attachment should NOT emit EventAttachment")
-				}
-			}
-		}
+	// A drained job notification emits exactly one EventAttachment whose stub
+	// carries the persisted envelope verbatim (appendQueuedReminderMessage):
+	// Mode stays job, Prompt is the full <system-reminder> envelope — the
+	// value the TUI/WUI live row renders from.
+	atts := ec.FindEvents(types.EventAttachment)
+	if len(atts) != 1 {
+		t.Fatalf("got %d EventAttachment events, want exactly 1", len(atts))
+	}
+	if atts[0].Message == nil || atts[0].Message.Attachment == nil {
+		t.Fatal("EventAttachment stub is nil")
+	}
+	stub := atts[0].Message.Attachment
+	if stub.Mode != types.ItemModeJob {
+		t.Errorf("stub Mode = %q, want %q", stub.Mode, types.ItemModeJob)
+	}
+	wantEnvelope := "<system-reminder>\nA background agent completed a job:\n" +
+		"<job-notification><job-id>bg-1</job-id></job-notification>\n</system-reminder>"
+	if stub.Prompt != wantEnvelope {
+		t.Errorf("stub Prompt = %q, want the full envelope %q", stub.Prompt, wantEnvelope)
 	}
 
 	// Verify the attachment text is in the final message history (merged into user message by marshalMessages)
@@ -2604,8 +2613,8 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 		t.Fatal("auto-process did not complete within timeout")
 	}
 
-	// Job-mode attachments no longer emit EventAttachment (TUI notification suppressed)
-	// Only prompt-mode attachments emit events. Verify LLM turn still runs.
+	// Job/message drains emit EventAttachment in final envelope form (see
+	// appendQueuedReminderMessage). Verify the LLM turn still runs.
 	if len(ec.FindEvents(types.EventTurnStart)) == 0 {
 		t.Error("expected EventTurnStart - LLM turn should begin")
 	}
@@ -3163,13 +3172,15 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 		t.Fatal("timed out waiting for query end")
 	}
 
-	gotAttachment := len(ec.FindEvents(types.EventAttachment)) > 0
+	gotAttachmentEvents := ec.FindEvents(types.EventAttachment)
 	gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
 	gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
 	gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
-	// Job-mode attachments no longer emit EventAttachment
-	if gotAttachment {
-		t.Error("job-mode attachment should NOT emit EventAttachment")
+	// The job reminder drain emits exactly one live event, before the turn.
+	if len(gotAttachmentEvents) != 1 {
+		t.Errorf("%d EventAttachment events for the job item, want exactly 1 (live row insert)", len(gotAttachmentEvents))
+	} else if gotAttachmentEvents[0].Message == nil || gotAttachmentEvents[0].Message.Attachment == nil {
+		t.Error("reminder EventAttachment carries no stub message")
 	}
 	if !gotTurnStart {
 		t.Error("expected EventTurnStart")

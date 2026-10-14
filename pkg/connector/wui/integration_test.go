@@ -14,6 +14,8 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/message"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -638,8 +640,12 @@ func TestUpdateStreamState_NilThinkingOnEnd(t *testing.T) {
 	}
 }
 
-func TestUpdateStreamState_AttachmentAddsUserBlock(t *testing.T) {
+// Mid-run form of the drain: turn_start precedes the attachment, so the
+// user echo block exists (idle arrivals produce none — see
+// AttachmentRegionAssignment).
+func TestUpdateStreamState_AttachmentMidQueryAddsUserBlock(t *testing.T) {
 	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventTurnStart})
 
 	updateStreamState(&ss, types.QueryEvent{
 		Type: types.EventAttachment,
@@ -662,16 +668,68 @@ func TestUpdateStreamState_AttachmentAddsUserBlock(t *testing.T) {
 	}
 }
 
+// TestUpdateStreamState_AttachmentRegionAssignment pins the two-region model:
+// a drained message's snapshot representation depends on whether turns are
+// running at arrival time. Mid-run (turn_start seen — real queries and
+// auto-turns alike emit it) the message lives ONLY in the streaming region —
+// buildHistory truncates at queryStartMsgIdx, so the user block is its sole
+// representation until turn-end commits it. Idle (no turn_start — the
+// auto-turn's processAttachments fires the first batch's attachment events
+// before runTurns emits anything) history already owns the row: an echo
+// block here would double-render it on every takeover during the auto-turn.
+func TestUpdateStreamState_AttachmentRegionAssignment(t *testing.T) {
+	newArrival := func() types.QueryEvent {
+		return types.QueryEvent{
+			Type: types.EventAttachment,
+			Message: &types.Message{
+				Role:      types.RoleUser,
+				Timestamp: time.Date(2026, 10, 14, 2, 39, 0, 0, time.UTC),
+				Content:   []types.ContentBlock{types.NewTextBlock("<message from=\"main\">\nhello\n</message>")},
+				Attachment: &types.Attachment{
+					Type:       types.AttachmentTypeQueued,
+					Prompt:     "<message from=\"main\">\nhello\n</message>",
+					SourceUUID: "arr-1",
+					Mode:       types.ItemModeMessage,
+				},
+			},
+		}
+	}
+
+	// Idle arrival: no turn_start precedes the attachment event.
+	idle := streamState{}
+	updateStreamState(&idle, newArrival())
+	if len(idle.blocks) != 0 {
+		t.Fatalf("idle arrival produced %d blocks, want 0 (history owns the row; an echo double-renders on takeover)", len(idle.blocks))
+	}
+
+	// Mid-run arrival: turn_start precedes the attachment event.
+	mid := streamState{}
+	updateStreamState(&mid, types.QueryEvent{Type: types.EventTurnStart})
+	updateStreamState(&mid, newArrival())
+	if len(mid.blocks) != 1 {
+		t.Fatalf("mid-run arrival produced %d blocks, want 1 (the streaming region is its only representation)", len(mid.blocks))
+	}
+	if mid.blocks[0].Kind != "user" || mid.blocks[0].Text != "<message from=\"main\">\nhello\n</message>" {
+		t.Errorf("mid-run block = (%s, %q), want the user echo", mid.blocks[0].Kind, mid.blocks[0].Text)
+	}
+}
+
+// Nil-message guard, exercised mid-run so the gate cannot make the
+// assertion vacuous (idle would produce 0 blocks regardless).
 func TestUpdateStreamState_AttachmentNilMessageNoOp(t *testing.T) {
 	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventTurnStart})
 	updateStreamState(&ss, types.QueryEvent{Type: types.EventAttachment})
 	if len(ss.blocks) != 0 {
 		t.Errorf("nil Message should be no-op, got %d blocks", len(ss.blocks))
 	}
 }
 
+// Empty-text guard, exercised mid-run for the same reason as the nil-message
+// guard above.
 func TestUpdateStreamState_AttachmentEmptyTextNoOp(t *testing.T) {
 	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventTurnStart})
 	updateStreamState(&ss, types.QueryEvent{
 		Type: types.EventAttachment,
 		Message: &types.Message{
@@ -681,6 +739,64 @@ func TestUpdateStreamState_AttachmentEmptyTextNoOp(t *testing.T) {
 	})
 	if len(ss.blocks) != 0 {
 		t.Errorf("empty text should be no-op, got %d blocks", len(ss.blocks))
+	}
+}
+
+// An Agent-tagged EventAttachment follows the same routing as every other
+// sub-agent event: nested under the parent tool's children in the snapshot,
+// never appended at the root — a root append would double-render the reminder
+// the jobs feed already shows. An unknown parent drops the event (targetList
+// returns nil).
+func TestUpdateStreamState_AttachmentAgentNestsUnderParent(t *testing.T) {
+	envelope := "<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-9</job-id>\n</job-notification>\n</system-reminder>"
+	ts := time.Date(2026, 10, 13, 13, 43, 5, 0, time.UTC)
+	newAttachment := func() types.QueryEvent {
+		return types.QueryEvent{
+			Type: types.EventAttachment,
+			Agent: &types.AgentMeta{
+				ParentToolUseID: "p1",
+				AgentType:       "fork",
+				Depth:           1,
+			},
+			Message: &types.Message{
+				Role:      types.RoleUser,
+				Timestamp: ts,
+				Content:   []types.ContentBlock{types.NewTextBlock(envelope)},
+				Attachment: &types.Attachment{
+					Type:       types.AttachmentTypeQueued,
+					Prompt:     envelope,
+					SourceUUID: "job-9",
+					Mode:       types.ItemModeJob,
+				},
+			},
+		}
+	}
+
+	ss := streamState{}
+	ss.blocks = append(ss.blocks, streamBlock{Kind: "tool", ID: "p1", Name: "Agent", State: "done", Children: []streamBlock{}})
+	updateStreamState(&ss, newAttachment())
+	if len(ss.blocks) != 1 {
+		t.Fatalf("root blocks = %d, want 1 (attachment must not land at the root)", len(ss.blocks))
+	}
+	children := ss.blocks[0].Children
+	if len(children) != 1 {
+		t.Fatalf("parent children = %d, want 1", len(children))
+	}
+	if children[0].Kind != "user" {
+		t.Errorf("nested block kind = %q, want user", children[0].Kind)
+	}
+	if children[0].Text != envelope {
+		t.Errorf("nested block text = %q, want the raw envelope %q", children[0].Text, envelope)
+	}
+	if children[0].StartedAt != ts.UnixMilli() {
+		t.Errorf("nested StartedAt = %d, want the message timestamp %d", children[0].StartedAt, ts.UnixMilli())
+	}
+
+	// Unknown parent: dropped, not appended to the root.
+	ssUnknown := streamState{}
+	updateStreamState(&ssUnknown, newAttachment())
+	if len(ssUnknown.blocks) != 0 {
+		t.Errorf("unknown parent produced %d root blocks, want 0", len(ssUnknown.blocks))
 	}
 }
 
@@ -1200,11 +1316,13 @@ func TestBuildSessionList_EmptySessions(t *testing.T) {
 // updateStreamState must unwrap queued message events: the persisted message
 // carries the reminder envelope in content, but the takeover snapshot echo
 // shows the original user text (att.Prompt), matching what the live client
-// rendered.
+// rendered. Mid-run form — the echo block only exists while turns are
+// running.
 func TestUpdateStreamState_QueuedMessageEchoUsesOriginalText(t *testing.T) {
 	envelope := "<system-reminder>\nThe user sent a new message while you were working:\ncheck the logs" +
 		"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>"
 	ss := streamState{}
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventTurnStart})
 	updateStreamState(&ss, types.QueryEvent{
 		Type: types.EventAttachment,
 		Message: &types.Message{
@@ -1226,5 +1344,58 @@ func TestUpdateStreamState_QueuedMessageEchoUsesOriginalText(t *testing.T) {
 	}
 	if ss.blocks[0].Text != "check the logs" {
 		t.Errorf("echo text = %q, want unwrapped %q", ss.blocks[0].Text, "check the logs")
+	}
+}
+
+// A drained reminder's snapshot block keeps the raw envelope as a user block
+// (the client sniffs it into a Reminder row at render time) and carries the
+// message timestamp as StartedAt — the row's wall-clock duration slot must
+// show the message's own time, not the render time, so takeover matches a
+// refresh. Mid-run form — the echo block only exists while turns are
+// running.
+func TestUpdateStreamState_ReminderEnvelopeKeepsStartedAt(t *testing.T) {
+	envelope := "<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-1</job-id>\n" +
+		"</job-notification>\n</system-reminder>"
+	ts := time.Date(2026, 10, 13, 13, 43, 5, 0, time.UTC)
+	ss := streamState{}
+	updateStreamState(&ss, types.QueryEvent{Type: types.EventTurnStart})
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role:      types.RoleUser,
+			Timestamp: ts,
+			Content:   []types.ContentBlock{types.NewTextBlock(envelope)},
+			Attachment: &types.Attachment{
+				Type:       types.AttachmentTypeQueued,
+				Prompt:     envelope,
+				SourceUUID: "job-1",
+				Mode:       types.ItemModeJob,
+			},
+		},
+	})
+	if len(ss.blocks) != 1 {
+		t.Fatalf("streamState blocks = %d, want 1", len(ss.blocks))
+	}
+	if ss.blocks[0].Kind != "user" {
+		t.Errorf("block kind = %q, want user", ss.blocks[0].Kind)
+	}
+	if ss.blocks[0].Text != envelope {
+		t.Errorf("block text = %q, want the raw envelope %q", ss.blocks[0].Text, envelope)
+	}
+	if ss.blocks[0].StartedAt != ts.UnixMilli() {
+		t.Errorf("block StartedAt = %d, want the message timestamp %d", ss.blocks[0].StartedAt, ts.UnixMilli())
+	}
+}
+
+// The engine registers the *MessageTool wrapper, not the inner builtTool;
+// interface embedding hides DecodeResult from the wrapper, so history replay
+// fed the raw wire JSON straight through RenderResult. The wrapper must
+// re-expose it (same as FormatWireBlocks).
+func TestRenderToolOutput_MessageWrapperDecodesWireBlocks(t *testing.T) {
+	msg := message.New(nil)
+	tools := map[string]tool.Tool{"Message": msg}
+	got := renderToolOutput("Message", []byte(`[{"type":"text","text":"hello there"}]`), tools)
+	if got != "hello there" {
+		t.Errorf("renderToolOutput = %q, want hello there", got)
 	}
 }

@@ -6677,14 +6677,23 @@ func TestProcessAttachments_WithPending(t *testing.T) {
 
 	eng.ProcessAttachments(ctx, "")
 
-	// Job-mode attachments no longer emit EventAttachment.
-	// Verify LLM turn runs (EventTurnStart + EventQueryEnd) without EventAttachment.
-	var gotTurn, gotEnd bool
+	// Job-mode attachments emit exactly one EventAttachment at drain time
+	// (the live reminder row insert), BEFORE the LLM turn starts.
+	var gotAttachment, gotTurn, gotEnd bool
 	for !gotTurn || !gotEnd {
 		select {
 		case evt := <-eventCh:
 			if evt.Type == types.EventAttachment {
-				t.Error("job-mode attachment should NOT emit EventAttachment")
+				if gotAttachment {
+					t.Error("job-mode attachment emitted more than one EventAttachment")
+				}
+				if gotTurn {
+					t.Error("EventAttachment arrived after EventTurnStart — the drain must fire it before the turn")
+				}
+				if evt.Message == nil || evt.Message.Attachment == nil {
+					t.Error("reminder EventAttachment carries no stub message")
+				}
+				gotAttachment = true
 			}
 			if evt.Type == types.EventTurnStart {
 				gotTurn = true
@@ -6695,6 +6704,9 @@ func TestProcessAttachments_WithPending(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for LLM turn after job attachment")
 		}
+	}
+	if !gotAttachment {
+		t.Error("job-mode attachment emitted no EventAttachment — live row insert lost")
 	}
 }
 

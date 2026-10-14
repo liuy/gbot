@@ -104,8 +104,8 @@ func TestCall_DeliversEnvelope(t *testing.T) {
 		t.Fatalf("enqueued %d items, want 1", got)
 	}
 	item := spy.last()
-	if item.Mode != types.ItemModeJob {
-		t.Errorf("Mode = %q, want %q", item.Mode, types.ItemModeJob)
+	if item.Mode != types.ItemModeMessage {
+		t.Errorf("Mode = %q, want %q", item.Mode, types.ItemModeMessage)
 	}
 	if !strings.Contains(item.Value, `<message from="main">`) {
 		t.Errorf("Value = %q, want <message from=\"main\"> envelope header", item.Value)
@@ -136,6 +136,29 @@ func TestCall_DeliversToEngineTarget(t *testing.T) {
 	}
 	if !strings.Contains(spy.last().Value, `<message from="main">`) {
 		t.Errorf("Value = %q, want envelope with from=main", spy.last().Value)
+	}
+}
+
+// TestMessageTool_DeliveryUsesMessageChannel pins the delivery channel: the
+// item rides its own mode and origin so the engine persists the envelope
+// verbatim instead of reminder-wrapping it. Value is pinned to the exact
+// buildEnvelope bytes.
+func TestMessageTool_DeliveryUsesMessageChannel(t *testing.T) {
+	t.Parallel()
+	tl, _, spy := newTool(t)
+	if _, err := callJSON(t, tl, `{"to":"agent-3","message":"hello main"}`); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	item := spy.last()
+	if item.Mode != types.ItemModeMessage {
+		t.Errorf("Mode = %q, want %q", item.Mode, types.ItemModeMessage)
+	}
+	if item.Origin == nil || item.Origin.Kind != types.OriginMessage {
+		t.Errorf("Origin = %+v, want Kind %q", item.Origin, types.OriginMessage)
+	}
+	want := "<message from=\"main\">\nhello main\n</message>"
+	if item.Value != want {
+		t.Errorf("Value = %q, want the exact buildEnvelope bytes %q", item.Value, want)
 	}
 }
 
@@ -378,8 +401,8 @@ func TestDescription_SummarizesMechanics(t *testing.T) {
 	if !strings.Contains(desc, "message") {
 		t.Errorf("Description = %q, want it to mention message sending", desc)
 	}
-	if !strings.Contains(desc, "agent") || !strings.Contains(desc, "engine") {
-		t.Errorf("Description = %q, want it to mention agents and engines", desc)
+	if !strings.Contains(desc, "agent") {
+		t.Errorf("Description = %q, want it to mention agents", desc)
 	}
 }
 
@@ -477,8 +500,8 @@ func TestMessageTool_DescriptionShowsTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
-	if desc != "-> main" {
-		t.Errorf("Description = %q, want %q", desc, "-> main")
+	if desc != "sent to main" {
+		t.Errorf("Description = %q, want %q", desc, "sent to main")
 	}
 }
 
@@ -489,7 +512,7 @@ func TestMessageTool_RenderResultPlainString(t *testing.T) {
 	}
 }
 
-func TestMessageTool_RenderResultShowsSentMessage(t *testing.T) {
+func TestMessageTool_RenderResultShowsSentContent(t *testing.T) {
 	tl, _, _ := newTool(t)
 	got := tl.RenderResult(MessageResult{To: "main", Message: "what time is it?"})
 	if got != "what time is it?" {
@@ -497,11 +520,26 @@ func TestMessageTool_RenderResultShowsSentMessage(t *testing.T) {
 	}
 }
 
+func TestMessageTool_DecodeResultUnwrapsWireBlocks(t *testing.T) {
+	tl, _, _ := newTool(t)
+	dt, ok := tl.Tool.(tool.ToolWithDecodeResult)
+	if !ok {
+		t.Fatal("MessageTool does not implement ToolWithDecodeResult")
+	}
+	v, err := dt.DecodeResult([]byte(`[{"type":"text","text":"hello there"}]`))
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	if got := tl.RenderResult(v); got != "hello there" {
+		t.Errorf("decode+render = %q, want hello there", got)
+	}
+}
+
 func TestMessageTool_WireBlocksFromMessageResult(t *testing.T) {
 	tl, _, _ := newTool(t)
 	blocks := tl.FormatWireBlocks(MessageResult{To: "agent-3", Message: "hello"})
-	if len(blocks) != 1 || blocks[0].Text != "Delivered to agent-3" {
-		t.Errorf("wire blocks = %+v, want single text Delivered to agent-3", blocks)
+	if len(blocks) != 1 || blocks[0].Text != "hello" {
+		t.Errorf("wire blocks = %+v, want single text of the sent message", blocks)
 	}
 }
 
@@ -512,7 +550,7 @@ func TestMessageTool_DescriptionFallbackOnBadInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Description(%s): %v", in, err)
 		}
-		if desc != "Send a text message to a running agent or engine (target IDs from the Job tool's list output)." {
+		if desc != "Send a text message to a running agent" {
 			t.Errorf("Description(%s) = %q, want static fallback", in, desc)
 		}
 	}

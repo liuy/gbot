@@ -176,9 +176,11 @@ export type QueryEvent = {
   session_id?: string
   /** Attachment/query_start payload (Go types.Message JSON tags). Attachment
    * mode "prompt" carries the original user text in prompt; queued-message
-   * events carry the envelope in content. */
+   * events carry the envelope in content. Drained job/message reminders ride
+   * mode "job"/"message" with the envelope in content and RFC3339 timestamp. */
   message?: {
     attachment?: { prompt?: string; source_uuid?: string; mode?: string }
+    timestamp?: string
     content?: {
       type: string
       text?: string

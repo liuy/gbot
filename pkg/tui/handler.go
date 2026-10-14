@@ -12,6 +12,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 const (
@@ -164,6 +165,14 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				UserText:   att.Prompt,
 				SourceUUID: att.SourceUUID,
 				Agent:      evt.Agent,
+			}
+		}
+		if att.Mode == types.ItemModeMessage {
+			// Agent-to-agent delivery: the label comes from the envelope's
+			// <message from="X"> head, matching the wui reminder row summary.
+			return attachmentMsg{
+				From:  utils.MessageDeliverySender(att.Prompt),
+				Agent: evt.Agent,
 			}
 		}
 		xml := att.Prompt

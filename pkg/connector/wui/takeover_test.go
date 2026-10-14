@@ -738,8 +738,11 @@ func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
 	// Empty history — all content comes from streaming.
 	c.mock().SetMessagesFn(func() []types.Message { return nil })
 
-	// Simulate query start
+	// Simulate query start + first turn start — a real query emits both
+	// (Query then runTurns); the turn_start-only auto-turn path is covered
+	// by AutoTurnDrainEchoedInSnapshot below.
 	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
 
 	// Turn 1: assistant produces text
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hello "})
@@ -846,18 +849,90 @@ func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
 	}
 }
 
-// TestTakeover_SnapshotIncludesAllBlocksWithQueryEndAttachment verifies that
-// snapshot includes ALL streaming blocks when a queued attachment is drained
-// AFTER query_end (processAttachments path). This is the scenario where the
-// user sends a queued message during a query, the query finishes, then
-// processAttachments picks up the queue and starts a new runTurns — all
-// within the same "busy" window from the client's perspective.
-//
-// The key difference from the mid-query case: the first query's query_end
-// fires, clearing streamState. Then processAttachments sends EventAttachment
-// + new streaming. The takeover snapshot must show the attachment + new
-// streaming. The first query's content should be in history (committed to
-// engine.Messages), NOT in snapshot (cleared by query_end).
+// TestTakeover_AutoTurnDrainEchoedInSnapshot pins the auto-turn half of the
+// two-region contract: processAttachments→runTurns emits turn_start but never
+// query_start, so the query-liveness gate must read turn_start. A mid-run
+// drain under a query_start-only gate looks idle and its echo is dropped;
+// buildHistory truncates everything past queryStartMsgIdx (snapshotted before
+// runTurns), so without the echo the drained message vanishes from every
+// takeover snapshot.
+func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
+	c := newTestConnector(t)
+
+	// Conn1 connects first, becomes active.
+	ws1 := dialAndStore(t, c)
+
+	// Empty history — all content comes from streaming.
+	c.mock().SetMessagesFn(func() []types.Message { return nil })
+
+	// Auto-turn already streaming: runTurns' turn_start, no query_start
+	// (the processAttachments path emits none).
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "working"})
+
+	// Mid-run drain at the turn boundary: a queued message arrives.
+	c.Handle(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "make check"},
+			},
+		},
+	})
+
+	// Conn2 connects → takeover
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+
+	_ = ws1
+
+	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+
+	var textContents []string
+	var userTexts []string
+	for _, b := range snapBlocks {
+		switch b.Kind {
+		case "text":
+			textContents = append(textContents, b.Text)
+		case "user":
+			userTexts = append(userTexts, b.Text)
+		}
+	}
+
+	foundWorking := false
+	for _, txt := range textContents {
+		if strings.Contains(txt, "working") {
+			foundWorking = true
+		}
+	}
+	if !foundWorking {
+		t.Errorf("snapshot missing auto-turn streaming text 'working', texts: %v", textContents)
+	}
+
+	foundMakeCheck := false
+	for _, u := range userTexts {
+		if strings.Contains(u, "make check") {
+			foundMakeCheck = true
+		}
+	}
+	if !foundMakeCheck {
+		t.Errorf("snapshot missing drained message 'make check' (auto-turn mid-run drain must echo as a user block — buildHistory truncates the row, the echo is its only snapshot representation), users: %v", userTexts)
+	}
+}
+
+// TestTakeover_SnapshotQueryEndAttachmentPath verifies the idle-region half
+// of the two-region contract when a queued attachment is drained AFTER
+// query_end (processAttachments path — the auto-turn emits attachment events
+// with NO query_start of its own). The drained row is appended before
+// processAttachments' snapshotQueryStart, so history owns it; the snapshot
+// must carry only the auto-turn's live streaming, with no user-block echo
+// that would double-render the history row. The first query's content is
+// likewise history-only (cleared from streamState by query_end).
 func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -922,15 +997,13 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 		}
 	}
 
-	// Snapshot must contain the attachment echo "make check"
-	foundMakeCheck := false
+	// Snapshot must NOT contain the attachment echo: no turn_start preceded
+	// it (the idle first batch drains before runTurns emits one), so the row
+	// lives in history — an echo here is the double-render takeover bug.
 	for _, u := range userTexts {
 		if strings.Contains(u, "make check") {
-			foundMakeCheck = true
+			t.Errorf("snapshot carries a user echo %q for an idle-drained message — history owns the row, users: %v", u, userTexts)
 		}
-	}
-	if !foundMakeCheck {
-		t.Errorf("snapshot missing attachment 'make check', users: %v", userTexts)
 	}
 
 	// Snapshot must contain the new streaming text "running make check"
@@ -963,13 +1036,20 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 		t.Fatalf("unmarshal history: %v", err)
 	}
 	foundQuery1Response := false
+	foundMakeCheck := false
 	for _, m := range hist.Messages {
 		if strings.Contains(m.Text, "query1 response") {
 			foundQuery1Response = true
 		}
+		if strings.Contains(m.Text, "make check") {
+			foundMakeCheck = true
+		}
 	}
 	if !foundQuery1Response {
 		t.Errorf("history missing query1 response — QueryStartMsgIdx truncation")
+	}
+	if !foundMakeCheck {
+		t.Errorf("history missing the idle-drained attachment row 'make check' — the history region must own it")
 	}
 }
 

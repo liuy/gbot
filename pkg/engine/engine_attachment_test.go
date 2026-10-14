@@ -81,6 +81,25 @@ func TestWrapOriginText_JobOrigin(t *testing.T) {
 	}
 }
 
+func TestWrapOriginText_JobCommandOrigin(t *testing.T) {
+	got := wrapOriginText("job output", &types.MessageOrigin{Kind: types.OriginJobCommand})
+	want := "A background command completed:\njob output"
+	if got != want {
+		t.Errorf("wrapOriginText(job_command) = %q, want %q", got, want)
+	}
+}
+
+func TestWrapOriginText_MessageOrigin(t *testing.T) {
+	got := wrapOriginText("<message from=\"main\">\nhi\n</message>", &types.MessageOrigin{Kind: types.OriginMessage})
+	want := "<message from=\"main\">\nhi\n</message>"
+	if got != want {
+		t.Errorf("wrapOriginText(message) = %q, want the raw text unchanged", got)
+	}
+	if strings.Contains(got, "The user sent a new message") {
+		t.Error("wrapOriginText(message) wrapped the delivery as a user 插话 — the identity case must precede the default arm")
+	}
+}
+
 func TestWrapOriginText_HumanOrigin(t *testing.T) {
 	got := wrapOriginText("hello", &types.MessageOrigin{Kind: types.OriginHuman})
 	want := "The user sent a new message while you were working:\nhello" +
@@ -534,15 +553,17 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 	})
 
 	// 4. Wait for processAttachments to complete
-	// Job-mode attachments no longer emit EventAttachment.
-	// processAttachments does not emit EventQueryEnd, so wait for
+	// The drain emits exactly one EventAttachment (live row insert) before
+	// the turn. processAttachments does not emit EventQueryEnd, so wait for
 	// EventTurnStart from runTurns as completion signal.
 	deadline := time.After(5 * time.Second)
+	attachments := 0
 	for {
 		allEvents := collector.Events()
+		attachments = 0
 		for _, e := range allEvents {
 			if e.Type == types.EventAttachment {
-				t.Fatal("job-mode attachment should NOT emit EventAttachment")
+				attachments++
 			}
 		}
 		gotTurn := false
@@ -559,6 +580,18 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 			t.Fatalf("timed out waiting for EventTurnStart. Total events: %d", len(allEvents))
 		default:
 			runtime.Gosched()
+		}
+	}
+	if attachments != 1 {
+		t.Fatalf("%d EventAttachment events for the sub-engine job attachment, want exactly 1", attachments)
+	}
+	// The sub-agent event must stay tagged so the TUI routes the row into the
+	// parent tool view, not the main conversation.
+	for _, e := range collector.Events() {
+		if e.Type == types.EventAttachment {
+			if e.Agent == nil || e.Agent.ParentToolUseID != "call_agent_123" {
+				t.Fatalf("sub-engine reminder event Agent = %+v, want the tagged parent", e.Agent)
+			}
 		}
 	}
 
@@ -626,12 +659,16 @@ waitLoop:
 		}
 	}
 
-	// Job-mode attachments no longer emit EventAttachment.
-	// Verify no EventAttachment was emitted but LLM turn ran.
+	// The drain emits exactly one EventAttachment (live row insert) and the
+	// LLM turn ran for it.
+	attachments := 0
 	for _, e := range collector.Events() {
 		if e.Type == types.EventAttachment {
-			t.Fatal("job-mode attachment should NOT emit EventAttachment")
+			attachments++
 		}
+	}
+	if attachments != 1 {
+		t.Fatalf("%d EventAttachment events for the sub-engine job attachment, want exactly 1", attachments)
 	}
 
 	// KEY CHECK: sub-engine should have called the LLM via runTurns

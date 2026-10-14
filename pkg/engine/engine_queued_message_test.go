@@ -163,6 +163,15 @@ func TestQueuedMessage_MidToolExec_TailAttachAtTurnBoundary(t *testing.T) {
 	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
 		t.Fatal("no EventAttachment after the tool completed")
 	}
+	// The boundary emit must carry the stub message, not just the event type
+	// — the TUI/WUI attachment handlers dereference ev.Message.
+	evs := ec.FindEvents(types.EventAttachment)
+	if len(evs) == 0 || evs[0].Message == nil {
+		t.Fatal("boundary EventAttachment carries no message")
+	}
+	if evs[0].Message.Attachment == nil || evs[0].Message.Attachment.Prompt != "wait, change of plans" {
+		t.Errorf("boundary event stub = %+v, want the original text in Prompt", evs[0].Message.Attachment)
+	}
 	if res := ec.WaitForResult(); res.Error != nil {
 		t.Fatalf("query error: %v", res.Error)
 	}
@@ -321,9 +330,9 @@ func TestQueuedMessage_MidToolExec_MultiQueuedFIFO(t *testing.T) {
 
 // TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable drives a
 // full query with a mid-tool queued message against a real store. The message
-// must NOT be in the store while the tool runs; the boundary attach persists
-// it immediately (before the follow-up LLM call completes), and reloading the
-// session must reproduce the live sequence byte-for-byte — the restart
+// must NOT be in the store while the tool runs; after the boundary attach a
+// batch persist commits it while the query is still running, and reloading
+// the session must reproduce the live sequence byte-for-byte — the restart
 // cache-stability contract.
 func TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable(t *testing.T) {
 	store := newTestStore(t)
@@ -399,8 +408,10 @@ func TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable(t *testin
 	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
 		t.Fatal("no EventAttachment after the tool completed")
 	}
-	// Attach-time persist: the store holds the envelope while the query is
-	// still running (the follow-up LLM call has not returned yet).
+	// Boundary batch persist: the drain itself does not persist (the query is
+	// active — the streaming region owns the row's live representation); a
+	// batch persist (turn boundary or query exit — this poll cannot tell them
+	// apart) commits it while the query is still running.
 	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
 	var persisted []types.Message
 	for {
@@ -416,7 +427,7 @@ func TestQueuedMessage_MidToolExec_PersistedAtBoundaryAndRestartStable(t *testin
 			break
 		}
 		if time.Now().After(deadline) { // REAL-TIME: poll loop bounded by deadline
-			t.Fatalf("store contains %d envelope messages after the boundary attach, want 1 (attach must persist immediately)", len(findEnvelopeMessages(persisted)))
+			t.Fatalf("store contains %d envelope messages after the boundary attach, want 1 (a batch persist must commit it while the query is still running)", len(findEnvelopeMessages(persisted)))
 		}
 		time.Sleep(10 * time.Millisecond) // REAL-TIME
 	}
@@ -643,10 +654,14 @@ func TestQueuedMessage_IdleEnqueueKeepsQueuePath(t *testing.T) {
 	}
 }
 
-// TestQueuedMessage_JobOriginStillQueuedMidTurn pins the scope: only the
-// wrapOriginText default branch (user queued message) changes. Job origins keep
-// the ephemeral attachment queue mid-turn.
-func TestQueuedMessage_JobOriginStillQueuedMidTurn(t *testing.T) {
+// TestQueuedMessage_JobItem_PersistedAtBoundaryNotAttachment pins the
+// routing rule: the persist path is chosen by MODE — prompt-mode items with
+// a user origin persist as 插话 (appendQueuedUserMessage), job-mode items
+// persist in their own reminder envelope at the turn boundary. The origin
+// only decides which prompt-mode items take the 插话 persist path
+// (isUserQueuedOrigin); it never routes a job item back to the ephemeral
+// attachment queue.
+func TestQueuedMessage_JobItem_PersistedAtBoundaryNotAttachment(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "final"), nil)
@@ -679,22 +694,138 @@ func TestQueuedMessage_JobOriginStillQueuedMidTurn(t *testing.T) {
 		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
 		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
 	})
-	if got := eng.AttachmentsLen(); got != 1 {
-		t.Errorf("queue len = %d, want 1 (job origin keeps queueing)", got)
+	// A second job item through the OTHER producer origin: routing is keyed
+	// on Mode, so the origin split must only change the envelope head.
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     bashNotificationXML(),
+		Mode:      types.ItemModeJob,
+		UUID:      "job-b",
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJobCommand},
+		Timestamp: time.Date(2026, 10, 5, 11, 0, 1, 0, time.UTC),
+	})
+	if got := eng.AttachmentsLen(); got != 2 {
+		t.Errorf("queue len = %d, want 2 (job items keep queueing mid-turn)", got)
 	}
-	if len(findEnvelopeMessages(eng.Messages())) != 0 {
-		t.Error("job origin must not append history messages")
+	if len(findReminderEnvelopeMessages(eng.Messages())) != 0 {
+		t.Error("job item must not append history messages while the tool runs")
 	}
 
 	close(bt.releaseCh)
-	ec.WaitForResult()
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
+	envelopes := findReminderEnvelopeMessages(eng.Messages())
+	if len(envelopes) != 2 {
+		t.Fatalf("history contains %d job envelope messages after the turn, want 2 (one per item, persisted at the boundary)", len(envelopes))
+	}
+	heads := map[string]bool{}
+	for _, i := range envelopes {
+		text := utils.FirstTextBlockContent(eng.Messages()[i])
+		switch {
+		case strings.Contains(text, "not a user queued message"):
+			heads["agent"] = strings.HasPrefix(text, "<system-reminder>\nA background agent completed a job:\n")
+		case strings.Contains(text, "bg-1"):
+			heads["command"] = strings.HasPrefix(text, "<system-reminder>\nA background command completed:\n")
+		default:
+			t.Errorf("unexpected envelope text: %q", text)
+		}
+	}
+	if !heads["agent"] || !heads["command"] {
+		t.Errorf("envelope heads: agent=%v command=%v, want both true (origin splits the head, not the routing)", heads["agent"], heads["command"])
+	}
+	if got := eng.AttachmentsLen(); got != 0 {
+		t.Errorf("attachment queue len = %d after the turn, want 0 (job items persisted, not attached)", got)
+	}
+	// Each drained job item emits exactly one live event; queuedMsgSeq stays
+	// put (pure UI signal).
+	evs := ec.FindEvents(types.EventAttachment)
+	if len(evs) != 2 {
+		t.Errorf("%d EventAttachment events for 2 job items, want exactly 2 (live row inserts)", len(evs))
+	}
+	for i, ev := range evs {
+		if ev.Message == nil || ev.Message.Attachment == nil {
+			t.Fatalf("event[%d] carries no stub message", i)
+		}
+		if ev.Message.Attachment.Mode != types.ItemModeJob {
+			t.Errorf("event[%d] stub mode = %q, want job", i, ev.Message.Attachment.Mode)
+		}
+	}
+	if eng.queuedMsgSeq != 0 {
+		t.Errorf("queuedMsgSeq = %d after 2 job reminder drains, want 0 (no bump)", eng.queuedMsgSeq)
+	}
+}
+
+// TestQueuedMessage_PromptJobOriginEmittedAtBoundary covers the one shape
+// that still rides the legacy attachment-message path through the
+// DrainByPriority boundary loop: a prompt-mode item with a job-family origin
+// (not a user queued message — drainQueuedUserAttachments leaves it queued).
+// That drain's emit must carry the stub message; the TUI/WUI attachment
+// handlers dereference ev.Message unconditionally.
+func TestQueuedMessage_PromptJobOriginEmittedAtBoundary(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "final"), nil)
+
+	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bt.Name(): bt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.Query(context.Background(), "run the tool", "")
+	select {
+	case <-bt.startCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "scope note",
+		Mode:      types.ItemModePrompt,
+		UUID:      "pj-1",
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
+	})
+	close(bt.releaseCh)
+	if !ec.WaitForEventCount(types.EventAttachment, 1, 5*time.Second) {
+		t.Fatal("no EventAttachment for the prompt item with a job origin at the boundary")
+	}
+	evs := ec.FindEvents(types.EventAttachment)
+	if len(evs) != 1 {
+		t.Fatalf("%d EventAttachment events, want exactly 1", len(evs))
+	}
+	if evs[0].Message == nil {
+		t.Fatal("boundary EventAttachment carries no message")
+	}
+	att := evs[0].Message.Attachment
+	if att == nil || att.Prompt != "scope note" || att.Mode != types.ItemModePrompt {
+		t.Errorf("boundary event stub = %+v, want prompt-mode stub carrying the original text", att)
+	}
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error: %v", res.Error)
+	}
+	if n := eng.AttachmentsLen(); n != 0 {
+		t.Errorf("attachment queue len = %d after the turn, want 0", n)
+	}
 }
 
 // TestQueuedMessage_PinsByteEqualityWithLegacyAssembledForm pins cross-version
 // prefix stability: the persisted queued message content must equal, byte for
 // byte, what the legacy assembly (normalizeAttachmentForAPI) produced for the
 // same queued item. If either side drifts, every pre-existing cache prefix
-// built by the other version diverges at the queued message.
+// built by the other version diverges at the queued message. The message
+// channel has NO legacy assembled form (it is a deliberate wire change — the
+// delivery used to ride the agent-head reminder and now rides its own bare
+// envelope), so it skips the legacy compare and pins its own bytes instead.
 func TestQueuedMessage_PinsByteEqualityWithLegacyAssembledForm(t *testing.T) {
 	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
 	cases := []struct {
@@ -731,50 +862,62 @@ func TestQueuedMessage_PinsByteEqualityWithLegacyAssembledForm(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "job command origin",
+			item: types.QueuedItem{Value: bashNotificationXML(), Mode: types.ItemModeJob, UUID: "u5", Origin: &types.MessageOrigin{Kind: types.OriginJobCommand}},
+		},
+		{
+			name: "job agent origin nil origin",
+			item: types.QueuedItem{Value: agentNotificationXML(), Mode: types.ItemModeJob, UUID: "u6"},
+		},
+		{
+			name: "job agent origin explicit",
+			item: types.QueuedItem{Value: agentNotificationXML(), Mode: types.ItemModeJob, UUID: "u7", Origin: &types.MessageOrigin{Kind: types.OriginJob}},
+		},
+		{
+			name: "message delivery",
+			item: types.QueuedItem{Value: "<message from=\"main\">\nhello main\n</message>", Mode: types.ItemModeMessage, UUID: "u8", Origin: &types.MessageOrigin{Kind: types.OriginMessage}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			persisted := queuedFinalContent(tc.item)
 			content := tc.item.Content
 			if len(content) == 0 {
 				content = []types.ContentBlock{types.NewTextBlock(tc.item.Value)}
 			}
-			persisted := buildReminderContent(content, tc.item.Origin)
 
-			legacy := types.Message{
-				Role:        types.RoleUser,
-				MessageType: types.MessageTypeAttachment,
-				Content:     content,
-				Attachment: &types.Attachment{
-					Type:       types.AttachmentTypeQueued,
-					Prompt:     tc.item.Value,
-					SourceUUID: tc.item.UUID,
-					Mode:       types.ItemModePrompt,
-					Origin:     tc.item.Origin,
-				},
-			}
-			assembled := normalizeAttachmentForAPI(legacy)
+			if tc.item.Mode != types.ItemModeMessage {
+				legacy := types.Message{
+					Role:        types.RoleUser,
+					MessageType: types.MessageTypeAttachment,
+					Content:     content,
+					Attachment: &types.Attachment{
+						Type:       types.AttachmentTypeQueued,
+						Prompt:     tc.item.Value,
+						SourceUUID: tc.item.UUID,
+						Mode:       tc.item.Mode,
+						Origin:     tc.item.Origin,
+					},
+				}
+				assembled := normalizeAttachmentForAPI(legacy)
 
-			if len(persisted) != len(assembled.Content) {
-				t.Fatalf("block count %d, want %d", len(persisted), len(assembled.Content))
-			}
-			for i := range persisted {
-				p, a := persisted[i], assembled.Content[i]
-				if p.Type != a.Type || p.Text != a.Text || p.ID != a.ID || p.Name != a.Name {
-					t.Errorf("block[%d] diverges:\npersisted: %+v\nassembled: %+v", i, p, a)
+				if len(persisted) != len(assembled.Content) {
+					t.Fatalf("block count %d, want %d", len(persisted), len(assembled.Content))
 				}
-				if (p.Source == nil) != (a.Source == nil) {
-					t.Errorf("block[%d] Source nil-ness diverges", i)
-				} else if p.Source != nil && *p.Source != *a.Source {
-					t.Errorf("block[%d] Source diverges:\npersisted: %+v\nassembled: %+v", i, p.Source, a.Source)
+				for i := range persisted {
+					p, a := persisted[i], assembled.Content[i]
+					if p.Type != a.Type || p.Text != a.Text || p.ID != a.ID || p.Name != a.Name {
+						t.Errorf("block[%d] diverges:\npersisted: %+v\nassembled: %+v", i, p, a)
+					}
+					if (p.Source == nil) != (a.Source == nil) {
+						t.Errorf("block[%d] Source nil-ness diverges", i)
+					} else if p.Source != nil && *p.Source != *a.Source {
+						t.Errorf("block[%d] Source diverges:\npersisted: %+v\nassembled: %+v", i, p.Source, a.Source)
+					}
 				}
 			}
-			// The envelope must unwrap back to the original user text so the
-			// UI render helpers (utils.UnwrapQueuedReminder) and this
-			// builder can never drift apart.
-			original, ok := utils.UnwrapQueuedReminder(persisted[0].Text)
-			if !ok {
-				t.Fatalf("envelope not recognized by utils unwrapper: %q", persisted[0].Text)
-			}
+
 			// Mirrors buildReminderContent's text join; falls back to Value
 			// for items that carry no text blocks.
 			var parts []string
@@ -783,19 +926,63 @@ func TestQueuedMessage_PinsByteEqualityWithLegacyAssembledForm(t *testing.T) {
 					parts = append(parts, b.Text)
 				}
 			}
-			wantText := tc.item.Value
+			rawText := tc.item.Value
 			if len(parts) != 0 {
-				wantText = strings.Join(parts, "\n")
+				rawText = strings.Join(parts, "\n")
 			}
-			if original != wantText {
-				t.Errorf("unwrapped = %q, want %q", original, wantText)
+
+			// Cross-package pin in the literal + predicate form: the persisted
+			// text must equal a literal written here, and the pkg/utils
+			// predicates (whose constants are unexported) must accept it.
+			switch {
+			case tc.item.Mode == types.ItemModeMessage:
+				want := tc.item.Value
+				if persisted[0].Text != want {
+					t.Errorf("persisted text = %q, want the delivery envelope verbatim %q", persisted[0].Text, want)
+				}
+				if strings.Contains(persisted[0].Text, "<system-reminder>") {
+					t.Error("message channel must never be reminder-wrapped")
+				}
+				if !utils.IsMessageDeliveryEnvelope(persisted[0].Text) {
+					t.Errorf("utils.IsMessageDeliveryEnvelope rejected %q — engine/utils envelope drift", persisted[0].Text)
+				}
+				if utils.IsInjectedReminderEnvelope(persisted[0].Text) {
+					t.Error("the two sniffs overlap: delivery classified as a job reminder")
+				}
+			case tc.item.Origin != nil && tc.item.Origin.Kind == types.OriginJobCommand:
+				want := "<system-reminder>\nA background command completed:\n" + rawText + "\n</system-reminder>"
+				if persisted[0].Text != want {
+					t.Errorf("persisted text = %q, want %q", persisted[0].Text, want)
+				}
+				if !utils.IsInjectedReminderEnvelope(persisted[0].Text) {
+					t.Errorf("utils.IsInjectedReminderEnvelope rejected %q — engine/utils envelope drift", persisted[0].Text)
+				}
+			case tc.item.Mode == types.ItemModeJob:
+				want := "<system-reminder>\nA background agent completed a job:\n" + rawText + "\n</system-reminder>"
+				if persisted[0].Text != want {
+					t.Errorf("persisted text = %q, want %q", persisted[0].Text, want)
+				}
+				if !utils.IsInjectedReminderEnvelope(persisted[0].Text) {
+					t.Errorf("utils.IsInjectedReminderEnvelope rejected %q — engine/utils envelope drift", persisted[0].Text)
+				}
+			default:
+				// The prompt envelope must unwrap back to the original user
+				// text so the UI render helpers (utils.UnwrapQueuedReminder)
+				// and this builder can never drift apart.
+				original, ok := utils.UnwrapQueuedReminder(persisted[0].Text)
+				if !ok {
+					t.Fatalf("envelope not recognized by utils unwrapper: %q", persisted[0].Text)
+				}
+				if original != rawText {
+					t.Errorf("unwrapped = %q, want %q", original, rawText)
+				}
 			}
 		})
 	}
 }
 
 // TestIsUserQueuedMessageOrigin pins the branch predicate to wrapOriginText's
-// default branch: everything except job (nil included).
+// default branch: everything except the job family (nil included).
 func TestIsUserQueuedMessageOrigin(t *testing.T) {
 	cases := []struct {
 		origin *types.MessageOrigin
@@ -804,6 +991,8 @@ func TestIsUserQueuedMessageOrigin(t *testing.T) {
 		{nil, true},
 		{&types.MessageOrigin{Kind: types.OriginHuman}, true},
 		{&types.MessageOrigin{Kind: types.OriginJob}, false},
+		{&types.MessageOrigin{Kind: types.OriginJobCommand}, false},
+		{&types.MessageOrigin{Kind: types.OriginMessage}, false},
 	}
 	for _, tc := range cases {
 		if got := isUserQueuedOrigin(tc.origin); got != tc.want {
@@ -910,7 +1099,26 @@ func TestQueuedMessage_CrashRecoveredUnpairedTail_PersistedAndReloaded(t *testin
 
 	// The turn boundary attaches at max(queuedInsertIndex, cursor) = 2 —
 	// below-cursor indices would drop the message from the uncommitted slice.
+	// The attach itself must NOT persist: the query is active, so the row's
+	// DB commit belongs to the turn-boundary / query-exit batch persist
+	// (runTurns owns it), keeping the streaming region as its only live
+	// representation until then.
 	eng.drainQueuedUserAttachments()
+	storeMsgs, err = store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after attach: %v", err)
+	}
+	afterAttach, err := short.StoreMessagesToEngine(storeMsgs)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if idx := findEnvelopeMessages(afterAttach); len(idx) != 0 {
+		t.Fatalf("store contains %d envelope messages after the boundary attach on active query, want 0 (commit waits for the batch persist)", len(idx))
+	}
+
+	// The turn boundary persists; simulate it explicitly — no
+	// turn loop runs in this direct-call test.
+	eng.PersistNewMessages()
 	storeMsgs, err = store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages after attach: %v", err)
@@ -921,7 +1129,7 @@ func TestQueuedMessage_CrashRecoveredUnpairedTail_PersistedAndReloaded(t *testin
 	}
 	idx := findEnvelopeMessages(persisted)
 	if got := len(idx); got != 1 {
-		t.Fatalf("store contains %d envelope messages after the boundary attach on crash-recovered history, want 1 (cursor clamp must keep it in the uncommitted slice)", got)
+		t.Fatalf("store contains %d envelope messages after the boundary persist on crash-recovered history, want 1 (cursor clamp must keep it in the uncommitted slice)", got)
 	}
 	if persisted[idx[0]].ID != "itst-crash" {
 		t.Errorf("persisted envelope ID = %q, want item UUID %q", persisted[idx[0]].ID, "itst-crash")
@@ -1066,6 +1274,15 @@ func TestQueuedMessage_EventStubShape(t *testing.T) {
 	}
 	if att.Mode != types.ItemModePrompt {
 		t.Errorf("Attachment.Mode = %v, want ItemModePrompt", att.Mode)
+	}
+	if att.Type != types.AttachmentTypeQueued {
+		t.Errorf("Attachment.Type = %q, want %q", att.Type, types.AttachmentTypeQueued)
+	}
+	if att.SourceUUID != "itst-stub" {
+		t.Errorf("Attachment.SourceUUID = %q, want the item UUID %q", att.SourceUUID, "itst-stub")
+	}
+	if att.Origin == nil || att.Origin.Kind != types.OriginHuman {
+		t.Errorf("Attachment.Origin = %+v, want the item origin Kind human", att.Origin)
 	}
 	if res := ec.WaitForResult(); res.Error != nil {
 		t.Fatalf("query error: %v", res.Error)

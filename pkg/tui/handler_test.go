@@ -1244,6 +1244,68 @@ func TestConvertEventToMsg_Attachment_JobModeBackwardCompat(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventAttachment with ItemModeMessage (delivery reminder)
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_Attachment_MessageMode(t *testing.T) {
+	h := NewTUIHandler()
+	evt := types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Content: []types.ContentBlock{
+				types.NewTextBlock("<message from=\"main\">\nhello main\n</message>"),
+			},
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModeMessage,
+				Prompt:     "<message from=\"main\">\nhello main\n</message>",
+				SourceUUID: "msg-1",
+			},
+		},
+	}
+	msg := h.convertEventToMsg(evt)
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.From != "main" {
+		t.Errorf("From = %q, want %q", am.From, "main")
+	}
+	if am.UserText != "" {
+		t.Errorf("UserText should be empty for message mode, got %q", am.UserText)
+	}
+	if am.JobID != "" {
+		t.Errorf("JobID should be empty for message mode, got %q", am.JobID)
+	}
+	if am.Preview != "" {
+		t.Errorf("Preview should be empty for message mode, got %q", am.Preview)
+	}
+}
+
+func TestConvertEventToMsg_Attachment_MessageModeWithAgent(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventAttachment,
+		Agent: &types.AgentMeta{ParentToolUseID: "call_agent_3", AgentType: "General", Depth: 0},
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:   types.ItemModeMessage,
+				Prompt: "<message from=\"e2\">\n报数\n</message>",
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.From != "e2" {
+		t.Errorf("From = %q, want %q", am.From, "e2")
+	}
+	if am.Agent == nil || am.Agent.ParentToolUseID != "call_agent_3" {
+		t.Errorf("Agent routing lost for sub-agent message delivery: %+v", am.Agent)
+	}
+}
+
 func TestConvertEventToMsg_CarriesIsTask(t *testing.T) {
 	h := NewTUIHandler()
 

@@ -8,7 +8,7 @@
 import { renderMarkdown } from '../markdown'
 import { createCopyButton } from '../utils/copy_button'
 import { createElement } from '../dom'
-import { isCollapsibleBlock } from '../utils'
+import { classifyReminderMessage, isCollapsibleBlock, type ReminderRow } from '../utils'
 import { formatArtifactSize } from '../artifact'
 import { userEchoBlock } from '../styles/recipes'
 import type { Block } from '../model'
@@ -122,6 +122,25 @@ export function appendUserAttachment(parent: HTMLElement, node: HTMLElement, bef
   parent.insertBefore(wrap, before)
 }
 
+function wallClockHHMMSS(ts: number): string {
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+// A reminder row is built entirely by the tool-block factory — appendToolBlock
+// header (dot, chevron, name, summary, duration) + finishTool settle — so a
+// reminder is anatomically a finished tool row. The one bespoke input is the
+// wall clock override in the duration slot: the message's own timestamp, not a
+// fake tool duration.
+export function appendReminderRow(parent: HTMLElement, row: ReminderRow, startedAt: number, before: Node | null = null): void {
+  const handles = appendToolBlock(parent, row.name, before)
+  handles.root.dataset.reminderRow = '1'
+  setToolSummary(handles, row.summary, row.name)
+  finishTool(handles, { isError: false, durationNs: 0, output: row.raw, skipHighlight: true })
+  handles.durEl.textContent = ' ' + wallClockHHMMSS(startedAt)
+}
+
 export function renderStreamBlock(
   parent: HTMLElement,
   block: Block,
@@ -131,9 +150,18 @@ export function renderStreamBlock(
 ): void {
   if (block.kind === 'user') {
     if (!block.text) return
-    // 'user' stream blocks are mid-turn queued message echoes (the engine
-    // persists them immediately in reminder form; text is already
-    // unwrapped) — rendered gray, matching history replay.
+    // A block whose text sniffs as an injected reminder envelope becomes a
+    // Reminder row through the shared tool-block path instead of gray queued
+    // echo text. One sniff point here covers chat (live event insertion,
+    // takeover snapshot, streamState backfill) and job feeds alike, so every
+    // surface renders the same row. Mid-turn queued message echoes (the
+    // engine persists them immediately in reminder form; text is already
+    // unwrapped) never classify and stay gray.
+    const reminder = classifyReminderMessage(block.text)
+    if (reminder) {
+      appendReminderRow(parent, reminder, block.startedAt ?? Date.now(), before)
+      return
+    }
     appendQueuedMessageBlock(parent, block.text, before)
   } else if (block.kind === 'image') {
     appendUserAttachment(parent, createAttachmentImage(block.src), before)

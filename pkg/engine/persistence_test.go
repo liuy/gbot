@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 func newTestStore(t *testing.T) *short.Store {
@@ -761,15 +762,15 @@ func TestForkSession_NoTitle(t *testing.T) {
 	}
 }
 
-// TestPersistNewMessages_AttachmentNotStored verifies the full production chain:
-// background job completes → EnqueueAttachment → processAttachments → runTurns
-// → PersistNewMessages → DB should contain the LLM's response but NOT the
-// raw attachment XML.
-//
-// Regression: attachment messages (job notifications, scope info) were being
-// written to the conversation DB as user messages. They are ephemeral context
-// for the current LLM call only and should never be persisted.
-func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
+// TestPersistNewMessages_JobNotificationStoredInFinalForm verifies the full
+// production chain: background job completes → EnqueueAttachment →
+// processAttachments → runTurns → PersistNewMessages → DB contains the LLM's
+// response AND the drained job notification, stored once, in the assembled
+// wire form, as a plain user message. The notification used to be ephemeral
+// (attachment message dropped by the persist filter), which broke the
+// prompt-cache prefix across restarts; the drain site now persists the final
+// form directly.
+func TestPersistNewMessages_JobNotificationStoredInFinalForm(t *testing.T) {
 	store := newTestStore(t)
 	session, err := store.CreateSession("", "test-model")
 	if err != nil {
@@ -779,7 +780,7 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	mp := &mockProvider{}
 	// First query: normal user question
 	mp.addResponse(textStreamEvents("test-model", "Sure, I'll help."), nil)
-	// Second query: LLM processes the attachment (triggered by processAttachments)
+	// Second query: LLM processes the notification (triggered by processAttachments)
 	mp.addResponse(textStreamEvents("test-model", "Background task completed successfully."), nil)
 
 	eng := New(&Params{
@@ -813,46 +814,84 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	})
 
 	// 3. Call processAttachments synchronously (same package, no goroutine).
-	//    This creates the attachment message, appends it to e.messages,
-	//    calls runTurns (LLM responds), and calls PersistNewMessages.
+	//    The item is appended as a persisted plain user message in final wire
+	//    form, then runTurns lets the LLM respond and PersistNewMessages
+	//    commits the turn.
 	eng.processAttachments(ctx, 0, eng.systemPrompt)
 
-	// 4. Run a third query — PersistNewMessages will persist the new user
-	//    message + LLM response, but the attachment message should have been
-	//    filtered during step 3's PersistNewMessages already.
-	//    This step verifies the attachment wasn't left in an uncommitted state.
+	// 4. Run a third query — verifies nothing was left in an uncommitted
+	//    state (a second row for the notification would mean a re-drain).
 	mp.addResponse(textStreamEvents("test-model", "Got it, thanks for letting me know."), nil)
 	result2 := eng.QuerySync(ctx, "How did the background task go?", "")
 	if result2.Error != nil {
 		t.Fatalf("third query: %v", result2.Error)
 	}
 
-	// 5. Verify DB contents
-	msgs, err := store.LoadMessages(session.SessionID)
+	// 5. Verify DB contents — decoded form for content assertions (the raw
+	//    Content column stores json.Marshal output, so '<' is \u003c and a
+	//    '<job-notification>' needle never matches it).
+	storeMsgs, err := store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
-	if len(msgs) == 0 {
+	if len(storeMsgs) == 0 {
 		t.Fatal("expected messages in store, got 0")
 	}
+	engMsgs, err := short.StoreMessagesToEngine(storeMsgs)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
 
-	// The LLM's response to the notification must be in DB
+	// Exactly one row carries the notification envelope, in final wire form.
+	var envelopeRows []int
+	for i, m := range engMsgs {
+		if utils.IsInjectedReminderEnvelope(utils.FirstTextBlockContent(m)) {
+			envelopeRows = append(envelopeRows, i)
+		}
+	}
+	if len(envelopeRows) != 1 {
+		t.Fatalf("store holds %d job envelope rows, want exactly 1", len(envelopeRows))
+	}
+	row := engMsgs[envelopeRows[0]]
+	if row.Role != types.RoleUser {
+		t.Errorf("envelope row role = %q, want user", row.Role)
+	}
+	if row.MessageType != types.MessageTypeUser {
+		t.Errorf("envelope row MessageType = %q, want %q (an unstamped row round-trips as \"\")",
+			row.MessageType, types.MessageTypeUser)
+	}
+	if row.Attachment != nil {
+		t.Errorf("envelope row still carries Attachment metadata: %+v", row.Attachment)
+	}
+	if row.HasFlag(types.FlagMeta) {
+		t.Error("envelope row carries FlagMeta — the wui history filter would drop it (and the enqueued item's IsMeta must be ignored)")
+	}
+	wantText := "<system-reminder>\n" + wrapOriginText(jobXML, &types.MessageOrigin{Kind: types.OriginJob}) + "\n</system-reminder>"
+	if text := utils.FirstTextBlockContent(row); text != wantText {
+		t.Errorf("envelope row text = %q, want %q", text, wantText)
+	}
+
+	// Raw-column equivalent: the bare keyword (no angle brackets) appears in
+	// exactly one row.
+	rawHits := 0
+	for _, m := range storeMsgs {
+		if strings.Contains(m.Content, "job-notification") {
+			rawHits++
+		}
+	}
+	if rawHits != 1 {
+		t.Errorf("raw Content rows containing 'job-notification' = %d, want 1", rawHits)
+	}
+
+	// The LLM's response to the notification must be in DB.
 	var foundLLMResponse bool
-	for _, m := range msgs {
-		if strings.Contains(m.Content, "Background task completed") {
+	for _, m := range engMsgs {
+		if strings.Contains(utils.FirstTextBlockContent(m), "Background task completed") {
 			foundLLMResponse = true
 		}
 	}
 	if !foundLLMResponse {
-		t.Error("LLM response to attachment should be persisted in DB")
-	}
-
-	// KEY CHECK: the raw attachment XML must NOT be in DB.
-	// json.Marshal escapes < to \u003c, so check the unescaped keyword.
-	for _, m := range msgs {
-		if strings.Contains(m.Content, "job-notification") {
-			t.Errorf("attachment XML should NOT be in DB, found: %s", m.Content[:min(len(m.Content), 200)])
-		}
+		t.Error("LLM response to the notification should be persisted in DB")
 	}
 }
 

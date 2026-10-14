@@ -566,10 +566,10 @@ func New(p *Params) *Engine {
 // message before the in-flight assistant(tool_use), forcing every later
 // request to re-read the whole response. The seq watermark then makes the
 // terminal unaddressed check run one more turn so the model answers them.
-// Job origins keep the queue path (follow-up: giving it the same
-// persist-in-final-form treatment would fix its restart stability the same
-// way, but a job notification is a one-shot status report the model can answer
-// in the turn it lands in, so it needs no extra turn).
+// Job/message origins run the same queue and persist in final form at the
+// drain point (appendQueuedReminderMessage): inserted and persisted
+// immediately with no seq bump — the notification is already visible to the
+// next call in the same query, so it buys no extra turn.
 //
 // Known gap: prompts that bypass both drains persist in bare-text form and
 // are wrapped only at assembly time. Two entry points: a prompt enqueued in
@@ -597,8 +597,8 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 	e.startProcessAttachmentsIfIdle()
 }
 
-// isUserQueuedOrigin mirrors wrapOriginText's default branch: any
-// origin other than job (including nil) wraps with the
+// isUserQueuedOrigin mirrors wrapOriginText's default branch: any origin
+// outside the job family (including nil) wraps with the
 // "user sent a new message" text, so exactly that set is attached in final
 // reminder form at the turn boundary.
 func isUserQueuedOrigin(origin *types.MessageOrigin) bool {
@@ -606,7 +606,7 @@ func isUserQueuedOrigin(origin *types.MessageOrigin) bool {
 		return true
 	}
 	switch origin.Kind {
-	case types.OriginJob:
+	case types.OriginJob, types.OriginJobCommand, types.OriginMessage:
 		return false
 	}
 	return true
@@ -627,8 +627,9 @@ func (e *Engine) drainQueuedUserAttachments() {
 }
 
 // appendQueuedUserMessage appends the reminder-wrapped user message to history
-// (pairing-safe position), persists it, and emits EventAttachment so UIs echo
-// it. Content is byte-identical to what normalizeAttachmentForAPI built at
+// (pairing-safe position), persists it (immediately when idle; mid-query the
+// commit waits for runTurns' batch persists), and emits EventAttachment so UIs
+// echo it. Content is byte-identical to what normalizeAttachmentForAPI built at
 // request time for queued items — the cross-version prefix pin.
 func (e *Engine) appendQueuedUserMessage(item types.QueuedItem) {
 	content := item.Content
@@ -641,29 +642,9 @@ func (e *Engine) appendQueuedUserMessage(item types.QueuedItem) {
 			textParts = append(textParts, b.Text)
 		}
 	}
-	msg := types.Message{
-		ID:        item.UUID,
-		Role:      types.RoleUser,
-		Content:   buildReminderContent(content, item.Origin),
-		Timestamp: item.Timestamp,
-	}
-	// A zero Timestamp marshals as a zero-year prefix in memory while the
-	// store replaces it with time.Now() — the reloaded form would differ.
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = time.Now()
-	}
+	msg := newQueuedMessage(item, buildReminderContent(content, item.Origin))
 
-	e.mu.Lock()
-	// Clamp to the persist cursor: a crash-recovered session can carry an
-	// unpaired trailing assistant from BEFORE the cursor (markAllPersisted
-	// set it to len on load); an index below the cursor would drop the
-	// queued message from the uncommitted slice and it would never persist.
-	idx := max(queuedInsertIndex(e.messages), e.lastPersistedIdx)
-	e.messages = slices.Insert(e.messages, idx, msg)
-	e.queuedMsgSeq++
-	e.mu.Unlock()
-
-	e.PersistNewMessages()
+	e.insertQueuedMessage(msg, true)
 
 	// The stored message must be an ordinary history message (no Attachment),
 	// but the event copy carries the stub so existing TUI/WUI attachment
@@ -677,6 +658,131 @@ func (e *Engine) appendQueuedUserMessage(item types.QueuedItem) {
 		Origin:     item.Origin,
 	}
 	e.emitEvent(types.QueryEvent{Type: types.EventAttachment, Message: &eventMsg})
+}
+
+// queuedFinalContent builds the content a drained item is stored and sent
+// with: the reminder envelope for job items, their own envelope verbatim for
+// message items. The origin inference mirrors normalizeAttachmentForAPI
+// exactly — without it, the nil-origin job items legacy/hand-built enqueues
+// carry would persist through wrapOriginText's default branch as user 插话
+// text.
+func queuedFinalContent(item types.QueuedItem) []types.ContentBlock {
+	content := item.Content
+	if len(content) == 0 {
+		content = []types.ContentBlock{types.NewTextBlock(item.Value)}
+	}
+	if item.Mode == types.ItemModeMessage {
+		return content // already carries <message from="…">; never reminder-wrapped
+	}
+	origin := item.Origin
+	if origin == nil && item.Mode == types.ItemModeJob {
+		origin = &types.MessageOrigin{Kind: types.OriginJob}
+	}
+	return buildReminderContent(content, origin)
+}
+
+// newQueuedMessage builds the history message for a drained queued item: a
+// plain user message with no flags. MessageType must be stamped — an
+// unstamped row round-trips through the store metadata as "" (empty
+// MetadataToJSON), so it would never reload as MessageTypeUser.
+func newQueuedMessage(item types.QueuedItem, content []types.ContentBlock) types.Message {
+	msg := types.Message{
+		ID:          item.UUID,
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeUser,
+		Content:     content,
+		Timestamp:   item.Timestamp,
+	}
+	// A zero Timestamp marshals as a zero-year prefix in memory while the
+	// store replaces it with time.Now() — the reloaded form would differ.
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now()
+	}
+	return msg
+}
+
+// insertQueuedMessage inserts msg at the pairing-safe index past the persist
+// cursor. Persist is conditional on query ownership: while a query is active
+// (a turn loop is running) the batch persist points runTurns already owns —
+// the turn-boundary PersistNewMessages and the query-exit defer, both
+// sweeping the uncommitted slice past the cursor — will commit this row, so
+// an immediate persist here would only race them. Idle, no turn loop will
+// run for this row, so it persists here immediately.
+// bumpSeq drives the terminal unaddressed check: a user message that arrived
+// after the last LLM call needs one more turn to be answered; job/message
+// notifications are already visible to the next call in the same query, so
+// they must not bump (a bump would buy a redundant LLM turn).
+func (e *Engine) insertQueuedMessage(msg types.Message, bumpSeq bool) {
+	e.mu.Lock()
+	// Clamp to the persist cursor: a crash-recovered session can carry an
+	// unpaired trailing assistant from BEFORE the cursor (markAllPersisted
+	// set it to len on load); an index below the cursor would drop the
+	// queued message from the uncommitted slice and it would never persist.
+	idx := max(queuedInsertIndex(e.messages), e.lastPersistedIdx)
+	e.messages = slices.Insert(e.messages, idx, msg)
+	if bumpSeq {
+		e.queuedMsgSeq++
+	}
+	idle := e.queryActive.Load() == 0
+	e.mu.Unlock()
+
+	if idle {
+		e.PersistNewMessages()
+	}
+}
+
+// appendQueuedReminderMessage persists a drained job/message item as its
+// final-form history message: inserted at the pairing-safe index, persisted
+// immediately only when the engine is idle (mid-query the commit waits for
+// runTurns' batch persists), no seq bump (a bump would buy a redundant LLM
+// turn — the notification is already visible to the next call in the same
+// query), persisted bytes untouched. EventAttachment fires with an event-copy
+// stub so TUI/WUI insert the row live; the stored message stays a plain user
+// message for history replay.
+// item.IsMeta is deliberately ignored — its only consumer was the ephemeral
+// attachment message's FlagMeta, which the wui history filter drops; the
+// persisted row must be a plain user message to stay renderable.
+func (e *Engine) appendQueuedReminderMessage(item types.QueuedItem) {
+	msg := newQueuedMessage(item, queuedFinalContent(item))
+	e.insertQueuedMessage(msg, false)
+	var text strings.Builder
+	for _, b := range msg.Content {
+		if b.Type == types.ContentTypeText {
+			text.WriteString(b.Text)
+		}
+	}
+	eventMsg := msg
+	eventMsg.Attachment = &types.Attachment{
+		Type:       types.AttachmentTypeQueued,
+		Prompt:     text.String(),
+		SourceUUID: item.UUID,
+		Mode:       item.Mode,
+		Origin:     item.Origin,
+	}
+	e.emitEvent(types.QueryEvent{Type: types.EventAttachment, Message: &eventMsg})
+}
+
+// appendDrainedItem appends ONE drained item in its channel's form and
+// returns the attachment message it produced (prompt mode only, nil
+// otherwise — reminder events fire inside appendQueuedReminderMessage, prompt
+// events stay at the call sites). Shared by the turn-boundary drain and
+// processAttachments so the two cannot drift. If a fourth ItemMode is ever
+// added, it must join one of these two branches.
+func (e *Engine) appendDrainedItem(item types.QueuedItem) *types.Message {
+	if item.Mode == types.ItemModePrompt {
+		msgs := e.createAttachmentMessages([]types.QueuedItem{item})
+		if len(msgs) == 0 {
+			return nil
+		}
+		e.appendMessage(msgs[0])
+		return &msgs[0]
+	}
+	// Non-prompt items (job notifications) persist in their own final form
+	// instead of becoming ephemeral attachment messages — stored bytes must
+	// equal the assembled wire bytes or the prompt-cache prefix diverges
+	// across restarts.
+	e.appendQueuedReminderMessage(item)
+	return nil
 }
 
 // queuedInsertIndex returns the history index at which an queued message
@@ -1271,21 +1377,23 @@ func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPro
 	if len(pendingItems) == 0 {
 		return
 	}
-	attachmentMsgs := e.createAttachmentMessages(pendingItems)
-	e.appendMessages(attachmentMsgs)
+	var attMsgs []types.Message
+	for i := range pendingItems {
+		// nil return = reminder item (job/message): the event already fired
+		// inside appendQueuedReminderMessage.
+		if m := e.appendDrainedItem(pendingItems[i]); m != nil {
+			attMsgs = append(attMsgs, *m)
+		}
+	}
 	// Update queryStartMsgIdx so buildHistory includes all committed messages
 	// (including the previous query's assistant response). Without this, the
 	// stale idx from the prior query truncates history, hiding committed turns.
 	e.snapshotQueryStart()
-	for i := range attachmentMsgs {
-		if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
-			e.emitEvent(types.QueryEvent{
-				Type:    types.EventAttachment,
-				Message: &attachmentMsgs[i],
-			})
-		} else {
-			e.logger.Info("engine:attachment_drained_silently", "mode", "job")
-		}
+	for i := range attMsgs {
+		e.emitEvent(types.QueryEvent{
+			Type:    types.EventAttachment,
+			Message: &attMsgs[i],
+		})
 	}
 	e.runTurns(ctx, systemPrompt)
 }
@@ -1333,6 +1441,10 @@ func (e *Engine) createAttachmentMessages(items []types.QueuedItem) []types.Mess
 // TS source: messages.ts:5496-5512 — wrapCommandText
 func wrapOriginText(raw string, origin *types.MessageOrigin) string {
 	switch {
+	case origin != nil && origin.Kind == types.OriginJobCommand:
+		return "A background command completed:\n" + raw
+	case origin != nil && origin.Kind == types.OriginMessage:
+		return raw
 	case origin != nil && origin.Kind == types.OriginJob:
 		return "A background agent completed a job:\n" + raw
 	default:
@@ -2278,16 +2390,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// PriorityLater items wait for DrainAll() at query end.
 		// See types.QueuePriority for full drain timing documentation.
 		if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
-			attachmentMsgs := e.createAttachmentMessages(drainedItems)
-			for i := range attachmentMsgs {
-				e.appendMessage(attachmentMsgs[i])
-				if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
+			for i := range drainedItems {
+				// nil return = reminder item (job/message): the event already
+				// fired inside appendQueuedReminderMessage.
+				if m := e.appendDrainedItem(drainedItems[i]); m != nil {
 					e.emitEvent(types.QueryEvent{
 						Type:    types.EventAttachment,
-						Message: &attachmentMsgs[i],
+						Message: m,
 					})
-				} else {
-					e.logger.Info("engine:attachment_drained_silently", "mode", "job")
 				}
 			}
 		}

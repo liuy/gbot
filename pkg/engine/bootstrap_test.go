@@ -224,12 +224,71 @@ func TestWireEngine_BashRegOnNotifyWired(t *testing.T) {
 	}
 
 	// Call the OnNotify callback directly with a real bash.JobNotification.
-	// WireEngine wires it to eng.EnqueueAttachment, which should not panic.
 	refs.BashReg.OnNotify(bash.JobNotification{
 		JobID:   "bg-1",
 		Status:  "completed",
 		Summary: "test done",
 	})
+	pending := eng.PendingAttachments()
+	if len(pending) != 1 {
+		t.Fatalf("PendingAttachments = %d items, want 1 (OnNotify must enqueue)", len(pending))
+	}
+	if pending[0].Mode != types.ItemModeJob {
+		t.Errorf("enqueued Mode = %q, want %q", pending[0].Mode, types.ItemModeJob)
+	}
+	if pending[0].Origin == nil || pending[0].Origin.Kind != types.OriginJobCommand {
+		t.Errorf("enqueued Origin = %+v, want Kind %q (bash producer splits from the agent origin)", pending[0].Origin, types.OriginJobCommand)
+	}
+	if !strings.Contains(pending[0].Value, "<job-notification>") {
+		t.Errorf("enqueued Value = %q, want the notification XML", pending[0].Value)
+	}
+}
+
+// The agent notify path fires from inside the background-agent completion
+// goroutine, so the only directly fireable lever is spawning a real
+// background agent against the wired engine (the mock provider fails the
+// sub-query immediately; the failure notification still rides the wiring).
+func TestWireEngine_ProducerOrigins(t *testing.T) {
+	deps, refs, eng := newTestDepsAndRefs(t)
+	defer eng.Close()
+
+	WireEngine(eng, refs, deps)
+
+	if _, err := refs.Agent.Call(context.Background(),
+		json.RawMessage(`{"prompt":"do it","description":"producer origin probe","run_in_background":true}`),
+		&tool.ToolUseContext{ToolUseID: "tu-probe"}); err != nil {
+		t.Fatalf("Agent.Call(background): %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second) // REAL-TIME
+	for {
+		pending := eng.PendingAttachments()
+		if len(pending) >= 1 {
+			var agentItem *types.QueuedItem
+			for i := range pending {
+				if strings.Contains(pending[i].Value, "<agent-type>") {
+					agentItem = &pending[i]
+				}
+			}
+			if agentItem != nil {
+				if agentItem.Mode != types.ItemModeJob {
+					t.Errorf("agent item Mode = %q, want %q", agentItem.Mode, types.ItemModeJob)
+				}
+				if agentItem.Origin == nil || agentItem.Origin.Kind != types.OriginJob {
+					t.Errorf("agent item Origin = %+v, want Kind %q", agentItem.Origin, types.OriginJob)
+				}
+				if !strings.Contains(agentItem.Value, "<job-notification>") {
+					t.Errorf("agent item Value = %q, want the notification XML", agentItem.Value)
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) { // REAL-TIME: poll loop bounded by deadline
+			items := eng.PendingAttachments()
+			t.Fatalf("background agent notification never enqueued (pending=%d): %v", len(items), items)
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME
+	}
 }
 
 func TestWireEngine_AgentNotifyFnWired(t *testing.T) {

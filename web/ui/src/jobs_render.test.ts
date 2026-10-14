@@ -258,6 +258,34 @@ describe('jobs section — agent feed', () => {
     expect(spans[0].className).toContain('text-t3')
     expect(feed.querySelectorAll('.md-body.text-t1')).toHaveLength(0)
   })
+
+  it('renders drained reminder envelopes as Reminder rows, never the raw envelope', async () => {
+    const ctx = mount()
+    const envelope =
+      '<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-1</job-id>\n' +
+      '<status>completed</status>\n<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n' +
+      '</job-notification>\n</system-reminder>'
+    const blocks: Block[] = [{ kind: 'user', id: '', text: envelope, startedAt: 1760358185000 }]
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    await nextFrame()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    // Same anatomy as the chat stream's reminder row: collapsed tool-block
+    // row with the parsed summary, not a gray queued echo of the envelope.
+    const rows = Array.from(feed.querySelectorAll('[data-reminder-row]'))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].dataset.toolName).toBe('Reminder')
+    const summary = rows[0].querySelector('span.font-light')
+    expect(summary?.textContent).toBe(' (command make check · exit 0)')
+    // The envelope only lives inside the collapsed row body — never as a
+    // bare gray echo span.
+    const echo = Array.from(feed.querySelectorAll('span')).filter(
+      (s) => s.className.includes('text-t3') && s.textContent?.includes('<system-reminder>'),
+    )
+    expect(echo).toHaveLength(0)
+    expect(rows[0].querySelector('.md-body')?.textContent).toContain('</job-notification>')
+  })
 })
 
 describe('jobs section — expansion lifecycle', () => {

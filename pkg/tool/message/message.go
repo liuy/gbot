@@ -72,6 +72,15 @@ func (t *MessageTool) FormatWireBlocks(data any) []types.ContentBlock {
 	return t.Tool.(tool.ToolWithWireBlocks).FormatWireBlocks(data)
 }
 
+// DecodeResult re-exposes the built scaffold's result decoding: like
+// FormatWireBlocks above, the embedded tool.Tool interface hides it, but
+// history replay needs *MessageTool to satisfy ToolWithDecodeResult —
+// otherwise renderViaTool falls back to passing the raw wire JSON through
+// RenderResult as a plain string.
+func (t *MessageTool) DecodeResult(raw json.RawMessage) (any, error) {
+	return t.Tool.(tool.ToolWithDecodeResult).DecodeResult(raw)
+}
+
 // messageInput is the input schema: exactly to + message.
 type messageInput struct {
 	To      string `json:"to"`
@@ -102,9 +111,9 @@ func (t *MessageTool) def() tool.ToolDef {
 		Description_: func(input json.RawMessage) (string, error) {
 			var in messageInput
 			if err := json.Unmarshal(input, &in); err != nil || strings.TrimSpace(in.To) == "" {
-				return "Send a text message to a running agent or engine (target IDs from the Job tool's list output).", nil
+				return "Send a text message to a running agent", nil
 			}
-			return "-> " + strings.TrimSpace(in.To), nil
+			return "sent to " + strings.TrimSpace(in.To), nil
 		},
 		RenderResult_: func(data any) string {
 			if r, ok := data.(MessageResult); ok {
@@ -123,9 +132,15 @@ func (t *MessageTool) def() tool.ToolDef {
 		ShouldDefer_:       false,
 		MaxResultSizeChars: 10000,
 		Prompt_:            messagePromptText,
+		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			// History replay feeds the persisted wire blocks back through
+			// renderViaTool; without this the raw JSON string passes straight
+			// through RenderResult and the UI shows [{"type":"text",...}].
+			return tool.UnmarshalSingleBlock(raw)
+		},
 		FormatWireBlocks_: func(data any) []types.ContentBlock {
 			if r, ok := data.(MessageResult); ok {
-				return []types.ContentBlock{types.NewTextBlock("Delivered to " + r.To)}
+				return []types.ContentBlock{types.NewTextBlock(r.Message)}
 			}
 			if s, ok := data.(string); ok {
 				return []types.ContentBlock{types.NewTextBlock(s)}
@@ -185,14 +200,15 @@ func (t *MessageTool) call(input json.RawMessage) (*tool.ToolResult, error) {
 
 	target.EnqueueAttachment(types.QueuedItem{
 		Value:     buildEnvelope(t.selfID, in.Message),
-		Mode:      types.ItemModeJob,
+		Mode:      types.ItemModeMessage,
+		Origin:    &types.MessageOrigin{Kind: types.OriginMessage},
 		Timestamp: time.Now(),
 	})
 	return &tool.ToolResult{Data: MessageResult{To: to, Message: in.Message}}, nil
 }
 
-// MessageResult carries the sent content so the TUI card can display it;
-// the wire text stays the short "Delivered to X" confirmation.
+// MessageResult carries the target and the sent content; wire and display
+// both show the sent content itself — a successful call means delivered.
 type MessageResult struct {
 	To      string
 	Message string

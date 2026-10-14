@@ -126,6 +126,7 @@ type attachmentMsg struct {
 	Failed     bool             // true for "failed" or "killed"
 	UserText   string           // plain text from ItemModePrompt attachment
 	SourceUUID string           // UUID for matching pendingQueue entries
+	From       string           // sender id from an ItemModeMessage delivery
 	Agent      *types.AgentMeta // non-nil when from a sub-agent
 }
 

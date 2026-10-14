@@ -353,6 +353,13 @@ type streamBlock struct {
 // goroutine in sendMetadata). Reset on query_end.
 type streamState struct {
 	blocks []streamBlock
+	// queryActive marks the two-region boundary: while turns are running,
+	// drained messages live here as user blocks (buildHistory truncates at
+	// queryStartMsgIdx so this is their only representation); idle, history
+	// owns every appended row and an echo block would double-render on
+	// takeover. Set by top-level turn_start, cleared implicitly by the
+	// query_end streamState reset.
+	queryActive bool
 }
 
 // engineSlot holds the per-engine state. Each engine gets its own streamState,
@@ -1178,6 +1185,16 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		})
 
 	case types.EventTurnStart:
+		// Top-level turn_start opens the streaming region for
+		// drained-message echoes. turn_start rather than query_start:
+		// auto-turns (processAttachments→runTurns) emit no query_start,
+		// and buildHistory truncates their mid-run drains past
+		// queryStartMsgIdx — without the echo a takeover renders nothing
+		// of them. The idle first batch drains before the first
+		// turn_start, so those rows stay history-owned.
+		if event.Agent == nil {
+			ss.queryActive = true
+		}
 		// Sub-agent turn_start: update parent Agent block's name with the
 		// agent type so snapshot/historical replay shows "Agent Planner"
 		// instead of just "Agent". The live streaming path does this in
@@ -1220,13 +1237,27 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		}
 
 	case types.EventAttachment:
-		// Queued message drained mid-query at a turn boundary (or a
-		// mid-turn queued message persisted immediately). Append a user echo
-		// block so takeover snapshot includes it. Prompt-mode attachments
-		// carry the original text in attachment.prompt; queued message events
-		// carry the reminder ENVELOPE in content, so prefer the prompt to
-		// keep the snapshot echo unwrapped.
+		// Queued message drained at a turn boundary mid-run (or a mid-turn
+		// queued message / job-message reminder arriving while turns are
+		// running — query or auto-turn). Append a user echo block so
+		// takeover snapshot includes it. Prompt-mode attachments carry the
+		// original text in attachment.prompt; queued message events and
+		// reminder events carry the reminder ENVELOPE in content, so prefer
+		// the prompt to keep the snapshot echo unwrapped. StartedAt feeds
+		// the client-side reminder row's wall-clock duration slot (the
+		// client sniffs the envelope at render time and swaps the echo for
+		// a Reminder row). Agent-tagged reminders nest under the parent
+		// tool like every other sub-agent event — a root append would
+		// double-render what the jobs feed's parent-tool view already
+		// shows. Idle arrivals (the auto-turn's processAttachments fires
+		// the first batch's attachment events before the first turn_start)
+		// are the exception: history already owns those rows — the snapshot
+		// echo exists only for messages whose insert landed past
+		// queryStartMsgIdx, which buildHistory truncates away.
 		if event.Message == nil {
+			return
+		}
+		if event.Agent == nil && !ss.queryActive {
 			return
 		}
 		var text string
@@ -1242,9 +1273,14 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		if text == "" {
 			return
 		}
-		ss.blocks = append(ss.blocks, streamBlock{
-			Kind: "user",
-			Text: text,
+		list := targetList(ss, event)
+		if list == nil {
+			return
+		}
+		*list = append(*list, streamBlock{
+			Kind:      "user",
+			Text:      text,
+			StartedAt: event.Message.Timestamp.UnixMilli(),
 		})
 
 	case types.EventToolEnd:
