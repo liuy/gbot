@@ -443,12 +443,46 @@ const REMINDER_SUFFIX = '\n</system-reminder>'
 const MESSAGE_DELIVERY_PREFIX = '<message from="'
 const MESSAGE_DELIVERY_SUFFIX = '</message>'
 
-// J1+J2: starts at index 0 with one of the two job heads, ends at the
-// reminder suffix. The index-0 rule keeps the assembled "[ts] <…" wire form
-// from matching.
-function isInjectedReminderEnvelope(text: string): boolean {
+// Bare <job-notification> envelope: what both producers emit once the outer
+// system-reminder wrap is gone. Mirrors background.go FormatXML's format
+// strings byte-for-byte.
+const JOB_NOTIFICATION_HEAD = '<job-notification>\n'
+const JOB_NOTIFICATION_SUFFIX = '</job-notification>'
+const JOB_STALL_JOINT = '</job-notification>\nLast output:'
+
+// Field segment between the head and the terminator — the final closing-tag
+// suffix, or the stall joint when the raw stall tail follows the closing tag.
+function jobNotificationSegment(text: string): string | null {
+  if (!text.startsWith(JOB_NOTIFICATION_HEAD)) return null
+  const inner = text.slice(JOB_NOTIFICATION_HEAD.length)
+  if (inner.endsWith(JOB_NOTIFICATION_SUFFIX)) {
+    return inner.slice(0, inner.length - JOB_NOTIFICATION_SUFFIX.length)
+  }
+  const joint = inner.indexOf(JOB_STALL_JOINT)
+  if (joint >= 0) return inner.slice(0, joint)
+  return null
+}
+
+// Bare half of the sniff spec (D2 N1-N3): head newline at index 0, terminator
+// at the closing tag or the stall joint, no unescaped system-reminder tag in
+// the field segment (the stall tail is command output and may contain
+// anything, so it is deliberately outside the check).
+export function isJobNotificationEnvelope(text: string): boolean {
+  const segment = jobNotificationSegment(text)
+  return segment !== null && !segment.includes('<system-reminder>')
+}
+
+// Pre-single-layer job predicate: one of the two <system-reminder> job heads
+// plus the reminder suffix — the double-wrapped form older sessions carry.
+// Its rows keep the raw-body rendering; no single-layer display form exists.
+export function isLegacyJobReminderEnvelope(text: string): boolean {
   if (!text.endsWith(REMINDER_SUFFIX)) return false
   return text.startsWith(JOB_COMMAND_REMINDER_PREFIX) || text.startsWith(JOB_AGENT_REMINDER_PREFIX)
+}
+
+// Total job predicate: legacy double-wrapped OR bare single-layer.
+export function isInjectedReminderEnvelope(text: string): boolean {
+  return isLegacyJobReminderEnvelope(text) || isJobNotificationEnvelope(text)
 }
 
 // D7 ①-④: the sender must be an id-shaped non-empty string (real senders are
@@ -469,16 +503,31 @@ function isMessageDeliveryEnvelope(text: string): boolean {
 // A collapsed job/message row derived from a stored envelope. No fallback for
 // a missing/empty from: D7 ② makes that state unreachable (the delivery
 // never classifies), and a fallback would be dead code.
-export type ReminderRow = { name: string; summary: string; raw: string }
+// body is the row's expandable content: display text for bare single-layer
+// envelopes and deliveries, the raw envelope for legacy wrapped rows (their
+// rendering is unchanged).
+export type ReminderRow = { name: string; summary: string; body: string }
 
-// &amp; decoded last so &amp;quot; cannot double-decode.
-function xmlUnescape(s: string): string {
-  return s
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'")
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&amp;', '&')
+// The union of both producers' escape alphabets — bash escapeXML emits the
+// named five, the agent/message xe (xml.Escape) emits the numeric forms and
+// escapes newline/tab/CR. ONE replace pass with &amp; last in the alternation
+// so &amp;quot; cannot double-decode (a chained replaceAll would).
+const XML_ENTITY_RE = /&#34;|&#39;|&quot;|&apos;|&lt;|&gt;|&#xA;|&#x9;|&#xD;|&amp;/g
+const XML_ENTITY_MAP: Record<string, string> = {
+  '&#34;': '"',
+  '&#39;': "'",
+  '&quot;': '"',
+  '&apos;': "'",
+  '&lt;': '<',
+  '&gt;': '>',
+  '&#xA;': '\n',
+  '&#x9;': '\t',
+  '&#xD;': '\r',
+  '&amp;': '&',
+}
+
+function decodeEntities(s: string): string {
+  return s.replace(XML_ENTITY_RE, (entity) => XML_ENTITY_MAP[entity])
 }
 
 // Each field gets its OWN tag lookup, never a forward scan from a previously
@@ -490,49 +539,113 @@ function extractTag(text: string, tag: string): string | null {
   return m ? m[1] : null
 }
 
-function classifyCommandRow(inner: string, raw: string): ReminderRow {
+function classifyCommandRow(inner: string, body: string): ReminderRow {
   // Field values are XML-escaped by both producers; unescape BEFORE the
   // quoted-span search and the exit-code probe — searching for a literal '"'
   // in escaped text finds nothing and the row degrades to command <job-id>.
-  const summaryTag = xmlUnescape(extractTag(inner, 'summary') ?? '')
-  const jobId = xmlUnescape(extractTag(inner, 'job-id') ?? '')
+  const summaryTag = decodeEntities(extractTag(inner, 'summary') ?? '')
+  const jobId = decodeEntities(extractTag(inner, 'job-id') ?? '')
   const status = extractTag(inner, 'status')
   const quoted = summaryTag.match(/"([^"]*)"/)
   const desc = quoted ? quoted[1] : jobId
-  if (!desc) return { name: 'Reminder', summary: 'command', raw }
+  if (!desc) return { name: 'Reminder', summary: 'command', body }
   const exit = summaryTag.match(/exit code (\d+)/)
-  if (exit) return { name: 'Reminder', summary: `command ${desc} · exit ${exit[1]}`, raw }
-  if (status) return { name: 'Reminder', summary: `command ${desc} · ${status}`, raw }
-  return { name: 'Reminder', summary: `command ${desc}`, raw }
+  if (exit) return { name: 'Reminder', summary: `command ${desc} · exit ${exit[1]}`, body }
+  if (status) return { name: 'Reminder', summary: `command ${desc} · ${status}`, body }
+  return { name: 'Reminder', summary: `command ${desc}`, body }
 }
 
-function classifyAgentRow(inner: string, raw: string): ReminderRow {
-  const agentType = xmlUnescape(extractTag(inner, 'agent-type') ?? '')
+function classifyAgentRow(inner: string, body: string): ReminderRow {
+  const agentType = decodeEntities(extractTag(inner, 'agent-type') ?? '')
   const status = extractTag(inner, 'status')
-  const jobId = xmlUnescape(extractTag(inner, 'job-id') ?? '')
+  const jobId = decodeEntities(extractTag(inner, 'job-id') ?? '')
   if (agentType) {
-    return { name: 'Reminder', summary: status ? `agent ${agentType} · ${status}` : `agent ${agentType}`, raw }
+    return { name: 'Reminder', summary: status ? `agent ${agentType} · ${status}` : `agent ${agentType}`, body }
   }
-  if (jobId) return { name: 'Reminder', summary: `agent ${jobId}`, raw }
-  return { name: 'Reminder', summary: 'agent', raw }
+  if (jobId) return { name: 'Reminder', summary: `agent ${jobId}`, body }
+  return { name: 'Reminder', summary: 'agent', body }
 }
 
 // classifyReminderMessage decides from content alone (no flag, no metadata):
-// a history user message whose single text block sniffs as one of the three
+// a history user message whose single text block sniffs as one of the
 // injected envelopes renders as a collapsed row instead of a user bubble.
+// Legacy wrapped rows keep their head-based inner slice and raw body; bare
+// single-layer rows dispatch on the agent-type tag (agent producers always
+// emit it, bash never does) with the FULL text as inner — extractTag is
+// wrapping-agnostic — and the display text as body.
 export function classifyReminderMessage(text: string): ReminderRow | null {
-  if (isInjectedReminderEnvelope(text)) {
+  if (isLegacyJobReminderEnvelope(text)) {
     const isCommand = text.startsWith(JOB_COMMAND_REMINDER_PREFIX)
     const prefixLen = isCommand ? JOB_COMMAND_REMINDER_PREFIX.length : JOB_AGENT_REMINDER_PREFIX.length
     const inner = text.slice(prefixLen, text.length - REMINDER_SUFFIX.length)
     return isCommand ? classifyCommandRow(inner, text) : classifyAgentRow(inner, text)
   }
+  if (isJobNotificationEnvelope(text)) {
+    const body = unwrapEnvelopeDisplay(text) ?? text
+    return extractTag(text, 'agent-type') !== null
+      ? classifyAgentRow(text, body)
+      : classifyCommandRow(text, body)
+  }
   if (isMessageDeliveryEnvelope(text)) {
     const quote = text.indexOf('"', MESSAGE_DELIVERY_PREFIX.length)
     const from = text.slice(MESSAGE_DELIVERY_PREFIX.length, quote)
-    return { name: 'Reminder', summary: `got a message from ${from}`, raw: text }
+    return { name: 'Reminder', summary: `got a message from ${from}`, body: unwrapEnvelopeDisplay(text) ?? text }
   }
   return null
+}
+
+// Byte-mirror of pkg/utils EnvelopeDisplayText: message → decoded body only;
+// job-notification → summary line + result body (machine fields hidden);
+// system-reminder → body only. The legacy double-wrapped job form returns
+// null (no recursion by design). Caller order is load-bearing: arm 3 also
+// matches the 插话 envelope and returns its full body including the IMPORTANT
+// boilerplate — callers wanting the original must try unwrapQueuedReminder
+// FIRST.
+export function unwrapEnvelopeDisplay(text: string): string | null {
+  if (isMessageDeliveryEnvelope(text)) return messageDeliveryDisplay(text)
+  if (isJobNotificationEnvelope(text)) return jobNotificationDisplay(text)
+  if (!isLegacyJobReminderEnvelope(text)) {
+    if (text.startsWith('<system-reminder>\n') && text.endsWith(REMINDER_SUFFIX)) {
+      return text.slice('<system-reminder>\n'.length, text.length - REMINDER_SUFFIX.length)
+    }
+  }
+  return null
+}
+
+// Decoded delivery body: between the `<message from="X">` head and the
+// closing tag with the bounding newlines dropped (the producer always emits
+// `\nbody\n`; a single-bound trim keeps the newline-less paste total).
+function messageDeliveryDisplay(text: string): string {
+  const quote = text.indexOf('"', MESSAGE_DELIVERY_PREFIX.length)
+  let body = text.slice(quote + 2, text.length - MESSAGE_DELIVERY_SUFFIX.length)
+  if (body.startsWith('\n')) body = body.slice(1)
+  if (body.endsWith('\n')) body = body.slice(0, -1)
+  return decodeEntities(body)
+}
+
+// Summary line + result body; machine fields (job-id, tool-use-id, status,
+// agent-type, output-file, duration-ms, tokens, tool-uses) are hidden —
+// duration/tokens are dropped, not compacted. The stall tail is interpolated
+// raw by the producer, so it is appended verbatim and NEVER decoded: decoding
+// would corrupt legitimate entity-shaped output (`echo '&amp;'`).
+function jobNotificationDisplay(text: string): string {
+  const summaryTag = extractTag(text, 'summary')
+  let out =
+    summaryTag !== null
+      ? decodeEntities(summaryTag)
+      : (jobNotificationSegment(text) ?? '').trim()
+  const resultTag = extractTag(text, 'result')
+  if (resultTag !== null) {
+    let body = decodeEntities(resultTag)
+    if (body.startsWith('\n')) body = body.slice(1)
+    if (body.endsWith('\n')) body = body.slice(0, -1)
+    if (body.trim() !== '') out += '\n\n' + body
+  }
+  const joint = text.indexOf(JOB_STALL_JOINT)
+  if (joint >= 0) {
+    out += '\n\n' + text.slice(joint + JOB_STALL_JOINT.length).trim()
+  }
+  return out
 }
 
 // Snapshot hydration cost estimate: recursive block count and parseable

@@ -211,6 +211,99 @@ describe('injected reminder history rendering', () => {
   })
 })
 
+// Bare single-layer envelopes (the post-wire-change persisted form) render
+// the same Reminder rows, but the row BODY is the shared display text —
+// machine fields and raw XML never appear.
+describe('bare envelope rendering', () => {
+  const BARE_BASH_XML =
+    '<job-notification>\n<job-id>bg-1</job-id>\n<status>completed</status>\n' +
+    '<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>'
+  const BARE_AGENT_XML =
+    '<job-notification>\n<job-id>agent-1</job-id>\n<tool-use-id>toolu_1</tool-use-id>\n' +
+    '<status>completed</status>\n<agent-type>fork</agent-type>\n<duration-ms>1200</duration-ms>\n' +
+    '<tokens>42</tokens>\n<tool-uses>1</tool-uses>\n<summary>Background agent &quot;refactor auth&quot; completed</summary>\n' +
+    '<result>\ndone &amp; green\n</result>\n</job-notification>'
+  const BARE_STALL_XML =
+    '<job-notification>\n<job-id>bg-2</job-id>\n' +
+    '<summary>Background command &quot;read -p&quot; appears stalled</summary>\n</job-notification>' +
+    '\nLast output:\nProceed? [y/n]\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.'
+
+  function expandedBody(row: HTMLElement): HTMLElement {
+    const body = row.querySelector('.md-body') as HTMLElement
+    const header = row.querySelector('[role="button"]') as HTMLElement
+    header.click()
+    return body
+  }
+
+  it('bare command envelope: display-text body, no raw XML', () => {
+    mountHistory(BARE_BASH_XML)
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(summaryTextOfRow(rows[0])).toBe(' (command make check · exit 0)')
+    const body = expandedBody(rows[0])
+    expect(body.textContent).toContain('Background command "make check" completed (exit code 0)')
+    expect(body.textContent).not.toContain('<job-notification>')
+    expect(body.textContent).not.toContain('<job-id>')
+    expect(body.textContent).not.toContain('<system-reminder>')
+  })
+
+  it('bare agent envelope: summary line + result body, machine fields hidden', () => {
+    mountHistory(BARE_AGENT_XML)
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(summaryTextOfRow(rows[0])).toBe(' (agent fork · completed)')
+    const body = expandedBody(rows[0])
+    expect(body.textContent).toContain('Background agent "refactor auth" completed')
+    expect(body.textContent).toContain('done & green')
+    for (const hidden of ['<job-id>', '<tool-use-id>', '<agent-type>', '<duration-ms>', '<tokens>', '<tool-uses>', '<status>']) {
+      expect(body.textContent, hidden).not.toContain(hidden)
+    }
+  })
+
+  it('bare stall envelope: body carries the raw tail and the boilerplate', () => {
+    mountHistory(BARE_STALL_XML)
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(summaryTextOfRow(rows[0])).toBe(' (command read -p)')
+    const body = expandedBody(rows[0])
+    expect(body.textContent).toContain('Proceed? [y/n]')
+    expect(body.textContent).toContain('The command is likely blocked on an interactive prompt.')
+    expect(body.textContent).not.toContain('<job-notification>')
+  })
+
+  it('message row body becomes the decoded delivered text', () => {
+    mountHistory('<message from="main">\nsay &#34;hi&#34;\n</message>')
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(summaryTextOfRow(rows[0])).toBe(' (got a message from main)')
+    const body = expandedBody(rows[0])
+    expect(body.textContent).toContain('say "hi"')
+    expect(body.textContent).not.toContain('&#34;')
+    expect(body.textContent).not.toContain('<message from=')
+  })
+
+  it('live: a drained notification (mode notification) inserts the same display row', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvent({ type: 'query_start' })
+    dispatchEvent({
+      type: 'attachment',
+      message: {
+        role: 'user',
+        timestamp: '2026-10-14T09:30:00Z',
+        content: [{ type: 'text', text: BARE_BASH_XML }],
+        attachment: { prompt: BARE_BASH_XML, source_uuid: 'notif-bg-1', mode: 'notification' },
+      },
+    })
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(summaryTextOfRow(rows[0])).toBe(' (command make check · exit 0)')
+    const body = expandedBody(rows[0])
+    expect(body.textContent).toContain('Background command "make check" completed (exit code 0)')
+    expect(body.textContent).not.toContain('<job-notification>')
+  })
+})
+
 describe('live reminder insertion', () => {
   // The engine's drained-reminder EventAttachment carries the persisted
   // message: the envelope in content, the wall clock in timestamp.

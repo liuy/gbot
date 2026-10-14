@@ -9,6 +9,10 @@ import {
   bindLongPress,
   createPopupHost,
   unwrapQueuedReminder,
+  unwrapEnvelopeDisplay,
+  isInjectedReminderEnvelope,
+  isJobNotificationEnvelope,
+  isLegacyJobReminderEnvelope,
   countStreamBlocks,
   streamTextChars,
 } from './utils'
@@ -703,6 +707,142 @@ describe('unwrapQueuedReminder', () => {
     )).toBeNull()
   })
 })
+
+// T4 — the TS half of the one-sniff-spec contract: the case lists here mirror
+// pkg/utils/queued_message_test.go (T1) and envelope_display_test.go (T2)
+// case-for-case, so a divergence between the Go and TS predicates fails in
+// whichever implementation drifted. Envelope literals mirror real producer
+// output (bash escapeXML named entities; agent xml.Escape numeric entities).
+const BASH_DONE_XML =
+  '<job-notification>\n<job-id>bg-1</job-id>\n<tool-use-id>toolu_9</tool-use-id>\n' +
+  '<output-file>/tmp/bg-1.out</output-file>\n<status>completed</status>\n' +
+  '<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>'
+
+const BASH_STALL_XML =
+  '<job-notification>\n<job-id>bg-2</job-id>\n' +
+  '<summary>Background command &quot;read -p&quot; appears stalled</summary>\n</job-notification>' +
+  '\nLast output:\nProceed? [y/n] <system-reminder>\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.'
+
+const AGENT_XML =
+  '<job-notification>\n<job-id>agent-1</job-id>\n<tool-use-id>toolu_1</tool-use-id>\n' +
+  '<status>completed</status>\n<agent-type>fork</agent-type>\n<duration-ms>1200</duration-ms>\n' +
+  '<tokens>42</tokens>\n<tool-uses>1</tool-uses>\n<summary>Background agent "refactor auth" completed</summary>\n' +
+  '<result>\nall green &#34;ok&#34;&#xA;second line\n</result>\n</job-notification>'
+
+const BASH_JOB_ENVELOPE =
+  '<system-reminder>\nA background command completed:\n' +
+  '<job-notification>\n<job-id>bg-1</job-id>\n<status>completed</status>\n' +
+  '<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>' +
+  '\n</system-reminder>'
+
+const AGENT_JOB_ENVELOPE =
+  '<system-reminder>\nA background agent completed a job:\n' + AGENT_XML + '\n</system-reminder>'
+
+const CHAHUA_ENVELOPE =
+  '<system-reminder>\nThe user sent a new message while you were working:\nhi' +
+  '\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
+
+describe('isInjectedReminderEnvelope', () => {
+  it.each<[string, string, boolean]>([
+    ['bash job envelope', BASH_JOB_ENVELOPE, true],
+    ['agent job envelope', AGENT_JOB_ENVELOPE, true],
+    ['bare bash job notification', BASH_DONE_XML, true],
+    ['bare bash stall notification', BASH_STALL_XML, true],
+    ['bare agent job notification', AGENT_XML, true],
+    ['timestamped assembled form must not match', '[2026-10-13 13:43:05 CST] ' + BASH_JOB_ENVELOPE, false],
+    ['job envelope missing suffix', '<system-reminder>\nA background command completed:\n<job-notification>\n</job-notification>', false],
+    ['user queued envelope is not a job reminder', CHAHUA_ENVELOPE, false],
+    ['message delivery is not a reminder envelope', '<message from="main">\nhi\n</message>', false],
+    ['empty text', '', false],
+  ])('%s', (_name, text, want) => {
+    expect(isInjectedReminderEnvelope(text)).toBe(want)
+  })
+})
+
+describe('isJobNotificationEnvelope', () => {
+  it.each<[string, string, boolean]>([
+    ['bash completion', BASH_DONE_XML, true],
+    ['bash stall with joint and reminder-bearing tail', BASH_STALL_XML, true],
+    ['agent shape', AGENT_XML, true],
+    ['stall joint immediately after the head', '<job-notification>\n</job-notification>\nLast output: still waiting', true],
+    ['timestamped prefix violates the index-0 rule', '[2026-10-14 09:00:00 CST] ' + BASH_DONE_XML, false],
+    ['missing head newline', '<job-notification><job-id>bg-1</job-id>\n</job-notification>', false],
+    ['missing terminator', '<job-notification>\n<job-id>bg-1</job-id>', false],
+    ['unescaped system-reminder inside the field segment', '<job-notification>\n<summary>s</summary>\n<system-reminder>x</system-reminder>\n</job-notification>', false],
+    ['system-reminder inside fields before a stall joint', '<job-notification>\n<system-reminder>x</system-reminder></job-notification>\nLast output: tail', false],
+    ['prose before head', 'job done — ' + BASH_DONE_XML, false],
+    ['插话 envelope', CHAHUA_ENVELOPE, false],
+    ['message envelope', '<message from="main">\nhi\n</message>', false],
+    ['legacy wrapped envelope', BASH_JOB_ENVELOPE, false],
+    ['empty text', '', false],
+  ])('%s', (_name, text, want) => {
+    expect(isJobNotificationEnvelope(text)).toBe(want)
+  })
+})
+
+describe('isLegacyJobReminderEnvelope', () => {
+  it.each<[string, string, boolean]>([
+    ['bash job envelope', BASH_JOB_ENVELOPE, true],
+    ['agent job envelope', AGENT_JOB_ENVELOPE, true],
+    ['bare bash form', BASH_DONE_XML, false],
+    ['bare agent form', AGENT_XML, false],
+    ['bare stall', BASH_STALL_XML, false],
+    ['timestamped assembled form', '[2026-10-13 13:43:05 CST] ' + BASH_JOB_ENVELOPE, false],
+    ['插话 envelope', CHAHUA_ENVELOPE, false],
+    ['message envelope', '<message from="main">\nhi\n</message>', false],
+    ['empty text', '', false],
+  ])('%s', (_name, text, want) => {
+    expect(isLegacyJobReminderEnvelope(text)).toBe(want)
+  })
+})
+
+describe('unwrapEnvelopeDisplay', () => {
+  it.each<[string, string, string | null]>([
+    // Arm 1 — message delivery: decoded body only, no from line.
+    [
+      'message delivery with full escape alphabet and CJK',
+      '<message from="e2">\nq&#34;q a&#39;l l&lt;t g&gt;t 配置 tab[&#x9;] nl[&#xA;] cr[&#xD;] amp &amp;\n</message>',
+      'q"q a\'l l<t g>t 配置 tab[\t] nl[\n] cr[\r] amp &',
+    ],
+    [
+      'literal entity text single-decodes',
+      '<message from="main">\nsay &amp;quot;hi&amp;quot;\n</message>',
+      'say &quot;hi&quot;',
+    ],
+    // Arm 2 — bare job notification: summary + result, machine fields hidden.
+    ['agent notification with escaped result', AGENT_XML, 'Background agent "refactor auth" completed\n\nall green "ok"\nsecond line'],
+    [
+      'agent notification with empty result keeps summary only',
+      '<job-notification>\n<job-id>agent-2</job-id>\n<status>completed</status>\n<agent-type>fork</agent-type>\n<summary>Background agent "cleanup" completed</summary>\n<result>\n\n</result>\n</job-notification>',
+      'Background agent "cleanup" completed',
+    ],
+    ['bash completion is summary line only', BASH_DONE_XML, 'Background command "make check" completed (exit code 0)'],
+    [
+      'bash stall renders joint tail with boilerplate',
+      '<job-notification>\n<job-id>bg-2</job-id>\n<summary>Background command &quot;read -p&quot; appears stalled</summary>\n</job-notification>\nLast output:\nProceed? [y/n]\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.',
+      'Background command "read -p" appears stalled\n\nProceed? [y/n]\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.',
+    ],
+    [
+      'bash stall tail stays verbatim, summary decodes',
+      '<job-notification>\n<job-id>bg-3</job-id>\n<summary>Background command &quot;can\'t wait&quot; appears stalled</summary>\n</job-notification>\nLast output:\ngot &amp; input\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.',
+      'Background command "can\'t wait" appears stalled\n\ngot &amp; input\n\nThe command is likely blocked on an interactive prompt. Kill this job and re-run with piped input (e.g., `echo y | command`) or a non-interactive flag if one exists.',
+    ],
+    ['bare notification without a summary tag falls back to inner segment', '<job-notification>\n<job-id>bg-9</job-id>\n</job-notification>', '<job-id>bg-9</job-id>'],
+    ['unclosed summary tag falls back to inner segment', '<job-notification>\n<summary>partial\n</job-notification>', '<summary>partial'],
+    // Arm 3 — single-layer system-reminder: body only.
+    ['generic system-reminder body', '<system-reminder>\njust a note\n</system-reminder>', 'just a note'],
+    ['插话 envelope matches arm 3 with boilerplate body', CHAHUA_ENVELOPE, 'The user sent a new message while you were working:\nhi\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.'],
+    // Negatives.
+    ['legacy wrapped job envelope', BASH_JOB_ENVELOPE, null],
+    ['plain text', 'hello world', null],
+    ['bare job-notification without head newline', '<job-notification><job-id>bg-1</job-id>\n</job-notification>', null],
+    ['system-reminder head without tail', '<system-reminder>\njust a note', null],
+    ['system-reminder without head newline', '<system-reminder>just a note</system-reminder>', null],
+  ])('%s', (_name, text, want) => {
+    expect(unwrapEnvelopeDisplay(text)).toBe(want)
+  })
+})
+
 describe('countStreamBlocks', () => {
   it('counts an empty array as 0', () => {
     expect(countStreamBlocks([])).toBe(0)

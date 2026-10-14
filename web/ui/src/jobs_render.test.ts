@@ -286,6 +286,32 @@ describe('jobs section — agent feed', () => {
     expect(echo).toHaveLength(0)
     expect(rows[0].querySelector('.md-body')?.textContent).toContain('</job-notification>')
   })
+
+  it('renders bare notification envelopes as Reminder rows with display-text bodies', async () => {
+    const ctx = mount()
+    const bare =
+      '<job-notification>\n<job-id>bg-1</job-id>\n<status>completed</status>\n' +
+      '<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>'
+    const blocks: Block[] = [{ kind: 'user', id: '', text: bare, startedAt: 1760358185000 }]
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    await nextFrame()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    const rows = Array.from(feed.querySelectorAll('[data-reminder-row]'))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].dataset.toolName).toBe('Reminder')
+    const summary = rows[0].querySelector('span.font-light')
+    expect(summary?.textContent).toBe(' (command make check · exit 0)')
+    // Display text in the collapsed body — never the raw XML, never a gray
+    // echo of the envelope.
+    expect(rows[0].querySelector('.md-body')?.textContent).toContain('Background command "make check" completed (exit code 0)')
+    expect(rows[0].querySelector('.md-body')?.textContent).not.toContain('<job-notification>')
+    const echo = Array.from(feed.querySelectorAll('span')).filter(
+      (s) => s.className.includes('text-t3') && s.textContent?.includes('<job-notification>'),
+    )
+    expect(echo).toHaveLength(0)
+  })
 })
 
 describe('jobs section — expansion lifecycle', () => {

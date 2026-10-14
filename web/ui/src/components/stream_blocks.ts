@@ -137,7 +137,7 @@ export function appendReminderRow(parent: HTMLElement, row: ReminderRow, started
   const handles = appendToolBlock(parent, row.name, before)
   handles.root.dataset.reminderRow = '1'
   setToolSummary(handles, row.summary, row.name)
-  finishTool(handles, { isError: false, durationNs: 0, output: row.raw, skipHighlight: true })
+  finishTool(handles, { isError: false, durationNs: 0, output: row.body, skipHighlight: true })
   handles.durEl.textContent = ' ' + wallClockHHMMSS(startedAt)
 }
 
