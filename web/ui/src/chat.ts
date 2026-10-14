@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, countStreamBlocks, isCollapsibleBlock, streamTextChars, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
 import {
@@ -18,6 +18,7 @@ import {
   appendReminderRow,
   type LiveStreamSink,
 } from './components/stream_blocks'
+import { createStreamHydration } from './components/stream_hydration'
 import {
   type ToolDomHandles,
   type ProgressDomHandles,
@@ -1186,128 +1187,33 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  // Hydration slicing thresholds: above either bound the snapshot render is
-  // spread across rAF frames instead of running as one task (multi-second
-  // freeze on long-query takeover). Block count bounds DOM-wiring cost,
-  // char volume bounds markdown-parse cost; a snapshot is chunked when
-  // EITHER is exceeded.
-  const HYDRATE_SYNC_BLOCKS = 24
-  const HYDRATE_SYNC_CHARS = 50_000
-  // Tail = blocks rendered synchronously in the metadata task (live content
-  // visible immediately); chunk = blocks backfilled per rAF frame afterwards.
-  const HYDRATE_TAIL_BLOCKS = 8
-  const HYDRATE_CHUNK_BLOCKS = 8
+  // Snapshot hydration lives in components/stream_hydration (shared with the
+  // jobs feed sink). The handle closes over chat's streaming refs; the scroll
+  // hooks deliberately ignore the container param and read chat's own scroll
+  // element — in chat the hydration container and the scroll element are
+  // different nodes, and compensation must track the one the user scrolls.
+  const streamHydration = createStreamHydration({
+    container: () => streamContainer,
+    anchor: () => progressHandles?.root ?? null,
+    sink: liveSink,
+    captureScroll: () => ({ top: scroll.scrollTop, height: scroll.scrollHeight }),
+    restoreScroll: (prev) => {
+      if (!isNearBottom) {
+        scroll.scrollTop = prev.top + (scroll.scrollHeight - prev.height)
+      }
+    },
+  })
 
-  // Renders blocks[from..to) in forward order, each inserted before the
-  // streaming progress anchor. Shared by the sync path, the hydration tail,
-  // and the query_end flush so all three produce identical DOM.
-  function renderStreamBlocksRange(blocks: Block[], from: number, to: number) {
-    const anchor = progressAnchor()
-    for (let i = from; i < to; i++) {
-      renderStreamBlock(streamContainer!, blocks[i], anchor, null, liveSink)
-    }
-  }
-
-  interface StreamHydration {
-    raf: number
-    next: number              // lowest not-yet-rendered backfill index
-    firstRendered: Node | null
-    container: HTMLElement
-    blocks: Block[]
-    onDone: (() => void) | undefined
-    finished: boolean
-  }
-  let streamHydration: StreamHydration | null = null
-
-  // Invalidates an in-flight hydration without flushing. Used where the
-  // streaming DOM is about to be replaced (resetAllState / new metadata):
-  // rendering into doomed nodes would be wasted work.
+  // Wrappers keep every historical call site (cleanupStreamingRefs,
+  // query_end, engine-switch, streamState) unchanged.
   function cancelStreamHydration() {
-    if (!streamHydration) return
-    if (streamHydration.raf) cancelAnimationFrame(streamHydration.raf)
-    streamHydration = null
+    streamHydration.cancel()
   }
 
   // query_end / error keep the streaming DOM: flush the un-rendered backfill
   // synchronously so the snapshot stays complete, then close the hydration.
   function finishStreamHydration() {
-    const h = streamHydration
-    if (!h) return
-    if (h.raf) cancelAnimationFrame(h.raf)
-    streamHydration = null
-    if (h.next > 0 && h.container.isConnected) {
-      insertBackfillChunk(h, 0)
-    }
-    completeStreamHydration(h)
-  }
-
-  function completeStreamHydration(h: StreamHydration) {
-    if (h.finished) return
-    h.finished = true
-    h.onDone?.()
-  }
-
-  // Renders blocks[end..h.next) forward into a fragment, inserts it before
-  // the oldest rendered node, and compensates scrollTop when the user is
-  // scrolled away from the bottom (same compensation loadHistory uses).
-  function insertBackfillChunk(h: StreamHydration, end: number) {
-    const frag = createFragment()
-    const anchor = null as Node | null
-    for (let i = end; i < h.next; i++) {
-      renderStreamBlock(frag as unknown as HTMLElement, h.blocks[i], anchor, null, liveSink)
-    }
-    const chunkFirst = frag.firstChild
-    const prevTop = scroll.scrollTop
-    const prevH = scroll.scrollHeight
-    h.container.insertBefore(frag, h.firstRendered)
-    if (!isNearBottom) {
-      scroll.scrollTop = prevTop + (scroll.scrollHeight - prevH)
-    }
-    // The oldest rendered node advances to this chunk's first node — the
-    // next (older) chunk must land ABOVE it, not between it and the tail.
-    // Skipped blocks (empty text) render nothing, keeping the old ref.
-    if (chunkFirst) h.firstRendered = chunkFirst
-    h.next = end
-  }
-
-  function hydrationStep(h: StreamHydration) {
-    if (streamHydration !== h) return
-    const end = Math.max(0, h.next - HYDRATE_CHUNK_BLOCKS)
-    if (end < h.next) insertBackfillChunk(h, end)
-    if (h.next > 0) {
-      h.raf = requestAnimationFrame(() => hydrationStep(h))
-    } else {
-      streamHydration = null
-      completeStreamHydration(h)
-    }
-  }
-
-  function startStreamHydration(blocks: Block[], onDone: (() => void) | undefined) {
-    cancelStreamHydration()
-    const container = streamContainer!
-    const prevFirst = container.firstChild
-    // The tail renders above the current bottom anchor, so it starts at the
-    // index prevFirst occupied. childNodes[prevIndex] after the render is
-    // the oldest node this hydration owns (container.firstChild when it was
-    // empty) — prevFirst.nextSibling would be null here because the anchor
-    // ends up BELOW the tail, not above it.
-    const prevIndex = prevFirst
-      ? Array.prototype.indexOf.call(container.childNodes, prevFirst)
-      : 0
-    const tailFrom = Math.max(0, blocks.length - HYDRATE_TAIL_BLOCKS)
-    renderStreamBlocksRange(blocks, tailFrom, blocks.length)
-    const firstRendered = (container.childNodes[prevIndex] as Node | undefined) ?? null
-    const h: StreamHydration = {
-      raf: 0,
-      next: tailFrom,
-      firstRendered,
-      container,
-      blocks,
-      onDone,
-      finished: false,
-    }
-    streamHydration = h
-    h.raf = requestAnimationFrame(() => hydrationStep(h))
+    streamHydration.flush()
   }
 
   function renderStreamStateBlocks(blocks: Block[], onHydrated?: () => void) {
@@ -1315,15 +1221,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     pendingBlocks.length = 0
     pendingBlocks.push(...blocks)
     registerBlocksForStreamState(blocks, null)
-    const large =
-      countStreamBlocks(blocks) > HYDRATE_SYNC_BLOCKS ||
-      streamTextChars(blocks) > HYDRATE_SYNC_CHARS
-    if (!large) {
-      renderStreamBlocksRange(blocks, 0, blocks.length)
-      onHydrated?.()
-      return
-    }
-    startStreamHydration(blocks, onHydrated)
+    streamHydration.renderSnapshot(blocks, onHydrated)
   }
 
   function handleEvent(e: QueryEvent) {

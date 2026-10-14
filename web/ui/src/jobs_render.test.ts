@@ -7,6 +7,22 @@ import type { Block } from './model'
 // jsdom fires rAF as a timer; one awaited frame flushes scheduleRender.
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
 
+// Fake-timer rAF for hydration tests (takeover_hydration.test.ts pattern):
+// advanceTimersByTime(16) fires exactly one backfill frame.
+function useFakeFrames() {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame', 'performance'],
+  })
+}
+
+function agentEvent(type: string, fields: Record<string, unknown> = {}) {
+  return {
+    type,
+    agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 },
+    ...fields,
+  }
+}
+
 function jw(partial: Partial<JobWireItem> & Pick<JobWireItem, 'id' | 'kind' | 'status'>): JobWireItem {
   return { startedMs: 1000, ...partial }
 }
@@ -167,6 +183,41 @@ describe('jobs section — bash expansion', () => {
     rowFor(ctx.host, 'bg-1').click()
     expect(expFor(ctx.host, 'bg-1')).not.toBeNull()
     expect(ctx.host.querySelector('.jobs-stop')).toBeNull()
+  })
+
+  it('re-expanding a bash row paints the carried tail (connector resends only changes)', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([bashJob('bg-1', 'completed')])
+    ctx.rerender()
+    rowFor(ctx.host, 'bg-1').click()
+    ctx.store.applyOutput('bg-1', 'carried tail line\n')
+    await nextFrame()
+    rowFor(ctx.host, 'bg-1').click() // collapse drops the view
+    rowFor(ctx.host, 'bg-1').click() // re-expand: tail unchanged server-side, never resent
+    const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    const body = feed.querySelector('.md-body') as HTMLElement
+    expect(body.textContent).toContain('carried tail line')
+    // The fresh paint arms the string guard: an unchanged-tail resend keeps
+    // the node (no phantom rebuild).
+    ctx.store.applyOutput('bg-1', 'carried tail line\n')
+    await nextFrame()
+    expect(feed.querySelector('.md-body')).toBe(body)
+  })
+
+  it('first expansion of a completed bash job paints the hydrated tail', async () => {
+    const ctx = mount()
+    ctx.store.setJobs(
+      [bashJob('bg-1', 'completed')],
+      new Map([['bg-1', { tail: 'snapshot tail line\n' }]]),
+    )
+    ctx.rerender()
+    rowFor(ctx.host, 'bg-1').click()
+    const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    expect((feed.querySelector('.md-body') as HTMLElement).textContent).toContain('snapshot tail line')
+    // A later unchanged-tail resend must not clobber the painted body.
+    ctx.store.applyOutput('bg-1', 'snapshot tail line\n')
+    await nextFrame()
+    expect(feed.querySelector('.md-body')?.textContent).toContain('snapshot tail line')
   })
 })
 
@@ -459,5 +510,291 @@ describe('jobs section — follow button', () => {
     await nextFrame()
     expect(feed.scrollTop).toBe(100)
     expect(btn.classList.contains('opacity-0')).toBe(false)
+  })
+})
+
+// ── DOM sink behavior (incremental rendering) ─────────────────────────────
+
+// Distinct marker per block; each text block renders exactly one .md-body.
+function makeFeedBlocks(n: number, prefix = 'blk'): Block[] {
+  return Array.from({ length: n }, (_, i) => ({
+    kind: 'text' as const,
+    id: '',
+    text: `${prefix}-${i} lorem ipsum dolor sit amet consectetur adipiscing elit **md**`,
+  }))
+}
+
+function expectedMdBodies(blocks: Block[]): number {
+  return blocks.length
+}
+
+describe('jobs section — incremental DOM sink', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('marker survives 100 coalesced text deltas (no full rebuild)', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([agentJob('agent-1', 'running')])
+    ctx.rerender()
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 't-1', name: 'Read', input: {} } }))
+    await nextFrame()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    const card = feed.querySelector('[data-tool-root]') as HTMLElement
+    card.dataset.marker = 'keep'
+    const cardNode = card
+
+    for (let i = 0; i < 100; i++) {
+      ctx.store.applyEvent(agentEvent('text_delta', { text: `d${i} ` }))
+    }
+    await nextFrame()
+
+    const after = feed.querySelector('[data-tool-root]') as HTMLElement
+    expect(after).toBe(cardNode)
+    expect(after.dataset.marker).toBe('keep')
+    expect(feed.querySelectorAll('[data-tool-root]')).toHaveLength(1)
+    expect(feed.textContent).toContain('d99')
+  })
+
+  it('sibling isolation: flooding job B leaves expanded job A untouched', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      agentJob('agent-A', 'running'),
+      jw({ id: 'agent-B', kind: 'agent', status: 'running', agentType: 'Executor', description: 'b', parentToolUseID: 'pB' }),
+    ])
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-A').click()
+    const feedA = expFor(ctx.host, 'agent-A')?.querySelector('.jobs-feed') as HTMLElement
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 'ta-1', name: 'Read', input: {} } }))
+    await nextFrame()
+    const card = feedA.querySelector('[data-tool-root]') as HTMLElement
+    card.dataset.marker = 'A'
+    const countBefore = feedA.children.length
+
+    for (let i = 0; i < 50; i++) {
+      ctx.store.applyEvent({
+        type: 'tool_start',
+        tool_use: { id: `tb-${i}`, name: 'Bash', input: {} },
+        agent: { parent_tool_use_id: 'pB', agent_type: 'Executor', depth: 1 },
+      })
+    }
+    await nextFrame()
+
+    expect(feedA.children.length).toBe(countBefore)
+    const cardAfter = feedA.querySelector('[data-tool-root]') as HTMLElement
+    expect(cardAfter).toBe(card)
+    expect(cardAfter.dataset.marker).toBe('A')
+  })
+
+  it('expand of a 420-block feed shows the tail synchronously and backfills across frames', () => {
+    useFakeFrames()
+    const ctx = mount()
+    const blocks = makeFeedBlocks(420)
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+
+    // Tail-first: newest visible now, oldest absent, partial DOM.
+    expect(feed.textContent).toContain('blk-419')
+    expect(feed.textContent).not.toContain('blk-0')
+    const syncCount = feed.querySelectorAll('.md-body').length
+    expect(syncCount).toBeGreaterThan(0)
+    expect(syncCount).toBeLessThan(expectedMdBodies(blocks))
+
+    vi.advanceTimersByTime(16 * 60)
+
+    expect(feed.querySelectorAll('.md-body')).toHaveLength(expectedMdBodies(blocks))
+    expect(feed.textContent).toContain('blk-0')
+    const text = feed.textContent ?? ''
+    expect(text.indexOf('blk-0')).toBeLessThan(text.indexOf('blk-419'))
+    vi.useRealTimers()
+  })
+
+  it('C1: deltas streamed mid-hydration reconcile exactly once with in-place seam patch', () => {
+    useFakeFrames()
+    const ctx = mount()
+    const blocks = makeFeedBlocks(60)
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    const tailDiv = feed.lastElementChild as HTMLElement // blk-59's div (8-tail sync)
+    expect(tailDiv.textContent).toContain('blk-59')
+
+    vi.advanceTimersByTime(16) // one backfill chunk landed; hydration pending
+
+    // Deltas while pending: two finalize deltas onto the seam block plus a
+    // new suffix (tool + text) — all coalesced into the same flush frame,
+    // so the seam mutates after its last render.
+    ctx.store.applyEvent(agentEvent('text_delta', { text: ' PLUS-ONE' }))
+    ctx.store.applyEvent(agentEvent('text_delta', { text: ' PLUS-FINAL' }))
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 't-live', name: 'Bash', input: {} } }))
+    ctx.store.applyEvent(agentEvent('text_delta', { text: 'after-tool' }))
+
+    vi.advanceTimersByTime(16 * 40)
+
+    // Exactly once: 60 fixture + the tool card's (hidden) output body + the
+    // after-tool text block.
+    expect(feed.querySelectorAll('.md-body')).toHaveLength(62)
+    // Seam patched in place: the tail div is the SAME node, holding every
+    // delta streamed onto it (content pin on the unconditional patch).
+    const seam = Array.from(feed.querySelectorAll('.md-body')).find(
+      (el) => (el.textContent ?? '').includes('blk-59'),
+    )
+    expect(seam).toBe(tailDiv)
+    expect(seam!.textContent).toContain('PLUS-ONE')
+    // Both finalize deltas coalesced before the tool_start landed on the
+    // seam. (**md** renders as <strong>md</strong>, so textContent has 'md'.)
+    expect(seam!.textContent).toContain('md PLUS-ONE PLUS-FINAL')
+    // Order intact: fixture head still above the tail.
+    const text = feed.textContent ?? ''
+    expect(text.indexOf('blk-0')).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf('blk-0')).toBeLessThan(text.indexOf('blk-59'))
+    expect(text).toContain('after-tool')
+    vi.useRealTimers()
+  })
+
+  it('C2: truncation arriving mid-hydration rehydrates from the capped list, never NotFoundError', () => {
+    useFakeFrames()
+    const ctx = mount()
+    const blocks = makeFeedBlocks(420)
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    vi.advanceTimersByTime(16) // backfill pending
+
+    // One event pushes the store past the 400 cap: the array is replaced and
+    // 21 head blocks are dropped.
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 't-401', name: 'Bash', input: {} } }))
+
+    vi.advanceTimersByTime(16 * 60)
+
+    expect(feed.querySelectorAll('.md-body')).toHaveLength(400)
+    const text = feed.textContent ?? ''
+    expect(text).toContain('blk-21') // post-truncation head
+    expect(text).not.toContain('blk-0')
+    expect(text).toContain('blk-419')
+    expect(text).toContain('Bash')
+    vi.useRealTimers()
+  })
+
+  it('collapse mid-hydration disposes the pending rAF chain: nothing appends later', () => {
+    useFakeFrames()
+    const ctx = mount()
+    const blocks = makeFeedBlocks(420)
+    ctx.store.setJobs([agentJob('agent-1', 'running')], new Map([['agent-1', { blocks }]]))
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    vi.advanceTimersByTime(16)
+    const midCount = feed.querySelectorAll('.md-body').length
+
+    rowFor(ctx.host, 'agent-1').click() // collapse
+    vi.advanceTimersByTime(16 * 60)
+
+    expect(feed.querySelectorAll('.md-body').length).toBe(midCount)
+    expect(expFor(ctx.host, 'agent-1')).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('quiescent truncation drops the rendered head node (dropLeading)', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([agentJob('agent-1', 'running')])
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    for (let i = 0; i < 5; i++) {
+      ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: `t-${String(i).padStart(3, '0')}`, name: 'Bash', input: {} } }))
+    }
+    await nextFrame()
+    const headNode = feed.children[0]
+
+    for (let i = 5; i < 401; i++) {
+      ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: `t-${String(i).padStart(3, '0')}`, name: 'Bash', input: {} } }))
+    }
+    await nextFrame()
+
+    expect(feed.children.length).toBe(400)
+    expect(headNode.isConnected).toBe(false)
+    expect(feed.children[0]).not.toBe(headNode)
+  })
+
+  it('bash tails skip unchanged strings (node identity) and re-render on change', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([bashJob('bg-1', 'running')])
+    ctx.rerender()
+    rowFor(ctx.host, 'bg-1').click()
+    const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+
+    ctx.store.applyOutput('bg-1', 'line-one\n')
+    await nextFrame()
+    const body = feed.children[0] as HTMLElement
+    expect(body.textContent).toContain('line-one')
+
+    ctx.store.applyOutput('bg-1', 'line-one\n') // same string
+    await nextFrame()
+    expect(feed.children[0]).toBe(body)
+
+    ctx.store.applyOutput('bg-1', 'line-one\nline-two\n')
+    await nextFrame()
+    const after = feed.children[0] as HTMLElement
+    expect(after).not.toBe(body)
+    expect(after.textContent).toContain('line-two')
+  })
+
+  it('quiet-feed rebuild stability: an unrelated status flip preserves a current view', async () => {
+    const ctx = mount()
+    const blocks = makeFeedBlocks(3, 'q')
+    ctx.store.setJobs(
+      [agentJob('agent-1', 'completed'), bashJob('bg-9', 'running')],
+      new Map([['agent-1', { blocks }]]),
+    )
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    await nextFrame()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    const childrenBefore = Array.from(feed.children)
+    expect(childrenBefore.length).toBe(3)
+
+    // Unrelated job status flip forces a full row rebuild (jobsSig change).
+    ctx.store.setJobs([agentJob('agent-1', 'completed'), bashJob('bg-9', 'completed')])
+    ctx.rerender()
+
+    const feedAfter = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    expect(feedAfter).toBe(feed)
+    // Node identity, not structural equality: an uninitialized lastVersion
+    // forces dispose+rehydrate on every rebuild — permanent churn.
+    expect(feedAfter.children.length).toBe(childrenBefore.length)
+    for (let i = 0; i < childrenBefore.length; i++) {
+      expect(feedAfter.children[i]).toBe(childrenBefore[i])
+    }
+  })
+
+  it('stale catch-up: deltas while the popover is closed render on reopen', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([agentJob('agent-1', 'running')])
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    await nextFrame()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    expect(feed.children.length).toBe(0)
+
+    // Popover closed: the section host detaches; flushes skip the feed.
+    ctx.host.remove()
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 't-late', name: 'Read', input: {} } }))
+    ctx.store.applyEvent(agentEvent('text_delta', { text: 'streamed while closed' }))
+    await nextFrame()
+    expect(feed.children.length).toBe(0)
+
+    // Reopen: rebuild catches the version gap and rehydrates.
+    document.body.appendChild(ctx.host)
+    ctx.rerender()
+    await nextFrame()
+    const reopened = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    expect(reopened.textContent).toContain('streamed while closed')
+    expect(reopened.querySelectorAll('[data-tool-root]')).toHaveLength(1)
   })
 })

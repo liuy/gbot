@@ -7,6 +7,19 @@ export interface JobFeedState {
   follow: boolean
 }
 
+// Granular per-feed change notification. The DOM sink consumes these to
+// touch only the affected job's feed element per store delta.
+//   event     — e routed to jobID; parentID = the parent tool id the event
+//               addressed (null = feed root)
+//   truncated — refs removed from the head by the 400-block cap
+//   tail      — applyOutput wrote the bash tail
+//   reset     — setJobs hydration replaced blocks/tail
+export type FeedChange =
+  | { kind: 'event'; jobID: string; parentID: string | null; e: QueryEvent }
+  | { kind: 'truncated'; jobID: string; dropped: Block[] }
+  | { kind: 'tail'; jobID: string }
+  | { kind: 'reset'; jobID: string }
+
 export interface JobsStoreHandle {
   setJobs(items: JobWireItem[], hydrated?: Map<string, { blocks?: Block[]; tail?: string }>): void
   applyOutput(jobID: string, tail: string): void
@@ -15,7 +28,10 @@ export interface JobsStoreHandle {
   feed(jobID: string): JobFeedState | undefined
   hasRunning(): boolean
   hasAny(): boolean
-  onChange(cb: () => void): () => void
+  onChange(cb: (jobID?: string) => void): () => void
+  onFeedChange(cb: (c: FeedChange) => void): () => void
+  // Monotonic per jobID, never reset — the renderer's stale-view watermark.
+  feedVersion(jobID: string): number
 }
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
@@ -30,7 +46,7 @@ const JOB_FEED_MAX_BLOCKS = 400
 // findBlock mirrors the connector's findBlock: depth-first search of the
 // block tree for a tool block by id. Sub-agent events address their parent
 // tool by id, wherever in the tree it lives.
-function findBlock(blocks: Block[], id: string): ToolBlock | null {
+export function findBlock(blocks: Block[], id: string): ToolBlock | null {
   for (const b of blocks) {
     if (b.kind === 'tool') {
       if (b.id === id) return b
@@ -50,10 +66,20 @@ export function createJobsStore(): JobsStoreHandle {
   // toolID → jobID here (connector keys feeds by parent id; jobs are keyed
   // by job id in this store).
   const innerToolToJob = new Map<string, string>()
-  const changeCbs = new Set<() => void>()
+  const changeCbs = new Set<(jobID?: string) => void>()
+  const feedCbs = new Set<(c: FeedChange) => void>()
+  const versions = new Map<string, number>()
 
-  const notify = () => {
-    for (const cb of changeCbs) cb()
+  const notify = (jobID?: string) => {
+    for (const cb of changeCbs) cb(jobID)
+  }
+
+  const emit = (c: FeedChange) => {
+    for (const cb of feedCbs) cb(c)
+  }
+
+  const bumpVersion = (jobID: string) => {
+    versions.set(jobID, (versions.get(jobID) ?? 0) + 1)
   }
 
   const ensureFeed = (jobID: string): JobFeedState | undefined => {
@@ -213,10 +239,16 @@ export function createJobsStore(): JobsStoreHandle {
       }
       if (hydrated) {
         for (const [id, h] of hydrated) {
+          // chat.ts maps every wire job into the hydration map; a job with
+          // no cached feed arrives as {undefined, undefined} and must not
+          // emit a spurious reset (it would rehydrate an expanded view).
+          if (h.blocks === undefined && h.tail === undefined) continue
           const f = ensureFeed(id)
           if (!f) continue
           if (h.blocks !== undefined) f.blocks = h.blocks
           if (h.tail !== undefined) f.tail = h.tail
+          emit({ kind: 'reset', jobID: id })
+          bumpVersion(id)
         }
       }
       notify()
@@ -224,8 +256,11 @@ export function createJobsStore(): JobsStoreHandle {
     applyOutput: (jobID, tail) => {
       const f = ensureFeed(jobID)
       if (!f) return
+      const changed = f.tail !== tail
       f.tail = tail
-      notify()
+      emit({ kind: 'tail', jobID })
+      if (changed) bumpVersion(jobID)
+      notify(jobID)
     },
     applyEvent: (e) => {
       const parent = e.agent?.parent_tool_use_id
@@ -252,7 +287,10 @@ export function createJobsStore(): JobsStoreHandle {
       const changed = applyStreamEvent(feed, target, e)
       // Mirror of Go's per-event cap in applyAgentEventLocked: drop the head,
       // the tail is the interesting end.
+      let dropped: Block[] | null = null
       if (feed.blocks.length > JOB_FEED_MAX_BLOCKS) {
+        const over = feed.blocks.length - JOB_FEED_MAX_BLOCKS
+        dropped = feed.blocks.slice(0, over)
         feed.blocks = feed.blocks.slice(-JOB_FEED_MAX_BLOCKS)
       }
       // Registration hangs off the ROUTING hit, not off toRoot: a depth ≥3
@@ -261,7 +299,12 @@ export function createJobsStore(): JobsStoreHandle {
       if (e.type === 'tool_start' && e.tool_use) {
         innerToolToJob.set(e.tool_use.id, jobID)
       }
-      if (changed) notify()
+      if (changed) {
+        emit({ kind: 'event', jobID, parentID: toRoot ? null : parent, e })
+        if (dropped) emit({ kind: 'truncated', jobID, dropped })
+        bumpVersion(jobID)
+        notify(jobID)
+      }
     },
     jobs: () => [...items.values()],
     feed: (jobID) => feeds.get(jobID),
@@ -276,5 +319,10 @@ export function createJobsStore(): JobsStoreHandle {
       changeCbs.add(cb)
       return () => changeCbs.delete(cb)
     },
+    onFeedChange: (cb) => {
+      feedCbs.add(cb)
+      return () => feedCbs.delete(cb)
+    },
+    feedVersion: (jobID) => versions.get(jobID) ?? 0,
   }
 }

@@ -1,11 +1,13 @@
 import type { JobWireItem } from './types'
-import type { JobFeedState, JobsStoreHandle } from './jobs_store'
+import type { JobsStoreHandle, FeedChange } from './jobs_store'
 import { createElement } from './dom'
 import { t } from './i18n'
-import { renderStreamBlock, wireCopyButtons } from './components/stream_blocks'
+import { wireCopyButtons } from './components/stream_blocks'
+import { createFeedSink, type FeedSinkHandle } from './components/stream_sink'
 import { renderToolOutput } from './tool_render'
 import { createFloatButton } from './buttons'
 import { toolBody } from './styles/recipes'
+import type { Block } from './model'
 
 // Follow threshold shared by bash tail feeds and agent block feeds: within
 // 40px of the bottom means "pinned". Parameterized (not read off an element)
@@ -36,12 +38,36 @@ export interface JobsSectionHandles {
 // Feed element trio per expanded job: the wrap is the positioning context
 // for the back-to-bottom overlay button (a sibling of the scroll container,
 // not a child, so it never scrolls away), the feed is the scroll container
-// whose content is fully re-rendered on every store change, and the button
-// is the chat-scrollBtn-style follow affordance.
+// whose content is updated incrementally by the per-feed sink, and the
+// button is the chat-scrollBtn-style follow affordance.
 interface FeedView {
   wrap: HTMLElement
   feed: HTMLElement
   btn: HTMLButtonElement
+  // null for bash views: no blocks ever route to a bash feed (tails arrive
+  // via applyOutput only), so the tail path is their entire rendering and a
+  // sink/hydration would be dead weight.
+  sink: FeedSinkHandle | null
+  // Bash tail string the DOM last rendered — string-guarded skip. Must init
+  // at view creation: the first flush must not rebuild a body that already
+  // matches the store.
+  lastTail: string
+  // "this view's DOM has fully absorbed the store through that version".
+  // Advances only in flush's consuming branches (1 and 3) and at
+  // rehydrate initiation; a branch-2 deferral leaves it behind so the next
+  // rebuild's mismatch check re-renders the deferred deltas.
+  lastVersion: number
+}
+
+// Per-feed deferred work, filled from granular store changes and consumed by
+// one flush pass. Records for never-expanded (detached) or removed feeds are
+// purged by rebuild so the queue cannot grow unboundedly.
+interface DirtyRecord {
+  tools: Set<string>
+  containers: Set<string | null>
+  dropped: Block[]
+  tail: boolean
+  reset: boolean
 }
 
 export function createJobsSection(): JobsSectionHandles {
@@ -49,50 +75,50 @@ export function createJobsSection(): JobsSectionHandles {
   // stays expanded and present — collapse or removal drops (and therefore
   // scroll-resets) the feed, which is the intended fresh-follow behavior.
   const feedEls = new Map<string, FeedView>()
+  const dirty = new Map<string, DirtyRecord>()
   let curStore: JobsStoreHandle | null = null
   let unsub: (() => void) | null = null
+  let feedUnsub: (() => void) | null = null
   let rafId = 0
 
-  const renderFeedContent = (view: FeedView, feed: JobFeedState): void => {
-    const el = view.feed
-    if (el.dataset.kind === 'bash') {
-      // Same pipeline as a chat Bash tool card's output body; the row label
-      // already carries the command so the feed shows output only.
-      const body = createElement('div', toolBody())
-      body.classList.remove('ml-6', 'hidden')
-      body.innerHTML = renderToolOutput(feed.tail)
-      wireCopyButtons(body)
-      el.replaceChildren(body)
-    } else {
-      const frag = document.createDocumentFragment()
-      for (const b of feed.blocks) renderStreamBlock(frag as unknown as HTMLElement, b, null, null)
-      el.replaceChildren(frag)
+  const ensureDirty = (jobID: string): DirtyRecord => {
+    let rec = dirty.get(jobID)
+    if (!rec) {
+      rec = { tools: new Set(), containers: new Set(), dropped: [], tail: false, reset: false }
+      dirty.set(jobID, rec)
     }
-    // Pin when following; when the user scrolled up, leave scrollTop alone —
-    // re-rendered content must not yank the viewport (that is the whole
-    // reason feeds are carried over instead of rebuilt).
-    if (feed.follow) el.scrollTop = el.scrollHeight
-    view.btn.classList.toggle('opacity-0', feed.follow)
-    view.btn.classList.toggle('pointer-events-none', feed.follow)
+    return rec
   }
 
-  // Renders every tracked feed, connected or not: the section host is built
-  // before the popover is attached, and a carried-over feed that went stale
-  // while the popover was closed must still refresh on the next rebuild.
-  const renderAllFeeds = () => {
-    if (!curStore) return
-    for (const [id, view] of feedEls) {
-      const feed = curStore.feed(id)
-      if (feed) renderFeedContent(view, feed)
+  // Granular change intake: only the affected job's dirty record grows, so
+  // a delta touches only that feed's DOM on the next flush.
+  const onFeedChange = (c: FeedChange) => {
+    const rec = ensureDirty(c.jobID)
+    switch (c.kind) {
+      case 'event': {
+        // Per-event tool-id extraction mirrors the store's own findBlock
+        // lookups: tool events address the tool, everything else addresses
+        // the container the event routed to.
+        if (c.e.type === 'tool_param_delta') {
+          if (c.e.partial_input?.id) rec.tools.add(c.e.partial_input.id)
+        } else if (c.e.type === 'tool_output_delta' || c.e.type === 'tool_end') {
+          if (c.e.tool_result?.tool_use_id) rec.tools.add(c.e.tool_result.tool_use_id)
+        } else {
+          rec.containers.add(c.parentID)
+        }
+        break
+      }
+      case 'truncated':
+        rec.dropped.push(...c.dropped)
+        break
+      case 'tail':
+        rec.tail = true
+        break
+      case 'reset':
+        rec.reset = true
+        break
     }
-  }
-
-  const scheduleRender = () => {
-    if (rafId) return
-    rafId = requestAnimationFrame(() => {
-      rafId = 0
-      renderAllFeeds()
-    })
+    scheduleRender()
   }
 
   const createFeedView = (job: JobWireItem): FeedView => {
@@ -100,12 +126,28 @@ export function createJobsSection(): JobsSectionHandles {
     const el = createElement('div', 'jobs-feed')
     el.dataset.kind = job.kind
     el.dataset.jobId = job.id
+    const feed = curStore?.feed(job.id)
+    const view: FeedView = {
+      wrap,
+      feed: el,
+      btn: null as unknown as HTMLButtonElement,
+      sink:
+        job.kind === 'bash'
+          ? null
+          : createFeedSink({
+              feedEl: el,
+              blocks: () => curStore?.feed(job.id)?.blocks ?? [],
+              follow: () => curStore?.feed(job.id)?.follow ?? false,
+            }),
+      lastTail: feed?.tail ?? '',
+      lastVersion: curStore?.feedVersion(job.id) ?? 0,
+    }
     const btn = createFloatButton({
       position: 'center',
       innerIcon: 'scroll-to-bottom',
       onClick: () => {
-        const feed = curStore?.feed(job.id)
-        if (feed) feed.follow = true
+        const f = curStore?.feed(job.id)
+        if (f) f.follow = true
         el.scrollTop = el.scrollHeight
         btn.classList.add('opacity-0', 'pointer-events-none')
       },
@@ -116,14 +158,83 @@ export function createJobsSection(): JobsSectionHandles {
     // Inline style wins over the class, so no CSS surgery is needed.
     btn.style.bottom = '4px'
     el.addEventListener('scroll', () => {
-      const feed = curStore?.feed(job.id)
-      if (!feed) return
-      feed.follow = nearBottom(el.scrollHeight, el.scrollTop, el.clientHeight)
-      btn.classList.toggle('opacity-0', feed.follow)
-      btn.classList.toggle('pointer-events-none', feed.follow)
+      const f = curStore?.feed(job.id)
+      if (!f) return
+      f.follow = nearBottom(el.scrollHeight, el.scrollTop, el.clientHeight)
+      btn.classList.toggle('opacity-0', f.follow)
+      btn.classList.toggle('pointer-events-none', f.follow)
     })
     wrap.append(el, btn)
-    return { wrap, feed: el, btn }
+    view.btn = btn
+    return view
+  }
+
+  // Bash tail body: the chat Bash tool-card output pipeline, shared by the
+  // flush tail path and a fresh view's initial paint.
+  const renderTailBody = (view: FeedView, tail: string): void => {
+    const body = createElement('div', toolBody())
+    body.classList.remove('ml-6', 'hidden')
+    body.innerHTML = renderToolOutput(tail)
+    wireCopyButtons(body)
+    view.feed.replaceChildren(body)
+    view.lastTail = tail
+  }
+
+  const flush = () => {
+    if (!curStore) return
+    for (const [id, view] of feedEls) {
+      const rec = dirty.get(id)
+      const feed = curStore.feed(id)
+      if (!rec || !feed) continue
+      // Popover closed → skip; state stays truth, the rebuild's version
+      // catch-up reconciles on reopen.
+      if (!view.feed.isConnected) continue
+      if (rec.reset || (rec.dropped.length > 0 && view.sink !== null && view.sink.pending())) {
+        // Truncation/reset is ALWAYS a wholesale rehydrate from the fresh
+        // store list: the pending chunks hold pre-truncation blocks, and a
+        // dropLeading into a pending snapshot could remove the hydration's
+        // insertBefore anchor (NotFoundError). The clear is load-bearing,
+        // not bookkeeping: a surviving dirty.reset would re-enter this
+        // branch on every subsequent flush AND on every hydration onDone —
+        // a self-sustaining rehydrate loop.
+        if (view.sink) {
+          view.sink.dispose()
+          view.lastVersion = curStore.feedVersion(id)
+          view.sink.hydrate(scheduleRender)
+        } else {
+          view.lastVersion = curStore.feedVersion(id)
+        }
+        dirty.delete(id)
+      } else if (view.sink !== null && view.sink.pending()) {
+        // Deltas are deferred; they reconcile in one pass when the
+        // hydration's onDone fires scheduleRender.
+        continue
+      } else {
+        view.sink?.dropLeading(rec.dropped)
+        for (const key of rec.containers) view.sink?.syncTail(key)
+        for (const toolID of rec.tools) view.sink?.patchTool(toolID)
+        view.lastVersion = curStore.feedVersion(id)
+        dirty.delete(id)
+      }
+      // Bash tail path (runs in every consuming branch, string-guarded —
+      // not on the cleared flag).
+      if (view.sink === null && feed.tail !== view.lastTail) {
+        renderTailBody(view, feed.tail)
+      }
+      // Pin when following; when the user scrolled up, leave scrollTop
+      // alone — re-rendered content must not yank the viewport.
+      if (feed.follow) view.feed.scrollTop = view.feed.scrollHeight
+      view.btn.classList.toggle('opacity-0', feed.follow)
+      view.btn.classList.toggle('pointer-events-none', feed.follow)
+    }
+  }
+
+  const scheduleRender = () => {
+    if (rafId) return
+    rafId = requestAnimationFrame(() => {
+      rafId = 0
+      flush()
+    })
   }
 
   // Stop affordance per design spec: bare 28px red icon button, solid
@@ -161,6 +272,17 @@ export function createJobsSection(): JobsSectionHandles {
       // inherit the released-follow state of the element it replaced.
       const feed = curStore?.feed(j.id)
       if (feed) feed.follow = true
+      // First render from current store truth; the fresh render supersedes
+      // any record accumulated while no view existed (deltas while
+      // collapsed are absorbed by this snapshot).
+      view.sink?.hydrate(scheduleRender)
+      // Bash counterpart of the hydrate call: the connector resends a tail
+      // only when it changed (jobs_panel.go diffs tailSent), so a completed
+      // job's output must paint here or never — flush's tail path is
+      // string-guarded against lastTail, which view creation already
+      // matched to the store.
+      if (view.sink === null && feed && feed.tail !== '') renderTailBody(view, feed.tail)
+      dirty.delete(j.id)
     }
     box.appendChild(view.wrap)
     if (j.status === 'running') {
@@ -243,16 +365,23 @@ export function createJobsSection(): JobsSectionHandles {
     // the panel's lifetime, but tests mount fresh sections per case).
     if (curStore !== store) {
       unsub?.()
+      feedUnsub?.()
       curStore = store
       unsub = store.onChange(scheduleRender)
+      feedUnsub = store.onFeedChange(onFeedChange)
     }
 
     const jobs = store.jobs()
     const live = new Set(jobs.map((j) => j.id))
     // Jobs removed from the store (cleared / engine switch) must not keep
-    // phantom expansion state alive.
+    // phantom expansion state alive, and their dirty records must not
+    // outlive the store's own truncation (dropped refs of removed feeds
+    // would grow the queue unboundedly).
     for (const id of [...opts.expanded]) {
       if (!live.has(id)) opts.expanded.delete(id)
+    }
+    for (const id of [...dirty.keys()]) {
+      if (!live.has(id)) dirty.delete(id)
     }
 
     // The toggle closure binds this rebuild's opts, so a click always acts
@@ -277,9 +406,29 @@ export function createJobsSection(): JobsSectionHandles {
     sectionHost.replaceChildren(frag)
 
     for (const id of [...feedEls.keys()]) {
-      if (!opts.expanded.has(id) || !live.has(id)) feedEls.delete(id)
+      if (!opts.expanded.has(id) || !live.has(id)) {
+        // dispose() cancels any pending hydration rAF chain: a view collapsed
+        // mid-hydration must not keep rendering backfill into detached nodes.
+        feedEls.get(id)?.sink?.dispose()
+        feedEls.delete(id)
+      }
     }
-    renderAllFeeds()
+
+    // Version catch-up for carried views: stale content accumulated while
+    // the popover was closed re-renders here. Assigned at initiation so
+    // deltas landing during the new hydration bump the store version past
+    // the watermark and the NEXT rebuild re-renders them.
+    for (const j of jobs) {
+      if (!opts.expanded.has(j.id) || j.kind === 'bash') continue
+      const view = feedEls.get(j.id)
+      if (!view?.sink) continue
+      if (view.lastVersion !== store.feedVersion(j.id)) {
+        view.lastVersion = store.feedVersion(j.id)
+        view.sink.dispose()
+        view.sink.hydrate(scheduleRender)
+        dirty.delete(j.id)
+      }
+    }
   }
 
   return {

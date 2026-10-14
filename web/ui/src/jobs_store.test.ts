@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createJobsStore } from './jobs_store'
+import { createJobsStore, type FeedChange } from './jobs_store'
 import type { JobWireItem, QueryEvent } from './types'
 import type { Block } from './model'
 
@@ -365,5 +365,165 @@ describe('jobs store — metadata hydration', () => {
       new Map([['ghost', { blocks }]]),
     )
     expect(store.feed('ghost')).toBeUndefined()
+  })
+})
+
+describe('jobs store — granular change feed', () => {
+  it('emits event with parentID null for root-routed events and the inner tool id for nested ones', () => {
+    const store = createJobsStore()
+    store.setJobs([agentJob('agent-1', 'running', 'parent-1')])
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+
+    store.applyEvent(toolStart('inner-1', 'parent-1', 'Agent'))
+    store.applyEvent(toolStart('nested-1', 'inner-1', 'Bash'))
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ kind: 'event', jobID: 'agent-1', parentID: null })
+    if (seen[0].kind !== 'event') throw new Error('expected event change')
+    expect(seen[0].e.type).toBe('tool_start')
+    expect(seen[1]).toMatchObject({ kind: 'event', jobID: 'agent-1', parentID: 'inner-1' })
+    // The emitted event object is the routed wire event itself.
+    if (seen[1].kind !== 'event') throw new Error('expected event change')
+    expect(seen[1].e.tool_use?.id).toBe('nested-1')
+  })
+
+  it('emits truncated after the event when the 400 cap slices the head, with the dropped refs', () => {
+    const store = createJobsStore()
+    const blocks: Block[] = Array.from({ length: 400 }, (_, i) => ({
+      kind: 'text' as const, id: '', text: `h${i}`,
+    }))
+    store.setJobs(
+      [agentJob('agent-1', 'running', 'parent-1')],
+      new Map([['agent-1', { blocks }]]),
+    )
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+    const headRef = store.feed('agent-1')!.blocks[0]
+
+    store.applyEvent(toolStart('live-1', 'parent-1', 'Bash'))
+
+    expect(seen.map((c) => c.kind)).toEqual(['event', 'truncated'])
+    const trunc = seen[1]
+    if (trunc.kind !== 'truncated') throw new Error('expected truncated change')
+    expect(trunc.jobID).toBe('agent-1')
+    expect(trunc.dropped).toHaveLength(1)
+    // Identity, not deep equality: the sink keys its registry off refs.
+    expect(trunc.dropped[0]).toBe(headRef)
+    expect(store.feed('agent-1')!.blocks).toHaveLength(400)
+  })
+
+  it('emits tail on every applyOutput but bumps the version only when the string changed', () => {
+    const store = createJobsStore()
+    store.setJobs([bashJob('bg-1', 'running')])
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+    const v0 = store.feedVersion('bg-1')
+
+    store.applyOutput('bg-1', 'a\n')
+    const v1 = store.feedVersion('bg-1')
+    store.applyOutput('bg-1', 'a\n') // same string
+
+    expect(seen.map((c) => c.kind + ':' + c.jobID)).toEqual(['tail:bg-1', 'tail:bg-1'])
+    expect(v1).toBe(v0 + 1)
+    expect(store.feedVersion('bg-1')).toBe(v1)
+  })
+
+  it('emits reset + version bump per hydrated id whose blocks/tail were written', () => {
+    const store = createJobsStore()
+    store.setJobs([agentJob('agent-1', 'running', 'parent-1'), agentJob('agent-2', 'running', 'parent-2')])
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+    const v1a = store.feedVersion('agent-1')
+
+    store.setJobs(
+      [agentJob('agent-1', 'running', 'parent-1'), agentJob('agent-2', 'running', 'parent-2')],
+      new Map([['agent-1', { blocks: [{ kind: 'text', id: '', text: 'x' }] }]]),
+    )
+
+    expect(seen.map((c) => c.kind + ':' + c.jobID)).toEqual(['reset:agent-1'])
+    expect(store.feedVersion('agent-1')).toBe(v1a + 1)
+    expect(store.feedVersion('agent-2')).toBe(0)
+  })
+  it('empty hydration entries (no blocks, no tail) emit no reset and no bump', () => {
+    const store = createJobsStore()
+    store.setJobs([agentJob('agent-1', 'running', 'parent-1'), bashJob('bg-1', 'completed')])
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+    // chat.ts maps every wire job into the hydration map; a job with no
+    // cached feed arrives as { blocks: undefined, tail: undefined }.
+    store.setJobs(
+      [agentJob('agent-1', 'running', 'parent-1'), bashJob('bg-1', 'completed')],
+      new Map([
+        ['agent-1', {}],
+        ['bg-1', {}],
+      ]),
+    )
+    expect(seen).toEqual([])
+    expect(store.feedVersion('agent-1')).toBe(0)
+    expect(store.feedVersion('bg-1')).toBe(0)
+    // Agent feeds still exist from discovery; an empty entry creates no
+    // bash feed (applyOutput will on the first tail).
+    expect(store.feed('agent-1')?.blocks).toEqual([])
+    expect(store.feed('bg-1')).toBeUndefined()
+  })
+
+  it('status-only setJobs emits nothing and does not bump the version', () => {
+    const store = createJobsStore()
+    store.setJobs([agentJob('agent-1', 'running', 'parent-1')])
+    store.applyEvent(agentEvent('text_delta', 'parent-1', { text: 'hi' }))
+    const v = store.feedVersion('agent-1')
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+
+    store.setJobs([agentJob('agent-1', 'completed', 'parent-1')])
+
+    expect(seen).toHaveLength(0)
+    expect(store.feedVersion('agent-1')).toBe(v)
+  })
+
+  it('no emission for unrouted events or content-free routed ones', () => {
+    const store = createJobsStore()
+    store.setJobs([agentJob('agent-1', 'running', 'parent-1')])
+    const seen: FeedChange[] = []
+    store.onFeedChange((c) => seen.push(c))
+    let changes = 0
+    store.onChange(() => changes++)
+
+    // Parent resolves to no job and no registered inner id.
+    store.applyEvent(toolStart('x', 'unrelated', 'Read'))
+    // Routed, but the event carries no content change.
+    store.applyEvent(agentEvent('tool_param_delta', 'parent-1', {}))
+    store.applyEvent(agentEvent('attachment', 'parent-1'))
+
+    expect(seen).toHaveLength(0)
+    expect(changes).toBe(0)
+    expect(store.feedVersion('agent-1')).toBe(0)
+  })
+
+  it('onChange callbacks receive the jobID of the mutated feed', () => {
+    const store = createJobsStore()
+    store.setJobs([bashJob('bg-1', 'running'), bashJob('bg-2', 'running')])
+    const ids: Array<string | undefined> = []
+    store.onChange((jobID) => ids.push(jobID))
+
+    store.applyOutput('bg-2', 'x')
+    store.setJobs([bashJob('bg-1', 'running'), bashJob('bg-2', 'running')])
+    store.applyEvent(agentEvent('text_delta', 'nope', { text: 'orphan' }))
+
+    expect(ids).toEqual(['bg-2', undefined])
+  })
+
+  it('feedVersion is monotonic per job and never resets (removal included)', () => {
+    const store = createJobsStore()
+    store.setJobs([bashJob('bg-1', 'running')])
+    store.applyOutput('bg-1', 'a')
+    const v = store.feedVersion('bg-1')
+    expect(v).toBeGreaterThan(0)
+    store.setJobs([]) // job gone; the version watermark survives
+    store.setJobs([bashJob('bg-1', 'running')])
+    store.applyOutput('bg-1', 'b')
+    expect(store.feedVersion('bg-1')).toBe(v + 1)
+    expect(store.feedVersion('never-seen')).toBe(0)
   })
 })

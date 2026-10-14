@@ -472,3 +472,44 @@ describe('taskPanel — job expansion (Phase 3)', () => {
     expect(popover.querySelector('.jobs-exp')).not.toBeNull()
   })
 })
+
+describe('taskPanel — job feed catch-up (DOM sink)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  function openPopover(panel: ReturnType<typeof createTaskPanel>) {
+    ;(panel.root as HTMLButtonElement).click()
+    return document.getElementById('task-popover') as HTMLElement
+  }
+
+  it('events streamed while the popover is closed appear when it reopens', async () => {
+    const panel = createTaskPanel()
+    document.body.appendChild(panel.root)
+    panel.setJobs([jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: 'work', parentToolUseID: 'p1' })])
+    const popover = openPopover(panel)
+    ;(popover.querySelector('.jobs-row') as HTMLElement).click()
+    const feed1 = popover.querySelector('.jobs-feed') as HTMLElement
+    expect(feed1.children.length).toBe(0)
+
+    // Close: the popover detaches; stream deltas land with no connected feed.
+    ;(panel.root as HTMLButtonElement).click()
+    panel.jobsStore.applyEvent({
+      type: 'tool_start',
+      tool_use: { id: 't-1', name: 'Read', input: {} },
+      agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 },
+    })
+    panel.jobsStore.applyEvent({
+      type: 'text_delta',
+      text: 'ran while closed',
+      agent: { parent_tool_use_id: 'p1', agent_type: 'Executor', depth: 1 },
+    })
+    await nextFrame()
+
+    const reopened = openPopover(panel)
+    expect(reopened.querySelector('.jobs-exp')).not.toBeNull()
+    const feed2 = reopened.querySelector('.jobs-feed') as HTMLElement
+    expect(feed2.textContent).toContain('ran while closed')
+    expect(feed2.querySelectorAll('[data-tool-root]')).toHaveLength(1)
+  })
+})
