@@ -319,13 +319,6 @@ describe('live reminder insertion', () => {
     })
   }
 
-  // Local-time HH:MM:SS of the fixed event timestamp — computed here so the
-  // duration-slot assertion holds in every test timezone.
-  function wallClockOf(ts: string): string {
-    const d = new Date(ts)
-    const p = (n: number) => String(n).padStart(2, '0')
-    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-  }
 
   it('streaming: a drained job reminder inserts a Reminder row at the stream tail', () => {
     mount()
@@ -337,10 +330,10 @@ describe('live reminder insertion', () => {
     const row = rows[0]
     expect(row.dataset.toolName).toBe('Reminder')
     expect(summaryTextOfRow(row)).toBe(' (command make check · exit 0)')
-    // Duration slot carries the message wall clock (the same slot content a
-    // refresh renders from history), never a fake tool duration.
+    // Duration slot shows the shared zero-duration default, matching every
+    // tool row's slot shape; arrival time rides the wire prefix, not the UI.
     const durEl = row.querySelector('span.font-mono.text-xs') as HTMLElement
-    expect(durEl.textContent).toBe(' ' + wallClockOf('2026-10-13T13:43:05Z'))
+    expect(durEl.textContent).toBe(' 0s')
     // Row anatomy matches the settled tool path: green settled dot (no
     // pulse), collapsed body holding the raw envelope. The streaming shell's
     // own progress pulse is outside the row.
@@ -437,4 +430,16 @@ describe('live reminder insertion', () => {
     expect(bubbleSpans().some(s => s.textContent?.includes('<system-reminder>'))).toBe(false)
     expect(document.body.textContent).not.toContain('<system-reminder>')
   })
+})
+
+test('reminder row carries no time suffix in the duration slot', async () => {
+  const { appendReminderRow } = await import('./components/stream_blocks')
+  const { classifyReminderMessage } = await import('./utils')
+  const host = document.createElement('div')
+  const row = classifyReminderMessage('<message from="agent-2">hi</message>')
+  if (!row) throw new Error('classify failed')
+  appendReminderRow(host, row, new Date('2026-10-14T20:02:19').getTime())
+  expect(host.textContent).not.toMatch(/\d{2}:\d{2}/)
+  const durEl = host.querySelector('span.font-mono.text-xs') as HTMLElement
+  expect(durEl.textContent).toContain('0s')
 })

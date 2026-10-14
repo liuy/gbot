@@ -122,12 +122,6 @@ export function appendUserAttachment(parent: HTMLElement, node: HTMLElement, bef
   parent.insertBefore(wrap, before)
 }
 
-function wallClockHHMMSS(ts: number): string {
-  const d = new Date(ts)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
 // A reminder row is built entirely by the tool-block factory — appendToolBlock
 // header (dot, chevron, name, summary, duration) + finishTool settle — so a
 // reminder is anatomically a finished tool row. The one bespoke input is the
@@ -138,7 +132,6 @@ export function appendReminderRow(parent: HTMLElement, row: ReminderRow, started
   handles.root.dataset.reminderRow = '1'
   setToolSummary(handles, row.summary, row.name)
   finishTool(handles, { isError: false, durationNs: 0, output: row.body, skipHighlight: true })
-  handles.durEl.textContent = ' ' + wallClockHHMMSS(startedAt)
 }
 
 export function renderStreamBlock(
