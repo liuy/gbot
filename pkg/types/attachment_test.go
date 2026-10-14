@@ -15,6 +15,9 @@ func TestItemModeConstants(t *testing.T) {
 	if ItemModeMessage != "message" {
 		t.Errorf("ItemModeMessage = %q, want %q", ItemModeMessage, "message")
 	}
+	if ItemModeNotification != "notification" {
+		t.Errorf("ItemModeNotification = %q, want %q", ItemModeNotification, "notification")
+	}
 }
 
 func TestQueuePriorityConstants(t *testing.T) {

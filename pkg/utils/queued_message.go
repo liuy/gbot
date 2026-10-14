@@ -24,6 +24,13 @@ const (
 	reminderSuffix           = "\n</system-reminder>"
 	messageDeliveryPrefix    = "<message from=\""
 	messageDeliverySuffix    = "</message>"
+
+	// Bare <job-notification> envelope: what both producers emit once the
+	// outer system-reminder wrap is gone. The head newline and the stall
+	// joint mirror background.go FormatXML's format strings byte-for-byte.
+	jobNotificationHead   = "<job-notification>\n"
+	jobNotificationSuffix = "</job-notification>"
+	jobStallJoint         = "</job-notification>\nLast output:"
 )
 
 // UnwrapQueuedReminder extracts the original user text from a
@@ -49,16 +56,55 @@ func IsQueuedEnvelope(text string) bool {
 	return ok
 }
 
-// IsInjectedReminderEnvelope implements the job half of the shared sniff spec:
-// true iff text starts at index 0 with one of the two job heads and ends with
-// the reminder suffix. The index-0 rule keeps the assembled
-// "[ts] <system-reminder>…" wire form from matching, same as UnwrapQueuedReminder.
-func IsInjectedReminderEnvelope(text string) bool {
+// jobNotificationSegment returns the field segment between the head and the
+// terminator — the final </job-notification> suffix, or the stall joint when
+// the raw stall tail follows the closing tag (D2 N1/N2).
+func jobNotificationSegment(text string) (string, bool) {
+	inner, ok := strings.CutPrefix(text, jobNotificationHead)
+	if !ok {
+		return "", false
+	}
+	if segment, ok := strings.CutSuffix(inner, jobNotificationSuffix); ok {
+		return segment, true
+	}
+	if idx := strings.Index(inner, jobStallJoint); idx >= 0 {
+		return inner[:idx], true
+	}
+	return "", false
+}
+
+// IsJobNotificationEnvelope implements the bare half of the sniff spec (D2
+// N1-N3): starts at index 0 with the head newline, terminates at the closing
+// tag or the stall joint, and carries no unescaped <system-reminder> in the
+// field segment — real producers escape their fields, so the raw tag can never
+// appear there. The unescaped stall tail is deliberately outside the check: it
+// is command output and may legitimately contain anything.
+func IsJobNotificationEnvelope(text string) bool {
+	segment, ok := jobNotificationSegment(text)
+	if !ok {
+		return false
+	}
+	return !strings.Contains(segment, "<system-reminder>")
+}
+
+// IsLegacyJobReminderEnvelope is the pre-single-layer job predicate: one of
+// the two <system-reminder> job heads at index 0 plus the reminder suffix —
+// the double-wrapped form persisted by sessions before ItemModeNotification.
+// The TUI replay keeps skipping these rows (no single-layer display form
+// exists for them).
+func IsLegacyJobReminderEnvelope(text string) bool {
 	if !strings.HasSuffix(text, reminderSuffix) {
 		return false
 	}
 	return strings.HasPrefix(text, jobCommandReminderPrefix) ||
 		strings.HasPrefix(text, jobAgentReminderPrefix)
+}
+
+// IsInjectedReminderEnvelope is the total job predicate: the legacy
+// double-wrapped form OR the bare single-layer form. Rewind and the engine
+// test helpers want both forms; display callers use the specific halves.
+func IsInjectedReminderEnvelope(text string) bool {
+	return IsLegacyJobReminderEnvelope(text) || IsJobNotificationEnvelope(text)
 }
 
 // IsMessageDeliveryEnvelope implements D7 ①-④. Tightened so a user who

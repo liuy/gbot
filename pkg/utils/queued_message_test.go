@@ -3,6 +3,7 @@ package utils
 import (
 	"testing"
 
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -75,6 +76,29 @@ const agentJobXML = "<job-notification>\n<job-id>agent-1</job-id>\n<tool-use-id>
 const bashJobEnvelope = "<system-reminder>\nA background command completed:\n" + bashJobXML + "\n</system-reminder>"
 const agentJobEnvelope = "<system-reminder>\nA background agent completed a job:\n" + agentJobXML + "\n</system-reminder>"
 
+// Real bash producer shapes (FormatXML) — the sniff positives must be the
+// bytes the engine actually enqueues, never hand-written approximations.
+func bashDoneNotificationXML() string {
+	return bash.JobNotification{
+		JobID:      "bg-1",
+		ToolUseID:  "toolu_9",
+		Status:     "completed",
+		Summary:    `Background command "make check" completed (exit code 0)`,
+		OutputFile: "/tmp/bg-1.out",
+	}.FormatXML()
+}
+
+func bashStallNotificationXML() string {
+	return bash.JobNotification{
+		JobID:   "bg-2",
+		Summary: `Background command "read -p" appears stalled`,
+		IsStall: true,
+		// The tail is raw command output: a literal <system-reminder> in it
+		// must not fail N3 — the check only covers the field segment.
+		Tail: "Proceed? [y/n] <system-reminder>",
+	}.FormatXML()
+}
+
 // T1 is the Go half of the one-sniff-spec contract (plan D7): the case list
 // here is exactly the list R5 asserts in web/ui/src/reminder_render.test.ts,
 // so a divergence between the Go and TS predicates fails in whichever
@@ -88,17 +112,79 @@ func TestIsInjectedReminderEnvelope(t *testing.T) {
 	}{
 		{"bash job envelope", bashJobEnvelope, true},
 		{"agent job envelope", agentJobEnvelope, true},
+		{"bare bash job notification", bashDoneNotificationXML(), true},
+		{"bare bash stall notification", bashStallNotificationXML(), true},
+		{"bare agent job notification", agentJobXML, true},
 		{"timestamped assembled form must not match", "[2026-10-13 13:43:05 CST] " + bashJobEnvelope, false},
 		{"job envelope missing suffix", "<system-reminder>\nA background command completed:\n" + bashJobXML, false},
 		{"user queued envelope is not a job reminder", "<system-reminder>\nThe user sent a new message while you were working:\nhi" +
 			"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>", false},
-		{"bare job-notification without envelope", bashJobXML, false},
 		{"message delivery is not a reminder envelope", "<message from=\"main\">\nhi\n</message>", false},
 		{"empty text", "", false},
 	}
 	for _, tc := range cases {
 		if got := IsInjectedReminderEnvelope(tc.text); got != tc.want {
 			t.Errorf("%s: IsInjectedReminderEnvelope = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestIsJobNotificationEnvelope pins the bare single-layer form (D2 N1-N3):
+// head newline at index 0, terminator at the closing tag or the stall joint,
+// and no unescaped system-reminder tag inside the field segment.
+func TestIsJobNotificationEnvelope(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"bash completion", bashDoneNotificationXML(), true},
+		{"bash stall with joint and reminder-bearing tail", bashStallNotificationXML(), true},
+		{"stall joint immediately after the head", "<job-notification>\n</job-notification>\nLast output: still waiting", true},
+		{"agent shape", agentJobXML, true},
+		{"timestamped prefix violates the index-0 rule", "[2026-10-14 09:00:00 CST] " + bashDoneNotificationXML(), false},
+		{"missing head newline", "<job-notification><job-id>bg-1</job-id>\n</job-notification>", false},
+		{"missing terminator", "<job-notification>\n<job-id>bg-1</job-id>", false},
+		{"unescaped system-reminder inside the field segment", "<job-notification>\n<summary>s</summary>\n<system-reminder>x</system-reminder>\n</job-notification>", false},
+		{"system-reminder inside fields before a stall joint", "<job-notification>\n<system-reminder>x</system-reminder></job-notification>\nLast output: tail", false},
+		{"prose before head", "job done — " + bashDoneNotificationXML(), false},
+		{"插话 envelope is not a job notification", "<system-reminder>\nThe user sent a new message while you were working:\nhi" +
+			"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>", false},
+		{"message delivery envelope", "<message from=\"main\">\nhi\n</message>", false},
+		{"legacy wrapped envelope is not bare", bashJobEnvelope, false},
+		{"empty text", "", false},
+	}
+	for _, tc := range cases {
+		if got := IsJobNotificationEnvelope(tc.text); got != tc.want {
+			t.Errorf("%s: IsJobNotificationEnvelope = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestIsLegacyJobReminderEnvelope pins the extracted pre-single-layer body of
+// the total predicate: exactly the two job heads plus the reminder suffix.
+func TestIsLegacyJobReminderEnvelope(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"bash job envelope", bashJobEnvelope, true},
+		{"agent job envelope", agentJobEnvelope, true},
+		{"bare bash form", bashJobXML, false},
+		{"bare agent form", agentJobXML, false},
+		{"bare producer stall", bashStallNotificationXML(), false},
+		{"timestamped assembled form", "[2026-10-13 13:43:05 CST] " + bashJobEnvelope, false},
+		{"插话 envelope", "<system-reminder>\nThe user sent a new message while you were working:\nhi" +
+			"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>", false},
+		{"message delivery envelope", "<message from=\"main\">\nhi\n</message>", false},
+		{"empty text", "", false},
+	}
+	for _, tc := range cases {
+		if got := IsLegacyJobReminderEnvelope(tc.text); got != tc.want {
+			t.Errorf("%s: IsLegacyJobReminderEnvelope = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
