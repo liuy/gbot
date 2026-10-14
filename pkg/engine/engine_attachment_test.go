@@ -194,6 +194,15 @@ func TestEnqueueAttachment_PriorityDefaults(t *testing.T) {
 	if items[0].Priority != types.PriorityNext {
 		t.Errorf("job priority = %q, want %q", items[0].Priority, types.PriorityNext)
 	}
+
+	eng.EnqueueAttachment(types.QueuedItem{Value: "<job-notification>\n</job-notification>", Mode: types.ItemModeNotification, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+	items = eng.attachments.DrainAll()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Priority != types.PriorityNext {
+		t.Errorf("notification priority = %q, want %q", items[0].Priority, types.PriorityNext)
+	}
 }
 
 // ---------------------------------------------------------------------------

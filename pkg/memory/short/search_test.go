@@ -592,6 +592,64 @@ func TestExtractTextFromJSON(t *testing.T) {
 	}
 }
 
+// TestExtractSearchableText_BareJobNotification pins the single-layer wire
+// form's parity with the legacy strip: a bare <job-notification> envelope is
+// not searchable user content either — span and stall tail both stripped,
+// real user text around it survives, and the 插话 behavior is unchanged.
+func TestExtractSearchableText_BareJobNotification(t *testing.T) {
+	// Backtick strings keep \n as a two-char JSON escape — the unmarshaled
+	// text then carries the real newlines the producers emit.
+	const bashNotification = `<job-notification>\n<job-id>bg-1</job-id>\n<status>completed</status>\n` +
+		`<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>`
+	const stallNotification = `<job-notification>\n<job-id>bg-2</job-id>\n` +
+		`<summary>Background command &quot;read -p&quot; appears stalled</summary>\n</job-notification>` +
+		`\nLast output:\nProceed? [y/n]\n\nThe command is likely blocked on an interactive prompt.`
+	tests := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{
+			name:     "bare notification alone yields empty",
+			content:  `[{"type":"text","text":"` + bashNotification + `"}]`,
+			expected: "",
+		},
+		{
+			name:     "stall tail stripped with the span",
+			content:  `[{"type":"text","text":"` + stallNotification + `"}]`,
+			expected: "",
+		},
+		{
+			name:     "mixed blocks keep user text",
+			content:  `[{"type":"text","text":"check the build"},{"type":"text","text":"` + bashNotification + `"},{"type":"text","text":"please"}]`,
+			expected: "check the build\n\nplease",
+		},
+		{
+			name:     "empty span alone yields empty",
+			content:  `[{"type":"text","text":"<job-notification></job-notification>"}]`,
+			expected: "",
+		},
+		{
+			name:     "stall span with preceding text keeps the prefix",
+			content:  `[{"type":"text","text":"note: ` + stallNotification + `"}]`,
+			expected: "note: ",
+		},
+		{
+			name:     "unclosed job-notification stays verbatim",
+			content:  `[{"type":"text","text":"<job-notification>\nnever closed"}]`,
+			expected: "<job-notification>\nnever closed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExtractSearchableText(tt.content)
+			if result != tt.expected {
+				t.Errorf("ExtractSearchableText(%q) = %q, want %q", tt.content, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestStripSystemReminders tests system reminder tag stripping.
 func TestStripSystemReminders(t *testing.T) {
 	tests := []struct {

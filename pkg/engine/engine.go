@@ -662,17 +662,17 @@ func (e *Engine) appendQueuedUserMessage(item types.QueuedItem) {
 
 // queuedFinalContent builds the content a drained item is stored and sent
 // with: the reminder envelope for job items, their own envelope verbatim for
-// message items. The origin inference mirrors normalizeAttachmentForAPI
-// exactly — without it, the nil-origin job items legacy/hand-built enqueues
-// carry would persist through wrapOriginText's default branch as user 插话
-// text.
+// message and notification items. The origin inference mirrors
+// normalizeAttachmentForAPI exactly — without it, the nil-origin job items
+// legacy/hand-built enqueues carry would persist through wrapOriginText's
+// default branch as user 插话 text.
 func queuedFinalContent(item types.QueuedItem) []types.ContentBlock {
 	content := item.Content
 	if len(content) == 0 {
 		content = []types.ContentBlock{types.NewTextBlock(item.Value)}
 	}
-	if item.Mode == types.ItemModeMessage {
-		return content // already carries <message from="…">; never reminder-wrapped
+	if item.Mode == types.ItemModeMessage || item.Mode == types.ItemModeNotification {
+		return content // own single-layer envelope; never reminder-wrapped
 	}
 	origin := item.Origin
 	if origin == nil && item.Mode == types.ItemModeJob {
@@ -766,8 +766,9 @@ func (e *Engine) appendQueuedReminderMessage(item types.QueuedItem) {
 // returns the attachment message it produced (prompt mode only, nil
 // otherwise — reminder events fire inside appendQueuedReminderMessage, prompt
 // events stay at the call sites). Shared by the turn-boundary drain and
-// processAttachments so the two cannot drift. If a fourth ItemMode is ever
-// added, it must join one of these two branches.
+// processAttachments so the two cannot drift. All four ItemModes are covered
+// by the two branches: prompt goes through createAttachmentMessages below;
+// job, message and notification persist in their own final form.
 func (e *Engine) appendDrainedItem(item types.QueuedItem) *types.Message {
 	if item.Mode == types.ItemModePrompt {
 		msgs := e.createAttachmentMessages([]types.QueuedItem{item})
@@ -777,9 +778,9 @@ func (e *Engine) appendDrainedItem(item types.QueuedItem) *types.Message {
 		e.appendMessage(msgs[0])
 		return &msgs[0]
 	}
-	// Non-prompt items (job notifications) persist in their own final form
-	// instead of becoming ephemeral attachment messages — stored bytes must
-	// equal the assembled wire bytes or the prompt-cache prefix diverges
+	// Non-prompt items (job/message/notification) persist in their own final
+	// form instead of becoming ephemeral attachment messages — stored bytes
+	// must equal the assembled wire bytes or the prompt-cache prefix diverges
 	// across restarts.
 	e.appendQueuedReminderMessage(item)
 	return nil

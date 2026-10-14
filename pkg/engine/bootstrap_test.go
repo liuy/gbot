@@ -224,23 +224,24 @@ func TestWireEngine_BashRegOnNotifyWired(t *testing.T) {
 	}
 
 	// Call the OnNotify callback directly with a real bash.JobNotification.
-	refs.BashReg.OnNotify(bash.JobNotification{
+	notify := bash.JobNotification{
 		JobID:   "bg-1",
 		Status:  "completed",
 		Summary: "test done",
-	})
+	}
+	refs.BashReg.OnNotify(notify)
 	pending := eng.PendingAttachments()
 	if len(pending) != 1 {
 		t.Fatalf("PendingAttachments = %d items, want 1 (OnNotify must enqueue)", len(pending))
 	}
-	if pending[0].Mode != types.ItemModeJob {
-		t.Errorf("enqueued Mode = %q, want %q", pending[0].Mode, types.ItemModeJob)
+	if pending[0].Mode != types.ItemModeNotification {
+		t.Errorf("enqueued Mode = %q, want %q", pending[0].Mode, types.ItemModeNotification)
 	}
 	if pending[0].Origin == nil || pending[0].Origin.Kind != types.OriginJobCommand {
 		t.Errorf("enqueued Origin = %+v, want Kind %q (bash producer splits from the agent origin)", pending[0].Origin, types.OriginJobCommand)
 	}
-	if !strings.Contains(pending[0].Value, "<job-notification>") {
-		t.Errorf("enqueued Value = %q, want the notification XML", pending[0].Value)
+	if pending[0].Value != notify.FormatXML() {
+		t.Errorf("enqueued Value = %q, want the FormatXML bytes %q", pending[0].Value, notify.FormatXML())
 	}
 }
 
@@ -271,8 +272,8 @@ func TestWireEngine_ProducerOrigins(t *testing.T) {
 				}
 			}
 			if agentItem != nil {
-				if agentItem.Mode != types.ItemModeJob {
-					t.Errorf("agent item Mode = %q, want %q", agentItem.Mode, types.ItemModeJob)
+				if agentItem.Mode != types.ItemModeNotification {
+					t.Errorf("agent item Mode = %q, want %q", agentItem.Mode, types.ItemModeNotification)
 				}
 				if agentItem.Origin == nil || agentItem.Origin.Kind != types.OriginJob {
 					t.Errorf("agent item Origin = %+v, want Kind %q", agentItem.Origin, types.OriginJob)

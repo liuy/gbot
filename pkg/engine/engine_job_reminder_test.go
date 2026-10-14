@@ -1082,3 +1082,396 @@ func TestJobReminder_NotRewindSelectable_AfterRestart(t *testing.T) {
 		t.Errorf("LastSelectableUserMessageIndex picked the job reminder row (%d), want a real user message", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Single-layer notification channel (ItemModeNotification): bare XML is
+// delivered and persisted verbatim — persisted bytes == assembled bytes ==
+// producer XML, with no reminder wrap and no origin inference.
+// ---------------------------------------------------------------------------
+
+// notificationItem builds the single-layer enqueue: the producer's bare XML,
+// Mode notification. Origin defaults to the bash producer's kind; override
+// per sub-case.
+func notificationItem(uuid, xml string) types.QueuedItem {
+	return types.QueuedItem{
+		Value:     xml,
+		Mode:      types.ItemModeNotification,
+		UUID:      uuid,
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJobCommand},
+		Timestamp: time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC),
+	}
+}
+
+// TestJobNotification_PersistedVerbatim is the notification-channel core
+// contract, cloned from the job flow: while the tool runs the item is only
+// queued; the turn-boundary drain persists exactly one row byte-equal to the
+// enqueued XML (no reminder wrap), the live event stub carries the same bytes
+// and Mode notification, and a follow-up query never re-drains it.
+func TestJobNotification_PersistedVerbatim(t *testing.T) {
+	cases := []struct {
+		name   string
+		xml    string
+		origin types.MessageOriginKind
+	}{
+		{"bash xml", bashNotificationXML(), types.OriginJobCommand},
+		{"agent xml", agentNotificationXML(), types.OriginJob},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			session, err := store.CreateSession("", "test-model")
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+
+			mp := &mockProvider{}
+			mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+			mp.addResponse(textStreamEvents("test-model", "acknowledged the job"), nil)
+			mp.addResponse(textStreamEvents("test-model", "follow-up answer"), nil)
+
+			bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
+			ec := newEventCollector()
+			eng := New(&Params{
+				Provider:   mp,
+				Dispatcher: ec,
+				ToolsProvider: func() map[string]tool.Tool {
+					return map[string]tool.Tool{bt.Name(): bt}
+				},
+				Model:  "test-model",
+				Logger: slog.Default(),
+			})
+			t.Cleanup(func() { eng.Close() })
+			eng.SetStore(store, "")
+			eng.SetSessionID(session.SessionID)
+
+			eng.Query(context.Background(), "run the tool", "")
+			select {
+			case <-bt.startCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("tool never started")
+			}
+
+			item := notificationItem("notif-"+tc.name, tc.xml)
+			item.Origin = &types.MessageOrigin{Kind: tc.origin}
+			eng.EnqueueAttachment(item)
+
+			// While the tool runs the notification is nowhere but the queue.
+			if n := eng.AttachmentsLen(); n != 1 {
+				t.Fatalf("attachment queue len = %d, want 1", n)
+			}
+			if idx := findReminderEnvelopeMessages(eng.Messages()); len(idx) != 0 {
+				t.Fatalf("history contains %d envelopes while the tool runs, want 0", len(idx))
+			}
+			if idx := findReminderEnvelopeMessages(loadDecodedStore(t, store, session.SessionID)); len(idx) != 0 {
+				t.Fatalf("store contains %d envelopes while the tool runs, want 0", len(idx))
+			}
+
+			close(bt.releaseCh)
+			deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+			var persisted []types.Message
+			for {
+				persisted = loadDecodedStore(t, store, session.SessionID)
+				if idx := findReminderEnvelopeMessages(persisted); len(idx) == 1 {
+					break
+				}
+				if time.Now().After(deadline) { // REAL-TIME: poll loop bounded by deadline
+					t.Fatalf("store contains %d envelopes after the boundary drain, want 1", len(findReminderEnvelopeMessages(persisted)))
+				}
+				time.Sleep(10 * time.Millisecond) // REAL-TIME
+			}
+			row := persisted[findReminderEnvelopeMessages(persisted)[0]]
+			text := utils.FirstTextBlockContent(row)
+			if text != item.Value {
+				t.Errorf("persisted text = %q, want the producer XML verbatim %q", text, item.Value)
+			}
+			if !utils.IsJobNotificationEnvelope(text) {
+				t.Error("utils.IsJobNotificationEnvelope rejected the persisted row — engine/utils drift")
+			}
+			if row.Role != types.RoleUser || row.MessageType != types.MessageTypeUser {
+				t.Errorf("persisted row = (%q, %q), want plain (user, user)", row.Role, row.MessageType)
+			}
+			if row.Attachment != nil {
+				t.Errorf("persisted row still carries Attachment metadata: %+v", row.Attachment)
+			}
+			if row.HasFlag(types.FlagMeta) {
+				t.Error("persisted row carries FlagMeta — wui buildHistory would drop it")
+			}
+			if !row.Timestamp.Equal(item.Timestamp) {
+				t.Errorf("persisted row Timestamp = %v, want the item timestamp %v", row.Timestamp, item.Timestamp)
+			}
+
+			if res := ec.WaitForResult(); res.Error != nil {
+				t.Fatalf("query error: %v", res.Error)
+			}
+			// Live event stub: same bytes, Mode notification, item origin.
+			evs := ec.FindEvents(types.EventAttachment)
+			if len(evs) != 1 {
+				t.Fatalf("%d EventAttachment events for a notification item, want exactly 1", len(evs))
+			}
+			if evs[0].Message == nil || evs[0].Message.Attachment == nil {
+				t.Fatal("notification EventAttachment carries no stub message")
+			}
+			att := evs[0].Message.Attachment
+			if att.Mode != types.ItemModeNotification {
+				t.Errorf("event stub mode = %q, want %q", att.Mode, types.ItemModeNotification)
+			}
+			if att.Origin == nil || att.Origin.Kind != tc.origin {
+				t.Errorf("event stub origin = %+v, want Kind %q", att.Origin, tc.origin)
+			}
+			if att.SourceUUID != item.UUID {
+				t.Errorf("event stub SourceUUID = %q, want %q", att.SourceUUID, item.UUID)
+			}
+			if att.Prompt != item.Value {
+				t.Errorf("event stub Prompt = %q, want the persisted XML %q", att.Prompt, item.Value)
+			}
+			if eng.queuedMsgSeq != 0 {
+				t.Errorf("queuedMsgSeq = %d after a notification drain, want 0 (no bump)", eng.queuedMsgSeq)
+			}
+			if eng.turnCount != 2 {
+				t.Errorf("turnCount = %d after the query, want 2 (tool turn + follow-up, no extra)", eng.turnCount)
+			}
+
+			// Zero re-drain: a follow-up query must not resurrect the row.
+			eng.Query(context.Background(), "next question", "")
+			if res := ec.WaitForResult(); res.Error != nil {
+				t.Fatalf("follow-up query error: %v", res.Error)
+			}
+			if n := eng.AttachmentsLen(); n != 0 {
+				t.Errorf("attachment queue len = %d after the follow-up query, want 0", n)
+			}
+			decoded := loadDecodedStore(t, store, session.SessionID)
+			if got := len(findReminderEnvelopeMessages(decoded)); got != 1 {
+				t.Errorf("store holds %d envelope rows after the follow-up query, want still 1 (no re-drain)", got)
+			}
+		})
+	}
+}
+
+// TestJobNotification_RestartStable reloads the settled store into a FRESH
+// engine (new instance, never the same object) and pins the wire bytes: the
+// reloaded marshal — including the injectTimestamp [ts] prefix — must equal
+// the live one block-for-block, so the prompt-cache prefix cannot diverge.
+func TestJobNotification_RestartStable(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "noted the completion"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetSystemPrompt("sys")
+
+	item := notificationItem("notif-restart", agentNotificationXML())
+	item.Origin = &types.MessageOrigin{Kind: types.OriginJob}
+	eng.EnqueueAttachment(item)
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("idle query error: %v", res.Error)
+	}
+
+	settleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	live := eng.Messages()
+	var reloaded []types.Message
+	for {
+		reloaded = loadDecodedStore(t, store, session.SessionID)
+		if len(reloaded) == len(live) {
+			break
+		}
+		if time.Now().After(settleDeadline) { // REAL-TIME: poll loop bounded by deadline
+			t.Fatalf("store never settled: %d rows vs %d live messages", len(reloaded), len(live))
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME
+	}
+	if got := len(findReminderEnvelopeMessages(reloaded)); got != 1 {
+		t.Fatalf("fixture holds %d envelope rows, want 1", got)
+	}
+
+	eng2 := New(&Params{Provider: mp, Model: "test-model", Logger: slog.Default()})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetMessages(reloaded)
+	liveWire := eng.marshalMessages()
+	reloadedWire := eng2.marshalMessages()
+	if len(liveWire) != len(reloadedWire) {
+		t.Fatalf("wire message count: live %d, reloaded %d", len(liveWire), len(reloadedWire))
+	}
+	for i := range liveWire {
+		if len(liveWire[i].Content) != len(reloadedWire[i].Content) {
+			t.Fatalf("wire msg[%d] block count: live %d, reloaded %d", i, len(liveWire[i].Content), len(reloadedWire[i].Content))
+		}
+		for b := range liveWire[i].Content {
+			if liveWire[i].Content[b].Text != reloadedWire[i].Content[b].Text {
+				t.Errorf("wire msg[%d] block[%d] diverges across restart:\nlive:     %q\nreloaded: %q",
+					i, b, liveWire[i].Content[b].Text, reloadedWire[i].Content[b].Text)
+			}
+		}
+	}
+	// The [ts] prefix must be present on the notification row in both forms —
+	// a bare comparison above would pass even if neither side carried it.
+	// (The wire text starts with the timestamp, so the index-0 sniffer does
+	// not apply; probe by content. Local wall clock per injectTimestamp.)
+	envWire := reloadedWire[findWireNotificationIndex(t, reloadedWire)]
+	wantPrefix := "[" + item.Timestamp.Local().Format("2006-01-02 15:04:05 MST") + "] "
+	if !strings.HasPrefix(envWire.Content[0].Text, wantPrefix) {
+		t.Errorf("reloaded notification wire text = %q, want the [ts] prefix %q", envWire.Content[0].Text, wantPrefix)
+	}
+}
+
+func findWireNotificationIndex(t *testing.T, wire []types.Message) int {
+	t.Helper()
+	for i, m := range wire {
+		if strings.Contains(utils.FirstTextBlockContent(m), "<job-notification>\n") {
+			return i
+		}
+	}
+	t.Fatal("no bare job-notification envelope in the wire form")
+	return -1
+}
+
+// TestJobNotification_StallPersistsVerbatim pins the stall shape end-to-end:
+// the raw tail after </job-notification> rides the same verbatim channel.
+func TestJobNotification_StallPersistsVerbatim(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "noted the stall"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetSystemPrompt("sys")
+
+	xml := bash.JobNotification{
+		JobID:   "bg-stall",
+		Summary: `Background command "read -p" appears stalled`,
+		IsStall: true,
+		Tail:    "Proceed? [y/n]",
+	}.FormatXML()
+	item := notificationItem("notif-stall", xml)
+	eng.EnqueueAttachment(item)
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("idle query error: %v", res.Error)
+	}
+
+	decoded := loadDecodedStore(t, store, session.SessionID)
+	idx := findReminderEnvelopeMessages(decoded)
+	if len(idx) != 1 {
+		t.Fatalf("store contains %d envelope rows after the idle drain, want 1", len(idx))
+	}
+	text := utils.FirstTextBlockContent(decoded[idx[0]])
+	if text != xml {
+		t.Errorf("persisted stall text = %q, want the producer XML verbatim (incl. tail) %q", text, xml)
+	}
+	if !utils.IsJobNotificationEnvelope(text) {
+		t.Error("utils.IsJobNotificationEnvelope rejected the persisted stall row")
+	}
+}
+
+// TestJobNotification_NilOriginVerbatim: unlike the job channel (whose nil
+// origin infers OriginJob and wraps), the notification channel has no
+// inference branch — a nil-origin item persists its XML untouched.
+func TestJobNotification_NilOriginVerbatim(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "noted"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetSystemPrompt("sys")
+
+	item := notificationItem("notif-nil", agentNotificationXML())
+	item.Origin = nil
+	eng.EnqueueAttachment(item)
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("idle query error: %v", res.Error)
+	}
+
+	decoded := loadDecodedStore(t, store, session.SessionID)
+	idx := findReminderEnvelopeMessages(decoded)
+	if len(idx) != 1 {
+		t.Fatalf("store contains %d envelope rows, want 1", len(idx))
+	}
+	text := utils.FirstTextBlockContent(decoded[idx[0]])
+	if text != item.Value {
+		t.Errorf("nil-origin persisted text = %q, want verbatim %q (no inference branch)", text, item.Value)
+	}
+	if strings.Contains(text, "<system-reminder>") {
+		t.Error("nil-origin notification was reminder-wrapped — the notification channel must never wrap")
+	}
+}
+
+// TestQueuedFinalContent_NotificationVerbatim pins the unit-level rule:
+// notification items return their own content unchanged, Value-built or
+// pre-built Content blocks alike — no buildReminderContent, no inference.
+func TestQueuedFinalContent_NotificationVerbatim(t *testing.T) {
+	t.Parallel()
+	blocks := []types.ContentBlock{types.NewTextBlock(agentNotificationXML())}
+	cases := []struct {
+		name string
+		item types.QueuedItem
+		want []types.ContentBlock
+	}{
+		{
+			"bash value",
+			notificationItem("u-n1", bashNotificationXML()),
+			[]types.ContentBlock{types.NewTextBlock(bashNotificationXML())},
+		},
+		{
+			"agent value",
+			notificationItem("u-n2", agentNotificationXML()),
+			[]types.ContentBlock{types.NewTextBlock(agentNotificationXML())},
+		},
+		{
+			"content blocks override value",
+			types.QueuedItem{Content: blocks, Mode: types.ItemModeNotification, UUID: "u-n3"},
+			blocks,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := queuedFinalContent(tc.item)
+			if len(got) != len(tc.want) {
+				t.Fatalf("queuedFinalContent = %d blocks, want %d", len(got), len(tc.want))
+			}
+			for i := range got {
+				if got[i].Type != tc.want[i].Type || got[i].Text != tc.want[i].Text {
+					t.Errorf("block[%d] = (%q, %q), want (%q, %q)", i, got[i].Type, got[i].Text, tc.want[i].Type, tc.want[i].Text)
+				}
+			}
+			for i := range got {
+				if strings.Contains(got[i].Text, "<system-reminder>") {
+					t.Errorf("block[%d] was reminder-wrapped: %q", i, got[i].Text)
+				}
+			}
+		})
+	}
+}

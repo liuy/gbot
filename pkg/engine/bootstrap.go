@@ -158,7 +158,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	refs.BashReg.OnNotify = func(n bash.JobNotification) {
 		eng.EnqueueAttachment(types.QueuedItem{
 			Value:     n.FormatXML(),
-			Mode:      types.ItemModeJob,
+			Mode:      types.ItemModeNotification,
 			Origin:    &types.MessageOrigin{Kind: types.OriginJobCommand},
 			Timestamp: time.Now(),
 		})
@@ -169,7 +169,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		func(xml string) {
 			eng.EnqueueAttachment(types.QueuedItem{
 				Value:     xml,
-				Mode:      types.ItemModeJob,
+				Mode:      types.ItemModeNotification,
 				Origin:    &types.MessageOrigin{Kind: types.OriginJob},
 				Timestamp: time.Now(),
 			})

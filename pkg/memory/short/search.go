@@ -361,7 +361,7 @@ func ExtractSearchableText(contentJSON string) string {
 		if err2 := json.Unmarshal([]byte(contentJSON), &singleBlock); err2 == nil {
 			blocks = []json.RawMessage{[]byte(contentJSON)}
 		} else {
-			return stripSystemReminders(contentJSON)
+			return stripJobNotificationSpans(stripSystemReminders(contentJSON))
 		}
 	}
 
@@ -379,7 +379,7 @@ func ExtractSearchableText(contentJSON string) string {
 		}
 	}
 
-	return stripSystemReminders(strings.Join(parts, "\n"))
+	return stripJobNotificationSpans(stripSystemReminders(strings.Join(parts, "\n")))
 }
 
 // stripSystemReminders removes <system-reminder> tags and their content.
@@ -398,6 +398,38 @@ func stripSystemReminders(text string) string {
 			break
 		}
 		close += open + len(closeTag)
+		result = result[:open] + result[close:]
+	}
+	return result
+}
+
+// stripJobNotificationSpans removes bare <job-notification> envelopes — the
+// single-layer wire form — the same way stripSystemReminders removes the
+// legacy double-wrapped rows: injected envelopes are not searchable user
+// content. A stall tail following the closing tag has no closing context of
+// its own (raw command output runs to the end), so it is cut with the span.
+func stripJobNotificationSpans(text string) string {
+	const openTag = "<job-notification>"
+	const closeTag = "</job-notification>"
+	const stallTail = "\nLast output:"
+
+	result := text
+	for {
+		open := strings.Index(result, openTag)
+		if open < 0 {
+			break
+		}
+		after := open + len(openTag)
+		close := strings.Index(result[after:], closeTag)
+		if close < 0 {
+			break
+		}
+		close += after + len(closeTag)
+		if strings.HasPrefix(result[close:], stallTail) {
+			// The stall tail has no terminator of its own — everything from
+			// the envelope start to the end of the text is envelope.
+			return result[:open]
+		}
 		result = result[:open] + result[close:]
 	}
 	return result
