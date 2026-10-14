@@ -564,14 +564,15 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 	var current *MessageView
 
 	for _, msg := range msgs {
-		// Persisted job/message reminders are injected notifications the user
-		// never typed; the raw envelope must not replay as a user bubble. The
-		// skip sits BEFORE the role switch so the accumulated assistant view
-		// is not flushed — replay stays identical to the no-reminder sequence.
+		// Legacy double-wrapped job reminders are injected notifications the
+		// user never typed and have no single-layer display form (no double
+		// unwrap by design); the raw envelope must not replay as a user
+		// bubble. The skip sits BEFORE the role switch so the accumulated
+		// assistant view is not flushed. Bare single-layer envelopes and
+		// deliveries fall through and render as gray BlockUser lines below.
 		reminderText := utils.FirstTextBlockContent(msg)
 		if msg.Flags&types.FlagMeta != 0 ||
-			utils.IsInjectedReminderEnvelope(reminderText) ||
-			utils.IsMessageDeliveryEnvelope(reminderText) {
+			utils.IsLegacyJobReminderEnvelope(reminderText) {
 			continue
 		}
 
@@ -669,9 +670,19 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 					// Persisted mid-turn queued messages carry the reminder
 					// envelope; history replay unwraps them to the original
 					// text and renders them as gray echo blocks (BlockUser),
-					// matching the live drain rendering.
+					// matching the live drain rendering. Order is load-bearing:
+					// UnwrapQueuedReminder must win before the generic
+					// envelope arm below, or the IMPORTANT boilerplate leaks.
 					if original, ok := utils.UnwrapQueuedReminder(block.Text); ok {
 						mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockUser, Text: original})
+						continue
+					}
+					// Bare single-layer envelopes (job notifications, message
+					// deliveries, other system-reminders) render as the same
+					// gray BlockUser lines carrying EnvelopeDisplayText output
+					// — the shared unwrapper hides the machine fields.
+					if display, ok := utils.EnvelopeDisplayText(block.Text); ok {
+						mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockUser, Text: display})
 						continue
 					}
 					mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})

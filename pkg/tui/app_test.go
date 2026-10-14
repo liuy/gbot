@@ -8970,15 +8970,14 @@ func TestResume_ToolResultError(t *testing.T) {
 	}
 }
 
-// Persisted job/message reminders replay invisible: they are injected
-// notifications, and the pre-role-switch skip keeps the accumulated assistant
-// view intact (a mid-loop flush would split one assistant turn into two views).
-func TestEngineMessagesToViews_SkipsInjectedReminderMessages(t *testing.T) {
+// Legacy double-wrapped job reminders replay invisible: the pre-role-switch
+// skip keeps the accumulated assistant view intact (a mid-loop flush would
+// split one assistant turn into two views). Scoped to the LEGACY form — the
+// single-layer wire change never persists this shape again.
+func TestEngineMessagesToViews_LegacyJobReminderStillSkipped(t *testing.T) {
 	jobEnvelope := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(
 		"<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-1</job-id>\n" +
 			"<status>completed</status>\n<summary>echo done</summary>\n</job-notification>\n</system-reminder>")}}
-	delivery := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(
-		"<message from=\"main\">\nreport in\n</message>")}}
 	base := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("run the check")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -8989,12 +8988,12 @@ func TestEngineMessagesToViews_SkipsInjectedReminderMessages(t *testing.T) {
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("all green")}},
 	}
-	withInjected := append(slices.Clone(base), jobEnvelope, delivery)
+	withInjected := append(slices.Clone(base), jobEnvelope)
 
 	got := engineMessagesToViews(withInjected, nil)
 	want := engineMessagesToViews(base, nil)
 	if len(got) != len(want) {
-		t.Fatalf("view count = %d with injected reminders, want %d (same as without)", len(got), len(want))
+		t.Fatalf("view count = %d with a legacy reminder, want %d (same as without)", len(got), len(want))
 	}
 	for i := range got {
 		if len(got[i].Blocks) != len(want[i].Blocks) {
@@ -9003,10 +9002,112 @@ func TestEngineMessagesToViews_SkipsInjectedReminderMessages(t *testing.T) {
 		}
 		for j, b := range got[i].Blocks {
 			text := b.Text
-			if strings.Contains(text, "<system-reminder>") || strings.Contains(text, "<message from=") {
+			if strings.Contains(text, "<system-reminder>") || strings.Contains(text, "<job-notification>") {
 				t.Errorf("view[%d] block[%d] leaks raw envelope: %q", i, j, text)
 			}
 		}
+	}
+}
+
+// Bare single-layer envelopes and message deliveries replay as gray BlockUser
+// lines carrying EnvelopeDisplayText output — the same visual as 插话 replay.
+// The rows here are reloaded-store shaped (plain user messages, no attachment
+// metadata): the recovery scenario feeds exactly these bytes through this
+// function. Consequence (accepted, mirrors 插话): such a row flushes the
+// accumulated assistant view at its chronological position.
+func TestEngineMessagesToViews_EnvelopesRenderAsGrayUserLines(t *testing.T) {
+	bashXML := "<job-notification>\n<job-id>bg-1</job-id>\n<status>completed</status>\n" +
+		"<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n</job-notification>"
+	agentXML := "<job-notification>\n<job-id>agent-1</job-id>\n<tool-use-id>toolu_1</tool-use-id>\n" +
+		"<status>failed</status>\n<agent-type>fork</agent-type>\n<duration-ms>1200</duration-ms>\n" +
+		"<tokens>42</tokens>\n<tool-uses>1</tool-uses>\n<summary>Background agent &quot;refactor auth&quot; failed</summary>\n" +
+		"<result>\ndone\n</result>\n</job-notification>"
+	queuedEnvelope := "<system-reminder>\nThe user sent a new message while you were working:\nhi there" +
+		"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>"
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("run the check")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Bash", Input: json.RawMessage(`{"command":"make check"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"ok"}]`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(bashXML)}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(agentXML)}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("<message from=\"main\">\nreport in\n</message>")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(queuedEnvelope)}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("all green")}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	wantRoles := []string{"user", "assistant", "user", "user", "user", "user", "assistant"}
+	if len(views) != len(wantRoles) {
+		t.Fatalf("view count = %d, want %d (%v)", len(views), len(wantRoles), wantRoles)
+	}
+	for i, want := range wantRoles {
+		if views[i].Role != want {
+			t.Errorf("view[%d] role = %q, want %q", i, views[i].Role, want)
+		}
+	}
+	if len(views[0].Blocks) != 1 || views[0].Blocks[0].Type != BlockText || views[0].Blocks[0].Text != "run the check" {
+		t.Errorf("view[0] blocks = %+v, want one BlockText \"run the check\"", views[0].Blocks)
+	}
+	if len(views[1].Blocks) != 1 || views[1].Blocks[0].Type != BlockTool || views[1].Blocks[0].ToolCall.ID != "toolu_1" {
+		t.Errorf("view[1] blocks = %+v, want one BlockTool for toolu_1", views[1].Blocks)
+	}
+
+	// Gray lines: display text via EnvelopeDisplayText, machine fields hidden.
+	gray := []struct {
+		idx      int
+		wantText string
+	}{
+		{2, "Background command \"make check\" completed (exit code 0)"},
+		{3, "Background agent \"refactor auth\" failed\n\ndone"},
+		{4, "report in"},
+		// Caller order is load-bearing: the 插话 branch must win over the
+		// generic system-reminder arm — the original text only, no IMPORTANT
+		// boilerplate.
+		{5, "hi there"},
+	}
+	for _, g := range gray {
+		blocks := views[g.idx].Blocks
+		if len(blocks) != 1 || blocks[0].Type != BlockUser {
+			t.Fatalf("view[%d] blocks = %+v, want one BlockUser", g.idx, blocks)
+		}
+		if blocks[0].Text != g.wantText {
+			t.Errorf("view[%d] BlockUser text = %q, want %q", g.idx, blocks[0].Text, g.wantText)
+		}
+		for _, leak := range []string{"<job-notification>", "<job-id>", "<tool-use-id>", "<message from=", "<system-reminder>", "IMPORTANT"} {
+			if strings.Contains(blocks[0].Text, leak) {
+				t.Errorf("view[%d] BlockUser leaks %s: %q", g.idx, leak, blocks[0].Text)
+			}
+		}
+	}
+	if len(views[6].Blocks) != 1 || views[6].Blocks[0].Type != BlockText || views[6].Blocks[0].Text != "all green" {
+		t.Errorf("view[6] blocks = %+v, want one BlockText \"all green\"", views[6].Blocks)
+	}
+
+	// A pasted envelope inside a MULTI-block user message renders the display
+	// line for the envelope block and keeps the sibling blocks — the block
+	// loop must continue past a matched envelope, not break.
+	pasted := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+		types.NewTextBlock(bashXML),
+		types.NewTextBlock("and that is that"),
+	}}
+	pastedViews := engineMessagesToViews([]types.Message{pasted}, nil)
+	if len(pastedViews) != 1 || len(pastedViews[0].Blocks) != 2 {
+		t.Fatalf("pasted-envelope views = %+v, want one view with two blocks", pastedViews)
+	}
+	if pastedViews[0].Blocks[0].Type != BlockUser || pastedViews[0].Blocks[0].Text != "Background command \"make check\" completed (exit code 0)" {
+		t.Errorf("pasted block[0] = %+v, want the envelope display line", pastedViews[0].Blocks[0])
+	}
+	if pastedViews[0].Blocks[1].Type != BlockText || pastedViews[0].Blocks[1].Text != "and that is that" {
+		t.Errorf("pasted block[1] = %+v, want the sibling text block preserved", pastedViews[0].Blocks[1])
+	}
+
+	// Cold start: empty history replays as empty views.
+	if got := engineMessagesToViews(nil, nil); len(got) != 0 {
+		t.Errorf("empty history = %d views, want 0", len(got))
 	}
 }
 

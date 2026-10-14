@@ -1282,6 +1282,42 @@ func TestConvertEventToMsg_Attachment_MessageMode(t *testing.T) {
 	}
 }
 
+// EventAttachment with Mode notification: the live dot row extracts its
+// fields from the BARE single-layer XML — the substring scan is
+// wrapping-agnostic, so the live path needs no mode branch of its own. This
+// guards that regression as the wire form changes.
+func TestConvertEventToMsg_Attachment_NotificationMode(t *testing.T) {
+	h := NewTUIHandler()
+	bare := "<job-notification>\n<job-id>bg-1</job-id>\n<tool-use-id>toolu_1</tool-use-id>\n" +
+		"<status>failed</status>\n<summary>Background command &quot;make check&quot; failed with exit code 2</summary>\n</job-notification>"
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModeNotification,
+				Prompt:     bare,
+				SourceUUID: "notif-1",
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.JobID != "bg-1" {
+		t.Errorf("JobID = %q, want %q", am.JobID, "bg-1")
+	}
+	if am.Preview != "Background command \"make check\" failed with exit code 2" {
+		t.Errorf("Preview = %q, want the decoded summary field", am.Preview)
+	}
+	if !am.Failed {
+		t.Error("Failed should be true for failed status")
+	}
+	if am.UserText != "" || am.From != "" {
+		t.Errorf("notification row must not carry UserText/From, got (%q, %q)", am.UserText, am.From)
+	}
+}
+
 func TestConvertEventToMsg_Attachment_MessageModeWithAgent(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
