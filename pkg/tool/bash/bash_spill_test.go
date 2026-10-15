@@ -161,8 +161,12 @@ func TestIntegration_ExecuteProgressDuringSpill(t *testing.T) {
 // TestIntegration_NoTempFilesLeaked verifies that temp files are cleaned up
 // after both small and large command execution.
 func TestIntegration_NoTempFilesLeaked(t *testing.T) {
-	// NOT parallel — must run isolated to detect leaked temp files.
+	// Isolate via private TMPDIR: the old "scan the global temp dir" form
+	// false-failed whenever another test process ran concurrently (e.g.
+	// go-mutesting workers).
 
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	// List temp files before
 	before, _ := os.ReadDir(os.TempDir())
 	beforeMap := make(map[string]bool)

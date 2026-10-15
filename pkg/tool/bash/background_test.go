@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
@@ -1596,5 +1597,811 @@ func TestBackgroundJob_Tail(t *testing.T) {
 	}
 	if strings.Contains(got, "line 10\n") {
 		t.Errorf("Tail exceeds the 20-line window: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mutation-kill additions — each test pins a behavior whose absence no other
+// test observes. Comments state the production consequence, not the mutant.
+// ---------------------------------------------------------------------------
+
+// TestBackgroundJobRegistry_Wait_NotFound_SentinelCode pins the not-found
+// contract: exit code -1 plus the exact ad-hoc error string that
+// isBashNotFound pattern-matches on the adapter side.
+func TestBackgroundJobRegistry_Wait_NotFound_SentinelCode(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	code, err := r.Wait("missing")
+	if err == nil {
+		t.Fatal("Wait on missing job should fail")
+	}
+	want := fmt.Sprintf("job %q not found", "missing")
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if code != -1 {
+		t.Errorf("not-found exit code = %d, want the -1 sentinel", code)
+	}
+}
+
+// TestJobInfoAdapter_WaitNotFound_PassesThroughRegistryCode: the adapter's
+// wrapping return must preserve the registry's -1, not just the error.
+func TestJobInfoAdapter_WaitNotFound_PassesThroughRegistryCode(t *testing.T) {
+	t.Parallel()
+	adapter := NewJobInfoAdapter(NewBackgroundJobRegistry())
+	code, err := adapter.Wait("missing")
+	if err == nil {
+		t.Fatal("Wait on missing job should fail")
+	}
+	if !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("error should wrap job.ErrNotFound, got: %v", err)
+	}
+	if code != -1 {
+		t.Errorf("adapter not-found code = %d, want the registry's -1", code)
+	}
+}
+
+// TestJobInfoAdapter_Wait_NonZeroExitCode: the fallthrough return must hand
+// back the real exit code — engine dispatches on it.
+func TestJobInfoAdapter_Wait_NonZeroExitCode(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("exit 7", 0, nil)
+	job.Complete(7, false)
+	code, err := NewJobInfoAdapter(r).Wait(job.ID)
+	if err != nil {
+		t.Fatalf("Wait error: %v", err)
+	}
+	if code != 7 {
+		t.Errorf("exit code = %d, want 7", code)
+	}
+}
+
+// TestJobInfoAdapter_Prefix: MultiRegistry routes IDs by this prefix.
+func TestJobInfoAdapter_Prefix(t *testing.T) {
+	t.Parallel()
+	if got := NewJobInfoAdapter(NewBackgroundJobRegistry()).Prefix(); got != "bg-" {
+		t.Errorf("Prefix() = %q, want bg-", got)
+	}
+}
+
+// TestJobInfoAdapter_InfoAndSummaryFieldPins pins every scalar the wui jobs
+// panel renders, on both the Get (full) path and the ListSummaries path.
+func TestJobInfoAdapter_InfoAndSummaryFieldPins(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	s := NewStreamingOutput(nil)
+	if _, err := s.Write([]byte("cap out\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	bt := r.RegisterForeground("echo pins", "panel description", s)
+	bt.Complete(7, false)
+
+	adapter := NewJobInfoAdapter(r)
+	info, ok := adapter.Get(bt.ID)
+	if !ok {
+		t.Fatalf("Get(%q) missing", bt.ID)
+	}
+	if info.ID != bt.ID {
+		t.Errorf("info ID = %q, want %q", info.ID, bt.ID)
+	}
+	if info.Type != "bash" {
+		t.Errorf("info Type = %q, want bash", info.Type)
+	}
+	if info.Status != "failed" {
+		t.Errorf("info Status = %q, want failed", info.Status)
+	}
+	if info.Command != "echo pins" {
+		t.Errorf("info Command = %q, want echo pins", info.Command)
+	}
+	if info.Description != "panel description" {
+		t.Errorf("info Description = %q, want panel description", info.Description)
+	}
+	if info.ExitCode != 7 {
+		t.Errorf("info ExitCode = %d, want 7", info.ExitCode)
+	}
+	if info.Backgrounded {
+		t.Error("info Backgrounded = true, want false (registered foreground)")
+	}
+	if info.Output != "cap out" {
+		t.Errorf("info Output = %q, want the materialized stream", info.Output)
+	}
+
+	summaries := adapter.ListSummaries()
+	if len(summaries) != 1 {
+		t.Fatalf("ListSummaries = %d entries, want 1", len(summaries))
+	}
+	sum := summaries[0]
+	if sum.Type != "bash" {
+		t.Errorf("summary Type = %q, want bash", sum.Type)
+	}
+	if sum.Command != "echo pins" {
+		t.Errorf("summary Command = %q, want echo pins", sum.Command)
+	}
+	if sum.Description != "panel description" {
+		t.Errorf("summary Description = %q, want panel description", sum.Description)
+	}
+	if sum.ExitCode != 7 {
+		t.Errorf("summary ExitCode = %d, want 7 (the panel shows exit codes for terminal jobs)", sum.ExitCode)
+	}
+	if sum.Output != "" {
+		t.Errorf("summary Output = %q, want empty (SummaryLister never materializes)", sum.Output)
+	}
+}
+
+// TestJobInfoAdapter_GetHoldsJobLockDuringOutputMaterialization: the whole
+// conversion — including the Output.String() materialization — must run under
+// bt.mu. We park String() on the output's own mutex and probe the job mutex:
+// it must stay held for as long as the conversion is in flight.
+func TestJobInfoAdapter_GetHoldsJobLockDuringOutputMaterialization(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	s := NewStreamingOutput(nil)
+	if _, err := s.Write([]byte("parked\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	bt := r.Spawn("park probe", 0, s)
+	adapter := NewJobInfoAdapter(r)
+
+	s.mu.Lock() // String() will block here until released
+	done := make(chan struct{})
+	go func() {
+		adapter.Get(bt.ID)
+		close(done)
+	}()
+	// Let the goroutine reach the parked String() call.
+	time.Sleep(100 * time.Millisecond) // REAL-TIME: scheduling grace for the probe goroutine
+	if bt.mu.TryLock() {
+		bt.mu.Unlock()
+		t.Error("bt.mu was free while Get was parked in Output.String() — the conversion must hold it throughout")
+	}
+	s.mu.Unlock()
+	<-done
+}
+
+// TestJobInfoAdapter_ListSummariesTriggersEviction: ListSummaries must run
+// the same lazy CleanupCompleted as List — the wui watcher only polls
+// summaries, so jobs would accumulate forever without it.
+func TestJobInfoAdapter_ListSummariesTriggersEviction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reg := NewBackgroundJobRegistry()
+		adapter := NewJobInfoAdapter(reg)
+		job := reg.Spawn("echo hi", 0, NewStreamingOutput(nil))
+		job.Complete(0, false)
+
+		if got := len(adapter.ListSummaries()); got != 1 {
+			t.Fatalf("summaries before grace = %d, want 1", got)
+		}
+		time.Sleep(3 * time.Second)
+		if n := len(adapter.ListSummaries()); n != 0 {
+			t.Errorf("summaries after 3s grace = %d, want 0 — ListSummaries must evict like List", n)
+		}
+	})
+}
+
+// TestKill_EvictsAfterStopDisplayGrace: Kill stamps the same 3s
+// STOPPED_DISPLAY_MS grace as Complete, not longer.
+func TestKill_EvictsAfterStopDisplayGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reg := NewBackgroundJobRegistry()
+		adapter := NewJobInfoAdapter(reg)
+		job := reg.Spawn("sleep", 0, NewStreamingOutput(nil))
+		if err := reg.Kill(job.ID); err != nil {
+			t.Fatalf("Kill: %v", err)
+		}
+		time.Sleep(3 * time.Second)
+		if n := len(adapter.List()); n != 0 {
+			t.Errorf("jobs 3s after kill = %d, want 0 (killed jobs evict on the same 3s grace)", n)
+		}
+	})
+}
+
+// TestJobNotification_FormatXML_EmptyStatusNotStall: a notification with no
+// status and IsStall=false is a progress ping — no <status> tag and no
+// interactive-prompt instructions, even with a populated Tail.
+func TestJobNotification_FormatXML_EmptyStatusNotStall(t *testing.T) {
+	t.Parallel()
+	n := JobNotification{JobID: "bg-x", Summary: "progress ping", Tail: "[sudo] password for user:"}
+	xml := n.FormatXML()
+	if contains(xml, "<status>") {
+		t.Error("empty Status with IsStall=false must not emit <status> — print.ts keys terminal-ness off it")
+	}
+	if contains(xml, "Last output:") {
+		t.Error("non-stall notification must not carry prompt instructions even when Tail is populated")
+	}
+	if !strings.HasSuffix(xml, "</job-notification>") {
+		t.Errorf("FormatXML must end with the closing tag, got %q", xml)
+	}
+}
+
+// TestJobNotification_FormatXML_StatusSuppressedOnStall: stall notifications
+// suppress <status> even when Status is populated — the tag would make
+// print.ts treat a still-running job as terminal.
+func TestJobNotification_FormatXML_StatusSuppressedOnStall(t *testing.T) {
+	t.Parallel()
+	n := JobNotification{JobID: "bg-y", Status: "completed", IsStall: true, Summary: "s", Tail: "tail text"}
+	xml := n.FormatXML()
+	if contains(xml, "<status>") {
+		t.Error("stall notifications must suppress <status> even when Status is populated")
+	}
+	if !contains(xml, "Last output:") {
+		t.Error("stall with a tail must include the Last output block")
+	}
+}
+
+// TestBackgroundJob_Complete_FailedNotificationFields pins the failed-path
+// notification: status "failed", the failed summary wording, and the
+// tool-use id for message correlation.
+func TestBackgroundJob_Complete_FailedNotificationFields(t *testing.T) {
+	t.Parallel()
+	var got *JobNotification
+	job := &BackgroundJob{
+		Status:    JobRunning,
+		done:      make(chan struct{}),
+		ID:        "bg-77",
+		ToolUseID: "tu-77",
+		Command:   "boom",
+		onNotify:  func(n JobNotification) { cp := n; got = &cp },
+	}
+	job.Complete(3, false)
+	if got == nil {
+		t.Fatal("failed completion should send a notification")
+	}
+	if got.Status != "failed" {
+		t.Errorf("notification Status = %q, want failed", got.Status)
+	}
+	if got.ToolUseID != "tu-77" {
+		t.Errorf("notification ToolUseID = %q, want tu-77", got.ToolUseID)
+	}
+	wantSummary := `Background command "boom" failed with exit code 3`
+	if got.Summary != wantSummary {
+		t.Errorf("notification Summary = %q, want %q", got.Summary, wantSummary)
+	}
+}
+
+// TestBackgroundJob_Complete_FlushesOutput: Complete must drive the final
+// progress update (IsIncomplete=false) so the TUI stops its spinner.
+func TestBackgroundJob_Complete_FlushesOutput(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var ups []StreamingUpdate
+	output := NewStreamingOutput(func(u StreamingUpdate) {
+		mu.Lock()
+		ups = append(ups, u)
+		mu.Unlock()
+	})
+	if _, err := output.Write([]byte("hello\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	job := &BackgroundJob{Status: JobRunning, done: make(chan struct{}), Output: output}
+	job.Complete(0, false)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ups) != 2 {
+		t.Fatalf("progress updates = %d, want 2 (stream write + final flush)", len(ups))
+	}
+	final := ups[1]
+	if final.IsIncomplete {
+		t.Error("final update must carry IsIncomplete=false")
+	}
+	if final.TotalBytes != 6 || final.TotalLines != 1 {
+		t.Errorf("final update totals = {bytes:%d lines:%d}, want {6 1}", final.TotalBytes, final.TotalLines)
+	}
+}
+
+// TestRegistryOnNotifyCopiedAtRegistration: both registration paths copy the
+// registry's OnNotify into the job — completion notifications must fire even
+// though the registry field itself is never consulted on that path.
+func TestRegistryOnNotifyCopiedAtRegistration(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	var mu sync.Mutex
+	var got []string
+	r.OnNotify = func(n JobNotification) {
+		mu.Lock()
+		got = append(got, n.JobID)
+		mu.Unlock()
+	}
+	bg := r.Spawn("spawned job", 0, nil)
+	fg := r.RegisterForeground("fg job", "desc", nil)
+
+	bg.Complete(0, false)
+	fg.Complete(0, false)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("completion notifications = %v, want ids %q and %q", got, bg.ID, fg.ID)
+	}
+	for _, want := range []string{bg.ID, fg.ID} {
+		if got[0] != want && got[1] != want {
+			t.Errorf("missing completion notification for %q", want)
+		}
+	}
+}
+
+// TestRegistrationLiterals_PinInitialState: Spawn registers bash jobs, and
+// RegisterForeground must enter the table as running with a real start time —
+// an empty status makes Kill reject the job and the panel shows epoch 0.
+func TestRegistrationLiterals_PinInitialState(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	bg := r.Spawn("spawned", 0, nil)
+	if bg.Kind != "bash" {
+		t.Errorf("Spawn Kind = %q, want bash (monitor is the only other kind)", bg.Kind)
+	}
+	fg := r.RegisterForeground("fg", "desc", nil)
+	if fg.Status != JobRunning {
+		t.Errorf("RegisterForeground Status = %q, want running", fg.Status)
+	}
+	if fg.StartTime.IsZero() {
+		t.Error("RegisterForeground StartTime is zero — panel StartedMs would read 0")
+	}
+}
+
+// TestKillAndComplete_MarkJobNotified: Kill and Complete both mark the job
+// notified so no later notification duplicates the result the tool call
+// already returned. MarkNotified reports "newly marked" and must say no.
+func TestKillAndComplete_MarkJobNotified(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	killed := r.Spawn("to kill", 0, nil)
+	if err := r.Kill(killed.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if r.MarkNotified(killed.ID) {
+		t.Error("Kill must mark the job notified — MarkNotified reports true only for newly-marked jobs")
+	}
+
+	completed := r.Spawn("to complete", 0, nil)
+	completed.Complete(0, false)
+	if r.MarkNotified(completed.ID) {
+		t.Error("Complete must mark the job notified")
+	}
+
+	fresh := r.Spawn("fresh", 0, nil)
+	if !r.MarkNotified(fresh.ID) {
+		t.Error("fresh job should be newly markable")
+	}
+	if r.MarkNotified(fresh.ID) {
+		t.Error("second MarkNotified on the same job must return false")
+	}
+}
+
+// TestKill_ClearsStallCancel: after cancelling the watchdog Kill nils the
+// handle — a stale cancelStall would be re-invoked by any later terminal
+// transition on the same job.
+func TestKill_ClearsStallCancel(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("cmd", 0, nil)
+	job.SetStallCancel(func() {})
+	if err := r.Kill(job.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	job.mu.Lock()
+	stale := job.cancelStall
+	job.mu.Unlock()
+	if stale != nil {
+		t.Error("Kill must nil out cancelStall after cancelling it")
+	}
+}
+
+// TestKillAndComplete_StampEndTime: terminal transitions stamp EndTime —
+// duration reporting reads it.
+func TestKillAndComplete_StampEndTime(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	killed := r.Spawn("k", 0, nil)
+	if err := r.Kill(killed.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if killed.EndTime.IsZero() {
+		t.Error("Kill must stamp EndTime")
+	}
+
+	completed := &BackgroundJob{Status: JobRunning, done: make(chan struct{})}
+	completed.Complete(0, false)
+	if completed.EndTime.IsZero() {
+		t.Error("Complete must stamp EndTime")
+	}
+}
+
+// TestBackground_GuardPathReleasesJobLock: rejecting an already-backgrounded
+// job must still release job.mu — the next registry operation on that job
+// would deadlock otherwise.
+func TestBackground_GuardPathReleasesJobLock(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("already bg", 0, nil) // Spawn marks backgrounded
+	if r.Background(job.ID) {
+		t.Error("Background on already-backgrounded job should return false")
+	}
+	if !job.mu.TryLock() {
+		t.Error("guard-path return must release job.mu")
+	} else {
+		job.mu.Unlock()
+	}
+}
+
+// TestBackground_SuccessPathReleasesJobLock mirrors the guard-path test for
+// the transition path.
+func TestBackground_SuccessPathReleasesJobLock(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.RegisterForeground("fg", "", nil) // nil output: watchdog start is a no-op
+	if !r.Background(job.ID) {
+		t.Fatal("Background should transition the foreground job")
+	}
+	if !job.mu.TryLock() {
+		t.Error("success path must release job.mu before starting the watchdog")
+	} else {
+		job.mu.Unlock()
+	}
+}
+
+// TestBackground_StartsStallWatchdog: transitioning to background arms the
+// stall watchdog — without it a prompt-blocked job never surfaces.
+func TestBackground_StartsStallWatchdog(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewBackgroundJobRegistry()
+		out := NewStreamingOutput(nil)
+		mustWriteStream(t, out, []byte("[sudo] password for user:"))
+		ch := make(chan JobNotification, 1)
+		r.OnNotify = func(n JobNotification) {
+			select {
+			case ch <- n:
+			default:
+			}
+		}
+		fg := r.RegisterForeground("sudo cmd", "desc", out)
+		if !r.Background(fg.ID) {
+			t.Fatal("Background should transition the foreground job")
+		}
+
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+		select {
+		case n := <-ch:
+			if !n.IsStall {
+				t.Errorf("notification should be a stall, got %+v", n)
+			}
+		default:
+			t.Fatal("Background() must start the stall watchdog — no stall notification fired")
+		}
+	})
+}
+
+// TestHasForegroundTasks_ReleasesJobLocks: the scan must leave every job's
+// mutex free.
+func TestHasForegroundTasks_ReleasesJobLocks(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	j1 := r.RegisterForeground("a", "", nil)
+	j2 := r.RegisterForeground("b", "", nil)
+	r.HasForegroundTasks()
+	for _, j := range []*BackgroundJob{j1, j2} {
+		if !j.mu.TryLock() {
+			t.Errorf("HasForegroundTasks must release %s's lock", j.ID)
+		} else {
+			j.mu.Unlock()
+		}
+	}
+}
+
+// TestUnregisterForeground_ReleasesJobLock: the unregister path unlocks the
+// job before deciding; it must also release it before returning.
+func TestUnregisterForeground_ReleasesJobLock(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.RegisterForeground("fg", "", nil)
+	r.UnregisterForeground(job.ID)
+	if !job.mu.TryLock() {
+		t.Error("UnregisterForeground must release job.mu before returning")
+	} else {
+		job.mu.Unlock()
+	}
+}
+
+// TestKill_NotRunningPathReleasesJobLock: rejecting a non-running job must
+// release job.mu.
+func TestKill_NotRunningPathReleasesJobLock(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("done", 0, nil)
+	job.Complete(0, false)
+	if err := r.Kill(job.ID); err == nil {
+		t.Error("Kill on completed job should fail")
+	}
+	if !job.mu.TryLock() {
+		t.Error("Kill's not-running path must release job.mu")
+	} else {
+		job.mu.Unlock()
+	}
+}
+
+// TestComplete_AlreadyTerminalReleasesJobLock: the terminal early-return
+// must release job.mu.
+func TestComplete_AlreadyTerminalReleasesJobLock(t *testing.T) {
+	t.Parallel()
+	job := &BackgroundJob{Status: JobRunning, done: make(chan struct{})}
+	job.Complete(0, false)
+	job.Complete(1, false) // terminal early-return path
+	if !job.mu.TryLock() {
+		t.Error("Complete's terminal early-return must release job.mu")
+	} else {
+		job.mu.Unlock()
+	}
+}
+
+// TestStallCallback_SkipPathReleasesLock: when the watchdog fires on an
+// already-notified job it bails under the lock — the unlock on that path is
+// the only thing keeping later Kill/Complete calls from deadlocking.
+func TestStallCallback_SkipPathReleasesLock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
+		job := &BackgroundJob{
+			Output:   output,
+			Kind:     "bash",
+			ID:       "bg-skip",
+			Notified: true,
+			onNotify: func(JobNotification) {},
+		}
+		job.startStallWatchdog()
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+		if !job.mu.TryLock() {
+			t.Error("stall callback's already-notified path must release job.mu")
+		} else {
+			job.mu.Unlock()
+		}
+		job.cancelStall()
+	})
+}
+
+// TestStallCallback_ReleasesLockAfterNotification: receiving the
+// notification means the callback passed its unlock — the mutex must be free
+// by then.
+func TestStallCallback_ReleasesLockAfterNotification(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
+		ch := make(chan JobNotification, 1)
+		job := &BackgroundJob{
+			Output:  output,
+			Kind:    "bash",
+			ID:      "bg-fire",
+			Command: "cmd",
+			onNotify: func(n JobNotification) {
+				select {
+				case ch <- n:
+				default:
+				}
+			},
+		}
+		job.startStallWatchdog()
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+		select {
+		case <-ch: // onNotify runs after the callback's unlock
+		default:
+			t.Fatal("stall notification did not fire")
+		}
+		if !job.mu.TryLock() {
+			t.Error("stall callback must release job.mu after marking Notified")
+		} else {
+			job.mu.Unlock()
+		}
+		job.cancelStall()
+	})
+}
+
+// TestStallNotification_PreventsCompletionDoubleNotify: once the stall
+// notification went out, Complete must not send a second one.
+func TestStallNotification_PreventsCompletionDoubleNotify(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
+		ch := make(chan JobNotification, 2)
+		job := &BackgroundJob{
+			Output:  output,
+			Kind:    "bash",
+			ID:      "bg-once",
+			Command: "cmd",
+			done:    make(chan struct{}),
+			onNotify: func(n JobNotification) {
+				ch <- n
+			},
+		}
+		job.startStallWatchdog()
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+		select {
+		case <-ch:
+		default:
+			t.Fatal("stall notification did not fire")
+		}
+		job.Complete(0, false)
+		select {
+		case n := <-ch:
+			t.Errorf("completion notification must be suppressed after a stall notification, got %+v", n)
+		default:
+		}
+	})
+}
+
+// TestStallNotification_CarriesRoutingFields: the stall notification carries
+// the tool-use id for message correlation, the output file path for lazy
+// reads, and the tail for the prompt hint.
+func TestStallNotification_CarriesRoutingFields(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		mustWriteStream(t, output, []byte("[sudo] password for user:"))
+		ch := make(chan JobNotification, 1)
+		job := &BackgroundJob{
+			Output:     output,
+			Kind:       "bash",
+			ID:         "bg-route",
+			Command:    "cmd",
+			ToolUseID:  "tu-route",
+			OutputPath: "/tmp/route-out.txt",
+			onNotify: func(n JobNotification) {
+				select {
+				case ch <- n:
+				default:
+				}
+			},
+		}
+		job.startStallWatchdog()
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+		var n JobNotification
+		select {
+		case n = <-ch:
+		default:
+			t.Fatal("stall notification did not fire")
+		}
+		if n.ToolUseID != "tu-route" {
+			t.Errorf("notification ToolUseID = %q, want tu-route", n.ToolUseID)
+		}
+		if n.OutputFile != "/tmp/route-out.txt" {
+			t.Errorf("notification OutputFile = %q, want /tmp/route-out.txt", n.OutputFile)
+		}
+		if !contains(n.Tail, "[sudo] password for user:") {
+			t.Errorf("notification Tail = %q, want the prompt line", n.Tail)
+		}
+	})
+}
+
+// evictionLogCapture records only CleanupCompleted's eviction summary lines;
+// foreign tests' registries log different ids, which the caller filters on.
+type evictionLogCapture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (h *evictionLogCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *evictionLogCapture) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "bash: cleaned up completed jobs" {
+		return nil
+	}
+	var sb strings.Builder
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&sb, " %s=%v", a.Key, a.Value)
+		return true
+	})
+	h.mu.Lock()
+	h.lines = append(h.lines, strings.TrimSpace(sb.String()))
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *evictionLogCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *evictionLogCapture) WithGroup(string) slog.Handler      { return h }
+
+// TestCleanupCompleted_EvictionLogging: the eviction summary must appear
+// exactly when at least one job was evicted — operators rely on it to spot
+// runaway registries, and an unconditional line would drown real signals.
+// Not parallel: swaps the default logger.
+func TestCleanupCompleted_EvictionLogging(t *testing.T) {
+	h := &evictionLogCapture{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	defer slog.SetDefault(prev)
+
+	reg := NewBackgroundJobRegistry()
+	// Seed fillers so the evicted id is not bg-1: parallel tests with fresh
+	// registries also log bg-1, and filtering is by id.
+	for range 25 {
+		reg.Spawn("filler", 0, nil)
+	}
+	reg.CleanupCompleted()
+	h.mu.Lock()
+	before := len(h.lines)
+	h.mu.Unlock()
+	if before != 0 {
+		t.Fatalf("cleanup with nothing evictable logged %d lines, want 0: %v", before, h.lines)
+	}
+
+	expired := reg.Spawn("done", 0, nil)
+	expired.Complete(0, false)
+	expired.mu.Lock()
+	expired.evictAfter = time.Now().Add(-time.Second) // REAL-TIME: eviction timing
+	expired.mu.Unlock()
+	reg.CleanupCompleted()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.lines) != 1 {
+		t.Fatalf("eviction log lines = %d, want 1: %v", len(h.lines), h.lines)
+	}
+	if !contains(h.lines[0], "count=1") {
+		t.Errorf("log attrs = %q, want count=1", h.lines[0])
+	}
+	if !contains(h.lines[0], expired.ID) {
+		t.Errorf("log attrs = %q, want the evicted id %q", h.lines[0], expired.ID)
+	}
+}
+
+// TestBackgroundJobRegistry_RegistryMethodsSerialiseMap: every registry
+// method holds r.mu across its map/nextID access — dropping it lets
+// concurrent registrations produce duplicate ids or corrupt the map
+// (runtime fatal), which CI would surface intermittently.
+func TestBackgroundJobRegistry_RegistryMethodsSerialiseMap(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	const writers, spawnsEach = 4, 12000
+	const fgEach = 3000
+	const unregEach, removeEach = 3000, 4000
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Go(func() {
+			for range spawnsEach {
+				r.Spawn("c", 0, nil)
+			}
+		})
+	}
+	wg.Go(func() {
+		for range fgEach {
+			r.RegisterForeground("c", "d", nil)
+		}
+	})
+	wg.Go(func() {
+		for range unregEach {
+			j := r.RegisterForeground("c", "d", nil)
+			r.UnregisterForeground(j.ID)
+		}
+	})
+	wg.Go(func() {
+		for range removeEach {
+			j := r.Spawn("c", 0, nil)
+			r.Remove(j.ID)
+		}
+	})
+	for range 2 {
+		wg.Go(func() {
+			for range 120 {
+				r.List()
+				r.HasForegroundTasks()
+				r.CleanupCompleted()
+			}
+		})
+		wg.Go(func() {
+			for range 20000 {
+				_, _ = r.Get("bg-1")
+			}
+		})
+	}
+	wg.Wait()
+
+	const want = writers*spawnsEach + fgEach
+	jobs := r.List()
+	if len(jobs) != want {
+		t.Errorf("List() = %d jobs, want %d — the registry map lost entries", len(jobs), want)
+	}
+	seen := make(map[string]struct{}, len(jobs))
+	for _, j := range jobs {
+		if _, dup := seen[j.ID]; dup {
+			t.Fatalf("duplicate job id %q — nextID increments are no longer serialised", j.ID)
+		}
+		seen[j.ID] = struct{}{}
 	}
 }
