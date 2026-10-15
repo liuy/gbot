@@ -353,6 +353,8 @@ class ChatFragment : Fragment() {
         // Read-only app-log bridge for the settings page's app-log panel
         // (same localhost-only trust scope as the theme bridge above).
         webView?.addJavascriptInterface(AppLogsBridge(), AppLogsBridge.BRIDGE_NAME)
+        // Long-press message share bridge (same trust scope as above).
+        webView?.addJavascriptInterface(ShareBridge(), SHARE_BRIDGE_NAME)
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
@@ -871,6 +873,44 @@ class ChatFragment : Fragment() {
                         .apply()
                 }
                 reloadToTarget()
+            }
+        }
+    }
+
+    /**
+     * Exposed to the WUI as window.GBotShare: message long-press → PNG share
+     * sheet. shareImage runs on the WebView JavaBridge thread — decode + file
+     * write happen there (plain IO), startActivity must hop to main (window
+     * touch) via runOnUiThread, same as NativeThemeBridge. Payload sanitizing
+     * lives in top-level functions of ShareBridge.kt so plain-JUnit covers it.
+     */
+    private inner class ShareBridge {
+        @JavascriptInterface
+        fun shareImage(dataUrl: String, fileName: String) {
+            GbotProcess.appendEvent("share", "called, file=$fileName, ${dataUrl.length} chars")
+            val ctx = context ?: run {
+                GbotProcess.appendEvent("share", "no context")
+                return
+            }
+            val bytes = decodeShareDataUrl(dataUrl) ?: run {
+                GbotProcess.appendEvent("share: rejected payload")
+                return
+            }
+            val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
+            val file = File(dir, sanitizeShareFileName(fileName))
+            file.writeBytes(bytes)
+            activity?.runOnUiThread {
+                val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                try {
+                    activity?.startActivity(Intent.createChooser(send, null))
+                } catch (e: Exception) {
+                    GbotProcess.appendEvent("share: ${e.message}")
+                }
             }
         }
     }

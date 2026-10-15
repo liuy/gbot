@@ -589,3 +589,45 @@ model-viewer { --progress-bar-color: var(--color-blue); }
    (whatwg/html#8375). The top is never covered by a docked IME, so no
    reveal-scroll fires (a floating landscape IME could still sit there). */
 .vnc-kbd-input { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: .01; border: none; padding: 0; background: transparent; color: transparent; resize: none; outline: none; }
+
+/* --- long-press share (share_menu.ts / share_card.ts) --- */
+.share-root > * { transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease, opacity .2s ease; }
+.share-root, .share-root * { user-select: none; -webkit-user-select: none; }
+.share-root.share-holding > *:not(.share-lifted) { opacity: 0.32; }
+.share-lifted { transform: scale(1.025) translateY(-2px); box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(120,180,255,0.14); z-index: 5; }
+.share-scrim { position: absolute; inset: 0; z-index: 15; display: none; } /* 15: above inputWrapper's z-10, below the menu's 20 */
+.share-scrim.share-open { display: block; }
+.share-menu { position: absolute; z-index: 20; display: flex; align-items: stretch;
+  /* Theme-adaptive glass: wui surfaces swap via --color-* tokens, so a
+     hardcoded dark capsule reads as a smudge on the light theme. */
+  background: var(--color-glass-solid); -webkit-backdrop-filter: blur(28px) saturate(1.8); backdrop-filter: blur(28px) saturate(1.8);
+  border: 1px solid var(--color-hairline); border-radius: 13px; padding: 3px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+  transform-origin: bottom center; animation: share-pop .26s cubic-bezier(.34,1.56,.64,1); }
+.share-menu.share-below { transform-origin: top center; }
+.share-menu.share-closing { animation: share-fadeout .12s ease forwards; }
+@keyframes share-pop { from { opacity: 0; transform: scale(0.82) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes share-fadeout { to { opacity: 0; transform: scale(0.92); } }
+.share-menu-item { display: flex; align-items: center; justify-content: center; width: 40px; height: 36px;
+  border-radius: 10px; cursor: pointer; background: none; border: none; padding: 0;
+  transition: background .15s ease, transform .12s ease; }
+.share-menu-item:active { background: var(--color-hairline); transform: scale(0.92); }
+.share-menu-item svg { width: 17px; height: 17px; stroke: var(--color-t2); flex: none; }
+.share-vsep { width: 1px; background: var(--color-hairline); margin: 6px 1px; }
+.share-toast { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%);
+  background: var(--color-glass-solid); border: 1px solid var(--color-hairline); color: var(--color-t1);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8); backdrop-filter: blur(28px) saturate(1.8);
+  font-size: 13px; padding: 9px 16px; border-radius: 13px; z-index: 40;
+  transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+/* No border-radius on the card: domToPng bakes the corners in as transparent
+   pixels, which leak whatever background the receiving app composites over. */
+.share-card { background: var(--color-ink); border: none; padding: 20px; }
+[data-theme="light"] .share-card { background: #FFFFFF; }
+.share-card-header { display: flex; align-items: baseline; gap: 8px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-hairline); margin-bottom: 16px; }
+.share-card-title { font-weight: 700; font-size: 15px; color: var(--color-t1); }
+.share-card-stamp { font-size: 13px; color: var(--color-t3); }
+/* Oversized messages truncate here by design (documented limit): an
+   unbounded card would drag domToPng into timeout/OOM territory. */
+.share-card-body { color: var(--color-t1); max-height: 4000px; overflow: hidden; }
+.share-card-offscreen-host { position: fixed; left: -10000px; top: 0; }

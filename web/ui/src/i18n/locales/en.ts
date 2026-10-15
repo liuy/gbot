@@ -221,6 +221,12 @@ export const dict = {
   jobKindFork: 'Fork',
   stopJob: 'Stop',
   backToBottom: 'Back to bottom',
+  shareMenuImage: 'Share as image',
+  shareMenuCopy: 'Copy text',
+  shareCopied: 'Copied',
+  shareCopyFailed: 'Copy failed',
+  shareImageReady: 'Share sheet opened',
+  shareImageFailed: 'Failed to create image',
 } as const
 
 export const endonym = 'English'

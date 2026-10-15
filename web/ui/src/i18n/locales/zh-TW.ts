@@ -196,6 +196,12 @@ export const dict: Dict = {
   jobKindFork: 'Fork',
   stopJob: '停止',
   backToBottom: '回到底部',
+  shareMenuImage: '圖片分享',
+  shareMenuCopy: '文字複製',
+  shareCopied: '已複製',
+  shareCopyFailed: '複製失敗',
+  shareImageReady: '已開啟分享面板',
+  shareImageFailed: '產生圖片失敗',
 }
 
 export const endonym = '繁體中文'

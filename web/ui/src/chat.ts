@@ -6,6 +6,7 @@ import {
   newUserMessage,
 } from './model'
 import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
+import { initShareMenu, extractShareText } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
 import {
@@ -545,6 +546,21 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   wrapper.appendChild(bottomSentinel)
   scroll.appendChild(wrapper)
   mainContent.appendChild(scroll)
+
+  // Long-press share: dead on desktop — initShareMenu probes window.GBotShare
+  // (Android shell only) and no-ops to a null handle without it.
+  const shareMenu = initShareMenu({
+    host: mainContent,
+    container: messagesContainer,
+    getSource: (row) => {
+      const m = messages.find((mm) => mm.domRoot === row)
+      if (!m || m.status !== 'done') return null
+      if (reminderRowOfMessage(m)) return null
+      const text = extractShareText(m.blocks)
+      if (!text.trim()) return null
+      return { anchor: row, role: m.role, startedAt: m.startedAt, text }
+    },
+  })
 
   const inputBar = createInputBar({ connected: initial.connected })
   inputBar.root.className = 'px-5 pb-3 pt-1'
@@ -2359,6 +2375,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const cleanup = () => {
     unsubscribe()
     unsubscribeBinary()
+    shareMenu?.destroy()
     if (refreshInterval !== null) clearInterval(refreshInterval)
   }
 

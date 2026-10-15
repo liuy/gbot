@@ -26,6 +26,7 @@
     "lit": "3.3.3",
     "markdown-it": "^14.1.0",
     "markdown-it-highlightjs": "^4.2.0",
+    "modern-screenshot": "^4.7.0",
     "tailwind-merge": "^3.6.0",
     "tailwind-variants": "^3.2.2",
     "three": "0.183.2",
