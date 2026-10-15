@@ -468,10 +468,7 @@ func TestBuild_WithMemoryFiles(t *testing.T) {
 		{Path: "/work/.gbot/memory/test.md", Content: "Remember this"},
 	}
 
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	if !strings.Contains(result, "## Memory") {
 		t.Error("built prompt missing Memory section")
@@ -486,10 +483,7 @@ func TestBuild_WithTypedMemory(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	b := context.NewBuilder("/work")
 
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	if !strings.Contains(result, "Types of memory") {
 		t.Error("built prompt missing typed-memory section")

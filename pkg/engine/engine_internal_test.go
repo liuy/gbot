@@ -5601,6 +5601,7 @@ func TestRunStopHook_Subagent(t *testing.T) {
 
 func TestFireCompactHooks_WithPreAndPost(t *testing.T) {
 	mp := &testProvider{}
+	rec := &integrationHookRecorder{}
 	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
 		"PreCompact": []hooks.HookMatcher{{
 			Matcher: "",
@@ -5610,18 +5611,34 @@ func TestFireCompactHooks_WithPreAndPost(t *testing.T) {
 			Matcher: "",
 			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "post-compact"}},
 		}},
-	}, &hookExecRecorder{})
+	}, rec)
 
+	dir := t.TempDir()
 	eng := New(&Params{
-		Provider: mp,
-		Model:    "test",
-		Hooks:    fakeHooks,
-		Logger:   slog.Default(),
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: dir,
+		Hooks:      fakeHooks,
+		Logger:     slog.Default(),
 	})
 	defer eng.Close()
 
 	eng.fireCompactHooks(context.Background(), "test_trigger", "pre")
 	eng.fireCompactHooks(context.Background(), "test_trigger", "post")
+
+	calls := rec.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("compact hook dispatches = %d, want 2 (PreCompact then PostCompact)", len(calls))
+	}
+	wantEvents := []string{"PreCompact", "PostCompact"}
+	for i, c := range calls {
+		if c.event != wantEvents[i] {
+			t.Errorf("dispatch %d event = %q, want %q", i, c.event, wantEvents[i])
+		}
+		if c.input.Cwd != dir {
+			t.Errorf("%s hook input Cwd = %q, want the engine's working dir %q", c.event, c.input.Cwd, dir)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

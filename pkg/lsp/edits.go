@@ -95,7 +95,10 @@ func HoverAt(ctx context.Context, c *Client, uri string, pos Position) (*Hover, 
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 || string(raw) == "null" {
+	// A JSON null arrives as the 4 bytes "null" (RawMessage keeps null verbatim),
+	// so there is no empty-raw case here: the envelope's result key is always
+	// present on a successful Request.
+	if string(raw) == "null" {
 		return nil, nil
 	}
 	var h Hover

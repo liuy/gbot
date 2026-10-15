@@ -1,19 +1,19 @@
 package context
 
 // BuildSystemPrompt constructs the full system prompt from all context sources.
-// toolPrompts are the system prompt contributions collected from each tool's Prompt() method.
-// On build failure, returns a minimal fallback prompt so the application can still start.
+//
+// toolPrompts are the system prompt contributions collected from each tool's
+// Prompt() method. They deliberately do NOT go into the system prompt — the
+// tool descriptions ride on the API's tools field instead. The parameter stays
+// because the Env.ToolPrompts harvest chain and its production call sites still
+// pass it; dropping it would touch 8 production and 14 test call sites, which is
+// outside this cleanup.
 func BuildSystemPrompt(workingDir, projectDir string, toolPrompts []string, skillListing string, memoryDirOverride string) string {
 	builder := NewBuilder(workingDir)
 	builder.ProjectDir = projectDir
 	builder.MemoryFiles = LoadMemoryFiles(workingDir, memoryDirOverride)
 	builder.MemoryDirOverride = memoryDirOverride
 	builder.SkillListing = skillListing
-	builder.ToolPrompts = toolPrompts
 
-	prompt, err := builder.Build()
-	if err != nil {
-		return "You are gbot, an interactive AI coding assistant. Use tools to accomplish tasks."
-	}
-	return prompt
+	return builder.Build()
 }

@@ -425,6 +425,13 @@ func expandPath(filePath string) string {
 	if filepath.IsAbs(filePath) {
 		return filePath
 	}
+	// TS path.ts checks the bare "~" before the "~/..." prefix, so a path that
+	// is exactly "~" means the home dir rather than a file literally named "~".
+	if filePath == "~" {
+		if home := os.Getenv("HOME"); home != "" {
+			return home
+		}
+	}
 	if strings.HasPrefix(filePath, "~/") {
 		if home := os.Getenv("HOME"); home != "" {
 			return filepath.Join(home, filePath[2:])
@@ -449,6 +456,28 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	if in.FilePath == "" {
 		return nil, fmt.Errorf("file_path is required")
 	}
+
+	// Resolve the path once, here, so every downstream branch (sqlite/archive
+	// selector probes, stat, image/document/text) reads the same string —
+	// rewriting in.FilePath is what makes a single join cover all of them.
+	// TS does the equivalent in FileReadTool.ts backfillObservableInput, where
+	// expandPath's baseDir defaults to getCwd(); tctx.WorkingDir is gbot's
+	// override-aware getCwd(), so this also fixes a relative Read after a
+	// session `bash cd`, not just the Agent cwd override.
+	//
+	// The join must precede the selector probes: "db.sqlite:users" and
+	// "archive.zip:dir/f.ts" are not real filesystem paths, so a probe that ran
+	// first would leave them resolving against the process cwd. Join/Clean
+	// operates on the whole string — it can even collapse ".." elements inside
+	// an archive subpath — but it leaves the ":"/"?" selector intact, which is
+	// what the probes split on.
+	// The trailing expandPath covers the "~"/"~/" half the join guard skips —
+	// os.Stat("~/x") can never succeed — and is a no-op on an already-absolute
+	// path.
+	if in.FilePath != "~" && !filepath.IsAbs(in.FilePath) && !strings.HasPrefix(in.FilePath, "~/") && tctx != nil && tctx.WorkingDir != "" {
+		in.FilePath = filepath.Join(tctx.WorkingDir, in.FilePath)
+	}
+	in.FilePath = expandPath(in.FilePath)
 
 	// SECURITY: Check for blocked device paths to prevent hanging
 	if isBlockedDevicePath(in.FilePath) {

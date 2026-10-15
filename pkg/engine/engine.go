@@ -1158,6 +1158,10 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 			HookEventName: "SubagentStart",
 			AgentID:       subEng.SessionID(),
 			AgentType:     agentType,
+			// subEng already holds "override or parent live dir"; the parent's
+			// sharedDeps.WorkingDir is the session-frozen dir and would hide the
+			// override from the hook.
+			Cwd: subEng.getWorkingDir(),
 		}
 		// RunAgent executes on the parent engine, so the dispatch pins the
 		// parent's REPL — the sub-agent's lifecycle hooks share the parent
@@ -2113,6 +2117,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					HookEventName: string(hooks.HookStopFailure),
 					SessionID:     e.sessionID,
 					Reason:        errText,
+					Cwd:           e.getWorkingDir(),
 				}
 				// Deliberately not goRun-tracked: the hook runs under
 				// context.Background() and cannot be cancelled by Close;
@@ -2536,6 +2541,7 @@ func (e *Engine) runStopHook(ctx context.Context) *hooks.HookResult {
 		HookEventName: string(hooks.HookStop),
 		SessionID:     e.sessionID,
 		ToolNames:     e.snapshotTurnToolNames(),
+		Cwd:           e.getWorkingDir(),
 	}
 	if e.isSubagent {
 		input.HookEventName = string(hooks.HookSubagentStop)
@@ -2557,6 +2563,7 @@ func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase str
 	input := &hooks.HookInput{
 		SessionID: e.sessionID,
 		Trigger:   trigger,
+		Cwd:       e.getWorkingDir(),
 	}
 	switch phase {
 	case "pre":
@@ -4307,6 +4314,7 @@ func (e *Engine) Close() {
 		_ = e.hooks.SessionEnd(e.jsHookCtx(context.Background()), &hooks.HookInput{
 			HookEventName: string(hooks.HookSessionEnd),
 			SessionID:     e.sessionID,
+			Cwd:           e.getWorkingDir(),
 		})
 	}
 	if e.mcpRegistry != nil {

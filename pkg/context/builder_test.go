@@ -19,9 +19,6 @@ func TestNewBuilder(t *testing.T) {
 	if b.WorkingDir != "/work" {
 		t.Errorf("WorkingDir = %q, want %q", b.WorkingDir, "/work")
 	}
-	if len(b.ToolPrompts) != 0 {
-		t.Errorf("ToolPrompts should be empty, got %d items", len(b.ToolPrompts))
-	}
 	if b.MaxTokens != 100000 {
 		t.Errorf("MaxTokens = %d, want 100000", b.MaxTokens)
 	}
@@ -44,10 +41,7 @@ func TestBuild_TypedMemorySeparator(t *testing.T) {
 	// The fallback section must not be reachable while a typed prompt exists.
 	b.MemoryFiles = []context.MemoryFile{{Path: "/fallback/only.md", Content: "fallback only"}}
 
-	got, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	got := b.Build()
 	typed := long.BuildMemoryPrompt(workingDir, "")
 	if typed == "" {
 		t.Fatal("expected a non-empty typed-memory prompt with auto memory enabled")
@@ -70,10 +64,7 @@ func TestBuild_MemoryFilesSectionExact(t *testing.T) {
 		{Path: "/tmp/.gbot/memory/notes.md", Content: "Use strict mode"},
 	}
 
-	got, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	got := b.Build()
 	want := "\n\n## Memory\n\n- [notes.md](/tmp/.gbot/memory/notes.md)\nUse strict mode\n"
 	if !strings.HasSuffix(got, want) {
 		t.Errorf("Build tail = %q, want %q", tail(got, len(want)+40), want)
@@ -85,10 +76,7 @@ func TestBuild_SkillListingExact(t *testing.T) {
 	b := context.NewBuilder("/work")
 	b.SkillListing = "- build — runs make check"
 
-	got, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	got := b.Build()
 	want := "\n\n## Available Skills\n\n- build — runs make check"
 	if !strings.HasSuffix(got, want) {
 		t.Errorf("Build tail = %q, want %q", tail(got, len(want)+40), want)
@@ -112,10 +100,7 @@ func truncateForTest(s string, n int) string {
 func TestBuild_Basic(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	promptStr := result
 
@@ -130,37 +115,11 @@ func TestBuild_Basic(t *testing.T) {
 	}
 }
 
-func TestBuild_WithToolPrompts_NoLongerInSystemPrompt(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.ToolPrompts = []string{"Tool 1: Use wisely", "Tool 2: Be carefully"}
-
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-
-	promptStr := result
-
-	if strings.Contains(promptStr, "Tool 1: Use wisely") {
-		t.Error("tool prompts must not appear in system prompt")
-	}
-	if strings.Contains(promptStr, "Tool 2: Be carefully") {
-		t.Error("tool prompts must not appear in system prompt")
-	}
-	if !strings.Contains(promptStr, "{{SYSTEM}}") {
-		t.Error("built prompt should still contain {{SYSTEM}} stub")
-	}
-}
-
 func TestBuild_AllSections(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/project")
 
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	promptStr := result
 
@@ -176,30 +135,10 @@ func TestBuild_AllSections(t *testing.T) {
 	}
 }
 
-func TestBuild_EmptyToolPrompts_NotInSystemPrompt(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.ToolPrompts = []string{"", "valid prompt", ""}
-
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-
-	promptStr := result
-
-	if strings.Contains(promptStr, "valid prompt") {
-		t.Error("tool prompts must not appear in system prompt")
-	}
-}
-
 func TestBuild_EscapesJSON(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 	if result == "" {
 		t.Error("Build() returned empty string")
 	}
@@ -266,10 +205,7 @@ func TestDefaultBasePrompt(t *testing.T) {
 func TestBuild_NoFiles(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	promptStr := result
 
@@ -289,39 +225,12 @@ func TestBuild_WithSkillListing(t *testing.T) {
 	b := context.NewBuilder("/work")
 	b.SkillListing = "/commit - create a commit\n/review - review code"
 
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	result := b.Build()
 
 	if !strings.Contains(result, "## Available Skills") {
 		t.Error("built prompt missing '## Available Skills' section")
 	}
 	if !strings.Contains(result, "/commit") {
 		t.Error("built prompt missing skill listing content")
-	}
-}
-
-func TestBuild_ToolPromptsIgnored(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.ToolPrompts = []string{"p1", "", "p3"}
-
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("Build() returned empty result")
-	}
-
-	promptStr := result
-
-	// Tool prompts go into tool defs, not system prompt.
-	if strings.Contains(promptStr, "p1") {
-		t.Error("tool prompt p1 must not be in system prompt")
-	}
-	if strings.Contains(promptStr, "p3") {
-		t.Error("tool prompt p3 must not be in system prompt")
 	}
 }

@@ -710,13 +710,11 @@ func TestRenderResourceResultJSON_EmptyResourceContentSlice(t *testing.T) {
 }
 
 func TestRenderResourceResultJSON_MarshalIndentError(t *testing.T) {
-	// Channels cannot be marshaled to JSON, so MarshalIndent fails
-	// and the fallback json.Marshal also fails, returning empty string.
-	got := renderResourceResultJSON(make(chan int))
-	if got != "" {
-		// json.Marshal(chan) returns an error; the fallback also fails.
-		// Both paths fail → returns "" from the string(b) where b is nil.
-		t.Logf("renderResourceResultJSON(chan) = %q", got)
+	// Channels cannot be marshaled, so MarshalIndent fails and leaves b nil.
+	// MarshalIndent wraps Marshal, so there is no second encoding that could
+	// succeed — the only honest outcome is the empty string.
+	if got := renderResourceResultJSON(make(chan int)); got != "" {
+		t.Errorf("renderResourceResultJSON(chan) = %q, want empty string", got)
 	}
 }
 

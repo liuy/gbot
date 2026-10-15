@@ -6108,6 +6108,7 @@ type stopFailureRecorder struct {
 	mu     sync.Mutex
 	events []string
 	reason string
+	cwd    string
 	fired  chan struct{}
 	once   sync.Once
 }
@@ -6120,15 +6121,16 @@ func (r *stopFailureRecorder) ExecuteHook(ctx context.Context, command string, i
 	r.mu.Lock()
 	r.events = append(r.events, input.HookEventName)
 	r.reason = input.Reason
+	r.cwd = input.Cwd
 	r.mu.Unlock()
 	r.once.Do(func() { close(r.fired) })
 	return hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, HookName: command}
 }
 
-func (r *stopFailureRecorder) snapshot() (events []string, reason string) {
+func (r *stopFailureRecorder) snapshot() (events []string, reason, cwd string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.events...), r.reason
+	return append([]string(nil), r.events...), r.reason, r.cwd
 }
 
 // TestTerminalAPIErrorFiresStopFailureNotStop pins the TS query.ts:1259-1265
@@ -6149,7 +6151,8 @@ func TestTerminalAPIErrorFiresStopFailureNotStop(t *testing.T) {
 			{Type: hooks.HookTypeCommand, Command: "on-stop"},
 		}}},
 	}, rec)
-	eng := New(&Params{Provider: mp, Model: "m", Logger: slog.Default(), Hooks: h})
+	dir := t.TempDir()
+	eng := New(&Params{Provider: mp, Model: "m", WorkingDir: dir, Logger: slog.Default(), Hooks: h})
 	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -6162,11 +6165,14 @@ func TestTerminalAPIErrorFiresStopFailureNotStop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("StopFailure hook never fired within 2s")
 	}
-	got, reason := rec.snapshot()
+	got, reason, cwd := rec.snapshot()
 	if len(got) != 1 || got[0] != "StopFailure" {
 		t.Fatalf("expected exactly one StopFailure dispatch, got %v", got)
 	}
 	if !strings.Contains(reason, "rate limited") {
 		t.Errorf("Reason must carry the error text for TS matchQuery parity, got %q", reason)
+	}
+	if cwd != dir {
+		t.Errorf("StopFailure hook input Cwd = %q, want the engine's working dir %q", cwd, dir)
 	}
 }

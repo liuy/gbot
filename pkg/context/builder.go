@@ -18,9 +18,6 @@ type Builder struct {
 	// Contains gbot.log, gbot.pid, memory/, session_notes/, file-history/, meta.json.
 	ProjectDir string
 
-	// ToolPrompts are system prompt contributions from tools.
-	ToolPrompts []string
-
 	// SkillListing is the formatted skill listing within context window budget.
 	SkillListing string
 
@@ -44,7 +41,7 @@ func NewBuilder(workingDir string) *Builder {
 
 // Build assembles the full system prompt.
 // Source: context.ts — the complete context assembly algorithm.
-func (b *Builder) Build() (string, error) {
+func (b *Builder) Build() string {
 	var buf bytes.Buffer
 
 	// 1. Base system prompt template
@@ -70,5 +67,5 @@ func (b *Builder) Build() (string, error) {
 		buf.WriteString(b.SkillListing)
 	}
 
-	return buf.String(), nil
+	return buf.String()
 }

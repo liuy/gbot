@@ -55,9 +55,6 @@ func (q *Queue) DrainByPriority(maxPriority types.QueuePriority) []types.QueuedI
 	var matched, remaining []types.QueuedItem
 	for _, item := range q.items {
 		itemPri := priorityOrder(item.Priority)
-		if item.Priority == "" {
-			itemPri = priorityOrder(types.PriorityNext)
-		}
 		if itemPri <= threshold {
 			matched = append(matched, item)
 		} else {

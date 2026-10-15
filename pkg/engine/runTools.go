@@ -845,6 +845,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				hookInput := &hooks.HookInput{
 					HookEventName: "PermissionRequest",
 					ToolName:      tt.Name,
+					Cwd:           e.hookCwd(),
 				}
 				// Dispatch on siblingCtx, not Background: the ctx chain down
 				// from a hook-origin tool call (hook → tools.Agent → this
@@ -945,6 +946,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			ToolName:      tt.Name,
 			ToolInput:     tt.Input,
 			ToolUseID:     tt.ID,
+			Cwd:           e.hookCwd(),
 		}
 		decision, _ := e.hooks.PreToolUse(e.hookDispatchCtx(e.siblingCtx), hookInput)
 		if decision == hooks.HookDecisionBlock {
@@ -1208,6 +1210,7 @@ func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError boo
 		ToolName:  tt.Name,
 		ToolInput: tt.Input,
 		ToolUseID: tt.ID,
+		Cwd:       e.hookCwd(),
 	}
 	if isError {
 		hookInput.HookEventName = string(hooks.HookPostToolUseFailure)
@@ -1217,6 +1220,23 @@ func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError boo
 		e.hooks.PostToolUse(e.hookDispatchCtx(e.siblingCtx), hookInput)
 	}
 }
+
+// hookCwd returns the live working dir for hook input construction.
+// Source: hooks.ts:323 — createBaseHookInput reads getCwd() per dispatch, so a
+// mid-query bash cd must be visible to the hook, unlike the query's base tctx snapshot.
+func (e *StreamingToolExecutor) hookCwd() string {
+	e.mu.Lock()
+	supplier, tctx := e.workingDirSupplier, e.tctx
+	e.mu.Unlock()
+	if supplier != nil {
+		return supplier()
+	}
+	if tctx != nil {
+		return tctx.WorkingDir
+	}
+	return ""
+}
+
 func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseContext {
 	e.mu.Lock()
 	msgs := e.messages

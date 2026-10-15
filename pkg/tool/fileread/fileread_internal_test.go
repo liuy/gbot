@@ -493,6 +493,101 @@ func TestOutputMethods(t *testing.T) {
 	FileUnchangedOutput{}.output()
 }
 
+// TestExecute_RelativePathJoinsWorkingDir pins Execute's path-resolution entry:
+// a relative file_path is joined onto tctx.WorkingDir once, before the
+// sqlite/archive selectors and the stat, so every downstream branch (stat, image,
+// document, text) sees the same resolved string. The nil-tctx control proves the
+// join is the only relative-path resolver here — without it the path falls
+// through to the process cwd and misses the file. The tilde case pins the other
+// half: the join guard skips "~/", so only the trailing expandPath can resolve it.
+// Not parallel: HOME is process-global.
+func TestExecute_RelativePathJoinsWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	const marker = "WORKDIRMARK-6h"
+	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte(marker+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile marker.txt: %v", err)
+	}
+
+	res, err := Execute(context.Background(), json.RawMessage(`{"file_path":"marker.txt"}`), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Execute with WorkingDir returned error: %v", err)
+	}
+	text, ok := res.Data.(TextOutput)
+	if !ok {
+		t.Fatalf("Data = %T, want TextOutput", res.Data)
+	}
+	if !strings.Contains(text.Content, marker) {
+		t.Errorf("Content = %q, want the marker %q from WorkingDir", text.Content, marker)
+	}
+
+	// Control: no tctx means no WorkingDir, so the relative path resolves
+	// against the process cwd and misses the file. Match only the error prefix —
+	// expandPath makes the reported path absolute.
+	if _, err := Execute(context.Background(), json.RawMessage(`{"file_path":"marker.txt"}`), nil); err == nil {
+		t.Error("Execute without tctx returned nil error, want 'file does not exist'")
+	} else if !strings.Contains(err.Error(), "file does not exist") {
+		t.Errorf("error = %q, want 'file does not exist'", err.Error())
+	}
+
+	// The IsAbs half of the guard: an absolute path must pass through a set
+	// WorkingDir untouched, otherwise the join re-roots it under WorkingDir.
+	absDir := t.TempDir()
+	absPath := filepath.Join(absDir, "abs.txt")
+	if err := os.WriteFile(absPath, []byte("ABSMARK-4t\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile abs.txt: %v", err)
+	}
+	res, err = Execute(context.Background(), json.RawMessage(`{"file_path":"`+absPath+`"}`), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Execute with an absolute path and WorkingDir set returned error: %v", err)
+	}
+	text, ok = res.Data.(TextOutput)
+	if !ok {
+		t.Fatalf("Data = %T, want TextOutput", res.Data)
+	}
+	if !strings.Contains(text.Content, "ABSMARK-4t") {
+		t.Errorf("Content = %q, want ABSMARK-4t from the absolute path %q", text.Content, absPath)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "tilde.txt"), []byte("TILDEMARK-2b\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tilde.txt: %v", err)
+	}
+	res, err = Execute(context.Background(), json.RawMessage(`{"file_path":"~/tilde.txt"}`), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Execute with ~/tilde.txt returned error: %v", err)
+	}
+	text, ok = res.Data.(TextOutput)
+	if !ok {
+		t.Fatalf("Data = %T, want TextOutput", res.Data)
+	}
+	if !strings.Contains(text.Content, "TILDEMARK-2b") {
+		t.Errorf("Content = %q, want TILDEMARK-2b from the HOME dir", text.Content)
+	}
+}
+
+// TestExecute_BareTildeExpandsToHome pins the TS path.ts branch where a path
+// that is exactly "~" means the home directory, not a file named "~". The
+// WorkingDir join has to skip it: once joined, the string is absolute and no
+// later tilde expansion can recover the intent. Read refuses directories, so
+// the observable proof is the stat verdict naming the HOME dir instead of the
+// joined path.
+// Not parallel: HOME is process-global.
+func TestExecute_BareTildeExpandsToHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+
+	_, err := Execute(context.Background(), json.RawMessage(`{"file_path":"~"}`), &tool.ToolUseContext{WorkingDir: dir})
+	want := "path is a directory, not a file: " + home
+	if err == nil {
+		t.Fatalf(`Execute with file_path "~" returned nil error, want %q`, want)
+	}
+	if err.Error() != want {
+		t.Errorf(`Execute with file_path "~" error = %q, want %q`, err.Error(), want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Coverage: expandPath branches
 // ---------------------------------------------------------------------------

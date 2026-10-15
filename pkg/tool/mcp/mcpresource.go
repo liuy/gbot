@@ -221,10 +221,7 @@ func renderResourceResultJSON(data any) string {
 		return "[]"
 	}
 
-	b, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		b, _ = json.Marshal(data)
-	}
+	b, _ := json.MarshalIndent(data, "", "  ")
 	return string(b)
 }
 

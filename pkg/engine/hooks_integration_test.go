@@ -607,11 +607,13 @@ func TestIntegration_SessionEnd_FiresOnClose(t *testing.T) {
 	}
 	hookSystem := hooks.NewHooks(hookConfig, rec)
 
+	dir := t.TempDir()
 	eng := New(&Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
-		Hooks:    hookSystem,
+		Provider:   mp,
+		Model:      "test-model",
+		WorkingDir: dir,
+		Logger:     slog.Default(),
+		Hooks:      hookSystem,
 	})
 
 	eng.Close()
@@ -621,6 +623,9 @@ func TestIntegration_SessionEnd_FiresOnClose(t *testing.T) {
 	for _, c := range calls {
 		if c.event == "SessionEnd" {
 			found = true
+			if c.input.Cwd != dir {
+				t.Errorf("SessionEnd hook input Cwd = %q, want the engine's live working dir %q", c.input.Cwd, dir)
+			}
 		}
 	}
 	if !found {

@@ -8,30 +8,15 @@ import (
 	"github.com/liuy/gbot/pkg/context"
 )
 
+// benchSink keeps Build()'s result live so the compiler can't dead-code the call.
+var benchSink string
+
 func BenchmarkBuild_Minimal(b *testing.B) {
 	bldr := context.NewBuilder("/work/project")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = bldr.Build()
-	}
-}
-
-func BenchmarkBuild_WithToolPrompts(b *testing.B) {
-	bldr := context.NewBuilder("/work/project")
-	bldr.ToolPrompts = []string{
-		"Bash: Execute shell commands. Use for running builds, tests, and other CLI tools.",
-		"Read: Read file contents. Use dedicated tools over Bash for file operations.",
-		"Edit: Make targeted edits to existing files. Prefer over Write for modifications.",
-		"Write: Create or completely replace files.",
-		"Glob: Find files matching a glob pattern using doublestar v4.",
-		"Grep: Search file contents using ripgrep. Supports regex, file type, and glob filters.",
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = bldr.Build()
+		benchSink = bldr.Build()
 	}
 }
 
@@ -77,10 +62,7 @@ func BenchmarkLoadContextFiles_WithFile(b *testing.B) {
 
 func BenchmarkBuild_Unmarshal(b *testing.B) {
 	bldr := context.NewBuilder("/work/project")
-	result, err := bldr.Build()
-	if err != nil {
-		b.Fatal(err)
-	}
+	result := bldr.Build()
 
 	b.ReportAllocs()
 	b.ResetTimer()
