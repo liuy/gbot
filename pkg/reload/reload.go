@@ -314,11 +314,13 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 		// inbound-device pool; a fresh engine build gets it from Start's deps.
 		WSRegistry: nil,
 		ShortStore: d.ShortStore,
-		// EngineMgr/BgAgents stay nil: this toolset is throwaway — only its
+		// EngineMgr/IDMinter stay nil: this toolset is throwaway — only its
 		// Prompt() text feeds the ToolPrompts harvest. Production engines get
-		// real resolver deps from the Start factory closure.
+		// real resolver deps from the Start factory closure; a nil IDMinter
+		// gives the throwaway table a private counter, which is fine because
+		// it never spawns.
 		EngineMgr: nil,
-		BgAgents:  nil,
+		IDMinter:  nil,
 	}, task.NewList(""))
 	for _, tl := range refs.Reg.EnabledTools() {
 		if p := tl.Prompt(); p != "" {

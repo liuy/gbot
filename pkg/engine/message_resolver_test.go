@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -21,20 +22,21 @@ import (
 // Harness
 // ---------------------------------------------------------------------------
 
-// msgDeps builds SharedDeps carrying the two resolver sources, plus the
-// manager and registry themselves for test setup.
+// msgDeps builds SharedDeps carrying the resolver's manager plus a shared id
+// minter, plus a standalone registry for direct resolver-literal tests (to be
+// registered via mgr.AddBgTable). Wired engines mint their own per-engine
+// table inside CreateTools — deps carries no shared registry.
 func msgDeps(t *testing.T) (SharedDeps, *EngineManager, *agenttool.BackgroundAgentRegistry) {
 	t.Helper()
 	mgr := NewEngineManager()
-	reg := agenttool.NewBackgroundAgentRegistry()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 		EngineMgr:  mgr,
-		BgAgents:   reg,
+		IDMinter:   agenttool.NewIDMinter(),
 	}
-	return deps, mgr, reg
+	return deps, mgr, agenttool.NewBackgroundAgentRegistry()
 }
 
 // spawnRunningAgent pre-seeds the registry with a running agent whose runFn
@@ -86,6 +88,7 @@ func msgWiredParent(t *testing.T, mp *mockProvider, engineID string, deps Shared
 func TestEngineMessageResolver_AgentRegistryFirst(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
+	mgr.AddBgTable(reg)
 	id := spawnRunningAgent(t, reg)
 	sink := &msgSpyTarget{}
 	reg.AttachSink(id, sink)
@@ -94,7 +97,7 @@ func TestEngineMessageResolver_AgentRegistryFirst(t *testing.T) {
 	defer engineView.Close()
 	mgr.Add(&EngineViewState{Engine: engineView, ID: id})
 
-	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	r := &EngineMessageResolver{mgr: mgr}
 	target, status, ok := r.Resolve(id)
 	if !ok {
 		t.Fatal("Resolve returned ok=false for a registered running agent")
@@ -130,7 +133,8 @@ func TestEngineMessageResolver_EngineByID(t *testing.T) {
 func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{"completed", "failed", "cancelled"} {
-		_, _, reg := msgDeps(t)
+		_, mgr, reg := msgDeps(t)
+		mgr.AddBgTable(reg)
 		var cancel context.CancelFunc
 		ctx := context.Background()
 		if want == "cancelled" {
@@ -165,7 +169,7 @@ func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 		if string(final.Status) != want {
 			t.Fatalf("setup: status = %q, want %q", final.Status, want)
 		}
-		r := &EngineMessageResolver{agents: reg}
+		r := &EngineMessageResolver{mgr: mgr}
 		target, status, ok := r.Resolve(st.ID)
 		if !ok {
 			t.Errorf("status %s: ok=false, want a known terminal agent", want)
@@ -182,9 +186,10 @@ func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 func TestEngineMessageResolver_StartingAgent(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
+	mgr.AddBgTable(reg)
 	id := spawnRunningAgent(t, reg) // no AttachSink — still starting
 
-	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	r := &EngineMessageResolver{mgr: mgr}
 	target, status, ok := r.Resolve(id)
 	if !ok {
 		t.Fatal("ok=false for a running agent without a sink")
@@ -199,8 +204,8 @@ func TestEngineMessageResolver_StartingAgent(t *testing.T) {
 
 func TestEngineMessageResolver_UnknownID(t *testing.T) {
 	t.Parallel()
-	_, mgr, reg := msgDeps(t)
-	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	_, mgr, _ := msgDeps(t)
+	r := &EngineMessageResolver{mgr: mgr}
 	target, status, ok := r.Resolve("nobody")
 	if ok {
 		t.Error("ok=true for an unknown id")
@@ -255,6 +260,7 @@ func TestEngineMessageResolver_IDBeatsName(t *testing.T) {
 func TestEngineMessageResolver_RegistryIDBeatsEngineName(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
+	mgr.AddBgTable(reg)
 	id := spawnRunningAgent(t, reg)
 	sink := &msgSpyTarget{}
 	reg.AttachSink(id, sink)
@@ -263,7 +269,7 @@ func TestEngineMessageResolver_RegistryIDBeatsEngineName(t *testing.T) {
 	defer eng.Close()
 	mgr.Add(&EngineViewState{Engine: eng, ID: "legacy", Name: id})
 
-	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	r := &EngineMessageResolver{mgr: mgr}
 	target, status, ok := r.Resolve(id)
 	if !ok {
 		t.Fatal("Resolve returned ok=false")
@@ -295,8 +301,8 @@ func TestEngineMessageResolver_NameOnLazyEngineNotDeliverable(t *testing.T) {
 
 func TestEngineMessageResolver_UnknownName(t *testing.T) {
 	t.Parallel()
-	_, mgr, reg := msgDeps(t)
-	r := &EngineMessageResolver{mgr: mgr, agents: reg}
+	_, mgr, _ := msgDeps(t)
+	r := &EngineMessageResolver{mgr: mgr}
 	target, status, ok := r.Resolve("no-such-name")
 	if ok {
 		t.Error("ok=true for an unknown name")
@@ -350,7 +356,7 @@ func TestCreateTools_RegistersMessageTool(t *testing.T) {
 		t.Fatal("ToolRefs.Message is nil with resolver deps present")
 	}
 
-	// Harvest path (reload): nil EngineMgr and nil BgAgents still register
+	// Harvest path (reload): nil EngineMgr and nil IDMinter still register
 	// the tool so ToolPrompts collection sees it.
 	plain := SharedDeps{WorkingDir: t.TempDir()}
 	refs2 := CreateTools(plain, tl)
@@ -375,6 +381,23 @@ func TestWireEngine_SetsSelfIDAndEngineID(t *testing.T) {
 	}
 }
 
+// WireEngine must register the engine's background table with the manager:
+// mgr.BgAgent is the message resolver's only path to any engine's spawns.
+func TestWireEngine_RegistersBgTable(t *testing.T) {
+	t.Parallel()
+	deps, mgr, _ := msgDeps(t)
+	_, refs := msgWiredParent(t, &mockProvider{}, "e2", deps)
+
+	id := spawnRunningAgent(t, refs.Agent.BgRegistry())
+	st, ok := mgr.BgAgent(id)
+	if !ok {
+		t.Fatal("mgr.BgAgent missed an agent spawned in the wired engine's own registry — WireEngine never registered the table")
+	}
+	if st.Status != agenttool.AgentRunning {
+		t.Errorf("status = %q, want running", st.Status)
+	}
+}
+
 // RunAgent must attach the freshly built sub-engine as the background
 // agent's sink, so the registry entry becomes deliverable.
 func TestRunAgent_BackgroundWiring(t *testing.T) {
@@ -390,9 +413,10 @@ func TestRunAgent_BackgroundWiring(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: eng, ID: "main"})
 
 	result, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:   "run",
-		AgentID:  id,
-		MaxTurns: 1,
+		Prompt:     "run",
+		AgentID:    id,
+		MaxTurns:   1,
+		BgRegistry: reg,
 	})
 	if err != nil {
 		t.Fatalf("RunAgent: %v", err)
@@ -434,29 +458,32 @@ func (s *msgSpyTarget) EnqueueAttachment(item types.QueuedItem) {
 // result — if the call errored, "Delivered to main" never appears.
 func TestEngine_BackgroundAgentMessagesParent(t *testing.T) {
 	t.Parallel()
-	deps, mgr, reg := msgDeps(t)
-	spawnRunningAgent(t, reg) // agent-1 exists before RunAgent attaches its sink
+	deps, mgr, _ := msgDeps(t)
 
 	mp := &mockProvider{}
+	parent, refs := msgWiredParent(t, mp, "main", deps)
+	reg := refs.Agent.BgRegistry()
+	id := spawnRunningAgent(t, reg) // agent exists before RunAgent attaches its sink
+
 	mp.addResponse(toolUseStreamEvents("test", "t1", "Message", `{"to":"main","message":"hello main"}`), nil)
 	mp.addResponse(textStreamEvents("test", "child final"), nil)
 	mp.addResponse(textStreamEvents("test", "parent auto-turn ack"), nil)
 
-	parent, _ := msgWiredParent(t, mp, "main", deps)
 	parent.SetSystemPrompt("parent system prompt")
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:   "report to base",
-		AgentID:  "agent-1",
-		MaxTurns: 2,
+		Prompt:     "report to base",
+		AgentID:    id,
+		MaxTurns:   2,
+		BgRegistry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
 
 	waitForCallCount(t, mp, 3, 10*time.Second)
-	if !mp.anyRequestContains(`<message from="agent-1">`, "hello main") {
-		t.Error("no recorded request carries the agent-1 envelope — delivery through the queue + auto-turn failed")
+	if !mp.anyRequestContains(fmt.Sprintf(`<message from=%q>`, id), "hello main") {
+		t.Error("no recorded request carries the agent envelope — delivery through the queue + auto-turn failed")
 	}
 	if !mp.anyRequestContains("hello main") {
 		t.Error("no recorded request carries the sent-message tool result — the message call errored")
@@ -467,26 +494,29 @@ func TestEngine_BackgroundAgentMessagesParent(t *testing.T) {
 // itself is rejected with the self-send error in the sub's next request.
 func TestEngine_BackgroundAgentSelfSendRejected(t *testing.T) {
 	t.Parallel()
-	deps, mgr, reg := msgDeps(t)
-	spawnRunningAgent(t, reg) // pre-seed agent-1 so the sink attach fires
+	deps, mgr, _ := msgDeps(t)
 
 	mp := &mockProvider{}
-	mp.addResponse(toolUseStreamEvents("test", "t1", "Message", `{"to":"agent-1","message":"note to self"}`), nil)
+	parent, refs := msgWiredParent(t, mp, "main", deps)
+	reg := refs.Agent.BgRegistry()
+	id := spawnRunningAgent(t, reg) // pre-seed so the sink attach fires
+
+	mp.addResponse(toolUseStreamEvents("test", "t1", "Message", fmt.Sprintf(`{"to":%q,"message":"note to self"}`, id)), nil)
 	mp.addResponse(textStreamEvents("test", "child final"), nil)
 
-	parent, _ := msgWiredParent(t, mp, "main", deps)
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:   "talk to yourself",
-		AgentID:  "agent-1",
-		MaxTurns: 2,
+		Prompt:     "talk to yourself",
+		AgentID:    id,
+		MaxTurns:   2,
+		BgRegistry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
 
 	waitForCallCount(t, mp, 2, 10*time.Second)
-	if !mp.anyRequestContains("cannot send a message to yourself (agent-1)") {
+	if !mp.anyRequestContains(fmt.Sprintf("cannot send a message to yourself (%s)", id)) {
 		t.Error("no recorded request carries the self-send rejection — RunAgent did not set the sub's selfID")
 	}
 }
@@ -496,31 +526,34 @@ func TestEngine_BackgroundAgentSelfSendRejected(t *testing.T) {
 // request carries the envelope with the parent engine id as sender.
 func TestEngine_ParentMessagesBackgroundAgent(t *testing.T) {
 	t.Parallel()
-	deps, mgr, reg := msgDeps(t)
-	spawnRunningAgent(t, reg) // agent-1 exists before RunAgent attaches its sink
+	deps, mgr, _ := msgDeps(t)
 
 	mp := &mockProvider{}
+	parent, refs := msgWiredParent(t, mp, "main", deps)
+	reg := refs.Agent.BgRegistry()
+	id := spawnRunningAgent(t, reg) // agent exists before RunAgent attaches its sink
+
 	mp.addResponse(textStreamEvents("test", "first sub run"), nil)
 	mp.addResponse(textStreamEvents("test", "sub auto-turn ack"), nil)
 
-	parent, refs := msgWiredParent(t, mp, "main", deps)
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 
 	// Live sub-engine: RunAgent completes and leaves the sub deliverable.
 	// MaxTurns stays unset — a capped sub would hit its turn limit before
 	// the auto-turn triggered by the incoming message can run.
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:  "one shot",
-		AgentID: "agent-1",
+		Prompt:     "one shot",
+		AgentID:    id,
+		BgRegistry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
-	got, ok := reg.Get("agent-1")
+	got, ok := reg.Get(id)
 	if !ok || got.Sink == nil {
-		t.Fatal("agent-1 has no sink after RunAgent")
+		t.Fatalf("agent %s has no sink after RunAgent", id)
 	}
 
-	res, err := refs.Message.Call(context.Background(), json.RawMessage(`{"to":"agent-1","message":"status update"}`), nil)
+	res, err := refs.Message.Call(context.Background(), json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"status update"}`, id)), nil)
 	if err != nil {
 		t.Fatalf("message call: %v", err)
 	}

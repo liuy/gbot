@@ -64,6 +64,7 @@ func TestCall_PassesCwdToRunAgent(t *testing.T) {
 func TestCall_ForkPassesCwdToRunAgent(t *testing.T) {
 	var captured AgentOpts
 	at := New()
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		captured = opts

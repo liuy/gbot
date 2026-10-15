@@ -96,6 +96,7 @@ func TestCallFork_SyncErrorWrapShape(t *testing.T) {
 	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return nil, sentinel
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	_, err := at.Call(context.Background(), json.RawMessage(`{"description":"d","prompt":"p","fork":true}`), nil)
@@ -123,6 +124,7 @@ func TestCallFork_ModelResolution(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	for _, tc := range []struct {
@@ -152,6 +154,7 @@ func TestCallFork_AssistantContentBuildsTriggerPair(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	tctx := &tool.ToolUseContext{
@@ -190,6 +193,7 @@ func TestCallFork_EmptyAssistantContentUsesHistoryOnly(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	tctx := &tool.ToolUseContext{
@@ -851,6 +855,7 @@ func TestCallFork_CarriesParentToolUseIDAndSystemPrompt(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "rendered parent prompt" })
 	at.SetResolveTierFn(func(tier string) string { return "resolved:" + tier })
 	at.SetMcpConnect(func(ctx context.Context, agentID string, raw []json.RawMessage) (*McpConnectResult, error) {
@@ -1308,6 +1313,7 @@ func TestCallFork_SyncPathPropagatesCallerContext(t *testing.T) {
 		seen = ctx.Value(parentCtxKey{})
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	ctx := context.WithValue(context.Background(), parentCtxKey{}, "parent-value")

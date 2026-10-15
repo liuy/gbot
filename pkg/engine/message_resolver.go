@@ -6,9 +6,10 @@ import (
 )
 
 // EngineMessageResolver maps flat ids to message-deliverable targets.
-// Lookup order: the process-global background-agent registry first (its ids
-// are the flat agent-N namespace), then the EngineManager by id, then the
-// EngineManager by name.
+// Lookup order: the background-agent tables first — mgr.BgAgent walks every
+// registered engine's per-engine table (agent-N ids are the flat namespace,
+// and an id is only ever live in its spawn tree's root table) — then the
+// EngineManager by id, then by name.
 //
 // Registry-first is safe because the id counter is seeded at boot above every
 // persisted agent-N suffix — engine ids AND display names — so while an engine
@@ -21,29 +22,26 @@ import (
 // settled consequence of the flat namespace, not an accident: start.go
 // registers all of them in one manager.
 type EngineMessageResolver struct {
-	mgr    *EngineManager
-	agents *agenttool.BackgroundAgentRegistry
+	mgr *EngineManager
 }
 
-// Resolve implements message.Resolver. A nil EngineMgr AND nil BgAgents
-// (reload's throwaway harvest toolset) degrades to not-found — Get takes
-// m.mu.RLock, which would panic on a nil manager.
+// Resolve implements message.Resolver. A nil EngineMgr (reload's throwaway
+// harvest toolset) degrades to not-found — Get takes m.mu.RLock, which would
+// panic on a nil manager.
 func (r *EngineMessageResolver) Resolve(id string) (message.Target, string, bool) {
-	if r.agents != nil {
-		if st, ok := r.agents.Get(id); ok {
-			if st.Status != agenttool.AgentRunning {
-				// Known but not deliverable: v1 does not resume stopped agents.
-				return nil, string(st.Status), true
-			}
-			if st.Sink == nil {
-				// Running but RunAgent has not attached the sub-engine yet.
-				return nil, "starting", true
-			}
-			return st.Sink, "running", true
-		}
-	}
 	if r.mgr == nil {
 		return nil, "", false
+	}
+	if st, ok := r.mgr.BgAgent(id); ok {
+		if st.Status != agenttool.AgentRunning {
+			// Known but not deliverable: v1 does not resume stopped agents.
+			return nil, string(st.Status), true
+		}
+		if st.Sink == nil {
+			// Running but RunAgent has not attached the sub-engine yet.
+			return nil, "starting", true
+		}
+		return st.Sink, "running", true
 	}
 	vs := r.mgr.Get(id)
 	if vs == nil {

@@ -53,14 +53,20 @@ type SharedDeps struct {
 	// nil = recall unavailable.
 	ShortStore *short.Store
 
-	// EngineMgr and BgAgents back the message tool's target resolver. Both
-	// come from the process-global instances created once in app/start.go so
-	// agent-N ids stay unique across engines and background agents, and
-	// every engine is addressable from anywhere. nil for both (reload's
-	// harvest toolset) = resolver degraded, tool still registered for
-	// ToolPrompts collection.
+	// EngineMgr and IDMinter split the background-agent substrate into its
+	// global half and local half. EngineMgr is the global identity layer:
+	// every live engine registers there, and its BgAgent lookup walks each
+	// engine's background table, so agent-N ids stay addressable from any
+	// engine. IDMinter is the global id source — one counter for engines,
+	// sub-agents and forks, so every producer mints collision-free agent-N
+	// ids. Each engine's background table itself is per-engine (minted in
+	// CreateTools from IDMinter): engine A's spawns are invisible and
+	// unstoppable from engine B's job view. nil EngineMgr (reload's harvest
+	// toolset) = resolver degraded, tool still registered for ToolPrompts
+	// collection; nil IDMinter = each registry falls back to a private
+	// counter.
 	EngineMgr *EngineManager
-	BgAgents  *agenttool.BackgroundAgentRegistry
+	IDMinter  *agenttool.IDMinter
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -92,13 +98,14 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	if deps.Cfg != nil {
 		at.SetResolveTierFn(deps.Cfg.ResolveTier)
 	}
-	// Share the process-global registry BEFORE SetNotifyFn — SetNotifyFn's
-	// create-if-nil fallback must not mint a second registry (two registries
-	// would issue colliding agent-N ids).
-	if deps.BgAgents != nil {
-		at.SetBgRegistry(deps.BgAgents)
-	}
-	// Stub SetNotifyFn — must be called before JobAdapter() so bgReg is initialized.
+	// Per-engine background table, minted from the shared id minter so
+	// agent-N ids stay globally unique. Injection is unconditional: a nil
+	// IDMinter makes the registry fall back to a private counter (harvest
+	// toolsets, tests).
+	bgReg := agenttool.NewBackgroundAgentRegistryWithMinter(deps.IDMinter)
+	at.SetBgRegistry(bgReg)
+	// Stub notification callbacks — WireEngine overrides them with the real
+	// engine attachment path. Harmless on toolsets that never get wired.
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	reg.MustRegister(at)
 
@@ -108,7 +115,8 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	// message: registered unconditionally — the ToolPrompts harvest (reload,
 	// boot) runs CreateTools with nil resolver deps and still needs the tool
 	// text; delivery degrades to "unknown target" until real deps arrive.
-	msgTool := message.New(&EngineMessageResolver{mgr: deps.EngineMgr, agents: deps.BgAgents})
+	// The resolver consults mgr.BgAgent, which walks every engine's table.
+	msgTool := message.New(&EngineMessageResolver{mgr: deps.EngineMgr})
 	reg.MustRegister(msgTool)
 
 	reg.MustRegister(task.New(taskList, deps.Hooks))
@@ -190,6 +198,13 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	if eng != nil {
 		refs.Agent.SetEngineID(eng.EngineID())
 		refs.Message.SetSelfID(eng.EngineID())
+	}
+
+	// Register this engine's background table with the manager so
+	// message-tool resolution reaches its spawns from any engine. Job
+	// visibility stays per-engine: only the resolver walks all tables.
+	if deps.EngineMgr != nil {
+		deps.EngineMgr.AddBgTable(refs.Agent.BgRegistry())
 	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).

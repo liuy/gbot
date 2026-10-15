@@ -550,5 +550,134 @@ func TestPersistMeta_SkipsSystemEngines(t *testing.T) {
 	}
 }
 
+// fakeBgSink is a stand-in SubEngine used only to assert that the sink
+// handle survives BgAgent resolution intact.
+type fakeBgSink struct{}
+
+func (fakeBgSink) EnqueueAttachment(types.QueuedItem) {}
+
+// spawnHoldingAgent spawns a background agent whose runFn blocks until its
+// context is cancelled; cleanup cancels and reaps the goroutine. Returns the
+// minted id.
+func spawnHoldingAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) string {
+	t.Helper()
+	state, err := reg.Spawn(context.Background(),
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		nil, "hold", "tooluse-1", "General")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	t.Cleanup(func() {
+		reg.Cancel(state.ID)
+		reg.Wait(state.ID)
+	})
+	return state.ID
+}
+
+func TestEngineManager_BgAgent_FindsSpawnedState(t *testing.T) {
+	m := NewEngineManager()
+	reg := agenttool.NewBackgroundAgentRegistry()
+	m.AddBgTable(reg)
+	id := spawnHoldingAgent(t, reg)
+	sink := fakeBgSink{}
+	reg.AttachSink(id, sink)
+
+	got, ok := m.BgAgent(id)
+	if !ok {
+		t.Fatalf("BgAgent(%q) not found after AddBgTable", id)
+	}
+	if got.ID != id {
+		t.Errorf("BgAgent.ID = %q, want %q", got.ID, id)
+	}
+	if got.Status != agenttool.AgentRunning {
+		t.Errorf("BgAgent.Status = %q, want %q", got.Status, agenttool.AgentRunning)
+	}
+	if got.Description != "hold" {
+		t.Errorf("BgAgent.Description = %q, want hold", got.Description)
+	}
+	if got.Sink != sink {
+		t.Errorf("BgAgent.Sink = %v, want the attached fakeBgSink", got.Sink)
+	}
+	// Snapshot copy: mutating the returned state must not corrupt the
+	// registry entry.
+	got.Status = agenttool.AgentCompleted
+	again, ok := m.BgAgent(id)
+	if !ok || again.Status != agenttool.AgentRunning {
+		t.Errorf("BgAgent after mutating the snapshot: ok=%v status=%q, want ok=true status=%q (result must be a copy)", ok, again.Status, agenttool.AgentRunning)
+	}
+}
+
+func TestEngineManager_BgAgent_SearchesAllTables(t *testing.T) {
+	m := NewEngineManager()
+	m.AddBgTable(agenttool.NewBackgroundAgentRegistry())
+	regB := agenttool.NewBackgroundAgentRegistry()
+	m.AddBgTable(regB)
+	id := spawnHoldingAgent(t, regB)
+
+	if got, ok := m.BgAgent(id); !ok || got.ID != id {
+		t.Errorf("BgAgent(%q) = (%v, %v), want the entry registered in the second table", id, got, ok)
+	}
+}
+
+func TestEngineManager_BgAgent_UnknownIDNotFound(t *testing.T) {
+	m := NewEngineManager()
+	if got, ok := m.BgAgent("agent-1"); ok || got != nil {
+		t.Errorf("BgAgent on empty manager = (%v, %v), want (nil, false)", got, ok)
+	}
+	m.AddBgTable(agenttool.NewBackgroundAgentRegistry())
+	if got, ok := m.BgAgent("agent-999"); ok || got != nil {
+		t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+func TestEngineManager_RemoveBgTable_UnregistersResolution(t *testing.T) {
+	m := NewEngineManager()
+	reg := agenttool.NewBackgroundAgentRegistry()
+	m.AddBgTable(reg)
+	id := spawnHoldingAgent(t, reg)
+	if _, ok := m.BgAgent(id); !ok {
+		t.Fatalf("BgAgent(%q) not found before RemoveBgTable", id)
+	}
+
+	m.RemoveBgTable(reg)
+	if got, ok := m.BgAgent(id); ok || got != nil {
+		t.Errorf("BgAgent(%q) after RemoveBgTable = (%v, %v), want (nil, false)", id, got, ok)
+	}
+	// Removal only unregisters the table — the registry still owns its
+	// entries and keeps serving them.
+	state, ok := reg.Get(id)
+	if !ok || state.Status != agenttool.AgentRunning {
+		t.Errorf("reg.Get after RemoveBgTable = (%v, %v), want the entry still running", state, ok)
+	}
+}
+
+func TestEngineManager_AddBgTable_DeduplicatedByPointer(t *testing.T) {
+	// Adding the same table twice must not create two entries: a single
+	// RemoveBgTable then fully unregisters it. (WireEngine can run more than
+	// once per engine on reload.)
+	m := NewEngineManager()
+	reg := agenttool.NewBackgroundAgentRegistry()
+	m.AddBgTable(reg)
+	m.AddBgTable(reg)
+	id := spawnHoldingAgent(t, reg)
+
+	m.RemoveBgTable(reg)
+	if got, ok := m.BgAgent(id); ok || got != nil {
+		t.Errorf("BgAgent(%q) after double AddBgTable + one RemoveBgTable = (%v, %v), want (nil, false)", id, got, ok)
+	}
+}
+
+func TestEngineManager_AddBgTable_NilRegistryNoop(t *testing.T) {
+	m := NewEngineManager()
+	m.AddBgTable(nil)
+	m.RemoveBgTable(nil)
+	if got, ok := m.BgAgent("agent-1"); ok || got != nil {
+		t.Errorf("BgAgent after nil AddBgTable = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
 // Ensure time is referenced (used by fakeRepl test setups above for future fields).
 var _ = time.Now

@@ -75,6 +75,7 @@ func newDreamMsgFixture(t *testing.T) *dreamMsgFixture {
 	mgr.Add(&engine.EngineViewState{Engine: peer, ID: "e2"})
 
 	reg := agenttool.NewBackgroundAgentRegistry()
+	mgr.AddBgTable(reg)
 	blocked := make(chan struct{})
 	t.Cleanup(func() { close(blocked) })
 	st, err := reg.Spawn(context.Background(),
@@ -100,7 +101,7 @@ func newDreamMsgFixture(t *testing.T) *dreamMsgFixture {
 			Logger:             slog.Default(),
 			NoTUI:              true,
 			EngineMgr:          mgr,
-			BgAgents:           reg,
+			IDMinter:           agenttool.NewIDMinter(),
 		},
 		agentID: st.ID,
 		sink:    sink,
@@ -181,7 +182,7 @@ func TestCreateDreamEngine_WhitelistOpensMessage(t *testing.T) {
 // TestCreateDreamEngine_DefaultWhitelistHidesMessage pins the other side of the
 // whitelist path: the default list keeps Message out of the model-visible map.
 // The resolver behind the unexposed tool must still deliver — EngineMgr and
-// BgAgents stay wired so opening the whitelist is a one-line config change,
+// IDMinter stay wired so opening the whitelist is a one-line config change,
 // not a re-wiring exercise.
 func TestCreateDreamEngine_DefaultWhitelistHidesMessage(t *testing.T) {
 	f := newDreamMsgFixture(t)

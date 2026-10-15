@@ -138,18 +138,22 @@ func (r *BackgroundAgentRegistry) Spawn(
 		result, err := runFn(childCtx, id)
 
 		r.mu.Lock()
-		if err != nil {
-			if childCtx.Err() != nil {
-				state.Status = AgentCancelled
-				// Preserve partial result on cancellation so the notification
-				// can include what the agent accomplished before being killed.
-				// Source: AgentTool.tsx:1006 + agentToolUtils.ts:658
-				if result != nil {
-					state.Result = result
-				}
-			} else {
-				state.Status = AgentFailed
+		if childCtx.Err() != nil {
+			// Killed via Cancel, regardless of how runFn reported it —
+			// engine.RunAgent converts a cancellation into a normal
+			// "(agent interrupted by user)" result with nil error, so the
+			// error value alone cannot mark the entry AgentCancelled (the
+			// job table maps that status to "killed"). childCtx is the
+			// registry's own derived context: cancelled only by Cancel.
+			// Preserve the partial result so the notification includes
+			// what the agent accomplished before being killed.
+			// Source: AgentTool.tsx:1006 + agentToolUtils.ts:658
+			state.Status = AgentCancelled
+			if result != nil {
+				state.Result = result
 			}
+		} else if err != nil {
+			state.Status = AgentFailed
 		} else {
 			state.Status = AgentCompleted
 			state.Result = result
@@ -164,6 +168,18 @@ func (r *BackgroundAgentRegistry) Spawn(
 	return &snapshot, nil
 }
 
+// copyState clones a state entry including its Result. Callers read the
+// snapshot without holding the owning registry's mutex, while the spawn
+// goroutine keeps mutating the original under that mutex.
+func copyState(s *BackgroundAgentState) *BackgroundAgentState {
+	cp := *s
+	if s.Result != nil {
+		res := *s.Result
+		cp.Result = &res
+	}
+	return &cp
+}
+
 // Wait blocks until the background agent with the given ID completes.
 func (r *BackgroundAgentRegistry) Wait(id string) (*BackgroundAgentState, bool) {
 	r.mu.Lock()
@@ -176,16 +192,13 @@ func (r *BackgroundAgentRegistry) Wait(id string) (*BackgroundAgentState, bool) 
 	// Re-acquire lock to read final state — the spawned goroutine writes
 	// Status/Result under the lock, and we must read them under it too.
 	r.mu.Lock()
-	cp := *state
-	if state.Result != nil {
-		r := *state.Result
-		cp.Result = &r
-	}
+	cp := copyState(state)
 	r.mu.Unlock()
-	return &cp, true
+	return cp, true
 }
 
-// Cancel cancels the background agent with the given ID.
+// Cancel cancels the background agent with the given ID. Reports whether the
+// id was found.
 func (r *BackgroundAgentRegistry) Cancel(id string) bool {
 	r.mu.Lock()
 	state, ok := r.agents[id]
@@ -206,12 +219,7 @@ func (r *BackgroundAgentRegistry) Get(id string) (*BackgroundAgentState, bool) {
 	if !ok {
 		return nil, false
 	}
-	cp := *state
-	if state.Result != nil {
-		r := *state.Result
-		cp.Result = &r
-	}
-	return &cp, true
+	return copyState(state), true
 }
 
 // AttachSink stores the sub-engine handle on the registry entry so the
@@ -228,25 +236,21 @@ func (r *BackgroundAgentRegistry) AttachSink(id string, sink SubEngine) {
 	r.mu.Unlock()
 }
 
-// List returns snapshots of all background agents.
-// Returns copies — callers can safely read fields without mutex concerns.
+// List returns snapshots of all background agents. Returns copies — callers
+// can safely read fields without mutex concerns.
 func (r *BackgroundAgentRegistry) List() []*BackgroundAgentState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result := make([]*BackgroundAgentState, 0, len(r.agents))
 	for _, state := range r.agents {
-		cp := *state
-		if state.Result != nil {
-			r := *state.Result
-			cp.Result = &r
-		}
-		result = append(result, &cp)
+		result = append(result, copyState(state))
 	}
 	return result
 }
 
-// CleanupCompleted removes all agents in terminal states (completed, failed, cancelled).
-// Call after processing results to prevent unbounded memory growth.
+// CleanupCompleted removes all agents in terminal states (completed, failed,
+// cancelled). Call after processing results to prevent unbounded memory
+// growth.
 func (r *BackgroundAgentRegistry) CleanupCompleted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

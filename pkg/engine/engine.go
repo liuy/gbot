@@ -1117,6 +1117,19 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	WireEngine(subEng, subRefs, *e.sharedDeps)
 
+	// Root-table routing: the sub's Agent tool is re-pointed at THIS engine's
+	// table, so every background spawn by this sub — and by any deeper
+	// engine, since NewSubEngine inherits toolRefs and e.toolRefs.Agent is
+	// therefore the session root's Agent tool at every depth — lands in the
+	// session root's table at spawn time. The sub's own table (registered by
+	// WireEngine above) stays manager-registered but permanently empty;
+	// mgr.BgAgent's iteration tolerates empty tables. The nil guard degrades
+	// gracefully: a root whose Agent tool is nil or registry-less (hand-built
+	// test engines) leaves the sub's own registry in place.
+	if root := e.toolRefs.Agent; root != nil && root.BgRegistry() != nil {
+		subRefs.Agent.SetBgRegistry(root.BgRegistry())
+	}
+
 	// Messaging identity: ALWAYS set — background agents address as their
 	// own registry id (opts.AgentID), sync subs fall back to this engine's
 	// id (NewSubEngine never sets engineID, so subEng.EngineID() is empty).
@@ -1132,9 +1145,11 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	subRefs.Agent.SetEngineID(selfID)
 	// The sub-engine is live and deliverable from this point on. No
 	// AgentID != "" guard: AttachSink is a documented no-op for unknown ids,
-	// which is exactly the sync-sub case ("" is never registered).
-	if e.sharedDeps.BgAgents != nil {
-		e.sharedDeps.BgAgents.AttachSink(opts.AgentID, subEng)
+	// which is exactly the sync-sub case ("" is never registered). The sink
+	// goes into the spawning engine's own table — the registry the bg spawn
+	// was created in, handed over via opts.
+	if opts.BgRegistry != nil {
+		opts.BgRegistry.AttachSink(opts.AgentID, subEng)
 	}
 
 	// Fire SubagentStart hook

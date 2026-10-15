@@ -274,14 +274,14 @@ func Start(opts Options) (*Instance, error) {
 		startSessionCleanup(store, 5*time.Second, 24*time.Hour)
 	}
 
-	// One process-global engine manager and background-agent registry sharing
-	// ONE id minter: engines, subagents and forks all mint agent-N ids from
-	// the same counter, so every producer (main, factory, dream, wechat)
-	// stays collision-free and resolvable in one flat namespace.
+	// One process-global id minter shared by every engine's background table
+	// (minted per engine inside CreateTools): engines, subagents and forks
+	// all draw agent-N ids from the same counter, so every producer (main,
+	// factory, dream, wechat) stays collision-free and resolvable in one
+	// flat namespace.
 	idMinter := agent.NewIDMinter()
 	engineMgr := engine.NewEngineManager()
 	engineMgr.SetIDMinter(idMinter)
-	bgAgents := agent.NewBackgroundAgentRegistryWithMinter(idMinter)
 
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
@@ -293,7 +293,7 @@ func Start(opts Options) (*Instance, error) {
 		WSRegistry: wsRegistry,
 		ShortStore: store,
 		EngineMgr:  engineMgr,
-		BgAgents:   bgAgents,
+		IDMinter:   idMinter,
 	}
 
 	mainTaskList := task.NewList("")
@@ -394,7 +394,7 @@ func Start(opts Options) (*Instance, error) {
 			WSRegistry: wsRegistry,
 			ShortStore: store,
 			EngineMgr:  engineMgr,
-			BgAgents:   bgAgents,
+			IDMinter:   idMinter,
 		}
 		refs := engine.CreateTools(deps, engTaskList)
 		var providerCfg *config.Provider
@@ -541,7 +541,7 @@ func Start(opts Options) (*Instance, error) {
 			Logger:             logger,
 			NoTUI:              opts.NoTUI,
 			EngineMgr:          engineMgr,
-			BgAgents:           bgAgents,
+			IDMinter:           idMinter,
 		})
 		dreamEng.SetStore(store, projectDir)
 		resumeDreamSession(dreamEng, store, projectDir)
@@ -793,12 +793,12 @@ type dreamEngineDeps struct {
 	Store              *short.Store
 	Logger             *slog.Logger
 	NoTUI              bool
-	// EngineMgr and BgAgents are prerequisite wiring for the tool whitelist
+	// EngineMgr and IDMinter are prerequisite wiring for the tool whitelist
 	// below being a config surface, not a runtime need of today's default
 	// whitelist (which omits Message): the resolver must already address every
 	// engine and background agent the moment a config adds Message to the list.
 	EngineMgr *engine.EngineManager
-	BgAgents  *agent.BackgroundAgentRegistry
+	IDMinter  *agent.IDMinter
 	// Tools overrides the dream tool whitelist (empty = the built-in default).
 	// The whitelist is a config surface — today's default is the current tool
 	// set, a future config may add Message/Agent.
@@ -823,7 +823,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		// so these decide what a whitelisted Message can reach. See
 		// dreamEngineDeps for why they stay wired under the default whitelist.
 		EngineMgr: d.EngineMgr,
-		BgAgents:  d.BgAgents,
+		IDMinter:  d.IDMinter,
 	}, task.NewList(""))
 
 	// Whitelist: only tools dream needs.
@@ -905,11 +905,11 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		LSPReg:     nil,
 		WSRegistry: nil,
 		ShortStore: d.Store,
-		// Kept identical to the CreateTools literal above: WireEngine reads
-		// neither today, but the two literals describe one engine — letting
-		// them diverge would silently un-wire the resolver later.
+		// Kept identical to the CreateTools literal above: the two literals
+		// describe one engine — letting them diverge would silently un-wire
+		// WireEngine's manager-side background-table registration.
 		EngineMgr: d.EngineMgr,
-		BgAgents:  d.BgAgents,
+		IDMinter:  d.IDMinter,
 	})
 	dreamEng.SetSystemPrompt(dream.SystemPrompt)
 	dreamEng.SetOnClose(func(sessionID string) {

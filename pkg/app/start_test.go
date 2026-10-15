@@ -738,6 +738,34 @@ func TestStartCleanupWired(t *testing.T) {
 	}
 }
 
+// TestStartSharedIDMinterWired pins the SharedDeps/dreamEngineDeps literals:
+// every IDMinter field must carry the one shared idMinter. A dropped or nil
+// field hands that engine's background table a private counter, so two
+// engines mint the same agent-N id and message/job addressing collides across
+// engines. Start() cannot run in tests, so this follows TestStartCleanupWired's
+// source-scan pattern.
+func TestStartSharedIDMinterWired(t *testing.T) {
+	src, err := os.ReadFile("start.go")
+	if err != nil {
+		t.Fatalf("read start.go: %v", err)
+	}
+	lines := strings.Split(string(src), "\n")
+	count := 0
+	for i, line := range lines {
+		if !strings.Contains(line, "IDMinter:") {
+			continue
+		}
+		count++
+		rhs := strings.TrimSuffix(strings.TrimSpace(line[strings.Index(line, ":")+1:]), ",")
+		if rhs != "idMinter" && rhs != "d.IDMinter" {
+			t.Errorf("start.go:%d: IDMinter rhs = %q, want the shared idMinter (nil mints a colliding private counter)", i+1, rhs)
+		}
+	}
+	if count != 5 {
+		t.Errorf("start.go has %d IDMinter literal fields, want 5 (main, factory, dream call site, dream CreateTools, dream WireEngine)", count)
+	}
+}
+
 // Restore must recover ENGINE-scoped from bad recorded sessions and rewrite
 // meta.json in the same startup. Seeds both real incidents: a VALID row
 // owned by another engine (agent-3 adopted main's chat after a buggy

@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/job"
@@ -829,6 +830,159 @@ func TestEngineAdapter_KillJobAndJobTail(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("KillJob unknown-id error = %v, want it to mention 'not found'", err)
+	}
+}
+
+// blockingSubagentEngine stands in for a real sub-engine on the spawn path:
+// RunAgent blocks until the context is cancelled (the kill), so a background
+// spawn stays running for the duration of the assertions with no LLM provider.
+type blockingSubagentEngine struct{}
+
+func (blockingSubagentEngine) RunAgent(ctx context.Context, _ agent.AgentOpts) (*types.SubQueryResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// wireJobsEngine builds one fully wired engine on the shared deps: real
+// CreateTools toolset, WireEngine callbacks, ToolRefs installed for the
+// engineAdapter to route through.
+func wireJobsEngine(t *testing.T, deps engine.SharedDeps, id string) (*engine.Engine, engine.ToolRefs) {
+	t.Helper()
+	eng := engine.New(&engine.Params{EngineID: id, Model: "test-model"})
+	eng.SetDispatcher(hub.NewHub())
+	refs := engine.CreateTools(deps, task.NewList(t.TempDir()))
+	eng.SetToolRefs(refs)
+	engine.WireEngine(eng, refs, deps)
+	return eng, refs
+}
+
+// waitKilledRow polls the owning adapter's job list until id reports killed —
+// the cancel→status flip happens on the spawn goroutine, so it is asynchronous
+// — then pins that the very next list drops the row (the Jobs() call that saw
+// the terminal state already ran the adapter's lazy cleanup).
+func waitKilledRow(t *testing.T, a *engineAdapter, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: bounded poll for async kill
+	for {
+		status := ""
+		found := false
+		for _, info := range a.Jobs() {
+			if info.ID == id {
+				status, found = info.Status, true
+			}
+		}
+		if found && status == "killed" {
+			break
+		}
+		if !found {
+			t.Fatalf("job %q vanished from the owner's list before ever reporting killed", id)
+		}
+		if time.Now().After(deadline) { // REAL-TIME: bounded poll for async kill
+			t.Fatalf("job %q status = %q after kill (2s deadline), want killed", id, status)
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+	}
+	for _, info := range a.Jobs() {
+		if info.ID == id {
+			t.Errorf("job %q still listed after the killed row was observed — terminal cleanup must drop it", id)
+		}
+	}
+}
+
+func jobInfoIDs(jobs []*job.JobInfo) []string {
+	ids := make([]string, len(jobs))
+	for i, j := range jobs {
+		ids[i] = j.ID
+	}
+	return ids
+}
+
+// TestEngineAdapter_BgTaskOwnership pins the bg-jobs panel's ownership
+// contract through the real engine wiring (two engines, one shared
+// EngineMgr/IDMinter): the panel is per-engine — engine B neither lists
+// engine A's background agents nor can its kill path reach them — and a
+// sub-spawned task, routed into the session root's table at spawn time,
+// surfaces on the root engine's panel only, still stoppable from there.
+func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
+	deps := engine.SharedDeps{EngineMgr: engine.NewEngineManager(), IDMinter: agent.NewIDMinter()}
+	engA, refsA := wireJobsEngine(t, deps, "engine-a")
+	engB, _ := wireJobsEngine(t, deps, "engine-b")
+	refsA.Agent.SetEngine(blockingSubagentEngine{})
+
+	aA := &engineAdapter{eng: engA}
+	aB := &engineAdapter{eng: engB}
+
+	// (a) Isolation: a bg agent spawned by A exists for A alone.
+	res, err := refsA.Agent.Call(context.Background(),
+		json.RawMessage(`{"description":"d","prompt":"p","run_in_background":true}`),
+		&tool.ToolUseContext{ToolUseID: "t1"})
+	if err != nil {
+		t.Fatalf("Agent.Call: %v", err)
+	}
+	sub, ok := res.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("Call data type = %T, want *types.SubQueryResult", res.Data)
+	}
+	id := sub.AgentID
+	if id == "" {
+		t.Fatal("spawn returned empty AgentID")
+	}
+	t.Cleanup(func() { _ = refsA.Agent.BgRegistry().Cancel(id) })
+
+	aJobs := aA.Jobs()
+	if len(aJobs) != 1 || aJobs[0].ID != id {
+		t.Fatalf("A's jobs = %v, want exactly [%s]", jobInfoIDs(aJobs), id)
+	}
+	if aJobs[0].Status != "running" {
+		t.Errorf("A's job status = %q, want running", aJobs[0].Status)
+	}
+	if bJobs := aB.Jobs(); len(bJobs) != 0 {
+		t.Errorf("B's jobs = %v, want none — engine B must not see engine A's bg task", jobInfoIDs(bJobs))
+	}
+	if err := aB.KillJob(id); !errors.Is(err, job.ErrNotFound) {
+		t.Fatalf("B's KillJob(%q) error = %v, want ErrNotFound", id, err)
+	}
+
+	if err := aA.KillJob(id); err != nil {
+		t.Fatalf("A's KillJob(%q): %v", id, err)
+	}
+	waitKilledRow(t, aA, id)
+
+	// (b) Root-table ownership: a sub-spawned task lands in the session
+	// root's table at spawn time — in production via RunAgent's routing
+	// (mechanism pinned by pkg/engine's acceptance test 2); spawned directly
+	// on A's registry here, this test pins the panel consequence: the row
+	// surfaces on A's panel (and only A's) and A's kill reaches it.
+	orphan, err := refsA.Agent.BgRegistry().Spawn(context.Background(),
+		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, nil, "orphan work", "toolu_orphan", "Explore")
+	if err != nil {
+		t.Fatalf("spawn orphan: %v", err)
+	}
+	t.Cleanup(func() { _ = refsA.Agent.BgRegistry().Cancel(orphan.ID) })
+
+	aJobs = aA.Jobs()
+	if len(aJobs) != 1 || aJobs[0].ID != orphan.ID {
+		t.Fatalf("A's jobs after the root-table spawn = %v, want exactly [%s]", jobInfoIDs(aJobs), orphan.ID)
+	}
+	if aJobs[0].Status != "running" {
+		t.Errorf("orphan status on A's panel = %q, want running", aJobs[0].Status)
+	}
+	if bJobs := aB.Jobs(); len(bJobs) != 0 {
+		t.Errorf("B's jobs after the root-table spawn = %v, want none — the root's bg task must surface only on the root engine", jobInfoIDs(bJobs))
+	}
+	if err := aB.KillJob(orphan.ID); !errors.Is(err, job.ErrNotFound) {
+		t.Fatalf("B's KillJob(%q) error = %v, want ErrNotFound", orphan.ID, err)
+	}
+
+	if err := aA.KillJob(orphan.ID); err != nil {
+		t.Fatalf("A's KillJob(%q): %v", orphan.ID, err)
+	}
+	waitKilledRow(t, aA, orphan.ID)
+	if bJobs := aB.Jobs(); len(bJobs) != 0 {
+		t.Errorf("B's jobs after the orphan kill = %v, want none", jobInfoIDs(bJobs))
 	}
 }
 

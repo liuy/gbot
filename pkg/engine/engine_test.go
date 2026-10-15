@@ -156,6 +156,15 @@ type mockProvider struct {
 type mockResponse struct {
 	events []llm.StreamEvent
 	err    error
+	// hang non-nil: after emitting its events the stream blocks until this
+	// channel closes or the request context is done — a turn stuck
+	// mid-flight that only a kill (context cancellation) can end.
+	hang chan struct{}
+	// match non-nil: this slot is served only to requests satisfying the
+	// predicate, instead of strictly in order. Needed when two engines race
+	// for the next script slot (a bg grandchild vs its spawning sub-agent's
+	// next turn).
+	match func(*llm.Request) bool
 }
 
 func (m *mockProvider) Name() string { return "mock" }
@@ -166,7 +175,7 @@ func (m *mockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Respons
 	}, nil
 }
 
-func (m *mockProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
+func (m *mockProvider) Stream(ctx context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
 	m.mu.Lock()
 	m.lastRequest = req
 	m.allRequests = append(m.allRequests, req)
@@ -176,6 +185,22 @@ func (m *mockProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.S
 
 	if m.index >= len(m.responses) {
 		return nil, errors.New("no more mock responses")
+	}
+	// Serve the first pending slot that accepts this request. Matching slots
+	// stay reserved for their caller; non-matching pending slots are skipped
+	// (swapped forward) and served to their own request later.
+	served := -1
+	for i := m.index; i < len(m.responses); i++ {
+		if m.responses[i].match == nil || m.responses[i].match(req) {
+			served = i
+			break
+		}
+	}
+	if served < 0 {
+		return nil, errors.New("no more mock responses")
+	}
+	if served != m.index {
+		m.responses[m.index], m.responses[served] = m.responses[served], m.responses[m.index]
 	}
 	resp := m.responses[m.index]
 	m.index++
@@ -189,6 +214,12 @@ func (m *mockProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.S
 		defer close(ch)
 		for _, evt := range resp.events {
 			ch <- evt
+		}
+		if resp.hang != nil {
+			select {
+			case <-resp.hang:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return ch, nil

@@ -32,6 +32,7 @@ func identityTool(t *testing.T, engineID string) (*AgentTool, *mockSubEngine) {
 	at.SetEngineID(engineID)
 	eng := &mockSubEngine{}
 	at.SetEngine(eng)
+	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	return at, eng
 }
@@ -241,6 +242,23 @@ func TestSetBgRegistry_SharedRegistryWins(t *testing.T) {
 	}
 	if at.JobAdapter() == nil {
 		t.Fatal("JobAdapter must wrap the shared registry")
+	}
+}
+
+// The getter is the wiring seam: WireEngine registers t.BgRegistry() in the
+// EngineManager and RunAgent reads a sub-engine's table through it. A getter
+// that returns anything but the injected registry silently unregisters the
+// engine's spawns from cross-engine message resolution.
+func TestBgRegistryGetter_ReturnsInjected(t *testing.T) {
+	t.Parallel()
+	at := New()
+	if got := at.BgRegistry(); got != nil {
+		t.Fatalf("BgRegistry() = %v before SetBgRegistry, want nil", got)
+	}
+	reg := NewBackgroundAgentRegistry()
+	at.SetBgRegistry(reg)
+	if got := at.BgRegistry(); got != reg {
+		t.Fatal("BgRegistry() did not return the exact injected registry")
 	}
 }
 
