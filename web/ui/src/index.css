@@ -592,11 +592,15 @@ model-viewer { --progress-bar-color: var(--color-blue); }
 
 /* --- long-press share (share_menu.ts / share_card.ts) --- */
 .share-root > * { transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease, opacity .2s ease; }
-.share-root, .share-root * { user-select: none; -webkit-user-select: none; }
+/* Selection is a feature inside the shell: long-press starts native handles
+   alongside our menu (contextmenu suppression kills only the system menu),
+   and the copy item reads the partial selection. The menu's own
+   user-select:none is set inline at creation in share_menu.ts (jsdom can't
+   see stylesheet rules in computed styles); this rule is pinned by the
+   source-text assertions in share_menu.test.ts. */
+.share-root { user-select: text; -webkit-user-select: text; }
 .share-root.share-holding > *:not(.share-lifted) { opacity: 0.32; }
 .share-lifted { transform: scale(1.025) translateY(-2px); box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(120,180,255,0.14); z-index: 5; }
-.share-scrim { position: absolute; inset: 0; z-index: 15; display: none; } /* 15: above inputWrapper's z-10, below the menu's 20 */
-.share-scrim.share-open { display: block; }
 .share-menu { position: absolute; z-index: 20; display: flex; align-items: stretch;
   /* Theme-adaptive glass: wui surfaces swap via --color-* tokens, so a
      hardcoded dark capsule reads as a smudge on the light theme. */
@@ -615,8 +619,8 @@ model-viewer { --progress-bar-color: var(--color-blue); }
 .share-menu-item svg { width: 17px; height: 17px; stroke: var(--color-t2); flex: none; }
 .share-vsep { width: 1px; background: var(--color-hairline); margin: 6px 1px; }
 /* 39: fixed and above the sticky header's z-30 so the confirm is actually
-   modal — the share scrim's absolute z-15 left the header tappable behind it.
-   Below the card's 40, above everything else the confirm has to swallow. */
+   modal — the header stays untappable behind it. Below the card's 40,
+   above everything else the confirm has to swallow. */
 .share-dl-scrim { position: fixed; inset: 0; z-index: 39; background: rgba(0,0,0,.45); }
 .share-dl { position: fixed; z-index: 40; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(320px, calc(100vw - 48px)); background: var(--color-glass-solid);

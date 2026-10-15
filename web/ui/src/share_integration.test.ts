@@ -102,6 +102,8 @@ describe('share integration: entry → menu → capture → bridge', () => {
 
     row!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientY: 0 }))
     vi.advanceTimersByTime(450)
+    // The browser's long-press moment: contextmenu is the primary open path.
+    row!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 0 }))
     const menu = chat.root.querySelector('.share-menu')
     expect(menu).not.toBeNull()
     const items = chat.root.querySelectorAll('button.share-menu-item')
@@ -122,6 +124,18 @@ describe('share integration: entry → menu → capture → bridge', () => {
     chat.cleanup()
   })
 
+  it('lift after expiry opens the menu (non-text fallback path)', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'history', messages: [historyMsg()], nextCursor: '', hasMore: false })
+    const row = messageRow(chat)
+    row!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientY: 0 }))
+    vi.advanceTimersByTime(450)
+    row!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientY: 0 }))
+    expect(chat.root.querySelector('.share-menu')).not.toBeNull()
+    chat.cleanup()
+  })
+
   it('streaming messages cannot be long-pressed into a menu', () => {
     const chat = mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -135,6 +149,8 @@ describe('share integration: entry → menu → capture → bridge', () => {
     expect(row).not.toBeNull()
     row!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientY: 0 }))
     vi.advanceTimersByTime(450)
+    row!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 0 }))
+    row!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientY: 0 }))
     expect(chat.root.querySelector('.share-menu')).toBeNull()
     chat.cleanup()
   })
