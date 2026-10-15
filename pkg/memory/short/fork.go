@@ -79,8 +79,6 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 	}
 	defer rows.Close()
 
-	// Track UUID mapping for chain rebuild
-	uuidMap := make(map[string]string) // old UUID → new UUID
 	var lastChainUUID string
 
 	for rows.Next() {
@@ -103,7 +101,6 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 
 		// Generate new UUID for the forked message
 		newUUID := uuid.New().String()
-		uuidMap[msgUUID] = newUUID
 
 		// Rebuild parent chain
 		var newParentUUID string

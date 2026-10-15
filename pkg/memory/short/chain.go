@@ -63,11 +63,6 @@ func recoverOrphanedParallelToolResults(allMessages []*TranscriptMessage, chain 
 		return ""
 	}
 
-	allMsgsByUUID := make(map[string]*TranscriptMessage)
-	for _, msg := range allMessages {
-		allMsgsByUUID[msg.UUID] = msg
-	}
-
 	// Collect chain assistants
 	chainAssistants := make([]*TranscriptMessage, 0)
 	for _, msg := range chain {
