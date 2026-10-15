@@ -98,13 +98,19 @@ export function createArtifactCard(
   const card = createElement('div', 'artifact-card')
 
   const preview = createElement('div', 'card-preview')
-  const frame = createElement('iframe')
-  frame.src = artifactURL(write.name)
-  frame.setAttribute('loading', 'lazy')
-  // Thumbnail is decorative — keep it out of the tab order; preview is not
-  // interactive either (pointer-events:none in CSS), the whole card clicks.
-  frame.setAttribute('tabindex', '-1')
-  preview.appendChild(frame)
+  // No thumbnail for download-type artifacts: the iframe would navigate to the
+  // file itself, and the App's WebView DownloadListener turns that navigation
+  // into a real download the moment the card scrolls into view — bypassing the
+  // confirm card entirely.
+  if (!isDownloadableArtifact(write.name)) {
+    const frame = createElement('iframe')
+    frame.src = artifactURL(write.name)
+    frame.setAttribute('loading', 'lazy')
+    // Thumbnail is decorative — keep it out of the tab order; preview is not
+    // interactive either (pointer-events:none in CSS), the whole card clicks.
+    frame.setAttribute('tabindex', '-1')
+    preview.appendChild(frame)
+  }
 
   const body = createElement('div', 'card-body')
   const titleRow = createElement('div', 'card-title-row')
@@ -489,4 +495,66 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   }
 
   return { root, open, close, isOpen: () => opened, current, reload }
+}
+
+// Installers, archives and office/document types cannot render in the preview
+// iframe (blank sheet at best, a WebView download at worst), so they open a
+// centered confirm instead and go through a top-level anchor hit. glb/gltf
+// stay out — the model-viewer path renders those.
+export function isDownloadableArtifact(name: string): boolean {
+  return /\.(apk|zip|gz|tgz|xz|7z|rar|tar|deb|rpm|dmg|exe|iso|jar|csv|xlsx|xls|docx|doc|pptx|ppt|bin)$/i.test(name)
+}
+
+export function downloadArtifact(name: string): void {
+  const a = createElement('a')
+  a.href = artifactURL(name)
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// Only one confirm may be on screen: two rapid taps would stack two scrims.
+// The newest request supersedes the open one, whose promise resolves false so
+// its caller can never download the name the user did not settle on.
+let activeConfirm: ((yes: boolean) => void) | null = null
+
+// Centered glass confirm for download-type artifacts: file name, then
+// cancel/download. A 68 MB accidental tap deserves an explicit yes.
+// Resolves true only when the user picked download.
+export function confirmArtifactDownload(name: string): Promise<boolean> {
+  activeConfirm?.(false)
+  return new Promise((resolve) => {
+    const scrim = createElement('div', 'share-dl-scrim')
+    const card = createElement('div', 'share-dl')
+
+    const nameEl = createElement('div', 'share-dl-name')
+    nameEl.textContent = name
+
+    const actions = createElement('div', 'share-dl-actions')
+    const cancel = createElement('button', 'share-dl-btn')
+    cancel.textContent = t('shareDlCancel')
+    const ok = createElement('button', 'share-dl-btn share-dl-ok')
+    ok.textContent = t('shareDlOk')
+    actions.append(cancel, ok)
+
+    card.append(nameEl, actions)
+    document.body.append(scrim, card)
+
+    const done = (yes: boolean) => {
+      activeConfirm = null
+      scrim.remove()
+      card.remove()
+      document.removeEventListener('keydown', onKey)
+      resolve(yes)
+    }
+    activeConfirm = done
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') done(false)
+    }
+    document.addEventListener('keydown', onKey)
+    scrim.addEventListener('click', () => done(false))
+    cancel.addEventListener('click', () => done(false))
+    ok.addEventListener('click', () => done(true))
+  })
 }

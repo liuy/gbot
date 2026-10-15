@@ -2,10 +2,13 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import {
   collectArtifactWrites,
   artifactURL,
+  confirmArtifactDownload,
+  downloadArtifact,
   formatArtifactSize,
   createArtifactCard,
   createArtifactSheet,
   fetchArtifactList,
+  isDownloadableArtifact,
   isGLTFArtifactName,
   isWalkToggleEnabled,
 } from './artifact'
@@ -253,6 +256,20 @@ describe('createArtifactCard', () => {
     ;(card as HTMLElement).click()
     expect(opened).toEqual(['game.html'])
     expect(card.classList.contains('stale')).toBe(false)
+  })
+  it('downloadable name leaves .card-preview empty (an iframe would auto-download on scroll)', () => {
+    stubFetchWithLength('68000000')
+    const card = createArtifactCard({ name: 'app.apk', updated: false }, () => {})
+    expect(card.querySelector('.card-preview')).toBeTruthy()
+    expect(card.querySelectorAll('iframe')).toHaveLength(0)
+    expect((card.querySelector('.card-preview') as HTMLElement).innerHTML).toBe('')
+    // The card itself stays clickable — the confirm path hangs off it.
+    const opened: string[] = []
+    const clickable = createArtifactCard({ name: 'app.apk', updated: false }, (name) => {
+      opened.push(name)
+    })
+    clickable.click()
+    expect(opened).toEqual(['app.apk'])
   })
 })
 
@@ -859,5 +876,155 @@ describe('fetchArtifactList', () => {
       vi.fn(async () => ({ ok: false, status: 500 })),
     )
     await expect(fetchArtifactList()).rejects.toThrow('500')
+  })
+})
+describe('isDownloadableArtifact', () => {
+  it.each([
+    ['x.apk', true],
+    ['X.APK', true],
+    ['archive.tar.gz', true],
+    ['disk.tar', true],
+    ['data.csv', true],
+    ['sheet.xlsx', true],
+    ['doc.docx', true],
+    ['deck.pptx', true],
+    ['firmware.bin', true],
+    ['tool.deb', true],
+    ['tool.rpm', true],
+    ['dmg.dmg', true],
+    ['run.exe', true],
+    ['pack.zip', true],
+    ['pack.tgz', true],
+    ['pack.xz', true],
+    ['report.doc', true],
+    ['sheet.xls', true],
+    ['deck.ppt', true],
+    ['pack.7z', true],
+    ['pack.rar', true],
+    ['lib.jar', true],
+    ['disk.iso', true],
+    ['model.glb', false],
+    ['model.gltf', false],
+    ['notes.txt', false],
+    ['page.html', false],
+    ['noext', false],
+    ['apk', false],
+    ['apk.txt', false],
+    ['archive.zipx', false],
+  ])('%s is downloadable=%s', (name, want) => {
+    expect(isDownloadableArtifact(name)).toBe(want)
+  })
+})
+describe('downloadArtifact', () => {
+  it('clicks an attached anchor with the encoded href and the raw download name, then detaches it', () => {
+    const clicked: HTMLAnchorElement[] = []
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this)
+        // jsdom only honours the download attribute while the anchor is in
+        // the document — the click has to happen before the removal.
+        expect(this.isConnected).toBe(true)
+      })
+    try {
+      downloadArtifact('sub/a b.zip')
+    } finally {
+      clickSpy.mockRestore()
+    }
+    expect(clicked).toHaveLength(1)
+    const anchor = clicked[0]
+    expect(anchor.getAttribute('href')).toBe('/artifacts/sub/a%20b.zip')
+    expect(anchor.getAttribute('download')).toBe('sub/a b.zip')
+    expect(anchor.isConnected).toBe(false)
+    expect(document.querySelectorAll('a[download]')).toHaveLength(0)
+  })
+})
+describe('confirmArtifactDownload', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+  const query = (selector: string) => document.querySelector(selector) as HTMLElement | null
+  const clickFirst = (selector: string) => {
+    const el = query(selector)
+    if (!el) throw new Error(`no element for ${selector}`)
+    el.click()
+  }
+
+  it('renders the name as text — markup never becomes an element', async () => {
+    const pending = confirmArtifactDownload('<img onerror=1>')
+    try {
+      expect(query('.share-dl-name')?.textContent).toBe('<img onerror=1>')
+      expect(document.querySelectorAll('.share-dl img')).toHaveLength(0)
+    } finally {
+      clickFirst('.share-dl-btn')
+      await pending
+    }
+  })
+
+  it('ok click resolves true and removes both surfaces', async () => {
+    const pending = confirmArtifactDownload('app.apk')
+    expect(document.querySelectorAll('.share-dl-scrim')).toHaveLength(1)
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(1)
+    clickFirst('.share-dl-ok')
+    expect(await pending).toBe(true)
+    expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
+  })
+
+  it.each([
+    ['cancel button', () => clickFirst('.share-dl-btn')],
+    ['scrim click', () => clickFirst('.share-dl-scrim')],
+    ['Escape', () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))],
+  ])('%s resolves false and removes both surfaces', async (_label, dismiss) => {
+    const pending = confirmArtifactDownload('app.apk')
+    dismiss()
+    expect(await pending).toBe(false)
+    expect(document.querySelectorAll('.share-dl-scrim')).toHaveLength(0)
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(0)
+  })
+
+  it.each([
+    ['ok click', () => clickFirst('.share-dl-ok')],
+    ['cancel click', () => clickFirst('.share-dl-btn')],
+    ['scrim click', () => clickFirst('.share-dl-scrim')],
+    ['Escape', () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))],
+  ])('keydown is detached on the %s path', async (_label, dismiss) => {
+    // Spy the ADD side too: detaching a different function than the one added
+    // leaves the handler live, so the reference itself is what must match.
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    try {
+      const pending = confirmArtifactDownload('app.apk')
+      const added = addSpy.mock.calls.filter(([type]) => type === 'keydown')
+      expect(added).toHaveLength(1)
+      dismiss()
+      await pending
+      const removed = removeSpy.mock.calls.filter(([type]) => type === 'keydown')
+      expect(removed).toHaveLength(1)
+      expect(removed[0][1]).toBe(added[0][1])
+    } finally {
+      addSpy.mockRestore()
+      removeSpy.mockRestore()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('Escape after a click-resolve is inert', async () => {
+    const pending = confirmArtifactDownload('app.apk')
+    clickFirst('.share-dl-ok')
+    expect(await pending).toBe(true)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
+  })
+
+  it('a second confirm supersedes the open one instead of stacking scrims', async () => {
+    const first = confirmArtifactDownload('a.apk')
+    const second = confirmArtifactDownload('b.apk')
+    expect(document.querySelectorAll('.share-dl-scrim')).toHaveLength(1)
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(1)
+    expect(query('.share-dl-name')?.textContent).toBe('b.apk')
+    expect(await first).toBe(false)
+    clickFirst('.share-dl-ok')
+    expect(await second).toBe(true)
+    expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
   })
 })

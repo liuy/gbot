@@ -227,6 +227,8 @@ export const dict = {
   shareCopyFailed: 'Copy failed',
   shareImageReady: 'Share sheet opened',
   shareImageFailed: 'Failed to create image',
+  shareDlOk: 'Download',
+  shareDlCancel: 'Cancel',
 } as const
 
 export const endonym = 'English'

@@ -54,7 +54,7 @@ import { createTaskPanel } from './task_panel'
 import type { JobsStoreHandle } from './jobs_store'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
-import { collectArtifactWrites, createArtifactCard, createArtifactSheet, fetchArtifactList } from './artifact'
+import { collectArtifactWrites, confirmArtifactDownload, createArtifactCard, createArtifactSheet, downloadArtifact, fetchArtifactList, isDownloadableArtifact } from './artifact'
 import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
@@ -622,11 +622,22 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     notifyCapsule(t('uiRefreshed'), { durationMs: 1000 })
   }
 
+  // One gate for both entry points (message cards and sidebar rows): a
+  // download-type name needs an explicit yes before the anchor click,
+  // everything else previews in the sheet.
+  const openArtifact = async (name: string) => {
+    if (isDownloadableArtifact(name)) {
+      if (await confirmArtifactDownload(name)) downloadArtifact(name)
+      return
+    }
+    artifactSheet.open(name)
+  }
+
   // Live path and history replay share this derivation — replay has no
   // separate artifact logic.
   const appendArtifactCards = (blocks: Block[], content: HTMLElement) => {
     for (const w of collectArtifactWrites(blocks)) {
-      content.appendChild(createArtifactCard(w, (name) => artifactSheet.open(name)))
+      content.appendChild(createArtifactCard(w, openArtifact))
     }
   }
 
@@ -2035,9 +2046,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   sidebar.onRename((id, title) => {
     conn.send({ type: 'session_rename', sessionID: id, title })
   })
-  sidebar.onArtifactClick((name) => {
-    artifactSheet.open(name)
-  })
+  sidebar.onArtifactClick(openArtifact)
   // Deletions (per-row ✕ / clear-all) refresh through the same fetch the
   // sidebar-open flow uses, so setArtifacts re-renders from disk truth.
   sidebar.onClearArtifacts(() => {

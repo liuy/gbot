@@ -1,6 +1,7 @@
 package com.gbot.android
 
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
@@ -8,6 +9,7 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Environment
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.ShapeDrawable
 import android.graphics.drawable.shapes.RoundRectShape
@@ -257,6 +259,20 @@ class ChatFragment : Fragment() {
         // than a malformed URL.
         internal fun buildTargetUrl(target: String, host: String, port: Int): String =
             if (target == TARGET_REMOTE && host.isNotBlank()) "http://$host:$port/" else LOCAL_URL
+        // Unlike the helpers above this one goes through android.net.Uri, which
+        // is stubbed (throws) in plain JUnit — its test runs on Robolectric.
+        /**
+         * Destination file name for a download URL. lastPathSegment is
+         * query-free and already percent-decoded (substringAfterLast('/') kept
+         * both the "?v=2" and the raw %20) — that decoding is a caller contract:
+         * arbitrary URLs must not be fed here, the artifactURL caller is safe
+         * because it encodes each path segment. ':' is stripped because
+         * setDestinationInExternalPublicDir rejects it.
+         */
+        internal fun downloadFileName(url: String): String {
+            val segment = Uri.parse(url).lastPathSegment ?: ""
+            return segment.replace(":", "").ifBlank { "gbot-download" }
+        }
     }
 
     private var webView: WebView? = null
@@ -355,6 +371,12 @@ class ChatFragment : Fragment() {
         webView?.addJavascriptInterface(AppLogsBridge(), AppLogsBridge.BRIDGE_NAME)
         // Long-press message share bridge (same trust scope as above).
         webView?.addJavascriptInterface(ShareBridge(), SHARE_BRIDGE_NAME)
+        // Without a listener the WebView silently drops every download —
+        // iframe navigations and Content-Disposition responses land in a void.
+        // Hand the URL to the system DownloadManager; its traffic rides the
+        // tailscale VPN like everything else on the device. blob: anchors stay
+        // out of scope — DownloadManager rejects them outright.
+        webView?.setDownloadListener { url, _, _, mimeType, _ -> onWebViewDownload(url, mimeType) }
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
@@ -465,6 +487,39 @@ class ChatFragment : Fragment() {
 
         tryLoad()
         updateStatusBarIcons()
+    }
+
+    // Verified on-device: DownloadManager's public-Downloads enqueue needs no
+    // storage permission on this app's target devices, so asking for one was
+    // pure interruption. Failures surface through the event log in enqueueDownload.
+    internal fun onWebViewDownload(url: String, mimeType: String?) {
+        val ctx = context ?: return
+        enqueueDownload(ctx, url, mimeType)
+    }
+
+    private fun enqueueDownload(ctx: Context, url: String, mimeType: String?) {
+        try {
+            // DownloadManager treats the second destination arg as a file
+            // NAME, not a directory — "gbot" alone produced nameless
+            // "gbot-1" files. The gbot/ subdirectory rides the leading slash
+            // of the name; the extension survives so the system can offer
+            // "Install".
+            val req = DownloadManager.Request(Uri.parse(url)).apply {
+                setMimeType(mimeType?.ifBlank { null })
+                setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                )
+                setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS,
+                    "gbot/${downloadFileName(url)}",
+                )
+            }
+            ctx.getSystemService(Context.DOWNLOAD_SERVICE)?.let { mgr ->
+                (mgr as DownloadManager).enqueue(req)
+            }
+        } catch (e: Exception) {
+            GbotProcess.appendEvent("download", "${e.message}")
+        }
     }
 
     private fun retryLoad() {

@@ -202,6 +202,8 @@ export const dict: Dict = {
   shareCopyFailed: '複製失敗',
   shareImageReady: '已開啟分享面板',
   shareImageFailed: '產生圖片失敗',
+  shareDlOk: '下載',
+  shareDlCancel: '取消',
 }
 
 export const endonym = '繁體中文'

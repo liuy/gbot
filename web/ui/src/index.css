@@ -614,6 +614,24 @@ model-viewer { --progress-bar-color: var(--color-blue); }
 .share-menu-item:active { background: var(--color-hairline); transform: scale(0.92); }
 .share-menu-item svg { width: 17px; height: 17px; stroke: var(--color-t2); flex: none; }
 .share-vsep { width: 1px; background: var(--color-hairline); margin: 6px 1px; }
+/* 39: fixed and above the sticky header's z-30 so the confirm is actually
+   modal — the share scrim's absolute z-15 left the header tappable behind it.
+   Below the card's 40, above everything else the confirm has to swallow. */
+.share-dl-scrim { position: fixed; inset: 0; z-index: 39; background: rgba(0,0,0,.45); }
+.share-dl { position: fixed; z-index: 40; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(320px, calc(100vw - 48px)); background: var(--color-glass-solid);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8); backdrop-filter: blur(28px) saturate(1.8);
+  border: 1px solid var(--color-hairline); border-radius: 16px; padding: 20px;
+  box-shadow: 0 20px 56px rgba(0,0,0,0.4); }
+.share-dl-name { font-size: 14.5px; font-weight: 600; color: var(--color-t1);
+  word-break: break-all; line-height: 1.45; }
+.share-dl-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.share-dl-btn { border: 1px solid var(--color-hairline); background: none; color: var(--color-t1);
+  font-size: 13.5px; padding: 8px 18px; border-radius: 10px; cursor: pointer;
+  transition: transform .12s ease, background .15s ease; }
+.share-dl-btn:active { transform: scale(0.96); }
+.share-dl-ok { background: var(--color-blue); border-color: transparent; color: #fff; font-weight: 600; }
+[data-theme="light"] .share-dl-ok { background: #333333; }
 .share-toast { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%);
   background: var(--color-glass-solid); border: 1px solid var(--color-hairline); color: var(--color-t1);
   -webkit-backdrop-filter: blur(28px) saturate(1.8); backdrop-filter: blur(28px) saturate(1.8);

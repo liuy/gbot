@@ -2829,11 +2829,11 @@ describe('artifact integration', () => {
   function runWriteQuery(
     toolName: 'Write' | 'Edit',
     id: string,
-    opts: { isError?: boolean; aborted?: boolean } = {},
+    opts: { isError?: boolean; aborted?: boolean; path?: string } = {},
   ) {
     dispatchEvents([
       { type: 'query_start' },
-      { type: 'tool_start', tool_use: { id, name: toolName, summary: '/home/u/.gbot/projects/abc/artifacts/game.html' } },
+      { type: 'tool_start', tool_use: { id, name: toolName, summary: opts.path ?? '/home/u/.gbot/projects/abc/artifacts/game.html' } },
     ])
     dispatchEvents([
       {
@@ -2898,6 +2898,38 @@ describe('artifact integration', () => {
     expect(artifactCards().length).toBe(0)
   })
 
+  it('a download-type card opens the confirm, never the sheet', () => {
+    stubFetchLength('68157440')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('package the apk')
+    pressEnter()
+    runWriteQuery('Write', 'w-apk', { path: '/home/u/.gbot/projects/abc/artifacts/app.apk' })
+    expect(artifactCards()).toHaveLength(1)
+    artifactCards()[0].click()
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(1)
+    // The sheet stays in its closed state — height 0px and no frame src.
+    expect((document.querySelector('.artifact-sheet') as HTMLElement).style.height).toBe('0px')
+    expect(document.querySelector('.artifact-sheet iframe')?.getAttribute('src')).toBeNull()
+    // Leave nothing open: an unresolved confirm keeps activeConfirm and a live
+    // keydown handler for every later test in this file.
+    document.querySelector('.share-dl-btn')?.click()
+    expect(document.querySelectorAll('.share-dl, .share-dl-scrim')).toHaveLength(0)
+  })
+  it('an html card still opens the sheet — the download gate does not swallow it', () => {
+    stubFetchLength('14541')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('make a page')
+    pressEnter()
+    runWriteQuery('Write', 'w-1')
+    artifactCards()[0].click()
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(0)
+    expect((document.querySelector('.artifact-sheet') as HTMLElement).style.height).toBe('70%')
+    expect(document.querySelector('.artifact-sheet iframe')?.getAttribute('src')).toBe(
+      '/artifacts/game.html',
+    )
+  })
   it('query_end does not reload the open sheet', () => {
     stubFetchLength('14541')
     mount()
@@ -3007,6 +3039,33 @@ describe('sidebar artifacts', () => {
     row.click()
     const frame = document.querySelector('.artifact-sheet iframe') as HTMLIFrameElement
     expect(frame.getAttribute('src')).toBe('/artifacts/game.html')
+  })
+  it('a download-type row opens the confirm, never the sheet', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => [{ name: 'app.apk', size: 68157440, mtime: Date.now() }],
+      })),
+    )
+    mount()
+
+    const hamburger = document.querySelector('button[aria-label="Menu"]') as HTMLElement
+    hamburger.click()
+
+    await vi.waitFor(() => {
+      const row = document.querySelector('.sidebar-artifacts .artifact-row') as HTMLElement | null
+      expect(row?.textContent).toContain('app.apk')
+    })
+
+    const row = document.querySelector('.sidebar-artifacts .artifact-row') as HTMLElement
+    row.click()
+    // Same gate as the card path: one confirm, and the sheet stays shut.
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(1)
+    expect((document.querySelector('.artifact-sheet') as HTMLElement).style.height).toBe('0px')
+    expect(document.querySelector('.artifact-sheet iframe')?.getAttribute('src')).toBeNull()
+    document.querySelector('.share-dl-btn')?.click()
+    expect(document.querySelectorAll('.share-dl, .share-dl-scrim')).toHaveLength(0)
   })
   it('empty list shows the empty state after opening', async () => {
     vi.stubGlobal(
