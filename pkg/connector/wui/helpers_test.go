@@ -3,8 +3,11 @@ package wui
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -553,7 +556,12 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 	}
 	c.slots[engineID] = slot
 	mock.onQueryDoneFn = func() {
+		// Mirrors the query_end reset in handleEvent, which runs under ssMu;
+		// unguarded, two concurrent dispatch goroutines (Query + a later
+		// QueryWithContent) race the map swap.
+		slot.ssMu.Lock()
 		slot.taskToolIDs = make(map[string]bool)
+		slot.ssMu.Unlock()
 	}
 	go c.wsWriter()
 	// Without the watcher, TestJobTick_* would hang waiting for frames: the
@@ -776,4 +784,156 @@ func extractSnapshotFromMetadata(t *testing.T, snapshotRaw json.RawMessage) []st
 		t.Fatalf("unmarshal snapshot: %v", err)
 	}
 	return snap.Blocks
+}
+
+func mbFatalf(t *testing.T, format string, args ...any) {
+	t.Helper()
+	t.Fatalf(format, args...)
+}
+
+// mutCSlogRecorder captures records through an installed default logger.
+// Several killed mutants differ only in which log line fires, so the record
+// stream itself is the observable contract.
+type mutCSlogRecorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (r *mutCSlogRecorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	r.records = append(r.records, rec)
+	r.mu.Unlock()
+	return nil
+}
+
+func (*mutCSlogRecorder) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (*mutCSlogRecorder) WithAttrs(attrs []slog.Attr) slog.Handler { return nil }
+
+func (*mutCSlogRecorder) WithGroup(name string) slog.Handler { return nil }
+
+func (r *mutCSlogRecorder) messages() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.records))
+	for i, rec := range r.records {
+		out[i] = rec.Message
+	}
+	return out
+}
+
+func mutCCaptureSlog(t *testing.T) *mutCSlogRecorder {
+	t.Helper()
+	rec := &mutCSlogRecorder{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rec
+}
+
+func (r *mutCSlogRecorder) hasMessage(msg string) bool {
+	for _, m := range r.messages() {
+		if m == msg {
+			return true
+		}
+	}
+	return false
+}
+
+// mutCDeadline runs fn and fatals when it does not return within d. Mutants
+// that remove an unlock or a select-default deadlock instead of returning a
+// wrong value, so the hang itself must fail the test quickly.
+func mutCDeadline(t *testing.T, d time.Duration, name string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %s (deadlocked?)", name, d)
+	}
+}
+
+func mutCWriteFile(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// slog capture helper — several mutants delete a log statement whose output
+// is the only observable effect.
+// ---------------------------------------------------------------------------
+
+type mutDLog struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (r *mutDLog) add(rec slog.Record) {
+	r.mu.Lock()
+	r.records = append(r.records, rec)
+	r.mu.Unlock()
+}
+
+func (r *mutDLog) count(level slog.Level, substr string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, rec := range r.records {
+		if rec.Level == level && strings.Contains(rec.Message, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *mutDLog) waitFor(t *testing.T, level slog.Level, substr string, timeout time.Duration) {
+	t.Helper()
+	if !waitFor(timeout, func() bool { return r.count(level, substr) > 0 }) {
+		t.Fatalf("no %v log containing %q within %v", level, substr, timeout)
+	}
+}
+
+// assertNoneWithin fails if the given record appears within grace. Used for
+// "must NOT log on the success path" assertions where the errant record would
+// be emitted microseconds after the trigger we synchronize on.
+func (r *mutDLog) assertNoneWithin(t *testing.T, level slog.Level, substr string, grace time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(grace) // REAL-TIME
+	for time.Now().Before(deadline) { // REAL-TIME
+		if n := r.count(level, substr); n > 0 {
+			t.Fatalf("unexpected %v log containing %q (count %d)", level, substr, n)
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+}
+
+type mutDLogHandler struct{ rec *mutDLog }
+
+func (h mutDLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h mutDLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.rec.add(r)
+	return nil
+}
+
+func (h mutDLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h mutDLogHandler) WithGroup(string) slog.Handler { return h }
+
+func mutDCaptureSlog(t *testing.T) *mutDLog {
+	t.Helper()
+	rec := &mutDLog{}
+	old := slog.Default()
+	slog.SetDefault(slog.New(mutDLogHandler{rec: rec}))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return rec
 }

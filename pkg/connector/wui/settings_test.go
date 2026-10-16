@@ -2,6 +2,7 @@ package wui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/config"
 )
 
 // settingsFixture mirrors the shape of the real ~/.gbot/settings.json:
@@ -842,5 +845,843 @@ func TestSettingsDefaultPut(t *testing.T) {
 	bak, _ := os.ReadFile(filepath.Join(home, ".gbot", "settings.json.bak"))
 	if !strings.Contains(string(bak), "xiaomi/mimo-v2.5") {
 		t.Error("backup does not hold the pre-save default")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// settings.go
+// ---------------------------------------------------------------------------
+
+func TestMutB_SettingsTimeoutDefault(t *testing.T) {
+	if settingsHTTPTimeout != 10*time.Second {
+		mbFatalf(t, "settingsHTTPTimeout = %v, want 10s (probe budget is a UX contract)", settingsHTTPTimeout)
+	}
+}
+
+func TestMutB_GetProvidersBrokenFile(t *testing.T) {
+	srv := newSettingsServer(t)
+	seedSettings(t, "{\n")
+
+	var got settingsProviders
+	resp := getJSON(t, srv.URL+"/api/settings/providers", &got)
+	if resp.StatusCode != http.StatusOK {
+		mbFatalf(t, "status = %d, want 200 — an unreadable file is cold start, not an error", resp.StatusCode)
+	}
+	if got.Providers == nil || len(got.Providers) != 0 {
+		mbFatalf(t, "providers = %v, want [] (never null)", got.Providers)
+	}
+	if got.Default.Provider != "" || got.Default.Model != "" {
+		mbFatalf(t, "default = %+v, want empty", got.Default)
+	}
+}
+
+func TestMutB_GetProvidersNoStoreHeader(t *testing.T) {
+	srv := newSettingsServer(t)
+	seedSettings(t, settingsFixture)
+
+	var got settingsProviders
+	resp := getJSON(t, srv.URL+"/api/settings/providers", &got)
+	if resp.StatusCode != http.StatusOK {
+		mbFatalf(t, "status = %d, want 200", resp.StatusCode)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		mbFatalf(t, "Cache-Control = %q, want no-store (a save must never be shadowed by a cached read)", cc)
+	}
+}
+
+func TestMutB_PutProvidersDecodeError(t *testing.T) {
+	srv := newSettingsServer(t)
+	path, old := seedSettings(t, settingsFixture)
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/settings/providers", strings.NewReader(`[{"name":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		mbFatalf(t, "status = %d, want 400", resp.StatusCode)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		mbFatalf(t, "body not JSON: %v", err)
+	}
+	if e.Error != "unexpected EOF" {
+		mbFatalf(t, "error = %q, want the decode message, not a validation message", e.Error)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(old) {
+		mbFatalf(t, "rejected PUT must leave the file byte-identical")
+	}
+}
+
+func TestMutB_PutProvidersSaveFails(t *testing.T) {
+	srv := newSettingsServer(t)
+	path, old := seedSettings(t, settingsFixture)
+	// A directory where the .bak must land makes the backup write fail, so
+	// SaveProviders aborts before touching settings.json.
+	if err := os.Mkdir(path+".bak", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `[{"name":"solo","url":"https://s","keys":["k"],"models":{"m":{}}}]`
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/settings/providers", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		mbFatalf(t, "body not JSON: %v", err)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		mbFatalf(t, "status = %d (error %q), want 500 when the save fails", resp.StatusCode, e.Error)
+	}
+	if e.Error == "" {
+		mbFatalf(t, "error envelope must carry the save failure")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(old) {
+		mbFatalf(t, "failed save must leave settings.json unchanged")
+	}
+}
+
+func TestMutB_ValidateKnownTypes(t *testing.T) {
+	for _, typ := range []string{"", "auto", "openai", "anthropic", "responses"} {
+		body := `[{"name":"p","url":"https://a","keys":["k"],"models":{"m":{}}}]`
+		if typ != "" {
+			body = `[{"name":"p","type":"` + typ + `","url":"https://a","keys":["k"],"models":{"m":{}}}]`
+		}
+		var providers []config.Provider
+		if err := json.Unmarshal([]byte(body), &providers); err != nil {
+			t.Fatalf("type %q: unmarshal: %v", typ, err)
+		}
+		if msg := validateProviders(providers); msg != "" {
+			t.Errorf("type %q rejected: %q", typ, msg)
+		}
+	}
+}
+
+func TestMutB_TestProviderDecodeError(t *testing.T) {
+	srv := newSettingsServer(t)
+
+	var e struct {
+		Error string `json:"error"`
+	}
+	resp := postSettingsJSON(t, srv.URL+"/api/settings/test", `{"name":`, &e)
+	if resp.StatusCode != http.StatusBadRequest {
+		mbFatalf(t, "status = %d, want 400", resp.StatusCode)
+	}
+	if e.Error != "unexpected EOF" {
+		mbFatalf(t, "error = %q, want the decode message", e.Error)
+	}
+}
+
+func TestMutB_ProbeAnthropicWire(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"msg_1","content":[]}`))
+	})
+
+	var got struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+		"name": "a", "type": "anthropic", "url": "`+up.URL+`",
+		"keys": ["ak"], "models": {"m1": {}, "m2": {}}
+	}`, &got)
+	if !got.OK || got.Error != "" {
+		mbFatalf(t, "ok=%v error=%q, want a successful probe", got.OK, got.Error)
+	}
+	if len(*calls) != 1 {
+		mbFatalf(t, "upstream hits = %d, want 1", len(*calls))
+	}
+	call := (*calls)[0]
+	if call.Method != http.MethodPost || call.Path != "/v1/messages" {
+		mbFatalf(t, "request = %s %s, want POST /v1/messages", call.Method, call.Path)
+	}
+	if call.Header.Get("x-api-key") != "ak" {
+		mbFatalf(t, "x-api-key = %q, want ak", call.Header.Get("x-api-key"))
+	}
+	if call.Header.Get("anthropic-version") != "2023-06-01" {
+		mbFatalf(t, "anthropic-version = %q, want 2023-06-01", call.Header.Get("anthropic-version"))
+	}
+	if ct := call.Header.Get("Content-Type"); ct != "application/json" {
+		mbFatalf(t, "Content-Type = %q, want application/json", ct)
+	}
+	var body struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Messages  []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(call.Body, &body); err != nil {
+		mbFatalf(t, "ping body not JSON: %v (%s)", err, call.Body)
+	}
+	if body.Model != "m1" || body.MaxTokens != 1 || len(body.Messages) != 1 ||
+		body.Messages[0].Role != "user" || body.Messages[0].Content != "ping" {
+		mbFatalf(t, "ping body = %+v, want model=m1 max_tokens=1 one user ping message", body)
+	}
+}
+
+func TestMutB_ProbeResponsesWire(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	var got struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+		"name": "r", "type": "responses", "url": "`+up.URL+`",
+		"keys": ["rk"], "models": {"m1": {}, "m2": {}}
+	}`, &got)
+	if !got.OK || got.Error != "" {
+		mbFatalf(t, "ok=%v error=%q, want a successful probe", got.OK, got.Error)
+	}
+	if len(*calls) != 1 {
+		mbFatalf(t, "upstream hits = %d, want 1", len(*calls))
+	}
+	call := (*calls)[0]
+	if call.Method != http.MethodPost || call.Path != "/responses" {
+		mbFatalf(t, "request = %s %s, want POST against the protocol endpoint /responses", call.Method, call.Path)
+	}
+	if auth := call.Header.Get("Authorization"); auth != "Bearer rk" {
+		mbFatalf(t, "Authorization = %q, want Bearer rk", auth)
+	}
+	if ct := call.Header.Get("Content-Type"); ct != "application/json" {
+		mbFatalf(t, "Content-Type = %q, want application/json", ct)
+	}
+	var body struct {
+		Model           string `json:"model"`
+		Input           string `json:"input"`
+		MaxOutputTokens int    `json:"max_output_tokens"`
+	}
+	if err := json.Unmarshal(call.Body, &body); err != nil {
+		mbFatalf(t, "probe body not JSON: %v (%s)", err, call.Body)
+	}
+	if body.Model != "m1" || body.Input != "ping" || body.MaxOutputTokens != 1 {
+		mbFatalf(t, "probe body = %+v, want model=m1 input=ping max_output_tokens=1", body)
+	}
+}
+
+func TestMutB_ProbeResponsesNoModels(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the responses probe needs a model name; no call is expected without one")
+	})
+
+	var got struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+		"name": "r", "type": "responses", "url": "`+up.URL+`", "keys": ["k"], "models": {}
+	}`, &got)
+	if got.OK || got.Error != "no models configured" {
+		mbFatalf(t, "ok=%v error=%q, want the no-models error", got.OK, got.Error)
+	}
+	if len(*calls) != 0 {
+		mbFatalf(t, "upstream hits = %d, want 0", len(*calls))
+	}
+}
+
+func TestMutB_ProbeBadURLGuards(t *testing.T) {
+	srv := newSettingsServer(t)
+	_, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("an unparseable URL must fail before any request goes out")
+	})
+	for _, typ := range []string{"anthropic", "responses", "openai"} {
+		var got struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+			"name": "p", "type": "`+typ+`", "url": "http://a b/",
+			"keys": ["k"], "models": {"m": {}}
+		}`, &got)
+		if got.OK {
+			mbFatalf(t, "type %s: ok=true on an unparseable URL", typ)
+		}
+		if !strings.Contains(got.Error, "invalid character") {
+			mbFatalf(t, "type %s: error = %q, want the URL parse failure", typ, got.Error)
+		}
+	}
+	if len(*calls) != 0 {
+		mbFatalf(t, "upstream hits = %d, want 0", len(*calls))
+	}
+}
+
+func TestMutB_ProbeStatusClassification(t *testing.T) {
+	srv := newSettingsServer(t)
+
+	t.Run("299 is success", func(t *testing.T) {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(299)
+			_, _ = w.Write([]byte(`{}`))
+		})
+		var got struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+			"name": "p", "url": "`+up.URL+`", "keys": ["k"], "models": {"m": {}}
+		}`, &got)
+		if !got.OK || got.Error != "" {
+			mbFatalf(t, "ok=%v error=%q, want success — 299 is a 2xx", got.OK, got.Error)
+		}
+	})
+	t.Run("401 error names the status", func(t *testing.T) {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		})
+		var got struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/test", `{
+			"name": "p", "url": "`+up.URL+`", "keys": ["k"], "models": {"m": {}}
+		}`, &got)
+		if got.OK || got.Error != "HTTP 401" {
+			mbFatalf(t, "ok=%v error=%q, want exactly HTTP 401", got.OK, got.Error)
+		}
+	})
+}
+
+func TestMutB_ProbeLatencyMeasured(t *testing.T) {
+	srv := newSettingsServer(t)
+	// The upstream stalls on a channel until the test releases it, so the
+	// probe's measured window provably spans the release delay — a constant
+	// or zero latencyMs cannot pass.
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	type probeReply struct {
+		OK        bool   `json:"ok"`
+		LatencyMs int    `json:"latencyMs"`
+		Error     string `json:"error"`
+	}
+	reply := make(chan probeReply, 1)
+	go func() {
+		resp, err := http.Post(srv.URL+"/api/settings/test", "application/json",
+			strings.NewReader(`{
+				"name": "p", "url": "`+up.URL+`", "keys": ["k"], "models": {"m": {}}
+			}`))
+		if err != nil {
+			reply <- probeReply{Error: err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		var got probeReply
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			reply <- probeReply{Error: "decode: " + err.Error()}
+			return
+		}
+		reply <- got
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never saw the probe request")
+	}
+	// Hold the probe in flight for 50ms of real time so the measured
+	// latency has a guaranteed floor.
+	time.Sleep(50 * time.Millisecond) // REAL-TIME
+	close(release)
+
+	select {
+	case got := <-reply:
+		if !got.OK {
+			mbFatalf(t, "ok=false error=%q, want success", got.Error)
+		}
+		if got.LatencyMs < 25 {
+			mbFatalf(t, "latencyMs = %d, want >= 25 (the upstream stalled 50ms)", got.LatencyMs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe request never returned after release")
+	}
+}
+
+func TestMutB_ProbeOutboundContext(t *testing.T) {
+	srv := newSettingsServer(t)
+	started := make(chan struct{}, 1)
+	sawCancel := make(chan struct{}, 1)
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+		sawCancel <- struct{}{}
+	})
+	old := settingsHTTPTimeout
+	settingsHTTPTimeout = 800 * time.Millisecond
+	t.Cleanup(func() { settingsHTTPTimeout = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/settings/test",
+		strings.NewReader(`{"name":"r","type":"responses","url":"`+up.URL+`","keys":["k"],"models":{"m":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		resp, err := srv.Client().Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	// Cancel only once the probe is provably in flight at the upstream —
+	// channel handshake instead of a sleep racing the request dispatch.
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			mbFatalf(t, "client error = %v, want the cancellation to surface", err)
+		}
+	case <-time.After(3 * time.Second):
+		mbFatalf(t, "client request never returned after cancel")
+	}
+	// The cancellation must reach the upstream long before settingsHTTPTimeout
+	// could fire: the outbound probe rides the request context.
+	select {
+	case <-sawCancel:
+	case <-time.After(400 * time.Millisecond):
+		mbFatalf(t, "upstream did not observe the cancellation within 400ms — the outbound probe must ride the request context")
+	}
+}
+
+func TestMutB_FetchModelsFree(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "max_price=0&sort=most-popular" {
+			t.Errorf("query = %q, want the free-models filter", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"f1","name":"F1","context_length":1,
+			 "pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},
+			{"id":"f2","context_length":131072,
+			 "pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}
+		]}`))
+	})
+
+	var got struct {
+		Mode   string `json:"mode"`
+		Models []struct {
+			ID      string `json:"id"`
+			Context string `json:"context"`
+		} `json:"models"`
+		Error string `json:"error"`
+	}
+	resp := postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","free":true}`, &got)
+	if resp.StatusCode != http.StatusOK {
+		mbFatalf(t, "status = %d", resp.StatusCode)
+	}
+	if got.Mode != "fetched" || got.Error != "" {
+		mbFatalf(t, "mode=%q error=%q, want fetched", got.Mode, got.Error)
+	}
+	if len(got.Models) != 2 {
+		mbFatalf(t, "models = %+v, want 2", got.Models)
+	}
+	if got.Models[0].ID != "f1" || got.Models[0].Context != "1" {
+		mbFatalf(t, "f1 = %+v, want context 1 (small values stay plain digits)", got.Models[0])
+	}
+	if got.Models[1].ID != "f2" || got.Models[1].Context != "128k" {
+		mbFatalf(t, "f2 = %+v, want context 128k (exact k multiple in human form)", got.Models[1])
+	}
+}
+
+func TestMutB_FetchModelsInputGuards(t *testing.T) {
+	srv := newSettingsServer(t)
+
+	t.Run("decode error", func(t *testing.T) {
+		resp, err := http.Post(srv.URL+"/api/settings/models", "application/json", strings.NewReader(`{"url":`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			mbFatalf(t, "status = %d, want 400", resp.StatusCode)
+		}
+		var e struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			mbFatalf(t, "body not JSON: %v", err)
+		}
+		if e.Error != "unexpected EOF" {
+			mbFatalf(t, "error = %q, want the decode message", e.Error)
+		}
+	})
+	t.Run("missing url", func(t *testing.T) {
+		resp, err := http.Post(srv.URL+"/api/settings/models", "application/json", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			mbFatalf(t, "status = %d, want 400", resp.StatusCode)
+		}
+		var e struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			mbFatalf(t, "body not JSON: %v", err)
+		}
+		if e.Error != "url is required" {
+			mbFatalf(t, "error = %q, want exactly 'url is required'", e.Error)
+		}
+	})
+	t.Run("anthropic is manual", func(t *testing.T) {
+		up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			t.Error("anthropic has no model list endpoint; no fetch is expected")
+		})
+		var got struct {
+			Mode string `json:"mode"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","type":"anthropic"}`, &got)
+		if got.Mode != "manual" {
+			mbFatalf(t, "mode = %q, want manual", got.Mode)
+		}
+		if len(*calls) != 0 {
+			mbFatalf(t, "upstream hits = %d, want 0", len(*calls))
+		}
+	})
+	t.Run("anthropic inferred from url path is manual", func(t *testing.T) {
+		up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			t.Error("an /anthropic base URL means manual mode; no fetch is expected")
+		})
+		var got struct {
+			Mode string `json:"mode"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`/anthropic"}`, &got)
+		if got.Mode != "manual" {
+			mbFatalf(t, "mode = %q, want manual for an untyped /anthropic base", got.Mode)
+		}
+		if len(*calls) != 0 {
+			mbFatalf(t, "upstream hits = %d, want 0", len(*calls))
+		}
+	})
+	t.Run("unparseable url", func(t *testing.T) {
+		var got struct {
+			Mode  string `json:"mode"`
+			Error string `json:"error"`
+		}
+		resp := postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"http://a b/","type":"openai"}`, &got)
+		if resp.StatusCode != http.StatusOK {
+			mbFatalf(t, "status = %d", resp.StatusCode)
+		}
+		if got.Mode != "error" {
+			mbFatalf(t, "mode = %q, want error", got.Mode)
+		}
+		if !strings.Contains(got.Error, "invalid character") {
+			mbFatalf(t, "error = %q, want the URL parse failure", got.Error)
+		}
+	})
+}
+
+func TestMutB_FetchModelsAuthHeader(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+
+	var withKey struct {
+		Mode string `json:"mode"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","key":"kk","type":"openai"}`, &withKey)
+	if withKey.Mode != "fetched" {
+		mbFatalf(t, "mode = %q, want fetched", withKey.Mode)
+	}
+	if auth := (*calls)[0].Header.Get("Authorization"); auth != "Bearer kk" {
+		mbFatalf(t, "Authorization = %q, want Bearer kk", auth)
+	}
+
+	calls2Up, calls2 := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	var noKey struct {
+		Mode string `json:"mode"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+calls2Up.URL+`","type":"openai"}`, &noKey)
+	if noKey.Mode != "fetched" {
+		mbFatalf(t, "mode = %q, want fetched without a key", noKey.Mode)
+	}
+	if auth := (*calls2)[0].Header.Get("Authorization"); auth != "" {
+		mbFatalf(t, "Authorization = %q, want absent when no key was given", auth)
+	}
+}
+
+func TestMutB_FetchModelsUpstreamFailures(t *testing.T) {
+	srv := newSettingsServer(t)
+
+	t.Run("unreachable upstream", func(t *testing.T) {
+		closed := httptest.NewServer(http.NotFoundHandler())
+		url := closed.URL
+		closed.Close()
+
+		var got struct {
+			Mode  string `json:"mode"`
+			Error string `json:"error"`
+		}
+		resp := postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+url+`","type":"openai"}`, &got)
+		if resp.StatusCode != http.StatusOK {
+			mbFatalf(t, "status = %d — transport failures are data", resp.StatusCode)
+		}
+		if got.Mode != "error" || got.Error == "" {
+			mbFatalf(t, "mode=%q error=%q, want error mode with the transport text", got.Mode, got.Error)
+		}
+	})
+	t.Run("non-2xx with valid body", func(t *testing.T) {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+		})
+		var got struct {
+			Mode  string `json:"mode"`
+			Error string `json:"error"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","type":"openai"}`, &got)
+		if got.Mode != "error" || got.Error != "HTTP 500" {
+			mbFatalf(t, "mode=%q error=%q, want error mode naming the status", got.Mode, got.Error)
+		}
+	})
+	t.Run("299 with valid body", func(t *testing.T) {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(299)
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+		})
+		var got struct {
+			Mode   string `json:"mode"`
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","type":"openai"}`, &got)
+		if got.Mode != "fetched" || len(got.Models) != 1 || got.Models[0].ID != "m1" {
+			mbFatalf(t, "mode=%q models=%+v, want fetched [m1] — 299 is a 2xx", got.Mode, got.Models)
+		}
+	})
+	t.Run("undecodable body", func(t *testing.T) {
+		up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`not-json`))
+		})
+		var got struct {
+			Mode  string `json:"mode"`
+			Error string `json:"error"`
+		}
+		postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","type":"openai"}`, &got)
+		if got.Mode != "error" {
+			mbFatalf(t, "mode = %q, want error", got.Mode)
+		}
+		if !strings.Contains(got.Error, "invalid character") {
+			mbFatalf(t, "error = %q, want the decode failure", got.Error)
+		}
+	})
+}
+
+func TestMutB_FetchModelsMergeDedupe(t *testing.T) {
+	srv := newSettingsServer(t)
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"data": [{"id":"m1"}],
+			"models": [
+				{"slug":"m2","context_window":1024,"input_modalities":["text","image"]},
+				{"slug":"m1"},
+				{"slug":"","display_name":"m3"},
+				{"slug":"","display_name":""},
+				{"slug":"m0","context_window":0},
+				{"slug":"m1c","context_window":1}
+			]
+		}`))
+	})
+
+	var got struct {
+		Mode   string `json:"mode"`
+		Models []struct {
+			ID      string   `json:"id"`
+			Context string   `json:"context"`
+			Input   []string `json:"input"`
+		} `json:"models"`
+	}
+	postSettingsJSON(t, srv.URL+"/api/settings/models", `{"url":"`+up.URL+`","type":"openai"}`, &got)
+	if got.Mode != "fetched" {
+		mbFatalf(t, "mode = %q, want fetched", got.Mode)
+	}
+	wantIDs := []string{"m2", "m1", "m3", "m0", "m1c"}
+	if len(got.Models) != len(wantIDs) {
+		mbFatalf(t, "models = %+v, want exactly %v (deduped, no empty ids)", got.Models, wantIDs)
+	}
+	for i, id := range wantIDs {
+		if got.Models[i].ID != id {
+			mbFatalf(t, "models[%d] = %+v, want id %q", i, got.Models[i], id)
+		}
+	}
+	m2 := got.Models[0]
+	if m2.Context != "1k" || len(m2.Input) != 2 || m2.Input[0] != "text" || m2.Input[1] != "image" {
+		mbFatalf(t, "m2 = %+v, want context 1k and the input modalities passed through", m2)
+	}
+	if got.Models[1].Context != "" || got.Models[2].Context != "" || got.Models[3].Context != "" {
+		mbFatalf(t, "zero context_window must stay unset, got %+v", got.Models[1:4])
+	}
+	if got.Models[4].Context != "1" {
+		mbFatalf(t, "m1c context = %q, want 1", got.Models[4].Context)
+	}
+}
+
+func TestMutB_FetchModelsClientTimeout(t *testing.T) {
+	srv := newSettingsServer(t)
+	sawTimeout := make(chan struct{}, 1)
+	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		sawTimeout <- struct{}{}
+	})
+	old := settingsHTTPTimeout
+	settingsHTTPTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { settingsHTTPTimeout = old })
+
+	type fetchReply struct {
+		Mode  string `json:"mode"`
+		Error string `json:"error"`
+	}
+	reply := make(chan fetchReply, 1)
+	go func() {
+		resp, err := http.Post(srv.URL+"/api/settings/models", "application/json",
+			strings.NewReader(`{"url":"`+up.URL+`","type":"openai"}`))
+		if err != nil {
+			reply <- fetchReply{Error: err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		var got fetchReply
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			reply <- fetchReply{Error: "decode: " + err.Error()}
+			return
+		}
+		reply <- got
+	}()
+
+	// The fetch must end within a bound around the client timeout, not hang.
+	var got fetchReply
+	select {
+	case got = <-reply:
+	case <-time.After(2 * time.Second):
+		mbFatalf(t, "fetch still in flight after 2s — the %v client timeout must bound it", settingsHTTPTimeout)
+	}
+	if got.Mode != "error" || got.Error == "" {
+		mbFatalf(t, "mode=%q error=%q, want the timeout as data", got.Mode, got.Error)
+	}
+	// The bound is the probe's own timeout: the upstream observes its
+	// request context cancel when the client gives up.
+	select {
+	case <-sawTimeout:
+	case <-time.After(3 * time.Second):
+		mbFatalf(t, "upstream request never cancelled — the client timeout did not reach the outbound fetch")
+	}
+}
+
+func TestMutB_DefaultPut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"providers":[{"name":"zhipu","url":"https://z","type":"openai","keys":["k"],"models":{"glm-5.3":{}}}]}`
+	if err := os.WriteFile(filepath.Join(home, ".gbot", "settings.json"), []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	RegisterSettingsRoutes(mux)
+	put := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/default", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := put(`{"provider":`)
+	if rec.Code != http.StatusBadRequest {
+		mbFatalf(t, "decode error: status = %d, want 400", rec.Code)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
+		mbFatalf(t, "body not JSON: %s", rec.Body.String())
+	}
+	if e.Error != "invalid body: unexpected EOF" {
+		mbFatalf(t, "error = %q, want the invalid-body wrapper", e.Error)
+	}
+
+	rec = put(`{"provider":"nope","model":"x"}`)
+	if rec.Code != http.StatusBadRequest {
+		mbFatalf(t, "unknown provider: status = %d, want 400", rec.Code)
+	}
+	{
+		var e2 struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &e2); err != nil || e2.Error != "unknown provider" {
+			mbFatalf(t, "unknown provider body = %s, want the sentinel text", rec.Body.String())
+		}
+	}
+
+	rec = put(`{"provider":"zhipu","model":"nope"}`)
+	if rec.Code != http.StatusBadRequest {
+		mbFatalf(t, "unknown model: status = %d, want 400", rec.Code)
+	}
+	var e3 struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e3); err != nil || e3.Error != "unknown model for provider" {
+		mbFatalf(t, "unknown model body = %s, want the sentinel text", rec.Body.String())
+	}
+
+	rec = put(`{"provider":"zhipu","model":"glm-5.3"}`)
+	if rec.Code != http.StatusOK {
+		mbFatalf(t, "valid put: status = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `{"ok":true}` {
+		mbFatalf(t, "body = %s, want exactly {\"ok\":true}", rec.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".gbot", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Model map[string]string `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		mbFatalf(t, "file invalid after put: %v", err)
+	}
+	if file.Model["default"] != "zhipu/glm-5.3" {
+		mbFatalf(t, "default = %q, want the written tier", file.Model["default"])
 	}
 }

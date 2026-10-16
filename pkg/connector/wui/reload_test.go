@@ -139,3 +139,62 @@ func TestReloadRoute_PassesContext(t *testing.T) {
 		t.Error("handler must pass a context with a deadline to the reload fn")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// reload.go
+// ---------------------------------------------------------------------------
+
+// Kills reload.go:13 (arithmetic/base, numbers/decrementer, numbers/
+// incrementer): the request context deadline must be the full 120s window
+// (the MCP drain alone can legally take tens of seconds).
+func TestMutD_ReloadRoute_TimeoutWindow(t *testing.T) {
+	mux := http.NewServeMux()
+	var remain time.Duration
+	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Error("reload fn received a context without deadline")
+			return fixtureReport(true)
+		}
+		remain = time.Until(dl)
+		return fixtureReport(true)
+	})
+	rec := postReload(t, mux.ServeHTTP)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// The handler's own work between WithTimeout and the fn call costs
+	// microseconds, so a correct 120s window lands just under 120s and every
+	// off-by-one or zeroed constant lands outside [119s, 120s].
+	if remain < 119*time.Second || remain > 120*time.Second {
+		t.Fatalf("deadline remaining = %v, want within [119s, 120s]", remain)
+	}
+}
+
+// Kills reload.go:28 (statement/defer-remove): cancel becomes an immediate
+// call, so the reload fn observes an already-canceled context.
+func TestMutD_ReloadRoute_ContextLiveInsideFn(t *testing.T) {
+	mux := http.NewServeMux()
+	var innerErr error
+	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report {
+		innerErr = ctx.Err()
+		return fixtureReport(true)
+	})
+	rec := postReload(t, mux.ServeHTTP)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if innerErr != nil {
+		t.Fatalf("ctx.Err() inside reload fn = %v, want nil (cancel must be deferred)", innerErr)
+	}
+}
+
+// Kills reload.go:30 (statement/remove: Cache-Control header).
+func TestMutD_ReloadRoute_NoStoreHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report { return fixtureReport(true) })
+	rec := postReload(t, mux.ServeHTTP)
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (reload results are per-request)", cc)
+	}
+}

@@ -1,11 +1,17 @@
 package wui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestContextRequest_FullBreakdown(t *testing.T) {
@@ -361,4 +367,200 @@ func TestContextRequest_NoEngine(t *testing.T) {
 		}
 	case <-time.After(400 * time.Millisecond):
 	}
+}
+
+// ---------------------------------------------------------------------------
+// context_breakdown.go
+// ---------------------------------------------------------------------------
+
+// Kills the composite/field-clear mutants on every converter line (110, 112,
+// 121, 129, 137, 145 x2, 153 x2, 165, 168, 181, 183, 188, 193, 194, 195,
+// 207, 208, 209): each converter must copy every field.
+func TestMutD_ConvertersCopyEveryField(t *testing.T) {
+	mcp := convertMCPTools([]engine.MCPToolDetail{{Name: "search", ServerName: "brave", Tokens: 800, IsLoaded: true}})
+	if len(mcp) != 1 {
+		t.Fatalf("mcp len = %d, want 1", len(mcp))
+	}
+	if mcp[0].ServerName != "brave" {
+		t.Errorf("mcp ServerName = %q, want brave", mcp[0].ServerName)
+	}
+	if mcp[0].IsLoaded != true {
+		t.Errorf("mcp IsLoaded = %v, want true", mcp[0].IsLoaded)
+	}
+	if mcp[0].Tokens != 800 || mcp[0].Name != "search" {
+		t.Errorf("mcp = %+v, want the input detail verbatim", mcp[0])
+	}
+
+	sys := convertSystemTools([]engine.SystemToolDetail{{Name: "Bash", Tokens: 1000}})
+	if len(sys) != 1 || sys[0].Name != "Bash" || sys[0].Tokens != 1000 {
+		t.Errorf("systemTools = %+v, want {Bash 1000}", sys)
+	}
+
+	sec := convertPromptSections([]engine.SystemPromptSectionDetail{{Name: "Base prompt", ID: "base_prompt", Tokens: 2000}})
+	if len(sec) != 1 || sec[0].Name != "Base prompt" || sec[0].ID != "base_prompt" || sec[0].Tokens != 2000 {
+		t.Errorf("promptSections = %+v, want all three fields", sec)
+	}
+
+	mem := convertMemoryFiles([]engine.MemoryFileDetail{{Path: "CLAUDE.md", Tokens: 1500}})
+	if len(mem) != 1 || mem[0].Path != "CLAUDE.md" || mem[0].Tokens != 1500 {
+		t.Errorf("memoryFiles = %+v, want both fields", mem)
+	}
+
+	ag := convertAgents([]engine.AgentDetail{{AgentType: "coder", Source: "built-in", Tokens: 400}})
+	if len(ag) != 1 || ag[0].AgentType != "coder" || ag[0].Source != "built-in" || ag[0].Tokens != 400 {
+		t.Errorf("agents = %+v, want all three fields", ag)
+	}
+
+	sk := convertSkills([]engine.SkillDetail{{Name: "commit", Source: "plugin", Tokens: 300}})
+	if len(sk) != 1 || sk[0].Name != "commit" || sk[0].Source != "plugin" || sk[0].Tokens != 300 {
+		t.Errorf("skills = %+v, want all three fields", sk)
+	}
+
+	cat := convertCategories([]engine.ContextCategory{{Name: "Messages", ID: "messages", Tokens: 30000, Percentage: 15.5, Color: "255", IsFree: false, IsReserved: true}})
+	if len(cat) != 1 {
+		t.Fatalf("categories len = %d, want 1", len(cat))
+	}
+	if cat[0].Percentage != 15.5 {
+		t.Errorf("category Percentage = %v, want 15.5", cat[0].Percentage)
+	}
+	if cat[0].IsReserved != true {
+		t.Errorf("category IsReserved = %v, want true", cat[0].IsReserved)
+	}
+	if cat[0].Name != "Messages" || cat[0].ID != "messages" || cat[0].Tokens != 30000 || cat[0].Color != "255" || cat[0].IsFree != false {
+		t.Errorf("category = %+v, want every field copied", cat[0])
+	}
+
+	mb := convertMessageBreakdown(&engine.MessageBreakdown{
+		ToolCallTokens:      3000,
+		ToolResultTokens:    6000,
+		AttachmentTokens:    500,
+		AssistantTextTokens: 2000,
+		UserTextTokens:      1000,
+		ToolCallsByType:     []engine.ToolCallByType{{Name: "Bash", CallTokens: 2000, ResultTokens: 4000}},
+		AttachmentsByType:   []engine.AttachmentByType{{Name: "file", Tokens: 500}},
+	})
+	if mb == nil {
+		t.Fatal("messageBreakdown = nil, want populated")
+	}
+	if mb.AttachmentTokens != 500 || mb.AssistantTextTokens != 2000 || mb.UserTextTokens != 1000 {
+		t.Errorf("mb token fields = %d/%d/%d, want 500/2000/1000", mb.AttachmentTokens, mb.AssistantTextTokens, mb.UserTextTokens)
+	}
+	if len(mb.ToolCallsByType) != 1 || mb.ToolCallsByType[0].Name != "Bash" || mb.ToolCallsByType[0].ResultTokens != 4000 {
+		t.Errorf("toolCallsByType = %+v, want name and result tokens", mb.ToolCallsByType)
+	}
+	if len(mb.AttachmentsByType) != 1 || mb.AttachmentsByType[0].Name != "file" || mb.AttachmentsByType[0].Tokens != 500 {
+		t.Errorf("attachmentsByType = %+v, want name and tokens", mb.AttachmentsByType)
+	}
+
+	api := convertAPIUsage(&engine.APIUsageSnapshot{
+		InputTokens: 70000, OutputTokens: 2000,
+		CacheCreationInputTokens: 5000, CacheReadInputTokens: 60000,
+	})
+	if api == nil {
+		t.Fatal("apiUsage = nil, want populated")
+	}
+	if api.OutputTokens != 2000 || api.CacheCreationInputTokens != 5000 || api.CacheReadInputTokens != 60000 {
+		t.Errorf("apiUsage = %+v, want output/cache fields copied", api)
+	}
+}
+
+// Kills context_breakdown.go:176 (branch/if): nil must map to nil without a
+// panic (a non-nil breakdown with nil MessageBreakdown is a legal state).
+func TestMutD_ConvertMessageBreakdown_NilIsNil(t *testing.T) {
+	if got := convertMessageBreakdown(nil); got != nil {
+		t.Fatalf("convertMessageBreakdown(nil) = %+v, want nil", got)
+	}
+}
+
+// Kills context_breakdown.go:214 (expression/remove x2, numbers x2): nil and
+// zero-token breakdowns must serialize as the minimal early-return shape, so
+// the wire never carries an empty full frame.
+func TestMutD_BuildContextBreakdown_ZeroShapes(t *testing.T) {
+	want := `{"type":"context_breakdown","totalTokens":0}`
+	if got := string(buildContextBreakdown(nil)); got != want {
+		t.Errorf("nil breakdown = %s, want %s", got, want)
+	}
+	bd := &engine.ContextBreakdown{Model: "m", TotalTokens: 0, Percentage: 12.5}
+	if got := string(buildContextBreakdown(bd)); got != want {
+		t.Errorf("zero-token breakdown = %s, want %s (zero tokens take the minimal path)", got, want)
+	}
+}
+
+// Kills context_breakdown.go:225 (composite/field-clear: ContextWindow) and
+// :228 (composite/field-clear: IsAutoCompact).
+func TestMutD_BuildContextBreakdown_TopLevelFields(t *testing.T) {
+	bd := &engine.ContextBreakdown{
+		Model:         "glm-5.2",
+		ContextWindow: 131072,
+		TotalTokens:   7,
+		Percentage:    2.5,
+		IsAutoCompact: true,
+	}
+	payload := buildContextBreakdown(bd)
+	if payload == nil {
+		t.Fatal("payload = nil, want JSON")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["contextWindow"] != float64(131072) {
+		t.Errorf("contextWindow = %v, want 131072", m["contextWindow"])
+	}
+	if m["isAutoCompact"] != true {
+		t.Errorf("isAutoCompact = %v, want true", m["isAutoCompact"])
+	}
+	if m["model"] != "glm-5.2" || m["percentage"] != 2.5 {
+		t.Errorf("model/percentage = %v/%v, want glm-5.2/2.5", m["model"], m["percentage"])
+	}
+}
+
+// Kills context_breakdown.go:243 (expression/error-guard) and :244
+// (statement/remove): a NaN percentage is the one input json.Marshal rejects;
+// the failure must be logged.
+func TestMutD_BuildContextBreakdown_MarshalFailureWarns(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	bd := &engine.ContextBreakdown{TotalTokens: 10, Percentage: math.NaN()}
+	if payload := buildContextBreakdown(bd); payload != nil {
+		t.Fatalf("payload = %s, want nil when marshal fails", payload)
+	}
+	if n := rec.count(slog.LevelWarn, "wui: marshal context_breakdown failed"); n != 1 {
+		t.Fatalf("marshal-failure warn count = %d, want exactly 1", n)
+	}
+}
+
+// Kills context_breakdown.go:253 (branch/if) and :265 (branch/if): a missing
+// active engine must be a silent no-op, not a nil-interface panic.
+func TestMutD_ContextHandlers_NilEngineNoPanic(t *testing.T) {
+	c := newTestConnector(t)
+	unknown := "no-such-engine"
+	c.active.Store(&unknown)
+	c.handleContextRequest()
+	c.handleCompactRequest()
+}
+
+// Kills context_breakdown.go:268 (expression/error-guard), :268
+// (conditional/negated, with the success test below) and :269
+// (statement/remove): compact failures must warn exactly once.
+func TestMutD_HandleCompactRequest_FailureWarns(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().manualCompactFn = func(context.Context, types.Message, string) (*short.CompactResult, error) {
+		return nil, errors.New("compact: engine busy")
+	}
+	rec := mutDCaptureSlog(t)
+	c.handleCompactRequest()
+	if n := rec.count(slog.LevelWarn, "wui: manual compact failed"); n != 1 {
+		t.Fatalf("compact-failure warn count = %d, want exactly 1", n)
+	}
+}
+
+// Kills the conditional/negated flavor of context_breakdown.go:268.
+func TestMutD_HandleCompactRequest_SuccessSilent(t *testing.T) {
+	c := newTestConnector(t)
+	c.mock().manualCompactFn = func(context.Context, types.Message, string) (*short.CompactResult, error) {
+		return nil, nil
+	}
+	rec := mutDCaptureSlog(t)
+	c.handleCompactRequest()
+	rec.assertNoneWithin(t, slog.LevelWarn, "wui: manual compact failed", 100*time.Millisecond)
 }

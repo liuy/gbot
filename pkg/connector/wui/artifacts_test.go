@@ -1,7 +1,9 @@
 package wui
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"net/http"
@@ -9,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -730,4 +734,681 @@ func TestObserveLLM(t *testing.T) {
 			t.Fatal("ok = true, want false with no active engine")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// artifacts.go — HTTP surface
+// ---------------------------------------------------------------------------
+
+// TestMutC_ArtifactOpenPermErrorIs404 pins the "unexplainable open error is
+// a plain 404" branch: only a missing file may fall through to the bundled
+// game fallback.
+func TestMutC_ArtifactOpenPermErrorIs404(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-bit fixtures do not fail as root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	srv := newArtifactTestServer(t, dir)
+
+	resp, err := http.Get(srv.URL + "/artifacts/chess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (EACCES must not fall through to the bundled page)", resp.StatusCode)
+	}
+	if got := strings.TrimSpace(string(body)); got != "not found" {
+		t.Errorf("body = %q, want the handler's not-found text", got)
+	}
+}
+
+func TestMutC_ArtifactBundledFallback(t *testing.T) {
+	srv := newArtifactTestServer(t, t.TempDir())
+
+	status, header, body := getArtifactFull(t, srv.URL+"/artifacts/chess")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (registry name serves the bundled page)", status)
+	}
+	if !strings.Contains(string(body), "var ZhChess") {
+		t.Errorf("body lacks the bundled chess template (%d bytes)", len(body))
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on the fallback", got)
+	}
+}
+
+func TestMutC_ArtifactListNoStoreHeader(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "a.html", "a")
+	srv := newArtifactTestServer(t, dir)
+
+	status, header, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (listing must reflect new writes)", got)
+	}
+	if string(body) == "" || string(body) == "null" {
+		t.Fatalf("body = %q, want a JSON array", string(body))
+	}
+}
+
+// TestMutC_ArtifactWalkErrorsSurface500 uses an unreadable artifacts dir to
+// pin that walk failures (other than a missing dir) answer 500 on both the
+// list and the clear route.
+func TestMutC_ArtifactWalkErrorsSurface500(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-bit fixtures do not fail as root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	srv := newArtifactTestServer(t, dir)
+
+	status, _, _ := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusInternalServerError {
+		t.Fatalf("list status = %d, want 500 (walk error must surface)", status)
+	}
+	if delStatus := deleteArtifact(t, srv.URL+"/api/artifacts"); delStatus != http.StatusInternalServerError {
+		t.Fatalf("delete status = %d, want 500 (walk error must surface)", delStatus)
+	}
+}
+
+// TestMutC_ArtifactDeleteRemoveFailure500 keeps the dir readable (r+x) but
+// not writable so readdir works and os.Remove fails with EACCES: a half-done
+// delete must answer 500, not 204.
+func TestMutC_ArtifactDeleteRemoveFailure500(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-bit fixtures do not fail as root")
+	}
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "a.html", "a")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	srv := newArtifactTestServer(t, dir)
+
+	if status := deleteArtifact(t, srv.URL+"/api/artifacts"); status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (a failing file remove must abort the clear)", status)
+	}
+}
+
+// TestMutC_ArtifactGzipSizeFloor pins the exact eligibility floor around
+// 1 MiB: below it identity, at it gzip.
+func TestMutC_ArtifactGzipSizeFloor(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "sub-threshold.html", strings.Repeat("a", 600*1024))
+	writeArtifactFile(t, dir, "one-under.html", strings.Repeat("a", 1<<20-1))
+	writeArtifactFile(t, dir, "exact.html", strings.Repeat("a", 1<<20))
+	srv := newArtifactTestServer(t, dir)
+
+	for _, name := range []string{"sub-threshold.html", "one-under.html"} {
+		status, h, body, _ := probeArtifact(t, srv.URL+"/artifacts/"+name, "gzip", nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", name, status)
+		}
+		if got := h.Get("Content-Encoding"); got != "" {
+			t.Errorf("%s Content-Encoding = %q, want identity below the 1MiB floor", name, got)
+		}
+		if len(body) < 600*1024 {
+			t.Errorf("%s body = %d bytes, want the full identity body", name, len(body))
+		}
+	}
+	status, h, body, _ := probeArtifact(t, srv.URL+"/artifacts/exact.html", "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("exact.html status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "gzip" {
+		t.Errorf("exact.html Content-Encoding = %q, want gzip (size == floor is eligible)", got)
+	}
+	if plain := gunzipAll(t, body); len(plain) != 1<<20 {
+		t.Errorf("exact.html gunzipped = %d bytes, want %d", len(plain), 1<<20)
+	}
+}
+
+// TestMutC_ArtifactGzipEligibleText serves a >1MiB text artifact: the
+// eligibility sniff must let plain text through and the octet-stream
+// Content-Type fallback must be applied on the compressed representation.
+func TestMutC_ArtifactGzipEligibleText(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("wui-gzip-text-payload\n", 80000) // > 1.5 MiB
+	writeArtifactFile(t, dir, "big.txt", content)
+	srv := newArtifactTestServer(t, dir)
+
+	status, h, body, contentLength := probeArtifact(t, srv.URL+"/artifacts/big.txt", "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip for compressible text over the floor", got)
+	}
+	if got := h.Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want the explicit octet-stream fallback", got)
+	}
+	if contentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d (exact compressed size on the wire)", contentLength, len(body))
+	}
+	if plain := gunzipAll(t, body); string(plain) != content {
+		t.Errorf("gunzipped body = %d bytes, want the exact content (%d)", len(plain), len(content))
+	}
+}
+
+// TestMutC_ArtifactGzipSkipsCompressedMedia pins the sniff blocklist: zip,
+// gzip and video payloads must serve identity even when the client accepts
+// gzip.
+func TestMutC_ArtifactGzipSkipsCompressedMedia(t *testing.T) {
+	dir := t.TempDir()
+	zipBytes := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0}, 1<<20+512)...)
+	gzBytes := append([]byte{0x1f, 0x8b, 0x08}, bytes.Repeat([]byte{0}, 1<<20+512)...)
+	// A valid ftyp box (size 32, brands padded) is required for the mp4
+	// sniff; the bytes inside the box must all be brand strings.
+	mp4Bytes := append([]byte{
+		0, 0, 0, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm',
+		'm', 'p', '4', '2', 'm', 'p', '4', '2', 'm', 'p', '4', '2',
+		'm', 'p', '4', '2', 'm', 'p', '4', '2',
+	}, bytes.Repeat([]byte{0}, 1<<20+512)...)
+	writeArtifactFile(t, dir, "a.zip", string(zipBytes))
+	writeArtifactFile(t, dir, "a.gz", string(gzBytes))
+	writeArtifactFile(t, dir, "a.mp4", string(mp4Bytes))
+	srv := newArtifactTestServer(t, dir)
+
+	for _, name := range []string{"a.zip", "a.gz", "a.mp4"} {
+		status, h, body, _ := probeArtifact(t, srv.URL+"/artifacts/"+name, "gzip", nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", name, status)
+		}
+		if got := h.Get("Content-Encoding"); got != "" {
+			t.Errorf("%s Content-Encoding = %q, want identity (already-compressed medium)", name, got)
+		}
+		if len(body) < 1<<20 {
+			t.Errorf("%s body = %d bytes, want the full identity body", name, len(body))
+		}
+	}
+}
+
+// TestMutC_ArtifactGzipValidators pins If-None-Match: "*" (a one-byte
+// header value) matching any representation, and the 304 header diet.
+func TestMutC_ArtifactGzipValidators(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "big.glb", bigGLB())
+	srv := newArtifactTestServer(t, dir)
+
+	status, h, body, _ := probeArtifact(t, srv.URL+"/artifacts/big.glb", "gzip",
+		map[string]string{"If-None-Match": "*"})
+	if status != http.StatusNotModified {
+		t.Fatalf("INM * status = %d, want 304", status)
+	}
+	if len(body) != 0 {
+		t.Errorf("304 body = %d bytes, want 0", len(body))
+	}
+	if got := h.Get("Content-Type"); got != "" {
+		t.Errorf("304 Content-Type = %q, want empty (writeNotModified drops representation headers)", got)
+	}
+	if got := h.Get("Content-Encoding"); got != "" {
+		t.Errorf("304 Content-Encoding = %q, want empty", got)
+	}
+	if !gzipETagRe.MatchString(h.Get("ETag")) {
+		t.Errorf("304 ETag = %q, want the gz- validator", h.Get("ETag"))
+	}
+}
+
+func TestMutC_ArtifactGzipHEADNoContentLength(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "big.glb", bigGLB())
+	srv := newArtifactTestServer(t, dir)
+
+	req, err := http.NewRequest(http.MethodHead, srv.URL+"/artifacts/big.glb", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if resp.ContentLength != -1 {
+		t.Errorf("HEAD ContentLength = %d, want -1 (HEAD returns before the compressed body is sized)", resp.ContentLength)
+	}
+	if got := resp.Header.Get("ETag"); !gzipETagRe.MatchString(got) {
+		t.Errorf("HEAD ETag = %q, want the gz- validator", got)
+	}
+}
+
+func TestMutC_ETagMatchesDirect(t *testing.T) {
+	tests := []struct {
+		name string
+		inm  string
+		etag string
+		want bool
+	}{
+		{"star matches anything", "*", `"abc"`, true},
+		{"exact", `"abc"`, `"abc"`, true},
+		{"weak prefix counts", `W/"abc"`, `"abc"`, true},
+		{"list with spaces", `"zzz", "abc" `, `"abc"`, true},
+		{"no match", `"zzz"`, `"abc"`, false},
+		{"empty header", ``, `"abc"`, false},
+	}
+	for _, tt := range tests {
+		if got := etagMatches(tt.inm, tt.etag); got != tt.want {
+			t.Errorf("%s: etagMatches(%q, %q) = %v, want %v", tt.name, tt.inm, tt.etag, got, tt.want)
+		}
+	}
+}
+
+func TestMutC_NotModifiedSinceDirect(t *testing.T) {
+	mtime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	fresh := mtime.UTC().Format(http.TimeFormat)
+	stale := mtime.Add(-time.Hour).UTC().Format(http.TimeFormat)
+	tests := []struct {
+		name    string
+		ims     string
+		modtime time.Time
+		want    bool
+	}{
+		{"empty header", "", mtime, false},
+		// A zero modtime is the bundled-template case; the guard must reject
+		// before ParseTime runs, and a mutated guard flips this to true.
+		{"zero modtime with valid ims", fresh, time.Time{}, false},
+		{"equal second is fresh", fresh, mtime, true},
+		{"older validator is fresh", stale, mtime, false},
+		{"malformed ims", "not-a-date", mtime, false},
+	}
+	for _, tt := range tests {
+		if got := notModifiedSince(tt.ims, tt.modtime); got != tt.want {
+			t.Errorf("%s: notModifiedSince(%q, %v) = %v, want %v", tt.name, tt.ims, tt.modtime, got, tt.want)
+		}
+	}
+}
+
+func TestMutC_ArtifactContentTypeGltf(t *testing.T) {
+	if got := artifactContentType("scene.GLTF"); got != "model/gltf+json" {
+		t.Errorf("gltf = %q, want model/gltf+json", got)
+	}
+	if got := artifactContentType("scene.glb"); got != "model/gltf-binary" {
+		t.Errorf("glb = %q, want model/gltf-binary", got)
+	}
+	if got := artifactContentType("scene.html"); got != "" {
+		t.Errorf("html = %q, want empty (no explicit map)", got)
+	}
+}
+
+func TestMutC_ArtifactListNewestFirstOrder(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFile(t, dir, "old.html", "old")
+	writeArtifactFile(t, dir, "new.html", "newer")
+	writeArtifactFile(t, dir, "mid.html", "mid")
+	setArtifactMtime(t, filepath.Join(dir, "old.html"), time.UnixMilli(1000))
+	setArtifactMtime(t, filepath.Join(dir, "mid.html"), time.UnixMilli(2000))
+	setArtifactMtime(t, filepath.Join(dir, "new.html"), time.UnixMilli(3000))
+	srv := newArtifactTestServer(t, dir)
+
+	status, _, body := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	var items []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &items); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3", len(items))
+	}
+	if items[0].Name != "new.html" || items[1].Name != "mid.html" || items[2].Name != "old.html" {
+		t.Fatalf("order = [%s %s %s], want newest first [new mid old]", items[0].Name, items[1].Name, items[2].Name)
+	}
+
+	// Equal mtimes must keep the walk order (a "<=" comparator reverses
+	// equal-key items under SliceStable's insertion pass).
+	writeArtifactFile(t, dir, "t1.html", "1")
+	writeArtifactFile(t, dir, "t2.html", "2")
+	eq := time.UnixMilli(5000)
+	setArtifactMtime(t, filepath.Join(dir, "t1.html"), eq)
+	setArtifactMtime(t, filepath.Join(dir, "t2.html"), eq)
+	status, _, body = getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusOK {
+		t.Fatalf("second list status = %d, want 200", status)
+	}
+	items = nil
+	if err := json.Unmarshal(body, &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 5 {
+		t.Fatalf("items = %d, want 5", len(items))
+	}
+	if items[0].Name != "t1.html" || items[1].Name != "t2.html" {
+		t.Fatalf("equal-mtime order = [%s %s], want the stable walk order [t1 t2]", items[0].Name, items[1].Name)
+	}
+}
+
+// TestMutC_ArtifactClearENOTDIR500 registers the routes under a path whose
+// parent is a regular file: stat fails with ENOTDIR (not IsNotExist), which
+// must surface as 500 rather than the nothing-to-clear 204.
+func TestMutC_ArtifactClearENOTDIR500(t *testing.T) {
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "blocker")
+	mutCWriteFile(t, blocker, []byte("file"))
+	bad := filepath.Join(blocker, "artifacts")
+	mux := http.NewServeMux()
+	RegisterArtifactRoutes(mux, bad, observeStubFn(nil, "", false))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	if status := deleteArtifact(t, srv.URL+"/api/artifacts"); status != http.StatusInternalServerError {
+		t.Fatalf("delete status = %d, want 500 (ENOTDIR is not the nothing-to-clear case)", status)
+	}
+	status, _, _ := getArtifactList(t, srv.URL+"/api/artifacts")
+	if status != http.StatusInternalServerError {
+		t.Fatalf("list status = %d, want 500 (ENOTDIR walk error surfaces)", status)
+	}
+}
+
+func TestMutC_ArtifactFilePathDirect(t *testing.T) {
+	dir := t.TempDir()
+	if got, status := artifactFilePath(dir, ""); got != "" || status != http.StatusBadRequest {
+		t.Errorf("empty name = (%q, %d), want (\"\", 400)", got, status)
+	}
+	full, status := artifactFilePath(dir, "sub/game.html")
+	if status != 0 || full != filepath.Join(dir, "sub", "game.html") {
+		t.Errorf("nested = (%q, %d), want the joined path", full, status)
+	}
+	if _, status := artifactFilePath(dir, "../secret"); status != http.StatusBadRequest {
+		t.Errorf("traversal status = %d, want 400", status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// artifacts.go — gzip cache
+// ---------------------------------------------------------------------------
+
+// mutCCacheCounts wraps a deterministic payload producer that records calls.
+type mutCCacheCounts struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (cc *mutCCacheCounts) compress(key string, payload []byte) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		cc.mu.Lock()
+		cc.calls = append(cc.calls, key)
+		cc.mu.Unlock()
+		return payload, nil
+	}
+}
+
+func (cc *mutCCacheCounts) count(key string) int {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	n := 0
+	for _, k := range cc.calls {
+		if k == key {
+			n++
+		}
+	}
+	return n
+}
+
+func mutCCacheGet(t *testing.T, c *gzipCache, path string, mtime, size int64, compress func() ([]byte, error)) []byte {
+	t.Helper()
+	// A mutant that drops an unlock deadlocks here; fail fast instead of
+	// stalling the whole suite.
+	var gz []byte
+	mutCDeadline(t, 5*time.Second, "gzipCache.get "+path, func() {
+		out, err := c.get(path, mtime, size, compress)
+		if err != nil {
+			t.Errorf("get %s: %v", path, err)
+			return
+		}
+		gz = out
+	})
+	return gz
+}
+
+// TestMutC_GzipCacheIdentity pins that a cached entry is keyed by the full
+// (mtime, size) identity and that replacing an entry updates the byte
+// accounting instead of accumulating.
+func TestMutC_GzipCacheIdentity(t *testing.T) {
+	c := newGzipCache(4, 1<<30)
+	cc := &mutCCacheCounts{}
+
+	gz1 := []byte(strings.Repeat("1", 10))
+	gz2 := []byte(strings.Repeat("2", 30))
+	if out := mutCCacheGet(t, c, "p", 100, 1, cc.compress("p", gz1)); !bytes.Equal(out, gz1) {
+		t.Fatalf("first get = %q, want the compressed payload", out)
+	}
+	c.mu.Lock()
+	bytes1, tick1 := c.bytes, c.tick
+	c.mu.Unlock()
+	if bytes1 != 10 {
+		t.Fatalf("bytes after insert = %d, want 10", bytes1)
+	}
+
+	// Same path, new mtime: identity mismatch must re-compress.
+	out := mutCCacheGet(t, c, "p", 200, 1, cc.compress("p", gz2))
+	if cc.count("p") != 2 {
+		t.Fatalf("compress calls = %d, want 2 (changed mtime invalidates)", cc.count("p"))
+	}
+	if !bytes.Equal(out, gz2) {
+		t.Fatalf("second get = %q, want the fresh payload (stale identity must not be served)", out)
+	}
+	// Same path, new size: same rule.
+	mutCCacheGet(t, c, "p", 200, 2, cc.compress("p", gz1))
+	if cc.count("p") != 3 {
+		t.Fatalf("compress calls = %d, want 3 (changed size invalidates)", cc.count("p"))
+	}
+	c.mu.Lock()
+	bytes2, tick2 := c.bytes, c.tick
+	entry := c.entries["p"]
+	c.mu.Unlock()
+	if bytes2 != 10 {
+		t.Fatalf("bytes after replacement = %d, want 10 (old entry subtracted, new added)", bytes2)
+	}
+	if entry == nil || entry.size != 2 || entry.mtimeNano != 200 {
+		t.Fatalf("entry = %+v, want the newest identity", entry)
+	}
+	if tick2 <= tick1 {
+		t.Fatalf("tick = %d after more gets, must advance (was %d)", tick2, tick1)
+	}
+}
+
+// TestMutC_GzipCacheJoinError pins single-flight error propagation: a joiner
+// must receive the leader's error, not start its own compression.
+func TestMutC_GzipCacheJoinError(t *testing.T) {
+	c := newGzipCache(2, 1<<30)
+	leaderStarted := make(chan struct{})
+	release := make(chan struct{})
+	var calls int32
+	compress := func() ([]byte, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			close(leaderStarted)
+			<-release
+			return nil, errors.New("leader boom")
+		}
+		return nil, errors.New("joiner boom")
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := c.get("p", 1, 1, compress)
+		errs <- err
+	}()
+	<-leaderStarted
+	go func() {
+		_, err := c.get("p", 1, 1, compress)
+		errs <- err
+	}()
+	// Give the joiner a moment to observe the in-flight call before releasing.
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: joins must observe the in-flight call before release
+	close(release)
+
+	var joinerErr error
+	mutCDeadline(t, 5*time.Second, "joined get", func() {
+		e1, e2 := <-errs, <-errs
+		if e1 == nil || e2 == nil {
+			t.Errorf("errors = %v / %v, want both non-nil", e1, e2)
+		}
+		if e1.Error() != "leader boom" {
+			t.Errorf("first error = %v, want leader boom", e1)
+		}
+		joinerErr = e2
+	})
+	if joinerErr == nil || joinerErr.Error() != "leader boom" {
+		t.Fatalf("joiner error = %v, want the leader's error (single flight)", joinerErr)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("compress calls = %d, want 1 (joiner must not re-compress)", got)
+	}
+}
+
+// TestMutC_GzipCacheLRUTickAndVictim pins the LRU clock: inserts and hits
+// advance tick, lastUsed reflects recency, and eviction picks the true LRU.
+func TestMutC_GzipCacheLRUTickAndVictim(t *testing.T) {
+	c := newGzipCache(2, 1<<30)
+	cc := &mutCCacheCounts{}
+
+	mutCCacheGet(t, c, "a", 1, 1, cc.compress("a", []byte("aaaaaa")))
+	mutCCacheGet(t, c, "b", 1, 1, cc.compress("b", []byte("bbbbbb")))
+	c.mu.Lock()
+	usedA, usedB := c.entries["a"].lastUsed, c.entries["b"].lastUsed
+	c.mu.Unlock()
+	if usedA != 1 || usedB != 2 {
+		t.Fatalf("lastUsed = a:%d b:%d, want 1 and 2 (insert stamps recency)", usedA, usedB)
+	}
+	// Touch a: it becomes most recent, b the victim.
+	mutCCacheGet(t, c, "a", 1, 1, cc.compress("a", nil))
+	mutCCacheGet(t, c, "c", 1, 1, cc.compress("c", []byte("cccccc")))
+
+	c.mu.Lock()
+	tick := c.tick
+	_, hasB := c.entries["b"]
+	_, hasA := c.entries["a"]
+	_, hasC := c.entries["c"]
+	c.mu.Unlock()
+	if !hasA || hasB || !hasC {
+		t.Fatalf("entries after eviction: a=%v b=%v c=%v, want b evicted (LRU) and a,c resident", hasA, hasB, hasC)
+	}
+	// a-insert + b-insert + a-hit + c-insert = 4 ticks.
+	if tick != 4 {
+		t.Fatalf("tick = %d, want 4 (every insert and hit advances the LRU clock)", tick)
+	}
+	if cc.count("b") != 1 {
+		t.Fatalf("b compress calls = %d, want 1", cc.count("b"))
+	}
+}
+
+// TestMutC_GzipCacheOversizedEntryKept pins the documented cap escape: a
+// single entry larger than maxBytes stays servable instead of evicting
+// itself.
+func TestMutC_GzipCacheOversizedEntryKept(t *testing.T) {
+	c := newGzipCache(3, 16)
+	cc := &mutCCacheCounts{}
+	payload := []byte(strings.Repeat("z", 40))
+
+	mutCCacheGet(t, c, "huge", 1, 1, cc.compress("huge", payload))
+	c.mu.Lock()
+	bytes, entry := c.bytes, c.entries["huge"]
+	c.mu.Unlock()
+	if entry == nil {
+		t.Fatal("oversized entry was evicted, want it servable (documented cap escape)")
+	}
+	if bytes != 40 {
+		t.Fatalf("bytes = %d, want 40", bytes)
+	}
+	mutCCacheGet(t, c, "huge", 1, 1, cc.compress("huge", payload))
+	if cc.count("huge") != 1 {
+		t.Fatalf("compress calls = %d, want 1 (oversized entry is cached)", cc.count("huge"))
+	}
+}
+
+// TestMutC_GzipCacheEvictionBytesAccounting pins that evicting a victim
+// subtracts (not assigns) its size.
+func TestMutC_GzipCacheEvictionBytesAccounting(t *testing.T) {
+	c := newGzipCache(3, 1<<30)
+	cc := &mutCCacheCounts{}
+	mutCCacheGet(t, c, "a", 1, 1, cc.compress("a", bytes.Repeat([]byte{1}, 10)))
+	mutCCacheGet(t, c, "b", 1, 1, cc.compress("b", bytes.Repeat([]byte{2}, 20)))
+	mutCCacheGet(t, c, "c", 1, 1, cc.compress("c", bytes.Repeat([]byte{3}, 30)))
+	mutCCacheGet(t, c, "d", 1, 1, cc.compress("d", bytes.Repeat([]byte{4}, 40)))
+
+	c.mu.Lock()
+	bytes := c.bytes
+	_, hasA := c.entries["a"]
+	c.mu.Unlock()
+	if hasA {
+		t.Fatal("a was not evicted at the entry cap")
+	}
+	if bytes != 20+30+40 {
+		t.Fatalf("bytes after eviction = %d, want %d (victim size subtracted)", bytes, 20+30+40)
+	}
+}
+
+// TestMutC_GzipCacheBudgetConstants pins the documented daemon-wide memory
+// budget. The byte cap is only observable with ~400MiB of resident entries,
+// which no hermetic test can produce; the constant itself is the contract.
+func TestMutC_GzipCacheBudgetConstants(t *testing.T) {
+	if artifactGzipCacheMaxEntries != 3 {
+		t.Errorf("artifactGzipCacheMaxEntries = %d, want 3 (documented resident-model budget)", artifactGzipCacheMaxEntries)
+	}
+	if artifactGzipCacheMaxBytes != 400<<20 {
+		t.Errorf("artifactGzipCacheMaxBytes = %d, want %d (documented pinned-memory budget)", artifactGzipCacheMaxBytes, 400<<20)
+	}
+	if artifactGzipMinSize != 1<<20 {
+		t.Errorf("artifactGzipMinSize = %d, want %d (floor under which gzip costs more than it saves)", artifactGzipMinSize, 1<<20)
+	}
+}
+
+// mutCFailWriter is an http.ResponseWriter whose Write always fails, so the
+// gzip write-error path fires deterministically.
+type mutCFailWriter struct {
+	hdr http.Header
+}
+
+func (w *mutCFailWriter) Header() http.Header { return w.hdr }
+
+func (w *mutCFailWriter) Write([]byte) (int, error) { return 0, errors.New("peer went away") }
+
+func (w *mutCFailWriter) WriteHeader(int) {}
+
+// TestMutC_ArtifactGzipWriteErrorWarns pins that a failed body write logs
+// instead of passing silently (the only externally visible effect).
+func TestMutC_ArtifactGzipWriteErrorWarns(t *testing.T) {
+	rec := mutCCaptureSlog(t)
+	resetArtifactGzipCache(t)
+	path := filepath.Join(t.TempDir(), "warn.txt")
+	mutCWriteFile(t, path, []byte(strings.Repeat("w", 2048)))
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	mutCDeadline(t, 5*time.Second, "serveArtifactGzipped", func() {
+		serveArtifactGzipped(&mutCFailWriter{hdr: http.Header{}}, r, f, st)
+	})
+	if !rec.hasMessage("artifact gzip write") {
+		t.Fatalf("log messages = %v, want an \"artifact gzip write\" warn", rec.messages())
+	}
 }

@@ -2,9 +2,11 @@ package wui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -581,5 +583,380 @@ func TestVNCPumpWriteFailure(t *testing.T) {
 	}
 	if _, _, err := aClient.ReadMessage(); err == nil {
 		t.Error("relay must close both conns after a pump write failure")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// remotedesktop.go
+// ---------------------------------------------------------------------------
+
+// Kills remotedesktop.go:49 (statement/remove: Cache-Control header).
+func TestMutD_RemoteDesktopGET_NoStoreHeader(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	resp, err := http.Get(srv.URL + "/api/settings/remotedesktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (devices may change via PUT at any time)", cc)
+	}
+}
+
+// Kills remotedesktop.go:170 (numbers x2), :179 (numbers x2) and :181
+// (conditional/negated, which panics on the nil resp of a refused dial):
+// error paths must report latency 0.
+func TestMutD_ProbeVNC_ErrorPathsReportZeroLatency(t *testing.T) {
+	latency, err := probeVNC(context.Background(), "")
+	if err == nil || err.Error() != "address is required" {
+		t.Fatalf("empty addr err = %v, want 'address is required'", err)
+	}
+	if latency != 0 {
+		t.Errorf("latency on normalize error = %d, want 0", latency)
+	}
+
+	latency2, err2 := probeVNC(context.Background(), "ws://127.0.0.1:1")
+	if err2 == nil {
+		t.Fatal("dial to a refused port must fail")
+	}
+	if latency2 != 0 {
+		t.Errorf("latency on dial error = %d, want 0", latency2)
+	}
+}
+
+// mutDDeviceServer upgrades one connection and records the negotiated
+// subprotocol from the device side.
+func mutDDeviceServer(t *testing.T, record func(string)) *httptest.Server {
+	t.Helper()
+	up := websocket.Upgrader{Subprotocols: []string{"binary"}, CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		record(ws.Subprotocol())
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Kills remotedesktop.go:173 (composite/field-clear: probe dialer
+// subprotocols): the probe must negotiate the binary subprotocol websockify
+// and noVNC speak.
+func TestMutD_ProbeVNC_NegotiatesBinarySubprotocol(t *testing.T) {
+	got := make(chan string, 4)
+	dev := mutDDeviceServer(t, func(s string) { got <- s })
+	if _, err := probeVNC(context.Background(), dev.URL); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	select {
+	case sub := <-got:
+		if sub != "binary" {
+			t.Fatalf("device negotiated subprotocol %q, want binary", sub)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("device never saw the probe dial")
+	}
+}
+
+// Kills remotedesktop.go:189 (numbers/incrementer): a sub-millisecond dial
+// must clamp to exactly 1, the documented floor.
+func TestMutD_ProbeVNC_LatencyFloorIsExactlyOne(t *testing.T) {
+	dev := mutDDeviceServer(t, func(string) {})
+	best := 0
+	for i := 0; i < 8; i++ {
+		lat, err := probeVNC(context.Background(), dev.URL)
+		if err != nil {
+			t.Fatalf("probe: %v", err)
+		}
+		if i == 0 || lat < best {
+			best = lat
+		}
+		if best == 1 {
+			break
+		}
+	}
+	if best != 1 {
+		t.Fatalf("best loopback latency = %d ms, want the floor of exactly 1 (loopback dials are sub-ms)", best)
+	}
+}
+
+// mutDHangListener accepts TCP connections and never answers: the handshake
+// timeout under test is the only way a dial to it terminates.
+func mutDHangListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			if _, err := ln.Accept(); err != nil {
+				return
+			}
+		}
+	}()
+	return "ws://" + ln.Addr().String()
+}
+
+// Kills remotedesktop.go:174 (composite/field-clear, arithmetic/base,
+// numbers/decrementer, numbers/incrementer): the probe dialer's handshake
+// timeout must fire at ~5s (mutants: 4s, 6s, or none until the 8s ctx cap).
+func TestMutD_ProbeVNC_HandshakeTimeout5s(t *testing.T) {
+	// No synctest here, measured: gorilla's HandshakeTimeout lands as a real
+	// fd SetDeadline while a bubble-parked dial goroutine freezes the virtual
+	// clock (wall 5s / bubble 0s), so the window must absorb scheduling
+	// noise instead. The upper bound stays below 6s to keep killing the
+	// 5s→6s HandshakeTimeout mutant (elapsed ≈6s).
+	addr := mutDHangListener(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	start := time.Now() // REAL-TIME
+	_, err := probeVNC(ctx, addr)
+	elapsed := time.Since(start) // REAL-TIME
+	if err == nil {
+		t.Fatal("dial to a hanging server must fail")
+	}
+	if elapsed < 4500*time.Millisecond || elapsed > 5950*time.Millisecond {
+		t.Fatalf("handshake timeout fired after %v, want ~5s", elapsed)
+	}
+}
+
+// Kills remotedesktop.go:245 (composite/field-clear, arithmetic/base,
+// numbers/decrementer, numbers/incrementer): the proxy's device dial must
+// time out at ~10s and surface a 1011 close to the browser client (mutants:
+// 9s, 11s, or none before the 12s read deadline).
+func TestMutD_VNCProxy_DeviceDialTimeout10s(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	addr := mutDHangListener(t)
+	seedSettings(t, `{"desktops":[{"name":"hang","addr":"`+addr+`"}]}`)
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	start := time.Now() // REAL-TIME
+	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/hang"), nil)
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer client.Close()
+	_ = client.SetReadDeadline(time.Now().Add(12 * time.Second)) // REAL-TIME
+	_, _, rerr := client.ReadMessage()
+	elapsed := time.Since(start) // REAL-TIME
+	ce, ok := rerr.(*websocket.CloseError)
+	if !ok || ce.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("client read err = %v, want a 1011 close after the device dial fails", rerr)
+	}
+	if elapsed < 9300*time.Millisecond || elapsed > 10700*time.Millisecond {
+		t.Fatalf("device dial failed after %v, want ~10s handshake timeout", elapsed)
+	}
+}
+
+// Kills remotedesktop.go:199 (composite/field-clear: vncUpgrader
+// subprotocols): the browser-facing upgrade must negotiate binary.
+func TestMutD_VNCProxy_ClientNegotiatesBinary(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	dev := mutDDeviceServer(t, func(string) {})
+	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+dev.URL+`"}]}`)
+	dialer := websocket.Dialer{Subprotocols: []string{"binary"}}
+	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/echo"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	if sub := client.Subprotocol(); sub != "binary" {
+		t.Fatalf("client negotiated subprotocol %q, want binary", sub)
+	}
+}
+
+// Kills remotedesktop.go:200 (composite/field-clear: CheckOrigin dropped,
+// gorilla then rejects cross-origin upgrades by default): the proxy must
+// accept browsers from any origin — it is same-origin by construction.
+func TestMutD_VNCProxy_CrossOriginAccepted(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	dev := mutDDeviceServer(t, func(string) {})
+	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+dev.URL+`"}]}`)
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	header := http.Header{"Origin": []string{"http://elsewhere.example:8080"}}
+	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/echo"), header)
+	if err != nil {
+		t.Fatalf("cross-origin dial must be accepted: %v", err)
+	}
+	_ = client.Close()
+}
+
+// Kills remotedesktop.go:244 (composite/field-clear: proxy dialer
+// subprotocols): the proxy must dial the device with the binary subprotocol.
+func TestMutD_VNCProxy_DeviceSeesBinarySubprotocol(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	subCh := make(chan string, 1)
+	dev := mutDDeviceServer(t, func(s string) { subCh <- s })
+	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+dev.URL+`"}]}`)
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/echo"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	select {
+	case sub := <-subCh:
+		if sub != "binary" {
+			t.Fatalf("device saw subprotocol %q, want binary", sub)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("proxy never dialed the device")
+	}
+}
+
+// Kills remotedesktop.go:223 (loop/break: break flipped to continue): with
+// duplicate device names only settings.json can produce, the FIRST match must
+// win; flipping to continue lets the last match hijack the lookup.
+func TestMutD_VNCProxy_DuplicateNamesFirstMatchWins(t *testing.T) {
+	srv := newRemoteDesktopServer(t)
+	dev := mutDDeviceServer(t, func(string) {})
+	// First "dup" points at a refused port; second at the live echo device.
+	// The loop's break must select the first, so the relay dies with 1011.
+	seedSettings(t, `{"desktops":[
+		{"name":"dup","addr":"ws://127.0.0.1:1"},
+		{"name":"dup","addr":"`+dev.URL+`"}]}`)
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/dup"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second)) // REAL-TIME
+	_, _, rerr := client.ReadMessage()
+	ce, ok := rerr.(*websocket.CloseError)
+	if !ok || ce.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("client read = %v, want 1011 close from the first (refused) device", rerr)
+	}
+	if !strings.Contains(ce.Text, "device dial failed") {
+		t.Errorf("close text = %q, want it to name the device dial failure", ce.Text)
+	}
+}
+
+// Kills remotedesktop.go:272 (statement/remove: trailing stop dropped): when
+// the main pump exits, relayWS itself must close both conns — the surviving
+// reverse pump would otherwise block on its read forever.
+func TestMutD_RelayWS_ClosesBothConnsWhenMainPumpExits(t *testing.T) {
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	mkPair := func() (*websocket.Conn, *websocket.Conn, *httptest.Server) {
+		srvConn := make(chan *websocket.Conn, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ws, err := up.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			srvConn <- ws
+		}))
+		client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+		if err != nil {
+			t.Fatalf("pair dial: %v", err)
+		}
+		return client, <-srvConn, srv
+	}
+	aC, aS, srvA := mkPair()
+	defer srvA.Close()
+	bC, bS, srvB := mkPair()
+	defer srvB.Close()
+
+	relayDone := make(chan struct{})
+	go func() {
+		relayWS(aS, bS)
+		close(relayDone)
+	}()
+	// Kill the b side: the MAIN pump (b→a) reads b and exits first, while the
+	// goroutine pump stays parked reading aS.
+	_ = bC.Close()
+	select {
+	case <-relayDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relayWS did not return after the main pump exited")
+	}
+	_ = aC.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
+	_, _, rerr := aC.ReadMessage()
+	if rerr == nil {
+		t.Fatal("a side must be closed after relay teardown")
+	}
+	if ne, ok := rerr.(net.Error); ok && ne.Timeout() {
+		t.Fatal("a peer still open after 2s — relayWS must close both conns so the parked pump unblocks")
+	}
+	_ = aC.Close()
+}
+
+// Kills remotedesktop.go:282 (branch/if): when ReadMessage fails MID-MESSAGE
+// it returns a valid message type plus partial data; the mutated pump falls
+// through and forwards those partial bytes, the original must not. The
+// mid-message error is produced deterministically with a read limit hit on
+// the second frame of a fragmented message.
+func TestMutD_PumpWS_ReadErrorForwardsNothing(t *testing.T) {
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+	// src side: the server pushes a fragmented binary message (2x64 bytes);
+	// the client under a 64-byte read limit errors mid-message after the
+	// first frame.
+	srcSrvConn := make(chan *websocket.Conn, 1)
+	srcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		srcSrvConn <- ws
+		frame1 := append([]byte{0x02, 0x40}, bytes.Repeat([]byte{0xA1}, 64)...) // binary, no FIN
+		frame2 := append([]byte{0x80, 0x40}, bytes.Repeat([]byte{0xB2}, 64)...) // continuation, FIN
+		if _, err := ws.UnderlyingConn().Write(append(frame1, frame2...)); err != nil {
+			return
+		}
+	}))
+	t.Cleanup(srcSrv.Close)
+
+	dstSrvConn := make(chan *websocket.Conn, 1)
+	dstSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		dstSrvConn <- ws
+	}))
+	t.Cleanup(dstSrv.Close)
+
+	src, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srcSrv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("src dial: %v", err)
+	}
+	defer src.Close()
+	src.SetReadLimit(64)
+	dst, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(dstSrv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dst dial: %v", err)
+	}
+	defer dst.Close()
+	dstS := <-dstSrvConn
+
+	pumped := make(chan struct{})
+	go func() {
+		pumpWS(src, dstS)
+		close(pumped)
+	}()
+
+	_ = dst.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // REAL-TIME
+	_, data, derr := dst.ReadMessage()
+	if derr == nil {
+		t.Fatalf("pump forwarded %d bytes after a failed read; the error path must write no frame", len(data))
+	}
+	if ne, ok := derr.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("dst read err = %v, want the 500ms deadline (silence, not a frame)", derr)
+	}
+	select {
+	case <-pumped:
+	case <-time.After(time.Second):
+		t.Fatal("pumpWS did not return after the read error")
 	}
 }

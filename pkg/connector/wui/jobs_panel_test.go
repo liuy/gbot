@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1910,5 +1911,315 @@ func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
 	}
 	if len(items[0].Blocks) != 0 {
 		t.Errorf("post-relist blocks = %+v, want none — flushed pending events must not replay", items[0].Blocks)
+	}
+}
+
+// mutDSlot builds a slot whose jobs maps exist, for direct calls into the
+// merge/capture helpers without a running watcher.
+func mutDSlot() *engineSlot {
+	return &engineSlot{
+		jobView:            make(map[string]*jobViewEntry),
+		jobFeeds:           make(map[string]*jobFeedState),
+		innerToolToFeed:    make(map[string]string),
+		pendingAgentEvents: make(map[string]*pendingAgentEvents),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// jobs_panel.go
+// ---------------------------------------------------------------------------
+
+// Kills jobs_panel.go:142 (expression/remove x2, expression/string-literal
+// x2): all three terminal statuses must be recognized.
+func TestMutD_IsTerminalJobStatus_AllThree(t *testing.T) {
+	for _, s := range []string{"completed", "failed", "killed"} {
+		if !isTerminalJobStatus(s) {
+			t.Errorf("isTerminalJobStatus(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"running", ""} {
+		if isTerminalJobStatus(s) {
+			t.Errorf("isTerminalJobStatus(%q) = true, want false", s)
+		}
+	}
+}
+
+// Kills jobs_panel.go:236 (statement/remove: vanish-drop log).
+func TestMutD_MergeLogs_RunningJobVanishDrop(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	slot := mutDSlot()
+	slot.jobView["gone"] = &jobViewEntry{item: jobWireItem{ID: "gone", Kind: "bash", Status: "running", StartedMs: 1}}
+	c := &WUIConnector{}
+	c.mergeJobSummariesLocked(slot, nil)
+	if _, ok := slot.jobView["gone"]; ok {
+		t.Error("running job missing from the registry must be dropped from the view")
+	}
+	if rec.count(slog.LevelInfo, "wui:jobs: running job missing from registry, dropping") != 1 {
+		t.Fatal("vanish drop must log the wui:jobs drop line exactly once")
+	}
+}
+
+// Kills jobs_panel.go:254 (statement/remove: cap-eviction log).
+func TestMutD_MergeLogs_CapEviction(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	slot := mutDSlot()
+	summaries := make([]*job.JobInfo, 0, 201)
+	for i := 1; i <= 201; i++ {
+		summaries = append(summaries, bgBashJob(mutDCapID(i), "completed", "cmd", int64(1000+i)))
+	}
+	c := &WUIConnector{}
+	c.mergeJobSummariesLocked(slot, summaries)
+	if len(slot.jobView) != jobsViewCap {
+		t.Fatalf("view len = %d, want %d", len(slot.jobView), jobsViewCap)
+	}
+	if rec.count(slog.LevelInfo, "wui:jobs: view over cap, evicting oldest terminal") != 1 {
+		t.Fatal("cap eviction must log the wui:jobs eviction line exactly once")
+	}
+}
+
+func mutDCapID(i int) string {
+	return "cap-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+}
+
+// Kills jobs_panel.go:262 (statement/remove: TTL sweep log).
+func TestMutD_MergeLogs_StalePendingSweep(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	slot := mutDSlot()
+	slot.pendingAgentEvents["toolu_stale"] = &pendingAgentEvents{
+		firstSeen: time.Now().Add(-jobsPendingTTL() - 5*time.Second), // REAL-TIME
+		events:    []types.QueryEvent{{Type: types.EventTextDelta, Text: "stale"}},
+	}
+	c := &WUIConnector{}
+	c.mergeJobSummariesLocked(slot, nil)
+	if len(slot.pendingAgentEvents) != 0 {
+		t.Fatalf("pendingAgentEvents len = %d, want 0 after the TTL sweep", len(slot.pendingAgentEvents))
+	}
+	if rec.count(slog.LevelInfo, "wui:jobs: sweeping stale pending agent events") != 1 {
+		t.Fatal("TTL sweep must log the wui:jobs sweep line exactly once")
+	}
+}
+
+// Kills jobs_panel.go:269 (expression/remove): nil entries must not panic and
+// foreground jobs must not be tailed — only backgrounded bash jobs.
+func TestMutD_MergeTailIDs_FiltersNilForegroundAndFeeds(t *testing.T) {
+	slot := mutDSlot()
+	slot.jobView["f1"] = &jobViewEntry{item: jobWireItem{ID: "f1", Kind: "bash", Status: "completed"}}
+	slot.jobView["b1"] = &jobViewEntry{item: jobWireItem{ID: "b1", Kind: "bash", Status: "running"}}
+	summaries := []*job.JobInfo{
+		nil,
+		{ID: "f1", Type: "bash", Status: "completed", Backgrounded: false},
+		{ID: "b1", Type: "bash", Status: "running", Backgrounded: true},
+	}
+	c := &WUIConnector{}
+	got := c.mergeJobSummariesLocked(slot, summaries)
+	if len(got) != 1 || got[0] != "b1" {
+		t.Fatalf("tailIDs = %v, want exactly [b1] (backgrounded bash only)", got)
+	}
+}
+
+// Kills jobs_panel.go:297 (statement/return) and :380 (statement/return):
+// every job in a round shares one StartedMs, so ONLY the ID tiebreak orders
+// the group — a zeroed tiebreak return leaves the group in map-iteration
+// order, which Go randomizes per range as a rotation of insertion order.
+// Each round uses freshly built maps, so a surviving mutant must draw the
+// identity rotation in both paths across every round.
+func TestMutD_JobSort_TiebreakOrdersBothOutputs(t *testing.T) {
+	c := &WUIConnector{done: make(chan struct{})}
+	c.outQ.Store(newOutQueue(outQueueCapacity))
+	c.activeWS.Store(&websocket.Conn{})
+
+	ids := []string{
+		"k-01", "k-02", "k-03", "k-04", "k-05",
+		"k-06", "k-07", "k-08", "k-09", "k-10",
+	}
+	want := ids
+
+	for round := 0; round < 6; round++ {
+		slot := mutDSlot()
+		slot.active.Store(true)
+		for _, id := range ids {
+			slot.jobView[id] = &jobViewEntry{item: jobWireItem{ID: id, Kind: "bash", Status: "running", StartedMs: 7777}}
+		}
+
+		frames := c.collectJobFramesLocked(slot)
+		if len(frames) != 1 {
+			t.Fatalf("round %d: frames = %d, want exactly one job_list push", round, len(frames))
+		}
+		var list jobListOutbound
+		if err := json.Unmarshal([]byte(frames[0]), &list); err != nil {
+			t.Fatal(err)
+		}
+		if got := jobIDs(list.Jobs); !mutDStringSlicesEqual(got, want) {
+			t.Fatalf("round %d: job_list tie order = %v, want %v", round, got, want)
+		}
+
+		raw := c.buildJobsMetadata(slot)
+		if raw == nil {
+			t.Fatalf("round %d: metadata jobs = nil, want snapshot", round)
+		}
+		var env jobsMetadataOutbound
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatal(err)
+		}
+		if got := hydratedIDs(env.Jobs); !mutDStringSlicesEqual(got, want) {
+			t.Fatalf("round %d: metadata tie order = %v, want %v", round, got, want)
+		}
+	}
+}
+
+func mutDStringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Kills jobs_panel.go:346 (statement/remove: Unlock dropped): the forced
+// snapshot must release jobsMu or every later watcher beat deadlocks.
+func TestMutD_PushJobsSnapshot_ReleasesLock(t *testing.T) {
+	c := &WUIConnector{}
+	slot := mutDSlot()
+	c.pushJobsSnapshot(slot)
+	if !waitFor(time.Second, func() bool { return slot.jobsMu.TryLock() }) {
+		t.Fatal("pushJobsSnapshot must release jobsMu before returning")
+	}
+	slot.jobsMu.Unlock()
+}
+
+// Kills jobs_panel.go:359 (statement/defer-remove): with the unlock made
+// immediate, buildJobsMetadata iterates jobView without the lock while a
+// locked writer mutates the same map — the Go runtime aborts the process on
+// concurrent map iteration and map write.
+func TestMutD_BuildJobsMetadata_HoldsLockDuringRead(t *testing.T) {
+	slot := mutDSlot()
+	slot.jobView["k"] = &jobViewEntry{item: jobWireItem{ID: "k", Kind: "bash", Status: "running", StartedMs: 1}}
+	c := &WUIConnector{}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			slot.jobsMu.Lock()
+			for i := 0; i < 64; i++ {
+				slot.jobView["k"] = &jobViewEntry{item: jobWireItem{ID: "k", Kind: "bash", Status: "running", StartedMs: int64(i)}}
+			}
+			slot.jobsMu.Unlock()
+		}
+	}()
+	var last json.RawMessage
+	for range 2000 {
+		if raw := c.buildJobsMetadata(slot); raw != nil {
+			last = raw
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if last == nil {
+		t.Fatal("buildJobsMetadata never produced a snapshot")
+	}
+}
+
+// Kills jobs_panel.go:465 (statement/defer-remove): with the unlock made
+// immediate, two captureJobEvent callers append to the same pending list
+// without the lock and updates are lost. Serialized by jobsMu the count is
+// exact.
+func TestMutD_CaptureJobEvent_HoldsLockDuringAppend(t *testing.T) {
+	slot := mutDSlot()
+	c := &WUIConnector{}
+	ev := types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_ghost"}, Text: "x"}
+	const iters = 30000
+	var wg sync.WaitGroup
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iters {
+				c.captureJobEvent(slot, ev)
+			}
+		}()
+	}
+	wg.Wait()
+	slot.jobsMu.Lock()
+	n := len(slot.pendingAgentEvents["toolu_ghost"].events)
+	slot.jobsMu.Unlock()
+	if n != 2*iters {
+		t.Fatalf("pending events = %d, want exactly %d (the append must run under jobsMu)", n, 2*iters)
+	}
+}
+
+// Kills jobs_panel.go:456 (expression/remove: both operand mutants) and :460
+// (branch/if): nil Agent and empty-parent events return early; non-feed event
+// types park nothing.
+func TestMutD_CaptureJobEvent_Guards(t *testing.T) {
+	c := &WUIConnector{}
+	// nil Agent: the guard must return before touching event.Agent
+	c.captureJobEvent(mutDSlot(), types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+
+	// Agent present but empty parent: nothing may be parked under ""
+	slot := mutDSlot()
+	c.captureJobEvent(slot, types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{}, Text: "x"})
+	if len(slot.pendingAgentEvents) != 0 {
+		t.Errorf("pendingAgentEvents = %+v, want empty for an empty-parent event", slot.pendingAgentEvents)
+	}
+
+	// Non-feed event type: usage/lifecycle events contribute no blocks and
+	// must not be parked for later replay.
+	slot2 := mutDSlot()
+	c.captureJobEvent(slot2, types.QueryEvent{Type: types.EventQueryEnd, Agent: &types.AgentMeta{ParentToolUseID: "toolu_ghost"}})
+	if len(slot2.pendingAgentEvents) != 0 {
+		t.Errorf("pendingAgentEvents = %+v, want empty for a non-feed event type", slot2.pendingAgentEvents)
+	}
+}
+
+// Kills jobs_panel.go:399 (expression/remove: !jobHasFeed term dropped): a
+// bash entry must not reclaim the feed of its (still live) parent agent job.
+func TestMutD_DeleteJobEntry_BashKeepsForeignFeed(t *testing.T) {
+	slot := mutDSlot()
+	slot.jobView["bashjob"] = &jobViewEntry{item: jobWireItem{ID: "bashjob", Kind: "bash", Status: "completed", ParentToolUseID: "toolu_live"}}
+	slot.jobFeeds["toolu_live"] = &jobFeedState{}
+	slot.innerToolToFeed["inner_t"] = "toolu_live"
+	c := &WUIConnector{}
+	c.deleteJobEntryLocked(slot, "bashjob")
+	if _, ok := slot.jobView["bashjob"]; ok {
+		t.Error("the bash entry itself must be deleted")
+	}
+	if _, ok := slot.jobFeeds["toolu_live"]; !ok {
+		t.Error("feed toolu_live must survive: it belongs to a live agent job, not the bash entry")
+	}
+	if _, ok := slot.innerToolToFeed["inner_t"]; !ok {
+		t.Error("route inner_t must survive the bash entry deletion")
+	}
+}
+
+// Kills jobs_panel.go:507 (expression/remove: both operand mutants):
+// ToolStart with a nil ToolUse must not panic, and a non-ToolStart event
+// carrying a ToolUse must not register an inner route.
+func TestMutD_ApplyAgentEvent_RouteRegistrationGuard(t *testing.T) {
+	slot := mutDSlot()
+	slot.jobFeeds["toolu_f"] = &jobFeedState{}
+	c := &WUIConnector{}
+	c.applyAgentEventLocked(slot, "toolu_f", types.QueryEvent{
+		Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_f"},
+	})
+	if len(slot.innerToolToFeed) != 0 {
+		t.Errorf("innerToolToFeed = %v, want empty for ToolStart without a ToolUse payload", slot.innerToolToFeed)
+	}
+	c.applyAgentEventLocked(slot, "toolu_f", types.QueryEvent{
+		Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_f"},
+		ToolUse: &types.ToolUseEvent{ID: "t9"}, Text: "x",
+	})
+	if len(slot.innerToolToFeed) != 0 {
+		t.Errorf("innerToolToFeed = %v, want empty: only ToolStart registers routes", slot.innerToolToFeed)
 	}
 }

@@ -455,3 +455,140 @@ func TestAttachmentAccumulator_HandleEnd_AfterReset_LazyInitsSavedAndSavesAgain(
 		t.Error("contents2[0].Source.Path = empty, want populated from saved[r2].path")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// attachment.go
+// ---------------------------------------------------------------------------
+
+// Kills attachment.go:15 (numbers x4): the cap must be exactly 50 MiB —
+// literal sizes, not the constant symbol, so a mutated constant cannot
+// self-fulfill the comparison.
+func TestMutD_AttachmentCapExactly50MiB(t *testing.T) {
+	acc := &attachmentAccumulator{}
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "edge", Name: "x.bin", Size: int64(50) << 20}); errMsg != "" {
+		t.Fatalf("size exactly 50 MiB must be accepted, got %q", errMsg)
+	}
+	over := &attachmentAccumulator{}
+	errMsg := over.handleStart(attachmentStartMsg{ID: "over", Name: "x.bin", Size: int64(51)<<20 - 1})
+	if errMsg == "" {
+		t.Fatal("size 51 MiB - 1 must be rejected")
+	}
+	if !strings.Contains(errMsg, "too large") {
+		t.Errorf("errMsg = %q, want substring 'too large'", errMsg)
+	}
+}
+
+// Kills attachment.go:130 (branch/if via nil-buf panic, statement/return via
+// the exact error string).
+func TestMutD_HandleEnd_NoActiveExactError(t *testing.T) {
+	acc := &attachmentAccumulator{}
+	if got := acc.handleEnd("ghost", nil); got != "no active attachment" {
+		t.Fatalf("handleEnd with no active upload = %q, want the exact 'no active attachment' message", got)
+	}
+}
+
+// Kills attachment.go:156 (expression/error-guard), :157 (branch/if),
+// :158 (statement/remove), :159 (statement/return): a failing Save must
+// return the save-failed error, clear the active upload, and not record a
+// saved entry. The failure is forced by parking a directory at the exact
+// destination path, which makes the atomic Rename fail — no permission tricks.
+func TestMutD_HandleEnd_SaveFailurePath(t *testing.T) {
+	store := newAccStore(t)
+	acc := &attachmentAccumulator{}
+	data := []byte("pretend document bytes")
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "d1", Name: "report.pdf", Size: int64(len(data))}); errMsg != "" {
+		t.Fatalf("handleStart: %q", errMsg)
+	}
+	if errMsg := acc.handleBinary(data); errMsg != "" {
+		t.Fatalf("handleBinary: %q", errMsg)
+	}
+	dst := store.Path(media.CategoryDocument, data, ".pdf")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	errMsg := acc.handleEnd("d1", store)
+	if errMsg == "" || !strings.Contains(errMsg, "save failed") {
+		t.Fatalf("errMsg = %q, want a 'save failed' error", errMsg)
+	}
+	if acc.activeID != "" {
+		t.Errorf("activeID = %q, want cleared after save failure", acc.activeID)
+	}
+	if _, ok := acc.saved["d1"]; ok {
+		t.Error("saved must not gain an entry when the store write failed")
+	}
+}
+
+// Kills attachment.go:175 (statement/return) and :185 (statement/return):
+// document classification must return real mime/ext/kind values.
+func TestMutD_ClassifyAttachmentDocumentValues(t *testing.T) {
+	mime, ext, kind := classifyAttachment([]byte("not an image"), "report.pdf", "text/plain")
+	if mime != "application/pdf" {
+		t.Errorf("mime = %q, want application/pdf", mime)
+	}
+	if ext != ".pdf" {
+		t.Errorf("ext = %q, want .pdf (filename extension preserved)", ext)
+	}
+	if kind != "document" {
+		t.Errorf("kind = %q, want document", kind)
+	}
+	if got := preserveDocExt("archive"); got != ".bin" {
+		t.Errorf("preserveDocExt(no extension) = %q, want .bin", got)
+	}
+}
+
+// Kills attachment.go:200 (loop/break: continue flipped to break): the missing
+// scan must continue past the first missing id — later ids still report.
+func TestMutD_BuildContents_MissingScanContinues(t *testing.T) {
+	acc := &attachmentAccumulator{}
+	acc.bindSaved("present", savedAttachment{path: "/cache/x.pdf", mime: "application/pdf", ext: ".pdf", kind: "document"})
+	out, missing := acc.buildContents([]inboundAttachment{
+		{ID: "miss1", Name: "a.pdf", Size: 1},
+		{ID: "present", Name: "b.pdf", Size: 1},
+		{ID: "miss2", Name: "c.pdf", Size: 1},
+	})
+	if out != nil {
+		t.Fatalf("out = %+v, want nil when ids are missing", out)
+	}
+	if missing != "miss1, miss2" {
+		t.Fatalf("missing = %q, want %q (every missing id, comma-joined)", missing, "miss1, miss2")
+	}
+}
+
+// Kills attachment.go:209 (composite/field-clear: Source.Type zeroed).
+func TestMutD_BuildContents_SourceTypeFile(t *testing.T) {
+	acc := &attachmentAccumulator{}
+	acc.bindSaved("img1", savedAttachment{path: "/cache/i.png", mime: "image/png", ext: ".png", kind: "image"})
+	out, missing := acc.buildContents([]inboundAttachment{{ID: "img1", Name: "photo.png", Mime: "image/png", Size: 5}})
+	if missing != "" {
+		t.Fatalf("missing = %q, want empty", missing)
+	}
+	if len(out) != 1 {
+		t.Fatalf("out len = %d, want 1", len(out))
+	}
+	src := out[0].Source
+	if src.Type != "file" {
+		t.Errorf("Source.Type = %q, want file", src.Type)
+	}
+	if out[0].Type != "image" {
+		t.Errorf("Type = %q, want image", out[0].Type)
+	}
+	if src.Path != "/cache/i.png" || src.Mime != "image/png" || src.Name != "photo.png" || src.Size != 5 {
+		t.Errorf("source = %+v, want the saved/upload metadata verbatim", src)
+	}
+}
+
+// Kills attachment.go:237 (statement/remove: activeID not cleared): after a
+// reset, a fresh upload must be accepted, not rejected as "in progress".
+func TestMutD_Reset_AllowsFreshUpload(t *testing.T) {
+	acc := &attachmentAccumulator{}
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "r1", Name: "x.png", Size: 4}); errMsg != "" {
+		t.Fatalf("first handleStart: %q", errMsg)
+	}
+	acc.reset()
+	if errMsg := acc.handleStart(attachmentStartMsg{ID: "r2", Name: "y.png", Size: 4}); errMsg != "" {
+		t.Fatalf("handleStart after reset = %q, want accepted (activeID must be cleared)", errMsg)
+	}
+	if acc.activeID != "r2" {
+		t.Errorf("activeID = %q, want r2", acc.activeID)
+	}
+}

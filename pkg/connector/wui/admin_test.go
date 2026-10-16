@@ -3,6 +3,8 @@ package wui
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -545,5 +547,265 @@ func TestAdminStateGET_CarriesPid(t *testing.T) {
 	}
 	if body.Build != "" {
 		t.Errorf("build must stay top-level, got %q", body.Build)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BusyReport / activeSessionTitle / inFlightPromptExcerpt / truncateRunes
+// (lines 893-997)
+// ---------------------------------------------------------------------------
+
+func busyMockA3(id string, busy bool, jobs []*job.JobInfo) *mockEngine {
+	return &mockEngine{
+		engineIDFn: func() string { return id },
+		isBusyFn:   func() bool { return busy },
+		jobsFn:     func() []*job.JobInfo { return jobs },
+		listSessionsFn: func(int) ([]*short.Session, error) {
+			return []*short.Session{{SessionID: "test-session", Title: "Sess-" + id}}, nil
+		},
+		messagesFn: func() []types.Message {
+			return []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("prompt-" + id)}}}
+		},
+		queryStartMsgIdxFn: func() int { return 0 },
+	}
+}
+
+func TestMutA3_BusyReportQueryItems(t *testing.T) {
+	c := &WUIConnector{pendingAsks: map[string]*types.AskEvent{}}
+	c.slots = map[string]*engineSlot{
+		"sys":  {engineID: "sys", engine: busyMockA3("sys", true, nil), name: "sys-name", system: true, taskToolIDs: map[string]bool{}},
+		"work": {engineID: "work", engine: busyMockA3("work", true, nil), name: "work-name", taskToolIDs: map[string]bool{}},
+	}
+	// Map iteration order is random: assert on EVERY iteration so an early
+	// break at the system slot cannot hide behind a lucky ordering.
+	for i := 0; i < 50; i++ {
+		rep := c.BusyReport()
+		if !rep.Busy || len(rep.Items) != 1 {
+			t.Fatalf("iter %d: busy=%v items=%d, want busy with exactly 1 item", i, rep.Busy, len(rep.Items))
+		}
+		it := rep.Items[0]
+		if it.Kind != "query" || it.Engine != "work-name" || it.EngineID != "work" ||
+			it.Session != "Sess-work" || it.Detail != "prompt-work" {
+			t.Fatalf("iter %d: item = %+v", i, it)
+		}
+	}
+}
+
+func TestMutA3_BusyReportJobItems(t *testing.T) {
+	c := &WUIConnector{pendingAsks: map[string]*types.AskEvent{}}
+	c.slots = map[string]*engineSlot{
+		"jobs": {engineID: "jobs", engine: busyMockA3("jobs", false, []*job.JobInfo{
+			nil,
+			{ID: "j-done", Status: "completed", Command: "old-cmd"},
+			{ID: "j-run", Status: "running", Command: "cmd-x"},
+			{ID: "j-nocmd", Status: "running", Description: "desc-y"},
+		}), name: "jobs-name", taskToolIDs: map[string]bool{}},
+	}
+	rep := c.BusyReport()
+	if len(rep.Items) != 2 {
+		t.Fatalf("items = %d, want 2 (nil and completed jobs skipped)", len(rep.Items))
+	}
+	if it := rep.Items[0]; it.Kind != "job" || it.EngineID != "jobs" || it.Detail != "cmd-x" {
+		t.Fatalf("first job item = %+v", it)
+	}
+	if it := rep.Items[1]; it.Detail != "desc-y" {
+		t.Fatalf("empty Command must fall back to Description, got %+v", it)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// admin.go
+// ---------------------------------------------------------------------------
+
+// Kills admin.go:56 (concurrency/goroutine-remove): a synchronous upgrade
+// call would block RequestRestart for the upgrade's full duration.
+func TestMutD_RequestRestart_UpgradeMustNotBlockCaller(t *testing.T) {
+	upgradeReturned := make(chan struct{})
+	start := time.Now() // REAL-TIME
+	outcome, _ := RequestRestart(
+		func() BusyReport { return BusyReport{} },
+		func() error { time.Sleep(300 * time.Millisecond); close(upgradeReturned); return nil }, // REAL-TIME
+	)
+	elapsed := time.Since(start) // REAL-TIME
+	if outcome != RestartStarted {
+		t.Fatalf("outcome = %v, want RestartStarted", outcome)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("RequestRestart blocked %v on the upgrade call; tableflip blocks until the child is ready, so the launch must be a goroutine", elapsed)
+	}
+	<-upgradeReturned
+}
+
+// Kills admin.go:57 (expression/error-guard), admin.go:57 (conditional/negated,
+// together with the success-path test below), admin.go:58 (branch/if) and
+// admin.go:58 (statement/remove): a failed upgrade must produce the warn.
+func TestMutD_RequestRestart_UpgradeFailureWarns(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	outcome, _ := RequestRestart(
+		func() BusyReport { return BusyReport{} },
+		func() error { return errors.New("tableflip: exit status 1") },
+	)
+	if outcome != RestartStarted {
+		t.Fatalf("outcome = %v, want RestartStarted", outcome)
+	}
+	rec.waitFor(t, slog.LevelWarn, "upgrade: failed", 2*time.Second)
+}
+
+// Kills the conditional/negated flavor of admin.go:57 (err == nil would log).
+func TestMutD_RequestRestart_UpgradeSuccessSilent(t *testing.T) {
+	rec := mutDCaptureSlog(t)
+	upgradeDone := make(chan struct{})
+	outcome, _ := RequestRestart(
+		func() BusyReport { return BusyReport{} },
+		func() error { close(upgradeDone); return nil },
+	)
+	if outcome != RestartStarted {
+		t.Fatalf("outcome = %v, want RestartStarted", outcome)
+	}
+	<-upgradeDone
+	rec.assertNoneWithin(t, slog.LevelWarn, "upgrade: failed", 150*time.Millisecond)
+}
+
+// Kills admin.go:54 (statement/return): the unsupported outcome must still
+// hand the caller the busy report (409/501 bodies reuse it).
+func TestMutD_RequestRestart_UnsupportedCarriesReport(t *testing.T) {
+	outcome, report := RequestRestart(
+		func() BusyReport {
+			return BusyReport{Busy: false, Items: []BusyItem{{Kind: "job", EngineID: "main", Detail: "make test"}}}
+		},
+		nil,
+	)
+	if outcome != RestartUnsupported {
+		t.Fatalf("outcome = %v, want RestartUnsupported", outcome)
+	}
+	if report.Busy {
+		t.Error("report.Busy = true, want false")
+	}
+	if len(report.Items) != 1 {
+		t.Fatalf("report.Items len = %d, want 1 (the report must be passed through, not zeroed)", len(report.Items))
+	}
+	if report.Items[0].Detail != "make test" {
+		t.Errorf("report.Items[0].Detail = %q, want %q", report.Items[0].Detail, "make test")
+	}
+}
+
+// Kills admin.go:61 (statement/return, both entries): the started outcome must
+// return the probe's report, not a zero BusyReport.
+func TestMutD_RequestRestart_StartedCarriesReport(t *testing.T) {
+	outcome, report := RequestRestart(
+		func() BusyReport {
+			return BusyReport{Busy: false, Items: []BusyItem{{Kind: "query", EngineID: "main", Detail: "scan"}}}
+		},
+		func() error { return nil },
+	)
+	if outcome != RestartStarted {
+		t.Fatalf("outcome = %v, want RestartStarted", outcome)
+	}
+	if len(report.Items) != 1 {
+		t.Fatalf("report.Items len = %d, want 1 (the report must be passed through, not zeroed)", len(report.Items))
+	}
+	if report.Items[0].Detail != "scan" {
+		t.Errorf("report.Items[0].Detail = %q, want %q", report.Items[0].Detail, "scan")
+	}
+}
+
+// Kills admin.go:113 (statement/remove: Cache-Control header) and
+// admin.go:115 (composite/field-clear: embedded BusyReport zeroed).
+func TestMutD_AdminGET_NoStoreHeaderAndBusyState(t *testing.T) {
+	srv := newAdminTestServerDeps(t, newTestConnector(t), AdminDeps{
+		Probe: func() BusyReport {
+			return BusyReport{Busy: true, Items: []BusyItem{{Kind: "query", EngineID: "main", Detail: "scanning files"}}}
+		},
+	})
+	resp, err := http.Get(srv.URL + "/api/admin/restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", resp.StatusCode)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (state must not be cached across a restart)", cc)
+	}
+	var body adminStatePayloadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Busy {
+		t.Error("busy = false, want true (probe result must reach the payload)")
+	}
+	if len(body.Items) != 1 || body.Items[0].Detail != "scanning files" {
+		t.Errorf("items = %+v, want one entry with detail %q", body.Items, "scanning files")
+	}
+}
+
+// Kills admin.go:125 (composite/field-clear: 501 error field) and
+// admin.go:134 (composite/field-clear: stepped_down status field).
+func TestMutD_AdminStepdown_Bodies(t *testing.T) {
+	c := newTestConnector(t)
+
+	nilSrv := newAdminTestServerDeps(t, c, AdminDeps{Probe: c.BusyReport})
+	resp, err := http.Post(nilSrv.URL+"/api/admin/stepdown", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("nil Stepdown status = %d, want 501", resp.StatusCode)
+	}
+	var refused struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&refused); err != nil {
+		t.Fatal(err)
+	}
+	if refused.Error != "stepdown not supported: no supervisor owns this daemon" {
+		t.Errorf("501 error = %q, want the supervisor sentence", refused.Error)
+	}
+
+	idleSrv := newAdminTestServerDeps(t, c, AdminDeps{
+		Probe:    c.BusyReport,
+		Stepdown: func() (bool, BusyReport) { return false, BusyReport{} },
+	})
+	resp2, err := http.Post(idleSrv.URL+"/api/admin/stepdown", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("idle Stepdown status = %d, want 200", resp2.StatusCode)
+	}
+	var ok struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&ok); err != nil {
+		t.Fatal(err)
+	}
+	if ok.Status != "stepped_down" {
+		t.Errorf("200 status field = %q, want stepped_down", ok.Status)
+	}
+}
+
+// Kills admin.go:144 (branch/if) and admin.go:144 (statement/remove): an empty
+// UnsupportedMessage must fall back to the platform sentence.
+func TestMutD_AdminRestartPOST_UnsupportedDefaultMessage(t *testing.T) {
+	srv := newAdminTestServerDeps(t, newTestConnector(t), AdminDeps{Probe: newTestConnector(t).BusyReport})
+	resp, err := http.Post(srv.URL+"/api/admin/restart", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "restart not supported on this platform" {
+		t.Errorf("error = %q, want the default platform sentence", body.Error)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -263,8 +264,7 @@ func TestExecute_ParseInputErrorWrapsCause(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	var syntax *json.SyntaxError
-	if !errors.As(err, &syntax) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Errorf("error %v does not wrap the json.SyntaxError cause (Unwrap chain broken)", err)
 	}
 }
@@ -779,10 +779,8 @@ func mockTmuxSocket(t *testing.T) {
 	markTmuxToolUsed()
 	origOverride := execTmuxOverride
 	execTmuxOverride = func(args []string) (tmuxResult, bool) {
-		for _, a := range args {
-			if a == "display-message" {
-				return tmuxResult{Code: 0, Stdout: "/tmp/gbot-mut-tsocket,12345"}, true
-			}
+		if slices.Contains(args, "display-message") {
+			return tmuxResult{Code: 0, Stdout: "/tmp/gbot-mut-tsocket,12345"}, true
 		}
 		return tmuxResult{Code: 0}, true
 	}
