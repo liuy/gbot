@@ -21,11 +21,14 @@ func TestAnthropicToolInput_TimeoutDisabled(t *testing.T) {
 		w.WriteHeader(200)
 		flusher := w.(http.Flusher)
 
-		// message_start
+		// message_start + content_block_start in ONE write+flush: separate
+		// flushes race the 50ms idle timer — under parallel-suite load the
+		// handler goroutine can be starved between them and the client then
+		// rightly times out before the tool_use block (whose arrival is what
+		// disables the timer). One flush makes the inter-event gap zero; the
+		// 150ms cliff below is the behavior under test and sits after the
+		// disable. (Verified red with a 60ms sleep between two flushes.)
 		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n"))
-		flusher.Flush()
-
-		// content_block_start (tool_use) — should trigger timeout disable
 		_, _ = w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_test\",\"name\":\"Write\"}}\n\n"))
 		flusher.Flush()
 
