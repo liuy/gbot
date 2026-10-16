@@ -1,6 +1,7 @@
 // Package send implements the Send tool for delivering local files to the
-// user via the engine's FileSender routing. Registered on engines that have
-// a connector-bound FileSender (WeChat, WUI); absent from the TUI engine.
+// user via the engine's FileSender routing. Registered only on engines whose
+// connector has no other file-delivery surface (WeChat); absent from the TUI
+// and WUI engines — WUI delivers files through artifacts.
 package send
 
 import (
@@ -15,7 +16,7 @@ import (
 
 // FileSender is implemented by connectors that can deliver a local file.
 // Satisfied by *engine.Engine (which routes by source to the registered
-// connector) and, indirectly, by *wechat.WeChatConnector and *wui.WUIConnector.
+// connector) and, indirectly, by *wechat.WeChatConnector.
 type FileSender interface {
 	SendFile(ctx context.Context, filePath, caption string) error
 }

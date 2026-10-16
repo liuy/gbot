@@ -2194,16 +2194,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   let askEls: HTMLElement[] = []
 
-  // Single pending-file slot for the chunked binary receive path. Set by
-  // file_start, accumulated by binary frames, finalized by file_end. Sound
-  // only because the SERVER serializes concurrent SendFile calls
-  // (sendFileMu) so frame sequences never interleave on the wire.
-  let pendingFile: { name: string; mime: string; chunks: ArrayBuffer[] } | null = null
-
-  const unsubscribeBinary = conn.subscribeBinary((data: ArrayBuffer) => {
-    if (pendingFile) pendingFile.chunks.push(data)
-  })
-
   const unsubscribe = conn.subscribe((msg: ServerMessage) => {
     switch (msg.type) {
       case 'metadata': {
@@ -2428,50 +2418,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         askEls.push(a.root)
         return
       }
-      case 'file_start': {
-        // Begin chunked binary receive. Binary frames accumulate into
-        // pendingFile until file_end reassembles the Blob.
-        pendingFile = { name: msg.name, mime: msg.mime, chunks: [] }
-        return
-      }
-      case 'file_end': {
-        if (!pendingFile) return
-        const blob = new Blob(pendingFile.chunks, { type: pendingFile.mime })
-
-        // Auto-download via transient anchor (same as the old base64 path).
-        const dlUrl = URL.createObjectURL(blob)
-        const dl = document.createElement('a')
-        dl.href = dlUrl
-        dl.download = pendingFile.name
-        dl.style.display = 'none'
-        document.body.appendChild(dl)
-        dl.click()
-        setTimeout(() => { dl.remove(); URL.revokeObjectURL(dlUrl) }, 60_000)
-
-        const { outer, content } = buildShell('assistant')
-        if (pendingFile.mime.startsWith('image/')) {
-          // Image: inline thumbnail. A SEPARATE object URL from the same
-          // Blob — NOT revoked — so the 60s revoke of dlUrl above cannot
-          // blank the preview. Reclaimed by the browser on page unload.
-          const imgUrl = URL.createObjectURL(blob)
-          const img = createElement('img', 'block max-w-full rounded-lg my-1')
-          img.src = imgUrl
-          img.alt = pendingFile.name
-          content.appendChild(img)
-        } else {
-          // Non-image: file icon + name (file is already auto-downloaded).
-          const row = createElement('div', 'inline-flex items-center gap-1.5 text-t2 my-1')
-          const icon = renderIcon('file', { size: 16 })
-          if (icon) row.appendChild(icon)
-          const name = createElement('span', 'break-all')
-          name.textContent = pendingFile.name
-          row.appendChild(name)
-          content.appendChild(row)
-        }
-        appendMsgWithDivider(messagesContainer, 'assistant', Date.now(), outer)
-        pendingFile = null
-        return
-      }
       case 'event':
         handleEvent(msg.event)
         // Background-agent feeds accumulate in the jobs store in parallel
@@ -2510,7 +2456,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const cleanup = () => {
     unsubscribe()
-    unsubscribeBinary()
     shareMenu?.destroy()
     if (refreshInterval !== null) clearInterval(refreshInterval)
   }

@@ -17,7 +17,7 @@ import (
 )
 
 // wuiFactory builds a fully wired engine (ToolRefs + WireEngine) the way the
-// production engineFactory does, so registerWUISendTool has a real registry.
+// production engineFactory does, so tests can assert on the real tool registry.
 func wuiFactory(spy *spyProvider) tui.EngineFactoryFn {
 	return func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
 		h, handler := tui.NewEngineHubWithHandler(id, nil)
@@ -78,8 +78,10 @@ func TestCreateEngineForWUI_RegistersEngineAndSession(t *testing.T) {
 	if vs.System || vs.ReadOnly {
 		t.Errorf("a wui-created engine must not be System/ReadOnly, got %+v", vs)
 	}
-	if _, ok := vs.Engine.ToolRefs().Reg.Lookup("Send"); !ok {
-		t.Error("the Send tool must be registered on a wui-created engine")
+	// File delivery to the browser goes through artifacts; the Send tool
+	// stays exclusive to WeChat-bound engines.
+	if _, ok := vs.Engine.ToolRefs().Reg.Lookup("Send"); ok {
+		t.Error("Send tool registered on a WUI engine; WUI file delivery must go through artifacts")
 	}
 	if got := len(mgr.List()); got != 1 {
 		t.Errorf("manager holds %d engines, want 1", got)
@@ -275,41 +277,5 @@ func TestCreateEngineForWUI_WhitespaceNameUsesMintedID(t *testing.T) {
 	}
 	if id != "agent-1" || vs.Name != "agent-1" {
 		t.Errorf("id/name = (%q, %q), want (agent-1, agent-1)", id, vs.Name)
-	}
-}
-func TestRegisterWUISendTool_IsIdempotent(t *testing.T) {
-	eng, _, err := wuiFactory(&spyProvider{})("eng-1", "one", "", "m")
-	if err != nil {
-		t.Fatalf("factory: %v", err)
-	}
-	defer eng.Close()
-	mgr := engine.NewEngineManager()
-	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
-
-	reg := eng.ToolRefs().Reg
-	sendCount := func() int {
-		n := 0
-		for _, name := range reg.Names() {
-			if name == "Send" {
-				n++
-			}
-		}
-		return n
-	}
-
-	registerWUISendTool(eng, wc)
-	before := sendCount()
-
-	registerWUISendTool(eng, wc)
-	after := sendCount()
-
-	if before != 1 {
-		t.Fatalf("first registerWUISendTool registered Send %d times, want exactly 1 (names = %v)", before, reg.Names())
-	}
-	if after != before {
-		t.Errorf("Send count = %d after the second registerWUISendTool, want %d — the lookup guard must keep it registered once", after, before)
-	}
-	if _, ok := reg.Lookup("Send"); !ok {
-		t.Fatal("Send tool missing after registerWUISendTool")
 	}
 }

@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"os"
@@ -405,8 +404,7 @@ type engineSlot struct {
 // wsMsg carries one outbound WS frame through the outbound queue. isBinary
 // selects the gorilla opcode (TextMessage vs BinaryMessage) in wsWriter, so
 // a single queue + single writer goroutine owns both frame types and FIFO
-// ordering is the only synchronization needed for file_start → binary →
-// file_end.
+// ordering is the only synchronization needed between frame types.
 type wsMsg struct {
 	data     []byte
 	isBinary bool
@@ -564,12 +562,6 @@ type WUIConnector struct {
 	// done signals the wsWriter goroutine to exit during shutdown.
 	done chan struct{}
 
-	// sendFileMu serializes concurrent SendFile calls so each file's
-	// file_start → chunk → file_end frame sequence is contiguous on the
-	// outbound queue
-	// (the executor runs concurrency-safe tools in parallel; see runTools.go).
-	sendFileMu sync.Mutex
-
 	// slotsMu guards only the slots map (registerEngine at runtime).
 	slotsMu sync.RWMutex
 
@@ -710,24 +702,6 @@ func (c *WUIConnector) wsWriter() {
 			}
 		}
 	}
-}
-
-// sendBinaryChunk enqueues a binary frame for wsWriter, mirroring sendWS's
-// blocking push (the queue-full block lives in outQueue.push). Binary chunks
-// cannot be dropped on an era flip mid-file (dropping corrupts the file),
-// but a flip means the receiving client is gone wholesale — the entire
-// sequence, earlier frames included, is dropped with the era, so no orphan
-// chunks reach the new client.
-//
-// The data is copied because callers (SendFile) reuse the read buffer across
-// loop iterations — without a copy, a later ReadFull would overwrite the
-// bytes of a chunk still buffered in the queue. android.go avoids this by
-// writing each chunk synchronously; the queued path here requires ownership
-// transfer.
-func (c *WUIConnector) sendBinaryChunk(data []byte) {
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	c.outQ.Load().push(wsMsg{data: cp, isBinary: true}, c.done)
 }
 
 // sendWS enqueues a payload for the wsWriter goroutine.
@@ -994,85 +968,6 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max]) + "…"
-}
-
-// fileStartMsg is the wire shape of the file_start text frame (server → browser).
-type fileStartMsg struct {
-	Type string `json:"type"` // "file_start"
-	Name string `json:"name"`
-	Mime string `json:"mime"`
-	Size int64  `json:"size"`
-}
-
-// fileEndMsg is the wire shape of the file_end text frame (server → browser).
-type fileEndMsg struct {
-	Type string `json:"type"` // "file_end"
-	Name string `json:"name"`
-}
-
-// fileChunkSize is the max payload per binary frame, mirroring
-// pkg/tool/computer/android.go's sendFileChunkSize (256 KiB).
-const fileChunkSize = 256 * 1024
-
-// SendFile streams a local file to the active WS client as a chunked binary
-// sequence: a file_start text frame, 256 KiB binary frames, then a file_end
-// text frame. Satisfies send.FileSender so the Send tool can route file
-// deliveries to the browser. Caption is dropped — the file frames carry only
-// the file, matching WeChat's media-only behavior.
-//
-// sendFileMu is held across the entire sequence so concurrent SendFile calls
-// (the Send tool is concurrency-safe) cannot interleave their frames on the
-// outbound queue.
-// The file is streamed from disk via io.ReadFull so peak memory is one chunk
-// regardless of size — there is no cap.
-func (c *WUIConnector) SendFile(_ context.Context, filePath, _ string) error {
-	c.sendFileMu.Lock()
-	defer c.sendFileMu.Unlock()
-
-	fi, err := os.Stat(filePath)
-	if err != nil {
-		return fmt.Errorf("wui: send file: %w", err)
-	}
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("wui: read file: %w", err)
-	}
-	defer f.Close()
-
-	startPayload, err := json.Marshal(fileStartMsg{
-		Type: "file_start",
-		Name: filepath.Base(filePath),
-		Mime: media.MimeFromExt(filepath.Ext(filePath)),
-		Size: fi.Size(),
-	})
-	if err != nil {
-		return fmt.Errorf("wui: marshal file_start: %w", err)
-	}
-	c.sendWS(startPayload)
-
-	buf := make([]byte, fileChunkSize)
-	for {
-		n, rerr := io.ReadFull(f, buf)
-		if n > 0 {
-			c.sendBinaryChunk(buf[:n])
-		}
-		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-			break
-		}
-		if rerr != nil {
-			return fmt.Errorf("wui: read file: %w", rerr)
-		}
-	}
-
-	endPayload, err := json.Marshal(fileEndMsg{
-		Type: "file_end",
-		Name: filepath.Base(filePath),
-	})
-	if err != nil {
-		return fmt.Errorf("wui: marshal file_end: %w", err)
-	}
-	c.sendWS(endPayload)
-	return nil
 }
 
 // Handle dispatches an event to the active engine. Kept for test

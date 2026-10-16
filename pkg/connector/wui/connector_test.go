@@ -11,7 +11,6 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +19,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1700,18 +1698,6 @@ func (p *a1BlockProvider) Stream(ctx context.Context, _ *llm.Request) (<-chan ll
 	return ch, nil
 }
 
-func a1ReadRaw(t *testing.T, ws *websocket.Conn) (int, []byte) {
-	t.Helper()
-	if err := ws.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil { // REAL-TIME
-		t.Fatalf("set read deadline: %v", err)
-	}
-	mt, data, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatalf("read ws frame: %v", err)
-	}
-	return mt, data
-}
-
 func a1UserMsg(text string) types.Message {
 	return types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(text)}}
 }
@@ -2297,128 +2283,6 @@ func TestMutA1_OnEngineEventTaskTrackingAndDebugTrace(t *testing.T) {
 
 	if sink.count("wui:event") == 0 {
 		t.Errorf("per-event debug trace 'wui:event' missing from log")
-	}
-}
-
-// ---- SendFile ----
-
-func TestMutA1_SendFileChunkedFrames(t *testing.T) {
-	c := newTestConnector(t)
-	ws := dialAndStore(t, c)
-
-	dir := t.TempDir()
-	name := "blob.png"
-	path := filepath.Join(dir, name)
-	payload := bytes.Repeat([]byte{0xAB}, 300000) // 256 KiB + 37856 remainder
-	if err := os.WriteFile(path, payload, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.SendFile(context.Background(), path, ""); err != nil {
-		t.Fatalf("SendFile: %v", err)
-	}
-
-	var start struct {
-		Type string `json:"type"`
-		Name string `json:"name"`
-		Mime string `json:"mime"`
-		Size int64  `json:"size"`
-	}
-	sData := readWSMessage(t, ws)
-	if err := json.Unmarshal(sData, &start); err != nil {
-		t.Fatalf("unmarshal file_start: %v", err)
-	}
-	if start.Type != "file_start" || start.Name != name || start.Size != 300000 {
-		t.Errorf("file_start = %+v", start)
-	}
-	if start.Mime != media.MimeFromExt(".png") {
-		t.Errorf("file_start mime = %q, want %q", start.Mime, media.MimeFromExt(".png"))
-	}
-
-	mt1, chunk1 := a1ReadRaw(t, ws)
-	mt2, chunk2 := a1ReadRaw(t, ws)
-	if mt1 != websocket.BinaryMessage || mt2 != websocket.BinaryMessage {
-		t.Errorf("chunk opcodes = %d,%d, want binary", mt1, mt2)
-	}
-	// Exact 256 KiB first chunk pins fileChunkSize's both constants.
-	if len(chunk1) != 262144 {
-		t.Errorf("first chunk = %d bytes, want 262144", len(chunk1))
-	}
-	if len(chunk2) != 37856 {
-		t.Errorf("second chunk = %d bytes, want 37856", len(chunk2))
-	}
-	if !bytes.Equal(append(chunk1, chunk2...), payload) {
-		t.Errorf("chunk payload does not reconstruct the file")
-	}
-
-	var end struct {
-		Type string `json:"type"`
-		Name string `json:"name"`
-	}
-	eData := readWSMessage(t, ws)
-	if err := json.Unmarshal(eData, &end); err != nil {
-		t.Fatalf("unmarshal file_end: %v", err)
-	}
-	if end.Type != "file_end" || end.Name != name {
-		t.Errorf("file_end = %+v", end)
-	}
-}
-
-func TestMutA1_SendFileStatError(t *testing.T) {
-	c := newTestConnector(t)
-	path := filepath.Join(t.TempDir(), "gone.bin")
-	err := c.SendFile(context.Background(), path, "")
-	if err == nil {
-		t.Fatal("SendFile on missing file: err = nil, want stat error")
-	}
-	want := fmt.Sprintf("wui: send file: stat %s: no such file or directory", path)
-	if err.Error() != want {
-		t.Errorf("err = %q, want %q", err.Error(), want)
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("errors.Is(fs.ErrNotExist) = false, err = %v", err)
-	}
-}
-
-func TestMutA1_SendFileOpenError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("chmod-based open failure is meaningless when running as root")
-	}
-	c := newTestConnector(t)
-	path := filepath.Join(t.TempDir(), "noperm.bin")
-	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-
-	err := c.SendFile(context.Background(), path, "")
-	if err == nil {
-		t.Fatal("SendFile on unreadable file: err = nil, want open error")
-	}
-	want := fmt.Sprintf("wui: read file: open %s: permission denied", path)
-	if err.Error() != want {
-		t.Errorf("err = %q, want %q", err.Error(), want)
-	}
-	if !errors.Is(err, fs.ErrPermission) {
-		t.Errorf("errors.Is(fs.ErrPermission) = false, err = %v", err)
-	}
-}
-
-func TestMutA1_SendFileReadError(t *testing.T) {
-	c := newTestConnector(t)
-	dir := t.TempDir()
-	err := c.SendFile(context.Background(), dir, "")
-	if err == nil {
-		t.Fatal("SendFile on a directory: err = nil, want read error")
-	}
-	want := fmt.Sprintf("wui: read file: read %s: is a directory", dir)
-	if err.Error() != want {
-		t.Errorf("err = %q, want %q", err.Error(), want)
-	}
-	if !errors.Is(err, syscall.EISDIR) {
-		t.Errorf("errors.Is(syscall.EISDIR) = false, err = %v", err)
 	}
 }
 

@@ -629,15 +629,6 @@ func Start(opts Options) (*Instance, error) {
 		if supervisedMode() {
 			supervisedClose.Store(func() { wc.CloseForUpgrade() })
 		}
-		// Register the Send tool + "wui" FileSender on every engine restored
-		// at boot. Engines created later via engine_new are wired inside
-		// createEngineForWUI.
-		for _, vs := range engineMgr.List() {
-			if vs.System {
-				continue // dream engine has no mutable registry (no CreateTools)
-			}
-			registerWUISendTool(vs.Engine, wc)
-		}
 		wc.SetCreateEngineFn(func(name string) (string, error) {
 			currentProvider, currentModel := "", model
 			if vs := engineMgr.Active(); vs != nil {

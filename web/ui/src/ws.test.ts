@@ -273,49 +273,19 @@ describe('ws binary frame routing', () => {
     expect(MockWebSocket.instances[0].binaryType).toBe('arraybuffer')
   })
 
-  it('routes binary frames to subscribeBinary listeners', async () => {
+  it('routes text frames to text listeners and ignores binary frames', async () => {
     const { getConnection } = await import('./ws')
     const conn = getConnection()
-    const binaryListener = vi.fn()
     const textListener = vi.fn()
-    conn.subscribeBinary(binaryListener)
     conn.subscribe(textListener)
 
+    // Inbound binary frames have no consumers since the Send tool left wui;
+    // they must not reach text listeners as garbage.
     MockWebSocket.instances[0].dispatchMessage(new Uint8Array([1, 2, 3]).buffer)
-
-    expect(binaryListener).toHaveBeenCalledTimes(1)
-    const received = binaryListener.mock.calls[0][0] as ArrayBuffer
-    expect(new Uint8Array(received)).toEqual(new Uint8Array([1, 2, 3]))
-    // Text listener must NOT receive binary frames.
     expect(textListener).not.toHaveBeenCalled()
-  })
-
-  it('routes text frames to text listeners and not binary listeners', async () => {
-    const { getConnection } = await import('./ws')
-    const conn = getConnection()
-    const binaryListener = vi.fn()
-    const textListener = vi.fn()
-    conn.subscribeBinary(binaryListener)
-    conn.subscribe(textListener)
 
     MockWebSocket.instances[0].dispatchMessage(JSON.stringify({ type: 'error', message: 'hi' }))
-
     expect(textListener).toHaveBeenCalledTimes(1)
     expect(textListener).toHaveBeenCalledWith({ type: 'error', message: 'hi' })
-    expect(binaryListener).not.toHaveBeenCalled()
-  })
-
-  it('subscribeBinary disposer removes the listener', async () => {
-    const { getConnection } = await import('./ws')
-    const conn = getConnection()
-    const binaryListener = vi.fn()
-    const dispose = conn.subscribeBinary(binaryListener)
-
-    MockWebSocket.instances[0].dispatchMessage(new Uint8Array([1]).buffer)
-    expect(binaryListener).toHaveBeenCalledTimes(1)
-
-    dispose()
-    MockWebSocket.instances[0].dispatchMessage(new Uint8Array([2]).buffer)
-    expect(binaryListener).toHaveBeenCalledTimes(1)
   })
 })

@@ -2139,8 +2139,10 @@ func TestMutC_BusyEnqueueItemFields(t *testing.T) {
 	}
 }
 
-// TestMutC_QuerySourceTaggedWUI pins that dispatched queries carry the
-// source tag the engine routes SendFile by.
+// TestMutC_QuerySourceTaggedWUI pins that dispatched queries carry the "wui"
+// source tag. WUI no longer registers a FileSender (file delivery goes through
+// artifacts), so the tag is kept for parity with other connectors and for any
+// future source-keyed routing.
 func TestMutC_QuerySourceTaggedWUI(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)

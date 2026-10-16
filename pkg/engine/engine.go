@@ -368,7 +368,8 @@ type Engine struct {
 
 	// senders routes Send tool calls to the connector that originated the
 	// query. Keyed by source string set via WithSource on the Query ctx.
-	// Empty for engines never given a FileSender (TUI main engine, sub-engines).
+	// Empty for engines never given a FileSender (TUI main engine, WUI
+	// engines, sub-engines).
 	senders   map[string]send.FileSender
 	sendersMu sync.RWMutex
 

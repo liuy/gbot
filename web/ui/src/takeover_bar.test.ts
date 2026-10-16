@@ -3,10 +3,8 @@ import { createTakeoverBar } from './takeover_bar'
 import { createChat } from './chat'
 
 type Listener = (msg: unknown) => void
-type BinaryListener = (data: ArrayBuffer) => void
 
 const listeners: Set<Listener> = new Set()
-const binaryListeners: Set<BinaryListener> = new Set()
 const stateCbs: Set<(s: string) => void> = new Set()
 const sent: unknown[] = []
 
@@ -15,10 +13,6 @@ vi.mock('./ws', () => ({
     subscribe: (fn: Listener) => {
       listeners.add(fn)
       return () => listeners.delete(fn)
-    },
-    subscribeBinary: (fn: BinaryListener) => {
-      binaryListeners.add(fn)
-      return () => binaryListeners.delete(fn)
     },
     send: (p: unknown) => {
       sent.push(p)
@@ -108,7 +102,6 @@ const METADATA = {
 
 beforeEach(() => {
   listeners.clear()
-  binaryListeners.clear()
   stateCbs.clear()
   sent.length = 0
   document.body.innerHTML = ''

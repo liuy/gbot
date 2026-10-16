@@ -11,10 +11,8 @@ class MockIntersectionObserver {
 vi.stubGlobal('IntersectionObserver', MockIntersectionObserver as unknown as typeof IntersectionObserver)
 
 type Listener = (msg: unknown) => void
-type BinaryListener = (data: ArrayBuffer) => void
 
 const listeners: Set<Listener> = new Set()
-const binaryListeners: Set<BinaryListener> = new Set()
 const sent: unknown[] = []
 
 vi.mock('./ws', () => ({
@@ -22,10 +20,6 @@ vi.mock('./ws', () => ({
     subscribe: (fn: Listener) => {
       listeners.add(fn)
       return () => listeners.delete(fn)
-    },
-    subscribeBinary: (fn: BinaryListener) => {
-      binaryListeners.add(fn)
-      return () => binaryListeners.delete(fn)
     },
     send: (p: unknown) => {
       sent.push(p)
@@ -107,7 +101,6 @@ const QUEUED_ENVELOPE =
 
 beforeEach(() => {
   listeners.clear()
-  binaryListeners.clear()
   sent.length = 0
   document.body.innerHTML = ''
 })

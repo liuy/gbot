@@ -20,7 +20,6 @@ vi.mock('../ws', () => ({
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    subscribeBinary: () => () => {},
     send: () => {},
     connected: true,
   }),
