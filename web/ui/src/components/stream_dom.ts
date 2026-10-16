@@ -38,13 +38,21 @@ import {
 import { createElement, createNode } from '../dom'
 
 export function createUserTextSpan(text: string): HTMLSpanElement {
-  return createNode('span', { className: userTextSpan(), text })
+  const span = createNode('span', { className: userTextSpan(), text })
+  // data-block-kind: long-press share resolves the block under the finger
+  // (chat.ts getSource). Committed user messages append this span directly
+  // to the content area with no wrapper, so the span itself is the block
+  // element there.
+  span.dataset.blockKind = 'user'
+  return span
 }
 
 // Queued-message echo: same structure as the user echo, muted gray. The text is
 // the ALREADY-unwrapped original (unwrapQueuedReminder ran upstream).
 export function createQueuedMessageTextSpan(text: string): HTMLSpanElement {
-  return createNode('span', { className: queuedTextSpan(), text })
+  const span = createNode('span', { className: queuedTextSpan(), text })
+  span.dataset.blockKind = 'user'
+  return span
 }
 
 interface ToolHeaderHandles {
@@ -55,6 +63,9 @@ interface ToolHeaderHandles {
 }
 
 function createToolHeader(): ToolHeaderHandles {
+  // No data-tool-header here: this factory also builds tool-GROUP headers
+  // (createGroupContainer), and the long-press exemption must apply only to
+  // per-tool rows. appendToolBlock stamps its own header after this call.
   const header = createNode('span', {
     className: toolHeaderBtn(),
     attrs: { role: 'button' },
@@ -156,6 +167,7 @@ function collectTrailingThinking(el: HTMLElement | null): HTMLElement[] {
 
 export function appendTextBlock(parent: HTMLElement, before?: Node | null): HTMLDivElement {
   const div = createElement('div', textBlock())
+  div.dataset.blockKind = 'text'
   insertBefore(parent, div, before ?? null)
   return div
 }
@@ -165,6 +177,7 @@ export function appendUserBlock(parent: HTMLElement, text: string, before?: Node
   // classes (whitespace-pre-wrap break-words) live on the inner span via
   // createUserTextSpan so all user-text paths share the same source of truth.
   const div = createElement('div', userEchoBlock())
+  div.dataset.blockKind = 'user'
   div.appendChild(createUserTextSpan(text))
   insertBefore(parent, div, before ?? null)
   return div
@@ -175,6 +188,7 @@ export function appendUserBlock(parent: HTMLElement, text: string, before?: Node
 // already-unwrapped original.
 export function appendQueuedMessageBlock(parent: HTMLElement, text: string, before?: Node | null): HTMLDivElement {
   const div = createElement('div', queuedEchoBlock())
+  div.dataset.blockKind = 'user'
   div.appendChild(createQueuedMessageTextSpan(text))
   insertBefore(parent, div, before ?? null)
   return div
@@ -338,9 +352,13 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   const root = createElement('div')
   root.dataset.toolRoot = '1'
   root.dataset.toolName = name
+  root.dataset.blockKind = 'tool'
   if (collapsible) root.dataset.collapsible = '1'
 
   const { header, dot, content } = createToolHeader()
+  // Stamp AFTER the factory: group headers come out of the same factory and
+  // must stay exempt from the long-press AVOID relaxation.
+  header.dataset.toolHeader = '1'
 
   const nameEl = createElement('span', toolName())
   nameEl.textContent = name

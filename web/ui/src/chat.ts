@@ -6,7 +6,7 @@ import {
   newUserMessage,
 } from './model'
 import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
-import { initShareMenu, extractShareText } from './share_menu'
+import { initShareMenu, extractShareText, type ShareSource } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
 import {
@@ -276,6 +276,118 @@ function reminderRowOfMessage(m: ChatMessage): ReminderRow | null {
   const b = m.blocks[0]
   if (b.kind !== 'text' && b.kind !== 'user') return null
   return classifyReminderMessage((b as { text: string }).text)
+}
+
+// ── Long-press per-block resolution ─────────────────────────────────────────
+// The share menu hands getSource the ORIGINAL press target; these helpers
+// resolve it to the block under the finger using the data-block-kind markers
+// the stream_dom append factories stamp on every block-level element.
+
+// Nearest block-marked ancestor of the press target, walking up to the
+// message row. Sub-agent child blocks (rendered inside the parent tool's
+// [data-tool-children] container) resolve to their parent tool row — the
+// flat block list keeps no entry for them. Thinking wraps carry no marker,
+// so pressing one lands on the message-level fallback below.
+function markedBlockOf(row: HTMLElement, target: HTMLElement): HTMLElement | null {
+  let el: HTMLElement | null = target
+  while (el && el !== row) {
+    const kind = el.dataset.blockKind
+    if ((kind === 'tool' || kind === 'text' || kind === 'user') && !el.closest('[data-tool-children]')) {
+      return el
+    }
+    el = el.parentElement
+  }
+  return null
+}
+
+// Marker elements of one selector in document order, outermost only: the
+// text span inside a user echo div carries its own marker, but the wrapper
+// is the block element. Excludes sub-agent children (see markedBlockOf).
+function markedSiblings(content: HTMLElement, selector: string): HTMLElement[] {
+  return Array.from(content.querySelectorAll<HTMLElement>(selector)).filter(
+    (t) => !t.parentElement?.closest('[data-block-kind]') && !t.closest('[data-tool-children]'),
+  )
+}
+
+// Top-level DOM tool roots and model tool blocks are both in block order
+// (grouping preserves document order), so index pairing is stable. Reminder
+// rows are excluded here: they are built by appendToolBlock (so they carry
+// the tool marker) but their model block is kind 'user' — counting them
+// would shift every tool's index by one and copy the WRONG tool's output.
+function toolBlockFor(el: HTMLElement, m: MessageState): ToolBlock | null {
+  const idx = markedSiblings(m.contentDiv, '[data-block-kind="tool"]:not([data-reminder-row])').indexOf(el)
+  if (idx < 0) return null
+  const blocks = m.blocks.filter((b): b is ToolBlock => b.kind === 'tool')
+  return idx < blocks.length ? blocks[idx] : null
+}
+
+// Markdown divs need the SOURCE text (textContent strips syntax); DOM text
+// divs and model text blocks pair 1:1 in document order (both render paths
+// skip empty text blocks).
+function textBlockSourceOf(el: HTMLElement, m: MessageState): string {
+  const idx = markedSiblings(m.contentDiv, '[data-block-kind="text"]').indexOf(el)
+  const blocks = m.blocks.filter((b): b is Extract<Block, { kind: 'text' }> => b.kind === 'text' && b.text !== '')
+  if (idx < 0 || idx >= blocks.length) return el.textContent ?? ''
+  return blocks[idx].text
+}
+
+// Empty text divs from abandoned text_starts linger in the live DOM while
+// their model blocks are dropped at commit (reload never renders them) —
+// removing both sides keeps the per-block DOM↔model pairing true.
+function removeEmptyTextDivs(content: HTMLElement): void {
+  for (const el of Array.from(content.querySelectorAll<HTMLElement>('[data-block-kind="text"]'))) {
+    if (!el.closest('[data-tool-children]') && !(el.textContent ?? '').trim()) el.remove()
+  }
+}
+
+// A reminder row inside a (non-reminder) assistant message is the DOM form of
+// a 'user' block whose envelope classified; its display text is the
+// ReminderRow body. Reminder rows and user-echo divs interleave in block
+// order, so the combined element list pairs 1:1 with the 'user' blocks.
+function reminderDisplayOf(el: HTMLElement, m: MessageState): string {
+  const idx = markedSiblings(m.contentDiv, '[data-reminder-row], [data-block-kind="user"]').indexOf(el)
+  if (idx < 0) return ''
+  const blocks = m.blocks.filter((b) => b.kind === 'user')
+  if (idx >= blocks.length) return ''
+  const text = (blocks[idx] as { text: string }).text
+  return classifyReminderMessage(text)?.body ?? text
+}
+
+// Block-less chrome (avatar, padding) or an unmatched marker: the final
+// reply when one exists, no menu otherwise.
+function shareFallbackFor(m: MessageState): ShareSource | null {
+  const text = extractShareText(m.blocks)
+  if (!text.trim()) return null
+  return { anchor: m.domRoot, role: m.role, startedAt: m.startedAt, text, shareable: true }
+}
+
+function shareSourceFor(m: MessageState, target: HTMLElement): ShareSource | null {
+  // Streaming: tool output finalizes incrementally and is safe to copy
+  // mid-flight; the reply text is still forming, so text/chrome/fallback
+  // stay off until done.
+  const done = m.status === 'done'
+  const el = markedBlockOf(m.domRoot, target)
+  if (el?.dataset.blockKind === 'tool') {
+    if (el.dataset.reminderRow) {
+      if (!done) return null
+      const text = reminderDisplayOf(el, m)
+      return text ? { anchor: m.domRoot, role: m.role, startedAt: m.startedAt, text, shareable: false } : shareFallbackFor(m)
+    }
+    const block = toolBlockFor(el, m)
+    // A blank displayOutput would open a copy-only capsule whose copy
+    // resolves to '' — fall through like every other textless branch.
+    if (block && block.displayOutput.trim())
+      return { anchor: m.domRoot, role: m.role, startedAt: m.startedAt, text: block.displayOutput, shareable: false }
+    return done ? shareFallbackFor(m) : null
+  }
+  if (!done) return null
+  if (el) {
+    // Plain-text elements (user spans/echoes) carry their exact display text
+    // in textContent; only markdown divs need the model lookup.
+    const text = el.dataset.blockKind === 'text' ? textBlockSourceOf(el, m) : el.textContent ?? ''
+    if (text.trim()) return { anchor: m.domRoot, role: m.role, startedAt: m.startedAt, text, shareable: true }
+  }
+  return shareFallbackFor(m)
 }
 
 // Wire shape of the attachment event's Message payload. QueryEvent.message is
@@ -548,17 +660,25 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   mainContent.appendChild(scroll)
 
   // Long-press share: dead on desktop — initShareMenu probes window.GBotShare
-  // (Android shell only) and no-ops to a null handle without it.
+  // (Android shell only) and no-ops to a null handle without it. Menu items
+  // resolve per press target (share+copy on text/user blocks and chrome with
+  // a final reply, copy-only on tool blocks and reminder rows).
   const shareMenu = initShareMenu({
     host: mainContent,
     container: messagesContainer,
-    getSource: (row) => {
+    getSource: (row, target) => {
       const m = messages.find((mm) => mm.domRoot === row)
-      if (!m || m.status !== 'done') return null
-      if (reminderRowOfMessage(m)) return null
-      const text = extractShareText(m.blocks)
-      if (!text.trim()) return null
-      return { anchor: row, role: m.role, startedAt: m.startedAt, text }
+      if (!m) return null
+      // Live streaming keeps blocks in pendingBlocks (m.blocks stays []
+      // until query_end), so hand shareSourceFor the effective list — its
+      // internal `done` gate keeps everything but tool-card copy off
+      // mid-flight, and only the tool branch reads blocks before that gate.
+      const effective = m.status === 'streaming' ? { ...m, blocks: pendingBlocks } : m
+      const reminder = reminderRowOfMessage(m)
+      if (reminder) {
+        return { anchor: row, role: m.role, startedAt: m.startedAt, text: reminder.body, shareable: false }
+      }
+      return shareSourceFor(effective, target)
     },
   })
 
@@ -1300,7 +1420,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             // the server kept the interrupted turn (queue non-empty — TS
             // parity: B runs next, A is not restored into the input).
             if (last && last.role === 'assistant') {
-              last.blocks = pendingBlocks.slice()
+              // Drop empty text blocks: startNewTextBlock creates the div
+              // eagerly and a text_start with no delta leaves a blank block
+              // that the reload path never renders — keeping it would break
+              // the per-block DOM↔model index pairing.
+              last.blocks = pendingBlocks.filter((b) => b.kind !== 'text' || b.text.trim() !== '').slice()
+              removeEmptyTextDivs(last.contentDiv)
               last.status = 'done'
               last.lastActivityAt = Date.now()
               appendArtifactCards(last.blocks, last.contentDiv)
@@ -1374,7 +1499,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           // Normal completion: DOM stays as-is (markdown already rendered during streaming).
           const last = messages[messages.length - 1]
           if (last && last.role === 'assistant') {
-            last.blocks = pendingBlocks.slice()
+            // Same empty-text filter as the abort COMMIT path — see there.
+            last.blocks = pendingBlocks.filter((b) => b.kind !== 'text' || b.text.trim() !== '').slice()
+            removeEmptyTextDivs(last.contentDiv)
             last.status = 'done'
             last.lastActivityAt = Date.now()
             appendArtifactCards(last.blocks, last.contentDiv)

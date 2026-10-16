@@ -1,14 +1,17 @@
-// Long-press message menu: two-item Liquid Glass popup (share the full reply
-// as image / copy the selection or the full reply), interaction ported from
+// Long-press message menu: Liquid Glass popup (share the pressed block as
+// image / copy the selection or the block text), interaction ported from
 // the approved share-menu-demo.html with two deliberate deviations: the
 // menu/toast mount on mainContent with absolute coordinates (a lingering
 // sidebar translateX would otherwise trap fixed elements), and the item awaits
-// its action so the success/failure toast is truthful. Entry is gated on the
+// its action so the success/failure toast is truthful. The item set is
+// decided per press: non-shareable sources (tool blocks, reminder rows) get
+// a copy-only capsule. Entry is gated on the
 // Android shell bridge — without window.GBotShare initShareMenu no-ops and
 // desktop never arms a listener. Long-press doubles as the native selection
 // start: contextmenu is suppressed only to drop the system menu (handles live
 // on), and the menu opens AT contextmenu — the moment the browser hands over
-// selection — so handles and menu coexist. Opening on lift made them
+// selection — so handles and menu coexist; a selection-anchored menu follows
+// the selection through scrolls and handle drags. Opening on lift made them
 // mutually exclusive.
 import { createNode } from './dom'
 import { t } from './i18n'
@@ -21,8 +24,8 @@ export const LONG_PRESS_MS = 450
 export const CANCEL_MOVE_PX = 8
 
 // Presses landing on interactive content never start the hold timer — code
-// copy buttons, tool-row collapse headers (span[role=button]), lightbox
-// images, artifact cards.
+// copy buttons, thinking/group collapse headers, lightbox images, artifact
+// cards. Sole exception: tool-row headers stamped data-tool-header (below).
 const AVOID_SELECTOR =
   'button, a, input, textarea, select, img, [role="button"], .artifact-card'
 
@@ -41,6 +44,9 @@ export interface ShareSource {
   role: 'user' | 'assistant'
   startedAt: number
   text: string
+  /** false = copy-only source (tool blocks, reminder rows): the menu drops
+   *  the share item and the .share-vsep separator. */
+  shareable: boolean
 }
 
 export interface ShareMenuOptions {
@@ -48,7 +54,9 @@ export interface ShareMenuOptions {
   host: HTMLElement
   /** messagesContainer: gesture target, gains the runtime share-root class. */
   container: HTMLElement
-  getSource: (row: HTMLElement) => ShareSource | null
+  /** target is the ORIGINAL press target (e.target of pointerdown) so the
+   *  wiring can resolve the block under the finger, not just the row. */
+  getSource: (row: HTMLElement, target: HTMLElement) => ShareSource | null
 }
 
 export interface ShareMenuHandle {
@@ -169,27 +177,49 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     // Load-bearing: an unselectable menu means tapping Copy does not collapse
     // the live selection — the handler reads it after this tap.
     menu.style.userSelect = 'none'
-    const shareItem = createNode('button', {
-      className: 'share-menu-item',
-      attrs: { type: 'button', 'aria-label': t('shareMenuImage') },
-    })
-    shareItem.appendChild(renderIcon('share'))
-    // Two icons, both reading the same long-press: share = full reply as
-    // image; copy = the partial selection when handles were used, else the
-    // full reply text. The system menu stays suppressed — handles alone are
-    // enough for our copy item to read the selection.
+    // Copy = the partial selection when handles were used, else the source
+    // text (the pressed block's text, per-block semantics). The system menu
+    // stays suppressed — handles alone are enough for our copy item to read
+    // the selection.
     const copyItem = createNode('button', {
       className: 'share-menu-item',
       attrs: { type: 'button', 'aria-label': t('shareMenuCopy') },
     })
     copyItem.appendChild(renderIcon('copy'))
-    menu.append(shareItem, createNode('span', { className: 'share-vsep' }), copyItem)
+    if (src.shareable) {
+      // Share = the pressed block / the final reply as image. Non-shareable
+      // sources (tool blocks, reminder rows) get the same capsule minus the
+      // share icon and the separator.
+      const shareItem = createNode('button', {
+        className: 'share-menu-item',
+        attrs: { type: 'button', 'aria-label': t('shareMenuImage') },
+      })
+      shareItem.appendChild(renderIcon('share'))
+      menu.append(shareItem, createNode('span', { className: 'share-vsep' }), copyItem)
+      shareItem.addEventListener('click', () => {
+        const src = currentSource
+        close()
+        if (!src) return
+        void shareMessage(src).then(
+          (res) => {
+            // 'no-bridge' resolving here would be a false success toast — it
+            // is a defensive path, report it as a failure.
+            toast(res === 'opened' ? t('shareImageReady') : t('shareImageFailed'))
+          },
+          () => {
+            toast(t('shareImageFailed'))
+          },
+        )
+      })
+    } else {
+      menu.appendChild(copyItem)
+    }
     host.appendChild(menu)
     copyItem.addEventListener('click', () => {
       const src = currentSource
       // Read the selection BEFORE close(): handles-dragged partial wins;
       // no selection (or one belonging to another row) falls back to the
-      // full reply text.
+      // source text.
       const selected = selectionInRow(row)?.text ?? ''
       close()
       if (!src) return
@@ -205,11 +235,16 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
         },
       )
     })
+    positionMenu(row, touchY)
+  }
 
-    // Vertical anchor precedence: the selection's bounding box (system
-    // toolbar style) → the touch point. Never the row's rect: wui rows can
-    // be thousands of pixels tall and row-rect anchoring reads as detached.
-    // The row rect is used for `left` only.
+  // Vertical anchor precedence: the selection's bounding box (system
+  // toolbar style) → the touch point. Never the row's rect: wui rows can
+  // be thousands of pixels tall and row-rect anchoring reads as detached.
+  // The row rect is used for `left` only. Extracted from open() so scroll /
+  // selectionchange can re-run the exact same math as the selection moves.
+  function positionMenu(row: HTMLElement, touchY: number): void {
+    if (!menu) return
     const hostRect = host.getBoundingClientRect()
     let anchorY = touchY
     // jsdom Range has no getBoundingClientRect — the typeof guard is not
@@ -242,22 +277,28 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     left = Math.max(12, Math.min(left, hostRect.width - mw - 12))
     menu.style.top = `${top}px`
     menu.style.left = `${left}px`
-    if (below) menu.classList.add('share-below')
+    menu.classList.toggle('share-below', below)
+  }
 
-    shareItem.addEventListener('click', () => {
-      const src = currentSource
-      close()
-      if (!src) return
-      void shareMessage(src).then(
-        (res) => {
-          // 'no-bridge' resolving here would be a false success toast — it
-          // is a defensive path, report it as a failure.
-          toast(res === 'opened' ? t('shareImageReady') : t('shareImageFailed'))
-        },
-        () => {
-          toast(t('shareImageFailed'))
-        },
-      )
+  // A menu anchored to a live selection FOLLOWS it through scrolls and
+  // handle drags instead of closing — gluing to the selection IS the
+  // behavior, and when it scrolls fully out of the host the menu follows it
+  // out and is clipped by the host's overflow:hidden (no clamping; the
+  // native handles share the same fate). One rAF per frame; a reposition
+  // scheduled before a close/destroy must never resurrect the menu.
+  let rafPending = false
+  const scheduleReposition = (): void => {
+    if (!menu || !held) return
+    if (rafPending) return
+    rafPending = true
+    requestAnimationFrame(() => {
+      rafPending = false
+      if (!menu || !held) return
+      if (!held.isConnected || !selectionInRow(held)) {
+        close()
+        return
+      }
+      positionMenu(held, startY)
     })
   }
 
@@ -281,10 +322,19 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     // finger's completed long-press is lost — the price of never locking
     // out. Do not "fix" this back into a blanket refusal.
     if (holdPointerId !== null && timer !== null) return
-    if (target.closest(AVOID_SELECTOR)) return
+    // Tool headers are role=button spans wrapping the command text the user
+    // actually presses; avoiding them left every tool row menu-less (handles
+    // appeared, menu didn't). Exempt ONLY the stamped per-tool headers —
+    // group headers ("Ran N tools") come out of the same factory unstamped
+    // and stay avoided. Quick taps still toggle (the click path is
+    // untouched) and long-press resolves to the tool block — the browser
+    // ends the pointer stream at contextmenu so no toggle click synthesizes
+    // (clickEat covers WebViews that do).
+    const avoided = target.closest(AVOID_SELECTOR)
+    if (avoided && !avoided.hasAttribute('data-tool-header')) return
     const row = rowFromTarget(target)
     if (!row) return
-    const src = getSource(row)
+    const src = getSource(row, target)
     if (!src) {
       return
     }
@@ -373,11 +423,25 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
   const onDocClick = (e: MouseEvent): void => {
     if (menu && !menu.contains(e.target as Node)) close()
   }
-  // The menu is absolutely positioned on the host while the rows scroll —
-  // a capsule floating over content that moved reads as broken. Scroll
-  // events don't bubble; the capture phase is how they reach the host.
+  // The menu is absolutely positioned on the host while the rows scroll.
+  // Scroll events don't bubble; the capture phase is how they reach the host.
+  // A menu anchored to a live selection follows it; every other open menu
+  // (no selection, held row detached) still closes — a capsule floating over
+  // content that moved with no anchor reads as broken.
   const onScroll = (): void => {
-    if (menu) close()
+    if (!menu) return
+    if (held && held.isConnected && selectionInRow(held)) scheduleReposition()
+    else close()
+  }
+  // Handle drags change the selection rect live; ride the same rAF path so
+  // the menu tracks the handles. Detached row (rewind mid-menu) → close.
+  const onSelectionChange = (): void => {
+    if (!menu || !held) return
+    if (!held.isConnected) {
+      close()
+      return
+    }
+    if (selectionInRow(held)) scheduleReposition()
   }
 
   container.addEventListener('pointerdown', onPointerDown)
@@ -386,6 +450,7 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
   container.addEventListener('pointercancel', onPointerCancel)
   container.addEventListener('contextmenu', onContextMenu)
   document.addEventListener('click', onDocClick)
+  document.addEventListener('selectionchange', onSelectionChange)
   host.addEventListener('scroll', onScroll, true)
 
   return {
@@ -412,6 +477,7 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
       container.removeEventListener('pointercancel', onPointerCancel)
       container.removeEventListener('contextmenu', onContextMenu)
       document.removeEventListener('click', onDocClick)
+      document.removeEventListener('selectionchange', onSelectionChange)
       host.removeEventListener('scroll', onScroll, true)
     },
   }

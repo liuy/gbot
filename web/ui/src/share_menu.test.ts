@@ -111,7 +111,7 @@ function press(clientY = 0): void {
   row.dispatchEvent(pointer('pointerdown', clientY))
 }
 
-function setup(getSource?: (r: HTMLElement) => ShareSource | null): void {
+function setup(getSource?: (r: HTMLElement, target: HTMLElement) => ShareSource | null): void {
   document.body.innerHTML = ''
   host = document.createElement('div')
   container = document.createElement('div')
@@ -124,6 +124,7 @@ function setup(getSource?: (r: HTMLElement) => ShareSource | null): void {
     role: 'assistant',
     startedAt: new Date(2026, 9, 15, 10, 50).getTime(),
     text: 'share me',
+    shareable: true,
   }
   handle = initShareMenu({
     host,
@@ -516,6 +517,177 @@ describe('menu positioning', () => {
   })
 })
 
+describe('copy-only sources', () => {
+  async function flush(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function openCopyOnly(text = 'tool display output'): void {
+    setup(() => ({ ...source, shareable: false, text }))
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+  }
+
+  it('renders a single-item capsule: no share icon, no separator', () => {
+    openCopyOnly()
+    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(1)
+    expect(host.querySelector('.share-vsep')).toBeNull()
+    // Copy-only still carries the full hold presentation.
+    expect(container.classList.contains('share-holding')).toBe(true)
+    expect(row.classList.contains('share-lifted')).toBe(true)
+  })
+
+  it('keeps the two-item capsule for shareable sources', () => {
+    setup(() => ({ ...source, shareable: true }))
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(2)
+    expect(host.querySelectorAll('.share-vsep')).toHaveLength(1)
+  })
+
+  it('copy with no selection falls back to the source text', async () => {
+    openCopyOnly('Bash output line')
+    vi.mocked(copyText).mockResolvedValue()
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(copyText).toHaveBeenCalledWith('Bash output line')
+  })
+
+  it('copy still prefers the live selection over the block fallback', async () => {
+    setup(() => ({ ...source, shareable: false, text: 'tool display output' }))
+    row.textContent = 'select partial please'
+    const sel = window.getSelection()
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 7)
+    range.setEnd(row.firstChild!, 14)
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    vi.mocked(copyText).mockResolvedValue()
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(copyText).toHaveBeenCalledWith('partial')
+  })
+
+  it('hands getSource the original press target, not the row', () => {
+    let got: HTMLElement | null = null
+    setup((_r, target) => {
+      got = target
+      return source
+    })
+    const inner = document.createElement('span')
+    row.appendChild(inner)
+    inner.dispatchEvent(pointer('pointerdown'))
+    expect(got).toBe(inner)
+  })
+})
+
+describe('selection-anchored scroll following', () => {
+  // Opens the menu anchored to an in-row selection whose rect top is
+  // mutable, so a test can move the selection (the scrolled-away state)
+  // and watch the menu reposition.
+  function openSelectionAnchored(rect: { top: number }): HTMLElement {
+    setup()
+    row.textContent = 'hello partial world'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 6)
+    range.setEnd(row.firstChild!, 13)
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () =>
+        domRect({ top: rect.top, left: 40, width: 100, height: 20, right: 140, bottom: rect.top + 20 }),
+    })
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 200, left: 100, width: 200, height: 50, right: 300, bottom: 250 }),
+    )
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    return host.querySelector('.share-menu') as HTMLElement
+  }
+
+  it('scroll repositions the menu to the moved selection instead of closing it', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    // 120-48-8: anchored above the selection, host at 0.
+    expect(menu.style.top).toBe('64px')
+
+    rect.top = 260
+    container.dispatchEvent(new Event('scroll'))
+    // Without the follow path the scroll would close the menu here.
+    expect(menu.classList.contains('share-closing')).toBe(false)
+    // rAF is timer-driven under jsdom: one 16ms frame runs the reposition.
+    vi.advanceTimersByTime(16)
+    expect(menu.classList.contains('share-closing')).toBe(false)
+    expect(menu.style.top).toBe('204px')
+  })
+
+  it('selectionchange repositions the open menu through the same rAF path', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    rect.top = 260
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(menu.style.top).toBe('204px')
+  })
+
+  it('scroll with no in-row selection still closes the menu', () => {
+    setup()
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    container.dispatchEvent(new Event('scroll'))
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('scroll after the held row was detached closes the menu', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    row.remove()
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(16)
+    expect(menu.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('selectionchange after the held row was detached closes the menu', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    row.remove()
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(menu.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('a reposition scheduled before a close never resurrects the menu', () => {
+    const rect = { top: 120 }
+    openSelectionAnchored(rect)
+    rect.top = 260
+    container.dispatchEvent(new Event('scroll'))
+    // Outside click closes synchronously; the scheduled rAF must no-op —
+    // 16ms runs the frame, 120ms lets the close animation finish removing.
+    host.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.advanceTimersByTime(16)
+    const menu = host.querySelector('.share-menu')
+    expect(menu?.classList.contains('share-closing')).toBe(true)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-menu')).toBeNull()
+  })
+})
+
 describe('control avoidance', () => {
   it('ignores presses landing on interactive controls', () => {
     setup()
@@ -527,6 +699,20 @@ describe('control avoidance', () => {
     expect(host.querySelector('.share-menu')).toBeNull()
   })
 
+  it('a press on a tool header span opens the menu despite role=button', () => {
+    setup()
+    const header = document.createElement('span')
+    header.setAttribute('role', 'button')
+    header.setAttribute('data-tool-header', '1')
+    row.appendChild(header)
+    header.dispatchEvent(pointer('pointerdown'))
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    header.dispatchEvent(pointer('pointerup'))
+    // Tool headers wrap the command text the user actually presses —
+    // avoiding them left every tool row menu-less (device finding).
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+  })
+
   it('ignores presses landing on artifact cards', () => {
     setup()
     const card = document.createElement('div')
@@ -535,6 +721,19 @@ describe('control avoidance', () => {
     card.dispatchEvent(pointer('pointerdown'))
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelector('.share-menu')).toBeNull()
+  })
+
+  it('still avoids a role=button without the tool-header stamp', () => {
+    setup()
+    // Thinking-block headers and other toggles share the role=button shape —
+    // only the stamped tool-row headers are exempt.
+    const toggle = document.createElement('span')
+    toggle.setAttribute('role', 'button')
+    row.appendChild(toggle)
+    toggle.dispatchEvent(pointer('pointerdown'))
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    toggle.dispatchEvent(pointer('pointerup'))
     expect(host.querySelector('.share-menu')).toBeNull()
   })
 
