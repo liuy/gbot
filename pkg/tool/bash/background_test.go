@@ -1154,6 +1154,57 @@ func TestBashAdapterKind(t *testing.T) {
 	}
 }
 
+// Terminal bash jobs expose total runtime via DurationMs — the job tool's
+// display elapsed for completed jobs derives from it. Running jobs keep
+// DurationMs zero (elapsed comes from StartedMs instead). Killed jobs get
+// their runtime from the EndTime Kill stamps.
+func TestJobInfoAdapter_TerminalJobDurationMs(t *testing.T) {
+	r := NewBackgroundJobRegistry()
+	done := r.Spawn("echo hi", 300, NewStreamingOutput(nil))
+	done.Complete(0, false)
+	// Pin the start deterministically: same-millisecond Spawn→Complete would
+	// make the measured duration flaky.
+	done.mu.Lock()
+	done.StartTime = done.EndTime.Add(-90 * time.Second)
+	done.mu.Unlock()
+	// PID 0: Kill's PID>0 guard skips the process-group signal — Kill with a
+	// live-looking PID would SIGKILL whatever group that pid leads.
+	killed := r.Spawn("sleep 60", 0, nil)
+	if err := r.Kill(killed.ID); err != nil {
+		t.Fatalf("Kill(%q) error: %v", killed.ID, err)
+	}
+	killed.mu.Lock()
+	killed.StartTime = killed.EndTime.Add(-45 * time.Second)
+	killed.mu.Unlock()
+	running := r.Spawn("sleep 60", 301, nil)
+
+	adapter := NewJobInfoAdapter(r)
+	info, ok := adapter.Get(done.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", done.ID)
+	}
+	if info.DurationMs != 90_000 {
+		t.Errorf("terminal DurationMs = %d, want 90000", info.DurationMs)
+	}
+	killedInfo, ok := adapter.Get(killed.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", killed.ID)
+	}
+	if killedInfo.Status != "killed" {
+		t.Errorf("killed Status = %q, want killed", killedInfo.Status)
+	}
+	if killedInfo.DurationMs != 45_000 {
+		t.Errorf("killed DurationMs = %d, want 45000 (EndTime-on-kill stamped)", killedInfo.DurationMs)
+	}
+	runInfo, ok := adapter.Get(running.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", running.ID)
+	}
+	if runInfo.DurationMs != 0 {
+		t.Errorf("running DurationMs = %d, want 0", runInfo.DurationMs)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JobInfoAdapter — Kill, List, Wait, Get coverage
 // ---------------------------------------------------------------------------

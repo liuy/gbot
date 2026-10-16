@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -45,6 +46,14 @@ type JobInfo struct {
 	AgentType  string `json:"agent_type,omitempty"`
 	Tokens     int    `json:"tokens,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+
+	// ElapsedMs is the display elapsed frozen at list time: since start for
+	// running jobs, total runtime for terminal ones. Frozen (not recomputed
+	// at render time) so the wire tag, the live render, and replay decoding
+	// the wire all agree — a still-running job replayed hours later must not
+	// show hours of elapsed. Populated only by executeList; the wui panel
+	// never sees it.
+	ElapsedMs int64 `json:"elapsed_ms,omitempty"`
 
 	// Panel metadata for the wui background-jobs view. Deliberately excluded
 	// from wireText: the LLM-visible Job tool output stays unchanged.
@@ -193,17 +202,23 @@ func NewJob(reg Registry) tool.Tool {
 				return nil, err
 			}
 			var o JobOutput
-			if err := json.Unmarshal([]byte(text), &o); err != nil {
-				return nil, err
+			jsonErr := json.Unmarshal([]byte(text), &o)
+			if jsonErr == nil {
+				// Wire text that happens to be a JSON object decodes into an
+				// all-zero JobOutput (unknown fields ignored), which replay
+				// would render as an empty result instead of falling back to
+				// the wire text. Uniform rule across wire-plaintext tools.
+				if o.Poll == nil && o.Stop == nil && o.List == nil {
+					return nil, fmt.Errorf("job: decoded output lacks identifying fields (not a legacy JSON result)")
+				}
+				return &o, nil
 			}
-			// Wire text that happens to be a JSON object decodes into an
-			// all-zero JobOutput (unknown fields ignored), which replay
-			// would render as an empty result instead of falling back to
-			// the wire text. Uniform rule across wire-plaintext tools.
-			if o.Poll == nil && o.Stop == nil && o.List == nil {
-				return nil, fmt.Errorf("job: decoded output lacks identifying fields (not a legacy JSON result)")
+			// The current wire is XML: recovering the structured result lets
+			// replay render the friendly line format instead of raw tags.
+			if out, xerr := decodeWireXML(text); xerr == nil {
+				return out, nil
 			}
-			return &o, nil
+			return nil, jsonErr
 		},
 		FormatWireBlocks_: func(data any) []types.ContentBlock {
 			out, ok := data.(*JobOutput)
@@ -345,9 +360,28 @@ func executeStop(reg Registry, jobID string) (*StopResult, error) {
 	}, nil
 }
 
-// executeList returns all registered jobs.
+// executeList returns all registered jobs with the display elapsed frozen
+// per job on shallow copies — registries may hand out shared snapshots.
 func executeList(reg Registry) *ListResult {
-	return &ListResult{Jobs: reg.List()}
+	jobs := reg.List()
+	for i, j := range jobs {
+		cp := *j
+		cp.ElapsedMs = jobElapsedMs(&cp, timeNow())
+		jobs[i] = &cp
+	}
+	return &ListResult{Jobs: jobs}
+}
+
+// jobElapsedMs: running jobs report time since start; terminal jobs report
+// total runtime from DurationMs (0 = unknown — the segment is then omitted).
+func jobElapsedMs(j *JobInfo, now time.Time) int64 {
+	if isTerminal(j.Status) {
+		return j.DurationMs
+	}
+	if j.StartedMs <= 0 {
+		return 0
+	}
+	return now.UnixMilli() - j.StartedMs
 }
 
 // ---------------------------------------------------------------------------
@@ -359,10 +393,11 @@ func isTerminal(status string) bool {
 	return status == "completed" || status == "failed" || status == "killed"
 }
 
-// timeAfter and timeNewTicker are vars for testability.
+// timeAfter, timeNewTicker and timeNow are vars for testability.
 var (
 	timeAfter     = func(ms int) <-chan time.Time { return time.After(time.Duration(ms) * time.Millisecond) }
 	timeNewTicker = time.NewTicker
+	timeNow       = time.Now
 )
 
 // ---------------------------------------------------------------------------
@@ -380,8 +415,7 @@ func wireText(out *JobOutput) string {
 		sections = append(sections, wirePollText(out.Poll))
 	}
 	if out.Stop != nil {
-		sections = append(sections, fmt.Sprintf("Successfully stopped job %s (%s): %s",
-			out.Stop.JobID, out.Stop.Type, out.Stop.Command))
+		sections = append(sections, wireStopText(out.Stop))
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -418,34 +452,52 @@ func wirePollText(p *PollResult) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// wireListText mirrors renderListResult — one line per job with the
-// command → description → ID fallback (plan D8).
+// wireListText emits one XML tag line per job (plan: unified XML wire for
+// all Job actions). Agent jobs carry their description in the <command> tag —
+// the same command → description fallback the pre-XML line format used.
 func wireListText(l *ListResult) string {
 	if len(l.Jobs) == 0 {
 		return "No jobs"
 	}
 	lines := make([]string, 0, len(l.Jobs))
 	for _, j := range l.Jobs {
-		lines = append(lines, formatListLine(j))
+		lines = append(lines, wireJobLine(j))
 	}
 	return strings.Join(lines, "\n")
 }
 
-// formatListLine is the single list-line format shared by wire and render.
-// The type token appears only when Type is set, so callers that never
-// populate it keep the pre-unification line shape.
-func formatListLine(j *JobInfo) string {
-	cmd := j.Command
-	if cmd == "" {
-		cmd = j.Description
+// wireJobLine lays out tags in a fixed order (job_id, type, status, elapsed,
+// command); decodeWireJobLine relies on it. The type tag appears only when
+// Type is set, so callers that never populate it keep a slimmer line.
+func wireJobLine(j *JobInfo) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<job_id>%s</job_id>", j.ID)
+	if j.Type != "" {
+		fmt.Fprintf(&sb, "<type>%s</type>", j.Type)
 	}
-	if cmd == "" {
-		cmd = j.ID
+	fmt.Fprintf(&sb, "<status>%s</status>", j.Status)
+	if j.ElapsedMs > 0 {
+		fmt.Fprintf(&sb, "<elapsed>%s</elapsed>", formatElapsedMs(j.ElapsedMs))
 	}
-	if j.Type == "" {
-		return fmt.Sprintf("job_id=%s status=%s command=%q", j.ID, j.Status, cmd)
+	if cmd := listCommand(j); cmd != "" {
+		fmt.Fprintf(&sb, "<command>%s</command>", cmd)
 	}
-	return fmt.Sprintf("job_id=%s type=%s status=%s command=%q", j.ID, j.Type, j.Status, cmd)
+	return sb.String()
+}
+
+// wireStopText emits the killed-job record as a single XML tag line — same
+// tag style as the list lines (minus elapsed, which stop does not carry).
+func wireStopText(s *StopResult) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<job_id>%s</job_id>", s.JobID)
+	if s.Type != "" {
+		fmt.Fprintf(&sb, "<type>%s</type>", s.Type)
+	}
+	fmt.Fprintf(&sb, "<status>%s</status>", s.Status)
+	if s.Command != "" {
+		fmt.Fprintf(&sb, "<command>%s</command>", s.Command)
+	}
+	return sb.String()
 }
 
 // jobRenderResult renders the unified JobOutput for TUI display.
@@ -457,6 +509,11 @@ func jobRenderResult(data any) string {
 		return fmt.Sprintf("%v", data)
 	}
 }
+
+// jobLineSep joins the display-line segments. TUI and wui both render the
+// engine's RenderResult output verbatim, so this function is the single
+// human-facing line format on both ends.
+const jobLineSep = " · "
 
 func renderJobOutput(out *JobOutput) string {
 	var sections []string
@@ -474,29 +531,99 @@ func renderJobOutput(out *JobOutput) string {
 	return strings.Join(sections, "\n\n")
 }
 
+// formatJobLine builds "id · type · status · elapsed · exit N · command",
+// omitting any segment with no value. Status words come straight from the
+// wire field values — no icons, no translation.
+func formatJobLine(id, typ, status string, elapsedMs int64, exitCode *int, cmd string) string {
+	segments := []string{id}
+	if typ != "" {
+		segments = append(segments, typ)
+	}
+	if status != "" {
+		segments = append(segments, status)
+	}
+	if elapsedMs > 0 {
+		segments = append(segments, formatElapsedMs(elapsedMs))
+	}
+	if exitCode != nil {
+		segments = append(segments, fmt.Sprintf("exit %d", *exitCode))
+	}
+	if cmd != "" {
+		segments = append(segments, cmd)
+	}
+	return strings.Join(segments, jobLineSep)
+}
+
+// formatElapsedMs humanizes the elapsed segment. It mirrors
+// utils.FormatDuration's output byte-for-byte (the repo-wide convention) but
+// lives here: pkg/utils tests import pkg/tool/bash, which imports this
+// package, so importing utils back would be an import cycle.
+func formatElapsedMs(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	s := int(d.Seconds())
+	switch {
+	case s < 1:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case s < 60:
+		return fmt.Sprintf("%ds", s)
+	case s < 3600:
+		return fmt.Sprintf("%dm %ds", s/60, s%60)
+	default:
+		return fmt.Sprintf("%dh %dm %ds", s/3600, (s%3600)/60, s%60)
+	}
+}
+
+// listCommand prefers the command, falling back to the description agent
+// jobs carry instead.
+func listCommand(j *JobInfo) string {
+	if j.Command != "" {
+		return j.Command
+	}
+	return j.Description
+}
+
+// renderPollResult: completed/failed polls show the header plus the output
+// body indented 4 spaces; still-running polls (not_ready/timeout) show the
+// header only — partial output belongs to the wire, not the line format.
 func renderPollResult(p *PollResult) string {
 	if p.Task == nil {
-		return fmt.Sprintf("Poll: %s", p.RetrievalStatus)
+		return p.RetrievalStatus
 	}
-
+	t := p.Task
+	header := formatJobLine(t.ID, t.Type, t.Status, 0, pollExitSegment(t), "")
+	if t.Status != "completed" && t.Status != "failed" {
+		return header
+	}
+	if strings.TrimSpace(t.Output) == "" {
+		return header
+	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Poll %s: %s", p.Task.ID, p.RetrievalStatus)
-	if isTerminal(p.Task.Status) {
-		fmt.Fprintf(&sb, " (exit: %d)", p.Task.ExitCode)
-	}
-	if p.Task.Output != "" {
-		sb.WriteByte('\n')
-		sb.WriteString(p.Task.Output)
+	sb.WriteString(header)
+	for line := range strings.SplitSeq(strings.TrimRight(t.Output, "\n"), "\n") {
+		// Blank lines take no indent — "    " would be pure trailing
+		// whitespace on the rendered line.
+		if line == "" {
+			sb.WriteString("\n")
+			continue
+		}
+		sb.WriteString("\n    ")
+		sb.WriteString(line)
 	}
 	return sb.String()
 }
 
-func renderStopResult(s *StopResult) string {
-	cmd := s.Command
-	if cmd == "" {
-		cmd = s.JobID
+// pollExitSegment surfaces the exit code only for completed/failed polls:
+// killed jobs carry a signal artifact (137 and friends), not a real exit.
+func pollExitSegment(t *JobInfo) *int {
+	if t.Status != "completed" && t.Status != "failed" {
+		return nil
 	}
-	return fmt.Sprintf("Stop %s: killed (was: %s)", s.JobID, cmd)
+	code := t.ExitCode
+	return &code
+}
+
+func renderStopResult(s *StopResult) string {
+	return formatJobLine(s.JobID, s.Type, s.Status, 0, nil, s.Command)
 }
 
 func renderListResult(l *ListResult) string {
@@ -508,7 +635,194 @@ func renderListResult(l *ListResult) string {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		sb.WriteString(formatListLine(j))
+		sb.WriteString(formatJobLine(j.ID, j.Type, j.Status, j.ElapsedMs, nil, listCommand(j)))
 	}
 	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// Wire XML parsing (replay)
+// ---------------------------------------------------------------------------
+
+// decodeWireXML recovers a JobOutput from wireText's XML form so history
+// replay renders the friendly lines instead of raw tags. It accepts only
+// what wireText itself emits; pre-XML text formats fail here and replay
+// falls through to as-is display (no legacy parsing).
+func decodeWireXML(text string) (*JobOutput, error) {
+	switch {
+	case strings.HasPrefix(text, "<retrieval_status>"):
+		return decodeWirePoll(text)
+	case strings.HasPrefix(text, "<job_id>"):
+		return decodeWireJobLines(text)
+	default:
+		return nil, fmt.Errorf("job: wire text is not job XML")
+	}
+}
+
+// decodeWirePoll walks the blank-line-joined parts wirePollText emits.
+func decodeWirePoll(text string) (*JobOutput, error) {
+	status, rest, ok := cutTag(text, "retrieval_status")
+	if !ok {
+		return nil, fmt.Errorf("job: poll wire missing retrieval_status")
+	}
+	res := &PollResult{RetrievalStatus: status}
+	var task *JobInfo
+	for rest != "" {
+		if !strings.HasPrefix(rest, "\n\n") {
+			return nil, fmt.Errorf("job: poll wire parts not blank-line separated at %q", wirePreview(rest))
+		}
+		part := rest[2:]
+		// Output is always the last part, so its value is everything between
+		// the fixed prefix and the fixed suffix — embedded angle brackets and
+		// look-alike closing tags stay part of the content.
+		const open, close = "<output>\n", "\n</output>"
+		if strings.HasPrefix(part, open) && strings.HasSuffix(part, close) {
+			if task == nil {
+				task = &JobInfo{}
+			}
+			task.Output = part[len(open) : len(part)-len(close)]
+			rest = ""
+			continue
+		}
+		if v, next, ok := cutTag(part, "task_id"); ok {
+			if task == nil {
+				task = &JobInfo{}
+			}
+			task.ID = v
+			rest = next
+			continue
+		}
+		if v, next, ok := cutTag(part, "task_type"); ok {
+			if task == nil {
+				task = &JobInfo{}
+			}
+			task.Type = v
+			rest = next
+			continue
+		}
+		if v, next, ok := cutTag(part, "status"); ok {
+			if task == nil {
+				task = &JobInfo{}
+			}
+			task.Status = v
+			rest = next
+			continue
+		}
+		if v, next, ok := cutTag(part, "exit_code"); ok {
+			code, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, fmt.Errorf("job: exit_code %q: %w", v, err)
+			}
+			if task == nil {
+				task = &JobInfo{}
+			}
+			task.ExitCode = code
+			rest = next
+			continue
+		}
+		return nil, fmt.Errorf("job: unrecognized poll part %q", wirePreview(part))
+	}
+	res.Task = task
+	return &JobOutput{Poll: res}, nil
+}
+
+// decodeWireJobLines parses the per-job XML lines wireListText (and
+// wireStopText, whose single line has the same shape) emit. Commands are
+// embedded verbatim, so a multi-line command makes one wire job line span
+// several "\n"-split fragments: a fragment starting with <job_id> opens a
+// new job, any other fragment continues the previous line (re-joined with
+// "\n" before parsing, so it lands inside the open <command> tag). A command
+// embedding a literal "\n<job_id>…" sequence would mis-split — accepted
+// ambiguity, since escaping newlines on the wire would change the LLM-visible
+// format.
+func decodeWireJobLines(text string) (*JobOutput, error) {
+	var lines []string
+	for frag := range strings.SplitSeq(text, "\n") {
+		if !strings.HasPrefix(frag, "<job_id>") {
+			if len(lines) == 0 {
+				return nil, fmt.Errorf("job: job line missing job_id")
+			}
+			lines[len(lines)-1] += "\n" + frag
+			continue
+		}
+		lines = append(lines, frag)
+	}
+	var jobs []*JobInfo
+	for _, line := range lines {
+		j, err := decodeWireJobLine(line)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return &JobOutput{List: &ListResult{Jobs: jobs}}, nil
+}
+
+func decodeWireJobLine(line string) (*JobInfo, error) {
+	id, rest, ok := cutTag(line, "job_id")
+	if !ok || id == "" {
+		return nil, fmt.Errorf("job: job line missing job_id")
+	}
+	j := &JobInfo{ID: id}
+	if v, next, ok := cutTag(rest, "type"); ok {
+		j.Type = v
+		rest = next
+	}
+	if v, next, ok := cutTag(rest, "status"); ok {
+		j.Status = v
+		rest = next
+	}
+	if v, next, ok := cutTag(rest, "elapsed"); ok {
+		ms, err := parseElapsedMs(v)
+		if err != nil {
+			return nil, err
+		}
+		j.ElapsedMs = ms
+		rest = next
+	}
+	// Command is free text and always the last tag, so the value is
+	// everything between the fixed prefix and the fixed suffix.
+	const open, close = "<command>", "</command>"
+	if rest != "" {
+		if !strings.HasPrefix(rest, open) || !strings.HasSuffix(rest, close) {
+			return nil, fmt.Errorf("job: job line has trailing non-command content %q", wirePreview(rest))
+		}
+		j.Command = rest[len(open) : len(rest)-len(close)]
+	}
+	return j, nil
+}
+
+// cutTag removes a leading "<name>value</name>" unit, taking the value up to
+// the first closing tag — safe for scalar tags whose values come from fixed
+// vocabularies (IDs, types, statuses, numbers).
+func cutTag(s, name string) (value, rest string, ok bool) {
+	open := "<" + name + ">"
+	if !strings.HasPrefix(s, open) {
+		return "", "", false
+	}
+	after := s[len(open):]
+	closing := "</" + name + ">"
+	before, after0, ok := strings.Cut(after, closing)
+	if !ok {
+		return "", "", false
+	}
+	return before, after0, true
+}
+
+// parseElapsedMs inverts utils.FormatDuration ("1h 2m 3s" style): the
+// decorative spaces are the only difference from time.ParseDuration syntax.
+func parseElapsedMs(s string) (int64, error) {
+	d, err := time.ParseDuration(strings.ReplaceAll(s, " ", ""))
+	if err != nil {
+		return 0, fmt.Errorf("job: elapsed %q: %w", s, err)
+	}
+	return d.Milliseconds(), nil
+}
+
+// wirePreview keeps error messages short — a poll <output> part can be huge.
+func wirePreview(s string) string {
+	if len(s) > 60 {
+		return s[:60] + "…"
+	}
+	return s
 }

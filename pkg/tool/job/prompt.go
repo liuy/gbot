@@ -14,8 +14,8 @@ Actions (one per call, set via the "action" parameter):
 job_id values come from Job list output (e.g. "bg-1"); do not guess them.
 
 Returns a retrieval_status for poll: success, timeout, or not_ready
-Returns a status for stop: killed (with the original command/description)
-Returns one line per job for list: job_id=... type=... status=... command=...
+Returns XML for stop: <job_id>...</job_id><type>...</type><status>killed</status><command>...</command>
+Returns one XML line per job for list: <job_id>...</job_id><type>...</type><status>...</status><elapsed>...</elapsed><command>...</command>
 
 Works with all job types: background shells, async agents, and remote sessions`
 }

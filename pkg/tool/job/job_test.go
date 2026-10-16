@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // mockRegistry implements Registry for testing.
@@ -784,17 +785,15 @@ func TestJob_RenderResultPoll(t *testing.T) {
 			RetrievalStatus: "success",
 			Task: &JobInfo{
 				ID:       "bg-1",
+				Type:     "bash",
 				Status:   "completed",
 				Output:   "hello world",
 				ExitCode: 0,
 			},
 		},
 	})
-	if !strings.Contains(result, "Poll bg-1: success (exit: 0)") {
-		t.Errorf("RenderResult = %q, want containing 'Poll bg-1: success (exit: 0)'", result)
-	}
-	if !strings.Contains(result, "hello world") {
-		t.Errorf("RenderResult = %q, want containing 'hello world'", result)
+	if result != "bg-1 · bash · completed · exit 0\n    hello world" {
+		t.Errorf("RenderResult = %q, want the header + indented body format", result)
 	}
 }
 
@@ -810,7 +809,7 @@ func TestJob_RenderResultStop(t *testing.T) {
 			Command: "sleep 60",
 		},
 	})
-	want := "Stop bg-10: killed (was: sleep 60)"
+	want := "bg-10 · bash · killed · sleep 60"
 	if result != want {
 		t.Errorf("RenderResult = %q, want %q", result, want)
 	}
@@ -837,13 +836,13 @@ func TestJob_RenderResultCombined(t *testing.T) {
 			Command: "sleep 60",
 		},
 	})
-	if !strings.Contains(result, "Poll bg-1: success (exit: 0)") {
+	if !strings.Contains(result, "bg-1 · completed · exit 0") {
 		t.Errorf("RenderResult missing poll section, got: %q", result)
 	}
-	if !strings.Contains(result, "hello world") {
-		t.Errorf("RenderResult missing output, got: %q", result)
+	if !strings.Contains(result, "    hello world") {
+		t.Errorf("RenderResult missing indented output, got: %q", result)
 	}
-	if !strings.Contains(result, "Stop bg-10: killed (was: sleep 60)") {
+	if !strings.Contains(result, "bg-10 · bash · killed · sleep 60") {
 		t.Errorf("RenderResult missing stop section, got: %q", result)
 	}
 }
@@ -871,7 +870,7 @@ func TestJob_RenderResultPollTimeout(t *testing.T) {
 			},
 		},
 	})
-	want := "Poll bg-3: timeout"
+	want := "bg-3 · running"
 	if result != want {
 		t.Errorf("RenderResult = %q, want %q", result, want)
 	}
@@ -887,8 +886,8 @@ func TestJob_RenderResultPollNilTask(t *testing.T) {
 			Task:            nil,
 		},
 	})
-	if result != "Poll: success" {
-		t.Errorf("RenderResult nil task = %q, want 'Poll: success'", result)
+	if result != "success" {
+		t.Errorf("RenderResult nil task = %q, want 'success'", result)
 	}
 }
 
@@ -941,8 +940,8 @@ func TestJob_StopEmptyJobAndEmptyCommandUsesJobID(t *testing.T) {
 			Command: out.Stop.Command,
 		},
 	})
-	if !strings.Contains(rendered, "bg-22") {
-		t.Errorf("RenderResult = %q, want containing job ID", rendered)
+	if rendered != "bg-22 · bash · killed" {
+		t.Errorf("RenderResult = %q, want %q", rendered, "bg-22 · bash · killed")
 	}
 }
 
@@ -960,7 +959,7 @@ func TestJob_RenderResultPollNoOutput(t *testing.T) {
 			},
 		},
 	})
-	want := "Poll bg-1: success (exit: 0)"
+	want := "bg-1 · completed · exit 0"
 	if result != want {
 		t.Errorf("RenderResult = %q, want %q", result, want)
 	}
@@ -1083,11 +1082,8 @@ func TestJob_RenderResultListWithJobs(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, `job_id=bg-1 status=running command="sleep 10"`) {
-		t.Errorf("RenderResult = %q, want containing new format", result)
-	}
-	if !strings.Contains(result, `job_id=bg-2 status=completed command="echo hi"`) {
-		t.Errorf("RenderResult = %q, want containing new format", result)
+	if result != "bg-1 · running · sleep 10\nbg-2 · completed · echo hi" {
+		t.Errorf("RenderResult = %q, want one line per job", result)
 	}
 }
 
@@ -1097,21 +1093,21 @@ func TestRenderList_IncludesType(t *testing.T) {
 		{ID: "agent-1", Type: "agent", Status: "running", Command: "research"},
 		{ID: "bg-2", Type: "bash", Status: "completed", Command: "echo hi"},
 	}})
-	want := "job_id=agent-1 type=agent status=running command=\"research\"\n" +
-		"job_id=bg-2 type=bash status=completed command=\"echo hi\""
+	want := "agent-1 · agent · running · research\n" +
+		"bg-2 · bash · completed · echo hi"
 	if got != want {
 		t.Errorf("renderListResult = %q, want %q", got, want)
 	}
 }
 
-// JobInfo built without Type (e.g. hand-constructed callers) keeps the old
-// line format — the type token appears only when Type is set.
+// JobInfo built without Type (e.g. hand-constructed callers) omits the type
+// segment — the segment appears only when Type is set.
 func TestJobListWire_EmptyTypeOmitsType(t *testing.T) {
 	t.Parallel()
 	got := jobWireText(t, &JobOutput{List: &ListResult{Jobs: []*JobInfo{
 		{ID: "bg-1", Status: "running", Command: "go test ./..."},
 	}}})
-	want := "job_id=bg-1 status=running command=\"go test ./...\""
+	want := "<job_id>bg-1</job_id><status>running</status><command>go test ./...</command>"
 	if got != want {
 		t.Errorf("wire text = %q, want %q", got, want)
 	}
@@ -1128,12 +1124,14 @@ func TestJob_RenderResultListFallsBackToDescription(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, `job_id=bg-5 status=running command="my agent task"`) {
-		t.Errorf("RenderResult = %q, want containing new format", result)
+	if result != "bg-5 · running · my agent task" {
+		t.Errorf("RenderResult = %q, want description in the command segment", result)
 	}
 }
 
-func TestJob_RenderResultListFallsBackToID(t *testing.T) {
+// With neither command nor description the command segment is omitted — the
+// id is already its own segment, so echoing it back would be noise.
+func TestJob_RenderResultListNoCommandOmitsSegment(t *testing.T) {
 	t.Parallel()
 	reg := newMockRegistry()
 	tl := NewJob(reg)
@@ -1144,8 +1142,8 @@ func TestJob_RenderResultListFallsBackToID(t *testing.T) {
 			},
 		},
 	})
-	if !strings.Contains(result, `job_id=bg-6 status=running command="bg-6"`) {
-		t.Errorf("RenderResult = %q, want containing new format", result)
+	if result != "bg-6 · running" {
+		t.Errorf("RenderResult = %q, want %q", result, "bg-6 · running")
 	}
 }
 
@@ -1205,6 +1203,30 @@ func TestJob_IsTerminalStatuses(t *testing.T) {
 	} {
 		if got := isTerminal(tc.status); got != tc.want {
 			t.Errorf("isTerminal(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+// formatElapsedMs must stay byte-identical to utils.FormatDuration — the
+// mirror exists only because of the pkg/utils test → bash → job import
+// cycle (see formatElapsedMs). The values walk every branch boundary and
+// each arithmetic operand, so mutating any literal flips at least one row.
+func TestFormatElapsedMs_MirrorsUtilsFormatDuration(t *testing.T) {
+	t.Parallel()
+	for _, ms := range []int64{
+		50, 300, 999, 1_000, 1_999, // sub-second and the s<1 boundary
+		59_000, 60_000, // s<60 boundary
+		119_000, 121_000, // s/60 operand boundaries (59/61 mutants)
+		3_599_000,            // s<3600 boundary, low side
+		3_600_000,            // s<3600 boundary, high side
+		3_723_000,            // s%60 operand boundary
+		7_199_000, 7_202_000, // s/3600 operand boundaries
+		7_259_000, 7_260_000, // (s%3600)/60 operand boundaries
+		86_400_000,
+	} {
+		want := utils.FormatDuration(time.Duration(ms) * time.Millisecond)
+		if got := formatElapsedMs(ms); got != want {
+			t.Errorf("formatElapsedMs(%d) = %q, want %q", ms, got, want)
 		}
 	}
 }
@@ -1436,8 +1458,8 @@ Actions (one per call, set via the "action" parameter):
 job_id values come from Job list output (e.g. "bg-1"); do not guess them.
 
 Returns a retrieval_status for poll: success, timeout, or not_ready
-Returns a status for stop: killed (with the original command/description)
-Returns one line per job for list: job_id=... type=... status=... command=...
+Returns XML for stop: <job_id>...</job_id><type>...</type><status>killed</status><command>...</command>
+Returns one XML line per job for list: <job_id>...</job_id><type>...</type><status>...</status><elapsed>...</elapsed><command>...</command>
 
 Works with all job types: background shells, async agents, and remote sessions`
 	if got := jobPrompt(); got != want {
@@ -1485,7 +1507,7 @@ func TestJob_RenderListSeparatorCount(t *testing.T) {
 		{ID: "a", Status: "running", Command: "echo a"},
 		{ID: "b", Status: "completed", Command: "echo b"},
 	}})
-	wantTwo := "job_id=a status=running command=\"echo a\"\njob_id=b status=completed command=\"echo b\""
+	wantTwo := "a · running · echo a\nb · completed · echo b"
 	if two != wantTwo {
 		t.Errorf("renderListResult(2 jobs) = %q, want %q", two, wantTwo)
 	}
@@ -1504,23 +1526,51 @@ func TestJob_RenderListSeparatorCount(t *testing.T) {
 
 func TestJob_RenderStopFallbackExact(t *testing.T) {
 	t.Parallel()
-	if got := renderStopResult(&StopResult{JobID: "bg-9", Command: "sleep 60"}); got != "Stop bg-9: killed (was: sleep 60)" {
-		t.Errorf("renderStopResult = %q, want %q", got, "Stop bg-9: killed (was: sleep 60)")
+	if got := renderStopResult(&StopResult{JobID: "bg-9", Type: "bash", Status: "killed", Command: "sleep 60"}); got != "bg-9 · bash · killed · sleep 60" {
+		t.Errorf("renderStopResult = %q, want %q", got, "bg-9 · bash · killed · sleep 60")
 	}
-	if got := renderStopResult(&StopResult{JobID: "bg-9", Command: ""}); got != "Stop bg-9: killed (was: bg-9)" {
-		t.Errorf("renderStopResult(empty command) = %q, want %q", got, "Stop bg-9: killed (was: bg-9)")
+	// Empty command drops the segment instead of echoing the job ID.
+	if got := renderStopResult(&StopResult{JobID: "bg-9", Status: "killed"}); got != "bg-9 · killed" {
+		t.Errorf("renderStopResult(empty command) = %q, want %q", got, "bg-9 · killed")
 	}
 }
 
 func TestJob_RenderPollExactShapes(t *testing.T) {
 	t.Parallel()
-	running := renderPollResult(&PollResult{RetrievalStatus: "not_ready", Task: &JobInfo{ID: "bg-1", Status: "running", Output: "line1\nline2"}})
-	if running != "Poll bg-1: not_ready\nline1\nline2" {
-		t.Errorf("renderPollResult(running) = %q, want %q", running, "Poll bg-1: not_ready\nline1\nline2")
+	// Still-running polls show the header only — partial output is wire-only.
+	running := renderPollResult(&PollResult{RetrievalStatus: "not_ready", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "running", Output: "line1\nline2"}})
+	if running != "bg-1 · bash · running" {
+		t.Errorf("renderPollResult(running) = %q, want %q", running, "bg-1 · bash · running")
 	}
 	terminal := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Status: "failed", ExitCode: 2}})
-	if terminal != "Poll bg-1: success (exit: 2)" {
-		t.Errorf("renderPollResult(terminal) = %q, want %q", terminal, "Poll bg-1: success (exit: 2)")
+	if terminal != "bg-1 · failed · exit 2" {
+		t.Errorf("renderPollResult(terminal) = %q, want %q", terminal, "bg-1 · failed · exit 2")
+	}
+	// Killed polls keep signal artifacts off the line: no exit segment.
+	killed := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "killed", ExitCode: 137}})
+	if killed != "bg-1 · bash · killed" {
+		t.Errorf("renderPollResult(killed) = %q, want %q", killed, "bg-1 · bash · killed")
+	}
+	// A failed poll shows its body too — both terminal states qualify.
+	failedBody := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "failed", ExitCode: 2, Output: "boom"}})
+	if failedBody != "bg-1 · bash · failed · exit 2\n    boom" {
+		t.Errorf("renderPollResult(failed body) = %q, want %q", failedBody, "bg-1 · bash · failed · exit 2\n    boom")
+	}
+	// Completed polls indent every non-blank body line 4 spaces; blank
+	// trailing lines are trimmed, interior blank lines stay empty (no
+	// trailing-whitespace padding).
+	body := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "completed", ExitCode: 0, Output: "l1\nl2\n\n"}})
+	if body != "bg-1 · bash · completed · exit 0\n    l1\n    l2" {
+		t.Errorf("renderPollResult(body) = %q, want indented body", body)
+	}
+	gap := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "completed", ExitCode: 0, Output: "l1\n\nl2\n"}})
+	if gap != "bg-1 · bash · completed · exit 0\n    l1\n\n    l2" {
+		t.Errorf("renderPollResult(interior blank) = %q, want %q", gap, "bg-1 · bash · completed · exit 0\n    l1\n\n    l2")
+	}
+	// Whitespace-only output keeps the header alone.
+	blank := renderPollResult(&PollResult{RetrievalStatus: "success", Task: &JobInfo{ID: "bg-1", Type: "bash", Status: "completed", ExitCode: 0, Output: " \n "}})
+	if blank != "bg-1 · bash · completed · exit 0" {
+		t.Errorf("renderPollResult(blank output) = %q, want header only", blank)
 	}
 }
 

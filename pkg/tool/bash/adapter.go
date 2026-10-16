@@ -85,6 +85,13 @@ func backgroundJobToInfo(bt *BackgroundJob) *job.JobInfo {
 		StartedMs:    bt.StartTime.UnixMilli(),
 	}
 
+	// Terminal bash jobs have no DurationMs source elsewhere; EndTime is set
+	// on every terminal transition, so the job tool can derive total runtime
+	// (the display elapsed for completed jobs) from it.
+	if !bt.StartTime.IsZero() && !bt.EndTime.IsZero() {
+		info.DurationMs = bt.EndTime.Sub(bt.StartTime).Milliseconds()
+	}
+
 	if bt.Output != nil {
 		info.Output = bt.Output.String()
 	}
