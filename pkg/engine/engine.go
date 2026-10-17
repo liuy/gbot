@@ -1399,6 +1399,16 @@ func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPro
 		return
 	}
 	var attMsgs []types.Message
+	// Snapshot before the drain appends the reminder/attachment rows, so
+	// queryStartMsgIdx marks the last user-side row: buildHistory's
+	// msgs[:idx+1] then admits the drained user rows but excludes the
+	// in-flight assistant row the snapshot streams — the same boundary a
+	// normal query gets by snapshotting before appendMessage. Snapshotting
+	// after the drain (the old placement) pointed the +1 at the assistant
+	// row instead, so a fresh client rendered it from both history and
+	// snapshot. This also refreshes the stale prior-query idx before
+	// runTurns, keeping committed turns in buildHistory.
+	e.snapshotQueryStart()
 	for i := range pendingItems {
 		// nil return = reminder item (job/message): the event already fired
 		// inside appendQueuedReminderMessage.
@@ -1406,10 +1416,6 @@ func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPro
 			attMsgs = append(attMsgs, *m)
 		}
 	}
-	// Update queryStartMsgIdx so buildHistory includes all committed messages
-	// (including the previous query's assistant response). Without this, the
-	// stale idx from the prior query truncates history, hiding committed turns.
-	e.snapshotQueryStart()
 	for i := range attMsgs {
 		e.emitEvent(types.QueryEvent{
 			Type:    types.EventAttachment,

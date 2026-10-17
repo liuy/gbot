@@ -1475,3 +1475,87 @@ func TestQueuedFinalContent_NotificationVerbatim(t *testing.T) {
 		})
 	}
 }
+
+// TestJobReminder_AutoTurnQueryStartMarksDrainedEnvelope pins where the idle
+// auto-turn's query start lands: processAttachments must snapshot
+// queryStartMsgIdx BEFORE the drain appends the reminder envelope, so
+// buildHistory's msgs[:idx+1] boundary marks the last user-side row (the
+// envelope) and excludes the in-flight assistant row the snapshot streams.
+// Snapshotting after the drain pointed the boundary at that assistant row and
+// a fresh WUI client rendered it twice. The prior QuerySync plants a stale
+// index — without the pre-drain snapshot the boundary stays at the prior
+// query's user row and this test fails.
+func TestJobReminder_AutoTurnQueryStartMarksDrainedEnvelope(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "prior turn acknowledged"), nil)
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "blocker", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "notification acknowledged"), nil)
+	bt := &blockingTool{name: "blocker", startCh: make(chan struct{}), releaseCh: make(chan struct{})}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bt.Name(): bt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	// The idle kick reads e.systemPrompt (not the Query parameter), so it
+	// must be set through the setter or EnqueueAttachment never starts a turn.
+	eng.SetSystemPrompt("sys")
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(bt.releaseCh)
+		}
+	}
+	t.Cleanup(release)
+
+	// A completed prior query plants a stale queryStartMsgIdx (its user row
+	// at index 0) — the realistic idle state an auto-turn wakes up in.
+	res := eng.QuerySync(context.Background(), "prior user turn", "")
+	if res.Error != nil {
+		t.Fatalf("prior query error: %v", res.Error)
+	}
+	if res.Reply != "prior turn acknowledged" {
+		t.Fatalf("prior query reply = %q, want scripted reply", res.Reply)
+	}
+
+	eng.EnqueueAttachment(reminderJobItem("job-idx-1"))
+	select {
+	case <-bt.startCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("auto-turn blocker tool never started")
+	}
+
+	// The parked window: the envelope row is committed and the auto-turn is
+	// still running — the exact state a fresh client's buildHistory reads.
+	env := findReminderEnvelopeMessages(eng.Messages())
+	if len(env) != 1 {
+		t.Fatalf("%d reminder envelope rows while the auto-turn runs, want 1", len(env))
+	}
+	if got := eng.QueryStartMsgIdx(); got != env[0] {
+		t.Fatalf("QueryStartMsgIdx = %d during the auto-turn, want %d (the drained envelope row, not a stale prior-query index)", got, env[0])
+	}
+
+	release()
+	if !ec.WaitForEventCount(types.EventQueryEnd, 2, 10*time.Second) {
+		t.Fatalf("auto-turn never ended: %d QueryEnd events, want 2 (prior + auto-turn)", len(ec.FindEvents(types.EventQueryEnd)))
+	}
+	// Three turns: the prior query is one LLM call, the auto-turn two
+	// (tool_use turn + closing end_turn turn). A fourth would mean a stray
+	// re-drain or re-entry.
+	if eng.turnCount != 3 {
+		t.Errorf("turnCount = %d after both queries, want 3 (no extra turn)", eng.turnCount)
+	}
+}
