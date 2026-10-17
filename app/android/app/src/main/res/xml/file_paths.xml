@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="captures" path="." />
+    <!-- API-28 download destination getExternalFilesDir(DOWNLOADS)/gbot —
+         the only legal way to hand that file to the installer/viewer. -->
+    <external-files-path name="downloads" path="Download" />
 </paths>

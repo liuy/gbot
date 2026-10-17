@@ -1,5 +1,6 @@
 package com.gbot.android.service
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,6 +8,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.gbot.android.ArtifactDownloader
 import com.gbot.android.GbotProcess
 import com.gbot.android.MainActivity
 import com.gbot.android.R
@@ -54,35 +56,69 @@ class ConnectionForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var active = false
     private var loopJob: Job? = null
+    // Last target the connection loop was started against — the "Connected to
+    // gbot on port %d" content is synthesized from this, so the download
+    // progress renderer can rebuild the idle form without new plumbing.
+    @Volatile private var targetPort = DEFAULT_PORT
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // The downloader pokes this (throttled) whenever its state changed;
+        // rendering stays service-owned: the content is re-synthesized here
+        // from both states, so two writers can never fight over id 1001.
+        ArtifactDownloader.requestRender = { renderStatusNotification() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val (host, port) = resolveTarget(intent)
+        targetPort = port
 
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text, port))
-            .setSmallIcon(android.R.drawable.ic_menu_share)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-
-        startForeground(NOTIFICATION_ID, notification)
+        startForeground(NOTIFICATION_ID, buildStatusNotification(port, ArtifactDownloader.state.get()))
         startClient(host, port)
         return START_STICKY
+    }
+
+    // THE single source of id-1001 content: both the startForeground post and
+    // download-progress re-renders build through here, so a progress update
+    // can never clobber the connection text maintained elsewhere.
+    internal fun buildStatusNotification(port: Int, download: ArtifactDownloader.DownloadState): Notification {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setOngoing(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            )
+        val downloading = download as? ArtifactDownloader.DownloadState.Downloading
+        if (downloading != null) {
+            builder.setContentTitle(getString(R.string.notification_downloading, downloading.name))
+            builder.setContentText(getString(R.string.notification_text, port))
+            // setProgress takes ints: clamp so artifacts over 2 GB degrade to
+            // a saturated bar instead of throwing, and an unknown total (-1)
+            // clamps to 0 — the bar then renders indeterminate, not negative.
+            builder.setProgress(
+                downloading.bytesTotal.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+                downloading.bytesDone.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+                downloading.bytesTotal <= 0,
+            )
+        } else {
+            builder.setContentTitle(getString(R.string.notification_title))
+            builder.setContentText(getString(R.string.notification_text, port))
+        }
+        return builder.build()
+    }
+
+    // internal: the render tests drive the service's real update path.
+    internal fun renderStatusNotification() {
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildStatusNotification(targetPort, ArtifactDownloader.state.get()))
     }
 
     private fun startClient(host: String, port: Int) {
@@ -140,6 +176,9 @@ class ConnectionForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // The hook captures this service — dropping it here keeps a destroyed
+        // instance from rendering into a later test's or process's shadows.
+        ArtifactDownloader.requestRender = null
         active = false
         loopJob?.cancel()
         wsClient?.shutdown()

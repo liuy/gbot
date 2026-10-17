@@ -7,11 +7,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * downloadFileName feeds DownloadManager.setDestinationInExternalPublicDir,
- * so it must survive percent-encoding, query strings and ':' (which that API
- * rejects outright — it throws, and the throw is swallowed into a silent drop).
- * Robolectric because the helper goes through android.net.Uri, which is stubbed
- * (throws) in plain JUnit.
+ * downloadFileName names the in-process downloader's destination, so it must
+ * survive percent-encoding, query strings and ':' (which is poison in a real
+ * file name / MediaStore DISPLAY_NAME). Robolectric because the helper goes
+ * through android.net.Uri, which is stubbed (throws) in plain JUnit.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -42,15 +41,16 @@ class ChatFragmentDownloadNameTest {
 	@Test
 	fun trailingSlash_usesTheLastRealSegment() {
 		// lastPathSegment skips the empty segment a trailing slash leaves
-		// behind — it never hands DownloadManager a blank leaf.
+		// behind — the leaf must never be blank, a blank DISPLAY_NAME/file
+		// name is what the fallback gbot-download exists for.
 		assertThat(ChatFragment.downloadFileName("http://127.0.0.1:8765/artifacts/"))
 			.isEqualTo("artifacts")
 	}
 
 	@Test
 	fun colonInName_isStripped() {
-		// setDestinationInExternalPublicDir rejects ':' — keeping it would make
-		// enqueue() throw and the download vanish with no trace.
+		// ':' is poison in a real filesystem name / MediaStore DISPLAY_NAME —
+		// keeping it would make the sink open fail or the row unusable.
 		assertThat(ChatFragment.downloadFileName("http://127.0.0.1:8765/artifacts/12:30:00.zip"))
 			.isEqualTo("123000.zip")
 	}

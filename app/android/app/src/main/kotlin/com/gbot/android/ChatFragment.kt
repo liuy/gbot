@@ -1,7 +1,6 @@
 package com.gbot.android
 
 import android.app.Activity
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
@@ -9,7 +8,6 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.os.Environment
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.ShapeDrawable
 import android.graphics.drawable.shapes.RoundRectShape
@@ -266,8 +264,8 @@ class ChatFragment : Fragment() {
          * query-free and already percent-decoded (substringAfterLast('/') kept
          * both the "?v=2" and the raw %20) — that decoding is a caller contract:
          * arbitrary URLs must not be fed here, the artifactURL caller is safe
-         * because it encodes each path segment. ':' is stripped because
-         * setDestinationInExternalPublicDir rejects it.
+         * because it encodes each path segment. ':' is stripped because a
+         * colon is poison in a real file name / MediaStore DISPLAY_NAME.
          */
         internal fun downloadFileName(url: String): String {
             val segment = Uri.parse(url).lastPathSegment ?: ""
@@ -373,9 +371,10 @@ class ChatFragment : Fragment() {
         webView?.addJavascriptInterface(ShareBridge(), SHARE_BRIDGE_NAME)
         // Without a listener the WebView silently drops every download —
         // iframe navigations and Content-Disposition responses land in a void.
-        // Hand the URL to the system DownloadManager; its traffic rides the
-        // tailscale VPN like everything else on the device. blob: anchors stay
-        // out of scope — DownloadManager rejects them outright.
+        // The in-process downloader starts reading on the user's confirm and
+        // rides the app's own network stack, so it shares the same VPN/tailscale
+        // routing the daemon is reachable through (the system DownloadManager
+        // is a separate process whose JobScheduler queue stalls on-device).
         webView?.setDownloadListener { url, _, _, mimeType, _ -> onWebViewDownload(url, mimeType) }
         webView?.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
@@ -489,37 +488,12 @@ class ChatFragment : Fragment() {
         updateStatusBarIcons()
     }
 
-    // Verified on-device: DownloadManager's public-Downloads enqueue needs no
-    // storage permission on this app's target devices, so asking for one was
-    // pure interruption. Failures surface through the event log in enqueueDownload.
+    // No storage permission on any API level: MediaStore Downloads on 29+,
+    // the app-scoped external dir on 28. Failures surface as a notification
+    // plus an event-log line — never a silent drop like the old enqueue did.
     internal fun onWebViewDownload(url: String, mimeType: String?) {
         val ctx = context ?: return
-        enqueueDownload(ctx, url, mimeType)
-    }
-
-    private fun enqueueDownload(ctx: Context, url: String, mimeType: String?) {
-        try {
-            // DownloadManager treats the second destination arg as a file
-            // NAME, not a directory — "gbot" alone produced nameless
-            // "gbot-1" files. The gbot/ subdirectory rides the leading slash
-            // of the name; the extension survives so the system can offer
-            // "Install".
-            val req = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mimeType?.ifBlank { null })
-                setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
-                )
-                setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    "gbot/${downloadFileName(url)}",
-                )
-            }
-            ctx.getSystemService(Context.DOWNLOAD_SERVICE)?.let { mgr ->
-                (mgr as DownloadManager).enqueue(req)
-            }
-        } catch (e: Exception) {
-            GbotProcess.appendEvent("download", "${e.message}")
-        }
+        ArtifactDownloader.start(ctx, url, downloadFileName(url), mimeType)
     }
 
     private fun retryLoad() {

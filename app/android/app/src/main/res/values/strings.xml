@@ -6,6 +6,13 @@
     <string name="notification_channel_description">Shows when GBot is connected to the gbot server</string>
     <string name="notification_title">GBot is running</string>
     <string name="notification_text">Connected to gbot on port %d</string>
+    <string name="notification_downloading">downloading %s</string>
+    <!-- Artifact download notifications -->
+    <string name="download_channel_name">Downloads</string>
+    <string name="download_channel_description">Artifact files downloaded by GBot</string>
+    <string name="download_done_title">Download complete</string>
+    <string name="download_done_saved">Saved to %s</string>
+    <string name="download_failed_title">Download failed</string>
     <!-- Splash endpoint picker -->
     <string name="splash_pill_local_name">Local</string>
     <string name="splash_pill_local_addr">this device</string>
