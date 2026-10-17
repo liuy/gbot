@@ -44,6 +44,16 @@ func assertStoreClosed(t *testing.T, store *short.Store, context string) {
 	}
 }
 
+// assertStoreOpen pins the handover-exit contract: the upgraded child is
+// attached to the same -wal/-shm, and a parent-side Close would delete the
+// sidecars out from under it (2026-10-17 loss mechanism).
+func assertStoreOpen(t *testing.T, store *short.Store, context string) {
+	t.Helper()
+	if err := store.DB().Ping(); err != nil {
+		t.Fatalf("%s: store closed — the upgrade handover must leave it open (a close deletes the -wal/-shm sidecars under the attached child, whose commits then vanish into the ghost wal): %v", context, err)
+	}
+}
+
 // interceptExit swaps the osExit seam for a recording no-op and returns a
 // channel closed when watchUpgradeExit reaches its exit call. The exit code
 // is pinned: the upgrade path must exit 0.
@@ -61,12 +71,16 @@ func interceptExit(t *testing.T) chan struct{} {
 	return exited
 }
 
-// The upgrade path exits via raw os.Exit(0), which skips every defer. The
-// store must be closed (final WAL checkpoint) inside watchUpgradeExit before
-// that exit, or the upgraded child inherits un-checkpointed frames.
-func TestWatchUpgradeExit_ClosesStoreBeforeExit(t *testing.T) {
+// The upgrade handover exit must LEAVE THE STORE OPEN: the upgraded child
+// opened the same database during its boot (its NewStore runs before the
+// parent's upg.Exit() fires), and a store.Close on this path runs the
+// final checkpoint and then DELETES the -wal/-shm sidecars out from under
+// the child's live connections — its later commits return nil but vanish
+// into the unlinked ghost wal (2026-10-17: 15 messages). Normal exits
+// close the store via Instance.Cleanup; the handover exit must not.
+func TestWatchUpgradeExit_LeavesStoreOpenForAttachedChild(t *testing.T) {
 	exited := interceptExit(t)
-	store, _ := newExitTestStore(t)
+	store, dbPath := newExitTestStore(t)
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
 
 	go watchUpgradeExit(upg, &http.Server{}, nil, nil, nil, store)
@@ -77,15 +91,23 @@ func TestWatchUpgradeExit_ClosesStoreBeforeExit(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("watchUpgradeExit did not exit after upg.Exit() closed")
 	}
-	assertStoreClosed(t, store, "after watchUpgradeExit")
+	assertStoreOpen(t, store, "upgrade handover exit")
+	// The sidecars the attached child needs must still be on disk — deleting
+	// them is exactly what the parent-side Close did.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(dbPath + suffix); err != nil {
+			t.Errorf("memory.db%s missing after the handover exit — the attached child needs it: %v", suffix, err)
+		}
+	}
 }
 
-// store.Close must run AFTER the HTTP drain: in-flight requests persist at
-// turn boundaries, and closing the store mid-drain loses their writes. The
-// blocked handler makes Shutdown provably unfinished, so any store closure
-// before release is a real ordering bug, not a flake. The pre-exit insert
-// also proves the close actually checkpointed (fresh open reads it, -wal gone).
-func TestWatchUpgradeExit_ClosesStoreAfterDrain(t *testing.T) {
+// The exit must follow the HTTP drain (in-flight requests persist at turn
+// boundaries), and at the exit the store must still be open — with the
+// parent-side skip-close, durability comes from WAL crash semantics: the
+// committed row sits in the on-disk -wal, and a FRESH opener must read it.
+// That fresh-open visibility is the store-level contract the attached
+// upgraded child relies on.
+func TestWatchUpgradeExit_ExitsAfterDrain_LeavesStoreOpen(t *testing.T) {
 	store, dbPath := newExitTestStore(t)
 	sess, err := store.CreateSessionWithEngine(t.TempDir(), "glm-5", "e9")
 	if err != nil {
@@ -106,8 +128,8 @@ func TestWatchUpgradeExit_ClosesStoreAfterDrain(t *testing.T) {
 		close(entered)
 		<-release
 		// Causal ordering proof: at the moment the in-flight request
-		// finishes, the store must still be open. A store.Close that
-		// jumped the drain closes the db before this ping runs.
+		// finishes, the store must still be open — anything that closed it
+		// before the drain completed would make this ping fail.
 		pingErr = store.DB().Ping()
 	})}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -141,31 +163,31 @@ func TestWatchUpgradeExit_ClosesStoreAfterDrain(t *testing.T) {
 		t.Fatal("watchUpgradeExit did not exit after release")
 	}
 	if pingErr != nil {
-		t.Fatalf("store closed while the HTTP drain was still in flight — store.Close must run after Shutdown: %v", pingErr)
+		t.Fatalf("store closed while the HTTP drain was still in flight — the exit must follow the drain, and nothing on this path may close the store: %v", pingErr)
 	}
-	assertStoreClosed(t, store, "after watchUpgradeExit")
-
-	if _, err := os.Stat(dbPath + "-wal"); !os.IsNotExist(err) {
-		t.Errorf("-wal sidecar remains after upgrade-exit close (checkpoint did not finish): %v", err)
+	assertStoreOpen(t, store, "after watchUpgradeExit")
+	if _, err := os.Stat(dbPath + "-wal"); err != nil {
+		t.Errorf("-wal missing after the handover exit — the committed frames live there for the attached child: %v", err)
 	}
 	fresh, err := short.NewStore(dbPath)
 	if err != nil {
-		t.Fatalf("reopen after exit: %v", err)
+		t.Fatalf("fresh open alongside the still-open parent store: %v", err)
 	}
 	defer fresh.Close()
 	msgs, err := fresh.LoadMessages(sess.SessionID)
 	if err != nil {
-		t.Fatalf("LoadMessages after exit: %v", err)
+		t.Fatalf("LoadMessages from fresh opener: %v", err)
 	}
 	if len(msgs) != 1 || msgs[0].UUID != "drain-probe-1" {
-		t.Errorf("pre-exit message not durable through the upgrade close: %+v", msgs)
+		t.Errorf("pre-exit message not visible to a fresh opener (crash-semantics durability): %+v", msgs)
 	}
 }
 
 // RunDreamTimer only checks ctx between ticks, so a mid-tick dream Query
-// outlives dreamCancel; watchUpgradeExit must join it (bounded) before
-// closing the store. The bound keeps a long dream Query from stalling the
-// upgrade forever.
+// outlives dreamCancel; watchUpgradeExit must join it (bounded) before the
+// exit — the join lets the mid-tick dream persist commit before process
+// death. The bound keeps a long dream Query from stalling the upgrade
+// forever.
 func TestWatchUpgradeExit_DreamJoinIsBounded(t *testing.T) {
 	orig := dreamJoinTimeout
 	dreamJoinTimeout = 50 * time.Millisecond
@@ -184,7 +206,7 @@ func TestWatchUpgradeExit_DreamJoinIsBounded(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("watchUpgradeExit hung on an unfinished dream tick")
 	}
-	assertStoreClosed(t, store, "after bounded dream join")
+	assertStoreOpen(t, store, "after bounded dream join")
 }
 
 // The join must actually happen: with dreamDone open past the (generously
@@ -217,7 +239,7 @@ func TestWatchUpgradeExit_JoinsDreamBeforeExit(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("exit did not follow dreamDone close — join case removed, only the timeout path exits")
 	}
-	assertStoreClosed(t, store, "after dream join")
+	assertStoreOpen(t, store, "after dream join")
 }
 
 // Instance.Cleanup is the shutdown path for non-upgrade exits; it must close

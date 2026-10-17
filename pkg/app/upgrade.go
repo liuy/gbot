@@ -136,21 +136,26 @@ const drainTimeout = 3 * time.Second
 var handedOver atomic.Bool
 
 // osExit is the seam tests intercept to observe pre-exit state: os.Exit
-// skips defers, so anything that must run before process death (final WAL
-// checkpoint) has to sit between the drain and this call.
+// skips defers, so any pre-death work must sit between the drain and this
+// call (deliberately nothing today — see the skip-close note at the exit).
 var osExit = os.Exit
 
 // dreamJoinTimeout bounds the wait for the dream timer goroutine after
 // dreamCancel: RunDreamTimer only checks ctx between ticks, so a mid-tick
-// dream Query outlives the cancel, and its final persist must not race
-// store.Close. A dream Query can legitimately run minutes, so past this
-// bound we accept a logged persist error rather than stall the upgrade.
+// dream Query outlives the cancel; the join lets its final persist commit
+// before process death (the handover exit never closes the store, so an
+// interrupted commit is lost whole, never half-applied). A dream Query can
+// legitimately run minutes, so past this bound we exit under it rather
+// than stall the upgrade.
 var dreamJoinTimeout = 3 * time.Second
 
 // watchUpgradeExit drains this process after it handed its listener to the
 // upgraded child. Order matters: the 1012 close frame must reach the
 // browser BEFORE teardown begins. The PID file is deliberately NOT
-// removed: the child rewrote it during boot and now owns it.
+// removed: the child rewrote it during boot and now owns it. The store is
+// deliberately NOT closed either — crash semantics; see the comment at the
+// exit below. (The store param stays unused on purpose: the red-check —
+// reintroducing Close here — stays a one-line diff at this seam.)
 func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, dreamCancel context.CancelFunc, dreamDone <-chan struct{}, store *short.Store) {
 	<-upg.Exit()
 	handedOver.Store(true)
@@ -161,7 +166,7 @@ func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, drea
 		select {
 		case <-dreamDone:
 		case <-time.After(dreamJoinTimeout):
-			slog.Warn("upgrade exit: dream timer still running; closing store under it")
+			slog.Warn("upgrade exit: dream timer still running; exiting under it (in-flight persist lost whole)")
 		}
 	}
 	if wc != nil {
@@ -178,14 +183,13 @@ func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, drea
 		_ = srv.Close()
 	}
 	cancel()
-	// os.Exit skips defers, so the final WAL checkpoint has to happen here:
-	// the upgraded child is already serving on the same database, and frames
-	// left un-checkpointed in this process's -wal are exactly what the
-	// 10-13 e3 incident lost (37 committed messages, rows vanished).
-	if store != nil {
-		if err := store.Close(); err != nil {
-			slog.Warn("upgrade exit: store close", "error", err)
-		}
-	}
+	// Deliberately NOT closing the store here: the upgraded child opened
+	// the same database before this parent's upg.Exit() fired, so a Close
+	// would checkpoint and DELETE the -wal/-shm out from under its live
+	// connections — the child's commits would then append to an unlinked
+	// ghost wal, returning nil while losing rows. Committed frames are
+	// durable on disk and the child folds them in via its own checkpoint;
+	// normal exits keep the Close in Instance.Cleanup where no successor
+	// is attached.
 	osExit(0)
 }

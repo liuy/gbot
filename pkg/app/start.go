@@ -259,6 +259,10 @@ func Start(opts Options) (*Instance, error) {
 
 	var store *short.Store
 	{
+		// Two live processes on one memory.db are a proven loss class:
+		// whichever closes first deletes the -wal/-shm under the peer.
+		// Handover is handled parent-side (watchUpgradeExit skips
+		// store.Close); double starts are rejected by acquirePID above.
 		dbPath := filepath.Join(projectDir, "memory", "memory.db")
 		s, err := short.NewStore(dbPath)
 		if err != nil {
