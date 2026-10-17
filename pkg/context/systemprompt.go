@@ -144,7 +144,7 @@ func (b *Builder) RuntimeInfo() string {
 	runtime := "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
 	if b.WorkingDir != "" && b.ProjectDir != "" {
 		runtime += "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n"
-		runtime += "- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (message transcripts); also session_notes/, file-history/, history/, plans/\n"
+		runtime += "- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (full transcript of all sessions); also session_notes/, file-history/, history/, plans/\n"
 		// The concrete path is embedded because models naturally write
 		// absolute paths — the mechanism adapts to that habit instead of
 		// teaching a prefix convention (the redirect design was dropped).
