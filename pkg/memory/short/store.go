@@ -1,12 +1,14 @@
 package short
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // DB returns the write connection — the single long-lived conn pinned by
@@ -54,8 +56,10 @@ func NewStore(dbPath string) (*Store, error) {
 }
 
 // Close shuts down both pools. The read pool closes first so the write conn
-// is the last connection standing — its close runs the final WAL
-// checkpoint and removes the -wal/-shm sidecars.
+// is the last connection standing; its close runs the final WAL checkpoint.
+// persistWAL keeps the -wal/-shm sidecars on disk after that close — their
+// clean-close deletion ghosted attached writers' commits (three incidents,
+// see persistWAL).
 func (s *Store) Close() error {
 	if s.readDB != nil {
 		if err := s.readDB.Close(); err != nil {
@@ -120,7 +124,46 @@ func openSQLite(path string) (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
+	persistWAL(db)
 	return db, nil
+}
+
+// persistWAL sets SQLITE_FCNTL_PERSIST_WAL on the write pool's pinned
+// connection via the driver's exported FileControl surface. A connection's
+// clean close deletes -wal/-shm even while other processes hold the
+// database open, and the resulting ghost wal silently swallowed committed
+// tails across three incidents (2026-10-13/17/18; V9b repro in
+// /tmp/rca/harness): commits keep returning nil but land in the unlinked
+// file. Persist-WAL removes the sidecar delete from every close path of
+// ours — Close, handover, and pool teardown alike. The mode=ro read pool
+// needs nothing: ro closes never delete sidecars (V10). Failure only
+// warns — an unexpected driver change must not brick the daemon over
+// sidecar retention, and while the pinned conn stays open the sidecars
+// survive anyway.
+func persistWAL(db *sql.DB) {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		slog.Warn("memory: acquire pinned write conn for persist-WAL failed; clean closes may delete -wal/-shm under attached processes", "error", err)
+		return
+	}
+	defer conn.Close() // hands the pinned conn back to the 1-conn pool, it is not closed
+	err = conn.Raw(func(driverConn any) error {
+		fc, ok := driverConn.(sqlite.FileControl)
+		if !ok {
+			return fmt.Errorf("driver conn %T lacks sqlite.FileControl", driverConn)
+		}
+		mode, err := fc.FileControlPersistWAL("main", 1)
+		if err != nil {
+			return fmt.Errorf("FileControlPersistWAL(main, 1): %w", err)
+		}
+		if mode != 1 {
+			return fmt.Errorf("FileControlPersistWAL(main, 1) returned mode %d, want 1", mode)
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Warn("memory: persist-WAL not set on write conn; clean closes may delete -wal/-shm under attached processes", "error", err)
+	}
 }
 
 // openSQLiteRead opens the read-only pool used by every read-only store

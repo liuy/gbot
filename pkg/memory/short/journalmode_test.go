@@ -36,8 +36,8 @@ func TestStoreJournalModeWAL(t *testing.T) {
 
 	// Sidecars must EXIST while the store is open: the pinned single write
 	// connection holds them for the store's lifetime (SQLite deletes -wal/-shm
-	// only when the last connection closes). Cleaned on Close — see
-	// TestStoreCleanCloseCheckpointsWal.
+	// only when the last connection closes). Kept past Close by persistWAL —
+	// see TestStoreCleanClosePersistsWalSidecars.
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Stat(path + suffix); err != nil {
 			t.Errorf("sidecar %s missing while store open: %v", suffix, err)
@@ -45,11 +45,14 @@ func TestStoreJournalModeWAL(t *testing.T) {
 	}
 }
 
-// TestStoreCleanCloseCheckpointsWal asserts the invariant that keeps Read
-// tool mode=ro opens healthy: after a clean Close, the WAL is checkpointed
-// away (SQLite deletes -wal/-shm when the last connection closes cleanly).
-// Sidecars surviving a clean close would mean checkpoint-on-close broke.
-func TestStoreCleanCloseCheckpointsWal(t *testing.T) {
+// TestStoreCleanClosePersistsWalSidecars (formerly CheckpointsWal, which
+// asserted clean-close deletion) pins the persist-WAL invariant: the write
+// conn's Close keeps -wal/-shm on disk. That clean-close deletion ghosted
+// attached writers' commits across three incidents (2026-10-13/17/18) —
+// deleting the sidecars under other processes' live connections makes their
+// nil-returning commits land in an unlinked wal. persistWAL removes the
+// delete from every close path of ours.
+func TestStoreCleanClosePersistsWalSidecars(t *testing.T) {
 	path := t.TempDir() + "/test.db"
 	store, err := NewStore(path)
 	if err != nil {
@@ -60,9 +63,64 @@ func TestStoreCleanCloseCheckpointsWal(t *testing.T) {
 	}
 
 	for _, suffix := range []string{"-wal", "-shm"} {
-		if _, err := os.Stat(path + suffix); err == nil {
-			t.Errorf("sidecar %s exists after clean close; checkpoint on close broken", path+suffix)
+		if _, err := os.Stat(path + suffix); err != nil {
+			t.Errorf("sidecar %s deleted by clean close; persist-WAL broken: %v", path+suffix, err)
 		}
+	}
+}
+
+// TestStoreClosePersistedWalSurvivesReopen pins the store-level fix end to
+// end: write a row, Close (the normal-exit close that used to delete the
+// sidecars), assert the -wal survives on disk, and prove the committed row
+// is still there through a fresh NewStore. Without persistWAL the wal is
+// removed on close; the incident variant deleted it under an attached
+// second process, whose rows then vanished.
+func TestStoreClosePersistedWalSurvivesReopen(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ses, err := store.CreateSession("/project", "model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := store.AppendMessages(ses.SessionID, []*TranscriptMessage{{
+		UUID:      "pw-survivor-1",
+		Type:      "user",
+		Content:   `[{"type":"text","text":"persist-wal survivor"}]`,
+		CreatedAt: time.Now(), // REAL-TIME: persisted timestamp field
+	}}); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	shmExisted := false
+	if _, err := os.Stat(path + "-shm"); err == nil {
+		shmExisted = true
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(path + "-wal"); err != nil {
+		t.Errorf("-wal deleted by clean close; persist-WAL broken: %v", err)
+	}
+	if shmExisted {
+		if _, err := os.Stat(path + "-shm"); err != nil {
+			t.Errorf("-shm existed before close but is gone after; persist-WAL broken: %v", err)
+		}
+	}
+
+	store2, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("reopen NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store2.Close() })
+	msgs, err := store2.LoadMessages(ses.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after reopen: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].UUID != "pw-survivor-1" {
+		t.Errorf("reopened rows = %v, want the single committed pw-survivor-1", msgs)
 	}
 }
 

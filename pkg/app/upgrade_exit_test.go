@@ -45,12 +45,13 @@ func assertStoreClosed(t *testing.T, store *short.Store, context string) {
 }
 
 // assertStoreOpen pins the handover-exit contract: the upgraded child is
-// attached to the same -wal/-shm, and a parent-side Close would delete the
-// sidecars out from under it (2026-10-17 loss mechanism).
+// attached to the same -wal/-shm, so the parent must not close under it
+// (a close also checkpoints over the child's view; deletion itself is now
+// barred by persistWAL).
 func assertStoreOpen(t *testing.T, store *short.Store, context string) {
 	t.Helper()
 	if err := store.DB().Ping(); err != nil {
-		t.Fatalf("%s: store closed — the upgrade handover must leave it open (a close deletes the -wal/-shm sidecars under the attached child, whose commits then vanish into the ghost wal): %v", context, err)
+		t.Fatalf("%s: store closed — the upgrade handover must leave it open (closing under the attached child checkpoints over its view; its commits must stay private to its own close): %v", context, err)
 	}
 }
 

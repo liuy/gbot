@@ -30,13 +30,13 @@ import (
 //     committed -wal frames stay on disk and shared with the child, which
 //     reads them and later checkpoints; nothing is lost.
 //
-// The overlap variant is a KNOWN-FAILING spectest: it pins the raw loss
-// class — a parent that DOES call Close under the attached child
-// checkpoints and deletes the -wal/-shm sidecars, and the child's later
-// commits land in the unlinked ghost wal while returning nil. Until
-// Store.Close stops deleting the sidecars under a live second opener, the
-// overlap test stays red. It is gated behind GBOT_E1_REPRO=1 so `make
-// check` stays green while the test remains runnable on demand:
+// The overlap variant is the incident spectest: the parent DOES call Close
+// under the attached child. Before persistWAL that close deleted the
+// -wal/-shm sidecars and the child's later commits landed in the unlinked
+// ghost wal while returning nil (the raw loss class); with persistWAL the
+// parent's close keeps the sidecars and the spectest passes. It stays
+// gated behind GBOT_E1_REPRO=1 — cross-process choreography is too
+// wall-clock-heavy for every `make check` — and is runnable on demand:
 //
 //	GBOT_E1_REPRO=1 go test ./pkg/memory/short/ -run E1 -count=1 -v
 
@@ -578,7 +578,8 @@ func TestHandoverV0SerialReopenAllSurvive(t *testing.T) {
 // while the child is still attached and after its final Close. Always on:
 // this pins the store-level contract that makes the parent-side skip safe
 // (committed -wal frames are shared with an attached successor via the
-// wal-index; only a Close under it deletes the sidecars).
+// wal-index; historically a Close under it also deleted the sidecars —
+// now prevented by persistWAL).
 func TestHandoverUpgradeSkipCloseAllSurvive(t *testing.T) {
 	runDir := t.TempDir()
 	dbPath := filepath.Join(runDir, "memory.db")
@@ -694,13 +695,13 @@ func TestHandoverUpgradeSkipCloseAllSurvive(t *testing.T) {
 // TestE1OverlapHandoverCommittedRowsSurvive: the production-incident
 // choreography — the child's Store opens while the parent is still alive,
 // the parent commits its tail and closes, the child writes post-close.
-// Expected to FAIL until Store.Close stops deleting the -wal/-shm sidecars
-// under a live second opener: the child's nil-returning commits land in the
-// unlinked ghost wal and vanish from every later open. Run on demand with
+// Green under persistWAL: the parent's Close keeps the -wal/-shm sidecars
+// under the attached child, so the child's nil-returning commits land in
+// the linked wal and survive every later open. Run on demand with
 // GBOT_E1_REPRO=1 (see the file comment).
 func TestE1OverlapHandoverCommittedRowsSurvive(t *testing.T) {
 	if os.Getenv("GBOT_E1_REPRO") != "1" {
-		t.Skip("known-failing incident spectest (store-level loss class); set GBOT_E1_REPRO=1 to run")
+		t.Skip("incident spectest, green under persist-WAL; cross-process choreography run on demand: GBOT_E1_REPRO=1")
 	}
 	runDir := t.TempDir()
 	dbPath := filepath.Join(runDir, "memory.db")
@@ -820,9 +821,9 @@ func TestE1OverlapHandoverCommittedRowsSurvive(t *testing.T) {
 
 	var vr e1VerifyResult
 	e1RunVerifier(t, runDir, cfgPath, &vr)
-	// The parent's rows survive via the close-time checkpoint backfill; the
-	// child's post-close rows are the victim class (absent from every fresh
-	// open until the store-level bug is fixed).
+	// Under persistWAL every row survives: the parent's rows via the
+	// close-time checkpoint backfill, the child's post-close rows because
+	// their wal stays linked under them.
 	e1AssertDurability(t, "E1 S1 (ballast, checkpointed)", vr.S1Count, len(ballast), vr.S1UUIDs, ballast)
 	e1AssertDurability(t, "E1 S2 (e3 tail + child victims)", vr.S2Count, len(p2tail)+e1ChildRows, vr.S2UUIDs, append(append([]string{}, p2tail...), childWant...))
 	e1AssertDurability(t, "E1 S3 (e4 pre+tail)", vr.S3Count, len(pre)+len(p3tail), vr.S3UUIDs, append(append([]string{}, pre...), p3tail...))
