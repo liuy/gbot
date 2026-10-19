@@ -211,18 +211,54 @@ func TestEngine_AllTools_NoMCP(t *testing.T) {
 	}
 }
 
+type fakeServerConn struct{}
+
+func (fakeServerConn) ConnType() string { return "fake" }
+
+// Engines borrow the daemon's registry; closing any engine — including the
+// transient session-memory sub-engines spawned every turn — must leave the
+// shared connections alive. Only the registry's owner tears it down.
 func TestEngine_Close_WithRegistry(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
-	eng := New(&Params{
-		MCPRegistry: registry,
-	})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("srv", fakeServerConn{})
 
+	eng := New(&Params{MCPRegistry: registry})
 	eng.Close()
 	eng.Close() // double close safe
+
+	if _, ok := registry.GetConnection("srv"); !ok {
+		t.Fatal("engine Close killed the shared registry's connection")
+	}
+
+	if err := registry.Close(); err != nil {
+		t.Fatalf("owner registry close: %v", err)
+	}
+	if _, ok := registry.GetConnection("srv"); ok {
+		t.Fatal("owner registry close left the connection in place")
+	}
+}
+
+// The production trigger: a sub-engine (session-memory, sub-agents) closes
+// while every other session still uses the same registry.
+func TestEngineClose_SubEngineKeepsSharedRegistry(t *testing.T) {
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("srv", fakeServerConn{})
+
+	parent := New(&Params{MCPRegistry: registry})
+	t.Cleanup(parent.Close)
+	sub := parent.NewSubEngine(SubEngineOptions{})
+	sub.Close()
+
+	if _, ok := registry.GetConnection("srv"); !ok {
+		t.Fatal("sub-engine Close killed the shared registry's connection")
+	}
 }
 
 func TestEngine_MCPRegistryParam(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
 	eng := New(&Params{
 		MCPRegistry: registry,
 	})

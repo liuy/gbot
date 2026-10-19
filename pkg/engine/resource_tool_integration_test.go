@@ -91,6 +91,7 @@ func setupResourceServer(t *testing.T) (*mcpsdk.Server, *mcp.Registry) {
 	})
 
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	reg.SetConnectionForTest("resource-server", &mcp.ConnectedServer{
 		Name:    "resource-server",
 		Session: session,
@@ -146,6 +147,7 @@ func TestResourceTools_ColdStart_NoRegistry(t *testing.T) {
 
 func TestResourceTools_ColdStart_NoResourceSupport(t *testing.T) {
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	reg.SetConnectionForTest("no-resources-server", &mcp.ConnectedServer{
 		Name:         "no-resources-server",
 		Session:      nil,
@@ -264,6 +266,7 @@ func TestResourceTools_IdempotentListResources(t *testing.T) {
 
 func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	eng := newEngineWithRegistry(reg)
 
 	// Phase 1: No resource support → no tools

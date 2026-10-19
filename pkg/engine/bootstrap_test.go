@@ -872,6 +872,7 @@ func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 	t.Parallel()
 	mcpReg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = mcpReg.Close() })
 	mcpReg.SetToolsForTest([]mcp.DiscoveredTool{
 		{
 			Name: "mcp__test__tool", OriginalName: "tool",
@@ -908,6 +909,7 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 	t.Parallel()
 	mcpReg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = mcpReg.Close() })
 	mcpReg.SetToolsForTest([]mcp.DiscoveredTool{
 		{
 			Name: "mcp__test__hello", OriginalName: "hello",

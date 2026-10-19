@@ -1143,11 +1143,13 @@ func TestRefreshTools_CodeOnlyDoesNotRegisterToolSearch(t *testing.T) {
 }
 
 func TestAllTools_IncludesCodeOnlyTool(t *testing.T) {
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	eng := New(&Params{
 		Provider:      &mockProvider{},
 		Model:         "test-model",
 		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{} },
-		MCPRegistry:   mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
+		MCPRegistry:   reg,
 	})
 	t.Cleanup(func() { eng.Close() })
 	eng.mcpRegistry.SetToolsForTest([]mcp.DiscoveredTool{{

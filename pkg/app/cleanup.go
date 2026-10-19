@@ -51,6 +51,17 @@ func (inst *Instance) Cleanup() {
 			ms.Close()
 		}
 	}
+	// MCP server process trees do not die on stdin EOF alone (children like
+	// browsers are never signalled), so teardown closes the shared registry
+	// here, engines only borrow it. Read through EnvHolder so a registry a
+	// late reload built (after an MCP-less startup) is closed too.
+	if inst.EnvHolder != nil {
+		if reg := inst.EnvHolder.Load().McpReg; reg != nil {
+			if err := reg.Close(); err != nil {
+				slog.Warn("cleanup: mcp registry close", "error", err)
+			}
+		}
+	}
 	// A Registry now holds a process per project root, so the exit path has to
 	// close them all: a leaked gopls keeps indexing a tree and holding its
 	// memory after gbot is gone.

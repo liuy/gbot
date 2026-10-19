@@ -26,6 +26,8 @@ func newTestEngineForBreakdown(t *testing.T) *Engine {
 	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("# test\n"), 0o644); err != nil {
 		t.Fatalf("create CLAUDE.md: %v", err)
 	}
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	eng := New(&Params{
 		Model:       "claude-test",
 		MaxTokens:   16000,
@@ -33,7 +35,7 @@ func newTestEngineForBreakdown(t *testing.T) *Engine {
 		AutoCompact: AutoCompactConfig{ContextWindow: 200000},
 		WorkingDir:  tmpDir,
 		Logger:      slog.Default(),
-		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
+		MCPRegistry: reg,
 	})
 	t.Cleanup(func() { eng.Close() })
 	return eng
@@ -224,6 +226,7 @@ func TestContextBreakdown_FreeSpaceNotNegative(t *testing.T) {
 func TestContextBreakdown_MCPLoadedAndDeferred(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
 		{
 			Name: "mcp__srv__always", OriginalName: "always",
@@ -312,6 +315,7 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		{AgentType: "TestAgent", WhenToUse: "test use"},
 	})
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
 		{
 			Name: "mcp__srv__always", OriginalName: "always",
@@ -2002,6 +2006,7 @@ func TestEstimateMCPLoadedTools_NilRegistry(t *testing.T) {
 func TestEstimateMCPLoadedTools_SumsLoadedTools(t *testing.T) {
 	t.Parallel()
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	schemaA := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
 	schemaB := json.RawMessage(`{"type":"object","properties":{"b":{"type":"number"}}}`)
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
@@ -2312,6 +2317,7 @@ func TestBuildDetails_NilToolSearchDropsDeferredEntry(t *testing.T) {
 func TestBuildDetails_MCPLoadedAndDeferred(t *testing.T) {
 	t.Parallel()
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	schemaLoaded := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
 	schemaLazy := json.RawMessage(`{"type":"object"}`)
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
@@ -2895,6 +2901,7 @@ func TestBuildDetails_EqualCallTokensKeepInsertionOrder(t *testing.T) {
 func TestBreakdown_CodeModeMCPToolsHidden(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	directSchema := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
 		// Code-mode tool first: the skip must not abort iteration over the

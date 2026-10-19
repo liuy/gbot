@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -9,7 +11,9 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/lsp"
+	mcp "github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/plugins"
+	"github.com/liuy/gbot/pkg/reload"
 )
 
 func TestCleanup_ClosesAllEngines(t *testing.T) {
@@ -115,4 +119,54 @@ func TestCleanup_ClosesProtocolRunners(t *testing.T) {
 	if hub.Connected("cam") {
 		t.Fatal("Cleanup must close protocol runners (unregister from the hub)")
 	}
+}
+
+type cleanupFakeConn struct{}
+
+func (cleanupFakeConn) ConnType() string { return "fake" }
+
+// cleanupWarnCapture records Warn-and-above records so the test can pin the
+// happy path to zero warnings — this is what kills the `err != nil` negation
+// mutant on the cleanup.go error branch (same pattern as pkg/lsp/mutate_sweep_test.go:48,
+// pkg/plugins/host_test.go:429, pkg/hub/hub_internal_test.go:33). Safe to swap the
+// default logger: pkg/app has zero t.Parallel() tests.
+type cleanupWarnCapture struct{ warned []string }
+
+func (h *cleanupWarnCapture) Enabled(context.Context, slog.Level) bool { return true }
+func (h *cleanupWarnCapture) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		h.warned = append(h.warned, r.Message)
+	}
+	return nil
+}
+func (h *cleanupWarnCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *cleanupWarnCapture) WithGroup(string) slog.Handler      { return h }
+
+func TestCleanup_ClosesMcpRegistry(t *testing.T) {
+	reg := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	reg.SetConnectionForTest("srv", cleanupFakeConn{})
+	holder := reload.NewEnvHolder(&reload.Env{McpReg: reg})
+
+	prev := slog.Default()
+	logs := &cleanupWarnCapture{}
+	slog.SetDefault(slog.New(logs))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	(&Instance{EnvHolder: holder}).Cleanup()
+
+	if _, ok := reg.GetConnection("srv"); ok {
+		t.Fatal("Cleanup left the MCP registry connection open")
+	}
+	// Happy path must be silent: DreamDone/Store are nil in this Instance, so
+	// the only Warn Cleanup can emit here is the mcp-registry error branch —
+	// which must not fire when Close succeeds.
+	if len(logs.warned) != 0 {
+		t.Fatalf("Cleanup logged warnings on the happy path: %v", logs.warned)
+	}
+}
+
+// A reload-built env may carry no registry; the close must be nil-guarded.
+func TestCleanup_NilMcpRegInEnv(t *testing.T) {
+	holder := reload.NewEnvHolder(&reload.Env{})
+	(&Instance{EnvHolder: holder}).Cleanup() // must not panic
 }

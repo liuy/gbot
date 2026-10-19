@@ -4324,9 +4324,6 @@ func (e *Engine) Close() {
 			Cwd:           e.getWorkingDir(),
 		})
 	}
-	if e.mcpRegistry != nil {
-		_ = e.mcpRegistry.Close()
-	}
 }
 
 func (e *Engine) SetOnClose(fn func(sessionID string)) {

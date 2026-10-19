@@ -6944,6 +6944,7 @@ func TestRunAgentToolRestriction(t *testing.T) {
 func TestRunAgentRegistersMcpRegistryTools(t *testing.T) {
 	t.Parallel()
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	reg.SetToolsForTest([]mcp.DiscoveredTool{
 		{Name: "mcp__srv__alpha", OriginalName: "alpha", ServerName: "srv",
 			Description: "a", InputSchema: json.RawMessage(`{"type":"object"}`), AlwaysLoad: true},

@@ -8424,15 +8424,6 @@ func TestSetFileHistoryWriter(t *testing.T) {
 	}
 }
 
-func TestClose_WithMCPRegistry(t *testing.T) {
-	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
-	eng := &Engine{
-		sessionID:   "s1",
-		mcpRegistry: reg,
-	}
-	eng.Close()
-}
-
 func TestRetryErrorType_NonStreamError(t *testing.T) {
 	got := retryErrorType(fmt.Errorf("some random error"))
 	if got != "" {
@@ -8674,6 +8665,7 @@ func TestFirePostTurnHooks_PanicRecovery(t *testing.T) {
 
 func TestPendingMCPServerNames_WithRegistry(t *testing.T) {
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
 	eng := &Engine{mcpRegistry: reg}
 	names := eng.pendingMCPServerNames()
 	if names == nil {
