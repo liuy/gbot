@@ -31,11 +31,9 @@ func TestTolerantPathsWarn(t *testing.T) {
 		return &ResolvedPlugin{Name: name, RootPath: filepath.Join(root, name), Manifest: m}
 	}
 
-	mcpMissing := plugin("mcpmissing", nil, &PluginManifest{Name: "mcpmissing", McpServers: "./nope.json"})
-	mcpBad := plugin("mcpbad", map[string]string{"mcp.json": `{"mcpServers":`},
-		&PluginManifest{Name: "mcpbad", McpServers: "./mcp.json"})
-	mcpSrv := plugin("mcpsrv", map[string]string{"mcp.json": `{"mcpServers":{"bad":"notanobject"}}`},
-		&PluginManifest{Name: "mcpsrv", McpServers: "./mcp.json"})
+	mcpMissing := plugin("mcpmissing", nil, &PluginManifest{Name: "mcpmissing"})
+	mcpSrv := plugin("mcpsrv", nil,
+		&PluginManifest{Name: "mcpsrv", McpServers: inlineSrvAs("bad", `"notanobject"`)})
 
 	hooksDirP := plugin("hooksdir", nil, &PluginManifest{Name: "hooksdir"})
 	if err := os.MkdirAll(filepath.Join(hooksDirP.RootPath, "hooks", "hooks.json"), 0o755); err != nil {
@@ -61,9 +59,6 @@ func TestTolerantPathsWarn(t *testing.T) {
 	if got := loadMcpServers(mcpMissing); len(got) != 0 {
 		t.Errorf("mcpmissing servers = %d, want 0", len(got))
 	}
-	if got := loadMcpServers(mcpBad); len(got) != 0 {
-		t.Errorf("mcpbad servers = %d, want 0", len(got))
-	}
 	if got := loadMcpServers(mcpSrv); len(got) != 0 {
 		t.Errorf("mcpsrv servers = %d, want 0 (invalid server skipped)", len(got))
 	}
@@ -88,8 +83,6 @@ func TestTolerantPathsWarn(t *testing.T) {
 
 	logged := buf.String()
 	for _, want := range []string{
-		`msg="plugins: skip MCP config"`,
-		`msg="plugins: invalid .mcp.json"`,
 		`msg="plugins: invalid server config"`,
 		`msg="plugins: read hooks"`,
 		`msg="plugins: invalid hooks.json"`,

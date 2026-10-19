@@ -227,10 +227,8 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 
 				resultsMu.Lock()
 				results[e.name] = result
-				r.mu.Lock()
-				r.connections[e.name] = result
-				r.mu.Unlock()
 				resultsMu.Unlock()
+				r.adoptConnection(e.name, result, nil)
 			})
 		}
 		wg.Wait()
@@ -286,26 +284,30 @@ func (r *Registry) Reconnect(ctx context.Context, serverName string) (ServerConn
 	// Source: client.ts:2145-2151 — clearServerCache
 	r.manager.InvalidateCache(serverName, cfg)
 
-	// Clear caches
-	r.toolCache.Remove(serverName)
-	r.resourceCache.Remove(serverName)
-	r.commandCache.Remove(serverName)
-
 	// Reconnect
 	conn, err := r.manager.ConnectToServer(ctx, serverName, cfg)
 	if err != nil {
+		// Discovery caches stay populated on failure: the last-known tool
+		// list keeps the server's tools listed (config-driven table), so the
+		// next call retries the not-found → Reconnect path instead of losing
+		// the tool entirely.
 		r.mu.Lock()
 		r.connections[serverName] = &FailedServer{Name: serverName, Config: cfg, Error: err.Error()}
 		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: reconnect %q failed: %w", serverName, err)
 	}
 
-	r.mu.Lock()
-	r.connections[serverName] = conn
-	r.mu.Unlock()
+	r.adoptConnection(serverName, conn, nil)
 
 	// Re-fetch discovery data
 	if cs, ok := conn.(*ConnectedServer); ok {
+		// Force fresh discovery only on the success path (the fetches below
+		// return cached entries when present).
+		r.mu.Lock()
+		r.toolCache.Remove(serverName)
+		r.resourceCache.Remove(serverName)
+		r.commandCache.Remove(serverName)
+		r.mu.Unlock()
 		tools, _ := FetchToolsForServer(ctx, cs, r.toolCache)
 		resources, _ := FetchResourcesForServer(ctx, cs, r.resourceCache)
 		commands, _ := FetchCommandsForServer(ctx, cs, r.commandCache)
@@ -741,10 +743,7 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 				slog.Warn("agent MCP server connect failed", "server", res.serverName, "agent", agentID, "error", res.err)
 				continue
 			}
-			r.mu.Lock()
-			r.connections[res.serverName] = res.conn
-			r.configs[res.serverName] = res.scopedCfg
-			r.mu.Unlock()
+			r.adoptConnection(res.serverName, res.conn, &res.scopedCfg)
 			newConnNames = append(newConnNames, res.serverName)
 			for _, dt := range res.tools {
 				handle.tools[dt.Name] = dt
@@ -934,17 +933,31 @@ func (r *Registry) rebuildAggregatesLocked() {
 	r.resources = make([]ServerResource, 0, cap(r.resources))
 	r.commands = make([]MCPCommand, 0, cap(r.commands))
 
-	for name, conn := range r.connections {
-		if _, ok := conn.(*ConnectedServer); ok {
-			if tools, ok := r.toolCache.Get(name); ok {
-				r.tools = append(r.tools, tools...)
-			}
-			if resources, ok := r.resourceCache.Get(name); ok {
-				r.resources = append(r.resources, resources...)
-			}
-			if commands, ok := r.commandCache.Get(name); ok {
-				r.commands = append(r.commands, commands...)
-			}
+	// Config-driven listing: the aggregate is built from discovery caches, not
+	// live connections. An evicted (dead) or failed server keeps its
+	// last-known tools listed, so the engine tool table — rebuilt from
+	// GetTools() per call — never loses the recovery entry point (the call
+	// itself: not-found/dead → Reconnect). Truly removed servers lose their
+	// caches in Disconnect and drop out here.
+	names := make(map[string]struct{}, len(r.connections))
+	for _, n := range r.toolCache.Keys() {
+		names[n] = struct{}{}
+	}
+	for _, n := range r.resourceCache.Keys() {
+		names[n] = struct{}{}
+	}
+	for _, n := range r.commandCache.Keys() {
+		names[n] = struct{}{}
+	}
+	for name := range names {
+		if tools, ok := r.toolCache.Get(name); ok {
+			r.tools = append(r.tools, tools...)
+		}
+		if resources, ok := r.resourceCache.Get(name); ok {
+			r.resources = append(r.resources, resources...)
+		}
+		if commands, ok := r.commandCache.Get(name); ok {
+			r.commands = append(r.commands, commands...)
 		}
 	}
 }
@@ -1179,10 +1192,7 @@ func (r *Registry) connectSingle(ctx context.Context, name string, cfg ScopedMcp
 		return
 	}
 
-	r.mu.Lock()
-	r.connections[name] = conn
-	r.configs[name] = cfg
-	r.mu.Unlock()
+	r.adoptConnection(name, conn, &cfg)
 
 	// Discover tools/resources/commands for the new connection
 	// These functions populate the caches internally.

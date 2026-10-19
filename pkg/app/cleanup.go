@@ -11,6 +11,15 @@ import (
 // PID file. Safe to call on a partially-initialized Instance (nil fields
 // are skipped).
 func (inst *Instance) Cleanup() {
+	// Protocol modules first: they hold hub registrations and dialed
+	// connections whose teardown the hub then observes. Both are nil when
+	// no plugin declared a protocol.
+	for _, r := range inst.ProtocolRunners {
+		r.Close()
+	}
+	if inst.TransportHub != nil {
+		inst.TransportHub.Close()
+	}
 	if inst.MainRefs != nil && inst.MainRefs.REPL != nil {
 		inst.MainRefs.REPL.Close()
 	}

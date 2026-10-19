@@ -111,11 +111,12 @@ func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.To
 	callDone := t.registry.EnterCall(t.info.ServerName)
 	defer callDone()
 
-	// Get connection from registry, with single reconnect attempt on "not found".
-	// This handles the case where a config reload or transient disconnect removed
-	// the connection — Reconnect re-establishes it from the stored config.
+	// Get connection from registry, with single reconnect attempt on "not
+	// found" or a stored FailedServer. The FailedServer case matters after a
+	// server process died and one reconnect attempt failed: without it the
+	// entry would stay failed until a manual config reload.
 	conn, ok := t.registry.GetConnection(t.info.ServerName)
-	if !ok {
+	if !ok || conn.ConnType() == "failed" {
 		var reconnectErr error
 		conn, reconnectErr = t.registry.Reconnect(ctx, t.info.ServerName)
 		if reconnectErr != nil {
@@ -149,12 +150,30 @@ func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.To
 	}
 
 	// Call through MCP protocol
-	result, err := mcp.CallMCPTool(ctx, mcp.CallMCPToolParams{
+	params := mcp.CallMCPToolParams{
 		Server:     cs,
 		ToolName:   t.info.OriginalName,
 		Args:       args,
 		OnProgress: onProgress,
-	})
+	}
+	result, err := mcp.CallMCPTool(ctx, params)
+	if err != nil && mcp.IsConnectionDeadError(err) {
+		// The server process died between (re)connect and call, leaving a
+		// stale entry behind. Evict this exact stale connection, reconnect
+		// once (single-flight protected), retry once.
+		originalErr := err
+		t.registry.EvictIfSame(t.info.ServerName, cs)
+		newConn, reconnectErr := t.registry.Reconnect(ctx, t.info.ServerName)
+		if reconnectErr != nil {
+			return nil, fmt.Errorf("mcp: server %q connection died: %v (reconnect failed: %w)", t.info.ServerName, originalErr, reconnectErr)
+		}
+		newCS, ok := newConn.(*mcp.ConnectedServer)
+		if !ok {
+			return nil, fmt.Errorf("mcp: server %q connection died: %v (reconnect returned state %s)", t.info.ServerName, originalErr, newConn.ConnType())
+		}
+		params.Server = newCS
+		result, err = mcp.CallMCPTool(ctx, params)
+	}
 	if err != nil {
 		return nil, err
 	}

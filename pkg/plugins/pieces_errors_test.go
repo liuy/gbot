@@ -25,30 +25,22 @@ func fileErrorOf(t *testing.T, err error) *FileError {
 	return fe
 }
 
-// mcp.json declared but unreadable (a directory where a file is expected).
+// The manifest itself unparseable (mcpServers of the wrong shape) fails at
+// discovery; the fail-open scan skips the plugin and the strict pieces path
+// sees nothing — pin that the malformed plugin never produces pieces.
 func TestLoadPluginPieces_McpJSONUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	writePluginFixture(t, dir, "plug", map[string]string{
 		"plugin.json": `{"name":"plug","version":"1.0.0","mcpServers":"./mcp.json"}`,
 	})
-	badPath := filepath.Join(dir, "plug", "mcp.json")
-	if err := os.MkdirAll(badPath, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", badPath, err)
+	pieces, err := LoadPluginPieces(dir, &config.Config{})
+	if err != nil {
+		t.Fatalf("string-form mcpServers is a discovery skip, not a pieces error: %v", err)
 	}
-
-	err := LoadPluginPiecesOnly(dir)
-	fe := fileErrorOf(t, err)
-	if fe.Path != badPath {
-		t.Errorf("FileError.Path = %q, want %q", fe.Path, badPath)
-	}
-	if fe.Err == nil {
-		t.Fatal("FileError.Err must carry the read failure")
-	}
-	if !strings.HasPrefix(fe.Err.Error(), "read mcp.json: ") {
-		t.Errorf("FileError.Err = %q, want it to start with %q", fe.Err.Error(), "read mcp.json: ")
-	}
-	if !errors.Is(err, syscall.EISDIR) {
-		t.Errorf("error %v must keep the OS error reachable via errors.Is", err)
+	for _, p := range pieces {
+		if p.Name == "plug" {
+			t.Fatal("malformed plugin must be skipped, not loaded as pieces")
+		}
 	}
 }
 
@@ -56,15 +48,14 @@ func TestLoadPluginPieces_McpJSONUnreadable(t *testing.T) {
 func TestLoadPluginPieces_InvalidServerConfig(t *testing.T) {
 	dir := t.TempDir()
 	writePluginFixture(t, dir, "plug", map[string]string{
-		"plugin.json": `{"name":"plug","version":"1.0.0","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"bad":"notanobject"}}`,
+		"plugin.json": `{"name":"plug","version":"1.0.0","mcpServers":{"bad":"notanobject"}}`,
 	})
-	mcpPath := filepath.Join(dir, "plug", "mcp.json")
+	manifestPath := filepath.Join(dir, "plug", "plugin.json")
 
 	err := LoadPluginPiecesOnly(dir)
 	fe := fileErrorOf(t, err)
-	if fe.Path != mcpPath {
-		t.Errorf("FileError.Path = %q, want %q", fe.Path, mcpPath)
+	if fe.Path != manifestPath {
+		t.Errorf("FileError.Path = %q, want %q", fe.Path, manifestPath)
 	}
 	if fe.Err == nil {
 		t.Fatal("FileError.Err must carry the parse failure")

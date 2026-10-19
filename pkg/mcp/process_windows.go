@@ -4,9 +4,17 @@
 package mcp
 
 import (
+	"log/slog"
 	"os"
+	"os/exec"
 	"time"
 )
+
+// SetProcessGroup is a Unix-only concept (process groups). On Windows it is a
+// no-op; ProcessCleanupEscalation therefore terminates only the top-level
+// process — descendants that outlive a crashed parent are not reaped here.
+// The equivalent mechanism would be job objects; deliberately out of scope.
+func SetProcessGroup(*exec.Cmd) {}
 
 // ProcessCleanupEscalation ensures a process terminates.
 // Exported for testing. Source: client.ts:1428-1557
@@ -16,10 +24,11 @@ import (
 // processes cannot receive POSIX signals, so we go straight to Kill.
 // The graceful close already happened via transport.Close() before this
 // function is called.
-func ProcessCleanupEscalation(proc *os.Process) {
+func ProcessCleanupEscalation(proc *os.Process, server string) {
 	if proc == nil {
 		return
 	}
+	slog.Info("mcp: killing server process (windows: top-level only)", "server", server, "pid", proc.Pid)
 	_ = proc.Kill()
 
 	// Give the OS a moment to reap the process so callers that check

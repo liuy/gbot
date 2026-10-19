@@ -23,11 +23,13 @@ import (
 // PluginManifest is the plugin definition read from plugin.json at the plugin
 // root. Source: schemas/plugins.ts — PluginSchema.
 type PluginManifest struct {
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	Skills     string `json:"skills,omitempty"`     // relative path, e.g. "./skills/"
-	McpServers string `json:"mcpServers,omitempty"` // relative path, e.g. "./mcp.json"
-	Repls      string `json:"repls,omitempty"`      // relative dir of .js files preloaded into the REPL, e.g. "./repl/"
+	Name       string                     `json:"name"`
+	Version    string                     `json:"version"`
+	Skills     string                     `json:"skills,omitempty"`     // relative path, e.g. "./skills/"
+	McpServers map[string]json.RawMessage `json:"mcpServers,omitempty"` // inline server definitions (old path form removed)
+	Repls      string                     `json:"repls,omitempty"`      // relative dir of .js files preloaded into the REPL, e.g. "./repl/"
+	UI         string                     `json:"ui,omitempty"`         // relative path of the wui card entry module, e.g. "./ui.js"
+	Protocol   string                     `json:"protocol,omitempty"`   // relative path of the JS module the daemon host runs, e.g. "./protocol.js"
 }
 
 // ReplScript is one plugin-supplied JS file evaluated into the REPL globals
@@ -134,6 +136,12 @@ func DiscoverPlugins() ([]*ResolvedPlugin, error) {
 	if err != nil {
 		return nil, err
 	}
+	return DiscoverPluginsFromDir(dir)
+}
+
+// DiscoverPluginsFromDir is DiscoverPlugins against an explicit directory
+// (used by the wui plugin routes' test seam).
+func DiscoverPluginsFromDir(dir string) ([]*ResolvedPlugin, error) {
 	return discoverPluginsFromDir(dir)
 }
 

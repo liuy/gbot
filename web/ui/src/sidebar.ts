@@ -1,5 +1,6 @@
 import type { ArtifactListItem, SessionListItem } from './types'
 import type { RemoteDevice } from './vnc'
+import type { PluginCard } from './plugin_host'
 import { bindLongPress } from './utils'
 import { createElement, createNode } from './dom'
 import { createIconButton } from './buttons'
@@ -23,6 +24,8 @@ export interface SidebarHandles {
   onClearArtifacts: (handler: () => void) => void
   setRemoteDevices: (devices: RemoteDevice[]) => void
   onDeviceClick: (handler: (device: RemoteDevice) => void) => void
+  setPlugins: (cards: PluginCard[]) => void
+  onPluginClick: (handler: (card: PluginCard) => void) => void
   onOpenSettings: (handler: () => void) => void
   onOpen: (handler: () => void) => void
 }
@@ -144,6 +147,17 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
   const devicesList = createElement('div', '')
   devicesSection.append(devicesHeader, devicesList)
   listContainer.appendChild(devicesSection)
+  // Plugin live cards: one row per plugin that provides transport channels
+  // (e.g. the browser live view). Same opt-in rule as Desktops — no
+  // channels, no section.
+  const pluginsSection = createElement('div', 'sidebar-plugins')
+  const pluginsHeader = createNode('div', {
+    className: 'text-[11px] text-t3 px-3 pt-4 pb-1 font-medium',
+    ...L('sidebarPlugins', { 'data-plugins-header': '' }),
+  })
+  const pluginsList = createElement('div', '')
+  pluginsSection.append(pluginsHeader, pluginsList)
+  listContainer.appendChild(pluginsSection)
   // Artifacts lists the projectspace artifacts directory. Rows open the
   // artifact; the header trash button clears everything (two-tap confirm —
   // artifacts are regenerable by the agent, so bulk delete is recoverable).
@@ -226,6 +240,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     artifactClick: (_name: string) => {},
     clearArtifacts: () => {},
     deviceClick: (_d: RemoteDevice) => {},
+    pluginClick: (_card: PluginCard) => {},
     openSettings: () => {},
     open: () => {},
   }
@@ -425,6 +440,33 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     }
   }
 
+  const setPlugins = (cards: PluginCard[]) => {
+    pluginsSection.classList.toggle('hidden', cards.length === 0)
+    pluginsList.innerHTML = ''
+    for (const card of cards) {
+      // Two states: online (service process wired, card opens) vs standby
+      // (installed but its process has not registered yet — grayed out).
+      const row = createElement(
+        'div',
+        card.running
+          ? 'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2'
+          : 'flex items-center gap-2 px-3 py-2 rounded-lg text-t3 opacity-50',
+      )
+      row.setAttribute('data-plugin-row', card.name)
+      if (!card.running) row.setAttribute('data-plugin-standby', '')
+      const nameSpan = createElement('span', 'text-[13px] truncate flex-1')
+      nameSpan.textContent = card.name
+      row.append(nameSpan)
+      if (card.running) {
+        row.addEventListener('click', () => {
+          handlers.pluginClick?.(card)
+          closeImmediate()
+        })
+      }
+      pluginsList.appendChild(row)
+    }
+  }
+
   const startRename = (
     row: HTMLElement,
     titleSpan: HTMLElement,
@@ -474,6 +516,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     setSessions,
     setArtifacts,
     setRemoteDevices,
+    setPlugins,
     onSessionClick: (handler) => {
       handlers.sessionClick = handler
     },
@@ -491,6 +534,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     },
     onDeviceClick: (handler) => {
       handlers.deviceClick = handler
+    },
+    onPluginClick: (handler) => {
+      handlers.pluginClick = handler
     },
     onOpenSettings: (handler) => {
       handlers.openSettings = handler

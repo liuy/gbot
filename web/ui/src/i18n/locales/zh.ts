@@ -38,6 +38,7 @@ export const dict: Dict = {
   remotePortInvalid: '端口必须是 1-65535',
   remoteDesktopSection: '桌面',
   sidebarRemoteDesktop: '桌面',
+  sidebarPlugins: '插件',
   rdAdd: '添加桌面',
   rdEditTitle: '编辑',
   rdNameLabel: '名称',

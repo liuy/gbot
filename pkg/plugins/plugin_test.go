@@ -139,7 +139,9 @@ func TestLoadManifest(t *testing.T) {
 		Name:       "test-plugin",
 		Version:    "1.0.0",
 		Skills:     "./skills/",
-		McpServers: "./mcp.json",
+		McpServers: map[string]json.RawMessage{"srv": json.RawMessage(`{"command":"echo"}`)},
+		Protocol:   "./protocol.js",
+		UI:         "./ui.js",
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -162,8 +164,14 @@ func TestLoadManifest(t *testing.T) {
 	if got.Skills != "./skills/" {
 		t.Errorf("Skills = %q, want %q", got.Skills, "./skills/")
 	}
-	if got.McpServers != "./mcp.json" {
-		t.Errorf("McpServers = %q, want %q", got.McpServers, "./mcp.json")
+	if len(got.McpServers) != 1 || string(got.McpServers["srv"]) != `{"command":"echo"}` {
+		t.Errorf("McpServers = %v, want one inline srv entry", got.McpServers)
+	}
+	if got.Protocol != "./protocol.js" {
+		t.Errorf("Protocol = %q, want %q", got.Protocol, "./protocol.js")
+	}
+	if got.UI != "./ui.js" {
+		t.Errorf("UI = %q, want %q", got.UI, "./ui.js")
 	}
 }
 

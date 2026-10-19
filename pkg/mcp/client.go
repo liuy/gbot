@@ -316,7 +316,7 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 	cleanup := func() error {
 		// Source: client.ts:1426-1557 — process cleanup escalation for stdio
 		if cmd != nil && cmd.Process != nil {
-			ProcessCleanupEscalation(cmd.Process)
+			ProcessCleanupEscalation(cmd.Process, name)
 		}
 		return session.Close()
 	}
@@ -334,11 +334,23 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 
 // InvalidateCache removes the cached connection for a server.
 // Source: client.ts:1648-1673 — clearServerCache
+//
+// In-flight entries are left alone: they are a fresh connection attempt that
+// concurrent callers should join via ConnectToServer's single flight.
+// Deleting an in-flight entry lets a second ConnectToServer spawn a parallel
+// process (double spawn / orphan holding profile locks).
 func (cm *ClientManager) InvalidateCache(name string, serverRef ScopedMcpServerConfig) {
 	key := GetServerCacheKey(name, serverRef)
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	delete(cm.cache, key)
+	if entry, ok := cm.cache[key]; ok {
+		select {
+		case <-entry.done:
+			delete(cm.cache, key)
+		default:
+			// in-flight: leave it — ConnectToServer callers join it
+		}
+	}
 }
 
 // ClearAllCache removes all cached connections.

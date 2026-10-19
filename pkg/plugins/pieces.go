@@ -26,6 +26,7 @@ type PluginPieces struct {
 	Agents      []types.AgentDefinition
 	ReplScripts []ReplScript
 	EnvVars     []string
+	Protocol    *ProtocolModule
 }
 
 // FileError names the plugin file a strict parse failed on; the reload
@@ -86,26 +87,22 @@ func loadPiecesOne(plugin *ResolvedPlugin) (*PluginPieces, error) {
 		Skills:      loadSkills(plugin),
 		Agents:      loadAgents(plugin),
 		ReplScripts: loadReplScripts(plugin),
+		Protocol:    protocolModule(plugin),
 	}
 
-	// Strict mcp.json: the tolerant path (loadMcpServers) warns and skips;
-	// the reload contract requires a hard error naming the file.
-	if plugin.Manifest != nil && plugin.Manifest.McpServers != "" {
-		mcpPath := resolvePluginPath(plugin.RootPath, plugin.Manifest.McpServers)
-		data, err := os.ReadFile(mcpPath)
-		if err != nil {
-			return nil, &FileError{Path: mcpPath, Err: fmt.Errorf("read mcp.json: %w", err)}
-		}
+	// Strict inline mcpServers: the tolerant path (loadMcpServers) warns and
+	// skips; the reload contract requires a hard error naming the manifest.
+	if plugin.Manifest != nil && len(plugin.Manifest.McpServers) > 0 {
 		pluginData := PluginDataDir(plugin.Name)
-		expanded := substitutePluginVars(string(data), plugin.RootPath, pluginData, CacheDir())
-		var cfgWrap mcp.McpJsonConfig
-		if err := json.Unmarshal([]byte(expanded), &cfgWrap); err != nil {
-			return nil, &FileError{Path: mcpPath, Err: fmt.Errorf("invalid mcp.json: %w", err)}
-		}
-		for serverName, rawMsg := range cfgWrap.McpServers {
-			srvCfg, err := mcp.UnmarshalServerConfig(rawMsg)
+		for serverName, rawMsg := range plugin.Manifest.McpServers {
+			raw, err := json.Marshal(rawMsg)
 			if err != nil {
-				return nil, &FileError{Path: mcpPath, Err: fmt.Errorf("invalid server %q: %w", serverName, err)}
+				return nil, &FileError{Path: filepath.Join(plugin.RootPath, "plugin.json"), Err: fmt.Errorf("re-marshal server %q: %w", serverName, err)}
+			}
+			expanded := substitutePluginVars(string(raw), plugin.RootPath, pluginData, CacheDir())
+			srvCfg, err := mcp.UnmarshalServerConfig(json.RawMessage(expanded))
+			if err != nil {
+				return nil, &FileError{Path: filepath.Join(plugin.RootPath, "plugin.json"), Err: fmt.Errorf("invalid server %q: %w", serverName, err)}
 			}
 			injectPluginEnv(srvCfg, plugin.RootPath, pluginData)
 			scopedName := fmt.Sprintf("plugin:%s:%s", plugin.Name, serverName)

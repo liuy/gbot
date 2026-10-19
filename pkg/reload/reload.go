@@ -448,10 +448,10 @@ func (o *Orchestrator) appendDiffRows(rep *Report, userRaw, projRaw []byte, piec
 	}
 	for _, p := range pieces {
 		old := oldPieces[p.Name] // nil = new plugin, every surface counts as changed
-		declaredMcp := p.Manifest != nil && p.Manifest.McpServers != ""
+		declaredMcp := p.Manifest != nil && len(p.Manifest.McpServers) > 0
 		if declaredMcp {
 			added, removed, changed := diffMcpServers(old, p)
-			row := FileEntry{Path: displayPluginPath(p.RootPath, "mcp.json")}
+			row := FileEntry{Path: displayPluginPath(p.RootPath, "plugin.json")}
 			if added+removed+changed > 0 {
 				row.Status = StatusReloaded
 				row.Note = fmt.Sprintf("%d added · %d removed · %d changed", added, removed, changed)

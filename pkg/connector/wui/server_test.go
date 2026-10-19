@@ -1238,11 +1238,13 @@ func TestMutC_ReadLimitBoundary(t *testing.T) {
 	}
 
 	// Exactly at the limit: gorilla rejects only strictly larger messages,
-	// so the frame is delivered and answered with the no-active-upload error.
+	// so the frame is delivered and answered with the no-active-upload
+	// error. The 0x00 attachment prefix is part of the wire frame, so the
+	// payload is one byte shorter to keep the boundary property.
 	if err := ws.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil { // REAL-TIME
 		t.Fatal(err)
 	}
-	if err := ws.WriteMessage(websocket.BinaryMessage, buf[:limit]); err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, buf[:limit-1]...)); err != nil {
 		t.Fatal(err)
 	}
 	frame := readUntilType(t, ws, "error")
@@ -1315,7 +1317,7 @@ func TestMutC_BinaryWithoutUploadErrors(t *testing.T) {
 	ws := mutCDialChat(t, c)
 	drainInitialFrames(t, ws)
 
-	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("chunk")); err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, []byte("chunk")...)); err != nil {
 		t.Fatal(err)
 	}
 	frame := readUntilType(t, ws, "error")
@@ -1340,7 +1342,7 @@ func TestMutC_CommitDuringUploadRejectedAndAlive(t *testing.T) {
 	writeWSText(t, ws, map[string]any{
 		"type": "attachment_start", "id": "a1", "name": "a.bin", "mime": "application/octet-stream", "size": 4,
 	})
-	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("data")); err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, []byte("data")...)); err != nil {
 		t.Fatal(err)
 	}
 	// Committing mid-stream must be rejected, and the rejection must not
@@ -1408,7 +1410,7 @@ func TestMutC_AttachmentCommitDispatches(t *testing.T) {
 	writeWSText(t, ws, map[string]any{
 		"type": "attachment_start", "id": "img1", "name": "dot.png", "mime": "image/png", "size": len(png),
 	})
-	if err := ws.WriteMessage(websocket.BinaryMessage, png); err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, png...)); err != nil {
 		t.Fatal(err)
 	}
 	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "img1"})

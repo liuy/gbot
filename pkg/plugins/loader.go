@@ -31,6 +31,7 @@ type LoadedPlugins struct {
 	Agents      []types.AgentDefinition
 	ReplScripts []ReplScript
 	EnvVars     []string
+	Protocols   []ProtocolModule
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,11 @@ func LoadAndInitialize(ctx context.Context, cwd string, cfg *config.Config) (*Lo
 
 		// Load agents
 		result.Agents = append(result.Agents, loadAgents(plugin)...)
+
+		// Collect declared protocol modules (loaded by the transport wiring)
+		if pm := protocolModule(plugin); pm != nil {
+			result.Protocols = append(result.Protocols, *pm)
+		}
 	}
 
 	return result, nil
@@ -97,32 +103,24 @@ func LoadAndInitialize(ctx context.Context, cwd string, cfg *config.Config) (*Lo
 func loadMcpServers(plugin *ResolvedPlugin) map[string]mcp.ScopedMcpServerConfig {
 	result := make(map[string]mcp.ScopedMcpServerConfig)
 
-	if plugin.Manifest == nil || plugin.Manifest.McpServers == "" {
+	if plugin.Manifest == nil || len(plugin.Manifest.McpServers) == 0 {
 		return result
 	}
 
-	// Resolve relative path
-	mcpPath := resolvePluginPath(plugin.RootPath, plugin.Manifest.McpServers)
-
-	data, err := os.ReadFile(mcpPath)
-	if err != nil {
-		slog.Warn("plugins: skip MCP config", "plugin", plugin.Name, "error", err)
-		return result
-	}
-
-	// Substitute ${GBOT_PLUGIN_ROOT} in the raw JSON before parsing
 	pluginData := PluginDataDir(plugin.Name)
-	expanded := substitutePluginVars(string(data), plugin.RootPath, pluginData, CacheDir())
 
-	// Parse as McpJsonConfig
-	var config mcp.McpJsonConfig
-	if err := json.Unmarshal([]byte(expanded), &config); err != nil {
-		slog.Warn("plugins: invalid .mcp.json", "plugin", plugin.Name, "error", err)
-		return result
-	}
+	for serverName, rawMsg := range plugin.Manifest.McpServers {
+		// Substitute ${GBOT_PLUGIN_ROOT} in the raw JSON before parsing —
+		// the values live in the manifest now, but the var-substitution
+		// contract from the old .mcp.json file form carries over unchanged.
+		raw, err := json.Marshal(rawMsg)
+		if err != nil {
+			slog.Warn("plugins: re-marshal server config", "plugin", plugin.Name, "server", serverName, "error", err)
+			continue
+		}
+		expanded := substitutePluginVars(string(raw), plugin.RootPath, pluginData, CacheDir())
 
-	for serverName, rawMsg := range config.McpServers {
-		cfg, err := mcp.UnmarshalServerConfig(rawMsg)
+		cfg, err := mcp.UnmarshalServerConfig(json.RawMessage(expanded))
 		if err != nil {
 			slog.Warn("plugins: invalid server config", "plugin", plugin.Name, "server", serverName, "error", err)
 			continue
@@ -410,6 +408,27 @@ func parseStringOrArrayField(v any) []string {
 		return result
 	default:
 		return nil
+	}
+}
+
+// ProtocolModule names one plugin's protocol script plus its coordinates —
+// the transport wiring loads each into the daemon's embedded JS host.
+type ProtocolModule struct {
+	Plugin   string
+	RootPath string
+	Path     string // absolute path of the .js file
+}
+
+// protocolModule resolves the manifest's protocol declaration; nil when the
+// plugin declares none.
+func protocolModule(plugin *ResolvedPlugin) *ProtocolModule {
+	if plugin.Manifest == nil || plugin.Manifest.Protocol == "" {
+		return nil
+	}
+	return &ProtocolModule{
+		Plugin:   plugin.Name,
+		RootPath: plugin.RootPath,
+		Path:     resolvePluginPath(plugin.RootPath, plugin.Manifest.Protocol),
 	}
 }
 

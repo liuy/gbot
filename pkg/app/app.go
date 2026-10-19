@@ -11,7 +11,9 @@ import (
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/plugins"
 	"github.com/liuy/gbot/pkg/reload"
+	"github.com/liuy/gbot/pkg/transport"
 	"github.com/liuy/gbot/pkg/tui"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -58,4 +60,10 @@ type Instance struct {
 	// swap seam the engine factory and refresh closures read at call time.
 	Reloader  *reload.Orchestrator
 	EnvHolder *reload.EnvHolder
+	// TransportHub is the plugin stream transport; ProtocolRuners are the
+	// plugin protocol modules loaded into the daemon's JS host on top of
+	// it. Both nil when nothing declared a protocol (plugins then run
+	// without live channels).
+	TransportHub    *transport.Hub
+	ProtocolRunners []*plugins.ProtocolRunner
 }

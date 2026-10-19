@@ -35,24 +35,16 @@ func createMockPluginAt(t *testing.T, root, name string) {
 		t.Fatalf("mkdir plugin root: %v", err)
 	}
 
-	// plugin.json (root-level manifest)
-	manifest := `{"name":"` + name + `","version":"1.0.0","skills":"./skills/","mcpServers":"./.mcp.json"}`
+	// plugin.json (root-level manifest) — mcpServers inline
+	manifest := `{"name":"` + name + `","version":"1.0.0","skills":"./skills/","mcpServers":{
+		"my-server": {
+			"command": "node",
+			"args": ["${GBOT_PLUGIN_ROOT}/bridge/server.cjs"],
+			"env": {"DEBUG": "1"}
+		}
+	}}`
 	if err := os.WriteFile(filepath.Join(root, "plugin.json"), []byte(manifest), 0644); err != nil {
 		t.Fatalf("write manifest: %v", err)
-	}
-
-	// .mcp.json with ${GBOT_PLUGIN_ROOT} variable
-	mcpConfig := `{
-		"mcpServers": {
-			"my-server": {
-				"command": "node",
-				"args": ["${GBOT_PLUGIN_ROOT}/bridge/server.cjs"],
-				"env": {"DEBUG": "1"}
-			}
-		}
-	}`
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpConfig), 0644); err != nil {
-		t.Fatalf("write mcp.json: %v", err)
 	}
 
 	// hooks/hooks.json (wrapper format)
@@ -113,6 +105,15 @@ You are a code reviewer. Analyze code for quality issues.`
 // loadMcpServers tests
 // ---------------------------------------------------------------------------
 
+// inlineSrv wraps one server definition as the manifest's inline map value.
+func inlineSrv(raw string) map[string]json.RawMessage {
+	return map[string]json.RawMessage{"my-server": json.RawMessage(raw)}
+}
+
+func inlineSrvAs(name, raw string) map[string]json.RawMessage {
+	return map[string]json.RawMessage{name: json.RawMessage(raw)}
+}
+
 func TestLoadMcpServers_VariableSubstitution(t *testing.T) {
 	root := createMockPlugin(t, "test-plugin")
 	plugin := &ResolvedPlugin{
@@ -121,7 +122,7 @@ func TestLoadMcpServers_VariableSubstitution(t *testing.T) {
 		Manifest: &PluginManifest{
 			Name:       "test-plugin",
 			Version:    "1.0.0",
-			McpServers: "./.mcp.json",
+			McpServers: inlineSrv(`{"command":"node","args":["${GBOT_PLUGIN_ROOT}/bridge/server.cjs"],"env":{"DEBUG":"1"}}`),
 		},
 	}
 
@@ -169,29 +170,12 @@ func TestLoadMcpServers_VariableSubstitution(t *testing.T) {
 	}
 }
 
-func TestLoadMcpServers_InvalidJson_Skip(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte("not json"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	plugin := &ResolvedPlugin{
-		Name:     "bad-plugin",
-		RootPath: root,
-		Manifest: &PluginManifest{McpServers: "./.mcp.json"},
-	}
-
-	servers := loadMcpServers(plugin)
-	if len(servers) != 0 {
-		t.Errorf("servers count = %d, want 0 for invalid JSON", len(servers))
-	}
-}
-
 func TestLoadMcpServers_NoManifestField(t *testing.T) {
 	root := t.TempDir()
 	plugin := &ResolvedPlugin{
 		Name:     "plugin",
 		RootPath: root,
-		Manifest: &PluginManifest{McpServers: ""},
+		Manifest: &PluginManifest{},
 	}
 
 	servers := loadMcpServers(plugin)
@@ -202,14 +186,11 @@ func TestLoadMcpServers_NoManifestField(t *testing.T) {
 
 func TestLoadMcpServers_ModePreserved(t *testing.T) {
 	root := t.TempDir()
-	mcpConfig := `{"mcpServers":{"pw":{"command":"node","args":["bridge.js"],"mode":"code"}}}`
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpConfig), 0644); err != nil {
-		t.Fatal(err)
-	}
 	plugin := &ResolvedPlugin{
 		Name:     "browser",
 		RootPath: root,
-		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0", McpServers: "./.mcp.json"},
+		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0",
+			McpServers: inlineSrvAs("pw", `{"command":"node","args":["bridge.js"],"mode":"code"}`)},
 	}
 
 	servers := loadMcpServers(plugin)
@@ -231,14 +212,11 @@ func TestLoadMcpServers_ModePreserved(t *testing.T) {
 
 func TestLoadMcpServers_InvalidMode_SkipsServer(t *testing.T) {
 	root := t.TempDir()
-	mcpConfig := `{"mcpServers":{"pw":{"command":"node","args":["bridge.js"],"mode":"nope"}}}`
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpConfig), 0644); err != nil {
-		t.Fatal(err)
-	}
 	plugin := &ResolvedPlugin{
 		Name:     "browser",
 		RootPath: root,
-		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0", McpServers: "./.mcp.json"},
+		Manifest: &PluginManifest{Name: "browser", Version: "1.0.0",
+			McpServers: inlineSrvAs("pw", `{"command":"node","args":["bridge.js"],"mode":"nope"}`)},
 	}
 
 	servers := loadMcpServers(plugin)
@@ -1094,29 +1072,12 @@ func TestLoadAndInitialize_BrokenPlugin_FailOpen(t *testing.T) {
 // Remaining path coverage
 // ---------------------------------------------------------------------------
 
-func TestLoadMcpServers_MissingFile(t *testing.T) {
-	root := t.TempDir()
-	plugin := &ResolvedPlugin{
-		Name:     "test",
-		RootPath: root,
-		Manifest: &PluginManifest{McpServers: "./nonexistent.json"},
-	}
-	servers := loadMcpServers(plugin)
-	if len(servers) != 0 {
-		t.Errorf("servers count = %d, want 0 for missing file", len(servers))
-	}
-}
-
 func TestLoadMcpServers_InvalidServerConfig(t *testing.T) {
 	root := t.TempDir()
-	mcpJSON := `{"mcpServers":{"bad":{"url":"not-a-valid-config"}}}`
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
 	plugin := &ResolvedPlugin{
 		Name:     "test",
 		RootPath: root,
-		Manifest: &PluginManifest{McpServers: "./.mcp.json"},
+		Manifest: &PluginManifest{McpServers: inlineSrvAs("bad", `{"url":"not-a-valid-config"}`)},
 	}
 	servers := loadMcpServers(plugin)
 	// Should skip the invalid server but not crash
@@ -1326,14 +1287,10 @@ func TestLoadHooks_InvalidBareJson(t *testing.T) {
 func TestLoadMcpServers_NoEnvField(t *testing.T) {
 	// Coverage for injectPluginEnv when Env is nil
 	root := t.TempDir()
-	mcpJSON := `{"mcpServers":{"minimal":{"command":"echo","args":["hello"]}}}`
-	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(mcpJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
 	plugin := &ResolvedPlugin{
 		Name:     "test",
 		RootPath: root,
-		Manifest: &PluginManifest{McpServers: "./.mcp.json"},
+		Manifest: &PluginManifest{McpServers: inlineSrvAs("minimal", `{"command":"echo","args":["hello"]}`)},
 	}
 	servers := loadMcpServers(plugin)
 	if len(servers) != 1 {
@@ -1533,5 +1490,76 @@ func TestLoadAgents_ReadFileError(t *testing.T) {
 	agents := loadAgents(plugin)
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents when file unreadable, got %d", len(agents))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// protocolModule: declaration → ProtocolModule field mapping
+// ---------------------------------------------------------------------------
+func TestProtocolModuleFieldMapping(t *testing.T) {
+	p := &ResolvedPlugin{
+		Name:     "browser",
+		RootPath: "/root/browser",
+		Manifest: &PluginManifest{Name: "browser", Protocol: "./protocol.js"},
+	}
+	pm := protocolModule(p)
+	if pm == nil {
+		t.Fatal("declared protocol must produce a module")
+	}
+	if pm.Plugin != "browser" {
+		t.Errorf("Plugin = %q, want browser", pm.Plugin)
+	}
+	if pm.RootPath != "/root/browser" {
+		t.Errorf("RootPath = %q, want /root/browser", pm.RootPath)
+	}
+	if pm.Path != filepath.Join("/root/browser", "protocol.js") {
+		t.Errorf("Path = %q, want resolved under root", pm.Path)
+	}
+	if got := protocolModule(&ResolvedPlugin{Manifest: &PluginManifest{}}); got != nil {
+		t.Errorf("undeclared protocol must produce nil, got %+v", got)
+	}
+	if got := protocolModule(&ResolvedPlugin{}); got != nil {
+		t.Errorf("nil manifest must produce nil, got %+v", got)
+	}
+}
+
+func TestLoadProtocolsBranch(t *testing.T) {
+	// A plugin declaring protocol surfaces it in LoadedPlugins.Protocols;
+	// one declaring none adds nothing.
+	base := t.TempDir()
+	pluginsDir := filepath.Join(base, "plugins")
+	root := filepath.Join(pluginsDir, "withproto")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugin.json"),
+		[]byte(`{"name":"withproto","version":"1.0.0","protocol":"./protocol.js"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "protocol.js"), []byte(`// noop`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root2 := filepath.Join(pluginsDir, "noproto")
+	if err := os.MkdirAll(root2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root2, "plugin.json"),
+		[]byte(`{"name":"noproto","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pluginsDirOverride = pluginsDir
+	defer func() { pluginsDirOverride = "" }()
+	loaded, err := LoadAndInitialize(context.Background(), base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Protocols) != 1 {
+		t.Fatalf("Protocols = %d, want exactly 1 (declared only)", len(loaded.Protocols))
+	}
+	if loaded.Protocols[0].Plugin != "withproto" {
+		t.Errorf("Protocols[0].Plugin = %q, want withproto", loaded.Protocols[0].Plugin)
+	}
+	if !strings.HasSuffix(loaded.Protocols[0].Path, "protocol.js") {
+		t.Errorf("Protocols[0].Path = %q, want it to end in protocol.js", loaded.Protocols[0].Path)
 	}
 }

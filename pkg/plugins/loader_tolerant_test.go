@@ -12,29 +12,28 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// Unparseable mcp.json: the FileError must name the file and keep the JSON
-// error in the chain.
+// An inline server entry whose JSON value has the wrong shape: the FileError
+// must name the manifest and keep the JSON error in the chain.
 func TestLoadPluginPieces_InvalidMcpJSONShape(t *testing.T) {
 	dir := t.TempDir()
 	writePluginFixture(t, dir, "plug", map[string]string{
-		"plugin.json": `{"name":"plug","version":"1.0.0","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"s":{"command":}}}`,
+		"plugin.json": `{"name":"plug","version":"1.0.0","mcpServers":{"s":"not-a-server-object"}}`,
 	})
-	mcpPath := filepath.Join(dir, "plug", "mcp.json")
+	manifestPath := filepath.Join(dir, "plug", "plugin.json")
 
 	err := LoadPluginPiecesOnly(dir)
 	fe := fileErrorOf(t, err)
-	if fe.Path != mcpPath {
-		t.Errorf("FileError.Path = %q, want %q", fe.Path, mcpPath)
+	if fe.Path != manifestPath {
+		t.Errorf("FileError.Path = %q, want %q", fe.Path, manifestPath)
 	}
 	if fe.Err == nil {
 		t.Fatal("FileError.Err must carry the parse failure")
 	}
-	if !strings.HasPrefix(fe.Err.Error(), "invalid mcp.json: ") {
-		t.Errorf("FileError.Err = %q, want it to start with %q", fe.Err.Error(), "invalid mcp.json: ")
+	if !strings.HasPrefix(fe.Err.Error(), `invalid server "s": `) {
+		t.Errorf("FileError.Err = %q, want it to start with %q", fe.Err.Error(), `invalid server "s": `)
 	}
-	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
-		t.Errorf("error %v must keep the JSON syntax error reachable via errors.As", err)
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+		t.Errorf("error %v must keep the JSON type error reachable via errors.As", err)
 	}
 }
 
@@ -252,8 +251,7 @@ func TestLoadPluginPieces_DisabledPluginWithBrokenMcp(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writePluginFixture(t, dir, "off", map[string]string{
-		"plugin.json": `{"name":"off","version":"1.0.0","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"s":{"command":}}}`,
+		"plugin.json": `{"name":"off","version":"1.0.0","mcpServers":{"s":"not-a-server-object"}}`,
 	})
 	cfg := &config.Config{Plugins: map[string]bool{"off": false}}
 	pieces, err := LoadPluginPieces(dir, cfg)

@@ -6,8 +6,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -293,6 +295,37 @@ func (TransportFactory) NewTransport(name string, cfg McpServerConfig, scope Con
 	}
 }
 
+// stderrLineLogger pipes an MCP server process's stderr into the daemon log,
+// one entry per line. Without this, crash reasons (node stack traces, OOM
+// kills' last words) are silently discarded and server deaths are
+// undebuggable — the 2026-10-18 chromium-death hunt was blind without it.
+type stderrLineLogger struct {
+	server string
+	buf    []byte
+}
+
+const stderrLineMax = 4096
+
+func (l *stderrLineLogger) Write(p []byte) (int, error) {
+	l.buf = append(l.buf, p...)
+	for {
+		i := bytes.IndexByte(l.buf, '\n')
+		if i < 0 {
+			// Guard against unbounded growth on newline-free writers.
+			if len(l.buf) > stderrLineMax {
+				slog.Warn("mcp: server stderr", "server", l.server, "line", string(l.buf[:stderrLineMax])+"…")
+				l.buf = l.buf[:0]
+			}
+			return len(p), nil
+		}
+		line := strings.TrimRight(string(l.buf[:min(i, stderrLineMax)]), "\r")
+		l.buf = l.buf[i+1:]
+		if line != "" {
+			slog.Warn("mcp: server stderr", "server", l.server, "line", line)
+		}
+	}
+}
+
 // newStdioTransport creates a CommandTransport for stdio servers.
 // Source: client.ts:944-958
 //
@@ -308,6 +341,10 @@ func newStdioTransport(name string, cfg *StdioConfig, scope ConfigScope, trusted
 
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	proc.HideWindow(cmd)
+	// Own process group so cleanup can reap the whole tree (crash-orphaned
+	// descendants included) — see ProcessCleanupEscalation.
+	SetProcessGroup(cmd)
+	cmd.Stderr = &stderrLineLogger{server: name}
 
 	// Source: client.ts:953-956 — env is subprocessEnv() merged with server env.
 	// In Go, exec.Command inherits os.Environ by default. We only need to

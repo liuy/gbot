@@ -60,6 +60,7 @@ export const dict = {
   remotePortInvalid: 'Port must be 1-65535',
   remoteDesktopSection: 'DESKTOPS',
   sidebarRemoteDesktop: 'Desktops',
+  sidebarPlugins: 'Plugins',
   rdAdd: 'Add Desktop',
   rdEditTitle: 'Edit',
   rdNameLabel: 'Name',

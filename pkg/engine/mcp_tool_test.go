@@ -590,7 +590,8 @@ func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
 	defer registry.Close()
 
-	// Inject a FailedServer (not *ConnectedServer) to test the type assertion path
+	// A FailedServer with no stored config: the call attempts one Reconnect,
+	// which fails because there is no config to reconnect from.
 	registry.SetConnectionForTest("bad-srv", &mcp.FailedServer{Name: "bad-srv", Error: "connection failed"})
 
 	tl := NewMCPTool(mcp.DiscoveredTool{
@@ -603,8 +604,24 @@ func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-connected server")
 	}
+	if !strings.Contains(err.Error(), "reconnect failed") {
+		t.Errorf("failed server must attempt one reconnect, got: %v", err)
+	}
+
+	// A DisabledServer (no reconnect attempt for non-failed states) still hits
+	// the type-assertion path.
+	registry.SetConnectionForTest("off-srv", &mcp.DisabledServer{Name: "off-srv"})
+	tl2 := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__off-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "off-srv",
+	}, registry)
+	_, err = tl2.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err == nil {
+		t.Fatal("expected error for disabled server")
+	}
 	if !strings.Contains(err.Error(), "not connected") {
-		t.Errorf("error should mention not connected, got: %v", err)
+		t.Errorf("disabled server error should mention not connected, got: %v", err)
 	}
 }
 

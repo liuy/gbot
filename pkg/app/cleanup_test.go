@@ -9,6 +9,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/lsp"
+	"github.com/liuy/gbot/pkg/plugins"
 )
 
 func TestCleanup_ClosesAllEngines(t *testing.T) {
@@ -98,4 +99,20 @@ func drainedClient(t *testing.T, reg *lsp.Registry, name, root string, spec lsp.
 	})
 	reg.InjectClientInRoot(name, root, spec, c)
 	return c
+}
+
+func TestCleanup_ClosesProtocolRunners(t *testing.T) {
+	mod := writeProtocolModule(t, "cam", `var ch = host.channel('cam')`)
+	hub, runners := wireTransport(&plugins.LoadedPlugins{Protocols: []plugins.ProtocolModule{mod}})
+	defer hub.Close()
+	if len(runners) != 1 || !hub.Connected("cam") {
+		t.Fatal("setup: runner must be wired")
+	}
+	// Hub deliberately NOT in the Instance: the only path that can
+	// unregister "cam" is the runner's own Close.
+	inst := &Instance{ProtocolRunners: runners}
+	inst.Cleanup()
+	if hub.Connected("cam") {
+		t.Fatal("Cleanup must close protocol runners (unregister from the hub)")
+	}
 }

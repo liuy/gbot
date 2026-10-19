@@ -1,4 +1,5 @@
 import type { ServerMessage } from './types'
+import { createTransportClient, type Channel, type TransportClient } from './transport'
 
 type Listener = (msg: ServerMessage) => void
 
@@ -11,12 +12,14 @@ export interface WebSocketConnection {
   connected: boolean
   onStateChange: (cb: (state: ConnState) => void) => void
   reconnect: () => void
+  openChannel: (name: string) => Channel
 }
 
 interface InternalState {
   listeners: Set<Listener>
   stateCbs: Set<(s: ConnState) => void>
   ws: WebSocket | null
+  hub: TransportClient
   connected: boolean
   reconnectCount: number
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -29,10 +32,11 @@ interface InternalState {
 let state: InternalState | null = null
 
 function createState(): InternalState {
-  return {
+  const s: InternalState = {
     listeners: new Set(),
     stateCbs: new Set(),
     ws: null,
+    hub: null as unknown as TransportClient,
     connected: false,
     reconnectCount: 0,
     reconnectTimer: null,
@@ -41,6 +45,19 @@ function createState(): InternalState {
     upgrading: false,
     upgradeStartedAt: 0,
   }
+  // The hub routes channel frames through whatever socket is current; the
+  // closures read s.ws at send time like every other path here.
+  s.hub = createTransportClient({
+    sendText: (obj) => {
+      const ws = s.ws
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj))
+    },
+    sendBinary: (data) => {
+      const ws = s.ws
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
+    },
+  })
+  return s
 }
 
 function notifyState(s: InternalState, cs: ConnState) {
@@ -121,6 +138,10 @@ function connect(s: InternalState, wsUrl: string) {
   }
 
   ws.onclose = (ev: CloseEvent) => {
+    // Channels are bound to THIS connection server-side; none survive any
+    // close. Tear them down before reconnect bookkeeping so renderer
+    // onclose handlers run exactly once per connection.
+    s.hub.reset()
     // 1012 = service restart: enter upgrading mode (fast reconnect, no
     // error visuals) BEFORE the taken_over check — during handover a
     // reconnect may briefly land on the still-draining old process, whose
@@ -152,13 +173,19 @@ function connect(s: InternalState, wsUrl: string) {
   }
 
   ws.onmessage = (ev: MessageEvent) => {
-    if (ev.data instanceof ArrayBuffer) return // inbound binary frames are not used
+    // Inbound binary frames are channel payloads ([id][bytes]); nothing
+    // else consumes binary client-side.
+    if (ev.data instanceof ArrayBuffer) {
+      s.hub.handleServerBinary(ev.data)
+      return
+    }
     let msg: ServerMessage
     try {
       msg = JSON.parse(ev.data) as ServerMessage
     } catch {
       return
     }
+    if (s.hub.handleServerText(msg)) return
     s.listeners.forEach((fn) => fn(msg))
   }
 }
@@ -220,5 +247,6 @@ function connFromState(s: InternalState): WebSocketConnection {
       s.stateCbs.add(cb)
     },
     reconnect: manualReconnect,
+    openChannel: (name: string) => s.hub.openChannel(name),
   }
 }

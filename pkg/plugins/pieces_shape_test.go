@@ -18,8 +18,7 @@ func TestLoadPluginPieces_PieceShape(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "plug")
 	writePluginFixture(t, dir, "plug", map[string]string{
-		"plugin.json": `{"name":"plug","version":"1.2.3","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"srv":{"command":"echo"}}}`,
+		"plugin.json": `{"name":"plug","version":"1.2.3","mcpServers":{"srv":{"command":"echo"}}}`,
 	})
 	pieces, err := LoadPluginPieces(dir, &config.Config{})
 	if err != nil {

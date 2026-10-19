@@ -543,7 +543,7 @@ func TestProcessCleanupEscalation(t *testing.T) {
 
 	// Run escalation — should terminate within ~500ms
 	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 	elapsed := time.Since(start)
 
 	// Reap the zombie so processExists reflects the true state
@@ -566,7 +566,7 @@ func TestProcessCleanupEscalation(t *testing.T) {
 
 func TestProcessCleanupEscalation_NilProcess(t *testing.T) {
 	// Should not panic on nil
-	ProcessCleanupEscalation(nil)
+	ProcessCleanupEscalation(nil, "test")
 }
 
 func TestProcessCleanupEscalation_AlreadyDead(t *testing.T) {
@@ -577,7 +577,7 @@ func TestProcessCleanupEscalation_AlreadyDead(t *testing.T) {
 	}
 
 	// Process is already dead — should return quickly without error
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 }
 
 func TestProcessExists(t *testing.T) {
@@ -902,7 +902,7 @@ func TestProcessCleanupEscalation_SIGINTStopsProcess(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 
 	// Reap zombie
 	if err := cmd.Wait(); err == nil {
@@ -930,7 +930,7 @@ func TestProcessCleanupEscalation_SigTermPath(t *testing.T) {
 	pid := cmd.Process.Pid
 
 	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 	elapsed := time.Since(start)
 
 	if err := cmd.Wait(); err == nil {
@@ -958,7 +958,7 @@ func TestProcessCleanupEscalation_SigKillPath(t *testing.T) {
 	pid := cmd.Process.Pid
 
 	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 	elapsed := time.Since(start)
 
 	if err := cmd.Wait(); err == nil {
@@ -988,7 +988,7 @@ func TestProcessCleanupEscalation_Unexported(t *testing.T) {
 	pid := cmd.Process.Pid
 
 	// Call ProcessCleanupEscalation directly
-	ProcessCleanupEscalation(cmd.Process)
+	ProcessCleanupEscalation(cmd.Process, "test")
 
 	if err := cmd.Wait(); err == nil {
 		t.Log("process exited cleanly")

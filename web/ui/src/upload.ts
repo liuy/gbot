@@ -80,7 +80,13 @@ export async function sendAttachmentViaWS(
   for (let offset = 0; offset < file.size; offset += chunkSize) {
     const slice = file.slice(offset, Math.min(offset + chunkSize, file.size))
     const buf = await slice.arrayBuffer()
-    conn.sendBinary(buf)
+    // Binary frames are [1-byte channel id][payload]; the attachment lane
+    // is channel 0x00, so every chunk ships with that prefix byte. A bare
+    // payload whose first byte happens to be non-zero would be routed to
+    // the transport hub and silently dropped.
+    const framed = new Uint8Array(1 + buf.byteLength)
+    framed.set(new Uint8Array(buf), 1)
+    conn.sendBinary(framed)
     if (!conn.connected) {
       throw new Error('WS disconnected mid-upload')
     }

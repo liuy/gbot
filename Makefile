@@ -293,6 +293,7 @@ web-novnc:
 
 web-mv:
 	cd web/ui && npm run check:mv
+
 # Regenerates (not checks) the model-viewer bundle so `make build` can never
 # embed a stale one — fork source edits need no remembered pre-step.
 web-mv-gen:

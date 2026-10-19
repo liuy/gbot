@@ -200,7 +200,7 @@ func TestRuntimeInfo_Exact(t *testing.T) {
 
 	const tail = " | model={{MODEL}} | modalities={{MODALITIES}}"
 	bullets := "\n\n- workspace: working directory for tool operations (Bash, Read, Write, Grep, Lsp, etc). Operations outside this directory require absolute paths.\n" +
-		"- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (full transcript of all sessions); also session_notes/, file-history/, history/, plans/\n" +
+		"- projectspace: gbot state directory. Layout: gbot.log + gbot.pid at root; memory/ subdir holds markdown notes + memory.db (full transcript of all sessions; created_at/updated_at columns are UTC); also session_notes/, file-history/, history/, plans/\n" +
 		fmt.Sprintf("- artifacts: interactive HTML pages shown to the user in wui (card + full view). Write them to the projectspace artifacts directory (%s/artifacts/, absolute paths) via Write/Edit; they are served in the chat as cards. Good artifacts are self-contained single-file pages (inline CSS/JS, no external scripts — the CSP blocks all cross-origin resources; localStorage works). When iterating, Edit the same file. Prefer in-line content in chat when the page adds nothing — err on the side of not creating one.", "/p")
 
 	tests := []struct {

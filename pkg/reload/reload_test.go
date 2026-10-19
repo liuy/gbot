@@ -213,20 +213,19 @@ func TestReload_AbortsOnInvalidPluginMcp(t *testing.T) {
 	o := env.orchestrator()
 
 	env.writePlugin(t, "broken", map[string]string{
-		"plugin.json": `{"name":"broken","version":"1.0.0","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"s":{"command":}}}`,
+		"plugin.json": `{"name":"broken","version":"1.0.0","mcpServers":{"s":"not-an-object"}}`,
 	})
 	rep := o.Reload(context.Background())
 
 	if rep.Applied {
-		t.Fatal("reload must abort on an invalid plugin mcp.json")
+		t.Fatal("reload must abort on an invalid inline mcpServers entry")
 	}
 	if rep.Phase != 1 {
 		t.Errorf("Phase = %d, want 1 (plugins)", rep.Phase)
 	}
 	found := false
 	for _, row := range rep.Files {
-		if row.Status == StatusFailed && strings.Contains(row.Path, filepath.Join("plugins", "broken", "mcp.json")) {
+		if row.Status == StatusFailed && strings.Contains(row.Path, filepath.Join("plugins", "broken", "plugin.json")) {
 			found = true
 			if row.ErrLine == "" {
 				t.Error("plugin mcp failed row must carry ErrLine")
@@ -234,7 +233,7 @@ func TestReload_AbortsOnInvalidPluginMcp(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("no failed row naming plugins/broken/mcp.json: %+v", rep.Files)
+		t.Fatalf("no failed row naming plugins/broken/plugin.json: %+v", rep.Files)
 	}
 	if o.Env().Cfg != initialCfg {
 		t.Error("env cfg must be untouched after an aborted reload")
@@ -599,5 +598,33 @@ func TestReload_ToolPromptsMatchFreshToolSet(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("ToolPrompts[%d] differs from a fresh harvest:\n got: %.120s\nwant: %.120s", i, got[i], want[i])
 		}
+	}
+}
+
+func TestReload_ReportsPluginMcpRow(t *testing.T) {
+	env := newReloadTestEnv(t, settingsA)
+	o := env.orchestrator()
+
+	env.writePlugin(t, "mcpd", map[string]string{
+		"plugin.json": `{"name":"mcpd","version":"1.0.0","mcpServers":{"s":{"command":"node","args":["x.js"]}}}`,
+	})
+	rep := o.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("valid plugin reload must apply: %+v", rep)
+	}
+	var found *FileEntry
+	for i := range rep.Files {
+		if strings.Contains(rep.Files[i].Path, filepath.Join("plugins", "mcpd", "plugin.json")) {
+			found = &rep.Files[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no plugin.json row for the new plugin: %+v", rep.Files)
+	}
+	if found.Status != StatusReloaded {
+		t.Errorf("row status = %v, want %v", found.Status, StatusReloaded)
+	}
+	if found.Note != "1 added · 0 removed · 0 changed" {
+		t.Errorf("row note = %q, want the 1-added summary", found.Note)
 	}
 }

@@ -540,3 +540,52 @@ describe('remote desktop section', () => {
     expect(sidebar.root.querySelectorAll('[data-device-row]').length).toBe(0)
   })
 })
+
+describe('sidebar plugins section', () => {
+  const CARDS = [
+    { name: 'browser', ui: '/plugins/browser/ui', running: true },
+    { name: 'camera', ui: '/plugins/camera/ui', running: false },
+  ]
+
+  it('empty card list hides the whole section', () => {
+    const { sidebar } = setup()
+    sidebar.setPlugins([])
+    expect(sidebar.root.querySelector('.sidebar-plugins')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('online rows are clickable; standby rows are grayed and inert', () => {
+    const { mainContent, sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onPluginClick(handler)
+    sidebar.open()
+    sidebar.setPlugins(CARDS)
+    const rows = sidebar.root.querySelectorAll('[data-plugin-row]')
+    expect(rows).toHaveLength(2)
+    const online = rows[0] as HTMLElement
+    const standby = rows[1] as HTMLElement
+    expect(online.hasAttribute('data-plugin-standby')).toBe(false)
+    expect(standby.hasAttribute('data-plugin-standby')).toBe(true)
+    // The standby row must not carry the pointer affordance of live rows.
+    expect(online.className).toContain('cursor-pointer')
+    expect(standby.className).not.toContain('cursor-pointer')
+    standby.click()
+    expect(handler).not.toHaveBeenCalled()
+    online.click()
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(CARDS[0])
+    expect(mainContent.style.transform).toBe('translateX(0px)')
+  })
+
+  it('re-setting the list replaces rows (running flips re-enable a row)', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onPluginClick(handler)
+    sidebar.setPlugins(CARDS)
+    sidebar.setPlugins([{ name: 'camera', ui: '/plugins/camera/ui', running: true }])
+    const rows = sidebar.root.querySelectorAll('[data-plugin-row]')
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as HTMLElement).hasAttribute('data-plugin-standby')).toBe(false)
+    ;(rows[0] as HTMLElement).click()
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+})

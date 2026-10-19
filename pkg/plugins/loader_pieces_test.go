@@ -26,24 +26,24 @@ func writePluginFixture(t *testing.T, dir, name string, files map[string]string)
 	}
 }
 
-const manifestAll = `{"name":"plug","version":"1.0.0","mcpServers":"./mcp.json","skills":"./skills/","repls":"./repl/"}`
+const manifestAll = `{"name":"plug","version":"1.0.0","mcpServers":{"srv":{"command":"echo","args":["${GBOT_PLUGIN_ROOT}/run.sh"]}},"skills":"./skills/","repls":"./repl/"}`
 
 func TestLoadPluginPieces_StrictMcpJSON(t *testing.T) {
 	dir := t.TempDir()
 
-	// Invalid mcp.json must be an error naming the plugin and the file path.
+	// An invalid inline server config must be an error naming the plugin and
+	// the manifest file path.
 	writePluginFixture(t, dir, "broken", map[string]string{
-		"plugin.json": `{"name":"broken","version":"1.0.0","mcpServers":"./mcp.json"}`,
-		"mcp.json":    `{"mcpServers":{"s":{"command":}}}`,
+		"plugin.json": `{"name":"broken","version":"1.0.0","mcpServers":{"s":{"url":"not-a-valid-config"}}}`,
 	})
 	_, err := LoadPluginPieces(dir, &config.Config{})
 	if err == nil {
-		t.Fatal("LoadPluginPieces must fail on an invalid plugin mcp.json")
+		t.Fatal("LoadPluginPieces must fail on an invalid inline server config")
 	}
 	if !strings.Contains(err.Error(), "broken") {
 		t.Errorf("error must name the plugin, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), filepath.Join("broken", "mcp.json")) {
+	if !strings.Contains(err.Error(), filepath.Join("broken", "plugin.json")) {
 		t.Errorf("error must name the offending file path, got: %v", err)
 	}
 
@@ -52,7 +52,6 @@ func TestLoadPluginPieces_StrictMcpJSON(t *testing.T) {
 	validDir := t.TempDir()
 	writePluginFixture(t, validDir, "plug", map[string]string{
 		"plugin.json": manifestAll,
-		"mcp.json":    `{"mcpServers":{"srv":{"command":"echo","args":["${GBOT_PLUGIN_ROOT}/run.sh"]}}}`,
 	})
 	pieces, err := LoadPluginPieces(validDir, &config.Config{})
 	if err != nil {
@@ -82,7 +81,6 @@ func TestLoadPluginPieces_StrictMcpJSON_EnvInjection(t *testing.T) {
 	dir := t.TempDir()
 	writePluginFixture(t, dir, "plug", map[string]string{
 		"plugin.json": manifestAll,
-		"mcp.json":    `{"mcpServers":{"srv":{"command":"echo","args":["${GBOT_PLUGIN_ROOT}/run.sh"]}}}`,
 	})
 	pieces, err := LoadPluginPieces(dir, &config.Config{})
 	if err != nil {

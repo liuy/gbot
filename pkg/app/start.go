@@ -152,6 +152,10 @@ func Start(opts Options) (*Instance, error) {
 	if pluginErr != nil {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
 	}
+	// Transport wiring loads plugin protocol modules into the JS host and
+	// registers them with the hub. On per-module failure the daemon
+	// continues without that plugin's live channels.
+	transportHub, protocolRunners := wireTransport(loadedPlugins)
 	if loadedPlugins != nil && len(loadedPlugins.ReplScripts) > 0 {
 		scripts := make([]repl.ReplScript, 0, len(loadedPlugins.ReplScripts))
 		for _, ps := range loadedPlugins.ReplScripts {
@@ -660,6 +664,10 @@ func Start(opts Options) (*Instance, error) {
 		}
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
+		if transportHub != nil {
+			wc.SetTransport(transportHub)
+		}
+		wui.RegisterPluginRoutes(wsMux, transportHub)
 		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
 		wui.RegisterSettingsRoutes(wsMux)
 		wui.RegisterReloadRoute(wsMux, orch.Reload)
@@ -757,6 +765,8 @@ func Start(opts Options) (*Instance, error) {
 		DreamDone:          dreamDone,
 		Reloader:           orch,
 		EnvHolder:          holder,
+		TransportHub:       transportHub,
+		ProtocolRunners:    protocolRunners,
 	}, nil
 }
 

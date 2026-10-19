@@ -31,12 +31,14 @@ func writeWSText(t *testing.T, c *websocket.Conn, payload map[string]any) {
 	}
 }
 
-// writeWSBinary sends a binary frame with a deadline. Mirrors readWSMessage's
-// 2s timeout so the test fails fast on a stalled write.
+// writeWSBinary sends an attachment chunk as a binary frame with a deadline.
+// Chunks ride the 0x00 lane of the channel-prefixed binary protocol.
+// Mirrors readWSMessage's 2s timeout so the test fails fast on a stalled write.
 func writeWSBinary(t *testing.T, c *websocket.Conn, data []byte) {
 	t.Helper()
+	frame := append([]byte{0x00}, data...)
 	_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
-	if err := c.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := c.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 		t.Fatalf("ws.WriteMessage(binary): %v", err)
 	}
 }

@@ -209,8 +209,10 @@ describe('chat attachment rendering', () => {
     expect(msg.attachments[0].name).toBe('photo.png')
 
     // One binary chunk (small file) — captured in sentBinary, not sent.
+    // Frames are [0x00 lane byte][payload], so the chunk is size + 1.
     expect(sentBinary.length).toBe(1)
-    expect(sentBinary[0].byteLength).toBe(file.size)
+    expect(sentBinary[0].byteLength).toBe(file.size + 1)
+    expect(new Uint8Array(sentBinary[0])[0]).toBe(0)
 
     // Rendered <img> uses the blob previewURL.
     const img = messagesContainer().querySelector('img') as HTMLImageElement
@@ -596,9 +598,10 @@ describe('chat clipboard file paste', () => {
     expect(msg.attachments[0].mime).toBe('image/png')
     expect(msg.attachments[0].size).toBe(blob.size)
 
-    // One binary chunk carrying the pasted bytes.
+    // One binary chunk carrying the pasted bytes ([0x00 lane byte]+payload).
     expect(sentBinary.length).toBe(1)
-    expect(sentBinary[0].byteLength).toBe(blob.size)
+    expect(sentBinary[0].byteLength).toBe(blob.size + 1)
+    expect(new Uint8Array(sentBinary[0])[0]).toBe(0)
 
     // Rendered user message shows the stamped name with a blob preview.
     const img = messagesContainer().querySelector('img') as HTMLImageElement

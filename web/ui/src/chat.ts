@@ -49,6 +49,7 @@ import {
 import { createHeader } from './header'
 import { createTakeoverBar } from './takeover_bar'
 import { createSidebar } from './sidebar'
+import { fetchPluginList, openPluginCard } from './plugin_host'
 import { createInputBar, type InputBarHandles, type AttachmentRef, type QueuedMsg } from './input_bar'
 import { createTaskPanel } from './task_panel'
 import type { JobsStoreHandle } from './jobs_store'
@@ -2190,6 +2191,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     fetchRemoteDevices()
       .then((devices) => sidebar.setRemoteDevices(devices))
       .catch(() => {})
+    fetchPluginList()
+      .then((cards) => sidebar.setPlugins(cards))
+      .catch(() => {})
+  })
+  sidebar.onPluginClick((card) => {
+    void openPluginCard(card)
   })
 
   let askEls: HTMLElement[] = []

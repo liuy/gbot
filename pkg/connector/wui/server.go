@@ -46,6 +46,23 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 	})
 }
 
+// channelSink adapts one wui WS connection era to transport.ClientSink. It
+// captures the era's outbound queue at creation: after a takeover the old
+// queue is closed and later pushes drop there — stale-era channel frames can
+// never leak into the new client's stream.
+type channelSink struct {
+	q    *outQueue
+	done <-chan struct{}
+}
+
+func (s channelSink) SendBinary(frame []byte) {
+	s.q.push(wsMsg{data: frame, isBinary: true}, s.done)
+}
+
+func (s channelSink) SendJSON(payload []byte) {
+	s.q.push(wsMsg{data: payload, isBinary: false}, s.done)
+}
+
 // serveChatWS drives one WS connection to completion with a unified
 // takeover = swap WS + switchEngine. Deactivates old engine first (prevents
 // live events from reaching new WS before metadata), installs a fresh
@@ -82,13 +99,24 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 		_ = oldWS.WriteControl(websocket.CloseMessage, closeFrame, time.Now().Add(time.Second))
 		_ = oldWS.Close()
 	}
+	// Transport channels follow the same single-client rule: the new
+	// connection's sink replaces the old one and the old client's channels
+	// unbind (providers keep running headless). Without a hub there is
+	// nothing to bind, so no sink is stored (channel_open degrades to an
+	// error) — storing one would be a dead write nothing reads.
+	sink := &channelSink{q: c.outQ.Load(), done: c.done}
+	if c.transport != nil {
+		if old := c.activeSink.Swap(sink); old != nil {
+			c.transport.UnbindClient(old)
+		}
+	}
 	c.switchEngine(c.ActiveID())
 
 	// This handler's era: serveChatWS just installed a fresh queue. A newer
 	// era at cleanup time means a takeover superseded this connection.
 	myEra := c.outQ.Load()
 
-	c.readLoop(ws)
+	c.readLoop(ws, sink)
 
 	// Era-guard the disconnect deactivation: only when no newer era was
 	// installed was this the last active connection. A stale readLoop exiting
@@ -106,13 +134,23 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 		}
 		c.slotsMu.RUnlock()
 	}
+	// Unbind everything this connection's sink ever bound — unconditional
+	// and pointer-scoped. A CAS here misses the straggler case: a
+	// channel_open this readLoop dispatched AFTER the takeover Swap bound
+	// the superseded sink again, and skipping the unbind would leave the
+	// channel "already open" for the new client until the provider
+	// reconnects. UnbindClient only touches bindings whose sink is exactly
+	// this one, so the new client's channels are never affected.
+	if c.transport != nil {
+		c.transport.UnbindClient(sink)
+	}
 	c.activeWS.CompareAndSwap(ws, nil)
 	c.abortPendingAsksOnDisconnect()
 	slog.Info("wui:disconnect")
 }
 
 // readLoop processes inbound JSON messages until the connection closes.
-func (c *WUIConnector) readLoop(ws *websocket.Conn) {
+func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 	// Gorilla's default ReadLimit (64 MiB) would let a >50 MiB rogue single
 	// binary frame into memory before our handleStart size check can reject
 	// it; lower the limit explicitly so the read stops at the frame boundary.
@@ -127,12 +165,19 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			slog.Info("wui:readLoop exit", "error", err)
 			return
 		}
-		// Binary frames are attachment chunk payloads — route them to the
-		// accumulator before the JSON-type peek (binary bytes fail
-		// json.Unmarshal and would otherwise be silently dropped).
+		// Binary frames are [1-byte channel id][payload]. 0x00 is the
+		// legacy attachment-chunk lane; any other byte routes the rest of
+		// the frame to the transport hub for that channel.
 		if msgType == websocket.BinaryMessage {
-			if errMsg := acc.handleBinary(data); errMsg != "" {
-				c.sendWS(buildError(errors.New(errMsg)))
+			if len(data) == 0 {
+				continue
+			}
+			if data[0] == 0x00 {
+				if errMsg := acc.handleBinary(data[1:]); errMsg != "" {
+					c.sendWS(buildError(errors.New(errMsg)))
+				}
+			} else if c.transport != nil {
+				c.transport.ChannelSend(data[0], data[1:])
 			}
 			continue
 		}
@@ -331,8 +376,81 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn) {
 			go c.handleCompactRequest()
 		case "quota_request":
 			go c.buildQuota()
+		case "channel_open":
+			var msg struct {
+				Channel string `json:"channel"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.Channel != "" {
+				c.handleChannelOpen(sink, msg.Channel)
+			}
+		case "channel_close":
+			var msg struct {
+				ChannelID uint8  `json:"channelId"`
+				Channel   string `json:"channel"`
+			}
+			if json.Unmarshal(data, &msg) == nil && c.transport != nil {
+				if msg.ChannelID != 0 {
+					c.transport.CloseChannel(msg.ChannelID)
+				} else if msg.Channel != "" {
+					// Closed before the server assigned an id (card closed
+					// mid-connecting): name is the only handle the client has.
+					c.transport.CloseChannelByName(msg.Channel)
+				}
+			}
 		}
 	}
+}
+
+// handleChannelOpen binds a transport channel to this connection's sink and
+// reports the assigned id, or explains why not.
+func (c *WUIConnector) handleChannelOpen(sink *channelSink, channel string) {
+	if c.transport == nil {
+		c.sendChannelError(channel, "transport unavailable")
+		return
+	}
+	// A straggler open from a superseded connection era would bind a dead
+	// sink and notify the wrong client; the hub-side reject races the
+	// takeover Swap, so gate it here where the ordering is visible. A nil
+	// sink (transport attached after this connection started) passes —
+	// there is no era to be superseded by.
+	if cur := c.activeSink.Load(); cur != nil && cur != sink {
+		c.sendChannelError(channel, "connection superseded")
+		return
+	}
+	id, err := c.transport.OpenChannel(sink, channel)
+	if err != nil {
+		c.sendChannelError(channel, err.Error())
+		return
+	}
+	c.finishChannelOpen(sink, channel, id)
+}
+
+// finishChannelOpen completes a channel open. A bind that a concurrent
+// takeover superseded in the window between handleChannelOpen's gate and the
+// bind landing is torn down at once — the new client must never observe
+// "already open" caused by a bind it superseded. Every other outcome gets
+// the channel_opened reply.
+func (c *WUIConnector) finishChannelOpen(sink *channelSink, channel string, id uint8) {
+	if cur := c.activeSink.Load(); cur != nil && cur != sink {
+		c.transport.CloseChannel(id)
+		c.sendChannelError(channel, "connection superseded")
+		return
+	}
+	resp, _ := json.Marshal(struct {
+		Type      string `json:"type"`
+		Channel   string `json:"channel"`
+		ChannelID uint8  `json:"channelId"`
+	}{Type: "channel_opened", Channel: channel, ChannelID: id})
+	c.sendWS(resp)
+}
+
+func (c *WUIConnector) sendChannelError(channel, reason string) {
+	resp, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		Channel string `json:"channel"`
+		Error   string `json:"error"`
+	}{Type: "channel_error", Channel: channel, Error: reason})
+	c.sendWS(resp)
 }
 
 // assembleGate, when non-nil, runs at the top of the assemble goroutine so

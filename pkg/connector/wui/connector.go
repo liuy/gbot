@@ -39,6 +39,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/transport"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -605,6 +606,14 @@ type WUIConnector struct {
 	// Typed as any so the production file does not depend on the test-only
 	// mockEngine type; mock() (in helpers_test.go) does the type assertion.
 	testMock any
+
+	// transport routes plugin stream channels for this connector's active
+	// client (see pkg/transport). nil until SetTransport is called — readLoop
+	// and channel_open degrade to errors without it. activeSink holds the
+	// channel sink of the CURRENT WS connection era; takeover swaps it and
+	// unbinds the previous client's channels.
+	transport  *transport.Hub
+	activeSink atomic.Pointer[channelSink]
 
 	// stopOnce makes Stop idempotent: synctest-based tests stop the
 	// connector inside the bubble via defer, and the helper's t.Cleanup
@@ -2881,6 +2890,12 @@ func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 // cache").
 func (c *WUIConnector) SetMediaCache(store *media.Store) {
 	c.mediaCache = store
+}
+
+// SetTransport injects the plugin stream hub. Without it, channel_open
+// requests get a channel_error reply instead of a hard failure.
+func (c *WUIConnector) SetTransport(h *transport.Hub) {
+	c.transport = h
 }
 
 // buildQueryStartReplay synthesizes the query_start event frame for an
