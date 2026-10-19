@@ -1093,7 +1093,12 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	// by every engine (a grandchild re-reads e.sharedDeps, not this copy).
 	subDeps := *e.sharedDeps
 	subDeps.WorkingDir = subWorkingDir
-	subRefs := CreateTools(subDeps, e.taskList)
+	// Session-root binding (bash/job side; the Agent side is re-pointed below
+	// via SetBgRegistry): every sidechain engine shares the session root's
+	// registries so background jobs stay visible/stoppable in the root's job
+	// view, while remaining isolated across slots. ToolRefs stay private —
+	// WireEngine wires the sub's own notification sink into them.
+	subRefs := CreateTools(subDeps, e.taskList, WithSessionRootRefs(&e.toolRefs))
 
 	if e.sharedDeps.McpReg != nil {
 		for _, dt := range e.sharedDeps.McpReg.GetTools() {

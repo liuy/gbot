@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -63,10 +64,47 @@ const MaxTimeout = 1 * time.Hour
 
 const MaxOutputSize = 30000
 
+// bashToolSurface pins the optional-interface surface of the built tool so
+// the Bash handle forwards it intact. Embedding the plain Tool interface
+// would hide these methods from *Bash, and every runtime type assertion
+// (replay decode, TUI collapse, wire formatting) would silently miss.
+type bashToolSurface interface {
+	tool.Tool
+	FormatWireBlocks(data any) []types.ContentBlock
+	IsSearchOrRead(input json.RawMessage) tool.SearchReadKind
+	DecodeResult(raw json.RawMessage) (any, error)
+	IsDeferred() bool
+	SearchHint() string
+}
+
+// Bash is the concrete Bash tool handle. jobNotify restores tool-level
+// notification priority: registry-level OnNotify routes to the table's owner
+// (the session-root engine once the registry is root-bound), while this hook
+// sends the notification to the engine that actually spawned the job.
+type Bash struct {
+	bashToolSurface
+	mu        sync.Mutex
+	jobNotify func(JobNotification)
+}
+
+// SetJobNotifyFn overrides the per-job notification recipient for jobs this
+// tool spawns. Called once at engine wiring time, before any query runs.
+func (b *Bash) SetJobNotifyFn(fn func(JobNotification)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.jobNotify = fn
+}
+
+func (b *Bash) JobNotifyFn() func(JobNotification) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.jobNotify
+}
+
 // New creates the Bash tool.
 // Source: tools/BashTool/BashTool.ts
 // New creates a Bash tool. If registry is nil, uses DefaultRegistry().
-func New(registry *BackgroundJobRegistry) tool.Tool {
+func New(registry *BackgroundJobRegistry) *Bash {
 	if registry == nil {
 		registry = DefaultRegistry()
 	}
@@ -97,8 +135,11 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			}
 		}
 	}`)
-
-	return tool.BuildTool(tool.ToolDef{
+	b := &Bash{}
+	// The assertion pins the optional surface at construction: if the ToolDef
+	// ever drops a field (e.g. IsSearchOrRead_), this panics here instead of
+	// silently breaking runtime assertions downstream.
+	b.bashToolSurface = tool.BuildTool(tool.ToolDef{
 		Name_:        "Bash",
 		Aliases_:     []string{"bash", "shell", "sh"},
 		InputSchema_: func() json.RawMessage { return schema },
@@ -114,7 +155,7 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			return "", nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return executeBash(ctx, input, tctx, reg)
+			return executeBash(ctx, input, tctx, reg, b.JobNotifyFn())
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
 			// Source: BashTool.ts — command classifier determines read-only
@@ -201,7 +242,8 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			}
 			return []types.ContentBlock{types.NewTextBlock(wireText(out))}
 		},
-	})
+	}).(bashToolSurface)
+	return b
 }
 
 // leadingBlankLinesRe strips leading blank/whitespace-only lines from stdout.
@@ -248,7 +290,7 @@ func wireText(out *Output) string {
 
 // Execute runs a bash command using the global default registry.
 func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	return executeBash(ctx, input, tctx, DefaultRegistry())
+	return executeBash(ctx, input, tctx, DefaultRegistry(), nil)
 }
 
 // executeBash is the unified entry point for bash command execution.
@@ -256,7 +298,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 // through tctx.OnProgress.
 //
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
-func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, registry *BackgroundJobRegistry) (*tool.ToolResult, error) {
+func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, registry *BackgroundJobRegistry, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -317,7 +359,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 	// Background execution: spawn command and return immediately with job ID
 	// Source: BashTool.tsx:988-1001 — run_in_background=true spawns immediately
 	if in.RunInBackground {
-		return spawnBackground(ctx, in, cwd, timeout, registry, tctx)
+		return spawnBackground(in, cwd, timeout, registry, tctx, jobNotify)
 	}
 
 	// Create streaming output with progress callback wired to tctx.OnProgress.
@@ -344,9 +386,9 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 
 	// Run the command, capturing output into StreamingOutput
 	if ptySupported {
-		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
+		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx, jobNotify)
 	}
-	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
+	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx, jobNotify)
 }
 
 // executePTY runs a command in PTY mode with streaming output capture.
@@ -355,7 +397,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background job instead of being killed.
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
-func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
 
 	baseEnv := os.Environ()
@@ -389,7 +431,7 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 
 	}
 	if shouldAutoBg {
-		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, wrappedCmd, cwdFile, baseEnv, screen, outputCap, emitAskInput, tctx)
+		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, wrappedCmd, cwdFile, baseEnv, screen, outputCap, emitAskInput, tctx, jobNotify)
 	}
 	return executePTYSync(ctx, in, cwd, timeout, s, wrappedCmd, cwdFile, baseEnv, screen, outputCap, emitAskInput, tctx)
 }
@@ -428,7 +470,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 //
 // Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
 // the actual timeout via a timer. When timeout fires, transitions to background.
-func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	ptyDone := make(chan struct{})
@@ -484,16 +526,16 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 			// #handleExit. Before Complete so Wait() implies the file is gone.
 			_ = os.Remove(cwdFile)
 			job.Complete(ptyExitCode, ptyInterrupted)
-		})
+		}, jobNotify)
 	}
 }
 
 // executeNonPTY runs a command without PTY (fallback mode) with streaming output capture.
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background job instead of being killed.
-func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	if shouldAutoBg {
-		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap, tctx)
+		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap, tctx, jobNotify)
 	}
 	return executeNonPTYSync(ctx, in, cwd, timeout, s, outputCap, tctx)
 }
@@ -566,7 +608,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 // When timeout fires, the process transitions to a background job instead of
 // being killed. The foreground result returns immediately with BackgroundJobID set.
 // The process continues running; when it exits, job.Complete is called.
-func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	taskCtx, taskCancel := context.WithCancel(context.Background())
@@ -656,7 +698,7 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 			// #handleExit. Before Complete so Wait() implies the file is gone.
 			_ = os.Remove(cwdFile)
 			job.Complete(exitCode, false)
-		})
+		}, jobNotify)
 	}
 }
 
@@ -849,7 +891,7 @@ func truncate(s string, maxLen int) string {
 //
 // Source: BashTool.tsx:904-921 — spawnBackgroundJob()
 // Source: LocalShellTask.tsx:180-252 — spawnShellTask()
-func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Duration, registry *BackgroundJobRegistry, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func spawnBackground(in Input, cwd string, timeout time.Duration, registry *BackgroundJobRegistry, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	s := NewStreamingOutput(nil)
 
 	// Build emitAskInput callback from tctx.OnAskInput (if available).
@@ -882,6 +924,11 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	job.CWD = cwd
 	job.Description = in.Description
 	job.ToolUseID = job.ID
+	// Must precede startStallWatchdog: the stall callback reads t.onNotify, so
+	// an override installed after the watchdog starts races a zero-value read.
+	if jobNotify != nil {
+		job.SetOnNotify(jobNotify)
+	}
 
 	// Source: LocalShellTask.tsx:221 — startStallWatchdog after registration
 	job.startStallWatchdog()
@@ -992,10 +1039,15 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 // wait for the process to exit and call job.Complete().
 //
 // Source: BashTool.tsx:924-963 — startBackgrounding
-func transitionToBackground(registry *BackgroundJobRegistry, command string, pid int, s *StreamingOutput, in Input, cwd string, completionFunc func(*BackgroundJob)) (*tool.ToolResult, error) {
+func transitionToBackground(registry *BackgroundJobRegistry, command string, pid int, s *StreamingOutput, in Input, cwd string, completionFunc func(*BackgroundJob), jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	job := registry.Spawn(command, pid, s)
 	job.CWD = cwd
 	job.Description = in.Description
+	// Must precede startStallWatchdog: the stall callback reads t.onNotify, so
+	// an override installed after the watchdog starts races a zero-value read.
+	if jobNotify != nil {
+		job.SetOnNotify(jobNotify)
+	}
 	job.startStallWatchdog()
 
 	// Stop foreground progress updates

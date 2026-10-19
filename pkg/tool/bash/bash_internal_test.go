@@ -746,7 +746,7 @@ func TestExecutePTY_PtyCommandError(t *testing.T) {
 	defer func() { shellCommand = orig }()
 
 	s := NewStreamingOutput(nil)
-	_, err := executePTY(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry(), MaxOutputSize, nil)
+	_, err := executePTY(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry(), MaxOutputSize, nil, nil)
 	if err == nil {
 		t.Fatal("expected error with non-existent shell")
 	}
@@ -842,7 +842,7 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 	defer func() { ptySupported = orig }()
 
 	// spawnBackground with a command that should start successfully
-	result, err := spawnBackground(context.Background(), Input{Command: "echo spawn"}, "", 10*time.Second, DefaultRegistry(), nil)
+	result, err := spawnBackground(Input{Command: "echo spawn"}, "", 10*time.Second, DefaultRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("spawnBackground() error: %v", err)
 	}
@@ -921,12 +921,10 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
-	parentCtx := t.Context()
-
-	result, err := spawnBackground(parentCtx, Input{
+	result, err := spawnBackground(Input{
 		Command:     "sleep 10",
 		Description: "test stay running",
-	}, t.TempDir(), 30*time.Second, DefaultRegistry(), nil)
+	}, t.TempDir(), 30*time.Second, DefaultRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}
@@ -972,12 +970,12 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
-	parentCtx, parentCancel := context.WithCancel(context.Background())
+	_, parentCancel := context.WithCancel(context.Background())
 
-	result, err := spawnBackground(parentCtx, Input{
+	result, err := spawnBackground(Input{
 		Command:     "sleep 10",
 		Description: "test context independence",
-	}, t.TempDir(), 30*time.Second, DefaultRegistry(), nil)
+	}, t.TempDir(), 30*time.Second, DefaultRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}
@@ -1211,7 +1209,7 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 	defer func() { defaultRegistry = origReg }()
 
 	// Set a non-existent working directory to trigger cmd.Start() error
-	result, err := spawnBackground(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, freshReg, nil)
+	result, err := spawnBackground(Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, freshReg, nil, nil)
 	if err != nil {
 		t.Fatalf("spawnBackground() error: %v (returns nil error, job completes with -1)", err)
 	}
@@ -1249,7 +1247,7 @@ func TestExecuteNonPTYAutoBg_StartError(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// Use a non-existent working directory to trigger cmd.Start() error
-	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry(), MaxOutputSize, nil)
+	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry(), MaxOutputSize, nil, nil)
 	if err == nil {
 		t.Fatal("expected error with non-existent working directory")
 	}
@@ -1295,7 +1293,7 @@ func TestExecutePTY_TmuxOverrides(t *testing.T) {
 	// Call through executePTY which sets up all the internal params for executePTYSync
 	s := NewStreamingOutput(nil)
 	in := Input{Command: "echo tmux-test", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil, MaxOutputSize, nil)
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil, MaxOutputSize, nil, nil)
 	if err != nil {
 		t.Fatalf("executePTY() error: %v", err)
 	}
@@ -1336,7 +1334,7 @@ func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
 	// The command completes before timeout, so it follows the sync path within executePTY.
 	s := NewStreamingOutput(nil)
 	in := Input{Command: "echo tmux-autobg", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg, MaxOutputSize, nil)
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg, MaxOutputSize, nil, nil)
 	if err != nil {
 		t.Fatalf("executePTY() error: %v", err)
 	}

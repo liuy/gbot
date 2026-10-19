@@ -696,10 +696,11 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 	t.Parallel()
 
 	tt := bash.New(nil)
+	var it tool.Tool = tt
 	inner := `{"output":"make[1]: Entering directory\nok  test result\n","exitCode":0}`
 	textBytes, _ := json.Marshal(inner)
 	raw := json.RawMessage(`[{"type":"text","text":` + string(textBytes) + `}]`)
-	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	v, err := it.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
 		t.Fatalf("DecodeResult failed: %v", err)
 	}
@@ -714,9 +715,10 @@ func TestRenderResult_JsonRawMessage_InvalidJson(t *testing.T) {
 	t.Parallel()
 
 	tt := bash.New(nil)
+	var it tool.Tool = tt
 	innerBytes, _ := json.Marshal("not valid json")
 	raw := json.RawMessage(`[{"type":"text","text":` + string(innerBytes) + `}]`)
-	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
+	_, err := it.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
 		t.Error("DecodeResult(invalid json inner) should return error")
 	}
@@ -726,7 +728,8 @@ func TestBash_DecodeResult_RejectsBareStruct(t *testing.T) {
 	t.Parallel()
 
 	tt := bash.New(nil)
-	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"output":"x","exitCode":0}`))
+	var it tool.Tool = tt
+	_, err := it.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"output":"x","exitCode":0}`))
 	if err == nil {
 		t.Error("DecodeResult must reject bare struct form")
 	}

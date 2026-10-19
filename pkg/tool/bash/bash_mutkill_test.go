@@ -160,10 +160,12 @@ func TestBashTool_MaxResultSizeIs30k(t *testing.T) {
 }
 
 // Dropping IsSearchOrRead_ from the ToolDef removes the ToolWithSearchOrRead
-// interface implementation entirely — the type assertion must still hold.
+// interface implementation entirely — the type assertion must still hold. The
+// assertion runs on the Tool interface value: the *Bash handle forwards the
+// optional surface via promotion, so it must survive the wrapper too.
 func TestBashTool_ImplementsSearchOrRead(t *testing.T) {
 	t.Parallel()
-	tt := New(nil)
+	var tt tool.Tool = New(nil)
 	sr, ok := tt.(tool.ToolWithSearchOrRead)
 	if !ok {
 		t.Fatal("Bash tool must implement ToolWithSearchOrRead")
@@ -210,7 +212,7 @@ func TestRenderResult_OneCharSegmentsKeepSeparators(t *testing.T) {
 // any operand from the identifying-fields condition rejects one of these.
 func TestBashDecodeResult_EverySingleFieldIdentifies(t *testing.T) {
 	t.Parallel()
-	tt := New(nil)
+	var tt tool.Tool = New(nil)
 	cases := []struct {
 		name  string
 		text  string
@@ -244,7 +246,7 @@ func TestBashDecodeResult_EverySingleFieldIdentifies(t *testing.T) {
 // downstream empty-text unmarshal error.
 func TestBashDecodeResult_NonArrayWireKeepsUnwrapError(t *testing.T) {
 	t.Parallel()
-	tt := New(nil)
+	var tt tool.Tool = New(nil)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(json.RawMessage(`{"not":"array"}`))
 	if err == nil {
 		t.Fatal("DecodeResult(non-array) = nil error, want error")
@@ -1190,7 +1192,7 @@ func TestSpawnBackground_NonPTY_StartErrorCompletesMinusOne(t *testing.T) {
 	forceNonPTY(t)
 	reg := NewBackgroundJobRegistry()
 	dead := filepath.Join(t.TempDir(), "no-such-dir")
-	res, err := spawnBackground(context.Background(), Input{Command: "echo nope"}, dead, 10*time.Second, reg, nil)
+	res, err := spawnBackground(Input{Command: "echo nope"}, dead, 10*time.Second, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("spawnBackground: %v", err)
 	}

@@ -71,12 +71,16 @@ func buildPerEngineHarness(t *testing.T, hookSystem *hooks.Hooks, tag string, re
 	for _, r := range responses {
 		mp.addResponse(r.events, r.err)
 	}
+	// TaskList must be supplied: New() otherwise falls back to a dir-"" list,
+	// and RunAgent hands that list to sub-engines, whose Task tool then writes
+	// task json into the package dir (go test runs with CWD = package dir).
 	eng := New(&Params{
 		Provider:      mp,
 		ToolsProvider: refs.Reg.ToolMapFn(),
 		Model:         "test-model",
 		Logger:        slog.Default(),
 		Hooks:         hookSystem,
+		TaskList:      tl,
 	})
 	eng.SetSharedDeps(&deps)
 	WireEngine(eng, refs, deps)
@@ -219,6 +223,7 @@ func TestIntegration_PerEngine_ReentrantToolCallSkipsInnerJsHook(t *testing.T) {
 		Model:         "test-model",
 		Logger:        slog.Default(),
 		Hooks:         hookSystem,
+		TaskList:      tl,
 	})
 	t.Cleanup(func() { eng.Close() })
 	WireEngine(eng, refs, deps)
@@ -520,6 +525,7 @@ func TestIntegration_PerEngine_PermissionRequestFromHookToolNoDeadlock(t *testin
 		Logger:            slog.Default(),
 		Hooks:             hookSystem,
 		PermissionChecker: askToolPermChecker{},
+		TaskList:          tl,
 	})
 	eng.SetSharedDeps(&deps)
 	WireEngine(eng, refs, deps)

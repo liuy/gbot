@@ -13,7 +13,7 @@ import (
 // single text block) and returns the block text.
 func bashWireText(t *testing.T, data any) string {
 	t.Helper()
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	wb, ok := tt.(tool.ToolWithWireBlocks)
 	if !ok {
 		t.Fatal("Bash tool must implement ToolWithWireBlocks")
@@ -157,7 +157,7 @@ func TestBashWire_NonOutputFallsBackToJSON(t *testing.T) {
 func TestBashDecodeResult_LegacyJSONWire(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock(`{"output":"hi","exitCode":0}`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestBashDecodeResult_LegacyJSONWire(t *testing.T) {
 func TestBashDecodeResult_SilentSuccessLegacyWire(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock(`{"output":"","exitCode":0,"cwd":"/tmp/x"}`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
@@ -196,7 +196,7 @@ func TestBashDecodeResult_SilentSuccessLegacyWire(t *testing.T) {
 func TestBashDecodeResult_TimedOutLegacyWire(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock(`{"output":"","timed_out":true}`)
 	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestBashDecodeResult_TimedOutLegacyWire(t *testing.T) {
 func TestBashDecodeResult_RejectsJSONObjectText(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock(`{"name":"gbot","version":"1.0"}`)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
@@ -230,7 +230,7 @@ func TestBashDecodeResult_RejectsJSONObjectText(t *testing.T) {
 func TestBashDecodeResult_RejectsAllZeroObject(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock(`{"output":""}`)
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {
@@ -244,7 +244,7 @@ func TestBashDecodeResult_RejectsAllZeroObject(t *testing.T) {
 func TestBashDecodeResult_RejectsPlainText(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New(nil)
+	var tt tool.Tool = bash.New(nil)
 	raw := tool.WrapSingleBlock("Found 3 files")
 	_, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
 	if err == nil {

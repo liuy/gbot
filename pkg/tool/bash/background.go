@@ -552,6 +552,15 @@ func (r *BackgroundJobRegistry) sendNotification(notify *JobNotification) {
 	r.OnNotify(*notify)
 }
 
+// SetOnNotify overrides the spawn-time notification callback. Registration
+// phase only — both production call sites run between Spawn and process
+// start, so the Complete/stall callbacks always read an already-final value.
+func (t *BackgroundJob) SetOnNotify(fn func(JobNotification)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onNotify = fn
+}
+
 // ---------------------------------------------------------------------------
 // startStallWatchdog — shared stall watchdog setup
 // ---------------------------------------------------------------------------

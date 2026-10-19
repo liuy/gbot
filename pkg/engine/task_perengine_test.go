@@ -11,14 +11,14 @@ import (
 func TestEngine_TaskList_PerEngine(t *testing.T) {
 	t.Parallel()
 
-	tl1 := task.NewList("")
+	tl1 := task.NewList(t.TempDir())
 	eng1 := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl1,
 	})
 	t.Cleanup(func() { eng1.Close() })
 
-	tl2 := task.NewList("")
+	tl2 := task.NewList(t.TempDir())
 	eng2 := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl2,
@@ -64,7 +64,7 @@ func TestEngine_TaskList_PerEngine(t *testing.T) {
 func TestSwitchSession_UpdatesTaskDir(t *testing.T) {
 	t.Parallel()
 
-	tl := task.NewList("")
+	tl := task.NewList(t.TempDir())
 	eng := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -152,7 +152,7 @@ func TestSwitchSession_UpdatesTaskDir(t *testing.T) {
 func TestForkSession_UpdatesTaskDir(t *testing.T) {
 	t.Parallel()
 
-	tl := task.NewList("")
+	tl := task.NewList(t.TempDir())
 	eng := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -205,7 +205,7 @@ func TestForkSession_UpdatesTaskDir(t *testing.T) {
 
 func TestNewSession_SetsTaskDir(t *testing.T) {
 	t.Parallel()
-	tl := task.NewList("")
+	tl := task.NewList(t.TempDir())
 	eng := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -232,7 +232,7 @@ func TestNewSession_SetsTaskDir(t *testing.T) {
 func TestSetSessionID_SetsTaskDir(t *testing.T) {
 	t.Parallel()
 
-	tl := task.NewList("")
+	tl := task.NewList(t.TempDir())
 	eng := New(&Params{
 		Logger:   slog.Default(),
 		TaskList: tl,

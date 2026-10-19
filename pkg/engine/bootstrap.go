@@ -76,6 +76,7 @@ type SharedDeps struct {
 // ToolRefs holds one engine's independent tool instances.
 type ToolRefs struct {
 	Reg     *tool.Registry
+	Bash    *bash.Bash
 	BashReg *bash.BackgroundJobRegistry
 	Agent   *agenttool.AgentTool
 	REPL    *repl.REPLTool
@@ -83,14 +84,50 @@ type ToolRefs struct {
 	Message *message.MessageTool
 }
 
+// createToolsOpts carries CreateTools option state.
+type createToolsOpts struct {
+	root *ToolRefs
+}
+
+// CreateToolsOption customizes CreateTools.
+type CreateToolsOption func(*createToolsOpts)
+
+// WithSessionRootRefs binds the created toolset's Bash and Job tools to a
+// session root's registries. A sidechain engine's own registries die with it,
+// taking their panel rows with them; the session root lives as long as the
+// slot, keeping every descendant's background job visible and stoppable.
+// Notifications are unaffected — they follow the spawner (per-job hook), not
+// the table. A root missing either registry degrades to no binding.
+func WithSessionRootRefs(root *ToolRefs) CreateToolsOption {
+	return func(o *createToolsOpts) { o.root = root }
+}
+
 // CreateTools creates a fresh, complete set of tool instances for one engine.
 // Engine wiring (SetEngine, OnNotify) is done separately by WireEngine.
 // taskList is passed explicitly rather than via SharedDeps because SharedDeps is shared across all engines and sub-engines.
-func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
+func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption) ToolRefs {
+	var ctOpts createToolsOpts
+	for _, opt := range opts {
+		opt(&ctOpts)
+	}
+	root := ctOpts.root
+	if root != nil && (root.BashReg == nil || root.JobReg == nil) {
+		root = nil
+	}
+
 	bashReg := bash.NewBackgroundJobRegistry()
+	// Root binding swaps only the registries the TOOLS see; the returned
+	// ToolRefs keeps the private ones because WireEngine writes its own
+	// engine's sink into refs.BashReg.OnNotify — returning the shared root
+	// table here would steal the root's notifications for this engine.
+	toolBashReg := bashReg
+	if root != nil {
+		toolBashReg = root.BashReg
+	}
 
 	reg := tool.NewRegistry()
-	reg.MustRegister(bash.New(bashReg))
+	bt := bash.New(toolBashReg)
+	reg.MustRegister(bt)
 	reg.MustRegister(fileread.New())
 	reg.MustRegister(fileedit.New())
 	reg.MustRegister(filewrite.New())
@@ -110,7 +147,11 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	reg.MustRegister(at)
 
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
-	reg.MustRegister(job.NewJob(jobReg))
+	toolJobReg := jobReg
+	if root != nil {
+		toolJobReg = root.JobReg
+	}
+	reg.MustRegister(job.NewJob(toolJobReg))
 
 	// message: registered unconditionally — the ToolPrompts harvest (reload,
 	// boot) runs CreateTools with nil resolver deps and still needs the tool
@@ -155,15 +196,20 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 		reg.MustRegister(recall.New(deps.ShortStore, long.GetMemoryPath(deps.WorkingDir)))
 	}
 
-	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg, Message: msgTool}
+	return ToolRefs{Reg: reg, Bash: bt, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg, Message: msgTool}
 }
 
 // WireEngine wires notification callbacks and injects the engine into tools.
 // Each sub-engine created through RunAgent gets its own fresh tool instances
 // via CreateTools.
 func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
-	// Bash background job notifications → engine's attachment queue.
-	refs.BashReg.OnNotify = func(n bash.JobNotification) {
+	// One closure, two hook points. Registry-level OnNotify serves the jobs
+	// the registry notifies as its owner (after root binding, the session-root
+	// engine — e.g. Kill's killed notifications); the per-spawner Bash hook
+	// restores tool-level priority so jobs this engine spawns notify THIS
+	// engine even though they register in a shared root table. Same bytes,
+	// same recipient contract.
+	bashNotify := func(n bash.JobNotification) {
 		eng.EnqueueAttachment(types.QueuedItem{
 			Value:     n.FormatXML(),
 			Mode:      types.ItemModeNotification,
@@ -171,6 +217,8 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 			Timestamp: time.Now(),
 		})
 	}
+	refs.BashReg.OnNotify = bashNotify
+	refs.Bash.SetJobNotifyFn(bashNotify)
 
 	// Background agent notifications → engine's attachment queue (overrides stub from CreateTools).
 	refs.Agent.SetNotifyFn(

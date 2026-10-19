@@ -18,6 +18,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -1210,5 +1211,247 @@ func TestAgentBackgroundSubagentEndToEnd(t *testing.T) {
 	}
 	if info.Status != "completed" {
 		t.Errorf("job status = %q, want %q", info.Status, "completed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session-root binding (WithSessionRootRefs)
+// ---------------------------------------------------------------------------
+
+// newWiredTestEngine builds a bare engine for wiring assertions: mock
+// provider/dispatcher and no system prompt, so the attachment kick after an
+// enqueue refuses to start a turn and the queue stays countable.
+func newWiredTestEngine(t *testing.T) *Engine {
+	t.Helper()
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: &mockDispatcher{},
+	})
+	t.Cleanup(func() { eng.Close() })
+	return eng
+}
+
+// Root-bound toolsets spawn background bash into the ROOT's registry (panel
+// visibility, stop, tail), keep their own ToolRefs registries private, and
+// their Job tool reaches root rows — including killing jobs the root itself
+// spawned.
+func TestCreateTools_WithSessionRootRefs_BindsRootRegistries(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	root := CreateTools(deps, tl)
+	sub := CreateTools(deps, tl, WithSessionRootRefs(&root))
+
+	// Engines over both toolsets, so every notification has an observable
+	// recipient. Created before the job cleanups below: t.Cleanup is LIFO, so
+	// the jobs get killed while the engines are still alive to receive it.
+	rootEng := newWiredTestEngine(t)
+	WireEngine(rootEng, root, deps)
+	subEng := newWiredTestEngine(t)
+	WireEngine(subEng, sub, deps)
+
+	bashTool, ok := sub.Reg.Lookup("Bash")
+	if !ok {
+		t.Fatal("sub toolset has no Bash tool")
+	}
+	res, err := bashTool.Call(context.Background(),
+		json.RawMessage(`{"command":"sleep 30","run_in_background":true,"description":"root-bound"}`), nil)
+	if err != nil {
+		t.Fatalf("sub Bash.Call: %v", err)
+	}
+	if out, ok := res.Data.(*bash.Output); !ok || !strings.Contains(out.Stdout, "Background job started with ID:") {
+		t.Fatalf("Bash.Call data = %+T, want *bash.Output carrying the bg id line", res.Data)
+	}
+
+	rootList := root.BashReg.List()
+	if len(rootList) != 1 {
+		t.Fatalf("root BashReg holds %d jobs, want 1 (sub spawn must land in the root table)", len(rootList))
+	}
+	jobID := rootList[0].ID
+	if rootList[0].Status != bash.JobRunning {
+		t.Errorf("root job row = {%s %s}, want {%s running}", rootList[0].ID, rootList[0].Status, jobID)
+	}
+	if n := len(sub.BashReg.List()); n != 0 {
+		t.Errorf("sub's own BashReg holds %d jobs, want 0 (ToolRefs registries stay private)", n)
+	}
+
+	// The sub's Job tool sees root rows (self-inspection capability).
+	jobTool, ok := sub.Reg.Lookup("Job")
+	if !ok {
+		t.Fatal("sub toolset has no Job tool")
+	}
+	listRes, err := jobTool.Call(context.Background(), json.RawMessage(`{"action":"list"}`), nil)
+	if err != nil {
+		t.Fatalf("sub Job list: %v", err)
+	}
+	listOut, ok := listRes.Data.(*job.JobOutput)
+	if !ok {
+		t.Fatalf("Job list data type = %T, want *job.JobOutput", listRes.Data)
+	}
+	sawRow := false
+	for _, j := range listOut.List.Jobs {
+		if j.ID == jobID {
+			sawRow = true
+		}
+	}
+	if !sawRow {
+		t.Errorf("sub Job list does not include the root-bound row %q", jobID)
+	}
+
+	// Kill routing: the sub's Job stop reaches jobs in the ROOT table — one the
+	// root spawned directly and one the sub's own Bash spawned there (bg-
+	// prefix routes to the root's bash table).
+	rootJob := root.BashReg.Spawn("sleep 30", 0, bash.NewStreamingOutput(nil))
+	t.Cleanup(func() {
+		_ = root.BashReg.Kill(jobID)
+		_ = root.BashReg.Kill(rootJob.ID)
+	})
+	for _, id := range []string{rootJob.ID, jobID} {
+		if _, err := jobTool.Call(context.Background(),
+			json.RawMessage(`{"action":"stop","job_id":"`+id+`"}`),
+			&tool.ToolUseContext{ToolUseID: "t-kill"}); err != nil {
+			t.Fatalf("sub Job stop(%q): %v", id, err)
+		}
+		deadline := time.Now().Add(2 * time.Second) // REAL-TIME: bounded poll for async kill
+		for {
+			info, ok := root.BashReg.Get(id)
+			if ok && string(info.Status) == "killed" {
+				break
+			}
+			if time.Now().After(deadline) { // REAL-TIME: bounded poll for async kill
+				status := "<gone>"
+				if ok {
+					status = string(info.Status)
+				}
+				t.Fatalf("root job %q status = %q after sub stop (2s deadline), want killed", id, status)
+			}
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+
+	// Recipient of the killed notifications: Kill notifies through the
+	// registry's own callback — the table owner — never through the per-job
+	// override. jobID was spawned by the sub's Bash tool, whose notify hook
+	// points at subEng, and its killed notification still lands in the root's
+	// queue while the sub's stays empty.
+	for _, id := range []string{rootJob.ID, jobID} {
+		found := false
+		for _, it := range rootEng.PendingAttachments() {
+			if !strings.Contains(it.Value, "<job-id>"+id+"</job-id>") ||
+				!strings.Contains(it.Value, "<status>killed</status>") {
+				continue
+			}
+			found = true
+		}
+		if !found {
+			t.Errorf("root engine queue has no killed notification for %q", id)
+		}
+	}
+	if n := rootEng.AttachmentsLen(); n != 2 {
+		t.Errorf("root engine attachments after the two stops = %d, want 2 (killed notifications go to the table owner)", n)
+	}
+	if n := subEng.AttachmentsLen(); n != 0 {
+		t.Errorf("sub engine attachments after its own stop calls = %d, want 0 (kill bypasses the per-job notify override)", n)
+	}
+}
+
+// A root missing either registry (or nil) must degrade to the historical
+// private-registry behavior — no binding, no panic.
+func TestCreateTools_WithSessionRootRefs_NilRootNoOps(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	sub := CreateTools(deps, tl, WithSessionRootRefs(nil))
+
+	bashTool, ok := sub.Reg.Lookup("Bash")
+	if !ok {
+		t.Fatal("sub toolset has no Bash tool")
+	}
+	res, err := bashTool.Call(context.Background(),
+		json.RawMessage(`{"command":"sleep 30","run_in_background":true,"description":"own table"}`), nil)
+	if err != nil {
+		t.Fatalf("sub Bash.Call: %v", err)
+	}
+	if out, ok := res.Data.(*bash.Output); !ok || !strings.Contains(out.Stdout, "Background job started with ID:") {
+		t.Fatalf("Bash.Call data = %+T, want *bash.Output carrying the bg id line", res.Data)
+	}
+	if got := len(sub.BashReg.List()); got != 1 {
+		t.Fatalf("sub's own BashReg holds %d jobs, want 1 (nil root = private table)", got)
+	}
+	row := sub.BashReg.List()[0]
+	t.Cleanup(func() { _ = sub.BashReg.Kill(row.ID) })
+}
+
+// A root present but missing either registry must degrade exactly like the
+// nil root: the spawn lands in the sub's own table, never in a half-bound
+// root table (or the process-global DefaultRegistry).
+func TestCreateTools_WithSessionRootRefs_PartialRootDegrades(t *testing.T) {
+	t.Parallel()
+	for name, missing := range map[string]func(refs *ToolRefs){
+		"missing BashReg": func(r *ToolRefs) { r.BashReg = nil },
+		"missing JobReg":  func(r *ToolRefs) { r.JobReg = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tl := task.NewList(t.TempDir())
+			deps := SharedDeps{
+				WorkingDir: t.TempDir(),
+				SkillReg:   skills.NewRegistry(t.TempDir()),
+				Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+			}
+			root := CreateTools(deps, tl)
+			missing(&root)
+			sub := CreateTools(deps, tl, WithSessionRootRefs(&root))
+
+			bashTool, ok := sub.Reg.Lookup("Bash")
+			if !ok {
+				t.Fatal("sub toolset has no Bash tool")
+			}
+			res, err := bashTool.Call(context.Background(),
+				json.RawMessage(`{"command":"sleep 30","run_in_background":true,"description":"degraded"}`), nil)
+			if err != nil {
+				t.Fatalf("sub Bash.Call: %v", err)
+			}
+			if out, ok := res.Data.(*bash.Output); !ok || !strings.Contains(out.Stdout, "Background job started with ID:") {
+				t.Fatalf("Bash.Call data = %+T, want *bash.Output carrying the bg id line", res.Data)
+			}
+			if got := len(sub.BashReg.List()); got != 1 {
+				t.Fatalf("sub's own BashReg holds %d jobs, want 1 (partial root must degrade to the private table)", got)
+			}
+			row := sub.BashReg.List()[0]
+			t.Cleanup(func() { _ = sub.BashReg.Kill(row.ID) })
+		})
+	}
+}
+
+// WireEngine must arm BOTH bash notification hook points with the same
+// closure: the registry-level OnNotify and the per-spawner tool hook.
+func TestWireEngine_SetsBashJobNotify(t *testing.T) {
+	t.Parallel()
+	deps, refs, eng := newTestDepsAndRefs(t)
+
+	WireEngine(eng, refs, deps)
+
+	if refs.BashReg.OnNotify == nil {
+		t.Fatal("BashReg.OnNotify should be wired by WireEngine")
+	}
+	if refs.Bash.JobNotifyFn() == nil {
+		t.Fatal("Bash.JobNotifyFn should be wired by WireEngine")
+	}
+	// No system prompt on eng, so the enqueue kick early-returns and the item
+	// stays countable in the queue.
+	refs.Bash.JobNotifyFn()(bash.JobNotification{JobID: "bg-9", Status: "completed", Summary: "hook probe"})
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Fatalf("AttachmentsLen after JobNotifyFn fire = %d, want 1", got)
 	}
 }
