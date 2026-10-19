@@ -133,6 +133,7 @@ ifdef MUTATE_PKG
 	  echo "NOTE: go-mutesting not installed, skipping mutation testing"; \
 	  echo '      go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@latest'; \
 	  exit 0; }; \
+	GOCACHE=$$(mktemp -d /tmp/mutate-cache.XXXXXX); export GOCACHE; trap 'rm -rf "$$GOCACHE"' EXIT; \
 	go-mutesting --config test/mutesting.yaml --workers $(MUTATE_WORKERS) --no-diffs --quiet --timeout-coefficient=3 $(MUTATE_PKG) 2>&1
 else
 	@command -v go-mutesting >/dev/null 2>&1 || { \
@@ -153,6 +154,7 @@ else
 	  echo "      make mutate FORCE=1 to run them anyway"; \
 	  exit 0; \
 	fi; \
+	GOCACHE=$$(mktemp -d /tmp/mutate-cache.XXXXXX); export GOCACHE; trap 'rm -rf "$$GOCACHE"' EXIT; \
 	go-mutesting --git-diff-lines --git-diff-base='$(MUTATE_BASE)' \
 	  --workers $(MUTATE_WORKERS) --no-diffs --quiet \
 	  --timeout-coefficient=3 $(PKG)
