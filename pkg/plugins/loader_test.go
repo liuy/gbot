@@ -92,7 +92,7 @@ Run tasks autonomously.`
 	agentMD := `---
 name: reviewer
 description: Code review specialist
-model: sonnet
+model: zhipu/glm-5.3-flash
 tools: ["Read", "Grep"]
 ---
 You are a code reviewer. Analyze code for quality issues.`
@@ -437,8 +437,8 @@ func TestLoadAgents_PrefixAndFrontmatter(t *testing.T) {
 	}
 
 	// Optional fields from frontmatter
-	if agent.Model != "sonnet" {
-		t.Errorf("Model = %q, want 'sonnet'", agent.Model)
+	if agent.Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want 'zhipu/glm-5.3-flash'", agent.Model)
 	}
 	if len(agent.Tools) != 2 {
 		t.Errorf("Tools count = %d, want 2", len(agent.Tools))

@@ -521,14 +521,14 @@ func TestFormatCommandLoadingMetadata_NoArgs(t *testing.T) {
 func TestFormatCommandPermissions(t *testing.T) {
 	t.Parallel()
 
-	result := formatCommandPermissions([]string{"Bash", "Read"}, "haiku")
+	result := formatCommandPermissions([]string{"Bash", "Read"}, "zhipu/glm-5.3-flash")
 	if !strings.Contains(result, "<command-permissions>") {
 		t.Errorf("should contain opening tag, got %q", result)
 	}
 	if !strings.Contains(result, "<allowed-tools>Bash,Read</allowed-tools>") {
 		t.Errorf("should contain allowed tools, got %q", result)
 	}
-	if !strings.Contains(result, "<model>haiku</model>") {
+	if !strings.Contains(result, "<model>zhipu/glm-5.3-flash</model>") {
 		t.Errorf("should contain model, got %q", result)
 	}
 	if !strings.Contains(result, "</command-permissions>") {
@@ -575,7 +575,7 @@ func TestSkillHasOnlySafeProperties_Unsafe_Model(t *testing.T) {
 
 	cmd := &types.SkillCommand{
 		Name:  "unsafe",
-		Model: "haiku",
+		Model: "zhipu/glm-5.3-flash",
 	}
 	if skillHasOnlySafeProperties(cmd) {
 		t.Error("skill with Model override should be unsafe")
@@ -739,7 +739,7 @@ func TestExecuteInlineSkill_WithPermissions(t *testing.T) {
 		LoadedFrom:      "skills",
 		IsUserInvocable: true,
 		AllowedTools:    []string{"Bash", "Read"},
-		Model:           "haiku",
+		Model:           "zhipu/glm-5.3-flash",
 		Content:         "Do something dangerous.",
 	}
 
@@ -755,8 +755,8 @@ func TestExecuteInlineSkill_WithPermissions(t *testing.T) {
 	if len(data.AllowedTools) != 2 {
 		t.Errorf("AllowedTools = %v, want 2 items", data.AllowedTools)
 	}
-	if data.Model != "haiku" {
-		t.Errorf("Model = %q, want %q", data.Model, "haiku")
+	if data.Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want %q", data.Model, "zhipu/glm-5.3-flash")
 	}
 
 	// Should have 3 messages: metadata + content + permissions
@@ -921,7 +921,7 @@ func TestTool_RenderResult_WithToolsAndModel(t *testing.T) {
 		CommandName:  "danger",
 		Status:       "inline",
 		AllowedTools: []string{"Bash", "Read", "Write"},
-		Model:        "haiku",
+		Model:        "zhipu/glm-5.3-flash",
 	})
 	if !strings.Contains(got, "Successfully loaded skill") {
 		t.Errorf("should contain base message, got %q", got)
@@ -929,7 +929,7 @@ func TestTool_RenderResult_WithToolsAndModel(t *testing.T) {
 	if !strings.Contains(got, "3 tools allowed") {
 		t.Errorf("should contain tool count, got %q", got)
 	}
-	if !strings.Contains(got, "haiku") {
+	if !strings.Contains(got, "zhipu/glm-5.3-flash") {
 		t.Errorf("should contain model, got %q", got)
 	}
 }

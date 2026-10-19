@@ -319,6 +319,10 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 		// real resolver deps from the Start factory closure; a nil IDMinter
 		// gives the throwaway table a private counter, which is fine because
 		// it never spawns.
+		// Providers stays nil for the same reason: the harvest only collects
+		// prompt text and never executes an agent, so it needs no provider
+		// table.
+		Providers: nil,
 		EngineMgr: nil,
 		IDMinter:  nil,
 	}, task.NewList(""))

@@ -1188,8 +1188,8 @@ func TestPromptHook_DefaultModel(t *testing.T) {
 	h.SetPromptExecutor(pe)
 
 	h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	if pe.model != "haiku" {
-		t.Errorf("model = %q, want %q (default)", pe.model, "haiku")
+	if pe.model != "" {
+		t.Errorf("model = %q, want %q (default = inherit parent)", pe.model, "")
 	}
 }
 
@@ -1199,7 +1199,7 @@ func TestPromptHook_CustomModel(t *testing.T) {
 	config := HooksConfig{
 		"PreToolUse": []HookMatcher{
 			{Matcher: "Bash", Hooks: []HookConfig{
-				{Type: HookTypePrompt, Prompt: "review", Model: "opus"},
+				{Type: HookTypePrompt, Prompt: "review", Model: "zhipu/glm-5.3-flash"},
 			}},
 		},
 	}
@@ -1207,8 +1207,8 @@ func TestPromptHook_CustomModel(t *testing.T) {
 	h.SetPromptExecutor(pe)
 
 	h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	if pe.model != "opus" {
-		t.Errorf("model = %q, want %q", pe.model, "opus")
+	if pe.model != "zhipu/glm-5.3-flash" {
+		t.Errorf("model = %q, want %q", pe.model, "zhipu/glm-5.3-flash")
 	}
 }
 
@@ -1662,8 +1662,8 @@ func TestAgentHook_DefaultModel(t *testing.T) {
 	h.SetAgentExecutor(ae)
 
 	h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	if ae.model != "haiku" {
-		t.Errorf("model = %q, want %q (default)", ae.model, "haiku")
+	if ae.model != "" {
+		t.Errorf("model = %q, want %q (default = inherit parent)", ae.model, "")
 	}
 }
 
@@ -1673,7 +1673,7 @@ func TestAgentHook_CustomModel(t *testing.T) {
 	config := HooksConfig{
 		"PreToolUse": []HookMatcher{
 			{Matcher: "Bash", Hooks: []HookConfig{
-				{Type: HookTypeAgent, Prompt: "analyze", Model: "sonnet"},
+				{Type: HookTypeAgent, Prompt: "analyze", Model: "zhipu/glm-5.3-flash"},
 			}},
 		},
 	}
@@ -1681,8 +1681,8 @@ func TestAgentHook_CustomModel(t *testing.T) {
 	h.SetAgentExecutor(ae)
 
 	h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	if ae.model != "sonnet" {
-		t.Errorf("model = %q, want %q", ae.model, "sonnet")
+	if ae.model != "zhipu/glm-5.3-flash" {
+		t.Errorf("model = %q, want %q", ae.model, "zhipu/glm-5.3-flash")
 	}
 }
 
@@ -1711,7 +1711,7 @@ func TestHookName_PromptType(t *testing.T) {
 
 func TestOnceKey_WithModel(t *testing.T) {
 	cfg1 := HookConfig{Type: HookTypePrompt, Prompt: "review"}
-	cfg2 := HookConfig{Type: HookTypePrompt, Prompt: "review", Model: "opus"}
+	cfg2 := HookConfig{Type: HookTypePrompt, Prompt: "review", Model: "zhipu/glm-5.3-flash"}
 	key1 := onceKey(HookPreToolUse, "Bash", cfg1)
 	key2 := onceKey(HookPreToolUse, "Bash", cfg2)
 	if key1 == key2 {

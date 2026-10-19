@@ -704,7 +704,7 @@ type AgentDefinition struct {
 	SystemPrompt    func() string // lazily generated system prompt
 	Tools           []string      // nil or ["*"] = all tools
 	DisallowedTools []string      // blacklist
-	Model           string        // "inherit" (use parent engine's model), tier name ("lite","pro","max"), or "provider/model"
+	Model           string        // "", "inherit" (parent's model), or "provider/model"
 	OmitClaudeMd    bool
 	MaxTurns        int // 0 = no limit
 
@@ -734,7 +734,6 @@ type AgentInput struct {
 	Prompt          string `json:"prompt"`
 	SubagentType    string `json:"subagent_type,omitempty"`
 	Name            string `json:"name,omitempty"`
-	Model           string `json:"model,omitempty"`
 	RunInBackground bool   `json:"run_in_background,omitempty"`
 	Fork            bool   `json:"fork,omitempty"`
 	Cwd             string `json:"cwd,omitempty"`
@@ -812,7 +811,7 @@ type SkillCommand struct {
 	// Execution control — TS: PromptCommand fields
 	Type                   string   // "prompt" (default)
 	AllowedTools           []string // nil = all tools
-	Model                  string   // "", "inherit", "haiku", etc.
+	Model                  string   // "", "inherit", or "provider/model"
 	Effort                 string   // "low"/"medium"/"high"/"max"
 	Context                string   // "" (inline, default) or "fork"
 	DisableModelInvocation bool

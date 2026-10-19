@@ -51,12 +51,11 @@ type AgentOpts struct {
 	SystemPrompt        string               // sub-agent's system prompt (pre-built; empty = build from agent def)
 	Tools               map[string]tool.Tool // filtered tool set
 	MaxTurns            int                  // 0 = no limit
-	Model               string               // "" = inherit from parent
+	Model               string               // "", "inherit", or "provider/model" (resolved by the engine; anything else hard-fails)
 	AgentType           string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
 	UserContextMessages []types.Message      // caller-supplied extras before userPrompt; spawnBackground appends the spawn identity line, RunAgent adds skill messages after it
-	ResolveTierFn       func(string) string  // model tier resolver (nil = identity)
 	McpConnect          McpConnectFunc       // agent-specific MCP server connector (nil = skip)
 	AllowedTools        []string             // further restrict tools to this list (nil = use agent def)
 	Cwd                 string               // absolute cwd override for the sub-agent ("" = inherit parent)
@@ -83,7 +82,6 @@ type AgentTool struct {
 	notifyFn    func(xml string)
 	sysPromptFn func() string
 	mcpConnect  McpConnectFunc
-	resolveTier func(string) string
 	// engineID is this tool's engine's messaging identity (engine id, or the
 	// sub-agent's own agent id after RunAgent re-injects). Used only for the
 	// spawn identity line.
@@ -107,10 +105,9 @@ func (t *AgentTool) SubagentDeps() *SubagentDeps {
 		return nil
 	}
 	return &SubagentDeps{
-		Engine:        t.engine,
-		ResolveTierFn: t.resolveTier,
-		McpConnect:    t.mcpConnect,
-		SysPromptFn:   t.sysPromptFn,
+		Engine:      t.engine,
+		McpConnect:  t.mcpConnect,
+		SysPromptFn: t.sysPromptFn,
 	}
 }
 
@@ -121,9 +118,6 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
 }
-
-// SetResolveTierFn injects a tier-name resolver for agent model selection.
-func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTier = fn }
 
 // SetEngineID injects the messaging identity used in the spawn identity line.
 // WireEngine passes eng.EngineID(); RunAgent re-injects the sub-agent's own id.
@@ -196,7 +190,6 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "prompt": {"type": "string", "description": "The task for the agent to perform"},
     "subagent_type": {"type": "string", "description": "Agent type to use"},
     "name": {"type": "string", "description": "Name for the spawned agent (display label in the TUI and in its completion notification)."},
-    "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
     "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background. Returns immediately with an agent ID; the result arrives as a job notification when the agent finishes. Applies to both fork and subagent_type agents."},
     "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"},
     "cwd": {"type": "string", "description": "Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent."}
@@ -246,8 +239,6 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 	opts := AgentOpts{
 		Prompt:          agentInput.Prompt,
 		AgentType:       agentInput.SubagentType,
-		Model:           agentInput.Model,
-		ResolveTierFn:   t.resolveTier,
 		ParentToolUseID: parentToolUseID,
 		Cwd:             agentInput.Cwd,
 	}
@@ -405,12 +396,6 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		parentToolUseID = tctx.ToolUseID
 	}
 
-	// Resolve model
-	model := input.Model
-	if model == "inherit" || model == "" {
-		model = ""
-	}
-
 	agentType := "fork"
 	if input.SubagentType != "" {
 		agentType = input.SubagentType
@@ -422,10 +407,8 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		ForkMessages:    forkMessages,
 		SystemPrompt:    systemPrompt,
 		MaxTurns:        forkMaxTurns,
-		Model:           model,
 		AgentType:       agentType,
 		ParentToolUseID: parentToolUseID,
-		ResolveTierFn:   t.resolveTier,
 		Cwd:             input.Cwd,
 	}
 

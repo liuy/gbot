@@ -989,6 +989,38 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		return nil, fmt.Errorf("unknown agent type %q: %w", agentType, err)
 	}
 
+	// Model semantics: ""/"inherit" = parent's provider+model; anything else
+	// must be "provider/model". A bare name used to pass through ResolveTier's
+	// default fallback as a composite string the parent provider rejected
+	// per-request (10-retry backoff storm, 2026-10-19 incident); hard-fail
+	// instead so the bad value and its source surface immediately.
+	// Resolved before tool filtering/MCP so a bad value never starts an MCP
+	// server first.
+	model := opts.Model
+	if model == "" {
+		model = agentDef.Model
+	}
+	var subProvider llm.Provider
+	if model == "" || model == "inherit" {
+		model = ""
+	} else {
+		if _, _, ok := strings.Cut(model, "/"); !ok {
+			return nil, fmt.Errorf("agent %q: invalid model %q: must be %q or %q", agentType, model, "inherit", "provider/model")
+		}
+		if e.sharedDeps.Cfg == nil {
+			return nil, fmt.Errorf("agent %q: cannot resolve model %q: no config on shared deps", agentType, model)
+		}
+		cfgProv, bare, err := e.sharedDeps.Cfg.ResolveModelByName(model)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: invalid model %q: %w", agentType, model, err)
+		}
+		prov, ok := e.sharedDeps.Providers[cfgProv.Name]
+		if !ok {
+			return nil, fmt.Errorf("agent %q: model %q: provider %q has no live provider instance", agentType, model, cfgProv.Name)
+		}
+		subProvider, model = prov, bare
+	}
+
 	// Filter tools from parent engine's tool set by agent definition.
 	// e.tools may be nil in tests where the engine isn't fully initialized;
 	// ResolveAgentTools handles nil/empty safely (returns empty map).
@@ -1026,20 +1058,6 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 			}
 		}
 		filteredTools = restricted
-	}
-
-	// Resolve model
-	model := opts.Model
-	if model == "" {
-		model = agentDef.Model
-	}
-	if model == "inherit" || model == "" {
-		model = ""
-	}
-	if model != "" && opts.ResolveTierFn != nil {
-		if resolved := opts.ResolveTierFn(model); resolved != "" {
-			model = resolved
-		}
 	}
 
 	// Agent cwd override (TS AgentTool input `cwd`): everything the sub-agent
@@ -1115,6 +1133,13 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	// in hand; callLLM reads it to decide whether CLAUDE.md belongs in the
 	// request's user context.
 	subEng.omitClaudeMd = agentDef.OmitClaudeMd
+
+	// A "provider/model" spawn keeps the parent's provider at construction
+	// (NewSubEngine has no provider parameter); swap it here so the sub-agent
+	// talks to the resolved provider while everything else stays shared.
+	if subProvider != nil {
+		subEng.SetProvider(subProvider)
+	}
 
 	WireEngine(subEng, subRefs, *e.sharedDeps)
 
@@ -5094,7 +5119,7 @@ type SubEngineOptions struct {
 	SystemPrompt    string               // sub-agent's system prompt
 	Tools           map[string]tool.Tool // filtered tool set
 	MaxTurns        int                  // 0 = no limit
-	Model           string               // "" = inherit from parent
+	Model           string               // "" = inherit from parent; bare name only — switching provider is RunAgent's job (SetProvider after construction)
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
 	AgentType       string               // "General", "Explore", "Planner", etc.
 	WorkingDir      string               // absolute cwd override; "" = inherit the parent's live dir

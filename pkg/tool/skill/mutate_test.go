@@ -94,8 +94,8 @@ func TestFormatCommandPermissions_Matrix(t *testing.T) {
 		{nil, "", ""},
 		{[]string{}, "", ""},
 		{[]string{"Read"}, "", "<command-permissions>\n  <allowed-tools>Read</allowed-tools>\n</command-permissions>"},
-		{nil, "sonnet", "<command-permissions>\n  <model>sonnet</model>\n</command-permissions>"},
-		{[]string{"Read", "Grep"}, "haiku", "<command-permissions>\n  <allowed-tools>Read,Grep</allowed-tools>\n  <model>haiku</model>\n</command-permissions>"},
+		{nil, "zhipu/glm-5.3-flash", "<command-permissions>\n  <model>zhipu/glm-5.3-flash</model>\n</command-permissions>"},
+		{[]string{"Read", "Grep"}, "zhipu/glm-5.3-flash", "<command-permissions>\n  <allowed-tools>Read,Grep</allowed-tools>\n  <model>zhipu/glm-5.3-flash</model>\n</command-permissions>"},
 	}
 	for _, c := range cases {
 		got := formatCommandPermissions(c.tools, c.model)
@@ -155,7 +155,7 @@ func TestExecuteInlineSkill_PermissionsMessageShape(t *testing.T) {
 		perms string
 	}{
 		{"tools only", []string{"Read"}, "", 3, "<command-permissions>\n  <allowed-tools>Read</allowed-tools>\n</command-permissions>"},
-		{"model only", nil, "sonnet", 3, "<command-permissions>\n  <model>sonnet</model>\n</command-permissions>"},
+		{"model only", nil, "zhipu/glm-5.3-flash", 3, "<command-permissions>\n  <model>zhipu/glm-5.3-flash</model>\n</command-permissions>"},
 		{"neither", nil, "", 2, ""},
 	}
 	for _, c := range cases {
@@ -265,7 +265,7 @@ func TestExecuteForkAndNew_AgentOpts(t *testing.T) {
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}}
 
-	cmd := skillCmd("s", []string{"Read", "Grep"}, "haiku")
+	cmd := skillCmd("s", []string{"Read", "Grep"}, "zhipu/glm-5.3-flash")
 	cmd.AgentType = "worker"
 	cmd.Content = "body $ARGUMENTS"
 
@@ -276,8 +276,8 @@ func TestExecuteForkAndNew_AgentOpts(t *testing.T) {
 	if got.Prompt != "body go" {
 		t.Errorf("new Prompt = %q, want %q (argument substitution)", got.Prompt, "body go")
 	}
-	if got.AgentType != "worker" || got.Model != "haiku" || got.ParentToolUseID != "tu-9" {
-		t.Errorf("new opts = (%q, %q, %q), want (worker, haiku, tu-9)", got.AgentType, got.Model, got.ParentToolUseID)
+	if got.AgentType != "worker" || got.Model != "zhipu/glm-5.3-flash" || got.ParentToolUseID != "tu-9" {
+		t.Errorf("new opts = (%q, %q, %q), want (worker, zhipu/glm-5.3-flash, tu-9)", got.AgentType, got.Model, got.ParentToolUseID)
 	}
 	if len(got.AllowedTools) != 2 || got.AllowedTools[0] != "Read" || got.AllowedTools[1] != "Grep" {
 		t.Errorf("new AllowedTools = %v, want [Read Grep]", got.AllowedTools)
@@ -298,8 +298,8 @@ func TestExecuteForkAndNew_AgentOpts(t *testing.T) {
 	if got.SystemPrompt != "sys" {
 		t.Errorf("fork SystemPrompt = %q, want the deps prompt", got.SystemPrompt)
 	}
-	if got.AgentType != "worker" || got.Model != "haiku" || got.ParentToolUseID != "tu-9" {
-		t.Errorf("fork opts = (%q, %q, %q), want (worker, haiku, tu-9)", got.AgentType, got.Model, got.ParentToolUseID)
+	if got.AgentType != "worker" || got.Model != "zhipu/glm-5.3-flash" || got.ParentToolUseID != "tu-9" {
+		t.Errorf("fork opts = (%q, %q, %q), want (worker, zhipu/glm-5.3-flash, tu-9)", got.AgentType, got.Model, got.ParentToolUseID)
 	}
 	if len(got.AllowedTools) != 2 {
 		t.Errorf("fork AllowedTools = %v, want 2 entries", got.AllowedTools)
@@ -351,8 +351,8 @@ func TestRenderResult_ExactShapes(t *testing.T) {
 		{skillOutput{CommandName: "c", Status: "inline"}, "Successfully loaded skill"},
 		{skillOutput{CommandName: "c", Status: "inline", AllowedTools: []string{"Read"}}, "Successfully loaded skill · 1 tool allowed"},
 		{skillOutput{CommandName: "c", Status: "inline", AllowedTools: []string{"Read", "Grep"}}, "Successfully loaded skill · 2 tools allowed"},
-		{skillOutput{CommandName: "c", Status: "inline", Model: "haiku"}, "Successfully loaded skill · haiku"},
-		{skillOutput{CommandName: "c", Status: "inline", AllowedTools: []string{"Read"}, Model: "haiku"}, "Successfully loaded skill · 1 tool allowed · haiku"},
+		{skillOutput{CommandName: "c", Status: "inline", Model: "zhipu/glm-5.3-flash"}, "Successfully loaded skill · zhipu/glm-5.3-flash"},
+		{skillOutput{CommandName: "c", Status: "inline", AllowedTools: []string{"Read"}, Model: "zhipu/glm-5.3-flash"}, "Successfully loaded skill · 1 tool allowed · zhipu/glm-5.3-flash"},
 		{skillOutput{CommandName: "c", Status: "forked"}, "Done"},
 		{42, "42"},
 	}
@@ -417,14 +417,14 @@ func TestExecuteInlineSkill_AuditLog(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	reg := skills.NewRegistry(t.TempDir())
-	if _, err := executeInlineSkill(skillCmd("withtools", []string{"Read"}, "haiku"), "withtools", "", reg); err != nil {
+	if _, err := executeInlineSkill(skillCmd("withtools", []string{"Read"}, "zhipu/glm-5.3-flash"), "withtools", "", reg); err != nil {
 		t.Fatalf("inline: %v", err)
 	}
 	if _, err := executeInlineSkill(skillCmd("plain", nil, ""), "plain", "", reg); err != nil {
 		t.Fatalf("inline: %v", err)
 	}
 	logged := buf.String()
-	if !strings.Contains(logged, `msg="skill: invoked" name=withtools hasAllowedTools=true model=haiku`) {
+	if !strings.Contains(logged, `msg="skill: invoked" name=withtools hasAllowedTools=true model=zhipu/glm-5.3-flash`) {
 		t.Errorf("audit line for a tool-bearing skill missing; got:\n%s", logged)
 	}
 	if !strings.Contains(logged, `msg="skill: invoked" name=plain hasAllowedTools=false model="" source=user`) {

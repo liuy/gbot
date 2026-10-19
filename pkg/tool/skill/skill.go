@@ -317,7 +317,6 @@ func executeNewSkill(
 		AllowedTools:    cmd.AllowedTools,
 		ParentToolUseID: parentToolUseID,
 		McpConnect:      deps.McpConnect,
-		ResolveTierFn:   deps.ResolveTierFn,
 	})
 
 	if err != nil {
@@ -388,7 +387,6 @@ func executeForkSkill(
 		AllowedTools:    cmd.AllowedTools,
 		ParentToolUseID: tctx.ToolUseID,
 		McpConnect:      deps.McpConnect,
-		ResolveTierFn:   deps.ResolveTierFn,
 	})
 
 	if err != nil {

@@ -113,7 +113,7 @@ Fork yourself (omit subagent_type) when the intermediate tool output isn't worth
 - **Research**: fork open-ended questions. If research can be broken into independent questions, launch parallel forks in one message. A fork beats a fresh subagent for this — it inherits context and shares your cache.
 - **Implementation**: prefer to fork implementation work that requires more than a couple of edits. Do research before jumping into implementation.
 
-Forks are cheap because they share your prompt cache. Don't set model on a fork — a different model can't reuse the parent's cache. Pass a short name so the user can see the fork and steer it mid-run.
+Forks are cheap because they share your prompt cache. Pass a short name so the user can see the fork and steer it mid-run.
 
 **Don't peek.** Do not Read or tail the output file unless the user explicitly asks for a progress check. You get a completion notification; trust it. Reading the transcript mid-flight pulls the fork's tool noise into your context, which defeats the point of forking.
 
@@ -134,7 +134,6 @@ Usage notes:
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first.
-- You can optionally specify a model for the agent: "sonnet" (default), "opus" (complex analysis), or "haiku" (quick lookups). If omitted, the agent inherits your current model.
 - If you specify "name": "foo", that name labels the agent in the TUI and its completion notification.
 - You can set "run_in_background": true on any agent (fork or subagent_type). The launch returns immediately with an agent ID; do NOT sleep or poll waiting for it — the result arrives on its own as a job notification in a later turn. Use the foreground default when you need results before proceeding; use background for genuinely independent parallel work.
 

@@ -142,23 +142,6 @@ func TestSanitizeToolName_MCPPrefix(t *testing.T) {
 	}
 }
 
-// --- isExcludedModel tests ---
-
-func TestIsExcludedModel_Haiku(t *testing.T) {
-	if !isExcludedModel("claude-haiku-4-5") {
-		t.Error("haiku models should be excluded")
-	}
-	if !isExcludedModel("claude-3-5-haiku-20241022") {
-		t.Error("haiku models should be excluded")
-	}
-}
-
-func TestIsExcludedModel_Sonnet(t *testing.T) {
-	if isExcludedModel("claude-sonnet-4-20250514") {
-		t.Error("sonnet models should NOT be excluded")
-	}
-}
-
 // --- getTrackingKey tests ---
 
 func TestGetTrackingKey_CompactShared(t *testing.T) {
@@ -699,19 +682,19 @@ func TestCheckResponse_DropBelow2000(t *testing.T) {
 	}
 }
 
-func TestCheckResponse_HaikuExcluded(t *testing.T) {
+// The haiku exclusion is gone: every model walks the same break-detection
+// path, so PrevCacheRead is updated like for any other model.
+func TestCheckResponse_NoModelExclusion(t *testing.T) {
 	resetGlobalState()
 	key := PromptStateKey{QuerySource: "repl_main_thread"}
 	RecordPromptState(makeSystemBlocks("sys"), makeTools("Read"), key, "claude-haiku-4-5", nil, "", false, false, false, false, "", 0)
 	val := stateStore["repl_main_thread"]
 	val.PrevCacheRead = 10000
 
-	// Haiku should be excluded — no break detection
 	CheckResponseForCacheBreak(key, 1000, 0, nil)
-	// TS returns before updating prevCacheRead for excluded models
 	val2 := stateStore["repl_main_thread"]
-	if val2.PrevCacheRead != 10000 {
-		t.Error("prevCacheRead should NOT be updated for excluded models (TS returns early)")
+	if val2.PrevCacheRead != 1000 {
+		t.Errorf("prevCacheRead = %d, want 1000 (updated like every other model)", val2.PrevCacheRead)
 	}
 }
 

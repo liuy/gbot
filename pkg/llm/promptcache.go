@@ -133,12 +133,6 @@ func sanitizeToolName(name string) string {
 	return name
 }
 
-// isExcludedModel skips break detection for haiku models.
-// Source: promptCacheBreakDetection.ts:129-131
-func isExcludedModel(model string) bool {
-	return strings.Contains(model, "haiku")
-}
-
 // getTrackingKey returns the tracking key for a querySource, or "" if untracked.
 // Source: promptCacheBreakDetection.ts:149-158
 // "compact" shares the same server-side cache as "repl_main_thread".
@@ -599,13 +593,6 @@ func CheckResponseForCacheBreak(key PromptStateKey, cacheReadTokens, cacheCreati
 		return
 	}
 	prev := prevVal
-
-	// Skip excluded models
-	// Source: TS lines 452-453
-	if isExcludedModel(prev.Model) {
-		muState.Unlock()
-		return
-	}
 
 	prevCacheRead := prev.PrevCacheRead
 	prev.PrevCacheRead = cacheReadTokens

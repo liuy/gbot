@@ -310,14 +310,6 @@ func (c *Config) ParseModel() (providerName, modelName string, err error) {
 	return "", m, nil
 }
 
-// ResolveTier returns the model string for a given tier name.
-// For a single-string ModelSpec, returns that string regardless of tier.
-// For a tiers map, looks up the tier; falls back to "default", then "".
-// If tier is empty, returns the default.
-func (c *Config) ResolveTier(tier string) string {
-	return c.Model.ResolveTier(tier)
-}
-
 // ResolveModel resolves Config.Model into a concrete Provider and model name.
 // Handles fuzzy matching via normalizeModelName + longest prefix.
 func (c *Config) ResolveModel() (*Provider, string, error) {
@@ -783,16 +775,4 @@ func (m ModelSpec) String() string {
 // IsZero reports whether the spec is empty.
 func (m ModelSpec) IsZero() bool {
 	return len(m) == 0
-}
-
-// ResolveTier returns the model for a given tier name.
-// Falls back to "default" if the tier is not found or tier is empty.
-func (m ModelSpec) ResolveTier(tier string) string {
-	if tier == "" {
-		return m["default"]
-	}
-	if v, ok := m[tier]; ok {
-		return v
-	}
-	return m["default"]
 }

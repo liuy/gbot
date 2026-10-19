@@ -22,7 +22,7 @@ when_to_use: Use this when testing
 allowed-tools: Bash,Read,Write
 argument-hint: <file> <pattern>
 arguments: file pattern
-model: haiku
+model: zhipu/glm-5.3-flash
 effort: high
 context: fork
 agent: code-reviewer
@@ -57,8 +57,8 @@ Multiple lines.
 	}
 
 	// Execution control
-	if cmd.Model != "haiku" {
-		t.Errorf("Model = %q, want %q", cmd.Model, "haiku")
+	if cmd.Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want %q", cmd.Model, "zhipu/glm-5.3-flash")
 	}
 	if cmd.Effort != "high" {
 		t.Errorf("Effort = %q, want %q", cmd.Effort, "high")

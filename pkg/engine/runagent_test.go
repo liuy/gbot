@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/skills"
@@ -961,5 +962,137 @@ func TestEngine_RunAgent_EmptyPromptNoContext_UsesForkedQuery(t *testing.T) {
 	if nonMetaUsers != 0 {
 		t.Errorf("non-meta user messages in request = %d, want 0\nrequest: %s",
 			nonMetaUsers, truncate(flattenText(requests[0]), 1200))
+	}
+}
+
+// allRequestsLen reads the append-only Stream-call log. callCount reads the
+// response-slot index, which stays 0 for a provider called with no scripted
+// responses — the exact "was the parent invoked at all" question these tests
+// ask — so allRequests is the only sound zero-call witness.
+func allRequestsLen(m *mockProvider) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.allRequests)
+}
+
+// TestRunAgent_ResolvesProviderModelComposite pins the "provider/model"
+// path: the sub-agent must run on the TARGET provider with the BARE model
+// name, and the parent provider must never see a request. Before the fix the
+// composite string went to the sub-engine verbatim with the parent provider,
+// whose endpoint rejected it per-request (2026-10-19 haiku incident).
+func TestRunAgent_ResolvesProviderModelComposite(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{Providers: []config.Provider{{Name: "zhipu"}}}
+	cfg.Providers[0].Models.Set("glm-x", config.ModelConfig{})
+	target := &mockProvider{}
+	target.addResponse(textStreamEvents("test", "ok"), nil)
+	d := runAgentDeps(t)
+	d.Cfg, d.Providers = cfg, config.ProviderMap{"zhipu": target}
+	// No scripted responses: any parent Stream call is a bug by itself.
+	parent := &mockProvider{}
+	eng := New(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
+	defer eng.Close()
+	eng.SetSharedDeps(&d)
+
+	_, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", Model: "zhipu/glm-x", ParentToolUseID: "tu-a"})
+	if err != nil {
+		t.Errorf("RunAgent: %v", err)
+	}
+	if calls := allRequestsLen(parent); calls != 0 {
+		t.Errorf("parent provider got %d requests, want 0 (composite must switch provider)", calls)
+	}
+	if target.lastRequest == nil {
+		t.Errorf("target provider never received a request, want one with model %q", "glm-x")
+	} else {
+		if target.lastRequest.Model != "glm-x" {
+			t.Errorf("target provider request model = %q, want bare name %q",
+				target.lastRequest.Model, "glm-x")
+		}
+		if !strings.Contains(string(target.lastRequest.System), "powered by the model glm-x.") {
+			t.Errorf("target system prompt lacks %q; system: %s",
+				"powered by the model glm-x.", string(target.lastRequest.System))
+		}
+	}
+}
+
+// TestRunAgent_InvalidModelHardFails pins that every non-inherit,
+// non-"provider/model" model value fails the RunAgent call itself: no
+// sub-agent start, no LLM call, no retry fodder. Each case scripts the parent
+// so a regression actually runs the sub-agent on it (allRequests grows)
+// instead of dying on mock exhaustion.
+func TestRunAgent_InvalidModelHardFails(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{Providers: []config.Provider{{Name: "zhipu"}}}
+	cfg.Providers[0].Models.Set("glm-x", config.ModelConfig{})
+
+	cases := []struct {
+		name      string
+		model     string
+		setDeps   func(d *SharedDeps)
+		wantInErr []string
+	}{
+		{
+			name:  "bare-name",
+			model: "haiku",
+			setDeps: func(d *SharedDeps) {
+				// Deliberately no Cfg: the bare-name rejection must fire at the
+				// Cut check, so the error carries the "must be" guidance rather
+				// than the downstream no-config message.
+			},
+			wantInErr: []string{`agent "General": invalid model "haiku": must be "inherit" or "provider/model"`},
+		},
+		{
+			name:  "unknown-provider",
+			model: "ghostprov/m",
+			setDeps: func(d *SharedDeps) {
+				d.Cfg = cfg
+			},
+			wantInErr: []string{"ghostprov"},
+		},
+		{
+			name:  "no-live-instance",
+			model: "zhipu/glm-x",
+			setDeps: func(d *SharedDeps) {
+				d.Cfg = cfg
+				d.Providers = config.ProviderMap{}
+			},
+			wantInErr: []string{"no live provider instance"},
+		},
+		{
+			name:  "no-config-guard",
+			model: "zhipu/m",
+			setDeps: func(d *SharedDeps) {
+				// Deliberately leaves Cfg nil with a composite model so the
+				// Cut check passes and the nil-Cfg guard is the branch on
+				// trial (the bare-name case never reaches it).
+			},
+			wantInErr: []string{"no config on shared deps"},
+		},
+	}
+	for _, tc := range cases {
+		parent := &mockProvider{}
+		parent.addResponse(textStreamEvents("test", "ok"), nil)
+		d := runAgentDeps(t)
+		tc.setDeps(&d)
+		eng := New(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
+		eng.SetSharedDeps(&d)
+		_, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+			Prompt: "p", AgentType: "General", Model: tc.model, ParentToolUseID: "tu-b"})
+		eng.Close()
+		if err == nil {
+			t.Errorf("%s: RunAgent succeeded, want hard failure", tc.name)
+		} else {
+			for _, want := range tc.wantInErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: error %q lacks %q", tc.name, err.Error(), want)
+				}
+			}
+		}
+		if calls := allRequestsLen(parent); calls != 0 {
+			t.Errorf("%s: parent provider got %d requests, want 0 (bad model must fail before any LLM call)", tc.name, calls)
+		}
 	}
 }

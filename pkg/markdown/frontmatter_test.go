@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseFrontmatter_WithValidYAML(t *testing.T) {
-	input := "---\nname: my-agent\ndescription: \"A test agent\"\nmodel: sonnet\n---\nSystem prompt here."
+	input := "---\nname: my-agent\ndescription: \"A test agent\"\nmodel: zhipu/glm-5.3-flash\n---\nSystem prompt here."
 	result := ParseFrontmatter(input, "")
 
 	if len(result.Frontmatter) != 3 {
@@ -20,8 +20,8 @@ func TestParseFrontmatter_WithValidYAML(t *testing.T) {
 	if result.Frontmatter["description"] != "A test agent" {
 		t.Errorf("description = %v, want 'A test agent'", result.Frontmatter["description"])
 	}
-	if result.Frontmatter["model"] != "sonnet" {
-		t.Errorf("model = %v, want sonnet", result.Frontmatter["model"])
+	if result.Frontmatter["model"] != "zhipu/glm-5.3-flash" {
+		t.Errorf("model = %v, want zhipu/glm-5.3-flash", result.Frontmatter["model"])
 	}
 	// Content is exactly what follows the closing --- delimiter, including the
 	// delimiter's own newline being consumed and nothing else.

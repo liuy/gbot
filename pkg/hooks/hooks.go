@@ -504,10 +504,7 @@ func findBlockingResult(results []HookResult) *HookResult {
 // Full implementation in Step 10; stub returns success for now.
 func execPromptHook(ctx context.Context, pe PromptExecutor, hook HookConfig, input *HookInput, timeout time.Duration) HookResult {
 	prompt := strings.ReplaceAll(hook.Prompt, "$ARGUMENTS", string(input.ToolInput))
-	model := hook.Model
-	if model == "" {
-		model = "haiku"
-	}
+	model := hook.Model // "" = inherit the parent engine's model
 	ok, reason, err := pe.ExecutePromptHook(ctx, prompt, model, timeout)
 	if err != nil {
 		return HookResult{Outcome: HookOutcomeNonBlockingError, Stderr: err.Error()}
@@ -523,10 +520,7 @@ func execPromptHook(ctx context.Context, pe PromptExecutor, hook HookConfig, inp
 // Full implementation in Step 10; stub returns success for now.
 func execAgentHook(ctx context.Context, ae AgentExecutor, hook HookConfig, input *HookInput, timeout time.Duration) HookResult {
 	prompt := strings.ReplaceAll(hook.Prompt, "$ARGUMENTS", string(input.ToolInput))
-	model := hook.Model
-	if model == "" {
-		model = "haiku"
-	}
+	model := hook.Model // "" = inherit the parent engine's model
 	ok, reason, err := ae.ExecuteAgentHook(ctx, prompt, model, nil, DefaultAgentMaxTurns, timeout)
 	if err != nil {
 		return HookResult{Outcome: HookOutcomeNonBlockingError, Stderr: err.Error()}

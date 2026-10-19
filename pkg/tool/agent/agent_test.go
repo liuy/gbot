@@ -363,6 +363,28 @@ func TestInputSchema(t *testing.T) {
 	}
 }
 
+// The model param is gone: the sonnet/opus/haiku enum was a Claude Code port
+// artifact whose tier resolution sent composite strings to the parent
+// provider. The schema must stop advertising it entirely.
+func TestInputSchema_NoModelProperty(t *testing.T) {
+	at := New()
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(at.InputSchema(), &schema); err != nil {
+		t.Fatalf("unmarshal InputSchema: %v", err)
+	}
+	if _, ok := schema.Properties["model"]; ok {
+		t.Error("schema properties contain \"model\", want it removed")
+	}
+	for _, r := range schema.Required {
+		if r == "model" {
+			t.Error("schema required contains \"model\", want it removed")
+		}
+	}
+}
+
 func TestPermissionMethods(t *testing.T) {
 	at := New()
 	input := json.RawMessage(`{}`)
@@ -573,28 +595,6 @@ func TestModelInheritResolvedToEmpty(t *testing.T) {
 	}
 	if capturedOpts.Model != "" {
 		t.Errorf("Model = %q, want %q (inherit should resolve to empty for parent inheritance)", capturedOpts.Model, "")
-	}
-}
-
-func TestModelExplicitOverride(t *testing.T) {
-	// When user specifies an explicit model, it should pass through
-	var capturedOpts AgentOpts
-	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
-		capturedOpts = opts
-		return &types.SubQueryResult{Content: "done"}, nil
-	}
-
-	_ = makeTestTools("Bash")
-	at := New()
-	at.SetEngine(&mockSubEngine{runFn: factory})
-
-	input := json.RawMessage(`{"description":"test","prompt":"do it","model":"custom-model-v1"}`)
-	_, err := at.Call(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if capturedOpts.Model != "custom-model-v1" {
-		t.Errorf("Model = %q, want %q", capturedOpts.Model, "custom-model-v1")
 	}
 }
 
@@ -1104,7 +1104,7 @@ func TestEnhanceSystemPrompt_ContainsEnvBlock(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
 		t.Fatalf("create .git: %v", err)
 	}
-	result := EnhanceSystemPrompt("test", nil, repoDir, "sonnet")
+	result := EnhanceSystemPrompt("test", nil, repoDir, "glm-5.3")
 	if !strings.Contains(result, "<env>") {
 		t.Error("expected <env> block")
 	}
@@ -1114,7 +1114,7 @@ func TestEnhanceSystemPrompt_ContainsEnvBlock(t *testing.T) {
 	if !strings.Contains(result, "Is directory a git repo: Yes") {
 		t.Error("expected isGit=Yes for a dir containing .git")
 	}
-	if !strings.Contains(result, "You are powered by the model sonnet") {
+	if !strings.Contains(result, "You are powered by the model glm-5.3") {
 		t.Error("expected model name")
 	}
 }

@@ -250,7 +250,7 @@ func TestParseAgentFromMarkdown_AllFields(t *testing.T) {
 	fm := map[string]any{
 		"name":               "my-agent",
 		"description":        "A test agent",
-		"model":              "sonnet",
+		"model":              "zhipu/glm-5.3-flash",
 		"tools":              []any{"Read", "Grep"},
 		"maxTurns":           50,
 		"color":              "blue",
@@ -295,8 +295,8 @@ func TestParseAgentFromMarkdown_AllFields(t *testing.T) {
 	}
 
 	// Optional fields
-	if def.Model != "sonnet" {
-		t.Errorf("Model = %q, want sonnet", def.Model)
+	if def.Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want zhipu/glm-5.3-flash", def.Model)
 	}
 	if len(def.Tools) != 2 || def.Tools[0] != "Read" || def.Tools[1] != "Grep" {
 		t.Errorf("Tools = %v, want [Read Grep]", def.Tools)
@@ -431,14 +431,14 @@ func TestGetActiveAgentsFromList_BuiltInOnly(t *testing.T) {
 func TestGetActiveAgentsFromList_UserOverridesBuiltIn(t *testing.T) {
 	agents := []*types.AgentDefinition{
 		{AgentType: "General", Source: types.AgentSourceBuiltIn, Model: "inherit"},
-		{AgentType: "General", Source: types.AgentSourceUserSettings, Model: "sonnet"},
+		{AgentType: "General", Source: types.AgentSourceUserSettings, Model: "zhipu/glm-5.3-flash"},
 	}
 	result := getActiveAgentsFromList(agents)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 agent (override), got %d", len(result))
 	}
-	if result[0].Model != "sonnet" {
-		t.Errorf("Model = %q, want sonnet (user override)", result[0].Model)
+	if result[0].Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want zhipu/glm-5.3-flash (user override)", result[0].Model)
 	}
 	if result[0].Source != types.AgentSourceUserSettings {
 		t.Errorf("Source = %v, want userSettings", result[0].Source)

@@ -113,10 +113,13 @@ func TestCallFork_SyncErrorWrapShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// callFork — model resolution and trigger-assistant construction
+// callFork — stale-input tolerance and trigger-assistant construction
 // ---------------------------------------------------------------------------
 
-func TestCallFork_ModelResolution(t *testing.T) {
+// AgentInput no longer has a Model field, so an LLM still serving a cached
+// prompt that mentions "model" must not break fork spawns: the unknown JSON
+// key is ignored and the fork stays on inherit.
+func TestCallFork_IgnoresStaleModelKey(t *testing.T) {
 	t.Parallel()
 	var captured AgentOpts
 	at := New()
@@ -127,21 +130,17 @@ func TestCallFork_ModelResolution(t *testing.T) {
 	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
-	for _, tc := range []struct {
-		in   string
-		want string
-	}{
-		{`{"description":"d","prompt":"p","fork":true}`, ""},
-		{`{"description":"d","prompt":"p","fork":true,"model":"inherit"}`, ""},
-		{`{"description":"d","prompt":"p","fork":true,"model":"INHERIT"}`, "INHERIT"},
-		{`{"description":"d","prompt":"p","fork":true,"model":"opus"}`, "opus"},
+	for _, in := range []string{
+		`{"description":"d","prompt":"p","fork":true}`,
+		`{"description":"d","prompt":"p","fork":true,"model":"inherit"}`,
+		`{"description":"d","prompt":"p","fork":true,"model":"opus"}`,
 	} {
-		_, err := at.Call(context.Background(), json.RawMessage(tc.in), nil)
+		_, err := at.Call(context.Background(), json.RawMessage(in), nil)
 		if err != nil {
-			t.Fatalf("Call(%s) returned error: %v", tc.in, err)
+			t.Fatalf("Call(%s) returned error: %v", in, err)
 		}
-		if captured.Model != tc.want {
-			t.Errorf("Call(%s): Model = %q, want %q", tc.in, captured.Model, tc.want)
+		if captured.Model != "" {
+			t.Errorf("Call(%s): Model = %q, want %q (stale key ignored, fork inherits)", in, captured.Model, "")
 		}
 	}
 }
@@ -787,7 +786,6 @@ func TestSubagentDeps_CarriesEveryField(t *testing.T) {
 	eng := &mockSubEngine{}
 	at := New()
 	at.SetEngine(eng)
-	at.SetResolveTierFn(func(tier string) string { return "tier-" + tier })
 	at.SetMcpConnect(func(ctx context.Context, agentID string, raw []json.RawMessage) (*McpConnectResult, error) {
 		return nil, nil
 	})
@@ -799,9 +797,6 @@ func TestSubagentDeps_CarriesEveryField(t *testing.T) {
 	}
 	if deps.Engine != SubagentEngine(eng) {
 		t.Error("SubagentDeps.Engine is not the injected engine")
-	}
-	if deps.ResolveTierFn == nil || deps.ResolveTierFn("fast") != "tier-fast" {
-		t.Errorf("SubagentDeps.ResolveTierFn did not carry the injected resolver")
 	}
 	if deps.McpConnect == nil {
 		t.Error("SubagentDeps.McpConnect is nil")
@@ -816,7 +811,7 @@ func TestSubagentDeps_CarriesEveryField(t *testing.T) {
 	}
 }
 
-func TestCall_PassesPromptTypeModelTierAndToolUseID(t *testing.T) {
+func TestCall_PassesPromptTypeAndToolUseID(t *testing.T) {
 	t.Parallel()
 	var captured AgentOpts
 	at := New()
@@ -824,8 +819,9 @@ func TestCall_PassesPromptTypeModelTierAndToolUseID(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetResolveTierFn(func(tier string) string { return "resolved:" + tier })
 
+	// "model" stays in the payload on purpose: an LLM serving a cached prompt
+	// can still send the deleted key, which must be ignored, not rejected.
 	input := json.RawMessage(`{"description":"d","prompt":"the prompt","subagent_type":"Explore","model":"opus"}`)
 	if _, err := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_42"}); err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -836,14 +832,11 @@ func TestCall_PassesPromptTypeModelTierAndToolUseID(t *testing.T) {
 	if captured.AgentType != "Explore" {
 		t.Errorf("AgentType = %q, want %q", captured.AgentType, "Explore")
 	}
-	if captured.Model != "opus" {
-		t.Errorf("Model = %q, want %q", captured.Model, "opus")
+	if captured.Model != "" {
+		t.Errorf("Model = %q, want %q (stale key ignored; the engine resolves model)", captured.Model, "")
 	}
 	if captured.ParentToolUseID != "call_42" {
 		t.Errorf("ParentToolUseID = %q, want %q", captured.ParentToolUseID, "call_42")
-	}
-	if captured.ResolveTierFn == nil || captured.ResolveTierFn("x") != "resolved:x" {
-		t.Error("ResolveTierFn was not carried into AgentOpts")
 	}
 }
 
@@ -857,7 +850,6 @@ func TestCallFork_CarriesParentToolUseIDAndSystemPrompt(t *testing.T) {
 	}})
 	at.SetBgRegistry(NewBackgroundAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "rendered parent prompt" })
-	at.SetResolveTierFn(func(tier string) string { return "resolved:" + tier })
 	at.SetMcpConnect(func(ctx context.Context, agentID string, raw []json.RawMessage) (*McpConnectResult, error) {
 		return nil, nil
 	})
@@ -875,9 +867,6 @@ func TestCallFork_CarriesParentToolUseIDAndSystemPrompt(t *testing.T) {
 	}
 	if captured.MaxTurns != forkMaxTurns {
 		t.Errorf("MaxTurns = %d, want %d", captured.MaxTurns, forkMaxTurns)
-	}
-	if captured.ResolveTierFn == nil || captured.ResolveTierFn("x") != "resolved:x" {
-		t.Error("the injected tier resolver must reach the fork's AgentOpts")
 	}
 	if at.McpConnectFn() == nil {
 		t.Error("McpConnectFn must return the connector injected by SetMcpConnect")

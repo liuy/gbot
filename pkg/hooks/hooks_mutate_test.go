@@ -53,16 +53,16 @@ func input() *HookInput {
 	return &HookInput{HookEventName: string(HookPreToolUse), ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)}
 }
 
-// Prompt hooks substitute $ARGUMENTS and default to haiku.
+// Prompt hooks substitute $ARGUMENTS and default to inheriting the parent model.
 func TestExecPromptHook_Contract(t *testing.T) {
 	t.Parallel()
 	pe := &recPrompt{ok: true}
-	res := execPromptHook(context.Background(), pe, HookConfig{Prompt: "check $ARGUMENTS", Model: "opus"}, input(), 5*time.Second)
+	res := execPromptHook(context.Background(), pe, HookConfig{Prompt: "check $ARGUMENTS", Model: "zhipu/glm-5.3-flash"}, input(), 5*time.Second)
 	if pe.prompt != `check {"command":"ls"}` {
 		t.Errorf("prompt = %q, want $ARGUMENTS substituted", pe.prompt)
 	}
-	if pe.model != "opus" {
-		t.Errorf("model = %q, want opus", pe.model)
+	if pe.model != "zhipu/glm-5.3-flash" {
+		t.Errorf("model = %q, want zhipu/glm-5.3-flash", pe.model)
 	}
 	if pe.timeout != 5*time.Second {
 		t.Errorf("timeout = %v, want 5s", pe.timeout)
@@ -73,8 +73,8 @@ func TestExecPromptHook_Contract(t *testing.T) {
 
 	pe = &recPrompt{ok: true}
 	res = execPromptHook(context.Background(), pe, HookConfig{Prompt: "p"}, input(), 0)
-	if pe.model != "haiku" {
-		t.Errorf("default model = %q, want haiku", pe.model)
+	if pe.model != "" {
+		t.Errorf("default model = %q, want empty (inherit parent)", pe.model)
 	}
 	if res.Outcome != HookOutcomeSuccess {
 		t.Errorf("outcome = %v, want success", res.Outcome)
@@ -101,8 +101,8 @@ func TestExecAgentHook_Contract(t *testing.T) {
 	if ae.prompt != `run {"command":"ls"}` {
 		t.Errorf("prompt = %q, want $ARGUMENTS substituted", ae.prompt)
 	}
-	if ae.model != "haiku" {
-		t.Errorf("model = %q, want haiku", ae.model)
+	if ae.model != "" {
+		t.Errorf("model = %q, want empty (inherit parent)", ae.model)
 	}
 	if ae.maxTurns != DefaultAgentMaxTurns {
 		t.Errorf("maxTurns = %d, want %d", ae.maxTurns, DefaultAgentMaxTurns)

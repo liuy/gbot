@@ -115,7 +115,7 @@ func TestLoadAgents_SkipsBadEntriesAndKeepsGoing(t *testing.T) {
 	writePluginFixture(t, root, "plug", map[string]string{
 		"agents/b.md":       "plain text, no frontmatter at all",
 		"agents/notes.txt":  "---\nname: txtagent\ndescription: from txt\n---\nbody\n",
-		"agents/planner.md": "---\nname: planner\ndescription: plans\nmodel: sonnet\n---\nbody text\n",
+		"agents/planner.md": "---\nname: planner\ndescription: plans\nmodel: zhipu/glm-5.3-flash\n---\nbody text\n",
 	})
 	// A dangling .md symlink sorts first and fails ReadFile: the scan must
 	// skip it and keep going.
@@ -146,8 +146,8 @@ func TestLoadAgents_SkipsBadEntriesAndKeepsGoing(t *testing.T) {
 	if a.WhenToUse != "plans" {
 		t.Errorf("WhenToUse = %q, want plans", a.WhenToUse)
 	}
-	if a.Model != "sonnet" {
-		t.Errorf("Model = %q, want sonnet", a.Model)
+	if a.Model != "zhipu/glm-5.3-flash" {
+		t.Errorf("Model = %q, want zhipu/glm-5.3-flash", a.Model)
 	}
 	if a.SystemPrompt == nil {
 		t.Fatal("SystemPrompt must be set")

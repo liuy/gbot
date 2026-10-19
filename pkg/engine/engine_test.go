@@ -19,6 +19,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
@@ -6884,21 +6885,7 @@ func TestRunAgentModelResolution(t *testing.T) {
 		want string
 	}{
 		{"inherit-by-default", agenttool.AgentOpts{Prompt: "p", AgentType: "General"}, "parent-model"},
-		{"explicit-model", agenttool.AgentOpts{Prompt: "p", AgentType: "General", Model: "child-model"}, "child-model"},
 		{"literal-inherit", agenttool.AgentOpts{Prompt: "p", AgentType: "General", Model: "inherit"}, "parent-model"},
-		{"tier-resolved", agenttool.AgentOpts{
-			Prompt: "p", AgentType: "General", Model: "child-model",
-			ResolveTierFn: func(string) string { return "tier-model" },
-		}, "tier-model"},
-		{"tier-skipped-for-empty-model", agenttool.AgentOpts{
-			Prompt: "p", AgentType: "General",
-			ResolveTierFn: func(m string) string {
-				if m == "" {
-					return "tier-for-empty"
-				}
-				return "tier-model"
-			},
-		}, "parent-model"},
 	}
 	for _, tc := range cases {
 		mp := &mockProvider{}
@@ -7507,7 +7494,7 @@ func TestRunSkillForkEvents(t *testing.T) {
 		Type:      "prompt",
 		Context:   "fork",
 		AgentType: "Explore",
-		Model:     "skill-model",
+		Model:     "zhipu/skill-model",
 		Source:    types.SkillSourceBundled,
 		Content:   "Review the code.",
 	})
@@ -7518,6 +7505,12 @@ func TestRunSkillForkEvents(t *testing.T) {
 	ec := newEventCollector()
 	eng, _ := skillTestEngine(t, mp, reg, ec)
 	t.Cleanup(func() { eng.Close() })
+	// The skill's composite model needs a resolvable provider table; the mock
+	// doubles as the target instance, so the wire model is the bare name.
+	cfg := &config.Config{Providers: []config.Provider{{Name: "zhipu"}}}
+	cfg.Providers[0].Models.Set("skill-model", config.ModelConfig{})
+	eng.sharedDeps.Cfg = cfg
+	eng.sharedDeps.Providers = config.ProviderMap{"zhipu": mp}
 
 	// A prior query moves the query-start watermark off zero.
 	eng.QuerySync(context.Background(), "earlier", "")

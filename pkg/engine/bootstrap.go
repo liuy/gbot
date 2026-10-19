@@ -42,7 +42,11 @@ type SharedDeps struct {
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
 	Cfg        *config.Config
-	LSPReg     *lsp.Registry
+	// Providers maps provider names to live llm.Provider instances. RunAgent
+	// uses it to switch a sub-agent's provider when its model is
+	// "provider/model"; nil = no switching (model override then hard-fails).
+	Providers config.ProviderMap
+	LSPReg    *lsp.Registry
 	// WSRegistry is the daemon's inbound-device connection registry. nil in
 	// TUI mode / sub-agent-only contexts — regDial then returns "daemon not
 	// running". Set only by the daemon entrypoint (cmd/gbot).
@@ -94,10 +98,6 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	reg.MustRegister(grep.New())
 
 	at := agenttool.New()
-	// Inject tier resolver so agent model: "max" resolves to the configured model.
-	if deps.Cfg != nil {
-		at.SetResolveTierFn(deps.Cfg.ResolveTier)
-	}
 	// Per-engine background table, minted from the shared id minter so
 	// agent-N ids stay globally unique. Injection is unconditional: a nil
 	// IDMinter makes the registry fall back to a private counter (harvest
