@@ -278,14 +278,12 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 	if matchedContent != "" {
 		cacheKey = tt.Name + ":" + matchedContent
 	}
-	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
-		return types.DecisionAllow
-	}
 
 	e.askMu.Lock()
 	defer e.askMu.Unlock()
 
-	// Double-check: cache may have been updated while waiting for lock
+	// Check under the lock: a lock-free read here races the allow-always
+	// write below (concurrent map read/write panics the whole process).
 	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
 		return types.DecisionAllow
 	}

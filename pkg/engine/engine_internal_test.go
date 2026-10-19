@@ -7415,7 +7415,7 @@ func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
 		}
 	}
 
-	// Pass non-nil tctx like production does (engine.go:1179)
+	// Pass non-nil tctx like production does
 	tctx := &tool.ToolUseContext{
 		Ctx:        context.Background(),
 		WorkingDir: ".",
@@ -7844,7 +7844,11 @@ func TestCallLLM_CtxCancel_ClosesOpenBlocks(t *testing.T) {
 			}
 			matched := tc.FindEvents(tt.wantTyp)
 			if len(matched) < tt.minCount {
-				t.Fatalf("%s: expected at least %d %s, got %d", tt.name, tt.minCount, tt.wantTyp, len(matched))
+				var seq []string
+				for _, ev := range tc.Events() {
+					seq = append(seq, string(ev.Type))
+				}
+				t.Fatalf("%s: expected at least %d %s, got %d; event sequence: %v", tt.name, tt.minCount, tt.wantTyp, len(matched), seq)
 			}
 			tt.check(t, tc.Events())
 		})

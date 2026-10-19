@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/memory/session"
@@ -604,4 +606,206 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 	if kept < 9 {
 		t.Errorf("kept only %d fixture messages: rescale overshot (expected 11)", kept)
 	}
+}
+
+// --- keepFrom boundary + notes-file gate coverage ---
+
+// smNotesFixture wires a notes file with the given content and a compactor on
+// the given context window.
+func smNotesFixture(t *testing.T, notes string, contextWindow int) (*AutoCompactor, *session.SessionMemory) {
+	t.Helper()
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	store, err := short.NewStore(t.TempDir() + "/sm-test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte(notes), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: contextWindow, provider: nil})
+	return ac, sm
+}
+
+func smText(text string) []types.ContentBlock {
+	return []types.ContentBlock{types.NewTextBlock(text)}
+}
+
+// smTailOf returns messages whose tail split lands exactly on index n: the
+// message at index n-1 is oversized so the scan stops there, everything from
+// n on is small. Group starts are {0, n-1…}: roles are chosen so index n is
+// itself a group start and the round-boundary snap is a no-op.
+func smSplitAt(n int) []types.Message {
+	huge := strings.Repeat("x", 200000)
+	small := strings.Repeat("y", 600)
+	msgs := make([]types.Message, 0, n+2)
+	for i := 0; i < n-1; i++ {
+		msgs = append(msgs, types.Message{Role: types.RoleUser, Content: smText(small)})
+	}
+	msgs = append(msgs, types.Message{Role: types.RoleUser, Content: smText(huge)})
+	// Two assistants after the split: each opens a new API round, so the
+	// group starts include index n.
+	msgs = append(msgs, types.Message{Role: types.RoleAssistant, Content: smText(small)})
+	msgs = append(msgs, types.Message{Role: types.RoleAssistant, Content: smText(small)})
+	return msgs
+}
+
+// keepFrom == len(shortMsgs) means "everything fits": SM-compact must fall
+// back to LLM compact rather than call PartialCompact with an out-of-range
+// split.
+func TestSMCompact_AllFitKeepFromLenFallsBack(t *testing.T) {
+	ac, sm := smNotesFixture(t, "# Session Notes\n## Current State\nnoted all-fit\n", 40000)
+	msgs := makeLargeMessages(5, 600)
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result != nil {
+		t.Errorf("result = non-nil, want nil: a 5-message transcript fits the keep budget, nothing to compact")
+	}
+}
+
+// keepFrom == 1 would compact a single head message; the guard treats it the
+// same as "no valid split".
+func TestSMCompact_KeepFromOneFallsBack(t *testing.T) {
+	ac, sm := smNotesFixture(t, "# Session Notes\n## Current State\nnoted keep1\n", 40000)
+	msgs := smSplitAt(1)
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result != nil {
+		t.Errorf("result = non-nil, want nil: keepFrom 1 is not a usable split")
+	}
+}
+
+// keepFrom == 2 is the smallest usable split and must proceed.
+func TestSMCompact_KeepFromTwoProceeds(t *testing.T) {
+	ac, sm := smNotesFixture(t, "# Session Notes\n## Current State\nnoted keep2\n", 40000)
+	msgs := smSplitAt(2)
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result = nil, want a compact: keepFrom 2 is a usable split")
+	}
+	if result.BeforeMessages != len(msgs) {
+		t.Errorf("BeforeMessages = %d, want %d", result.BeforeMessages, len(msgs))
+	}
+	if !strings.Contains(result.Summary, "noted keep2") {
+		t.Errorf("summary does not carry the notes content: %q", result.Summary)
+	}
+}
+
+// A one-byte notes file is real content, not the empty-file sentinel: the
+// length check is == 0, not <= 1.
+func TestSMCompact_OneByteNotesProceeds(t *testing.T) {
+	ac, sm := smNotesFixture(t, "x", 40000)
+	msgs := smSplitAt(2)
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result = nil, want a compact: a 1-byte notes file is non-empty content")
+	}
+}
+
+// A failed extraction wait must fall back even when every later gate would
+// have succeeded — otherwise the compact races the in-flight notes rewrite.
+func TestSMCompact_ExtractionWaitFailureFallsBack(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	store, err := short.NewStore(t.TempDir() + "/sm-test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	blockCh := make(chan struct{})
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
+		<-blockCh
+		return nil
+	}
+	sm := session.New(session.Config{
+		MinTokensToInit:        100,
+		MinTokensBetweenUpdate: 50,
+		ExtractionTimeoutMs:    100,
+		ExtractionStaleMs:      60000,
+	}, tmpDir, "main", extractFn, slog.Default())
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\nnoted extraction\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = sm.Extract(context.Background(), makeLargeMessages(3, 600), 100) }()
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: let the extraction start and block
+
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: 40000, provider: nil})
+	result, err := ac.TrySMCompact(smSplitAt(2), sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result != nil {
+		t.Error("result = non-nil, want nil: a timed-out extraction wait must fall back to LLM compact")
+	}
+	close(blockCh)
+}
+
+// The extraction-wait fallback is a race the operator needs to see: falling
+// back silently would hide that SM-compact skipped an in-flight notes
+// rewrite.
+func TestSMCompact_ExtractionWaitFailureIsLogged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setTempHome(t)
+		store := newTestStore(t)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		defer close(release)
+		sm := session.New(session.Config{
+			MinTokensToInit:        100,
+			MinTokensBetweenUpdate: 50,
+			ExtractionTimeoutMs:    100,
+			ExtractionStaleMs:      60000,
+		}, t.TempDir(), "main", func(_ context.Context, _, _ string, _ []types.Message, _ string) error {
+			close(started)
+			<-release
+			return nil
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		notesPath := sm.NotesPath()
+		if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(notesPath, []byte("# Session Notes\n## Current State\nnoteg warn\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		go func() { _ = sm.Extract(context.Background(), makeLargeMessages(3, 600), 100) }()
+		<-started
+		synctest.Wait()
+
+		logs := captureSlog(t)
+		ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "gtest-warn", contextWindow: 40000})
+		res, err := ac.TrySMCompact(smSplitAt(2), sm)
+		if err != nil {
+			t.Fatalf("TrySMCompact: %v", err)
+		}
+		if res != nil {
+			t.Error("result = non-nil, want the LLM-compact fallback after a timed-out extraction wait")
+		}
+		if _, ok := logs.find("sm-compact: extraction wait failed, falling back", func(a map[string]any) bool {
+			e, _ := a["error"].(error)
+			return e != nil && strings.Contains(e.Error(), "extraction wait timed out")
+		}); !ok {
+			t.Error("no sm-compact extraction-wait warning recorded")
+		}
+	})
 }

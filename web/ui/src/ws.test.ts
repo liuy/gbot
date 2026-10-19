@@ -29,7 +29,10 @@ class MockWebSocket {
   }
 }
 
-describe('ws reconnect backoff', () => {
+// Dynamic re-imports of the module graph dominate these tests' wall time;
+// under a loaded CI box (concurrent vitest workers) the 5s default ran out
+// before the imports finished, not before any assertion did.
+describe('ws reconnect backoff', { timeout: 15000 }, () => {
   beforeEach(() => {
     MockWebSocket.instances = []
     vi.stubGlobal('WebSocket', MockWebSocket)

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"math"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -674,5 +675,467 @@ func TestNewAutoCompactor_InjectsCalibratedEstimator(t *testing.T) {
 	}
 	if atomic.LoadInt32(&called) == 0 {
 		t.Error("EstimateTokensCalibrated was never called — injection branch broken")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Token calibration persistence pins
+// ---------------------------------------------------------------------------
+
+// TestClampTableBounds pins every bound of calibrationClamps. The fit is
+// fed ratios far outside the table in both directions, so each of the twelve
+// bounds is the value a fitted ratio actually lands on.
+func TestClampTableBounds(t *testing.T) {
+	t.Parallel()
+
+	high := &tokenCalibration{}
+	calibFeedObservations(high, [6]float64{10, 20, 30, 40, 50, 60}, 10)
+	if !high.fitted {
+		t.Fatal("all-high fit not applied")
+	}
+	wantHigh := [6]float64{1.5, 3.0, 2.0, 0.5, 1.2, 0.5}
+	for j, want := range wantHigh {
+		if high.R[j] != want {
+			t.Errorf("upper clamp R[%d] = %v, want exactly %v (fit source 10..60 is far above the table)", j, high.R[j], want)
+		}
+	}
+
+	low := &tokenCalibration{}
+	calibFeedObservations(low, [6]float64{-10, -10, -10, -5, -10, -10}, 10)
+	if !low.fitted {
+		t.Fatal("all-low fit not applied")
+	}
+	wantLow := [6]float64{0.3, 0.3, 0.2, -1.0, 0.1, 0.05}
+	for j, want := range wantLow {
+		if low.R[j] != want {
+			t.Errorf("lower clamp R[%d] = %v, want exactly %v (fit source -10 is far below the table)", j, low.R[j], want)
+		}
+	}
+}
+
+// TestWindowCapExact pins calibrationWindow with literal counts; deriving
+// the feed length from the constant would let a changed constant slide the
+// window unnoticed.
+func TestWindowCapExact(t *testing.T) {
+	t.Parallel()
+	cal := &tokenCalibration{}
+	for i := range 74 {
+		cal.observe(utils.TokenFeatures{CJK: 100 + i}, 10+i)
+	}
+	if len(cal.obs) != 64 {
+		t.Fatalf("obs count = %d, want exactly 64 (calibrationWindow)", len(cal.obs))
+	}
+	if cal.obs[0].f.CJK != 110 {
+		t.Errorf("window head CJK = %d, want 110 (10 oldest of 74 slid out)", cal.obs[0].f.CJK)
+	}
+	if cal.obs[63].f.CJK != 173 {
+		t.Errorf("window tail CJK = %d, want 173 (newest observation)", cal.obs[63].f.CJK)
+	}
+}
+
+// TestMinObsGateExact pins calibrationMinObs at both sides of the gate and
+// pins each conjunct of the ratios() guard separately.
+func TestMinObsGateExact(t *testing.T) {
+	t.Parallel()
+	fittedR := [6]float64{0.9, 0.9, 0.9, -0.5, 0.9, 0.2}
+	if fittedR == utils.SeedTokenRatios {
+		t.Fatal("test ratios must differ from the seeds")
+	}
+	obs := func(n int) []calibObservation {
+		o := make([]calibObservation, n)
+		for i := range o {
+			o[i] = calibObservation{f: utils.TokenFeatures{CJK: 10 * (i + 1)}, real: 7 * (i + 1)}
+		}
+		return o
+	}
+
+	two := &tokenCalibration{obs: obs(2), R: fittedR, fitted: true}
+	if got := two.ratios(); got != utils.SeedTokenRatios {
+		t.Errorf("ratios with 2 observations = %v, want seeds (minimum is 3)", got)
+	}
+	three := &tokenCalibration{obs: obs(3), R: fittedR, fitted: true}
+	if got := three.ratios(); got != fittedR {
+		t.Errorf("ratios with 3 observations = %v, want the fitted %v (3 meets the minimum)", got, fittedR)
+	}
+	// fitted must be honoured independently of the observation count.
+	unfitted := &tokenCalibration{obs: obs(3), R: fittedR, fitted: false}
+	if got := unfitted.ratios(); got != utils.SeedTokenRatios {
+		t.Errorf("ratios of an unfitted calibration = %v, want seeds", got)
+	}
+}
+
+// TestPartialPivotRequired feeds a system whose only usable pivot for
+// column 0 sits below the diagonal, so the solve is possible only if the
+// search runs and the winning row is actually swapped into place.
+func TestPartialPivotRequired(t *testing.T) {
+	t.Parallel()
+	var a [6][7]float64
+	a[0][1], a[0][6] = 2, 6
+	a[1][0], a[1][6] = 3, 12
+	a[2][2], a[2][6] = 5, 10
+	a[3][3], a[3][6] = 7, 21
+	a[4][4], a[4][6] = 11, 33
+	a[5][5], a[5][6] = 13, 52
+	want := [6]float64{4, 3, 2, 3, 3, 4}
+
+	got, ok := solveLinear6(a)
+	if !ok {
+		t.Fatal("system solvable only with row pivoting reported singular")
+	}
+	if got != want {
+		t.Errorf("solveLinear6 = %v, want %v", got, want)
+	}
+}
+
+// TestSingularityThresholdAtEps puts a pivot exactly on the threshold
+// (maxAbs·1e-12, computed the same way the solver does it): a pivot that equals
+// eps is usable, only a strictly smaller one is singular.
+func TestSingularityThresholdAtEps(t *testing.T) {
+	t.Parallel()
+	eps := 1e12 * 1e-12
+	var a [6][7]float64
+	a[0][0], a[0][6] = 1e12, 1e12
+	a[1][1], a[1][6] = eps, eps*3
+	a[2][2], a[2][6] = 5, 10
+	a[3][3], a[3][6] = 7, 21
+	a[4][4], a[4][6] = 11, 33
+	a[5][5], a[5][6] = 13, 52
+
+	got, ok := solveLinear6(a)
+	if !ok {
+		t.Fatalf("pivot exactly at eps (%v) rejected as singular; the guard is strictly-less-than", eps)
+	}
+	want := [6]float64{1, 3, 2, 3, 3, 4}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Errorf("x[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestEliminationFactorTraps builds a system with elimination factors of
+// exactly -1 and exactly +1. Skipping either elimination (a guard that tests
+// the factor against the wrong constant) changes the answer.
+func TestEliminationFactorTraps(t *testing.T) {
+	t.Parallel()
+	var a [6][7]float64
+	a[0][0], a[0][1], a[0][6] = 2, 4, 6
+	a[1][0], a[1][1], a[1][6] = -2, 3, 1
+	a[2][2], a[2][6] = 5, 10
+	a[3][3], a[3][4], a[3][6] = 1, 2, 3
+	a[4][3], a[4][4], a[4][6] = 2, 5, 7
+	a[5][3], a[5][5], a[5][6] = 2, 7, 16
+
+	got, ok := solveLinear6(a)
+	if !ok {
+		t.Fatal("factor-trap system reported singular")
+	}
+	want := [6]float64{1, 1, 2, 1, 1, 2}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Errorf("x[%d] = %v, want %v (factor ±1 elimination skipped)", i, got[i], want[i])
+		}
+	}
+}
+
+// TestEliminationAllRows uses a dense system so every column needs more
+// than one row eliminated; a loop that stops after the first row below the
+// diagonal cannot recover the solution.
+func TestEliminationAllRows(t *testing.T) {
+	t.Parallel()
+	m := [6][6]float64{
+		{4, 1, 0, 2, 0, 1},
+		{1, 5, 2, 0, 1, 0},
+		{0, 2, 6, 1, 0, 3},
+		{3, 0, 1, 7, 2, 0},
+		{0, 1, 0, 2, 8, 1},
+		{2, 0, 3, 0, 1, 9},
+	}
+	want := [6]float64{1, 2, 3, 4, 5, 6}
+	var a [6][7]float64
+	for i := range m {
+		for j := range m[i] {
+			a[i][j] = m[i][j]
+			a[i][6] += m[i][j] * want[j]
+		}
+	}
+	got, ok := solveLinear6(a)
+	if !ok {
+		t.Fatal("dense system reported singular")
+	}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Errorf("x[%d] = %v, want %v (rows below the first pivot row not eliminated)", i, got[i], want[i])
+		}
+	}
+}
+
+// TestEstimateUsesEveryFeature pins the linear model's arithmetic on a
+// vector with all six features non-zero, so no term can be dropped, zeroed or
+// turned into a division without changing the result.
+func TestEstimateUsesEveryFeature(t *testing.T) {
+	t.Parallel()
+	f := utils.TokenFeatures{CJK: 10, Struct: 20, Digit: 30, Indent: 40, Words: 50, Other: 60}
+	// Seeds 0.72/1.38/1.34/-0.04/0.48/0.11 → 7.2+27.6+40.2-1.6+24+6.6 = 104.
+	if got := estimateWithFeatures(f, utils.SeedTokenRatios); got != 104 {
+		t.Errorf("estimateWithFeatures = %d, want exactly 104", got)
+	}
+}
+
+// TestEstimateFloorsMinusOne needs int(v) to land on -1: flooring at 0 is
+// only observable when the un-floored value is negative.
+func TestEstimateFloorsMinusOne(t *testing.T) {
+	t.Parallel()
+	R := [6]float64{0, 0, 0, -1, 0, 0}
+	want := 0 // int(-1) floored at zero, never negative
+	if got := estimateWithFeatures(utils.TokenFeatures{Indent: 1}, R); got != want {
+		t.Errorf("estimateWithFeatures(indent 1, ratio -1) = %d, want %d (floored, never negative)", got, want)
+	}
+}
+
+// lockProbeProvider records whether e.mu is still held at the moment
+// calibrationKey reads the provider name.
+type lockProbeProvider struct {
+	mu     *sync.RWMutex
+	held   bool
+	probed bool
+}
+
+func (p *lockProbeProvider) Name() string {
+	if p.mu.TryLock() {
+		p.mu.Unlock()
+		p.held = false
+	} else {
+		p.held = true
+	}
+	p.probed = true
+	return "probe"
+}
+
+func (p *lockProbeProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+func (p *lockProbeProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	return nil, nil
+}
+
+// TestModelKeyHoldsLockWhileReading pins the defer on modelKey's RUnlock:
+// the unlock must happen after the provider and model fields are read.
+func TestModelKeyHoldsLockWhileReading(t *testing.T) {
+	t.Parallel()
+	e := &Engine{model: "m"}
+	p := &lockProbeProvider{mu: &e.mu}
+	e.provider = p
+
+	if got := e.modelKey(); got != "probe/m" {
+		t.Errorf("modelKey() = %q, want %q", got, "probe/m")
+	}
+	if !p.probed {
+		t.Fatal("provider.Name was never called — modelKey no longer derives the key from the provider")
+	}
+	if !p.held {
+		t.Error("e.mu was already released while the key was being computed — RUnlock is no longer deferred")
+	}
+}
+
+// TestRatiosForRegistersCalibration pins the lazy registration: a ratios
+// lookup must leave a calibration in the map for later observations.
+func TestRatiosForRegistersCalibration(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	if got := e.ratiosFor("p/m"); got != utils.SeedTokenRatios {
+		t.Errorf("ratiosFor = %v, want seeds", got)
+	}
+	e.calibMu.Lock()
+	cal := e.calibrations["p/m"]
+	e.calibMu.Unlock()
+	if cal == nil {
+		t.Fatal("ratiosFor did not register a calibration for the key — its observations would be dropped")
+	}
+	if cal.fitted || len(cal.obs) != 0 {
+		t.Errorf("freshly registered calibration = %+v, want unfitted with no observations", cal)
+	}
+}
+
+// TestOneTokenUsageAnchors pins the usage guard at total <= 0: a provider
+// reporting a single input token is real usage and must anchor.
+func TestOneTokenUsageAnchors(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	e.mu.Lock()
+	e.messages = []types.Message{calibTextMessage("q")}
+	e.mu.Unlock()
+	one := calibAssistant("a", 1)
+	e.mu.Lock()
+	e.messages = append(e.messages, *one)
+	e.mu.Unlock()
+	e.recordCalibrationObservation(one)
+
+	e.calibMu.Lock()
+	cal := e.calibrations[e.modelKey()]
+	e.calibMu.Unlock()
+	if cal == nil {
+		t.Fatal("usage of 1 input token was discarded; only total <= 0 may skip anchoring")
+	}
+	if cal.anchorTotal != 1 || cal.anchorMsgIdx != 1 || !cal.anchored {
+		t.Errorf("anchor = (total %d, idx %d, anchored %v), want (1, 1, true)",
+			cal.anchorTotal, cal.anchorMsgIdx, cal.anchored)
+	}
+}
+
+// TestZeroDeltaSkipped pins the observation gate at real > 0: a turn whose
+// usage did not grow carries no differential signal.
+func TestZeroDeltaSkipped(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	e.mu.Lock()
+	e.messages = []types.Message{calibTextMessage("first question"), *calibAssistant("first answer", 1000)}
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[1])
+
+	e.mu.Lock()
+	e.messages = append(e.messages, calibTextMessage("more context"), *calibAssistant("second answer", 1000))
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[3])
+
+	e.calibMu.Lock()
+	cal := e.calibrations[e.modelKey()]
+	e.calibMu.Unlock()
+	if len(cal.obs) != 0 {
+		t.Errorf("recorded %d observations for a zero token delta, want 0", len(cal.obs))
+	}
+	if cal.anchorTotal != 1000 || cal.anchorMsgIdx != 3 {
+		t.Errorf("anchor = (total %d, idx %d), want (1000, 3) — the anchor still advances",
+			cal.anchorTotal, cal.anchorMsgIdx)
+	}
+}
+
+// TestOneTokenDeltaRecorded pins the other side of the same gate: a delta
+// of one token is a positive delta and must be recorded.
+func TestOneTokenDeltaRecorded(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	e.mu.Lock()
+	e.messages = []types.Message{calibTextMessage("first question"), *calibAssistant("first answer", 1000)}
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[1])
+
+	e.mu.Lock()
+	e.messages = append(e.messages, calibTextMessage("more context"), *calibAssistant("second answer", 1001))
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[3])
+
+	e.calibMu.Lock()
+	defer e.calibMu.Unlock()
+	cal := e.calibrations[e.modelKey()]
+	if len(cal.obs) != 1 {
+		t.Fatalf("recorded %d observations for a 1-token delta, want 1", len(cal.obs))
+	}
+	if cal.obs[0].real != 1 {
+		t.Errorf("observation real = %d, want 1", cal.obs[0].real)
+	}
+}
+
+// TestSingleMessageWindowObservable anchors on a turn and appends only the
+// next reply: the window is exactly the one message between them, so the gate
+// must accept n-1 > windowStart with a one-message gap.
+func TestSingleMessageWindowObservable(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	first := calibAssistant("first answer", 1000)
+	e.mu.Lock()
+	e.messages = []types.Message{calibTextMessage("first question"), *first}
+	e.mu.Unlock()
+	e.recordCalibrationObservation(first)
+
+	second := calibAssistant("second answer", 1300)
+	e.mu.Lock()
+	e.messages = append(e.messages, *second)
+	e.mu.Unlock()
+	e.recordCalibrationObservation(second)
+
+	e.calibMu.Lock()
+	defer e.calibMu.Unlock()
+	cal := e.calibrations[e.modelKey()]
+	if len(cal.obs) != 1 {
+		t.Fatalf("recorded %d observations for a one-message window, want 1", len(cal.obs))
+	}
+	if cal.obs[0].real != 300 {
+		t.Errorf("observation real = %d, want 300", cal.obs[0].real)
+	}
+	if cal.obs[0].f != messageTokenFeatures(e.messages[1]) {
+		t.Errorf("observation features = %+v, want the anchored reply's features %+v",
+			cal.obs[0].f, messageTokenFeatures(e.messages[1]))
+	}
+}
+
+// TestZeroFeatureWindowSkipped keeps an observable window that carries no
+// text (image-only) out of the fit: a zero feature vector is not a data point.
+func TestZeroFeatureWindowSkipped(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	e.mu.Lock()
+	e.messages = []types.Message{calibTextMessage("first question"), *calibAssistant("", 1000)}
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[1])
+
+	img := types.NewUserMessage([]types.ContentBlock{{Type: types.ContentTypeImage}})
+	e.mu.Lock()
+	e.messages = append(e.messages, img, *calibAssistant("", 1400))
+	e.mu.Unlock()
+	e.recordCalibrationObservation(&e.messages[3])
+
+	e.calibMu.Lock()
+	cal := e.calibrations[e.modelKey()]
+	e.calibMu.Unlock()
+	if len(cal.obs) != 0 {
+		t.Errorf("recorded %d observations from a textless window, want 0", len(cal.obs))
+	}
+	if cal.anchorTotal != 1400 || cal.anchorMsgIdx != 3 {
+		t.Errorf("anchor = (total %d, idx %d), want (1400, 3) — the anchor still advances",
+			cal.anchorTotal, cal.anchorMsgIdx)
+	}
+}
+
+// TestAddTokenFeaturesSumsAllFields pins every field of the feature sum.
+func TestAddTokenFeaturesSumsAllFields(t *testing.T) {
+	t.Parallel()
+	a := utils.TokenFeatures{CJK: 1, Struct: 2, Digit: 3, Indent: 4, Words: 5, Other: 6}
+	b := utils.TokenFeatures{CJK: 10, Struct: 20, Digit: 30, Indent: 40, Words: 50, Other: 60}
+	want := utils.TokenFeatures{CJK: 11, Struct: 22, Digit: 33, Indent: 44, Words: 55, Other: 66}
+	if got := addTokenFeatures(a, b); got != want {
+		t.Errorf("addTokenFeatures = %+v, want %+v", got, want)
+	}
+	if got := addTokenFeatures(a, utils.TokenFeatures{}); got != a {
+		t.Errorf("addTokenFeatures(a, zero) = %+v, want %+v (identity)", got, a)
+	}
+}
+
+// TestMessageTokenFeaturesToolResult pins the tool_result branch of the
+// message feature scan.
+func TestMessageTokenFeaturesToolResult(t *testing.T) {
+	t.Parallel()
+	content := json.RawMessage(`"ls output 123"`)
+	msg := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, Content: content}},
+	}
+	want := toolResultTokenFeatures(content)
+	if want == (utils.TokenFeatures{}) {
+		t.Fatal("fixture content produced no features")
+	}
+	if got := messageTokenFeatures(msg); got != want {
+		t.Errorf("messageTokenFeatures(tool_result) = %+v, want %+v", got, want)
+	}
+}
+
+// TestToolResultSingleByteContent pins the empty-content guard with a
+// length that is neither 0 nor large: a one-byte payload still carries signal.
+func TestToolResultSingleByteContent(t *testing.T) {
+	t.Parallel()
+	got := toolResultTokenFeatures(json.RawMessage(`0`))
+	if got != utils.CountTokenFeatures("0") {
+		t.Errorf("toolResultTokenFeatures(one byte) = %+v, want %+v", got, utils.CountTokenFeatures("0"))
 	}
 }

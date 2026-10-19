@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
+	"modernc.org/sqlite"
 )
 
 func newTestStore(t *testing.T) *short.Store {
@@ -1389,5 +1391,565 @@ func TestRunTurns_SubagentGuardSkipsPersistPoints(t *testing.T) {
 	}
 	if idx := eng.LastPersistedIdx(); idx != 0 {
 		t.Errorf("sub-agent LastPersistedIdx = %d, want 0", idx)
+	}
+}
+
+// --- TestPersist*: second-round mutation gaps in PersistNewMessages /
+// LoadMessages / extractUserTitle.
+
+// blockSessionUpdates makes every UPDATE on the sessions table fail, which is
+// the only way to reach the post-append store-error branches (timestamp,
+// context tokens, title) while the message INSERT path still succeeds.
+func blockSessionUpdates(t *testing.T, store *short.Store) {
+	t.Helper()
+	if _, err := store.DB().Exec(
+		`CREATE TRIGGER mutf_block_sessions_update BEFORE UPDATE ON sessions
+		 BEGIN SELECT RAISE(ABORT, 'mutf: sessions update blocked'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+}
+
+func TestPersist_SkipGuardMatrix(t *testing.T) {
+	// store==nil + sessionID=="" — both guard operands true.
+	rec := captureSlog(t)
+	engNil := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engNil.Close() })
+	engNil.PersistNewMessages()
+	if _, ok := rec.find("PersistNewMessages: skip persistence", func(a map[string]any) bool {
+		return a["store_nil"] == true && a["sessionID"] == "" && a["subagent"] == false
+	}); !ok {
+		t.Fatalf("nil-store skip record missing or wrong attrs: %+v", rec.calls)
+	}
+
+	// store set + sessionID=="" — only the sessionID operand is true.
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	engNoSID := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engNoSID.Close() })
+	engNoSID.SetStore(store, "")
+	engNoSID.SetMessages([]types.Message{CreateUserMessage("must not persist")})
+	engNoSID.PersistNewMessages()
+	if _, ok := rec.find("PersistNewMessages: skip persistence", func(a map[string]any) bool {
+		return a["store_nil"] == false && a["sessionID"] == ""
+	}); !ok {
+		t.Fatalf("empty-sessionID skip record missing or wrong attrs: %+v", rec.calls)
+	}
+	if msgs, err := store.LoadMessages(session.SessionID); err != nil || len(msgs) != 0 {
+		t.Fatalf("store messages after empty-sessionID persist = %d (err %v), want 0", len(msgs), err)
+	}
+
+	// store==nil + sessionID set — only the store operand is true.
+	engNilSID := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engNilSID.Close() })
+	engNilSID.SetSessionID("mutf-nil-store")
+	engNilSID.SetMessages([]types.Message{CreateUserMessage("x")})
+	engNilSID.PersistNewMessages()
+	if _, ok := rec.find("PersistNewMessages: skip persistence", func(a map[string]any) bool {
+		return a["store_nil"] == true && a["sessionID"] == "mutf-nil-store"
+	}); !ok {
+		t.Fatalf("nil-store-with-sessionID skip record missing: %+v", rec.calls)
+	}
+}
+
+func TestPersist_NothingNewLog(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{CreateUserMessage("one")})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	rec := captureSlog(t)
+	eng.PersistNewMessages()
+	if _, ok := rec.find("PersistNewMessages: nothing new", func(a map[string]any) bool {
+		return a["messages"] == int64(1) && a["lastPersistedIdx"] == int64(1) &&
+			a["engine"] == eng.engineID && a["session"] == session.SessionID[:8]
+	}); !ok {
+		t.Fatalf("nothing-new record missing or wrong attrs: %+v", rec.calls)
+	}
+	if got := eng.LastPersistedIdx(); got != 1 {
+		t.Errorf("lastPersistedIdx = %d, want 1 (nothing-new path must not advance the cursor)", got)
+	}
+	if msgs, err := store.LoadMessages(session.SessionID); err != nil || len(msgs) != 1 {
+		t.Fatalf("store messages = %d (err %v), want 1", len(msgs), err)
+	}
+}
+
+func TestPersist_AttachmentFilterNilAttachment(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	// An attachment-typed message with no Attachment payload: the nil check is
+	// what keeps the mode/meta probes from dereferencing nil.
+	eng.SetMessages([]types.Message{{
+		ID:          "mutf-att-nil",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content:     []types.ContentBlock{types.NewTextBlock("payload-less attachment")},
+	}})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+	if msgs, err := store.LoadMessages(session.SessionID); err != nil || len(msgs) != 0 {
+		t.Fatalf("store messages = %d (err %v), want 0 (nil-attachment message stays ephemeral)", len(msgs), err)
+	}
+}
+
+func TestPersist_AttachmentFilterMetaAndMode(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	att := func(id, text string, mode types.ItemMode, isMeta bool) types.Message {
+		return types.Message{
+			ID:          id,
+			Role:        types.RoleUser,
+			MessageType: types.MessageTypeAttachment,
+			Content:     []types.ContentBlock{types.NewTextBlock(text)},
+			Attachment:  &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: text, Mode: mode, IsMeta: isMeta},
+		}
+	}
+	eng.SetMessages([]types.Message{
+		att("mutf-att-prompt", "keep me", types.ItemModePrompt, false),
+		att("mutf-att-meta", "meta prompt", types.ItemModePrompt, true),
+		att("mutf-att-job", "job notification text", types.ItemModeJob, false),
+		att("mutf-att-note", "plain notification", types.ItemModeNotification, false),
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	msgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("store messages = %d, want 1 (only the non-meta prompt attachment persists): %+v",
+			len(msgs), messageUUIDs(msgs))
+	}
+	if msgs[0].UUID != "mutf-att-prompt" {
+		t.Errorf("persisted uuid = %q, want mutf-att-prompt", msgs[0].UUID)
+	}
+}
+
+func messageUUIDs(msgs []*short.TranscriptMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.UUID)
+	}
+	return out
+}
+
+func TestPersist_ForkPointAppliedAndCleared(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{{ID: "mutf-fork-root", Role: types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("root")}}})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	// Rewind semantics: the next batch must chain off the explicit fork parent.
+	eng.mu.Lock()
+	eng.forkParentUUID = "mutf-fork-root"
+	eng.mu.Unlock()
+	eng.SetMessages([]types.Message{
+		{ID: "mutf-fork-root", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("root")}},
+		{ID: "mutf-fork-child", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("branch")}},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 1
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	child, err := store.GetMessageByUUID("mutf-fork-child")
+	if err != nil {
+		t.Fatalf("GetMessageByUUID: %v", err)
+	}
+	if child == nil {
+		t.Fatal("fork-point batch was not appended")
+	}
+	if child.ParentUUID != "mutf-fork-root" {
+		t.Fatalf("fork batch parent_uuid = %q, want mutf-fork-root", child.ParentUUID)
+	}
+
+	// The fork point is single-use: the following batch chains normally.
+	eng.SetMessages([]types.Message{
+		{ID: "mutf-fork-root", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("root")}},
+		{ID: "mutf-fork-child", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("branch")}},
+		{ID: "mutf-fork-next", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("next")}},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 2
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	next, err := store.GetMessageByUUID("mutf-fork-next")
+	if err != nil {
+		t.Fatalf("GetMessageByUUID next: %v", err)
+	}
+	if next == nil {
+		t.Fatal("post-fork batch was not appended")
+	}
+	if next.ParentUUID != "mutf-fork-child" {
+		t.Errorf("post-fork parent_uuid = %q, want mutf-fork-child (fork point must be cleared after use)", next.ParentUUID)
+	}
+}
+
+func TestPersist_AppendFailureKeepsCursor(t *testing.T) {
+	store := newTestStore(t)
+	rec := captureSlog(t)
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	// Session row does not exist: the messages INSERT hits the FK constraint.
+	eng.SetSessionID("mutf-missing-session")
+	eng.SetMessages([]types.Message{CreateUserMessage("orphan")})
+	eng.PersistNewMessages()
+
+	if _, ok := rec.find("PersistNewMessages: append messages", func(a map[string]any) bool {
+		e, _ := a["error"].(error)
+		return e != nil && strings.Contains(e.Error(), "FOREIGN KEY")
+	}); !ok {
+		t.Fatalf("append-error record missing: %+v", rec.calls)
+	}
+	want := 0 // the failed append must not advance the cursor
+	if got := eng.LastPersistedIdx(); got != want {
+		t.Errorf("lastPersistedIdx = %d, want %d", got, want)
+	}
+}
+
+func TestPersist_SessionUpdateFailuresLogged(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	blockSessionUpdates(t, store)
+
+	rec := captureSlog(t)
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.ContextTokens = 5
+	eng.SetMessages([]types.Message{CreateUserMessage("title source")})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	for _, msg := range []string{
+		"PersistNewMessages: update session timestamp",
+		"PersistNewMessages: update context tokens",
+		"PersistNewMessages: auto-title",
+	} {
+		if _, ok := rec.find(msg, func(a map[string]any) bool {
+			e, _ := a["error"].(error)
+			return e != nil && strings.Contains(e.Error(), "mutf: sessions update blocked")
+		}); !ok {
+			t.Errorf("%q error record missing: %+v", msg, rec.calls)
+		}
+	}
+	// The messages themselves still land, and the cursor advances.
+	if _, ok := rec.find("PersistNewMessages: persisted messages", func(a map[string]any) bool {
+		return a["count"] == int64(1) && a["total"] == int64(1)
+	}); !ok {
+		t.Errorf("persisted-messages record missing: %+v", rec.calls)
+	}
+	if msgs, err := store.LoadMessages(session.SessionID); err != nil || len(msgs) != 1 {
+		t.Fatalf("store messages = %d (err %v), want 1", len(msgs), err)
+	}
+}
+
+func TestPersist_ContextTokensGate(t *testing.T) {
+	cases := []struct {
+		name string
+		eng  int
+		want int
+	}{
+		{"zero skips write", 0, 7},
+		{"one writes", 1, 1},
+		{"positive writes", 5, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			session, err := store.CreateSession("", "test-model")
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			if err := store.UpdateContextTokens(session.SessionID, 7); err != nil {
+				t.Fatalf("seed context tokens: %v", err)
+			}
+			eng := New(&Params{Logger: slog.Default()})
+			t.Cleanup(func() { eng.Close() })
+			eng.SetStore(store, "")
+			eng.SetSessionID(session.SessionID)
+			eng.ContextTokens = tc.eng
+			eng.SetMessages([]types.Message{CreateUserMessage("hello")})
+			eng.mu.Lock()
+			eng.lastPersistedIdx = 0
+			eng.mu.Unlock()
+			eng.PersistNewMessages()
+
+			ses, err := store.GetSession(session.SessionID)
+			if err != nil {
+				t.Fatalf("GetSession: %v", err)
+			}
+			if ses.ContextTokens != tc.want {
+				t.Errorf("stored context_tokens = %d, want %d (engine ContextTokens %d)", ses.ContextTokens, tc.want, tc.eng)
+			}
+		})
+	}
+}
+
+func TestPersist_AutoTitleGates(t *testing.T) {
+	// First persist with an empty store batch must not title the session.
+	storeEmpty := newTestStore(t)
+	sessEmpty, err := storeEmpty.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	engEmpty := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engEmpty.Close() })
+	engEmpty.SetStore(storeEmpty, "")
+	engEmpty.SetSessionID(sessEmpty.SessionID)
+	engEmpty.SetMessages([]types.Message{{
+		ID: "mutf-title-job", Role: types.RoleUser, MessageType: types.MessageTypeAttachment,
+		Content:    []types.ContentBlock{types.NewTextBlock("notification text")},
+		Attachment: &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: "notification text", Mode: types.ItemModeJob},
+	}})
+	engEmpty.mu.Lock()
+	engEmpty.lastPersistedIdx = 0
+	engEmpty.mu.Unlock()
+	engEmpty.PersistNewMessages()
+	if ses, err := storeEmpty.GetSession(sessEmpty.SessionID); err != nil {
+		t.Fatalf("GetSession: %v", err)
+	} else if ses.Title != "" {
+		t.Errorf("title = %q, want empty (no persistable message, so no auto-title)", ses.Title)
+	}
+
+	// A later persist (cursor already past 0) must not title either.
+	storeLate := newTestStore(t)
+	sessLate, err := storeLate.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	engLate := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engLate.Close() })
+	engLate.SetStore(storeLate, "")
+	engLate.SetSessionID(sessLate.SessionID)
+	engLate.SetMessages([]types.Message{{ID: "mutf-late-1", Role: types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("no title here")}}})
+	engLate.mu.Lock()
+	engLate.lastPersistedIdx = 0
+	engLate.mu.Unlock()
+	engLate.PersistNewMessages()
+	engLate.SetMessages([]types.Message{
+		{ID: "mutf-late-1", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("no title here")}},
+		{ID: "mutf-late-2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("should not become title")}},
+	})
+	engLate.mu.Lock()
+	engLate.lastPersistedIdx = 1
+	engLate.mu.Unlock()
+	engLate.PersistNewMessages()
+	if ses, err := storeLate.GetSession(sessLate.SessionID); err != nil {
+		t.Fatalf("GetSession late: %v", err)
+	} else if ses.Title != "" {
+		t.Errorf("title = %q, want empty (auto-title runs on the first persist only)", ses.Title)
+	}
+
+	// The first persist with a real user prompt does title the session, and
+	// logs no error when the update succeeds.
+	storeOK := newTestStore(t)
+	sessOK, err := storeOK.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rec := captureSlog(t)
+	engOK := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { engOK.Close() })
+	engOK.SetStore(storeOK, "")
+	engOK.SetSessionID(sessOK.SessionID)
+	engOK.SetMessages([]types.Message{CreateUserMessage("first real prompt")})
+	engOK.mu.Lock()
+	engOK.lastPersistedIdx = 0
+	engOK.mu.Unlock()
+	engOK.PersistNewMessages()
+	if ses, err := storeOK.GetSession(sessOK.SessionID); err != nil {
+		t.Fatalf("GetSession ok: %v", err)
+	} else if ses.Title != "first real prompt" {
+		t.Errorf("title = %q, want %q", ses.Title, "first real prompt")
+	}
+	if _, ok := rec.find("PersistNewMessages: auto-titled session", func(a map[string]any) bool {
+		return a["title"] == "first real prompt"
+	}); !ok {
+		t.Errorf("auto-titled record missing: %+v", rec.calls)
+	}
+	for _, c := range rec.calls {
+		if c.msg == "PersistNewMessages: auto-title" {
+			t.Errorf("unexpected auto-title error record on success: %+v", c.attrs)
+		}
+	}
+}
+
+func TestLoadMessages_LoadError(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	// Drop the table the chain query reads so the store call fails with a typed
+	// driver error the engine must wrap (not stringify).
+	if _, err := store.DB().Exec(`DROP TABLE messages`); err != nil {
+		t.Fatalf("drop messages table: %v", err)
+	}
+	msgs, err := eng.LoadMessages(session.SessionID)
+	if err == nil {
+		t.Fatalf("LoadMessages on broken store returned %v, want error", msgs)
+	}
+	if _, ok := errors.AsType[*sqlite.Error](err); !ok {
+		t.Errorf("LoadMessages error = %v, want chain to carry the driver error", err)
+	}
+	if !strings.HasPrefix(err.Error(), "load messages: ") {
+		t.Errorf("LoadMessages error = %q, want prefix %q", err.Error(), "load messages: ")
+	}
+	if msgs != nil {
+		t.Errorf("LoadMessages messages = %v, want nil on error", msgs)
+	}
+}
+
+func TestLoadMessages_EmptySession(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	msgs, err := eng.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages empty session: %v", err)
+	}
+	if msgs != nil {
+		t.Errorf("LoadMessages empty session = %v, want nil", msgs)
+	}
+}
+
+func TestLoadMessages_ConvertError(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// A stored row whose role is not user/assistant/system makes the store→engine
+	// conversion fail; the engine must surface that as a wrapped error.
+	if err := store.AppendMessages(session.SessionID, []*short.TranscriptMessage{{
+		UUID: "mutf-bogus-role", Type: "bogus_role", Content: "[]",
+	}}); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	msgs, err := eng.LoadMessages(session.SessionID)
+	if err == nil {
+		t.Fatalf("LoadMessages with unknown role returned %v, want error", msgs)
+	}
+	if !strings.Contains(err.Error(), "unknown message role") {
+		t.Errorf("LoadMessages error = %q, want it to name the unknown role", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "convert messages: ") {
+		t.Errorf("LoadMessages error = %q, want prefix %q", err.Error(), "convert messages: ")
+	}
+	if msgs != nil {
+		t.Errorf("LoadMessages messages = %v, want nil on error", msgs)
+	}
+}
+
+func TestExtractUserTitle_NonTextBlocks(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "t1", Text: "tool result text"},
+			{Type: types.ContentTypeText, Text: "real prompt"},
+		},
+	}}
+	if got := extractUserTitle(msgs); got != "real prompt" {
+		t.Errorf("extractUserTitle = %q, want %q (non-text blocks are skipped)", got, "real prompt")
+	}
+}
+
+func TestExtractUserTitle_SkipContinue(t *testing.T) {
+	emptyFirst := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("   \n  "),
+			types.NewTextBlock("after blank"),
+		},
+	}}
+	if got := extractUserTitle(emptyFirst); got != "after blank" {
+		t.Errorf("extractUserTitle blank-first = %q, want %q (blank text continues, not breaks)", got, "after blank")
+	}
+	angleFirst := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("<system-reminder>ignore</system-reminder>"),
+			types.NewTextBlock("after tag"),
+		},
+	}}
+	if got := extractUserTitle(angleFirst); got != "after tag" {
+		t.Errorf("extractUserTitle tag-first = %q, want %q (tagged text continues, not breaks)", got, "after tag")
+	}
+}
+
+func TestExtractUserTitle_TruncationBoundary(t *testing.T) {
+	at200 := strings.Repeat("a", 200)
+	if got := extractUserTitle([]types.Message{{Role: types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(at200)}}}); got != at200 {
+		t.Errorf("extractUserTitle(200 chars) = %q len=%d, want the string unchanged", got, len([]rune(got)))
+	}
+	at201 := strings.Repeat("b", 201)
+	want := strings.Repeat("b", 200) + "…"
+	if got := extractUserTitle([]types.Message{{Role: types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(at201)}}}); got != want {
+		t.Errorf("extractUserTitle(201 chars) = %q len=%d, want 200 chars + ellipsis", got, len([]rune(got)))
 	}
 }

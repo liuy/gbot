@@ -23,8 +23,12 @@ import (
 type integrationHookRecorder struct {
 	mu      sync.Mutex
 	calls   []hookCall
+	ctxs    []context.Context
 	results []hooks.HookResult
 	index   int
+	onCall  func()        // side effect before each dispatch (e.g. discarding the executor mid-call)
+	panics  bool          // panic on dispatch, exercising recover paths
+	entered chan struct{} // closed on the first dispatch when non-nil
 }
 
 type hookCall struct {
@@ -36,7 +40,21 @@ type hookCall struct {
 func (r *integrationHookRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration, extraEnv []string) hooks.HookResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.entered != nil {
+		select {
+		case <-r.entered:
+		default:
+			close(r.entered)
+		}
+	}
 	r.calls = append(r.calls, hookCall{event: input.HookEventName, command: command, input: input})
+	r.ctxs = append(r.ctxs, ctx)
+	if r.onCall != nil {
+		r.onCall()
+	}
+	if r.panics {
+		panic("hook executor exploded")
+	}
 	if r.index < len(r.results) {
 		result := r.results[r.index]
 		r.index++
@@ -49,6 +67,24 @@ func (r *integrationHookRecorder) Calls() []hookCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]hookCall(nil), r.calls...)
+}
+
+func (r *integrationHookRecorder) Ctxs() []context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]context.Context(nil), r.ctxs...)
+}
+
+// lastInput returns the input of the most recent dispatch, failing the test
+// if the hook never ran.
+func (r *integrationHookRecorder) lastInput(t *testing.T) *hooks.HookInput {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.calls) == 0 {
+		t.Fatal("hook never ran")
+	}
+	return r.calls[len(r.calls)-1].input
 }
 
 func (r *integrationHookRecorder) CallCount() int {

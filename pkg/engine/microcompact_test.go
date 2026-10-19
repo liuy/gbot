@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -1449,5 +1450,843 @@ func TestLastAnchoredTokenCount_Contract(t *testing.T) {
 	want := 9000 + EstimateMessagesTokens(msgs[1:])
 	if v != want {
 		t.Errorf("anchored count = %d, want base + est(tail) = %d", v, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch-D mutation coverage: exact-value estimation, trigger boundary,
+// clear/keep sets, provider capability.
+// ---------------------------------------------------------------------------
+
+// One message carrying every block type: the per-case `+=` must accumulate, so
+// a single-block test cannot tell `total += x` from `total = x`.
+func TestMC_EstimateAllBlockTypesInOneMessage(t *testing.T) {
+	t.Parallel()
+	estLen := func(s string) int { return len(s) }
+	unknown := types.ContentBlock{Type: "server_tool_use", Name: "srv", Text: "uu"}
+	rawUnknown, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("abc"),
+			{Type: types.ContentTypeThinking, Thinking: "abcd"},
+			{Type: types.ContentTypeRedacted, Data: "abcde"},
+			types.NewToolUseBlock("id1", "Re", json.RawMessage(`x`)),
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "AAAA"}),
+			types.NewDocumentBlock("a.pdf", "/x/a.pdf", "application/pdf", 999, 7),
+			types.NewDocumentBlock("b.bin", "/x/b.bin", "application/octet-stream", 40, 0),
+			unknown,
+		},
+	}}
+	want := 3 + 4 + 5 + len("Rex") + ImageMaxTokenSize + 7 + 40/4 + len(string(rawUnknown)) + defaultMessageEnvelopeTokens
+	got := estimateMessagesTokensWith(msgs, defaultMessageEnvelopeTokens, estLen)
+	if got != want {
+		t.Errorf("estimateMessagesTokensWith(all block types) = %d, want %d", got, want)
+	}
+}
+
+// tool_result arrays accumulate per block; a one-byte raw payload is not the
+// empty-content sentinel.
+func TestMC_CalculateToolResultTokens_ArrayAccumulates(t *testing.T) {
+	t.Parallel()
+	estLen := func(s string) int { return len(s) }
+	content := json.RawMessage(`[{"type":"text","text":"abc"},{"type":"text","text":"defg"},{"type":"image"},{"type":"document"}]`)
+	want := 3 + 4 + ImageMaxTokenSize + ImageMaxTokenSize
+	if got := calculateToolResultTokensWith(content, estLen); got != want {
+		t.Errorf("array tool_result = %d, want %d", got, want)
+	}
+	// len(content)==0 is the only empty sentinel: a 1-byte payload falls to the
+	// raw-bytes estimate.
+	if got := calculateToolResultTokensWith(json.RawMessage(`{`), estLen); got != 1 {
+		t.Errorf("1-byte payload = %d, want 1 (raw-bytes fallback)", got)
+	}
+	if got := calculateToolResultTokensWith(nil, estLen); got != 0 {
+		t.Errorf("empty payload = %d, want 0", got)
+	}
+}
+
+// The usage anchor sums all four token fields.
+func TestMC_LastAnchoredTokenCount_SumsEveryUsageField(t *testing.T) {
+	t.Parallel()
+	estLen := func(s string) int { return len(s) }
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("q1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("a1")},
+			Usage: &types.Usage{InputTokens: 100, CacheCreationInputTokens: 20, CacheReadInputTokens: 30, OutputTokens: 7}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("tail")}},
+	}
+	got, ok := lastAnchoredTokenCount(msgs, defaultMessageEnvelopeTokens, estLen)
+	if !ok {
+		t.Fatal("lastAnchoredTokenCount ok = false, want an anchored total")
+	}
+	want := 100 + 20 + 30 + 7 + (len("tail") + defaultMessageEnvelopeTokens)
+	if got != want {
+		t.Errorf("anchored total = %d, want %d", got, want)
+	}
+}
+
+// The anchor scan walks backwards: the newest assistant with usage wins, and an
+// assistant without usage does not shadow it.
+func TestMC_LastAnchoredTokenCount_PicksNewestUsageBearingAssistant(t *testing.T) {
+	t.Parallel()
+	estLen := func(s string) int { return len(s) }
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old")},
+			Usage: &types.Usage{InputTokens: 500}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("nilusage")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("u")}},
+	}
+	got, ok := lastAnchoredTokenCount(msgs, defaultMessageEnvelopeTokens, estLen)
+	if !ok {
+		t.Fatal("ok = false, want the older usage-bearing assistant to anchor")
+	}
+	want := 500 + (len("nilusage") + defaultMessageEnvelopeTokens) + (len("u") + defaultMessageEnvelopeTokens)
+	if got != want {
+		t.Errorf("anchored total = %d, want %d", got, want)
+	}
+}
+
+func TestMC_DefaultTimeBasedConfigConstants(t *testing.T) {
+	t.Parallel()
+	cfg := getTimeBasedMCConfig()
+	if cfg.GapThresholdMinutes != 60 {
+		t.Errorf("GapThresholdMinutes = %d, want 60 (prompt cache TTL)", cfg.GapThresholdMinutes)
+	}
+	if cfg.KeepRecent != 5 {
+		t.Errorf("KeepRecent = %d, want 5", cfg.KeepRecent)
+	}
+	if !cfg.Enabled {
+		t.Error("Enabled = false, want the default on")
+	}
+}
+
+// The suppression flag is the whole contract of the two helpers.
+// Not parallel: compactWarningSuppressed is process-global, and parallel
+// prune tests set it while this test asserts both polarities.
+func TestMC_SuppressAndClearCompactWarning(t *testing.T) {
+	clearCompactWarningSuppression()
+	suppressCompactWarning()
+	if !compactWarningSuppressed.Load() {
+		t.Error("suppressCompactWarning did not set the suppression flag")
+	}
+	clearCompactWarningSuppression()
+	if compactWarningSuppressed.Load() {
+		t.Error("clearCompactWarningSuppression did not clear the suppression flag")
+	}
+}
+
+// collectCompactableToolIds: assistant-only, compactable-tools-only, encounter order.
+func TestMC_CollectCompactableToolIds_FiltersRoleAndTool(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolUseBlock("u-read", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("a1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("a2", "WebFetch", json.RawMessage(`{}`)),
+			types.NewTextBlock("note"),
+			types.NewToolUseBlock("a3", "Bash", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleSystem, Content: []types.ContentBlock{
+			types.NewToolUseBlock("s1", "Grep", json.RawMessage(`{}`)),
+		}},
+	}
+	got := collectCompactableToolIds(msgs)
+	want := []string{"a1", "a3"}
+	if !slices.Equal(got, want) {
+		t.Errorf("collectCompactableToolIds = %v, want %v", got, want)
+	}
+}
+
+// gap == threshold fires (the guard rejects only a strictly smaller gap);
+// gap one minute under does not.
+func TestMC_EvaluateTimeBasedTrigger_ThresholdBoundary(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		at := func(d time.Duration) []types.Message {
+			return []types.Message{{Role: types.RoleAssistant, ID: "a-old", Timestamp: now.Add(d),
+				Content: []types.ContentBlock{types.NewTextBlock("a")}}}
+		}
+		if r := EvaluateTimeBasedTrigger(at(-59*time.Minute), QuerySourceReplMainThread); r != nil {
+			t.Errorf("59-minute gap fired (gap=%v), want nil below the 60-minute threshold", r.GapMinutes)
+		}
+		r := EvaluateTimeBasedTrigger(at(-60*time.Minute), QuerySourceReplMainThread)
+		if r == nil {
+			t.Fatal("a gap of exactly 60 minutes must fire")
+		}
+		if r.GapMinutes != 60 {
+			t.Errorf("GapMinutes = %v, want exactly 60", r.GapMinutes)
+		}
+	})
+}
+
+// The scan walks back to the LAST assistant, and the trigger reports which
+// message anchored the gap.
+func TestMC_EvaluateTimeBasedTrigger_LastAssistantEvidence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		old := now.Add(-90 * time.Minute)
+		msgs := []types.Message{
+			{Role: types.RoleAssistant, ID: "a-old", Timestamp: old,
+				Content: []types.ContentBlock{types.NewTextBlock("a")}},
+			{Role: types.RoleUser, ID: "u-new", Timestamp: now,
+				Content: []types.ContentBlock{types.NewTextBlock("u")}},
+		}
+		r := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread)
+		if r == nil {
+			t.Fatal("an assistant 90 minutes back must fire even when the newest message is a user turn")
+		}
+		if r.LastAssistantID != "a-old" {
+			t.Errorf("LastAssistantID = %q, want %q", r.LastAssistantID, "a-old")
+		}
+		if !r.LastAssistantTS.Equal(old) {
+			t.Errorf("LastAssistantTS = %v, want %v", r.LastAssistantTS, old)
+		}
+		if r.Config.GapThresholdMinutes != 60 {
+			t.Errorf("Config.GapThresholdMinutes = %d, want the config echoed back", r.Config.GapThresholdMinutes)
+		}
+	})
+}
+
+// mcClearScenario builds 7 compactable rounds; with KeepRecent=5 the two
+// oldest tool_results are cleared and the five newest stay intact. The caller
+// supplies the clock read so base derives from the bubble's virtual now.
+func mcClearScenario(t *testing.T, keepRecent int, now time.Time) ([]types.Message, int) {
+	t.Helper()
+	origCfg := defaultMicrocompactConfig
+	t.Cleanup(func() { defaultMicrocompactConfig = origCfg })
+	defaultMicrocompactConfig.TimeBased.KeepRecent = keepRecent
+	base := now.Add(-61 * time.Minute)
+	var msgs []types.Message
+	for i := 1; i <= 7; i++ {
+		id := fmt.Sprintf("t%d", i)
+		msgs = append(msgs, types.Message{
+			Role:      types.RoleAssistant,
+			Timestamp: base,
+			Content:   []types.ContentBlock{types.NewToolUseBlock(id, "Read", json.RawMessage(`{}`))},
+		})
+		msgs = append(msgs, types.Message{
+			Role:      types.RoleUser,
+			Timestamp: base,
+			Content:   []types.ContentBlock{types.NewToolResultBlock(id, json.RawMessage(`"payload-`+id+`"`), false)},
+		})
+	}
+	return msgs, 7
+}
+
+func mcClearedIDs(msgs []types.Message) []string {
+	var out []string
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeToolResult &&
+				string(b.Content) == `"`+TimeBasedMCClearedMessage+`"` {
+				out = append(out, b.ToolUseID)
+			}
+		}
+	}
+	return out
+}
+
+func TestMC_TimeBased_ClearsExactlyTheOldRounds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		msgs, _ := mcClearScenario(t, 5, time.Now())
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+		res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, logger)
+		if res == nil {
+			t.Fatal("expected a microcompact result")
+		}
+		got := mcClearedIDs(res.Messages)
+		want := []string{"t1", "t2"}
+		if !slices.Equal(got, want) {
+			t.Errorf("cleared tool_results = %v, want %v (KeepRecent 5 of 7)", got, want)
+		}
+		wantSaved := calculateToolResultTokens(json.RawMessage(`"payload-t1"`)) +
+			calculateToolResultTokens(json.RawMessage(`"payload-t2"`))
+		logged := buf.String()
+		if !strings.Contains(logged, fmt.Sprintf("tokens_saved=%d", wantSaved)) {
+			t.Errorf("log missing tokens_saved=%d; got:\n%s", wantSaved, logged)
+		}
+		if !strings.Contains(logged, "cleared=2") || !strings.Contains(logged, "kept=5") {
+			t.Errorf("log must report cleared=2 kept=5; got:\n%s", logged)
+		}
+	})
+}
+
+// A tool_result parked in an assistant message is out of scope: only user
+// messages carry tool_results the clearer may touch.
+func TestMC_TimeBased_IgnoresToolResultsOutsideUserMessages(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
+		base := time.Now().Add(-61 * time.Minute)
+		msgs := []types.Message{{
+			Role:      types.RoleAssistant,
+			Timestamp: base,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+				types.NewToolResultBlock("t1", json.RawMessage(`"in-assistant"`), false),
+			},
+		}}
+		if res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil); res != nil {
+			t.Errorf("result = non-nil, want nil: the only tool_result sits in an assistant message")
+		}
+	})
+}
+
+// Nothing to clear (every compactable id is kept) must be a no-op.
+func TestMC_TimeBased_NothingToClear(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		msgs, _ := mcClearScenario(t, 7, time.Now())
+		if res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil); res != nil {
+			t.Error("result = non-nil, want nil when KeepRecent covers every compactable tool use")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Token-pressure prune
+// ---------------------------------------------------------------------------
+
+func mcPruneScenario(keepRecent int) []types.Message {
+	// Fixed date: the token prune orders by transcript position and never
+	// compares timestamps against the clock.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var msgs []types.Message
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("p%d", i)
+		msgs = append(msgs, types.Message{
+			Role:      types.RoleAssistant,
+			Timestamp: base,
+			Content:   []types.ContentBlock{types.NewToolUseBlock(id, "Read", json.RawMessage(`{}`))},
+		})
+		msgs = append(msgs, types.Message{
+			Role:      types.RoleUser,
+			Timestamp: base,
+			Content:   []types.ContentBlock{types.NewToolResultBlock(id, json.RawMessage(`"body-`+id+`-body"`), false)},
+		})
+	}
+	return msgs
+}
+
+func TestMC_TokenPrune_BudgetBoundary(t *testing.T) {
+	t.Parallel()
+	cfg := TokenPruneConfig{Enabled: true, KeepRecent: 1}
+	msgs := mcPruneScenario(1)
+	if got := maybeTokenBasedMicrocompact(msgs, 1000, 1000, cfg, QuerySourceReplMainThread, nil); got != nil {
+		t.Errorf("currentTokens == tokenBudget pruned %d results, want nil (budget is inclusive)", got.Cleared)
+	}
+	got := maybeTokenBasedMicrocompact(msgs, 1001, 1000, cfg, QuerySourceReplMainThread, nil)
+	if got == nil {
+		t.Fatal("one token over budget must prune")
+	}
+	if got.Cleared != 3 {
+		t.Errorf("Cleared = %d, want 3 (4 compactable, KeepRecent 1)", got.Cleared)
+	}
+	wantSaved := 0
+	for i := 1; i <= 3; i++ {
+		wantSaved += calculateToolResultTokens(json.RawMessage(fmt.Sprintf(`"body-p%d-body"`, i)))
+	}
+	if got.TokensSaved != wantSaved {
+		t.Errorf("TokensSaved = %d, want %d (sum of the three cleared results)", got.TokensSaved, wantSaved)
+	}
+}
+
+func TestMC_TokenPrune_Guards(t *testing.T) {
+	t.Parallel()
+	msgs := mcPruneScenario(1)
+	disabled := TokenPruneConfig{Enabled: false, KeepRecent: 1}
+	if got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, disabled, QuerySourceReplMainThread, nil); got != nil {
+		t.Errorf("Enabled=false pruned %d results, want nil", got.Cleared)
+	}
+	if got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 1}, QuerySourceAgentCustom, nil); got != nil {
+		t.Errorf("sub-agent query source pruned %d results, want nil", got.Cleared)
+	}
+	if got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 4}, QuerySourceReplMainThread, nil); got != nil {
+		t.Errorf("KeepRecent covering every tool use pruned %d results, want nil", got.Cleared)
+	}
+}
+
+// KeepRecent is floored at 1: a zero config must not clear the newest result.
+func TestMC_TokenPrune_KeepRecentFlooredAtOne(t *testing.T) {
+	t.Parallel()
+	msgs := mcPruneScenario(0)
+	got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 0}, QuerySourceReplMainThread, nil)
+	if got == nil {
+		t.Fatal("expected a prune")
+	}
+	if got.Cleared != 3 {
+		t.Errorf("Cleared = %d, want 3 — KeepRecent 0 must floor to keeping exactly one result", got.Cleared)
+	}
+}
+
+// Exactly one clearable id is still a prune, and the log must report it.
+// Not parallel: the closing assertion reads the process-global suppression
+// flag, which the parallel SuppressAndClear test clears mid-flight.
+func TestMC_TokenPrune_SingleClearLogs(t *testing.T) {
+	msgs := mcPruneScenario(3)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 3}, QuerySourceReplMainThread, logger)
+	if got == nil {
+		t.Fatal("expected a prune of the single oldest result")
+	}
+	if got.Cleared != 1 {
+		t.Errorf("Cleared = %d, want 1", got.Cleared)
+	}
+	wantSaved := calculateToolResultTokens(json.RawMessage(`"body-p1-body"`))
+	logged := buf.String()
+	if !strings.Contains(logged, "engine:token_based_mc") {
+		t.Fatalf("missing engine:token_based_mc log; got:\n%s", logged)
+	}
+	for _, want := range []string{"current_tokens=10000", "budget=10", "cleared=1", "kept=3", fmt.Sprintf("tokens_saved=%d", wantSaved)} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("log missing %q; got:\n%s", want, logged)
+		}
+	}
+	if !compactWarningSuppressed.Load() {
+		t.Error("a token prune must suppress the autocompact warning")
+	}
+	clearCompactWarningSuppression()
+}
+
+// A tool_result living in an assistant message is out of scope for the pruner.
+func TestMC_TokenPrune_IgnoresToolResultsOutsideUserMessages(t *testing.T) {
+	t.Parallel()
+	// Fixed date: the token prune never reads the clock.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	msgs := []types.Message{{
+		Role:      types.RoleAssistant,
+		Timestamp: base,
+		Content: []types.ContentBlock{
+			types.NewToolUseBlock("p1", "Read", json.RawMessage(`{}`)),
+			types.NewToolResultBlock("p1", json.RawMessage(`"in-assistant"`), false),
+		},
+	}}
+	if got := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 0}, QuerySourceReplMainThread, nil); got != nil {
+		t.Errorf("result = non-nil, want nil: the only tool_result sits in an assistant message")
+	}
+}
+
+// The provider capability probe is honored: a provider that reports the chain
+// off must not be pruned.
+func TestMC_MicrocompactEnabledFollowsProvider(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mcOptOutProvider{}, Model: "test-model"})
+	t.Cleanup(func() { eng.Close() })
+	if eng.microcompactEnabled() {
+		t.Error("microcompactEnabled = true, want false for a provider reporting the chain off")
+	}
+	eng2 := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+	t.Cleanup(func() { eng2.Close() })
+	if !eng2.microcompactEnabled() {
+		t.Error("microcompactEnabled = false, want true for a provider without the capability")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Microcompact message-shape pins
+// ---------------------------------------------------------------------------
+
+// toolPairMessages builds an assistant tool_use + user tool_result pair for the
+// time-based pins. Default KeepRecent is 5, so 7 pairs leave 2 to clear.
+func toolPairMessages(id, tool, result string) []types.Message {
+	return []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock(id, tool, json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock(id, json.RawMessage(`"`+result+`"`), false),
+		}},
+	}
+}
+
+// gapMessages builds n Read pairs older than the 60-minute trigger.
+func gapMessages(n int) []types.Message {
+	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: the trigger measures the wall-clock gap
+	var msgs []types.Message
+	for i := range n {
+		pair := toolPairMessages(fmt.Sprintf("g%d", i), "Read", fmt.Sprintf("content-%d", i))
+		pair[0].Timestamp = old
+		pair[1].Timestamp = old
+		msgs = append(msgs, pair...)
+	}
+	return msgs
+}
+
+// blockContentOf returns the tool_result content for the block of message i
+// carrying the given tool_use id.
+func blockContentOf(msgs []types.Message, toolUseID string) (string, bool) {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeToolResult && b.ToolUseID == toolUseID {
+				return string(b.Content), true
+			}
+		}
+	}
+	return "", false
+}
+
+// The collector must gate on both the block type and the tool name: a text
+// block that happens to carry a compactable Name, and a tool_use for a
+// non-compactable tool, are both out of scope.
+func TestCollectCompactableToolIds_RequiresToolUseTypeAndCompactableName(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		{Type: types.ContentTypeText, ID: "cb_text", Name: "Read", Text: "named like a compactable tool"},
+		types.NewToolUseBlock("tu_task", "Task", json.RawMessage(`{}`)),
+		types.NewToolUseBlock("tu_read", "Read", json.RawMessage(`{}`)),
+	}}}
+	ids := collectCompactableToolIds(msgs)
+	if len(ids) != 1 || ids[0] != "tu_read" {
+		t.Errorf("collectCompactableToolIds = %v, want [tu_read]", ids)
+	}
+}
+
+// A document block priced at exactly one estimated token must bill that token
+// and not fall through to the size/4 estimate.
+func TestEstimateMessagesTokens_DocumentEstTokensOneIsUsed(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{
+		types.NewDocumentBlock("a.bin", "/x/a.bin", "application/octet-stream", 4000, 1),
+	}}}
+	got := EstimateMessagesTokens(msgs)
+	if want := 1 + defaultMessageEnvelopeTokens; got != want {
+		t.Errorf("document with EstTokens=1 estimated %d, want %d (est + envelope)", got, want)
+	}
+}
+
+// Usage on a non-assistant message is not an anchor: the estimation fallback
+// must still price the whole transcript.
+func TestTokenCountWithEstimation_IgnoresUsageOnNonAssistant(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("assistant turn")}},
+		{Role: types.RoleUser, Usage: &types.Usage{InputTokens: 50000, OutputTokens: 700},
+			Content: []types.ContentBlock{types.NewTextBlock("user turn")}},
+	}
+	got := TokenCountWithEstimation(msgs)
+	if want := EstimateMessagesTokens(msgs); got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (user usage must not anchor)", got, want)
+	}
+}
+
+// An assistant message without Usage is skipped while scanning backwards, not
+// dereferenced.
+func TestTokenCountWithEstimation_SkipsAssistantWithNilUsage(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("no usage yet")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("follow-up")}},
+	}
+	got := TokenCountWithEstimation(msgs)
+	if want := EstimateMessagesTokens(msgs); got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (nil Usage must be skipped)", got, want)
+	}
+}
+
+// The gap is measured from the NEWEST assistant message, not the first one
+// the backward scan meets.
+func TestEvaluateTimeBasedTrigger_AnchorsOnNewestAssistant(t *testing.T) {
+	t.Parallel()
+	base := time.Now() // REAL-TIME: the trigger compares against the wall clock
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, ID: "old", Timestamp: base.Add(-120 * time.Minute),
+			Content: []types.ContentBlock{types.NewTextBlock("older")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("ask")}},
+		{Role: types.RoleAssistant, ID: "new", Timestamp: base.Add(-90 * time.Minute),
+			Content: []types.ContentBlock{types.NewTextBlock("newer")}},
+	}
+	tr := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread)
+	if tr == nil {
+		t.Fatal("EvaluateTimeBasedTrigger = nil, want a trigger (90 min gap)")
+	}
+	if tr.LastAssistantID != "new" {
+		t.Errorf("LastAssistantID = %q, want %q", tr.LastAssistantID, "new")
+	}
+	if tr.GapMinutes < 89 || tr.GapMinutes > 92 {
+		t.Errorf("GapMinutes = %v, want ~90", tr.GapMinutes)
+	}
+}
+
+// A gap under the threshold must not trigger, whatever the Inf/NaN guards do.
+func TestEvaluateTimeBasedTrigger_UnderThresholdReturnsNil(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{{Role: types.RoleAssistant, ID: "recent",
+		Timestamp: time.Now().Add(-5 * time.Minute), // REAL-TIME: gap vs the 60 min threshold
+		Content:   []types.ContentBlock{types.NewTextBlock("recent")}}}
+	if tr := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread); tr != nil {
+		t.Errorf("EvaluateTimeBasedTrigger = %+v, want nil for a 5 minute gap", tr)
+	}
+}
+
+// The clear loop must not rewrite blocks it never touched: a user message
+// with no clearable content keeps its original (nil) content slice.
+func TestMaybeTimeBasedMicrocompact_UntouchedMessageKeepsNilContent(t *testing.T) {
+	t.Parallel()
+	msgs := gapMessages(7)
+	msgs = append(msgs, types.Message{Role: types.RoleUser})
+	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears (7 pairs, keepRecent 5)")
+	}
+	last := res.Messages[len(res.Messages)-1]
+	if last.Role != types.RoleUser {
+		t.Fatalf("last message role = %q, want user", last.Role)
+	}
+	if last.Content != nil {
+		t.Errorf("untouched user message Content = %#v, want nil (the message was not rewritten)", last.Content)
+	}
+}
+
+// A persisted tool_result keeps its preview, and finding one must not stop the
+// scan of the rest of the message.
+func TestMaybeTimeBasedMicrocompact_SkipsPersistedAndKeepsScanning(t *testing.T) {
+	t.Parallel()
+	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: past the 60 min trigger
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Timestamp: old, Content: []types.ContentBlock{
+			types.NewToolUseBlock("p1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p3", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p4", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p5", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p6", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("p7", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Timestamp: old, Content: []types.ContentBlock{
+			types.NewToolResultBlock("p1", json.RawMessage(`"<persisted-output>big</persisted-output>"`), false),
+			types.NewToolResultBlock("p2", json.RawMessage(`"plain two"`), false),
+			types.NewToolResultBlock("p3", json.RawMessage(`"plain three"`), false),
+			types.NewToolResultBlock("p4", json.RawMessage(`"plain four"`), false),
+			types.NewToolResultBlock("p5", json.RawMessage(`"plain five"`), false),
+			types.NewToolResultBlock("p6", json.RawMessage(`"plain six"`), false),
+			types.NewToolResultBlock("p7", json.RawMessage(`"plain seven"`), false),
+		}},
+	}
+	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
+	}
+	got, ok := blockContentOf(res.Messages, "p1")
+	if !ok {
+		t.Fatal("p1 tool_result missing from the result")
+	}
+	if !strings.Contains(got, "persisted-output") {
+		t.Errorf("persisted p1 was cleared: %s", got)
+	}
+	got, _ = blockContentOf(res.Messages, "p2")
+	if got != `"`+TimeBasedMCClearedMessage+`"` {
+		t.Errorf("p2 = %s, want cleared (the scan must continue past the persisted block)", got)
+	}
+	for _, id := range []string{"p3", "p6", "p7"} {
+		got, _ := blockContentOf(res.Messages, id)
+		if got == `"`+TimeBasedMCClearedMessage+`"` {
+			t.Errorf("%s = cleared, want kept (within the recent window)", id)
+		}
+	}
+}
+
+// Only tool_result blocks inside the clear set are rewritten: a non-result
+// block carrying a cleared tool_use_id, and a result inside the keep window,
+// both stay verbatim.
+func TestMaybeTimeBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T) {
+	t.Parallel()
+	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: past the 60 min trigger
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Timestamp: old, Content: []types.ContentBlock{
+			types.NewToolUseBlock("c1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c3", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c4", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c5", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c6", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c7", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Timestamp: old, Content: []types.ContentBlock{
+			types.NewToolResultBlock("c1", json.RawMessage(`"result content number one"`), false),
+			{Type: types.ContentTypeText, ToolUseID: "c1", Content: json.RawMessage(`"text block sharing a cleared id"`)},
+			types.NewToolResultBlock("c2", json.RawMessage(`"result content number two"`), false),
+			types.NewToolResultBlock("c3", json.RawMessage(`"result content number three"`), false),
+			types.NewToolResultBlock("c4", json.RawMessage(`"result content number four"`), false),
+			types.NewToolResultBlock("c5", json.RawMessage(`"result content number five"`), false),
+			types.NewToolResultBlock("c6", json.RawMessage(`"result content number six"`), false),
+			types.NewToolResultBlock("c7", json.RawMessage(`"result content number seven"`), false),
+		}},
+	}
+	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
+	}
+	user := res.Messages[1]
+	if string(user.Content[1].Content) != `"text block sharing a cleared id"` {
+		t.Errorf("text block was rewritten to %s, want untouched (only tool_result blocks are cleared)", user.Content[1].Content)
+	}
+	got, _ := blockContentOf(res.Messages, "c1")
+	if got != `"`+TimeBasedMCClearedMessage+`"` {
+		t.Errorf("c1 = %s, want cleared", got)
+	}
+	for _, id := range []string{"c5", "c6", "c7"} {
+		got, _ := blockContentOf(res.Messages, id)
+		if got == `"`+TimeBasedMCClearedMessage+`"` {
+			t.Errorf("%s = cleared, want kept (within the recent window)", id)
+		}
+	}
+}
+
+// A time-based clear suppresses the "context left" warning for the turn.
+func TestMaybeTimeBasedMicrocompact_SuppressesCompactWarning(t *testing.T) {
+	clearCompactWarningSuppression()
+	t.Cleanup(clearCompactWarningSuppression)
+	if res := maybeTimeBasedMicrocompact(gapMessages(7), QuerySourceReplMainThread, nil); res == nil {
+		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
+	}
+	if !compactWarningSuppressed.Load() {
+		t.Error("compactWarningSuppressed = false after a time-based clear")
+	}
+}
+
+// cacheDeletionApplied drives pkg/llm's break-detection state machine for
+// a tracked query source and reports whether the deletion notice was applied.
+// NotifyCacheDeletion only marks a tracked key; the marker surfaces as the
+// deletion_applied record on the next response check, which is the only
+// cross-package read of it. Only the anthropic provider drives this state in
+// tests, so the key is free for the pins below.
+func cacheDeletionApplied(t *testing.T, querySource string, prev, curr int, notify func()) bool {
+	t.Helper()
+	key := llm.PromptStateKey{QuerySource: querySource}
+	logs := captureSlog(t)
+	sys := []map[string]any{{"type": "text", "text": "system prompt"}}
+	llm.RecordPromptState(sys, nil, key, "gtest-model", nil, "", false, false, false, false, "", 0)
+	llm.CheckResponseForCacheBreak(key, prev, 0, nil)
+	notify()
+	llm.CheckResponseForCacheBreak(key, curr, 0, nil)
+	_, found := logs.find("prompt_cache:deletion_applied", func(a map[string]any) bool {
+		return attrInt(a["cacheReadPrev"]) == int64(prev) && attrInt(a["cacheReadCurr"]) == int64(curr)
+	})
+	return found
+}
+
+// The time-based clear must tell cache-break detection that the prompt lost
+// content, under this query source.
+func TestMaybeTimeBasedMicrocompact_NotifiesCacheDeletionForQuerySource(t *testing.T) {
+	const src = QuerySourceReplMainThread
+	if !cacheDeletionApplied(t, src, 4000, 3900, func() {
+		if r := maybeTimeBasedMicrocompact(gapMessages(7), src, nil); r == nil {
+			t.Error("time-based clear returned nil")
+		}
+	}) {
+		t.Error("no prompt_cache:deletion_applied record for the cleared query source")
+	}
+}
+
+// The token-based clear must notify cache-break detection under the query
+// source it was asked about, not an empty key.
+func TestMaybeTokenBasedMicrocompact_NotifiesCacheDeletionForQuerySource(t *testing.T) {
+	const src = QuerySourceReplMainThread + ":outputStyle:gtest"
+	prune := TokenPruneConfig{Enabled: true, KeepRecent: 2}
+	if !cacheDeletionApplied(t, src, 5000, 4900, func() {
+		if r := maybeTokenBasedMicrocompact(gapMessages(7), 50000, 10000, prune, src, nil); r == nil {
+			t.Error("token-based prune returned nil")
+		}
+	}) {
+		t.Error("no prompt_cache:deletion_applied record for the pruned query source")
+	}
+}
+
+// The token-based walk must copy every message it inspects: an untouched
+// message keeps its role and content, and one with no blocks keeps a nil
+// content slice.
+func TestMaybeTokenBasedMicrocompact_UntouchedMessagesKeepTheirShape(t *testing.T) {
+	t.Parallel()
+	msgs := gapMessages(7)
+	msgs = append(msgs,
+		types.Message{Role: types.RoleUser},
+		types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("trailing reply")}},
+	)
+	res := maybeTokenBasedMicrocompact(msgs, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 2}, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTokenBasedMicrocompact = nil, want clears")
+	}
+	if len(res.Messages) != len(msgs) {
+		t.Fatalf("result has %d messages, want %d", len(res.Messages), len(msgs))
+	}
+	empty := res.Messages[len(msgs)-2]
+	if empty.Role != types.RoleUser {
+		t.Errorf("untouched empty user message role = %q, want user", empty.Role)
+	}
+	if empty.Content != nil {
+		t.Errorf("untouched empty user message Content = %#v, want nil", empty.Content)
+	}
+	tail := res.Messages[len(msgs)-1]
+	if tail.Role != types.RoleAssistant || len(tail.Content) != 1 || tail.Content[0].Text != "trailing reply" {
+		t.Errorf("trailing assistant message = %+v, want the original message", tail)
+	}
+}
+
+// Same gate as the time-based path: only tool_result blocks in the clear set
+// are rewritten.
+func TestMaybeTokenBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("k1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("k2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("k3", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("k4", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("k1", json.RawMessage(`"pruned result content one"`), false),
+			{Type: types.ContentTypeText, ToolUseID: "k1", Content: json.RawMessage(`"text block sharing a cleared id"`)},
+			types.NewToolResultBlock("k2", json.RawMessage(`"pruned result content two"`), false),
+			types.NewToolResultBlock("k3", json.RawMessage(`"pruned result content three"`), false),
+			types.NewToolResultBlock("k4", json.RawMessage(`"pruned result content four"`), false),
+		}},
+	}
+	res := maybeTokenBasedMicrocompact(msgs, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 2}, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTokenBasedMicrocompact = nil, want clears")
+	}
+	if res.Cleared != 2 {
+		t.Errorf("Cleared = %d, want 2 (k1, k2)", res.Cleared)
+	}
+	user := res.Messages[1]
+	if string(user.Content[1].Content) != `"text block sharing a cleared id"` {
+		t.Errorf("text block was rewritten to %s, want untouched", user.Content[1].Content)
+	}
+	for _, id := range []string{"k1", "k2"} {
+		got, _ := blockContentOf(res.Messages, id)
+		if got != `"`+TokenPrunedMessage+`"` {
+			t.Errorf("%s = %s, want cleared", id, got)
+		}
+	}
+	for _, id := range []string{"k3", "k4"} {
+		got, _ := blockContentOf(res.Messages, id)
+		if got == `"`+TokenPrunedMessage+`"` {
+			t.Errorf("%s = cleared, want kept (within the recent window)", id)
+		}
+	}
+}
+
+// mcOptInProvider reports the microcompact chain as available.
+type mcOptInProvider struct {
+	mockProvider
+}
+
+func (m *mcOptInProvider) MicrocompactEnabled() bool { return true }
+
+// A provider that reports the chain on must keep it on: the capability's own
+// answer, not a constant, decides.
+func TestMicrocompactEnabled_FollowsProviderReportingOn(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mcOptInProvider{}, Model: "test-model"})
+	t.Cleanup(func() { eng.Close() })
+	if !eng.microcompactEnabled() {
+		t.Error("microcompactEnabled = false, want true for a provider reporting the chain on")
 	}
 }

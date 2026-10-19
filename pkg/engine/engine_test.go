@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -21,7 +23,11 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/glob"
@@ -6174,5 +6180,4879 @@ func TestTerminalAPIErrorFiresStopFailureNotStop(t *testing.T) {
 	}
 	if cwd != dir {
 		t.Errorf("StopFailure hook input Cwd = %q, want the engine's working dir %q", cwd, dir)
+	}
+}
+
+// ===========================================================================
+// Engine loop pins: exit traces, compact, skills, attachments
+// ===========================================================================
+
+// slogCapture is a slog.Handler that records every record with its attributes,
+// so log-only statements (which have no other observable effect) stay asserted.
+
+// awaitErrorEvents waits (bounded, signal-polled) until the collector holds at
+// least n error-carrying events, then returns them.
+func awaitErrorEvents(ec *eventCollector, n int) []types.QueryEvent {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out []types.QueryEvent
+	for {
+		out = nil
+		for _, ev := range ec.Events() {
+			if ev.Error != nil {
+				out = append(out, ev)
+			}
+		}
+		if len(out) >= n {
+			return out
+		}
+		select {
+		case <-ctx.Done():
+			return out
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func silentLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// waitEngineIdle blocks until the engine reports idle, i.e. its query goroutine
+// has run every exit defer. Query registers ownership synchronously, so the
+// flag is already set when Query returns — no sleep-then-assert window.
+func waitEngineIdle(t *testing.T, e *Engine) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for e.IsBusy() {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waitEngineIdle: engine still busy after %v", 5*time.Second)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func TestAutoCompactBuffer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ window, want int }{
+		{200_000, 14_000}, // 7% of the window, the TS-13K equivalent point
+		{43_000, 3_010},   // just above the floor
+		{42_000, 3_000},   // 2940 → floor wins
+		{10_000, 3_000},
+		{0, 3_000},
+	} {
+		if got := autoCompactBuffer(tc.window); got != tc.want {
+			t.Errorf("autoCompactBuffer(%d) = %d, want %d", tc.window, got, tc.want)
+		}
+	}
+}
+
+func TestLastAssistantText(t *testing.T) {
+	t.Parallel()
+	assistant := func(texts ...string) types.Message {
+		m := types.Message{Role: types.RoleAssistant}
+		for _, s := range texts {
+			m.Content = append(m.Content, types.NewTextBlock(s))
+		}
+		return m
+	}
+	user := func(s string) types.Message {
+		return types.NewUserMessage([]types.ContentBlock{types.NewTextBlock(s)})
+	}
+
+	// A trailing user message must be skipped, not read.
+	if got := lastAssistantText([]types.Message{assistant("older"), user("newest")}); got != "older" {
+		t.Errorf("lastAssistantText with trailing user message = %q, want %q", got, "older")
+	}
+	// No assistant at all → empty.
+	if got := lastAssistantText([]types.Message{user("a"), user("b")}); got != "" {
+		t.Errorf("lastAssistantText without assistant = %q, want empty", got)
+	}
+	if got := lastAssistantText(nil); got != "" {
+		t.Errorf("lastAssistantText(nil) = %q, want empty", got)
+	}
+	// Only text blocks concatenate; tool_use blocks are skipped.
+	withTool := assistant("part1 ", "part2")
+	withTool.Content = append(withTool.Content, types.ContentBlock{
+		Type: types.ContentTypeToolUse, ID: "t1", Name: "X",
+	})
+	if got := lastAssistantText([]types.Message{withTool}); got != "part1 part2" {
+		t.Errorf("lastAssistantText mixed blocks = %q, want %q", got, "part1 part2")
+	}
+	// The LAST assistant wins, not the first one found.
+	if got := lastAssistantText([]types.Message{assistant("first"), assistant("second")}); got != "second" {
+		t.Errorf("lastAssistantText two assistants = %q, want %q", got, "second")
+	}
+}
+
+func TestNewDefaults(t *testing.T) {
+	t.Parallel()
+	pc := &mockPermChecker{hasRules: true}
+	e := New(&Params{
+		Provider:          &mockProvider{},
+		Model:             "test-model",
+		PermissionChecker: pc,
+		AutoCompact:       AutoCompactConfig{ContextWindow: 1},
+	})
+	t.Cleanup(func() { e.Close() })
+
+	if !slices.Equal(e.inputModalities, []string{"text"}) {
+		t.Errorf("inputModalities = %v, want the conservative default [text]", e.inputModalities)
+	}
+	if e.taskList == nil {
+		t.Fatal("taskList must be auto-created when Params.TaskList is nil")
+	}
+	if got := e.taskList.Dir(); got != "" {
+		t.Errorf("auto-created taskList Dir() = %q, want empty (resolved per session)", got)
+	}
+	if e.permissionChecker != pc {
+		t.Errorf("permissionChecker = %v, want the injected checker %v", e.permissionChecker, pc)
+	}
+	if e.compactor == nil {
+		t.Fatal("compactor must be auto-created when AutoCompact.ContextWindow > 0")
+	}
+}
+
+func TestNewKeepsExplicitModalities(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{
+		Provider:        &mockProvider{},
+		Model:           "test-model",
+		InputModalities: []string{"image"},
+	})
+	t.Cleanup(func() { e.Close() })
+	if !slices.Equal(e.inputModalities, []string{"image"}) {
+		t.Errorf("inputModalities = %v, want the injected [image]", e.inputModalities)
+	}
+}
+
+func TestNewCompactorAutoCreateGuards(t *testing.T) {
+	t.Parallel()
+	// No provider → nothing to compact with, so no auto-compactor.
+	noProvider := New(&Params{Model: "test-model", AutoCompact: AutoCompactConfig{ContextWindow: 50_000}})
+	t.Cleanup(func() { noProvider.Close() })
+	if noProvider.compactor != nil {
+		t.Error("compactor must stay nil when no provider is configured")
+	}
+	// An injected compactor must never be replaced by the auto-created one.
+	injected := &mockCompactor{}
+	e := New(&Params{
+		Provider:    &mockProvider{},
+		Model:       "test-model",
+		Compactor:   injected,
+		AutoCompact: AutoCompactConfig{ContextWindow: 50_000},
+	})
+	t.Cleanup(func() { e.Close() })
+	if e.compactor != Compactor(injected) {
+		t.Errorf("compactor = %v, want the injected compactor to survive", e.compactor)
+	}
+	// ContextWindow 0 disables proactive compaction entirely.
+	off := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+	t.Cleanup(func() { off.Close() })
+	if off.compactor != nil {
+		t.Error("compactor must stay nil when AutoCompact.ContextWindow is 0")
+	}
+}
+
+func TestEnqueueAttachmentLogPreview(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: slog.New(logs)})
+	t.Cleanup(func() { e.Close() })
+
+	const eighty = "01234567890123456789012345678901234567890123456789012345678901234567890123456789"
+	if len(eighty) != 80 {
+		t.Fatalf("fixture length = %d, want 80", len(eighty))
+	}
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"short", "hello", "hello"},
+		{"exactly-80", eighty, eighty},
+		{"81-chars", eighty + "x", eighty + "..."},
+	}
+	for _, tc := range cases {
+		logs.mu.Lock()
+		logs.calls = nil
+		logs.mu.Unlock()
+		e.EnqueueAttachment(types.QueuedItem{UUID: "u-" + tc.name, Mode: types.ItemModeJob, Value: tc.value})
+		recs := logs.all("engine:attachment_enqueued")
+		if len(recs) != 1 {
+			t.Fatalf("%s: %d attachment_enqueued records, want exactly 1", tc.name, len(recs))
+		}
+		if got := recs[0].attrs["value_preview"]; got != tc.want {
+			t.Errorf("%s: value_preview = %q, want %q", tc.name, got, tc.want)
+		}
+		if got := recs[0].attrs["mode"]; got != any(types.ItemModeJob) {
+			t.Errorf("%s: mode = %v, want %v", tc.name, got, types.ItemModeJob)
+		}
+		if got := recs[0].attrs["priority"]; got != any(types.PriorityNext) {
+			t.Errorf("%s: priority = %v, want %v", tc.name, got, types.PriorityNext)
+		}
+	}
+}
+
+func TestDrainQueuedUserAttachmentsOnlyDrainsPrompts(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	e.EnqueueAttachment(types.QueuedItem{UUID: "note-1", Mode: types.ItemModeNotification, Value: "a note"})
+	e.EnqueueAttachment(types.QueuedItem{UUID: "prompt-1", Mode: types.ItemModePrompt, Value: "a prompt"})
+	before := len(e.Messages())
+
+	e.drainQueuedUserAttachments()
+
+	if got := e.attachments.Len(); got != 1 {
+		t.Errorf("queue length after drain = %d, want 1 (the notification must stay queued)", got)
+	}
+	msgs := e.Messages()
+	if len(msgs) != before+1 {
+		t.Fatalf("history grew by %d messages, want exactly 1", len(msgs)-before)
+	}
+	if msgs[before].ID != "prompt-1" {
+		t.Errorf("drained message ID = %q, want the prompt item %q", msgs[before].ID, "prompt-1")
+	}
+	if msgs[before].Role != types.RoleUser {
+		t.Errorf("drained message role = %v, want user", msgs[before].Role)
+	}
+}
+
+func TestQueuedInsertIndex(t *testing.T) {
+	t.Parallel()
+	assistantText := func(s string) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(s)}}
+	}
+	assistantToolUse := func(id string) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: id, Name: "X"},
+		}}
+	}
+	userToolResult := func(id string) types.Message {
+		return types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: id},
+		}}
+	}
+	userToolUse := func(id string) types.Message {
+		return types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: id, Name: "X"},
+		}}
+	}
+	assistantToolResult := func(id string) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: id},
+		}}
+	}
+
+	// Unpaired tool_use → insert before the assistant that owns it.
+	if got := queuedInsertIndex([]types.Message{
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("hi")}),
+		assistantToolUse("t1"),
+	}); got != 1 {
+		t.Errorf("unpaired tool_use: index = %d, want 1", got)
+	}
+	// Paired tool_use → plain append.
+	if got := queuedInsertIndex([]types.Message{assistantToolUse("t1"), userToolResult("t1")}); got != 2 {
+		t.Errorf("paired tool_use: index = %d, want 2", got)
+	}
+	// A tool_result on a NON-user message does not count as a pairing.
+	if got := queuedInsertIndex([]types.Message{
+		assistantToolResult("t1"),
+		assistantToolUse("t1"),
+	}); got != 1 {
+		t.Errorf("tool_result on assistant: index = %d, want 1 (only user messages pair)", got)
+	}
+	// A tool_use on a NON-assistant message is not a scan target.
+	if got := queuedInsertIndex([]types.Message{
+		assistantText("done"),
+		userToolUse("t9"),
+	}); got != 2 {
+		t.Errorf("tool_use on user: index = %d, want 2 (only assistant messages are scanned)", got)
+	}
+	// The backward scan must skip non-assistant messages, not stop at them.
+	if got := queuedInsertIndex([]types.Message{
+		assistantToolUse("t1"),
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("x")}),
+	}); got != 0 {
+		t.Errorf("assistant behind a user message: index = %d, want 0", got)
+	}
+	// Empty history appends at 0.
+	if got := queuedInsertIndex(nil); got != 0 {
+		t.Errorf("empty history: index = %d, want 0", got)
+	}
+}
+
+func TestRemoveAttachment(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: slog.New(logs)})
+	t.Cleanup(func() { e.Close() })
+
+	// An empty uuid is never a match, even for a queued item that carries one.
+	e.EnqueueAttachment(types.QueuedItem{UUID: "", Mode: types.ItemModeJob, Value: "blank uuid"})
+	if e.RemoveAttachment("") {
+		t.Error("RemoveAttachment(\"\") must report no removal")
+	}
+	if got := e.attachments.Len(); got != 1 {
+		t.Errorf("queue length = %d, want 1 (the blank-uuid item must stay)", got)
+	}
+
+	e.EnqueueAttachment(types.QueuedItem{UUID: "u1", Mode: types.ItemModeJob, Value: "x"})
+	if !e.RemoveAttachment("u1") {
+		t.Error("RemoveAttachment(u1) must report removal")
+	}
+	if got := e.attachments.Len(); got != 1 {
+		t.Errorf("queue length after removing u1 = %d, want 1", got)
+	}
+	if e.RemoveAttachment("missing") {
+		t.Error("RemoveAttachment(missing) must report no removal")
+	}
+
+	recs := logs.all("engine:attachment_removed")
+	if len(recs) != 1 {
+		t.Fatalf("%d attachment_removed records, want exactly 1", len(recs))
+	}
+	if got := recs[0].attrs["uuid"]; got != "u1" {
+		t.Errorf("attachment_removed uuid = %v, want u1", got)
+	}
+}
+
+func TestAbort(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: slog.New(logs)})
+	t.Cleanup(func() { e.Close() })
+
+	// Nothing active → the noop branch logs.
+	e.Abort()
+	if recs := logs.all("engine:abort_noop_no_active_cancel"); len(recs) != 1 {
+		t.Errorf("%d abort_noop records, want exactly 1", len(recs))
+	}
+
+	// The cancel call must run while activeCancelMu is still held: a probe
+	// that re-locks from inside the cancel can only fail in the correct code.
+	reentrant := false
+	e.beginQuery(func() {
+		reentrant = e.activeCancelMu.TryLock()
+		if reentrant {
+			e.activeCancelMu.Unlock()
+		}
+	})
+	e.Abort()
+	if reentrant {
+		t.Error("Abort released activeCancelMu before the cancel call returned")
+	}
+	if e.activeCancel != nil {
+		t.Error("Abort must clear activeCancel after cancelling")
+	}
+	if recs := logs.all("engine:abort_entered"); len(recs) != 1 {
+		t.Errorf("%d abort_entered records, want exactly 1", len(recs))
+	}
+	if recs := logs.all("engine:abort_cancel_returned"); len(recs) != 1 {
+		t.Errorf("%d abort_cancel_returned records, want exactly 1", len(recs))
+	}
+	// A second Abort with nothing active goes back to the noop branch.
+	e.Abort()
+	if recs := logs.all("engine:abort_noop_no_active_cancel"); len(recs) != 2 {
+		t.Errorf("%d abort_noop records after the second Abort, want 2", len(recs))
+	}
+}
+
+func TestBeginQueryIfIdleRejectsClosingEngine(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	e.closing = true
+	tok, ok := e.beginQueryIfIdle(func() {})
+	if tok != 0 || ok {
+		t.Errorf("beginQueryIfIdle on a closing engine = (%d, %v), want (0, false)", tok, ok)
+	}
+	if e.queryActive.Load() != 0 {
+		t.Error("a closing engine must not be marked busy")
+	}
+}
+
+func TestEndQuery(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	// Token 0 means "no ownership": it must never release anyone's state.
+	e.queryActive.Store(1)
+	e.endQuery(0)
+	if got := e.queryActive.Load(); got != 0 && got != 1 {
+		t.Fatalf("queryActive after endQuery(0) = %d, want unchanged", got)
+	}
+	if got := e.queryActive.Load(); got != 1 {
+		t.Errorf("endQuery(0) changed queryActive to %d, want 1 (no ownership, no cleanup)", got)
+	}
+
+	// The owner releases its own state.
+	tok := e.beginQuery(func() {})
+	if tok == 0 {
+		t.Fatal("beginQuery on an open engine must return a non-zero token")
+	}
+	e.endQuery(tok)
+	if got := e.queryActive.Load(); got != 0 {
+		t.Errorf("queryActive after the owner's endQuery = %d, want 0", got)
+	}
+	if e.activeCancel != nil {
+		t.Error("endQuery must clear activeCancel")
+	}
+
+	// A stale token must not clobber the newer owner.
+	first := e.beginQuery(func() {})
+	second := e.beginQuery(func() {})
+	if second <= first {
+		t.Fatalf("tokens must be monotonic: first=%d second=%d", first, second)
+	}
+	e.endQuery(first)
+	if got := e.queryActive.Load(); got != 1 {
+		t.Errorf("stale endQuery cleared the busy flag (%d), want 1", got)
+	}
+	e.endQuery(second)
+	if got := e.queryActive.Load(); got != 0 {
+		t.Errorf("queryActive after the current owner's endQuery = %d, want 0", got)
+	}
+}
+
+// panickingProvider panics inside Stream, reaching Query's recover.
+type panickingProvider struct{}
+
+func (p *panickingProvider) Name() string { return "panicker" }
+
+func (p *panickingProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	panic("provider stream exploded")
+}
+
+func (p *panickingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	panic("provider stream exploded")
+}
+
+func TestQueryPanicEmitsQueryEnd(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	e := New(&Params{
+		Provider:   &panickingProvider{},
+		Model:      "test-model",
+		Logger:     silentLogger(),
+		Dispatcher: ec,
+	})
+	e.Query(context.Background(), "hi", "")
+	waitEngineIdle(t, e)
+	e.Close() // joins the query goroutine: every event is dispatched by return
+
+	var errEvents []types.QueryEvent
+	for _, ev := range ec.Events() {
+		if ev.Error != nil {
+			errEvents = append(errEvents, ev)
+		}
+	}
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error-carrying events after a panicking query, want exactly 1", len(errEvents))
+	}
+	if errEvents[0].Type != types.EventQueryEnd {
+		t.Errorf("panic event type = %v, want %v", errEvents[0].Type, types.EventQueryEnd)
+	}
+	if !strings.Contains(errEvents[0].Error.Error(), "provider stream exploded") {
+		t.Errorf("panic event error = %q, want it to carry the panic value", errEvents[0].Error.Error())
+	}
+}
+
+func TestQueryPanicLogs(t *testing.T) {
+	// slog.Error is the package-level default logger, so the capture has to
+	// swap it; sequential (non-parallel) keeps the global swap race-free.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+
+	e := New(&Params{
+		Provider: &panickingProvider{},
+		Model:    "test-model",
+		Logger:   silentLogger(),
+	})
+	e.Query(context.Background(), "hi", "")
+	waitEngineIdle(t, e)
+	e.Close()
+
+	recs := logs.all("engine: panic in queryLoop")
+	if len(recs) != 1 {
+		t.Fatalf("%d panic records, want exactly 1", len(recs))
+	}
+	if recs[0].level != slog.LevelError {
+		t.Errorf("panic record level = %v, want error", recs[0].level)
+	}
+	if got := fmt.Sprint(recs[0].attrs["error"]); got != "provider stream exploded" {
+		t.Errorf("panic record error = %q, want %q", got, "provider stream exploded")
+	}
+	if got, ok := recs[0].attrs["stack"]; !ok || !strings.Contains(fmt.Sprint(got), "panickingProvider") {
+		t.Errorf("panic record stack = %v, want the panic stack", got)
+	}
+}
+
+func TestProcessAttachmentsBusyFlag(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: textStreamEvents("test-model", "done"),
+		hang:   hang,
+	})
+	e := New(&Params{Provider: mp, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	e.EnqueueAttachment(types.QueuedItem{UUID: "p1", Mode: types.ItemModePrompt, Value: "go"})
+	e.ProcessAttachments(context.Background(), "sp")
+
+	waitForCallCount(t, mp, 1, 5*time.Second)
+	if !e.IsBusy() {
+		t.Error("engine must report busy while attachment processing runs a turn")
+	}
+	close(hang)
+	e.Close()
+	if e.IsBusy() {
+		t.Error("engine must be idle once attachment processing finishes")
+	}
+}
+
+func TestProcessAttachmentsReKicksOnExit(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses,
+		mockResponse{events: textStreamEvents("test-model", "first"), hang: hang},
+		mockResponse{events: textStreamEvents("test-model", "second")},
+	)
+	e := New(&Params{Provider: mp, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	// The engine gets its prompt only after the first enqueue, so the
+	// enqueue-time kick stays inert and the exit kick is the sole path that can
+	// run the second item.
+	e.EnqueueAttachment(types.QueuedItem{UUID: "p1", Mode: types.ItemModePrompt, Value: "go"})
+	e.SetSystemPrompt("sp")
+	e.ProcessAttachments(context.Background(), "sp")
+	waitForCallCount(t, mp, 1, 5*time.Second)
+
+	// A job item is invisible to the in-loop prompt drain, so only the exit
+	// kick can ever run it.
+	e.EnqueueAttachment(types.QueuedItem{UUID: "j1", Mode: types.ItemModeJob, Value: "later job"})
+	close(hang)
+	waitForCallCount(t, mp, 2, 5*time.Second)
+	want := 0 // both drained items were consumed by the exit kick
+	if got := e.attachments.Len(); got != want {
+		t.Errorf("queue length after the exit kick = %d, want %d", got, want)
+	}
+}
+
+func TestToolRefsRoundTrip(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	refs := ToolRefs{Reg: tool.NewRegistry()}
+	if got := e.ToolRefs(); got != (ToolRefs{}) {
+		t.Errorf("ToolRefs before SetToolRefs = %+v, want the zero value", got)
+	}
+	e.SetToolRefs(refs)
+	if got := e.ToolRefs(); got != refs {
+		t.Errorf("ToolRefs after SetToolRefs = %+v, want %+v", got, refs)
+	}
+	if e.ToolRefs().Reg != refs.Reg {
+		t.Error("ToolRefs().Reg must be the registry that was set")
+	}
+}
+
+func TestAppendDrainedItemPerMode(t *testing.T) {
+	t.Parallel()
+	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { e.Close() })
+
+	promptMsg := e.appendDrainedItem(types.QueuedItem{UUID: "p1", Mode: types.ItemModePrompt, Value: "hello"})
+	if promptMsg == nil {
+		t.Fatal("a prompt item must produce an attachment message")
+	}
+	if promptMsg.ID != "p1" || promptMsg.Role != types.RoleUser {
+		t.Errorf("prompt message = (%q, %v), want (p1, user)", promptMsg.ID, promptMsg.Role)
+	}
+	if promptMsg.MessageType != types.MessageTypeAttachment {
+		t.Errorf("prompt message type = %v, want attachment", promptMsg.MessageType)
+	}
+	if promptMsg.Attachment == nil || promptMsg.Attachment.Prompt != "hello" {
+		t.Errorf("prompt message attachment = %+v, want the item value", promptMsg.Attachment)
+	}
+	for _, mode := range []types.ItemMode{types.ItemModeJob, types.ItemModeMessage, types.ItemModeNotification} {
+		if got := e.appendDrainedItem(types.QueuedItem{UUID: "u-" + string(mode), Mode: mode, Value: "v"}); got != nil {
+			t.Errorf("appendDrainedItem(%v) = %+v, want nil (reminder items emit their own event)", mode, got)
+		}
+	}
+	if got := len(e.Messages()); got != 4 {
+		t.Errorf("history length = %d, want 4 (one per drained item)", got)
+	}
+}
+
+func TestQueryOnClosedEngine(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	e := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test-model",
+		Logger:     silentLogger(),
+		Dispatcher: ec,
+	})
+	e.Close()
+	e.Query(context.Background(), "hi", "")
+
+	errEvents := awaitErrorEvents(ec, 1)
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error events on a closed engine, want exactly 1", len(errEvents))
+	}
+	if errEvents[0].Type != types.EventQueryEnd {
+		t.Errorf("closed-engine event type = %v, want %v", errEvents[0].Type, types.EventQueryEnd)
+	}
+	if got := errEvents[0].Error.Error(); got != "engine: query on closed engine" {
+		t.Errorf("closed-engine error = %q, want the closed-engine message", got)
+	}
+	if mp, ok := e.provider.(*mockProvider); ok && mp.callCount() != 0 {
+		t.Errorf("closed engine made %d provider calls, want 0", mp.callCount())
+	}
+}
+
+// runAgentDeps is the minimal SharedDeps bundle RunAgent needs.
+func runAgentDeps(t *testing.T) SharedDeps {
+	t.Helper()
+	return SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+}
+
+func runAgentTools() map[string]tool.Tool {
+	return map[string]tool.Tool{
+		"Read": &mockTool{name: "Read", enabled: true},
+		"Grep": &mockTool{name: "Grep", enabled: true},
+	}
+}
+
+// runAgentOnce runs one sub-agent and returns the request the sub-engine sent.
+func runAgentOnce(t *testing.T, mp *mockProvider, opts agenttool.AgentOpts, tools map[string]tool.Tool, deps *SharedDeps) *llm.Request {
+	t.Helper()
+	if tools == nil {
+		tools = runAgentTools()
+	}
+	d := runAgentDeps(t)
+	if deps != nil {
+		d = *deps
+	}
+	eng := New(&Params{
+		Provider:      mp,
+		Model:         "parent-model",
+		Logger:        silentLogger(),
+		ToolsProvider: func() map[string]tool.Tool { return tools },
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+	if _, err := eng.RunAgent(context.Background(), opts); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	req := mp.lastRequest
+	if req == nil {
+		t.Fatal("sub-engine never sent a request")
+	}
+	return req
+}
+
+func requestToolNames(req *llm.Request) []string {
+	names := make([]string, 0, len(req.Tools))
+	for _, td := range req.Tools {
+		names = append(names, td.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func TestRunAgentModelResolution(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		opts agenttool.AgentOpts
+		want string
+	}{
+		{"inherit-by-default", agenttool.AgentOpts{Prompt: "p", AgentType: "General"}, "parent-model"},
+		{"explicit-model", agenttool.AgentOpts{Prompt: "p", AgentType: "General", Model: "child-model"}, "child-model"},
+		{"literal-inherit", agenttool.AgentOpts{Prompt: "p", AgentType: "General", Model: "inherit"}, "parent-model"},
+		{"tier-resolved", agenttool.AgentOpts{
+			Prompt: "p", AgentType: "General", Model: "child-model",
+			ResolveTierFn: func(string) string { return "tier-model" },
+		}, "tier-model"},
+		{"tier-skipped-for-empty-model", agenttool.AgentOpts{
+			Prompt: "p", AgentType: "General",
+			ResolveTierFn: func(m string) string {
+				if m == "" {
+					return "tier-for-empty"
+				}
+				return "tier-model"
+			},
+		}, "parent-model"},
+	}
+	for _, tc := range cases {
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEvents("test", "ok"), nil)
+		req := runAgentOnce(t, mp, tc.opts, nil, nil)
+		if req.Model != tc.want {
+			t.Errorf("%s: sub-request model = %q, want %q", tc.name, req.Model, tc.want)
+		}
+	}
+}
+
+func TestRunAgentToolRestriction(t *testing.T) {
+	t.Parallel()
+	// No AllowedTools: the agent-filtered set (both parent tools) survives.
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	req := runAgentOnce(t, mp, agenttool.AgentOpts{Prompt: "p", AgentType: "General"}, nil, nil)
+	if got := requestToolNames(req); !slices.Equal(got, []string{"Grep", "Read"}) {
+		t.Errorf("no AllowedTools: request tools = %v, want [Grep Read]", got)
+	}
+
+	// One allowed tool: the restriction must narrow to exactly that tool.
+	mp = &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	req = runAgentOnce(t, mp, agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", AllowedTools: []string{"Read"},
+	}, nil, nil)
+	if got := requestToolNames(req); !slices.Equal(got, []string{"Read"}) {
+		t.Errorf("AllowedTools=[Read]: request tools = %v, want [Read]", got)
+	}
+
+	// Two allowed tools: every entry of the list is considered, not just the first.
+	mp = &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	req = runAgentOnce(t, mp, agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", AllowedTools: []string{"Read", "Grep", "Missing"},
+	}, nil, nil)
+	if got := requestToolNames(req); !slices.Equal(got, []string{"Grep", "Read"}) {
+		t.Errorf("AllowedTools=[Read Grep Missing]: request tools = %v, want [Grep Read]", got)
+	}
+}
+
+func TestRunAgentRegistersMcpRegistryTools(t *testing.T) {
+	t.Parallel()
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	reg.SetToolsForTest([]mcp.DiscoveredTool{
+		{Name: "mcp__srv__alpha", OriginalName: "alpha", ServerName: "srv",
+			Description: "a", InputSchema: json.RawMessage(`{"type":"object"}`), AlwaysLoad: true},
+		{Name: "mcp__srv__beta", OriginalName: "beta", ServerName: "srv",
+			Description: "b", InputSchema: json.RawMessage(`{"type":"object"}`), AlwaysLoad: true},
+	})
+	deps := runAgentDeps(t)
+	deps.McpReg = reg
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	tools := runAgentTools()
+	tools["mcp__srv__alpha"] = &mockTool{name: "mcp__srv__alpha", enabled: true}
+	tools["mcp__srv__beta"] = &mockTool{name: "mcp__srv__beta", enabled: true}
+
+	req := runAgentOnce(t, mp, agenttool.AgentOpts{Prompt: "p", AgentType: "General"}, tools, &deps)
+	if got := requestToolNames(req); !slices.Equal(got, []string{"Grep", "Read", "mcp__srv__alpha", "mcp__srv__beta"}) {
+		t.Errorf("request tools = %v, want both MCP tools registered from the parent registry", got)
+	}
+}
+
+func TestRunAgentMaxTurnsOverride(t *testing.T) {
+	t.Parallel()
+	// Turn 1 asks for a tool, so the loop would continue without a turn cap.
+	script := func(mp *mockProvider) {
+		mp.addResponse(toolUseStreamEvents("test", "tu1", "Read", `{"file_path":"/nonexistent/probe"}`), nil)
+		mp.addResponse(textStreamEvents("test", "after tool"), nil)
+	}
+
+	capped := &mockProvider{}
+	script(capped)
+	d := runAgentDeps(t)
+	eng := New(&Params{Provider: capped, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", MaxTurns: 1,
+	}); err != nil {
+		t.Fatalf("RunAgent(MaxTurns=1): %v", err)
+	}
+	if got := capped.callCount(); got != 1 {
+		t.Errorf("MaxTurns=1 made %d provider calls, want exactly 1", got)
+	}
+
+	uncapped := &mockProvider{}
+	script(uncapped)
+	eng2 := New(&Params{Provider: uncapped, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetSharedDeps(&d)
+	if _, err := eng2.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General",
+	}); err != nil {
+		t.Fatalf("RunAgent(MaxTurns=0): %v", err)
+	}
+	if got := uncapped.callCount(); got != 2 {
+		t.Errorf("MaxTurns=0 made %d provider calls, want 2 (agent default is uncapped)", got)
+	}
+}
+
+func TestRunAgentPropagatesSubError(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{} // no scripted responses → Stream fails
+	d := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+	res, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{Prompt: "p", AgentType: "General"})
+	if err == nil {
+		t.Fatalf("RunAgent must surface the sub-engine error, got result %+v", res)
+	}
+	if res != nil {
+		t.Errorf("RunAgent returned result %+v alongside error %v, want nil result", res, err)
+	}
+	if !strings.Contains(err.Error(), "no more mock responses") {
+		t.Errorf("error = %q, want it to carry the provider failure", err.Error())
+	}
+}
+
+func TestRunAgentUnknownTypeWraps(t *testing.T) {
+	t.Parallel()
+	d := runAgentDeps(t)
+	eng := New(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+	res, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{Prompt: "p", AgentType: "NoSuchAgentType"})
+	if err == nil {
+		t.Fatalf("unknown agent type must fail, got %+v", res)
+	}
+	if res != nil {
+		t.Errorf("result = %+v, want nil", res)
+	}
+	if !strings.HasPrefix(err.Error(), `unknown agent type "NoSuchAgentType": `) {
+		t.Errorf("error = %q, want the unknown-agent prefix", err.Error())
+	}
+	inner := errors.Unwrap(err)
+	if inner == nil {
+		t.Fatalf("error %q does not wrap the definition lookup failure", err.Error())
+	}
+	if inner.Error() != `unknown agent type "NoSuchAgentType": not found in built-in agents` {
+		t.Errorf("wrapped error = %q, want the definition lookup message", inner.Error())
+	}
+}
+
+func TestRunAgentInterruptedWithoutContent(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 12}}},
+		},
+		hang: hang,
+	})
+	d := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		waitForCallCount(t, mp, 1, 5*time.Second)
+		cancel()
+		close(hang)
+	}()
+	res, err := eng.RunAgent(ctx, agenttool.AgentOpts{Prompt: "p", AgentType: "General"})
+	if err != nil {
+		t.Fatalf("a cancelled sub-agent must not return an error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("cancelled sub-agent returned nil result")
+	}
+	if res.Content != "(agent interrupted by user)" {
+		t.Errorf("Content = %q, want the interrupt stub", res.Content)
+	}
+	if res.AgentType != "General" {
+		t.Errorf("AgentType = %q, want General", res.AgentType)
+	}
+	if res.TotalTokens != 0 {
+		t.Errorf("TotalTokens = %d, want 0 (a stream cancelled before its delta contributes nothing)", res.TotalTokens)
+	}
+	if res.TotalToolUseCount != 0 {
+		t.Errorf("TotalToolUseCount = %d, want 0", res.TotalToolUseCount)
+	}
+}
+
+func TestRunAgentCancelledWithRealContent(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses,
+		mockResponse{events: toolUseStreamEvents("test", "tu1", "Read", `{"file_path":"/nonexistent/probe"}`)},
+		mockResponse{events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 7}}},
+		}, hang: hang},
+	)
+	d := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		waitForCallCount(t, mp, 2, 5*time.Second)
+		cancel()
+		close(hang)
+	}()
+	res, err := eng.RunAgent(ctx, agenttool.AgentOpts{Prompt: "p", AgentType: "General"})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if res == nil {
+		t.Fatal("RunAgent returned nil result")
+	}
+	// The sub-agent produced a real tool_use turn, so the interrupt stub must
+	// not replace its finalization.
+	if res.Content == "(agent interrupted by user)" {
+		t.Error("interrupt stub replaced a sub-agent run that produced real content")
+	}
+	if res.AgentType != "General" {
+		t.Errorf("AgentType = %q, want General", res.AgentType)
+	}
+	if res.TotalToolUseCount != 1 {
+		t.Errorf("TotalToolUseCount = %d, want 1", res.TotalToolUseCount)
+	}
+	if want := 20 + 10; res.TotalTokens != want {
+		t.Errorf("TotalTokens = %d, want %d (usage of the completed turn)", res.TotalTokens, want)
+	}
+}
+
+func TestRunAgentSubagentStartHookInput(t *testing.T) {
+	t.Parallel()
+	rec := &integrationHookRecorder{}
+	hookSystem := hooks.NewHooks(hooks.HooksConfig{
+		"SubagentStart": []hooks.HookMatcher{{Matcher: "", Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "h-substart"},
+		}}},
+	}, rec)
+	dir := t.TempDir()
+	deps := SharedDeps{
+		WorkingDir: dir,
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hookSystem,
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	eng := New(&Params{Provider: mp, Model: "parent-model", WorkingDir: dir,
+		Logger: silentLogger(), Hooks: hookSystem, ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", Cwd: dir,
+	}); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	var start *hookCall
+	calls := rec.Calls()
+	for i := range calls {
+		if calls[i].event == "SubagentStart" {
+			start = &calls[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("SubagentStart never dispatched; recorded events: %v", rec.Events())
+	}
+	if start.input.HookEventName != "SubagentStart" {
+		t.Errorf("HookEventName = %q, want SubagentStart", start.input.HookEventName)
+	}
+	if start.input.AgentType != "General" {
+		t.Errorf("AgentType = %q, want General", start.input.AgentType)
+	}
+	if start.input.AgentID == "" {
+		t.Error("AgentID is empty: the hook input must carry the sub-engine session id")
+	}
+	if start.input.Cwd != dir {
+		t.Errorf("Cwd = %q, want the cwd override %q", start.input.Cwd, dir)
+	}
+}
+
+func TestRunAgentNilParentTools(t *testing.T) {
+	t.Parallel()
+	// A hand-built engine has no tool map at all; RunAgent must still resolve an
+	// empty filtered set rather than dereference nil.
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	deps := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger()})
+	eng.tools = nil
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{Prompt: "p", AgentType: "General"}); err != nil {
+		t.Fatalf("RunAgent with nil parent tools: %v", err)
+	}
+	req := mp.lastRequest
+	if req == nil {
+		t.Fatal("sub-engine never sent a request")
+	}
+	// An empty (non-nil) parent set must behave exactly like a nil one.
+	empty := &mockProvider{}
+	empty.addResponse(textStreamEvents("test", "ok"), nil)
+	eng2 := New(&Params{Provider: empty, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{} }})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetSharedDeps(&deps)
+	if _, err := eng2.RunAgent(context.Background(), agenttool.AgentOpts{Prompt: "p", AgentType: "General"}); err != nil {
+		t.Fatalf("RunAgent with empty parent tools: %v", err)
+	}
+	nilNames := requestToolNames(req)
+	emptyNames := requestToolNames(empty.lastRequest)
+	if !slices.Equal(nilNames, emptyNames) {
+		t.Errorf("nil parent tools gave %v, empty parent tools gave %v — they must be identical", nilNames, emptyNames)
+	}
+	if len(nilNames) == 0 {
+		t.Error("unrestricted sub-agent must get the standard tool set, got none")
+	}
+}
+
+func TestRunAgentSubagentEventsTagged(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "sub says hi"), nil)
+	deps := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		Dispatcher: ec, ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+
+	if _, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", ParentToolUseID: "call_parent_1",
+	}); err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	var tagged int
+	for _, ev := range ec.Events() {
+		if ev.Agent == nil {
+			continue
+		}
+		tagged++
+		if ev.Agent.ParentToolUseID != "call_parent_1" {
+			t.Errorf("tagged event %v ParentToolUseID = %q, want call_parent_1", ev.Type, ev.Agent.ParentToolUseID)
+		}
+		if ev.Agent.AgentType != "General" {
+			t.Errorf("tagged event %v AgentType = %q, want General", ev.Type, ev.Agent.AgentType)
+		}
+		if ev.Agent.Depth != 1 {
+			t.Errorf("tagged event %v Depth = %d, want 1", ev.Type, ev.Agent.Depth)
+		}
+	}
+	if tagged == 0 {
+		t.Fatal("no sub-agent events were tagged; the assertions above would pass vacuously")
+	}
+}
+
+func TestRunAgentForkMessages(t *testing.T) {
+	t.Parallel()
+	fork := []types.Message{
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("fork-user")}),
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("fork-assistant")}},
+	}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "ok"), nil)
+	req := runAgentOnce(t, mp, agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", ForkMessages: fork,
+	}, nil, nil)
+	msgs := req.Messages
+	if len(msgs) != 3 {
+		t.Fatalf("sub request has %d messages, want 3 (two fork messages + the prompt)", len(msgs))
+	}
+	// Each message carries a timestamp prefix, so the payload is matched by suffix.
+	for i, want := range []string{"fork-user", "fork-assistant", "p"} {
+		if got := msgs[i].Content[0].Text; !strings.HasSuffix(got, want) {
+			t.Errorf("message %d = %q, want it to end with %q", i, got, want)
+		}
+	}
+
+	// No fork messages: only the prompt is sent.
+	mp2 := &mockProvider{}
+	mp2.addResponse(textStreamEvents("test", "ok"), nil)
+	req2 := runAgentOnce(t, mp2, agenttool.AgentOpts{Prompt: "p", AgentType: "General"}, nil, nil)
+	if len(req2.Messages) != 1 {
+		t.Fatalf("sub request has %d messages, want 1 (prompt only)", len(req2.Messages))
+	}
+	if got := req2.Messages[0].Content[0].Text; !strings.HasSuffix(got, "p") {
+		t.Errorf("message = %q, want the prompt", got)
+	}
+}
+
+// TestRunAgentInterruptStubFields pins the fields of the synthesized
+// interrupt result. The cancelled turn contributes no usage (its message is
+// rewound), so TotalTokens is provably zero here — which is exactly why the
+// token field of this literal carries no observable signal.
+func TestRunAgentInterruptStubFields(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 12}}},
+		},
+		hang: hang,
+	})
+	// A forked tool_use turn sits before the prompt, so the run has tool uses
+	// on record while everything after the last selectable user message stays
+	// synthetic.
+	fork := []types.Message{
+		types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("f1")}),
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu_fork", Name: "Read"},
+		}},
+	}
+	deps := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		waitForCallCount(t, mp, 1, 5*time.Second)
+		cancel()
+		close(hang)
+	}()
+	res, err := eng.RunAgent(ctx, agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", ForkMessages: fork,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if res == nil {
+		t.Fatal("RunAgent returned nil result")
+	}
+	if res.Content != "(agent interrupted by user)" {
+		t.Errorf("Content = %q, want the interrupt stub", res.Content)
+	}
+	if res.AgentType != "General" {
+		t.Errorf("AgentType = %q, want General", res.AgentType)
+	}
+	if res.TotalToolUseCount != 1 {
+		t.Errorf("TotalToolUseCount = %d, want 1 (the forked tool_use counts)", res.TotalToolUseCount)
+	}
+	if res.TotalTokens != 0 {
+		t.Errorf("TotalTokens = %d, want 0 (the cancelled turn contributes no usage)", res.TotalTokens)
+	}
+}
+
+// skillTestEngine wires an engine with a skill registry, a dispatcher and the
+// shared deps a fork skill needs.
+func skillTestEngine(t *testing.T, mp *mockProvider, reg *skills.Registry, ec *eventCollector) (*Engine, *eventCollector) {
+	t.Helper()
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   reg,
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "parent-model",
+		Logger:     silentLogger(),
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	eng.SetSharedDeps(&deps)
+	eng.SetSkillRegistry(reg)
+	return eng, ec
+}
+
+func skillRegistryWith(t *testing.T, cmds ...types.SkillCommand) *skills.Registry {
+	t.Helper()
+	reg := skills.NewRegistry(t.TempDir())
+	for _, c := range cmds {
+		reg.RegisterBundledSkill(c)
+	}
+	return reg
+}
+
+func eventText(ev types.QueryEvent) string {
+	if ev.Message == nil || len(ev.Message.Content) == 0 {
+		return ""
+	}
+	return ev.Message.Content[0].Text
+}
+
+func TestRunSkillInline(t *testing.T) {
+	// "engine: running skill" is a package-level slog.Info, so the capture
+	// swaps the default logger; sequential keeps the swap race-free.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name:      "probe-inline",
+		Type:      "prompt",
+		Context:   "inline",
+		Source:    types.SkillSourceBundled,
+		SourceDir: "/skill/dir",
+		Content:   "Do the thing in ${SKILL_DIR}",
+	})
+	const wantContent = "Do the thing in /skill/dir\n\nARGUMENTS: myargs"
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "main reply"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp, Model: "parent-model", Logger: slog.New(logs), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	eng.SetSkillRegistry(reg)
+	t.Cleanup(func() { eng.Close() })
+
+	// A prior query moves the query-start watermark off zero, so a missing
+	// snapshotQueryStart becomes visible.
+	eng.QuerySync(context.Background(), "earlier", "")
+	ec.Reset()
+
+	eng.RunSkill(context.Background(), "probe-inline", "myargs", "sys")
+	ec.WaitForResult()
+
+	starts := ec.FindEvents(types.EventQueryStart)
+	if len(starts) != 1 {
+		t.Fatalf("%d query_start events, want exactly 1", len(starts))
+	}
+	if got := eventText(starts[0]); got != wantContent {
+		t.Errorf("query_start message = %q, want %q", got, wantContent)
+	}
+	if eng.currentTurnMsgID != starts[0].Message.ID {
+		t.Errorf("currentTurnMsgID = %q, want the skill message id %q", eng.currentTurnMsgID, starts[0].Message.ID)
+	}
+	// The watermark is only readable through the accessor while a query owns the
+	// engine, so the field is read directly: the snapshot must land right before
+	// the skill message, not stay on the previous query's value.
+	if got := eng.queryStartMsgIdx; got != 2 {
+		t.Errorf("queryStartMsgIdx = %d, want 2 (snapshot taken before the skill message)", got)
+	}
+	var found bool
+	for _, m := range eng.Messages() {
+		if textOfMessage(m) == wantContent {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("skill message %q was not appended to history", wantContent)
+	}
+	if req := mp.lastRequest; req == nil || !strings.Contains(fmt.Sprint(req.Messages), wantContent) {
+		t.Error("the provider request does not carry the substituted skill content")
+	}
+
+	recs := logs.all("engine: running skill")
+	if len(recs) != 1 {
+		t.Fatalf("%d running-skill records, want exactly 1", len(recs))
+	}
+	if got := recs[0].attrs["name"]; got != "probe-inline" {
+		t.Errorf("running-skill name = %v, want probe-inline", got)
+	}
+	if got := recs[0].attrs["context"]; got != "inline" {
+		t.Errorf("running-skill context = %v, want inline", got)
+	}
+	if recs := logs.all("engine: panic in RunSkill"); len(recs) != 0 {
+		t.Errorf("%d panic records on a clean skill run, want 0", len(recs))
+	}
+
+	invoked := reg.GetInvokedSkillsForAgent("")
+	if len(invoked) != 1 {
+		t.Fatalf("%d invoked skills recorded, want exactly 1", len(invoked))
+	}
+	if invoked[0].SkillName != "probe-inline" {
+		t.Errorf("invoked SkillName = %q, want probe-inline", invoked[0].SkillName)
+	}
+	if invoked[0].Content != wantContent {
+		t.Errorf("invoked Content = %q, want %q", invoked[0].Content, wantContent)
+	}
+	if invoked[0].SkillPath != string(types.SkillSourceBundled)+":probe-inline" {
+		t.Errorf("invoked SkillPath = %q, want %q", invoked[0].SkillPath, string(types.SkillSourceBundled)+":probe-inline")
+	}
+}
+
+func textOfMessage(m types.Message) string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	return m.Content[0].Text
+}
+
+func TestRunSkillForkEvents(t *testing.T) {
+	t.Parallel()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name:      "probe-fork",
+		Type:      "prompt",
+		Context:   "fork",
+		AgentType: "Explore",
+		Model:     "skill-model",
+		Source:    types.SkillSourceBundled,
+		Content:   "Review the code.",
+	})
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "earlier reply"), nil)
+	mp.addResponse(textStreamEvents("test", "sub result"), nil)
+	mp.addResponse(textStreamEvents("test", "main summary"), nil)
+	ec := newEventCollector()
+	eng, _ := skillTestEngine(t, mp, reg, ec)
+	t.Cleanup(func() { eng.Close() })
+
+	// A prior query moves the query-start watermark off zero.
+	eng.QuerySync(context.Background(), "earlier", "")
+	ec.Reset()
+
+	eng.RunSkill(context.Background(), "probe-fork", "", "sys")
+	ec.WaitForResult()
+
+	starts := ec.FindEvents(types.EventQueryStart)
+	if len(starts) != 1 {
+		t.Fatalf("%d query_start events, want exactly 1", len(starts))
+	}
+	if got := eventText(starts[0]); got != "/probe-fork" {
+		t.Errorf("query_start message = %q, want /probe-fork", got)
+	}
+	var slashMsg bool
+	for _, m := range eng.Messages() {
+		if textOfMessage(m) == "/probe-fork" {
+			slashMsg = true
+			break
+		}
+	}
+	if !slashMsg {
+		t.Error("the /skill user message was not appended to history")
+	}
+	if eng.currentTurnMsgID != starts[0].Message.ID {
+		t.Errorf("currentTurnMsgID = %q, want the skill message id %q", eng.currentTurnMsgID, starts[0].Message.ID)
+	}
+	if got := eng.queryStartMsgIdx; got != 2 {
+		t.Errorf("queryStartMsgIdx = %d, want 2 (snapshot taken before the skill message)", got)
+	}
+
+	toolStarts := ec.FindEvents(types.EventToolStart)
+	if len(toolStarts) != 1 {
+		t.Fatalf("%d tool_start events, want exactly 1", len(toolStarts))
+	}
+	tu := toolStarts[0].ToolUse
+	if tu == nil {
+		t.Fatal("tool_start carries no ToolUse payload")
+	}
+	if !strings.HasPrefix(tu.ID, "skill-fork-") || len(tu.ID) != len("skill-fork-")+8 {
+		t.Errorf("tool_start ID = %q, want skill-fork- plus an 8-char uuid", tu.ID)
+	}
+	if tu.Name != "Skill" {
+		t.Errorf("tool_start Name = %q, want Skill", tu.Name)
+	}
+	if tu.Summary != "probe-fork" {
+		t.Errorf("tool_start Summary = %q, want probe-fork", tu.Summary)
+	}
+
+	toolRuns := ec.FindEvents(types.EventToolRun)
+	if len(toolRuns) != 1 {
+		t.Fatalf("%d tool_run events, want exactly 1", len(toolRuns))
+	}
+	if toolRuns[0].ToolUse == nil {
+		t.Fatal("tool_run carries no ToolUse payload")
+	}
+	if toolRuns[0].ToolUse.ID != tu.ID {
+		t.Errorf("tool_run ID = %q, want the tool_start ID %q", toolRuns[0].ToolUse.ID, tu.ID)
+	}
+	if toolRuns[0].ToolUse.Name != "Skill" {
+		t.Errorf("tool_run Name = %q, want Skill", toolRuns[0].ToolUse.Name)
+	}
+
+	toolEnds := ec.FindEvents(types.EventToolEnd)
+	if len(toolEnds) != 1 {
+		t.Fatalf("%d tool_end events, want exactly 1", len(toolEnds))
+	}
+	tr := toolEnds[0].ToolResult
+	if tr == nil {
+		t.Fatal("tool_end carries no ToolResult payload")
+	}
+	if tr.ToolUseID != tu.ID {
+		t.Errorf("tool_end ToolUseID = %q, want %q", tr.ToolUseID, tu.ID)
+	}
+	if tr.DisplayOutput != "sub result" {
+		t.Errorf("tool_end DisplayOutput = %q, want the sub-agent content", tr.DisplayOutput)
+	}
+	if tr.IsError {
+		t.Error("tool_end IsError = true, want false for a successful skill run")
+	}
+
+	// The sub-agent runs with the skill's own agent type, model and prompt, and
+	// its events are tagged with the virtual tool id.
+	var tagged int
+	for _, ev := range ec.Events() {
+		if ev.Agent == nil {
+			continue
+		}
+		tagged++
+		if ev.Agent.AgentType != "Explore" {
+			t.Errorf("tagged event %v AgentType = %q, want Explore", ev.Type, ev.Agent.AgentType)
+		}
+		if ev.Agent.ParentToolUseID != tu.ID {
+			t.Errorf("tagged event %v ParentToolUseID = %q, want %q", ev.Type, ev.Agent.ParentToolUseID, tu.ID)
+		}
+	}
+	if tagged == 0 {
+		t.Fatal("no tagged sub-agent events; the assertions above would pass vacuously")
+	}
+	var subReq *llm.Request
+	for _, req := range mp.allRequests {
+		if req != nil && req.Model == "skill-model" {
+			subReq = req
+			break
+		}
+	}
+	if subReq == nil {
+		t.Fatalf("no request carried the skill model; models: %v", func() []string {
+			var out []string
+			for _, r := range mp.allRequests {
+				out = append(out, r.Model)
+			}
+			return out
+		}())
+	}
+	if got := textOfMessage(subReq.Messages[len(subReq.Messages)-1]); !strings.HasSuffix(got, "Review the code.") {
+		t.Errorf("sub-agent prompt = %q, want the skill content", got)
+	}
+
+	// The skill result rides history as a meta user message.
+	var meta string
+	for _, m := range eng.Messages() {
+		if m.Flags&types.FlagMeta != 0 {
+			meta = textOfMessage(m)
+		}
+	}
+	wantMeta := "Skill \"probe-fork\" completed.\n\nsub result"
+	if meta != wantMeta {
+		t.Errorf("meta skill-result message = %q, want %q", meta, wantMeta)
+	}
+}
+
+func TestRunSkillForkFailure(t *testing.T) {
+	t.Parallel()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name: "probe-fail", Type: "prompt", Context: "fork", AgentType: "General",
+		Source: types.SkillSourceBundled, Content: "Boom.",
+	})
+	mp := &mockProvider{} // no responses → the sub-agent run fails
+	ec := newEventCollector()
+	eng, _ := skillTestEngine(t, mp, reg, ec)
+	t.Cleanup(func() { eng.Close() })
+
+	eng.RunSkill(context.Background(), "probe-fail", "", "sys")
+	ec.WaitForResult()
+
+	ends := ec.FindEvents(types.EventToolEnd)
+	if len(ends) != 1 {
+		t.Fatalf("%d tool_end events, want exactly 1", len(ends))
+	}
+	if ends[0].ToolResult == nil {
+		t.Fatal("tool_end carries no ToolResult payload")
+	}
+	if !ends[0].ToolResult.IsError {
+		t.Error("tool_end IsError = false, want true for a failed sub-agent run")
+	}
+	if ends[0].ToolResult.DisplayOutput != "Skill execution completed" {
+		t.Errorf("tool_end DisplayOutput = %q, want the fallback text", ends[0].ToolResult.DisplayOutput)
+	}
+	var ends2 []types.QueryEvent
+	for _, ev := range ec.FindEvents(types.EventQueryEnd) {
+		if ev.Agent == nil {
+			ends2 = append(ends2, ev)
+		}
+	}
+	if len(ends2) != 1 {
+		t.Fatalf("%d skill-owned query_end events, want exactly 1", len(ends2))
+	}
+	if ends2[0].Error == nil {
+		t.Error("query_end must carry the sub-agent failure")
+	}
+	// The failed skill must not append its completion notice.
+	for _, m := range eng.Messages() {
+		if strings.Contains(textOfMessage(m), "probe-fail\" completed") {
+			t.Error("a failed skill appended a completion notice")
+		}
+	}
+}
+
+func TestRunSkillWithoutRegistry(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	eng.RunSkill(context.Background(), "anything", "", "sys")
+
+	deadline := context.Background()
+	_ = deadline
+	errEvents := awaitErrorEvents(ec, 1)
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error events without a skill registry, want exactly 1", len(errEvents))
+	}
+	if errEvents[0].Type != types.EventQueryEnd {
+		t.Errorf("event type = %v, want query_end", errEvents[0].Type)
+	}
+	if got := errEvents[0].Error.Error(); got != "skill registry not configured" {
+		t.Errorf("error = %q, want the missing-registry message", got)
+	}
+}
+
+func TestRunSkillPanic(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name: "probe-panic", Type: "prompt", Context: "inline",
+		Source: types.SkillSourceBundled, Content: "Panic.",
+	})
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: &panickingProvider{}, Model: "parent-model",
+		Logger: silentLogger(), Dispatcher: ec,
+	})
+	eng.SetSkillRegistry(reg)
+	eng.RunSkill(context.Background(), "probe-panic", "", "sys")
+	waitEngineIdle(t, eng)
+	eng.Close()
+
+	var errEvents []types.QueryEvent
+	for _, ev := range ec.Events() {
+		if ev.Error != nil {
+			errEvents = append(errEvents, ev)
+		}
+	}
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error events after a panicking skill, want exactly 1", len(errEvents))
+	}
+	if errEvents[0].Type != types.EventQueryEnd {
+		t.Errorf("panic event type = %v, want query_end", errEvents[0].Type)
+	}
+	if !strings.Contains(errEvents[0].Error.Error(), "provider stream exploded") {
+		t.Errorf("panic event error = %q, want the panic value", errEvents[0].Error.Error())
+	}
+	recs := logs.all("engine: panic in RunSkill")
+	if len(recs) != 1 {
+		t.Fatalf("%d panic records, want exactly 1", len(recs))
+	}
+	if recs[0].level != slog.LevelError {
+		t.Errorf("panic record level = %v, want error", recs[0].level)
+	}
+}
+
+func TestRunSkillBusyFlag(t *testing.T) {
+	t.Parallel()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name: "probe-busy", Type: "prompt", Context: "inline",
+		Source: types.SkillSourceBundled, Content: "Busy.",
+	})
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{events: textStreamEvents("test", "done"), hang: hang})
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger()})
+	eng.SetSkillRegistry(reg)
+	t.Cleanup(func() { eng.Close() })
+
+	eng.RunSkill(context.Background(), "probe-busy", "", "sys")
+	waitForCallCount(t, mp, 1, 5*time.Second)
+	if !eng.IsBusy() {
+		t.Error("engine must stay busy while the skill turn is in flight")
+	}
+	close(hang)
+	waitEngineIdle(t, eng)
+	if eng.IsBusy() {
+		t.Error("engine must be idle once the skill run finishes")
+	}
+}
+
+func TestRunSkillOnClosedEngine(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name: "probe-closed", Type: "prompt", Context: "inline",
+		Source: types.SkillSourceBundled, Content: "Nope.",
+	})
+	mp := &mockProvider{}
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(), Dispatcher: ec})
+	eng.SetSkillRegistry(reg)
+	eng.Close()
+
+	eng.RunSkill(context.Background(), "probe-closed", "", "sys")
+	errEvents := awaitErrorEvents(ec, 1)
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error events on a closed engine, want exactly 1", len(errEvents))
+	}
+	if got := errEvents[0].Error.Error(); got != "engine: skill on closed engine" {
+		t.Errorf("error = %q, want the closed-engine message", got)
+	}
+	if mp.callCount() != 0 {
+		t.Errorf("closed engine made %d provider calls, want 0", mp.callCount())
+	}
+}
+
+func TestStartProcessAttachmentsIfIdleGuards(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+
+	// No system prompt: the kick must not run turns even with a queued item.
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "q1", Mode: types.ItemModeJob, Value: "v"})
+	eng.startProcessAttachmentsIfIdle()
+	want := 0 // without a system prompt the kick cannot run any turn
+	if got := mp.callCount(); got != want {
+		t.Errorf("provider calls with an empty system prompt = %d, want %d", got, want)
+	}
+
+	// System prompt set but the engine is busy: no second owner is registered.
+	eng.SetSystemPrompt("sys")
+	hold := eng.beginQuery(func() {})
+	if hold == 0 {
+		t.Fatal("beginQuery must return a token on an open engine")
+	}
+	eng.startProcessAttachmentsIfIdle()
+	if eng.activeCancel == nil {
+		t.Error("the held query registration must survive a rejected kick")
+	}
+	eng.endQuery(hold)
+
+	// System prompt set and the engine idle, but the queue is empty: the kick
+	// has nothing to run and must not register a query at all.
+	empty := New(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger()})
+	empty.SetSystemPrompt("sys")
+	t.Cleanup(func() { empty.Close() })
+	empty.startProcessAttachmentsIfIdle()
+	if empty.IsBusy() {
+		t.Error("an empty attachment queue started a query")
+	}
+	empty.mu.RLock()
+	registered := empty.activeCancel
+	empty.mu.RUnlock()
+	if registered != nil {
+		t.Error("an empty attachment queue registered a cancel handle")
+	}
+}
+
+func TestCreateAttachmentMessages(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+
+	ts := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	origin := &types.MessageOrigin{Kind: types.OriginMessage}
+	msgs := eng.createAttachmentMessages([]types.QueuedItem{
+		{UUID: "u-skip", Mode: types.ItemModeMessage, Value: "skipped"},
+		{UUID: "u1", Mode: types.ItemModePrompt, Value: "prompt one", Origin: origin, Timestamp: ts},
+		{UUID: "u2", Mode: types.ItemModeJob, Value: "job two", Timestamp: ts},
+		{UUID: "u3", Mode: types.ItemModeNotification, Value: "skipped too"},
+		{UUID: "u5", Mode: types.ItemModePrompt, Value: "meta item", IsMeta: true},
+	})
+	if len(msgs) != 3 {
+		t.Fatalf("%d attachment messages, want exactly 3 (prompt + job + meta prompt)", len(msgs))
+	}
+	first := msgs[0]
+	if first.ID != "u1" {
+		t.Errorf("message ID = %q, want u1", first.ID)
+	}
+	if first.Role != types.RoleUser || first.MessageType != types.MessageTypeAttachment {
+		t.Errorf("message role/type = %v/%v, want user/attachment", first.Role, first.MessageType)
+	}
+	if !first.Timestamp.Equal(ts) {
+		t.Errorf("message Timestamp = %v, want %v", first.Timestamp, ts)
+	}
+	if first.Flags&types.FlagMeta != 0 {
+		t.Error("a non-meta prompt item must not carry FlagMeta")
+	}
+	if len(first.Content) != 1 || first.Content[0].Text != "prompt one" {
+		t.Errorf("message content = %+v, want the item value as one text block", first.Content)
+	}
+	if first.Attachment == nil {
+		t.Fatal("message has no Attachment stub")
+	}
+	if first.Attachment.Type != types.AttachmentTypeQueued {
+		t.Errorf("Attachment.Type = %v, want queued_item", first.Attachment.Type)
+	}
+	if first.Attachment.Prompt != "prompt one" {
+		t.Errorf("Attachment.Prompt = %q, want the item value", first.Attachment.Prompt)
+	}
+	if first.Attachment.SourceUUID != "u1" {
+		t.Errorf("Attachment.SourceUUID = %q, want u1", first.Attachment.SourceUUID)
+	}
+	if first.Attachment.Mode != types.ItemModePrompt {
+		t.Errorf("Attachment.Mode = %v, want prompt", first.Attachment.Mode)
+	}
+	if first.Attachment.Origin != origin {
+		t.Errorf("Attachment.Origin = %v, want the item origin", first.Attachment.Origin)
+	}
+	if first.Attachment.IsMeta {
+		t.Error("Attachment.IsMeta = true, want false")
+	}
+	// A job item is meta by definition.
+	second := msgs[1]
+	if second.ID != "u2" {
+		t.Errorf("job message ID = %q, want u2", second.ID)
+	}
+	if second.Flags&types.FlagMeta == 0 {
+		t.Error("a job item must carry FlagMeta")
+	}
+	if second.Attachment == nil || second.Attachment.Mode != types.ItemModeJob {
+		t.Errorf("job Attachment = %+v, want Mode job", second.Attachment)
+	}
+	if second.Attachment.IsMeta {
+		t.Error("Attachment.IsMeta mirrors the item flag, not the computed meta state")
+	}
+
+	third := msgs[2]
+	if third.Attachment == nil || !third.Attachment.IsMeta {
+		t.Errorf("meta item Attachment = %+v, want IsMeta true", third.Attachment)
+	}
+	if third.Flags&types.FlagMeta == 0 {
+		t.Error("an IsMeta item must carry FlagMeta")
+	}
+
+	// Explicit content blocks win over the value string.
+	withBlocks := eng.createAttachmentMessages([]types.QueuedItem{{
+		UUID: "u4", Mode: types.ItemModePrompt, Value: "ignored",
+		Content: []types.ContentBlock{types.NewTextBlock("block one")},
+	}})
+	if len(withBlocks) != 1 || withBlocks[0].Content[0].Text != "block one" {
+		t.Errorf("explicit content = %+v, want the provided block", withBlocks)
+	}
+}
+
+func TestProcessAttachmentsPanic(t *testing.T) {
+	// Sequential: the default-logger swap must not overlap other captures.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &panickingProvider{}, Model: "parent-model", Logger: silentLogger(), Dispatcher: ec})
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "p1", Mode: types.ItemModePrompt, Value: "go"})
+	eng.processAttachments(context.Background(), 0, "sys")
+	eng.Close()
+
+	var errEvents []types.QueryEvent
+	for _, ev := range ec.Events() {
+		if ev.Error != nil {
+			errEvents = append(errEvents, ev)
+		}
+	}
+	if len(errEvents) != 1 {
+		t.Fatalf("%d error events after a panicking attachment run, want exactly 1", len(errEvents))
+	}
+	if errEvents[0].Type != types.EventQueryEnd {
+		t.Errorf("panic event type = %v, want query_end", errEvents[0].Type)
+	}
+	if !strings.Contains(errEvents[0].Error.Error(), "provider stream exploded") {
+		t.Errorf("panic event error = %q, want the panic value", errEvents[0].Error.Error())
+	}
+	recs := logs.all("engine: panic in processAttachments")
+	if len(recs) != 1 {
+		t.Fatalf("%d panic records, want exactly 1", len(recs))
+	}
+	if recs[0].level != slog.LevelError {
+		t.Errorf("panic record level = %v, want error", recs[0].level)
+	}
+}
+
+func TestProcessAttachmentsCleanRunEvents(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "earlier reply"), nil)
+	mp.addResponse(textStreamEvents("test", "reply"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.QuerySync(context.Background(), "earlier", "")
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "p1", Mode: types.ItemModePrompt, Value: "prompt item"})
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "j1", Mode: types.ItemModeJob, Value: "job item"})
+	eng.processAttachments(context.Background(), 0, "sys")
+
+	// The watermark is snapshotted BEFORE the drain (87159962): it marks the
+	// last pre-drain row so buildHistory excludes the in-flight assistant row
+	// the takeover snapshot streams.
+	if got := eng.queryStartMsgIdx; got != 2 {
+		t.Errorf("queryStartMsgIdx = %d, want 2 (pre-drain snapshot)", got)
+	}
+
+	if got := len(ec.FindEvents(types.EventAttachment)); got != 2 {
+		t.Errorf("%d EventAttachment events, want 2 (one per drained item)", got)
+	}
+	var errEvents int
+	for _, ev := range ec.Events() {
+		if ev.Error != nil {
+			errEvents++
+		}
+	}
+	if errEvents != 0 {
+		t.Errorf("%d error events on a clean attachment run, want 0", errEvents)
+	}
+	if eng.IsBusy() {
+		t.Error("engine must be idle once processAttachments returns")
+	}
+}
+
+func TestProcessAttachmentsEmptyQueue(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "must not run"), nil)
+	ec := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.processAttachments(context.Background(), 0, "sys")
+
+	want := 0 // an empty queue must not run a turn
+	if got := mp.callCount(); got != want {
+		t.Errorf("provider calls with an empty queue = %d, want %d (no turn may run)", got, want)
+	}
+	if evs := ec.Events(); len(evs) != 0 {
+		t.Errorf("%d events with an empty queue, want 0", len(evs))
+	}
+	if eng.IsBusy() {
+		t.Error("engine must not stay busy after processing an empty queue")
+	}
+}
+
+func TestNormalizeAttachmentForAPI(t *testing.T) {
+	t.Parallel()
+	origin := &types.MessageOrigin{Kind: types.OriginMessage}
+	job := normalizeAttachmentForAPI(types.Message{
+		Content: []types.ContentBlock{types.NewTextBlock("job body")},
+		Attachment: &types.Attachment{
+			SourceUUID: "u-job",
+			Mode:       types.ItemModeJob,
+		},
+	})
+	if job.ID != "u-job" {
+		t.Errorf("normalized ID = %q, want the source uuid", job.ID)
+	}
+	if job.Role != types.RoleUser {
+		t.Errorf("normalized role = %v, want user", job.Role)
+	}
+	if job.Flags&types.FlagMeta == 0 {
+		t.Error("a job-origin attachment must carry FlagMeta")
+	}
+	if !strings.Contains(fmt.Sprint(job.Content), "job body") {
+		t.Errorf("normalized content = %v, want it to wrap the body", job.Content)
+	}
+	// An explicit non-nil origin is meta even when IsMeta is false.
+	explicit := normalizeAttachmentForAPI(types.Message{
+		Content: []types.ContentBlock{types.NewTextBlock("note")},
+		Attachment: &types.Attachment{
+			SourceUUID: "u-exp",
+			Mode:       types.ItemModeNotification,
+			Origin:     origin,
+		},
+	})
+	if explicit.Flags&types.FlagMeta == 0 {
+		t.Error("an attachment with an explicit origin must carry FlagMeta")
+	}
+	// No origin and no meta flag: plain message.
+	plain := normalizeAttachmentForAPI(types.Message{
+		Content: []types.ContentBlock{types.NewTextBlock("plain")},
+		Attachment: &types.Attachment{
+			SourceUUID: "u-plain",
+			Mode:       types.ItemModePrompt,
+		},
+	})
+	if plain.Flags != 0 {
+		t.Errorf("plain attachment Flags = %d, want 0", plain.Flags)
+	}
+}
+
+func TestCoalesceBufWindow(t *testing.T) {
+	t.Parallel()
+	var flushed []string
+	c := &coalesceBuf{}
+	flush := func() { c.flush(func(text string) { flushed = append(flushed, text) }) }
+
+	// First write: nothing to drain yet, the window clock starts here.
+	c.write("a", time.Second, flush)
+	if len(flushed) != 0 {
+		t.Errorf("flushes on the first write = %v, want none", flushed)
+	}
+	if c.lastFlush.IsZero() {
+		t.Fatal("the first write must stamp lastFlush")
+	}
+	// Window still open: no drain.
+	c.write("b", time.Hour, flush)
+	if len(flushed) != 0 {
+		t.Errorf("flushes inside the window = %v, want none", flushed)
+	}
+	if got := c.buf.String(); got != "ab" {
+		t.Errorf("buffer = %q, want ab", got)
+	}
+	// Window elapsed (zero window): the next write drains what is buffered first.
+	c.write("c", 0, flush)
+	if !slices.Equal(flushed, []string{"ab"}) {
+		t.Errorf("flushed = %v, want [ab]", flushed)
+	}
+	if got := c.buf.String(); got != "c" {
+		t.Errorf("buffer after the timed drain = %q, want c", got)
+	}
+	// Explicit flush drains and resets.
+	c.flush(func(text string) { flushed = append(flushed, text) })
+	if !slices.Equal(flushed, []string{"ab", "c"}) {
+		t.Errorf("flushed = %v, want [ab c]", flushed)
+	}
+	if c.buf.Len() != 0 {
+		t.Errorf("buffer after flush = %q, want empty", c.buf.String())
+	}
+	// Flushing an empty buffer must not dispatch.
+	before := len(flushed)
+	c.flush(func(text string) { flushed = append(flushed, text) })
+	if len(flushed) != before {
+		t.Errorf("empty flush dispatched %d payloads, want 0", len(flushed)-before)
+	}
+
+	// With the clock never started, nothing may be drained yet — the buffer is
+	// only ever appended to.
+	seeded := &coalesceBuf{}
+	seeded.buf.WriteString("seed")
+	var seededFlushed []string
+	seeded.write("a", time.Hour, func() {
+		seeded.flush(func(text string) { seededFlushed = append(seededFlushed, text) })
+	})
+	if len(seededFlushed) != 0 {
+		t.Errorf("first write with an unstamped clock drained %v, want nothing", seededFlushed)
+	}
+	if got := seeded.buf.String(); got != "seeda" {
+		t.Errorf("buffer = %q, want seeda", got)
+	}
+}
+
+func TestCoalesceBufFlushStampsClock(t *testing.T) {
+	t.Parallel()
+	c := &coalesceBuf{}
+	c.buf.WriteString("seed")
+	c.flush(func(text string) {})
+	if c.lastFlush.IsZero() {
+		t.Fatal("flush must restamp the coalesce clock")
+	}
+}
+
+func TestToolDeltaCoalesce(t *testing.T) {
+	t.Parallel()
+	type sent struct {
+		id, text string
+		meta     any
+	}
+	var out []sent
+	tc := &toolDeltaCoalesce{}
+	flush := func() { tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) }) }
+
+	tc.write("t1", "alpha", "meta1", time.Hour, flush)
+	tc.write("t2", "", nil, time.Hour, flush)
+	if len(out) != 0 {
+		t.Errorf("flushes during the window = %d, want 0", len(out))
+	}
+	tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) })
+	if len(out) != 1 {
+		t.Fatalf("%d payloads after flush, want 1 (the empty buffer is skipped): %+v", len(out), out)
+	}
+	if out[0].id != "t1" || out[0].text != "alpha" || out[0].meta != any("meta1") {
+		t.Errorf("flushed payload = %+v, want {t1 alpha meta1}", out[0])
+	}
+	if tc.bufs != nil || tc.meta != nil {
+		t.Errorf("buffers after flush = %v/%v, want both cleared", tc.bufs, tc.meta)
+	}
+	// Same unstamped-clock rule for the per-id buffer: nothing drains yet.
+	seeded := &toolDeltaCoalesce{}
+	seeded.bufs = map[string]*strings.Builder{"t1": {}}
+	seeded.bufs["t1"].WriteString("seed")
+	var seededOut []string
+	seeded.write("t2", "x", nil, time.Hour, func() {
+		seeded.flush(func(id, text string, meta any) { seededOut = append(seededOut, id+":"+text) })
+	})
+	if len(seededOut) != 0 {
+		t.Errorf("first write with an unstamped clock drained %v, want nothing", seededOut)
+	}
+
+	// A later write without metadata must not resurrect the old payload.
+	out = nil
+	tc.write("t1", "beta", nil, time.Hour, flush)
+	tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) })
+	if len(out) != 1 || out[0].text != "beta" || out[0].meta != nil {
+		t.Errorf("second flush = %+v, want {t1 beta <nil>}", out)
+	}
+}
+
+func TestToolDeltaCoalesceFlushStampsClock(t *testing.T) {
+	t.Parallel()
+	tc := &toolDeltaCoalesce{}
+	tc.flush(func(id, text string, meta any) {})
+	if tc.lastFlush.IsZero() {
+		t.Fatal("flush must stamp the coalesce clock even with nothing buffered")
+	}
+	var flushes int
+	tc.write("t1", "x", nil, 0, func() { flushes++ })
+	if flushes != 1 {
+		t.Errorf("writes after a flush triggered %d drains, want 1", flushes)
+	}
+}
+
+func TestEmitEventCoalescing(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSessionID("sess-probe")
+	eng.window = 1 // nanoseconds: every follow-up delta drains the previous one
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "hello "})
+	want := 0 // the first delta stays buffered until the next one arrives
+	if got := len(ec.Events()); got != want {
+		t.Fatalf("%d events after the first delta, want %d (buffered)", got, want)
+	}
+	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "world"})
+	var texts []string
+	for _, ev := range ec.Events() {
+		if ev.Type == types.EventTextDelta {
+			texts = append(texts, ev.Text)
+		}
+	}
+	if !slices.Equal(texts, []string{"hello "}) {
+		t.Errorf("dispatched text deltas = %v, want [hello ]", texts)
+	}
+
+	// A non-delta event drains the buffers and carries the session id.
+	eng.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
+	var lastText *types.QueryEvent
+	var start *types.QueryEvent
+	events := ec.Events()
+	for i, ev := range events {
+		if ev.Type == types.EventTextDelta {
+			e := events[i]
+			lastText = &e
+		}
+		if ev.Type == types.EventTurnStart {
+			e := events[i]
+			start = &e
+		}
+	}
+	if lastText == nil || lastText.Text != "world" {
+		t.Errorf("buffered text after the flush = %+v, want world", lastText)
+	}
+	if start == nil {
+		t.Fatal("turn_start was not dispatched")
+	}
+	if start.SessionID != "sess-probe" {
+		t.Errorf("dispatched SessionID = %q, want sess-probe", start.SessionID)
+	}
+}
+
+func TestEmitEventNilPayloadGuards(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolParamDelta})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolOutputDelta})
+	want := 0 // nil delta payloads are dropped before dispatch
+	if got := len(ec.Events()); got != want {
+		t.Errorf("%d events for nil delta payloads, want %d", got, want)
+	}
+}
+
+func TestEmitEventEffectiveWindow(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	eng.window = 1
+	if got := eng.effectiveWindow(); got != 1 {
+		t.Errorf("effectiveWindow = %v, want the configured 1ns", got)
+	}
+	eng.window = 0
+	if got := eng.effectiveWindow(); got != coalesceWindow {
+		t.Errorf("effectiveWindow with no override = %v, want %v", got, coalesceWindow)
+	}
+}
+
+func TestFlushBuffersCarryMetadata(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	eng.window = time.Hour
+
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolParamDelta, PartialInput: &types.PartialInputEvent{
+		ID: "t1", Delta: `{"q":`, Name: "Grep", Summary: "searching",
+		IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true,
+	}})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{
+		ToolUseID: "t1", DisplayOutput: "out",
+		IsError: true, IsBackground: true, IsSearch: true, IsRead: true,
+		IsList: true, IsLsp: true, IsTask: true,
+	}})
+	eng.flushBufs()
+
+	var params *types.PartialInputEvent
+	var output *types.ToolResultEvent
+	for _, ev := range ec.Events() {
+		switch ev.Type {
+		case types.EventToolParamDelta:
+			params = ev.PartialInput
+		case types.EventToolOutputDelta:
+			output = ev.ToolResult
+		}
+	}
+	if params == nil {
+		t.Fatal("no tool_param_delta dispatched")
+	}
+	if params.ID != "t1" || params.Delta != `{"q":` || params.Name != "Grep" || params.Summary != "searching" {
+		t.Errorf("param payload = %+v, want the streamed identity", params)
+	}
+	if !params.IsSearch || !params.IsRead || !params.IsList || !params.IsLsp || !params.IsTask {
+		t.Errorf("param classification flags = %+v, want all true", params)
+	}
+	if output == nil {
+		t.Fatal("no tool_output_delta dispatched")
+	}
+	if output.ToolUseID != "t1" || output.DisplayOutput != "out" {
+		t.Errorf("output payload = %+v, want the streamed text", output)
+	}
+	if !output.IsError || !output.IsBackground || !output.IsSearch || !output.IsRead ||
+		!output.IsList || !output.IsLsp || !output.IsTask {
+		t.Errorf("output flags = %+v, want all true", output)
+	}
+}
+
+func TestFlushBuffersLogPreview(t *testing.T) {
+	// flush_text/flush_think log through the package-level default logger.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: newEventCollector()})
+	t.Cleanup(func() { eng.Close() })
+	eng.window = time.Hour
+
+	text := strings.Repeat("x", 41)
+	eng.textCoalesce.write(text, time.Hour, eng.flushTextBuf)
+	eng.thinkCoalesce.write(text, time.Hour, eng.flushThinkBuf)
+	eng.flushTextBuf()
+	eng.flushThinkBuf()
+
+	textRecs := logs.all("engine:flush_text")
+	if len(textRecs) != 1 {
+		t.Fatalf("%d flush_text records, want exactly 1", len(textRecs))
+	}
+	if got := textRecs[0].attrs["len"]; got != int64(41) && got != 41 {
+		t.Errorf("flush_text len = %v (%T), want 41", got, got)
+	}
+	if got := textRecs[0].attrs["preview"]; got != text[:40]+"..." {
+		t.Errorf("flush_text preview = %q, want the first 40 chars plus an ellipsis", got)
+	}
+	thinkRecs := logs.all("engine:flush_think")
+	if len(thinkRecs) != 1 {
+		t.Fatalf("%d flush_think records, want exactly 1", len(thinkRecs))
+	}
+	if got := thinkRecs[0].attrs["len"]; got != int64(41) && got != 41 {
+		t.Errorf("flush_think len = %v (%T), want 41", got, got)
+	}
+	if got := thinkRecs[0].attrs["preview"]; got != text[:40]+"..." {
+		t.Errorf("flush_think preview = %q, want the first 40 chars plus an ellipsis", got)
+	}
+}
+
+// cacheUsageStreamEvents scripts one text turn with explicit cache token usage.
+func cacheUsageStreamEvents(in, cacheRead, cacheCreate, out int) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{
+			InputTokens:              in,
+			CacheReadInputTokens:     cacheRead,
+			CacheCreationInputTokens: cacheCreate,
+		}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "reply"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: out}},
+		{Type: "message_stop"},
+	}
+}
+
+func attrInt(got any) int64 {
+	switch v := got.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return -1
+}
+
+func TestRunTurnsExitTraceAndSummary(t *testing.T) {
+	// PersistNewMessages logs through the package-level default logger.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+
+	cases := []struct {
+		name                  string
+		in, read, create, out int
+		wantCache             string
+	}{
+		{"cache-hit", 10, 200, 7, 5, "hit 92%"},
+		{"cache-hit-single-token", 10, 1, 0, 5, "hit 9%"},
+		{"cache-warm", 10, 0, 7, 5, "warm"},
+		{"cache-warm-single-token", 10, 0, 1, 5, "warm"},
+		{"cache-miss", 10, 0, 0, 5, "miss"},
+	}
+	for _, tc := range cases {
+		mp := &mockProvider{}
+		mp.addResponse(cacheUsageStreamEvents(tc.in, tc.read, tc.create, tc.out), nil)
+		eng := New(&Params{Provider: mp, Model: "test-model", Logger: slog.New(logs)})
+		// A session id with no store: the crash-window persist must stay guarded.
+		eng.SetSessionID("sess-probe-exit")
+		eng.QuerySync(context.Background(), "go", "")
+		eng.Close()
+
+		exits := logs.all("engine:runTurns_exit")
+		if len(exits) != 1 {
+			t.Fatalf("%s: %d runTurns_exit records, want exactly 1", tc.name, len(exits))
+		}
+		if got := attrInt(exits[0].attrs["messages"]); got != 2 {
+			t.Errorf("%s: exit messages = %d, want 2 (user + assistant)", tc.name, got)
+		}
+		if got := attrInt(exits[0].attrs["turns"]); got != 1 {
+			t.Errorf("%s: exit turns = %d, want 1", tc.name, got)
+		}
+		if got := fmt.Sprint(exits[0].attrs["engine_id"]); got != eng.engineID || got == "" {
+			t.Errorf("%s: exit engine_id = %q, want the engine's own id %q", tc.name, got, eng.engineID)
+		}
+		if got, ok := exits[0].attrs["store_nil"]; !ok || got != true {
+			t.Errorf("%s: exit store_nil = %v, want true", tc.name, got)
+		}
+		if got := exits[0].attrs["engine_id"]; got != "main" {
+			t.Errorf("%s: exit engine_id = %v, want main", tc.name, got)
+		}
+
+		sums := logs.all("engine:query_summary")
+		if len(sums) != 1 {
+			t.Fatalf("%s: %d query_summary records, want exactly 1", tc.name, len(sums))
+		}
+		s := sums[0].attrs
+		if got := attrInt(s["input"]); got != int64(tc.in) {
+			t.Errorf("%s: summary input = %d, want %d", tc.name, got, tc.in)
+		}
+		if got := attrInt(s["output"]); got != int64(tc.out) {
+			t.Errorf("%s: summary output = %d, want %d", tc.name, got, tc.out)
+		}
+		if got := attrInt(s["cache_read"]); got != int64(tc.read) {
+			t.Errorf("%s: summary cache_read = %d, want %d", tc.name, got, tc.read)
+		}
+		if got := attrInt(s["cache_creation"]); got != int64(tc.create) {
+			t.Errorf("%s: summary cache_creation = %d, want %d", tc.name, got, tc.create)
+		}
+		if got := attrInt(s["turns"]); got != 1 {
+			t.Errorf("%s: summary turns = %d, want 1", tc.name, got)
+		}
+		if got := s["cache"]; got != tc.wantCache {
+			t.Errorf("%s: summary cache = %v, want %q", tc.name, got, tc.wantCache)
+		}
+		if got := attrInt(s["tools_ms"]); got != 0 {
+			t.Errorf("%s: summary tools_ms = %d, want 0 (no tools ran)", tc.name, got)
+		}
+
+		// The crash-window persist is guarded by the store check, so only the
+		// runTurns defer may report the skip.
+		if got := len(logs.all("PersistNewMessages: skip persistence")); got != 1 {
+			t.Errorf("%s: %d skip-persistence records, want exactly 1", tc.name, got)
+		}
+		logs.mu.Lock()
+		logs.calls = nil
+		logs.mu.Unlock()
+	}
+}
+
+func TestRunTurnsPanicLog(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	eng := New(&Params{Provider: &panickingProvider{}, Model: "test-model", Logger: slog.New(logs)})
+	eng.Query(context.Background(), "go", "")
+	waitEngineIdle(t, eng)
+	eng.Close()
+
+	recs := logs.all("engine:runTurns_panic")
+	if len(recs) != 1 {
+		t.Fatalf("%d runTurns_panic records, want exactly 1", len(recs))
+	}
+	if recs[0].level != slog.LevelError {
+		t.Errorf("panic record level = %v, want error", recs[0].level)
+	}
+	if got := fmt.Sprint(recs[0].attrs["panic"]); got != "provider stream exploded" {
+		t.Errorf("panic record panic = %q, want the panic value", got)
+	}
+	if got, ok := recs[0].attrs["stack"]; !ok || !strings.Contains(fmt.Sprint(got), "panickingProvider") {
+		t.Errorf("panic record stack = %v, want the panic stack", got)
+	}
+}
+
+func TestRunTurnsAbortAtLoopTop(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", "tu1", "Read", `{"file_path":"/nonexistent/probe"}`), nil)
+	mp.addResponse(textStreamEvents("test", "never"), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readTool := &mockTool{name: "Read", enabled: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: "done"}, nil
+	}}
+	eng := New(&Params{
+		Provider: mp, Model: "test-model", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{"Read": readTool} },
+		// Post-turn hooks only fire with auto-compact configured; the compactor
+		// itself is cleared so the turn loop, not compaction, is what we observe.
+		AutoCompact: AutoCompactConfig{ContextWindow: 200_000},
+	})
+	eng.mu.Lock()
+	eng.compactor = nil
+	eng.mu.Unlock()
+	// The hook runs at the turn boundary, after the post-tool abort check, so
+	// the cancellation is first observed by the loop-top check.
+	eng.RegisterPostTurnHook(func(context.Context, []types.Message, int, string) { cancel() })
+	t.Cleanup(func() { eng.Close() })
+
+	res := eng.QuerySync(ctx, "go", "")
+	if res.Error == nil {
+		t.Fatal("a cancelled context must abort the turn loop")
+	}
+	if got := mp.callCount(); got != 1 {
+		t.Errorf("provider calls after the loop-top abort = %d, want 1 (the second turn must not run)", got)
+	}
+	var ends, mistyped int
+	for _, ev := range ec.Events() {
+		if ev.Error == nil {
+			continue
+		}
+		if ev.Type == types.EventQueryEnd {
+			ends++
+		} else {
+			mistyped++
+		}
+	}
+	if ends == 0 {
+		t.Fatal("no query_end event carries the abort error")
+	}
+	if mistyped != 0 {
+		t.Errorf("%d error-carrying events without the query_end type", mistyped)
+	}
+	var interrupted bool
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, types.InterruptMessage) {
+				interrupted = true
+			}
+		}
+	}
+	if !interrupted {
+		t.Error("the inline interrupt message was not appended to the last assistant turn")
+	}
+}
+
+func TestQueryLoopEmitsQueryStart(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "reply"), nil)
+	eng := New(&Params{Provider: mp, Model: "test-model", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.QuerySync(context.Background(), "hello", "")
+	ec.Reset()
+	eng.QuerySync(context.Background(), "second", "")
+	starts := ec.FindEvents(types.EventQueryStart)
+	if len(starts) != 1 {
+		t.Fatalf("%d query_start events, want exactly 1", len(starts))
+	}
+	if starts[0].Message == nil || !strings.HasSuffix(eventText(starts[0]), "second") {
+		t.Errorf("query_start message = %+v, want the user message", starts[0].Message)
+	}
+	if starts[0].Model != "test-model" {
+		t.Errorf("query_start Model = %q, want test-model", starts[0].Model)
+	}
+	if got := eng.queryStartMsgIdx; got != 2 {
+		t.Errorf("queryStartMsgIdx = %d, want 2 (snapshot before the second user message)", got)
+	}
+}
+
+// primeHistory runs one cheap turn so the compacted transcript has more
+// messages than the compactor returns — the reduction the breaker counts.
+func primeHistory(t *testing.T, eng *Engine, ec *eventCollector, logs *slogCapture) {
+	t.Helper()
+	eng.QuerySync(context.Background(), "prime", "")
+	ec.Reset()
+	logs.mu.Lock()
+	logs.calls = nil
+	logs.mu.Unlock()
+}
+
+// compactFixture builds a CompactResult with known payloads so summary lines
+// and token counters are assertable.
+func compactFixture(summary string, beforeTokens, afterTokens int) *short.CompactResult {
+	return &short.CompactResult{
+		Summary:      summary,
+		BeforeTokens: beforeTokens,
+		AfterTokens:  afterTokens,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("compacted")}},
+		},
+	}
+}
+
+type compactProbeKey struct{}
+
+func compactTestEngine(t *testing.T, mc Compactor, ec *eventCollector, logs *slogCapture, hr *integrationHookRecorder) *Engine {
+	t.Helper()
+	cfg := hooks.HooksConfig{}
+	if hr != nil {
+		cfg = hooks.HooksConfig{
+			"PreCompact": []hooks.HookMatcher{{Matcher: "*", Hooks: []hooks.HookConfig{
+				{Type: hooks.HookTypeCommand, Command: "pre-compact"},
+			}}},
+			"PostCompact": []hooks.HookMatcher{{Matcher: "*", Hooks: []hooks.HookConfig{
+				{Type: hooks.HookTypeCommand, Command: "post-compact"},
+			}}},
+		}
+	}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test-model",
+		MaxTokens:  1000,
+		Logger:     slog.New(logs),
+		Dispatcher: ec,
+		Hooks:      hooks.NewHooks(cfg, hr),
+	})
+	// effectiveWindow = 6000-1000 = 5000, buffer 3000 → threshold 2000 tokens,
+	// which the long prompt used by these tests clears.
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 6000, MaxConsecutiveFailures: 3})
+	return eng
+}
+
+func TestRunTurnsAutoCompactSuccess(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	ec := newEventCollector()
+	hooksRec := &integrationHookRecorder{}
+	mc := &recordingCompactor{result: compactFixture("condensed recap", 3000, 900)}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "after compact"), nil)
+	eng := compactTestEngine(t, mc, ec, logs, hooksRec)
+	eng.provider = mp
+	// A previous failure must be cleared by a compact that actually reduced.
+	eng.mu.Lock()
+	eng.consecutiveCompactFailures = 1
+	eng.mu.Unlock()
+	t.Cleanup(func() { eng.Close() })
+
+	primeHistory(t, eng, ec, logs)
+	// A sentinel on the query context proves the compact hooks were dispatched
+	// with the live query context rather than a fresh one.
+	eng.QuerySync(context.WithValue(context.Background(), compactProbeKey{}, "sentinel"), strings.Repeat("filler ", 4000), "")
+
+	calls, ctxs := mc.snapshot()
+	if calls != 1 {
+		t.Fatalf("compactor called %d times, want 1", calls)
+	}
+	if len(ctxs) != 1 || ctxs[0] == nil || ctxs[0].Value(compactProbeKey{}) != "sentinel" {
+		t.Error("the compactor ran without the live query context")
+	}
+	starts := ec.FindEvents(types.EventToolStart)
+	runs := ec.FindEvents(types.EventToolRun)
+	ends := ec.FindEvents(types.EventToolEnd)
+	params := ec.FindEvents(types.EventToolParamDelta)
+	if len(starts) != 1 || len(runs) != 1 || len(ends) != 1 || len(params) != 1 {
+		t.Fatalf("compact events: %d start, %d run, %d end, %d param — want 1 each",
+			len(starts), len(runs), len(ends), len(params))
+	}
+	tu := starts[0].ToolUse
+	if tu == nil {
+		t.Fatal("compact tool_start carries no ToolUse payload")
+	}
+	if !strings.HasPrefix(tu.ID, "compact-auto-") || len(tu.ID) != len("compact-auto-")+8 {
+		t.Errorf("compact id = %q, want compact-auto- plus an 8-char uuid", tu.ID)
+	}
+	if tu.Name != "Compact" {
+		t.Errorf("compact tool_start Name = %q, want Compact", tu.Name)
+	}
+	if tu.Summary != "Compacting conversation..." {
+		t.Errorf("compact tool_start Summary = %q", tu.Summary)
+	}
+	if runs[0].ToolUse == nil || runs[0].ToolUse.ID != tu.ID || runs[0].ToolUse.Name != "Compact" {
+		t.Errorf("compact tool_run = %+v, want the same id and Compact", runs[0].ToolUse)
+	}
+	if params[0].PartialInput == nil || params[0].PartialInput.ID != tu.ID {
+		t.Errorf("compact tool_param_delta = %+v, want the compact id", params[0].PartialInput)
+	}
+	wantLine := CompactSummaryLine(mc.lastResult())
+	if params[0].PartialInput.Summary != wantLine {
+		t.Errorf("compact summary line = %q, want %q", params[0].PartialInput.Summary, wantLine)
+	}
+	tr := ends[0].ToolResult
+	if tr == nil {
+		t.Fatal("compact tool_end carries no ToolResult payload")
+	}
+	if tr.ToolUseID != tu.ID {
+		t.Errorf("compact tool_end ToolUseID = %q, want %q", tr.ToolUseID, tu.ID)
+	}
+	if tr.DisplayOutput != "condensed recap" || tr.IsError {
+		t.Errorf("compact tool_end = %+v, want the compact summary text and no error", tr)
+	}
+	eng.mu.RLock()
+	failures := eng.consecutiveCompactFailures
+	eng.mu.RUnlock()
+	if failures != 0 {
+		t.Errorf("consecutiveCompactFailures = %d, want 0 (the seeded failure must be reset)", failures)
+	}
+	var preCompact, postCompact int
+	for _, ev := range hooksRec.Events() {
+		switch ev {
+		case string(hooks.HookPreCompact):
+			preCompact++
+		case string(hooks.HookPostCompact):
+			postCompact++
+		}
+	}
+	if preCompact != 1 {
+		t.Errorf("%d PreCompact hook calls, want exactly 1", preCompact)
+	}
+	if postCompact != 1 {
+		t.Errorf("%d PostCompact hook calls, want exactly 1", postCompact)
+	}
+	ctxLost := len(hooksRec.Ctxs()) != 2
+	for _, c := range hooksRec.Ctxs() {
+		if c == nil || c.Value(compactProbeKey{}) != "sentinel" {
+			ctxLost = true
+		}
+	}
+	if ctxLost {
+		t.Errorf("compact hooks ran with %d contexts, want 2 carrying the query context", len(hooksRec.Ctxs()))
+	}
+	recs := logs.all("pre-turn auto-compact succeeded")
+	if len(recs) != 1 {
+		t.Fatalf("%d success records, want exactly 1", len(recs))
+	}
+	if got := attrInt(recs[0].attrs["messages"]); got != 1 {
+		t.Errorf("success messages = %d, want 1", got)
+	}
+}
+
+func TestRunTurnsAutoCompactFailure(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	ec := newEventCollector()
+	mc := &recordingCompactor{result: compactFixture("condensed recap", 3000, 900), err: errors.New("compact boom")}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "after failed compact"), nil)
+	eng := compactTestEngine(t, mc, ec, logs, nil)
+	eng.provider = mp
+	t.Cleanup(func() { eng.Close() })
+
+	primeHistory(t, eng, ec, logs)
+	eng.QuerySync(context.Background(), strings.Repeat("filler ", 4000), "")
+
+	ends := ec.FindEvents(types.EventToolEnd)
+	if len(ends) != 1 {
+		t.Fatalf("%d tool_end events, want exactly 1", len(ends))
+	}
+	tr := ends[0].ToolResult
+	if tr == nil {
+		t.Fatal("failure tool_end carries no ToolResult payload")
+	}
+	if ts := ec.FindEvents(types.EventToolStart); len(ts) != 1 || ts[0].ToolUse == nil || tr.ToolUseID != ts[0].ToolUse.ID {
+		t.Errorf("failure tool_end ToolUseID = %q, want the compact tool id", tr.ToolUseID)
+	}
+	if tr.DisplayOutput != "Compact failed: compact boom" {
+		t.Errorf("failure DisplayOutput = %q, want the compact error", tr.DisplayOutput)
+	}
+	if !tr.IsError {
+		t.Error("failure tool_end IsError = false, want true")
+	}
+	eng.mu.RLock()
+	failures := eng.consecutiveCompactFailures
+	eng.mu.RUnlock()
+	if failures != 1 {
+		t.Errorf("consecutiveCompactFailures = %d, want 1 after a failed compact", failures)
+	}
+	recs := logs.all("pre-turn auto-compact failed")
+	if len(recs) != 1 {
+		t.Fatalf("%d failure records, want exactly 1", len(recs))
+	}
+	if got := fmt.Sprint(recs[0].attrs["error"]); !strings.Contains(got, "compact boom") {
+		t.Errorf("failure record error = %q, want the compact error", got)
+	}
+	if got := attrInt(recs[0].attrs["consecutiveFailures"]); got != 1 {
+		t.Errorf("failure record consecutiveFailures = %d, want 1", got)
+	}
+}
+
+func TestRunTurnsAutoCompactNoReduction(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	ec := newEventCollector()
+	// Same message count in and out: BeforeTokens == AfterTokens, so the
+	// compact is a no-op and must count as a failure for the breaker.
+	noop := compactFixture("condensed recap", 3000, 900)
+	noop.AfterTokens = noop.BeforeTokens
+	mc := &recordingCompactor{result: noop}
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "reply"), nil)
+	eng := compactTestEngine(t, mc, ec, logs, nil)
+	eng.provider = mp
+	t.Cleanup(func() { eng.Close() })
+
+	primeHistory(t, eng, ec, logs)
+	eng.QuerySync(context.Background(), strings.Repeat("filler ", 4000), "")
+	eng.mu.RLock()
+	failures := eng.consecutiveCompactFailures
+	eng.mu.RUnlock()
+	if failures != 1 {
+		t.Errorf("consecutiveCompactFailures = %d, want 1 for a non-reducing compact", failures)
+	}
+	if len(logs.all("pre-turn auto-compact succeeded")) != 1 {
+		t.Error("a non-reducing compact must still log the success branch")
+	}
+}
+
+func TestRunTurnsFileHistorySnapshot(t *testing.T) {
+	// make_snapshot logs through the package-level default logger.
+	logs := &slogCapture{}
+	attachSlogCapture(t, logs)
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "tracked.txt")
+	// Large enough that the snapshot's backup copy clears one millisecond,
+	// which is what the query_summary snapshot_ms accumulator measures.
+	big := bytes.Repeat([]byte("A"), 8<<20)
+	if err := os.WriteFile(file, big, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	tracker := filehistory.NewTracker(dir)
+	tracker.LoadState(filehistory.FileHistoryState{
+		// Fixed date: the seed snapshot only needs to exist and predate the
+		// query; no assertion depends on its distance to the new snapshot.
+		Snapshots:        []filehistory.FileHistorySnapshot{{MessageID: "seed-message", Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}},
+		TrackedFiles:     map[string]bool{file: true},
+		SnapshotSequence: 1,
+	})
+	if err := tracker.TrackEdit(file); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := os.WriteFile(file, bytes.Repeat([]byte("B"), 8<<20), 0o644); err != nil {
+		t.Fatalf("rewrite fixture: %v", err)
+	}
+
+	var writerCalls int
+	ec := newEventCollector()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "reply"), nil)
+	eng := New(&Params{Provider: mp, Model: "test-model", Logger: slog.New(logs), Dispatcher: ec})
+	eng.SetFileHistory(tracker)
+	eng.SetFileHistoryWriter(func(filehistory.FileHistoryState) { writerCalls++ })
+	t.Cleanup(func() { eng.Close() })
+
+	eng.QuerySync(context.Background(), "go", "")
+
+	recs := logs.all("engine:make_snapshot")
+	if len(recs) != 1 {
+		t.Fatalf("%d make_snapshot records, want exactly 1", len(recs))
+	}
+	if got := recs[0].attrs["msgID"]; got != eng.currentTurnMsgID || got == "" {
+		t.Errorf("make_snapshot msgID = %v, want the current turn id %q", got, eng.currentTurnMsgID)
+	}
+	if got := attrInt(recs[0].attrs["trackedFiles"]); got != 1 {
+		t.Errorf("make_snapshot trackedFiles = %d, want 1", got)
+	}
+	if got := attrInt(recs[0].attrs["snapshots"]); got != 2 {
+		t.Errorf("make_snapshot snapshots = %d, want 2 (seed + this turn)", got)
+	}
+	if writerCalls != 1 {
+		t.Errorf("fileHistoryWriter called %d times, want 1", writerCalls)
+	}
+	if len(logs.all("engine:make_snapshot_failed")) != 0 {
+		t.Error("a successful snapshot logged a failure")
+	}
+	summaries := logs.all("engine:query_summary")
+	if len(summaries) != 1 {
+		t.Fatalf("%d query_summary records, want exactly 1", len(summaries))
+	}
+	if got := attrInt(summaries[0].attrs["snapshot_ms"]); got < 1 {
+		t.Errorf("snapshot_ms = %d, want at least 1 for an 8MB backup copy", got)
+	}
+}
+
+// prunableHistory builds a transcript with six Read tool results, the
+// oldest of which the token prune must clear (KeepRecent is five).
+func prunableHistory(t *testing.T) ([]types.Message, json.RawMessage) {
+	t.Helper()
+	content, err := json.Marshal(strings.Repeat("payload ", 500))
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	var msgs []types.Message
+	// The stamps must sit near the wall clock: runTurns evaluates the
+	// time-based trigger (time.Since of the last assistant) before the token
+	// prune, and stale stamps would let that trigger clear rounds first.
+	now := time.Now() // REAL-TIME: fresh stamps keep the time-based trigger off
+	for i := range 6 {
+		id := fmt.Sprintf("read-%d", i)
+		msgs = append(msgs, types.Message{Role: types.RoleAssistant, Timestamp: now, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: id, Name: "Read"},
+		}})
+		msgs = append(msgs, types.Message{Role: types.RoleUser, Timestamp: now, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: id, Content: content},
+		}})
+	}
+	return msgs, content
+}
+
+// passThroughCompactor returns the transcript unchanged: the auto-compact
+// runs, reports no reduction, and leaves the token prune as the next resort.
+type passThroughCompactor struct {
+	calls  int
+	tokens int // BeforeTokens; 0 means len(msgs)*100
+	reduce bool
+}
+
+func (c *passThroughCompactor) Compact(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
+	c.calls++
+	n := c.tokens
+	if n == 0 {
+		n = len(msgs) * 100
+	}
+	after := n
+	if c.reduce {
+		after = n / 2
+	}
+	return &short.CompactResult{
+		Messages:       msgs,
+		BeforeTokens:   n,
+		AfterTokens:    after,
+		BeforeMessages: len(msgs),
+	}, nil
+}
+
+func TestRunTurnsTokenPrune(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	msgs, content := prunableHistory(t)
+	saved := calculateToolResultTokens(content)
+	if saved == 0 {
+		t.Fatal("fixture tool result estimates to zero tokens")
+	}
+
+	mp := &mockProvider{}
+	// The turn's usage would overwrite ContextTokens, so fail the API call:
+	// the prune's subtraction is then the last write to ContextTokens.
+	mp.addResponse(nil, errors.New("llm down"))
+	eng := New(&Params{
+		Provider: mp, Model: "test-model", MaxTokens: 1000, MaxTurns: 1,
+		Logger:      slog.New(logs),
+		AutoCompact: AutoCompactConfig{ContextWindow: 6000},
+	})
+	mc := &passThroughCompactor{}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 6000, MaxConsecutiveFailures: 3})
+	eng.setMessages(msgs)
+	eng.SetContextTokens(5000)
+	t.Cleanup(func() { eng.Close() })
+
+	eng.runTurns(context.Background(), "")
+
+	if mc.calls != 1 {
+		t.Fatalf("compactor called %d times, want 1 (the prune only runs after a failed compact)", mc.calls)
+	}
+	recs := logs.all("engine:token_prune")
+	if len(recs) != 1 {
+		t.Fatalf("%d token_prune records, want exactly 1", len(recs))
+	}
+	if got := attrInt(recs[0].attrs["cleared"]); got != 1 {
+		t.Errorf("token_prune cleared = %d, want 1 (six results, five kept)", got)
+	}
+	if got := attrInt(recs[0].attrs["tokens_saved"]); got != int64(saved) {
+		t.Errorf("token_prune tokens_saved = %d, want %d", got, saved)
+	}
+	eng.mu.RLock()
+	ctxTokens := eng.ContextTokens
+	eng.mu.RUnlock()
+	// runCompact leaves ContextTokens at the compactor's AfterTokens
+	// (12 messages x 100); the prune then subtracts what it cleared.
+	if ctxTokens != 1200-saved {
+		t.Errorf("ContextTokens = %d, want %d", ctxTokens, 1200-saved)
+	}
+	var clearedCount int
+	for _, m := range eng.Messages() {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeToolResult && string(b.Content) == `"`+TokenPrunedMessage+`"` {
+				clearedCount++
+			}
+		}
+	}
+	if clearedCount != 1 {
+		t.Errorf("%d tool results cleared, want 1", clearedCount)
+	}
+}
+
+func TestRunTurnsTokenPruneGuards(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		subagent  bool
+		ctxWindow int
+		reducing  bool
+		wantPrune bool
+	}{
+		{"subagent", true, 6000, false, false},
+		{"no-context-window", false, 0, false, false},
+		{"window-of-one", false, 1, false, true},
+		{"successful-compact", false, 6000, true, false},
+	}
+	for _, tc := range cases {
+		logs := &slogCapture{}
+		msgs, _ := prunableHistory(t)
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEvents("test", "reply"), nil)
+		eng := New(&Params{
+			Provider: mp, Model: "test-model", MaxTokens: 1000, MaxTurns: 1,
+			Logger:      slog.New(logs),
+			AutoCompact: AutoCompactConfig{ContextWindow: tc.ctxWindow},
+		})
+		mc := &passThroughCompactor{tokens: 4000, reduce: tc.reducing}
+		eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: tc.ctxWindow, MaxConsecutiveFailures: 3})
+		eng.isSubagent = tc.subagent
+		eng.setMessages(msgs)
+		eng.SetContextTokens(5000)
+		t.Cleanup(func() { eng.Close() })
+
+		eng.runTurns(context.Background(), "")
+
+		want := 0
+		if tc.wantPrune {
+			want = 1
+		}
+		if got := len(logs.all("engine:token_prune")); got != want {
+			t.Errorf("%s: %d token_prune records, want %d", tc.name, got, want)
+		}
+		var cleared int
+		for _, m := range eng.Messages() {
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeToolResult && string(b.Content) == `"`+TokenPrunedMessage+`"` {
+					cleared++
+				}
+			}
+		}
+		if cleared != want {
+			t.Errorf("%s: %d tool results cleared, want %d", tc.name, cleared, want)
+		}
+	}
+}
+
+func TestRunTurnsLLMTiming(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	mp := &mockProvider{}
+	// A text-only turn ends the loop, so the second turn has to be reached
+	// through a tool call: two LLM calls means two accumulator terms.
+	readTool := &mockTool{name: "Read", enabled: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: "done"}, nil
+	}}
+	hang1, hang2 := make(chan struct{}), make(chan struct{})
+	mp.addResponse(toolUseStreamEvents("test", "tu1", "Read", `{"file_path":"/nonexistent/probe"}`), nil)
+	mp.addResponse(textStreamEvents("test", "slow turn two"), nil)
+	mp.responses[0].hang = hang1
+	mp.responses[1].hang = hang2
+	go func() {
+		// Each hold is real elapsed time: the llm_ms accumulator sums the
+		// wall-clock span of every callLLM, so the delays are lower bounds.
+		// 30ms each keeps the 30ms floor safe when turn two starts late.
+		time.Sleep(30 * time.Millisecond) // REAL-TIME: llm_ms reads the wall clock
+		close(hang1)
+		time.Sleep(30 * time.Millisecond) // REAL-TIME: llm_ms reads the wall clock
+		close(hang2)
+	}()
+
+	eng := New(&Params{
+		Provider: mp, Model: "test-model", MaxTurns: 2, Logger: slog.New(logs),
+		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{"Read": readTool} },
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.QuerySync(context.Background(), "go", "")
+
+	recs := logs.all("engine:query_summary")
+	if len(recs) != 1 {
+		t.Fatalf("%d query_summary records, want exactly 1", len(recs))
+	}
+	// Two turns held open for 20ms each: the accumulator must add, not replace.
+	if got := attrInt(recs[0].attrs["llm_ms"]); got < 30 {
+		t.Errorf("llm_ms = %d, want at least 30 for two turns held open for 30ms each", got)
+	}
+}
+
+func TestRunTurnsTokenPruneClampsAtZero(t *testing.T) {
+	t.Parallel()
+	logs := &slogCapture{}
+	msgs, content := prunableHistory(t)
+	saved := calculateToolResultTokens(content)
+	mp := &mockProvider{}
+	mp.addResponse(nil, errors.New("llm down"))
+	eng := New(&Params{
+		Provider: mp, Model: "test-model", MaxTokens: 1000, MaxTurns: 1,
+		Logger:      slog.New(logs),
+		AutoCompact: AutoCompactConfig{ContextWindow: 6000},
+	})
+	// The compact leaves ContextTokens one token below what the prune will
+	// clear, so the subtraction lands on exactly -1: the clamp has to run.
+	mc := &passThroughCompactor{tokens: saved - 1}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 6000, MaxConsecutiveFailures: 3})
+	eng.setMessages(msgs)
+	eng.SetContextTokens(5000)
+	t.Cleanup(func() { eng.Close() })
+
+	eng.runTurns(context.Background(), "")
+
+	if got := len(logs.all("engine:token_prune")); got != 1 {
+		t.Fatalf("%d token_prune records, want exactly 1", got)
+	}
+	eng.mu.RLock()
+	ctxTokens := eng.ContextTokens
+	eng.mu.RUnlock()
+	if ctxTokens != 0 {
+		t.Errorf("ContextTokens = %d, want the clamp at 0 (saved %d exceeds the %d the compact left)", ctxTokens, saved, saved-1)
+	}
+}
+
+func TestGetWorkingDirReleasesLock(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.setWorkingDir("/tmp/probe-dir")
+	if got := eng.getWorkingDir(); got != "/tmp/probe-dir" {
+		t.Fatalf("getWorkingDir = %q, want the configured directory", got)
+	}
+	// A leaked RLock would block the next writer forever; TryLock turns that
+	// deadlock into an immediate, observable false.
+	if !eng.mu.TryLock() {
+		t.Error("getWorkingDir left the engine mutex read-locked")
+	} else {
+		eng.mu.Unlock()
+	}
+}
+
+func TestDefaultCoalesceWindow(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+
+	if got := eng.effectiveWindow(); got != 100*time.Millisecond {
+		t.Errorf("default coalesce window = %v, want 100ms", got)
+	}
+}
+
+// TestTokenPruneBudgetBoundary pins the token-prune threshold itself: the
+// reserved-output and manual-compact buffers are subtracted from the context
+// window, and the comparison is "prune only above the budget".
+func TestTokenPruneBudgetBoundary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		offset    int // budget = estimate + offset
+		wantPrune bool
+	}{
+		{"at-budget", 0, false},
+		{"one-over-budget", -1, true},
+	}
+	for _, tc := range cases {
+		logs := &slogCapture{}
+		msgs, _ := prunableHistory(t)
+		mp := &mockProvider{}
+		mp.addResponse(nil, errors.New("llm down"))
+		eng := New(&Params{
+			Provider: mp, Model: "test-model", MaxTokens: 100_000, MaxTurns: 1,
+			Logger: slog.New(logs),
+		})
+		eng.mu.Lock()
+		eng.compactor = nil
+		eng.mu.Unlock()
+		eng.setMessages(msgs)
+		estimate := eng.currentInputTokens()
+		// budget = ContextWindow - min(maxTokens, 20000) - 3000
+		window := estimate + tc.offset + 20_000 + 3_000
+		eng.mu.Lock()
+		eng.autoCompactConfig = AutoCompactConfig{ContextWindow: window}
+		eng.mu.Unlock()
+		t.Cleanup(func() { eng.Close() })
+
+		eng.runTurns(context.Background(), "")
+
+		want := 0
+		if tc.wantPrune {
+			want = 1
+		}
+		if got := len(logs.all("engine:token_prune")); got != want {
+			t.Errorf("%s: %d token_prune records, want %d (estimate %d, window %d)",
+				tc.name, got, want, estimate, window)
+		}
+	}
+}
+
+func TestMaxTokensRecoveryLimit(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	for range 6 {
+		mp.addResponse(textEventsWithStopReason("test-model", "cut off", stopReasonMaxTokens), nil)
+	}
+	eng := New(&Params{Provider: mp, Model: "test-model", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.QuerySync(context.Background(), "tell me a long story", "")
+
+	if got := mp.callCount(); got != 4 {
+		t.Errorf("provider calls = %d, want 4 (one turn plus three max_tokens recoveries)", got)
+	}
+	var continuations int
+	for _, m := range eng.Messages() {
+		if m.Role == types.RoleUser && m.Flags&types.FlagMeta != 0 {
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeText && b.Text == continuationPrompt {
+					continuations++
+				}
+			}
+		}
+	}
+	if continuations != 3 {
+		t.Errorf("%d continuation prompts, want 3", continuations)
+	}
+}
+
+// TestRunAgentInterruptStubWithoutUserMessage covers the lastUserIdx < 0
+// arm: a fork whose transcript has no selectable user message at all.
+func TestRunAgentInterruptStubWithoutUserMessage(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 12}}},
+		},
+		hang: hang,
+	})
+	fork := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu_fork", Name: "Read"},
+		}},
+	}
+	deps := runAgentDeps(t)
+	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+		ToolsProvider: runAgentTools})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		waitForCallCount(t, mp, 1, 5*time.Second)
+		cancel()
+		close(hang)
+	}()
+
+	res, err := eng.RunAgent(ctx, agenttool.AgentOpts{
+		Prompt: "p", AgentType: "General", ForkMessages: fork,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if res == nil {
+		t.Fatal("RunAgent returned nil result")
+	}
+	if res.Content != "(agent interrupted by user)" {
+		t.Errorf("Content = %q, want the interrupt stub for a transcript with no user message", res.Content)
+	}
+}
+
+// ===========================================================================
+// Usage payload and reactive-compact pins
+// ===========================================================================
+
+// distinctUsage is a usage script whose four counters are all distinct and
+// non-zero, so clearing or mis-accumulating any one of them breaks an equality
+// assertion instead of hiding behind a zero.
+var distinctUsage = types.Usage{
+	InputTokens:              100,
+	OutputTokens:             7,
+	CacheReadInputTokens:     30,
+	CacheCreationInputTokens: 11,
+}
+
+var distinctUsageEvent = types.UsageEvent{
+	InputTokens:              100,
+	OutputTokens:             7,
+	CacheReadInputTokens:     30,
+	CacheCreationInputTokens: 11,
+}
+
+// textStreamEventsWithUsage streams a text reply with usage carried on both
+// message_start and message_delta, the way the Anthropic stream reports it.
+func textStreamEventsWithUsage(model, text, stopReason string, u types.Usage) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: u}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: text}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: stopReason}, Usage: &u},
+		{Type: "message_stop"},
+	}
+}
+
+// toolUseStreamEventsWithUsage streams a tool_use reply with the same usage payload.
+func toolUseStreamEventsWithUsage(model, id, name, input string, u types.Usage) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: u}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: id, Name: name}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: input}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &u},
+		{Type: "message_stop"},
+	}
+}
+
+// singleQueryEnd returns the single query_end event, failing the test if the
+// terminal emission is missing or duplicated.
+func singleQueryEnd(t *testing.T, ec *eventCollector) types.QueryEvent {
+	t.Helper()
+	ends := ec.FindEvents(types.EventQueryEnd)
+	if len(ends) != 1 {
+		t.Fatalf("%d query_end events, want exactly 1", len(ends))
+	}
+	return ends[0]
+}
+
+// checkUsagePayload pins all four counters of a usage payload.
+func checkUsagePayload(t *testing.T, label string, got *types.UsageEvent, want types.UsageEvent) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s carries no usage payload", label)
+	}
+	if *got != want {
+		t.Errorf("%s usage = %+v, want %+v", label, *got, want)
+	}
+}
+
+// TestTerminalQueryEndUsageFields pins the usage payload of the
+// no-tool-use terminal exit.
+func TestTerminalQueryEndUsageFields(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", distinctUsage), nil)
+	ec := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	end := singleQueryEnd(t, ec)
+	checkUsagePayload(t, "terminal query_end", end.Usage, distinctUsageEvent)
+	if res.TotalUsage != (types.Usage{InputTokens: 100, OutputTokens: 7, CacheReadInputTokens: 30, CacheCreationInputTokens: 11}) {
+		t.Errorf("QueryResult.TotalUsage = %+v, want the accumulated usage", res.TotalUsage)
+	}
+	if res.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1", res.TurnCount)
+	}
+}
+
+// TestMaxTurnsEndQueryEndUsage pins the usage payload of the max-turns
+// exhaustion exit.
+func TestMaxTurnsEndQueryEndUsage(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, distinctUsage), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp, Model: "m", MaxTurns: 1, Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	end := singleQueryEnd(t, ec)
+	checkUsagePayload(t, "max-turns query_end", end.Usage, distinctUsageEvent)
+	if res.TotalUsage != (types.Usage{InputTokens: 100, OutputTokens: 7, CacheReadInputTokens: 30, CacheCreationInputTokens: 11}) {
+		t.Errorf("QueryResult.TotalUsage = %+v, want the accumulated usage", res.TotalUsage)
+	}
+	if res.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1", res.TurnCount)
+	}
+	if len(ec.FindEvents(types.EventTurnEnd)) != 1 {
+		t.Errorf("%d turn_end events, want exactly 1 for the tool turn", len(ec.FindEvents(types.EventTurnEnd)))
+	}
+}
+
+// TestPostStreamAbortQueryEndUsage pins the post-streaming abort exit
+// interrupt message, tool discard, turn_end, and the
+// full usage payload on both the event and the returned result.
+func TestPostStreamAbortQueryEndUsage(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	toolReturned := make(chan struct{})
+	// The stream completes (message_stop) but stays open, so the abort is first
+	// observed by the post-streaming check, not by callLLM itself.
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: toolUseStreamEventsWithUsage("m", "tu_1", "Slow", `{}`, distinctUsage),
+		hang:   hang,
+	})
+	ec := newEventCollector()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Slow": &mockTool{
+				name: "Slow", enabled: true,
+				callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+					close(started)
+					<-release
+					close(toolReturned)
+					return &tool.ToolResult{Data: "late"}, nil
+				},
+			}}
+		},
+	})
+	t.Cleanup(func() {
+		select {
+		case <-started:
+			releaseOnce.Do(func() { close(release) })
+			<-toolReturned
+		default:
+		}
+	})
+	// The tool must be mid-call before the cancel, so its completion is
+	// guaranteed to land after Discard() has run.
+	go func() {
+		<-started
+		cancel()
+		close(hang)
+	}()
+	res := eng.QuerySync(ctx, "go", "")
+	if res.Error == nil {
+		t.Fatal("expected an abort error from the post-streaming check")
+	}
+	var abortErr *AbortError
+	if !errors.As(res.Error, &abortErr) {
+		t.Fatalf("res.Error = %v (%T), want *AbortError", res.Error, res.Error)
+	}
+	if abortErr.Phase != "streaming" {
+		t.Errorf("AbortError.Phase = %q, want \"streaming\"", abortErr.Phase)
+	}
+	end := singleQueryEnd(t, ec)
+	checkUsagePayload(t, "post-stream abort query_end", end.Usage, distinctUsageEvent)
+	if end.Error == nil {
+		t.Error("query_end carries no abort error")
+	}
+	if res.TotalUsage != (types.Usage{InputTokens: 100, OutputTokens: 7, CacheReadInputTokens: 30, CacheCreationInputTokens: 11}) {
+		t.Errorf("QueryResult.TotalUsage = %+v, want the accumulated usage", res.TotalUsage)
+	}
+	if len(ec.FindEvents(types.EventTurnEnd)) != 1 {
+		t.Errorf("%d turn_end events, want exactly 1 before the abort query_end", len(ec.FindEvents(types.EventTurnEnd)))
+	}
+	// Discard() ran before the query returned, so the tool that finishes after
+	// the abort must not add a tool_end: the executor suppresses emissions once
+	// discarded. Release it and give any (mutant) late emission a window to land.
+	before := len(ec.FindEvents(types.EventToolEnd))
+	releaseOnce.Do(func() { close(release) })
+	<-toolReturned
+	deadline := time.NewTimer(300 * time.Millisecond)
+	defer deadline.Stop()
+	for {
+		if n := len(ec.FindEvents(types.EventToolEnd)); n > before {
+			t.Fatalf("tool_end count grew from %d to %d after the abort: Discard() did not suppress the late emission", before, n)
+		}
+		select {
+		case <-deadline.C:
+			return
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+// TestLLMErrorAbortQueryEndUsage pins the abort exit taken when the LLM
+// call itself fails under a cancelled context.
+func TestLLMErrorAbortQueryEndUsage(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	// Turn 1 accumulates usage; turn 2's stream dies without message_stop while
+	// ctx is cancelled, so callLLM returns the abort error.
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, distinctUsage), nil)
+	mp.responses = append(mp.responses, mockResponse{
+		events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "m", Usage: types.Usage{InputTokens: 500}}},
+		},
+		hang: make(chan struct{}),
+	})
+	ec := newEventCollector()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	go func() {
+		waitForCallCount(t, mp, 2, 5*time.Second)
+		cancel()
+	}()
+	res := eng.QuerySync(ctx, "go", "")
+	if res.Error == nil {
+		t.Fatal("expected an abort error from the cancelled second turn")
+	}
+	if _, ok := errors.AsType[*AbortError](res.Error); !ok {
+		t.Fatalf("res.Error = %v (%T), want *AbortError", res.Error, res.Error)
+	}
+	end := singleQueryEnd(t, ec)
+	checkUsagePayload(t, "callLLM-abort query_end", end.Usage, distinctUsageEvent)
+	if end.Error == nil {
+		t.Error("query_end carries no abort error")
+	}
+	if res.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1 (the aborted call is not a completed turn)", res.TurnCount)
+	}
+	var interrupted bool
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
+				interrupted = true
+			}
+		}
+	}
+	if !interrupted {
+		t.Error("the inline interrupt message was not appended on the callLLM abort path")
+	}
+}
+
+// TestAbortAfterFailedCompactAttempt pins the abort check that runs after
+// a failed reactive compact: the abort error, not the
+// original API error, is what the query returns.
+func TestAbortAfterFailedCompactAttempt(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(nil, &llm.APIError{Type: "invalid_request_error", ErrorCode: "prompt_too_long", Message: "context overflow", Status: 413, Retryable: false})
+	ec := newEventCollector()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	// The compactor cancels the query and then fails, so the abort is observed
+	// only by the post-compact check.
+	eng.SetCompactor(&funcCompactor{fn: func(context.Context, []types.Message) (*short.CompactResult, error) {
+		cancel()
+		return nil, errors.New("compact failed on purpose")
+	}}, AutoCompactConfig{ContextWindow: 200000})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(ctx, "go", "")
+	if res.Error == nil {
+		t.Fatal("expected an abort error after the failed compact attempt")
+	}
+	if _, ok := errors.AsType[*AbortError](res.Error); !ok {
+		t.Fatalf("res.Error = %v (%T), want *AbortError — the post-compact abort check must outrank the API error", res.Error, res.Error)
+	}
+	end := singleQueryEnd(t, ec)
+	if end.Error == nil {
+		t.Error("query_end carries no abort error")
+	} else if _, ok := end.Error.(*AbortError); !ok {
+		t.Errorf("query_end error = %v (%T), want *AbortError", end.Error, end.Error)
+	}
+	var interrupted bool
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && b.Text == types.InterruptMessage {
+				interrupted = true
+			}
+		}
+	}
+	if !interrupted {
+		t.Error("the inline interrupt message was not appended on the post-compact abort path")
+	}
+}
+
+// overflowAPIError is a context-overflow API error: IsContextOverflow keys on
+// ErrorCode, not Type.
+func overflowAPIError() error {
+	return &llm.APIError{Type: "invalid_request_error", ErrorCode: "prompt_too_long", Message: "context overflow", Status: 413, Retryable: false}
+}
+
+// recordingCompactor records the context it was handed and returns a fixed result,
+// so the compact event payloads are known to the test.
+type recordingCompactor struct {
+	mu     sync.Mutex
+	calls  int
+	gotCtx []context.Context
+	result *short.CompactResult
+	last   *short.CompactResult
+	err    error
+}
+
+func (c *recordingCompactor) Compact(ctx context.Context, msgs []types.Message) (*short.CompactResult, error) {
+	c.mu.Lock()
+	c.calls++
+	c.gotCtx = append(c.gotCtx, ctx)
+	c.mu.Unlock()
+	if c.err != nil {
+		return nil, c.err
+	}
+	out := *c.result
+	out.BeforeMessages = len(msgs)
+	c.mu.Lock()
+	c.last = &out
+	c.mu.Unlock()
+	return &out, nil
+}
+
+// lastResult returns the result the compactor actually handed the engine, so
+// summary-line assertions compare against the real BeforeMessages.
+func (c *recordingCompactor) lastResult() *short.CompactResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
+func (c *recordingCompactor) snapshot() (int, []context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls, append([]context.Context(nil), c.gotCtx...)
+}
+
+// compactEventGroup returns the compact event group in emission order, keyed by
+// the tool_use id the group shares.
+type compactEventGroup struct {
+	start, run, paramDelta, end *types.QueryEvent
+	id                          string
+}
+
+// collectCompactEvents pulls the Compact events out of the stream and pins that
+// every one of them carries the same tool_use id.
+func collectCompactEvents(t *testing.T, ec *eventCollector, idPrefix string) compactEventGroup {
+	t.Helper()
+	var got compactEventGroup
+	var starts, runs, deltas, ends int
+	for _, ev := range ec.Events() {
+		switch ev.Type {
+		case types.EventToolStart:
+			if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+				starts++
+				got.start = &ev
+				got.id = ev.ToolUse.ID
+			}
+		case types.EventToolRun:
+			if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+				runs++
+				got.run = &ev
+			}
+		case types.EventToolParamDelta:
+			if ev.PartialInput != nil && strings.HasPrefix(ev.PartialInput.ID, idPrefix) {
+				deltas++
+				got.paramDelta = &ev
+			}
+		case types.EventToolEnd:
+			if ev.ToolResult != nil && strings.HasPrefix(ev.ToolResult.ToolUseID, idPrefix) {
+				ends++
+				got.end = &ev
+			}
+		}
+	}
+	if starts != 1 || runs != 1 || deltas != 1 || ends != 1 {
+		t.Fatalf("compact event group = %d start, %d run, %d param_delta, %d end; want 1 each", starts, runs, deltas, ends)
+	}
+	if !strings.HasPrefix(got.id, idPrefix) {
+		t.Errorf("compact id = %q, want prefix %q", got.id, idPrefix)
+	}
+	if len(got.id) != len(idPrefix)+8 {
+		t.Errorf("compact id %q has a %d-char suffix, want 8 (uuid slice width)", got.id, len(got.id)-len(idPrefix))
+	}
+	if got.run.ToolUse == nil || got.run.ToolUse.ID != got.id {
+		t.Errorf("tool_run tool_use = %+v, want the same id %q", got.run.ToolUse, got.id)
+	}
+	if got.paramDelta.PartialInput.ID != got.id {
+		t.Errorf("tool_param_delta id = %q, want %q", got.paramDelta.PartialInput.ID, got.id)
+	}
+	if got.end.ToolResult.ToolUseID != got.id {
+		t.Errorf("tool_end tool_use_id = %q, want %q", got.end.ToolResult.ToolUseID, got.id)
+	}
+	return got
+}
+
+// compactHookConfig wires PreCompact/PostCompact command hooks.
+func compactHookConfig() hooks.HooksConfig {
+	return hooks.HooksConfig{
+		"PreCompact": []hooks.HookMatcher{{Matcher: "*", Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "pre-compact"},
+		}}},
+		"PostCompact": []hooks.HookMatcher{{Matcher: "*", Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "post-compact"},
+		}}},
+	}
+}
+
+// TestReactiveCompactEventPayloads pins the whole reactive-compact event
+// group: id width, names, summary lines, hook dispatch,
+// and the retry that follows.
+func TestReactiveCompactEventPayloads(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(nil, overflowAPIError())
+	mp.addResponse(textStreamEventsWithUsage("m", "recovered", "end_turn", types.Usage{InputTokens: 3}), nil)
+	ec := newEventCollector()
+	hookRec := &integrationHookRecorder{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		Hooks: hooks.NewHooks(compactHookConfig(), hookRec),
+	})
+	mc := &recordingCompactor{result: compactFixture("reactive summary", 4321, 210)}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if got := mp.callCount(); got != 2 {
+		t.Fatalf("%d provider calls, want 2 (compact then retry)", got)
+	}
+	got := collectCompactEvents(t, ec, "compact-reactive-")
+	if got.start.ToolUse.Summary != "Compacting after context overflow..." {
+		t.Errorf("tool_start summary = %q, want the overflow summary", got.start.ToolUse.Summary)
+	}
+	if got.run.ToolUse.Name != "Compact" {
+		t.Errorf("tool_run name = %q, want Compact", got.run.ToolUse.Name)
+	}
+	wantLine := CompactSummaryLine(mc.lastResult())
+	if got.paramDelta.PartialInput.Summary != wantLine {
+		t.Errorf("tool_param_delta summary = %q, want %q", got.paramDelta.PartialInput.Summary, wantLine)
+	}
+	if got.end.ToolResult.DisplayOutput != "reactive summary" {
+		t.Errorf("tool_end display = %q, want the compact summary", got.end.ToolResult.DisplayOutput)
+	}
+	if got.end.ToolResult.IsError {
+		t.Error("tool_end marks a successful compact as an error")
+	}
+	calls, ctxs := mc.snapshot()
+	if calls != 1 {
+		t.Fatalf("compactor called %d times, want 1", calls)
+	}
+	for i, c := range ctxs {
+		if c == nil {
+			t.Errorf("compactor call %d ran with a nil context", i)
+		}
+	}
+	hookCtxs := hookRec.Ctxs()
+	if len(hookCtxs) != 2 {
+		t.Fatalf("%d compact hook dispatches, want 2 (pre + post)", len(hookCtxs))
+	}
+	for i, c := range hookCtxs {
+		if c == nil {
+			t.Errorf("compact hook %d dispatched with a nil context", i)
+		}
+	}
+}
+
+// TestReactiveCompactFailureEvent pins the failure arm
+// error-flagged tool_end, no param delta, no retry, and
+// the warning log.
+func TestReactiveCompactFailureEvent(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(nil, overflowAPIError())
+	ec := newEventCollector()
+	logs := &slogCapture{}
+	eng := New(&Params{Provider: mp, Model: "m", Logger: slog.New(logs), Dispatcher: ec})
+	boom := errors.New("compact boom")
+	mc := &recordingCompactor{err: boom}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error == nil {
+		t.Fatal("expected the overflow error to stay terminal after a failed compact")
+	}
+	if got := mp.callCount(); got != 1 {
+		t.Errorf("%d provider calls, want 1 (no retry after a failed compact)", got)
+	}
+	var starts, ends, deltas int
+	var end *types.QueryEvent
+	for i, ev := range ec.Events() {
+		switch ev.Type {
+		case types.EventToolStart:
+			if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+				starts++
+			}
+		case types.EventToolParamDelta:
+			deltas++
+		case types.EventToolEnd:
+			if ev.ToolResult != nil && strings.HasPrefix(ev.ToolResult.ToolUseID, "compact-reactive-") {
+				ends++
+				end = &ec.Events()[i]
+			}
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("%d compact start / %d compact end events, want 1 each", starts, ends)
+	}
+	if deltas != 0 {
+		t.Errorf("%d tool_param_delta events, want 0 on a failed compact", deltas)
+	}
+	if end.ToolResult.DisplayOutput != fmt.Sprintf("Compact failed: %v", boom) {
+		t.Errorf("tool_end display = %q, want %q", end.ToolResult.DisplayOutput, fmt.Sprintf("Compact failed: %v", boom))
+	}
+	if !end.ToolResult.IsError {
+		t.Error("tool_end does not flag the failed compact as an error")
+	}
+	recs := logs.all("reactive auto-compact failed")
+	if len(recs) != 1 {
+		t.Fatalf("%d 'reactive auto-compact failed' records, want 1", len(recs))
+	}
+	if errVal, ok := recs[0].attrs["error"].(error); !ok || errVal != boom {
+		t.Errorf("warning attrs[error] = %#v, want the compact error", recs[0].attrs["error"])
+	}
+}
+
+// TestReactiveCompactSkippedForCompactSource pins the recursion guard at
+// compact- and session-memory-forked agents must not run a
+// reactive compact.
+func TestReactiveCompactSkippedForCompactSource(t *testing.T) {
+	t.Parallel()
+	for _, agentType := range []string{"compact", "session_memory"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			mp := &mockProvider{}
+			mp.addResponse(nil, overflowAPIError())
+			ec := newEventCollector()
+			parent := New(&Params{Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+			mc := &recordingCompactor{result: compactFixture("must not run", 4321, 210)}
+			parent.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+			t.Cleanup(func() { parent.Close() })
+			sub := parent.NewSubEngine(SubEngineOptions{AgentType: agentType, Tools: map[string]tool.Tool{}})
+			res := sub.QuerySync(context.Background(), "go", "")
+			if res.Error == nil {
+				t.Fatal("expected the overflow error to be terminal for a guarded query source")
+			}
+			if calls, _ := mc.snapshot(); calls != 0 {
+				t.Errorf("compactor called %d times, want 0 for a %s query", calls, agentType)
+			}
+			for _, ev := range ec.Events() {
+				if ev.Type == types.EventToolStart && ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+					t.Fatalf("a %s query emitted a Compact tool_start", agentType)
+				}
+			}
+		})
+	}
+}
+
+// TestContextWindowRecoveryEventPayloads pins the stop_reason recovery
+// compact group.
+func TestContextWindowRecoveryEventPayloads(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEventsWithUsage("m", "truncated", stopReasonContextWindowExceeded, types.Usage{InputTokens: 40}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "after recovery", "end_turn", types.Usage{InputTokens: 5}), nil)
+	ec := newEventCollector()
+	hookRec := &integrationHookRecorder{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		Hooks: hooks.NewHooks(compactHookConfig(), hookRec),
+	})
+	mc := &recordingCompactor{result: compactFixture("recovery summary", 4321, 210)}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if got := mp.callCount(); got != 2 {
+		t.Fatalf("%d provider calls, want 2 (recovery then next turn)", got)
+	}
+	got := collectCompactEvents(t, ec, "compact-recovery-")
+	if got.start.ToolUse.Summary != "Compacting to continue truncated response..." {
+		t.Errorf("tool_start summary = %q, want the recovery summary", got.start.ToolUse.Summary)
+	}
+	if got.start.ToolUse.Name != "Compact" {
+		t.Errorf("tool_start name = %q, want Compact", got.start.ToolUse.Name)
+	}
+	if got.run.ToolUse.Name != "Compact" {
+		t.Errorf("tool_run name = %q, want Compact", got.run.ToolUse.Name)
+	}
+	wantLine := CompactSummaryLine(mc.lastResult())
+	if got.paramDelta.PartialInput.Summary != wantLine {
+		t.Errorf("tool_param_delta summary = %q, want %q", got.paramDelta.PartialInput.Summary, wantLine)
+	}
+	if got.end.ToolResult.DisplayOutput != "recovery summary" {
+		t.Errorf("tool_end display = %q, want the compact summary", got.end.ToolResult.DisplayOutput)
+	}
+	if got.end.ToolResult.IsError {
+		t.Error("tool_end marks a successful recovery compact as an error")
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 2 {
+		t.Errorf("%d turn_end events, want 2 (recovery turn + terminal turn)", n)
+	}
+	calls, ctxs := mc.snapshot()
+	if calls != 1 {
+		t.Fatalf("compactor called %d times, want 1", calls)
+	}
+	for i, c := range ctxs {
+		if c == nil {
+			t.Errorf("recovery compactor call %d ran with a nil context", i)
+		}
+	}
+	hookCtxs := hookRec.Ctxs()
+	if len(hookCtxs) != 2 {
+		t.Fatalf("%d compact hook dispatches, want 2 (pre + post)", len(hookCtxs))
+	}
+	for i, c := range hookCtxs {
+		if c == nil {
+			t.Errorf("recovery compact hook %d dispatched with a nil context", i)
+		}
+	}
+}
+
+// TestContextWindowRecoveryCompactFailure pins the recovery failure arm
+// error-flagged tool_end, no param delta, no recovery
+// turn_end, and no second provider call.
+func TestContextWindowRecoveryCompactFailure(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEventsWithUsage("m", "truncated", stopReasonContextWindowExceeded, types.Usage{InputTokens: 40}), nil)
+	ec := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	boom := errors.New("recovery boom")
+	mc := &recordingCompactor{err: boom}
+	eng.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if got := mp.callCount(); got != 1 {
+		t.Errorf("%d provider calls, want 1 (a failed recovery does not continue)", got)
+	}
+	var starts, ends, deltas, runs int
+	var end *types.QueryEvent
+	for i, ev := range ec.Events() {
+		switch ev.Type {
+		case types.EventToolStart:
+			if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+				starts++
+				if ev.ToolUse.ID == "" {
+					t.Error("compact tool_start carries no tool_use id")
+				}
+			}
+		case types.EventToolRun:
+			if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+				runs++
+			}
+		case types.EventToolParamDelta:
+			deltas++
+		case types.EventToolEnd:
+			if ev.ToolResult != nil && strings.HasPrefix(ev.ToolResult.ToolUseID, "compact-recovery-") {
+				ends++
+				end = &ec.Events()[i]
+			}
+		}
+	}
+	if starts != 1 || runs != 1 || ends != 1 {
+		t.Fatalf("recovery group = %d start, %d run, %d end; want 1 each", starts, runs, ends)
+	}
+	if deltas != 0 {
+		t.Errorf("%d tool_param_delta events, want 0 on a failed recovery compact", deltas)
+	}
+	if end.ToolResult.DisplayOutput != fmt.Sprintf("Compact failed: %v", boom) {
+		t.Errorf("tool_end display = %q, want %q", end.ToolResult.DisplayOutput, fmt.Sprintf("Compact failed: %v", boom))
+	}
+	if !end.ToolResult.IsError {
+		t.Error("tool_end does not flag the failed recovery compact as an error")
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 1 {
+		t.Errorf("%d turn_end events, want 1 (the terminal turn only)", n)
+	}
+}
+
+// TestContextWindowRecoverySkippedForCompactSource pins the recursion
+// guard for compact- and session-memory-forked agents.
+func TestContextWindowRecoverySkippedForCompactSource(t *testing.T) {
+	t.Parallel()
+	for _, agentType := range []string{"compact", "session_memory"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			mp := &mockProvider{}
+			mp.addResponse(textStreamEventsWithUsage("m", "truncated", stopReasonContextWindowExceeded, types.Usage{InputTokens: 40}), nil)
+			ec := newEventCollector()
+			parent := New(&Params{Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec})
+			mc := &recordingCompactor{result: compactFixture("must not run", 4321, 210)}
+			parent.SetCompactor(mc, AutoCompactConfig{ContextWindow: 200000})
+			t.Cleanup(func() { parent.Close() })
+			sub := parent.NewSubEngine(SubEngineOptions{AgentType: agentType, Tools: map[string]tool.Tool{}})
+			res := sub.QuerySync(context.Background(), "go", "")
+			if res.Error != nil {
+				t.Fatalf("query failed: %v", res.Error)
+			}
+			if calls, _ := mc.snapshot(); calls != 0 {
+				t.Errorf("compactor called %d times, want 0 for a %s query", calls, agentType)
+			}
+			for _, ev := range ec.Events() {
+				if ev.Type == types.EventToolStart && ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+					t.Fatalf("a %s query emitted a Compact tool_start", agentType)
+				}
+			}
+		})
+	}
+}
+
+// errUpstreamRefused is an error whose FormatLLMError output does not already
+// carry the "API Error" prefix, so the engine's prepend is observable.
+var errUpstreamRefused = errors.New("upstream refused the request")
+
+// TestTerminalAPIErrorMarker pins the terminal-error exit
+// the flagged assistant marker, its exact text, the
+// query_end payload, and the terminal log record.
+func TestTerminalAPIErrorMarker(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(nil, errUpstreamRefused)
+	ec := newEventCollector()
+	logs := &slogCapture{}
+	eng := New(&Params{Provider: mp, Model: "m", Logger: slog.New(logs), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error == nil {
+		t.Fatal("expected a terminal error")
+	}
+	wantText := "API Error: " + errUpstreamRefused.Error()
+	var markers []types.Message
+	for _, m := range eng.Messages() {
+		if m.Role == types.RoleAssistant && m.Flags&types.FlagAPIError != 0 {
+			markers = append(markers, m)
+		}
+	}
+	if len(markers) != 1 {
+		t.Fatalf("%d API-error assistant markers, want exactly 1", len(markers))
+	}
+	if markers[0].Flags != types.FlagAPIError {
+		t.Errorf("marker flags = %d, want exactly FlagAPIError", markers[0].Flags)
+	}
+	if len(markers[0].Content) != 1 || markers[0].Content[0].Text != wantText {
+		t.Errorf("marker text = %+v, want %q", markers[0].Content, wantText)
+	}
+	end := singleQueryEnd(t, ec)
+	if end.Error == nil || end.Error.Error() != res.Error.Error() {
+		t.Errorf("query_end error = %v, want the terminal error %v", end.Error, res.Error)
+	}
+	recs := logs.all("callLLM error (terminal)")
+	if len(recs) != 1 {
+		t.Fatalf("%d 'callLLM error (terminal)' records, want 1", len(recs))
+	}
+	if errVal, ok := recs[0].attrs["error"].(error); !ok || errVal.Error() != errUpstreamRefused.Error() {
+		t.Errorf("terminal log attrs[error] = %#v, want the API error", recs[0].attrs["error"])
+	}
+	if turns, ok := recs[0].attrs["turn"]; !ok || turns != int64(0) {
+		t.Errorf("terminal log attrs[turn] = %#v, want 0", recs[0].attrs["turn"])
+	}
+}
+
+// TestTerminalAPIErrorStopFailurePanic pins the fire-and-forget
+// StopFailure goroutine: the hook runs, a panicking
+// executor is recovered, and the panic is logged.
+func TestTerminalAPIErrorStopFailurePanic(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(nil, errUpstreamRefused)
+	logs := &slogCapture{}
+	rec := &integrationHookRecorder{panics: true, entered: make(chan struct{})}
+	h := hooks.NewHooks(hooks.HooksConfig{
+		"StopFailure": []hooks.HookMatcher{{Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "on-failure"},
+		}}},
+	}, rec)
+	eng := New(&Params{Provider: mp, Model: "m", Logger: slog.New(logs), Hooks: h})
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(context.Background(), "go", ""); res.Error == nil {
+		t.Fatal("expected a terminal error")
+	}
+	select {
+	case <-rec.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the StopFailure hook was never dispatched")
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		if recs := logs.all("StopFailure hook panic"); len(recs) == 1 {
+			if recs[0].attrs["panic"] != "hook executor exploded" {
+				t.Errorf("panic attr = %#v, want the recovered value", recs[0].attrs["panic"])
+			}
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("no 'StopFailure hook panic' record; records: %v", logMsgs(logs))
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+// logMsgs lists recorded slog messages, for failure output only.
+func logMsgs(l *slogCapture) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, 0, len(l.calls))
+	for _, r := range l.calls {
+		out = append(out, r.msg)
+	}
+	return out
+}
+
+// TestUsageAccumulatesAcrossTurns pins the += accumulation of cache
+// counters across turns.
+func TestUsageAccumulatesAcrossTurns(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, types.Usage{
+		InputTokens: 100, OutputTokens: 7, CacheReadInputTokens: 30, CacheCreationInputTokens: 11,
+	}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{
+		InputTokens: 60, OutputTokens: 4, CacheReadInputTokens: 5, CacheCreationInputTokens: 2,
+	}), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	want := types.Usage{InputTokens: 160, OutputTokens: 11, CacheReadInputTokens: 35, CacheCreationInputTokens: 13}
+	if res.TotalUsage != want {
+		t.Errorf("QueryResult.TotalUsage = %+v, want %+v (per-turn sums, not last-wins)", res.TotalUsage, want)
+	}
+	end := singleQueryEnd(t, ec)
+	checkUsagePayload(t, "two-turn query_end", end.Usage, types.UsageEvent{
+		InputTokens: 160, OutputTokens: 11, CacheReadInputTokens: 35, CacheCreationInputTokens: 13,
+	})
+}
+
+// TestCalibrationAnchoredAfterAssistant pins the calibration anchor the
+// assistant message leaves behind.
+func TestCalibrationAnchoredAfterAssistant(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	usage := types.Usage{InputTokens: 120, CacheReadInputTokens: 40, OutputTokens: 9}
+	mp.addResponse(textStreamEventsWithUsage("m", "answer", "end_turn", usage), nil)
+	eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(context.Background(), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	key := calibrationKey(mp, "m")
+	eng.calibMu.Lock()
+	cal := eng.calibrations[key]
+	eng.calibMu.Unlock()
+	if cal == nil {
+		t.Fatalf("no calibration entry for key %q after an assistant turn", key)
+	}
+	if !cal.anchored {
+		t.Errorf("calibration for %q is not anchored after the assistant message landed", key)
+	}
+	if want := usage.TotalInputTokens(); cal.anchorTotal != want {
+		t.Errorf("calibration anchorTotal = %d, want %d", cal.anchorTotal, want)
+	}
+	if wantIdx := len(eng.Messages()) - 1; cal.anchorMsgIdx != wantIdx {
+		t.Errorf("calibration anchorMsgIdx = %d, want %d (the assistant message index)", cal.anchorMsgIdx, wantIdx)
+	}
+}
+
+// TestStopHookBlockedTurn pins the blocking Stop-hook turn
+// the log record, the meta feedback message, the
+// turn_end, the turn count, and the post-turn hook context.
+func TestStopHookBlockedTurn(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEventsWithUsage("m", "I am done", "end_turn", types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "fine, more", "end_turn", types.Usage{InputTokens: 12}), nil)
+	ec := newEventCollector()
+	logs := &slogCapture{}
+	block := hooks.HookResult{Outcome: hooks.HookOutcomeBlocking, Stderr: "keep working", HookName: "stop-hook"}
+	rec := &integrationHookRecorder{results: []hooks.HookResult{
+		block,
+		{Outcome: hooks.HookOutcomeSuccess, HookName: "stop-hook"},
+	}}
+	h := hooks.NewHooks(hooks.HooksConfig{
+		"Stop": []hooks.HookMatcher{{Hooks: []hooks.HookConfig{
+			{Type: hooks.HookTypeCommand, Command: "stop-hook"},
+		}}},
+	}, rec)
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: slog.New(logs), Dispatcher: ec, Hooks: h,
+		AutoCompact: AutoCompactConfig{ContextWindow: 200_000},
+	})
+	hooksSeen := &postTurnCtxRecorder{}
+	eng.RegisterPostTurnHook(hooksSeen.hook)
+	t.Cleanup(func() { eng.Close() })
+	res := eng.QuerySync(withSentinel(context.Background()), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if got := mp.callCount(); got != 2 {
+		t.Fatalf("%d provider calls, want 2 (the blocked stop rewakes the loop)", got)
+	}
+	if recs := logs.all("stop hook blocked, continuing turn"); len(recs) != 1 {
+		t.Errorf("%d 'stop hook blocked' records, want 1", len(recs))
+	}
+	wantFeedback := hooks.StopHookMessage(block)
+	var feedback int
+	for _, m := range eng.Messages() {
+		if m.Role != types.RoleUser || m.Flags&types.FlagMeta == 0 {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && b.Text == wantFeedback {
+				feedback++
+			}
+		}
+	}
+	if feedback != 1 {
+		t.Errorf("%d stop-hook feedback messages equal to %q, want exactly 1", feedback, wantFeedback)
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 2 {
+		t.Errorf("%d turn_end events, want 2 (blocked turn + terminal turn)", n)
+	}
+	if res.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2", res.TurnCount)
+	}
+	if got := hooksSeen.snapshot(); len(got) != 2 || got[0] != "sentinel=live" || got[1] != "sentinel=live" {
+		t.Errorf("post-turn hook contexts = %v, want two live query contexts", got)
+	}
+}
+
+type sentinelCtxKey struct{}
+
+// withSentinel tags the query context so a hook can prove it received the
+// live one rather than nil or a fresh background context.
+func withSentinel(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sentinelCtxKey{}, "live")
+}
+
+// postTurnCtxRecorder records what each post-turn hook call saw.
+type postTurnCtxRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (r *postTurnCtxRecorder) hook(ctx context.Context, _ []types.Message, _ int, _ string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ctx == nil {
+		r.seen = append(r.seen, "NILCTX")
+		return
+	}
+	v, _ := ctx.Value(sentinelCtxKey{}).(string)
+	if v == "" {
+		v = "<absent>"
+	}
+	r.seen = append(r.seen, "sentinel="+v)
+}
+
+func (r *postTurnCtxRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
+}
+
+// TestUnaddressedQueuedMessageTurn pins the queued-message rewake turn
+// the log record with its seq, the turn_end, the turn
+// count, and the post-turn hook context.
+func TestUnaddressedQueuedMessageTurn(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEventsWithUsage("m", "first answer", "end_turn", types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "answered the interjection", "end_turn", types.Usage{InputTokens: 12}), nil)
+	ec := newEventCollector()
+	logs := &slogCapture{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: slog.New(logs), Dispatcher: ec,
+		AutoCompact: AutoCompactConfig{ContextWindow: 200_000},
+	})
+	hooksSeen := &postTurnCtxRecorder{}
+	eng.RegisterPostTurnHook(hooksSeen.hook)
+	t.Cleanup(func() { eng.Close() })
+	// The enqueue runs inside the provider's request predicate, i.e. after the
+	// engine set its queued-message watermark and before the terminal check —
+	// no sleep/poll race.
+	mp.responses[0].match = func(*llm.Request) bool {
+		eng.EnqueueAttachment(types.QueuedItem{
+			Mode:  types.ItemModePrompt,
+			Value: "and also do this",
+			UUID:  "queued-e1-1",
+		})
+		return true
+	}
+	res := eng.QuerySync(withSentinel(context.Background()), "go", "")
+	if res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if got := mp.callCount(); got != 2 {
+		t.Fatalf("%d provider calls, want 2 (the unaddressed message forces one more turn)", got)
+	}
+	recs := logs.all("engine:queued message_unaddressed")
+	if len(recs) != 1 {
+		t.Fatalf("%d 'message_unaddressed' records, want 1", len(recs))
+	}
+	if seq, ok := recs[0].attrs["seq"].(uint64); !ok || seq != 1 {
+		t.Errorf("message_unaddressed attrs[seq] = %#v, want uint64(1)", recs[0].attrs["seq"])
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 2 {
+		t.Errorf("%d turn_end events, want 2 (rewake turn + terminal turn)", n)
+	}
+	if res.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2", res.TurnCount)
+	}
+	if got := hooksSeen.snapshot(); len(got) != 2 || got[0] != "sentinel=live" || got[1] != "sentinel=live" {
+		t.Errorf("post-turn hook contexts = %v, want two live query contexts", got)
+	}
+}
+
+// TestPostTurnHookContextsOnNormalPaths pins the live query context on
+// the terminal (2329) and tool-turn (2468) post-turn hook calls.
+func TestPostTurnHookContextsOnNormalPaths(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(),
+		AutoCompact: AutoCompactConfig{ContextWindow: 200_000},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true}}
+		},
+	})
+	seen := &postTurnCtxRecorder{}
+	eng.RegisterPostTurnHook(seen.hook)
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(withSentinel(context.Background()), "go", ""); res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	got := seen.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("%d post-turn hook calls, want 2 (tool turn + terminal turn)", len(got))
+	}
+	for i, s := range got {
+		if s != "sentinel=live" {
+			t.Errorf("post-turn hook %d saw %q, want the live query context", i, s)
+		}
+	}
+}
+
+// TestQuerySummaryCacheStatus pins the cache verdict of the
+// engine:query_summary record across the four usage
+// shapes that decide it.
+func TestQuerySummaryCacheStatus(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		u    types.Usage
+		want string
+	}{
+		{"read+input", types.Usage{InputTokens: 100, CacheReadInputTokens: 30}, "hit 23%"},
+		{"creation only", types.Usage{InputTokens: 100, CacheCreationInputTokens: 50}, "warm"},
+		{"no cache", types.Usage{InputTokens: 100}, "miss"},
+		// cacheRead alone makes the total exactly 1, which pins the `> 0`
+		// comparisons against off-by-one drift.
+		{"single cached token", types.Usage{CacheReadInputTokens: 1}, "hit 100%"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mp := &mockProvider{}
+			mp.addResponse(textStreamEventsWithUsage("m", "answer", "end_turn", tc.u), nil)
+			logs := &slogCapture{}
+			eng := New(&Params{Provider: mp, Model: "m", Logger: slog.New(logs)})
+			t.Cleanup(func() { eng.Close() })
+			if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+				t.Fatalf("query failed: %v", res.Error)
+			}
+			recs := logs.all("engine:query_summary")
+			if len(recs) != 1 {
+				t.Fatalf("%d query_summary records, want 1", len(recs))
+			}
+			if got := recs[0].attrs["cache"]; got != tc.want {
+				t.Errorf("query_summary cache = %q, want %q (usage %+v)", got, tc.want, tc.u)
+			}
+		})
+	}
+}
+
+// TestSubagentNeverPersistsQueryMessages pins the `!e.isSubagent` half of
+// the persist guards in the query-start snapshot path.
+func TestSubagentNeverPersistsQueryMessages(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "m")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	parent := New(&Params{Provider: mp, Model: "m", Logger: silentLogger()})
+	parent.SetStore(store, "")
+	parent.SetSessionID(session.SessionID)
+	t.Cleanup(func() { parent.Close() })
+	sub := parent.NewSubEngine(SubEngineOptions{Tools: map[string]tool.Tool{
+		"Read": &mockTool{name: "Read", enabled: true},
+	}})
+	subSession := session.SessionID + "-sub"
+	sub.SetStore(store, "")
+	sub.SetSessionID(subSession)
+	if res := sub.QuerySync(context.Background(), "go", ""); res.Error != nil {
+		t.Fatalf("sub query failed: %v", res.Error)
+	}
+	for _, sid := range []string{session.SessionID, subSession} {
+		msgs, err := store.LoadMessages(sid)
+		if err != nil {
+			t.Fatalf("LoadMessages(%s): %v", sid, err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("session %s holds %d messages (%v); a sub-agent must never persist",
+				sid, len(msgs), firstMessageTexts(msgs))
+		}
+	}
+}
+
+// firstMessageTexts renders stored messages for failure output only.
+func firstMessageTexts(msgs []*short.TranscriptMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.Type)
+	}
+	return out
+}
+
+// TestFileHistorySnapshotGuards pins the `!e.isSubagent` and
+// `e.currentTurnMsgID != ""` halves of the snapshot guard.
+func TestFileHistorySnapshotGuards(t *testing.T) {
+	t.Parallel()
+	t.Run("subagent takes no snapshot", func(t *testing.T) {
+		t.Parallel()
+		tracker := filehistory.NewTracker(t.TempDir())
+		file := filepath.Join(t.TempDir(), "a.go")
+		if err := os.WriteFile(file, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := tracker.TrackEdit(file); err != nil {
+			t.Fatalf("TrackEdit: %v", err)
+		}
+		before := len(tracker.State().Snapshots)
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEventsWithUsage("m", "sub answer", "end_turn", types.Usage{InputTokens: 5}), nil)
+		parent := New(&Params{Provider: mp, Model: "m", Logger: silentLogger()})
+		parent.SetFileHistory(tracker)
+		t.Cleanup(func() { parent.Close() })
+		sub := parent.NewSubEngine(SubEngineOptions{Tools: map[string]tool.Tool{}})
+		if res := sub.QuerySync(context.Background(), "go", ""); res.Error != nil {
+			t.Fatalf("sub query failed: %v", res.Error)
+		}
+		if after := len(tracker.State().Snapshots); after != before {
+			t.Errorf("sub-agent query added %d snapshots; only the main engine snapshots", after-before)
+		}
+	})
+	t.Run("no snapshot without a turn message id", func(t *testing.T) {
+		t.Parallel()
+		tracker := filehistory.NewTracker(t.TempDir())
+		file := filepath.Join(t.TempDir(), "b.go")
+		if err := os.WriteFile(file, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := tracker.TrackEdit(file); err != nil {
+			t.Fatalf("TrackEdit: %v", err)
+		}
+		before := len(tracker.State().Snapshots)
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEventsWithUsage("m", "answer", "end_turn", types.Usage{InputTokens: 5}), nil)
+		eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger()})
+		eng.SetFileHistory(tracker)
+		t.Cleanup(func() { eng.Close() })
+		// runTurns directly: currentTurnMsgID stays empty, which is exactly the
+		// case the guard exists for.
+		if res := eng.runTurns(context.Background(), ""); res.Error != nil {
+			t.Fatalf("runTurns failed: %v", res.Error)
+		}
+		if after := len(tracker.State().Snapshots); after != before {
+			t.Errorf("%d snapshots taken with an empty currentTurnMsgID, want 0", after-before)
+		}
+	})
+	t.Run("main engine with a turn message id snapshots", func(t *testing.T) {
+		t.Parallel()
+		tracker := filehistory.NewTracker(t.TempDir())
+		file := filepath.Join(t.TempDir(), "c.go")
+		if err := os.WriteFile(file, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := tracker.TrackEdit(file); err != nil {
+			t.Fatalf("TrackEdit: %v", err)
+		}
+		var written int
+		mp := &mockProvider{}
+		mp.addResponse(textStreamEventsWithUsage("m", "answer", "end_turn", types.Usage{InputTokens: 5}), nil)
+		eng := New(&Params{Provider: mp, Model: "m", Logger: silentLogger()})
+		eng.SetFileHistory(tracker)
+		eng.SetFileHistoryWriter(func(filehistory.FileHistoryState) { written++ })
+		t.Cleanup(func() { eng.Close() })
+		if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+			t.Fatalf("query failed: %v", res.Error)
+		}
+		if written != 1 {
+			t.Errorf("%d fileHistoryWriter callbacks, want 1 (the pre-loop snapshot)", written)
+		}
+	})
+}
+
+// TestLockHeldForWholeCall pins the deferred unlocks of getWorkingDir
+// Query, beginQuery and beginQueryIfIdle: the mutex must
+// stay held for the whole call, including the value computation. A defer
+// turned into a plain call releases it early, which a concurrent holder sees.
+func TestLockHeldForWholeCall(t *testing.T) {
+	t.Parallel()
+	t.Run("getWorkingDir holds e.mu for the read", func(t *testing.T) {
+		t.Parallel()
+		eng := New(&Params{Model: "m", Logger: silentLogger()})
+		t.Cleanup(func() { eng.Close() })
+		eng.mu.Lock()
+		done := make(chan string, 1)
+		go func() { done <- eng.getWorkingDir() }()
+		select {
+		case got := <-done:
+			eng.mu.Unlock()
+			t.Fatalf("getWorkingDir returned %q while e.mu was held elsewhere: the RUnlock is no longer deferred", got)
+		case <-time.After(150 * time.Millisecond):
+		}
+		eng.mu.Unlock()
+		if got := <-done; got != eng.getWorkingDir() {
+			t.Errorf("getWorkingDir after unlock = %q, want the engine dir", got)
+		}
+	})
+	t.Run("beginQuery holds activeCancelMu for beginLocked", func(t *testing.T) {
+		t.Parallel()
+		eng := New(&Params{Model: "m", Logger: silentLogger()})
+		t.Cleanup(func() { eng.Close() })
+		eng.activeCancelMu.Lock()
+		done := make(chan uint64, 1)
+		go func() { done <- eng.beginQuery(func() {}) }()
+		select {
+		case tok := <-done:
+			eng.activeCancelMu.Unlock()
+			eng.endQuery(tok)
+			t.Fatalf("beginQuery completed with token %d while activeCancelMu was held elsewhere: the Unlock is no longer deferred", tok)
+		case <-time.After(150 * time.Millisecond):
+		}
+		eng.activeCancelMu.Unlock()
+		tok := <-done
+		if tok == 0 {
+			t.Fatal("beginQuery returned 0 after the lock was released")
+		}
+		eng.endQuery(tok)
+	})
+	t.Run("beginQueryIfIdle holds activeCancelMu", func(t *testing.T) {
+		t.Parallel()
+		eng := New(&Params{Model: "m", Logger: silentLogger()})
+		t.Cleanup(func() { eng.Close() })
+		eng.activeCancelMu.Lock()
+		done := make(chan uint64, 1)
+		go func() {
+			tok, ok := eng.beginQueryIfIdle(func() {})
+			if !ok {
+				tok = 0
+			}
+			done <- tok
+		}()
+		select {
+		case tok := <-done:
+			eng.activeCancelMu.Unlock()
+			if tok != 0 {
+				eng.endQuery(tok)
+			}
+			t.Fatalf("beginQueryIfIdle completed with token %d while activeCancelMu was held elsewhere: the Unlock is no longer deferred", tok)
+		case <-time.After(150 * time.Millisecond):
+		}
+		eng.activeCancelMu.Unlock()
+		tok := <-done
+		if tok == 0 {
+			t.Fatal("beginQueryIfIdle returned 0 after the lock was released")
+		}
+		eng.endQuery(tok)
+	})
+}
+
+// TestNewSeedsCalibrationMap pins the calibrations field of the Engine
+// literal in New.
+func TestNewSeedsCalibrationMap(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Model: "m", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+	eng.calibMu.Lock()
+	defer eng.calibMu.Unlock()
+	if eng.calibrations == nil {
+		t.Fatal("New left calibrations nil; the map must be seeded at construction")
+	}
+	if len(eng.calibrations) != 0 {
+		t.Errorf("calibrations = %d entries after New, want 0", len(eng.calibrations))
+	}
+}
+
+// TestDrainIfKeepsNonUserOrigins pins the drain predicate of
+// drainQueuedUserAttachments: only prompt items with a
+// user-side origin ride the turn-boundary attach path.
+func TestDrainIfKeepsNonUserOrigins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		item types.QueuedItem
+	}{
+		{"job mode with nil origin", types.QueuedItem{Mode: types.ItemModeJob, Value: "job body", UUID: "u-job"}},
+		{"prompt mode with job origin", types.QueuedItem{
+			Mode: types.ItemModePrompt, Value: "prompt body", UUID: "u-prompt-job",
+			Origin: &types.MessageOrigin{Kind: types.OriginJob},
+		}},
+		{"message mode with nil origin", types.QueuedItem{Mode: types.ItemModeMessage, Value: "msg body", UUID: "u-msg"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			eng := New(&Params{Model: "m", Logger: silentLogger()})
+			t.Cleanup(func() { eng.Close() })
+			eng.attachments.Enqueue(tc.item)
+			eng.drainQueuedUserAttachments()
+			if eng.attachments.Len() != 1 {
+				t.Fatalf("drainQueuedUserAttachments drained a %s item; the queue must keep it", tc.name)
+			}
+			if n := len(eng.Messages()); n != 0 {
+				t.Errorf("draining a %s item appended %d messages, want 0", tc.name, n)
+			}
+		})
+	}
+}
+
+// TestEmptyDeltaGuardsInEmitEvent pins the nil/empty guards of the
+// thinking and tool-output delta arms of emitEvent.
+func TestEmptyDeltaGuardsInEmitEvent(t *testing.T) {
+	t.Parallel()
+	ec := newEventCollector()
+	eng := New(&Params{Model: "m", Logger: silentLogger(), Dispatcher: ec})
+	t.Cleanup(func() { eng.Close() })
+	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: nil})
+	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: ""}})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolOutputDelta, ToolResult: nil})
+	eng.emitEvent(types.QueryEvent{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{ToolUseID: "tu_1", DisplayOutput: ""}})
+	// A non-delta event flushes the buffers, so any buffered empty payload
+	// would surface here.
+	eng.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+	if n := len(ec.FindEvents(types.EventThinkingDelta)); n != 0 {
+		t.Errorf("%d thinking_delta events, want 0 (nil and empty payloads must be dropped)", n)
+	}
+	if n := len(ec.FindEvents(types.EventToolOutputDelta)); n != 0 {
+		t.Errorf("%d tool_output_delta events, want 0 (nil and empty payloads must be dropped)", n)
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 1 {
+		t.Errorf("%d turn_end events, want 1", n)
+	}
+}
+
+// TestToolDeltaCoalesceSkipsEmptyBuffers pins the per-id skip in
+// toolDeltaCoalesce.flush: an empty buffer must not stop the
+// dispatch of the ids that follow it. Map iteration order is random, so the
+// scenario is repeated to make a break-instead-of-continue mutant fail
+// deterministically rather than by luck.
+func TestToolDeltaCoalesceSkipsEmptyBuffers(t *testing.T) {
+	t.Parallel()
+	for i := range 24 {
+		tr := &toolDeltaCoalesce{}
+		tr.write("empty", "", nil, time.Hour, nil)
+		tr.write("kept", "payload", nil, time.Hour, nil)
+		var dispatched []string
+		tr.flush(func(id, text string, _ any) { dispatched = append(dispatched, id+":"+text) })
+		if len(dispatched) != 1 || dispatched[0] != "kept:payload" {
+			t.Fatalf("iteration %d: flush dispatched %v, want [kept:payload]", i, dispatched)
+		}
+	}
+}
+
+// TestToolSearchDiscovery pins the ToolSearch registration block
+// only a successful ToolSearch result contributes
+// discovered names, and the discovery is logged with its count.
+func TestToolSearchDiscovery(t *testing.T) {
+	t.Parallel()
+	const tsResult = `<functions><function>{"name": "WebFetch"}</function><function>{"name": "WebSearch"}</function></functions>`
+	const foreignResult = `<function>{"name": "Sneaky"}</function>`
+	mp := &mockProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "m", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_ts", Name: ToolSearchToolName}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"query":"web"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_read", Name: "Read"}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 4}},
+		{Type: "message_stop"},
+	}, nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	logs := &slogCapture{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: slog.New(logs),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				ToolSearchToolName: &mockTool{name: ToolSearchToolName, enabled: true,
+					callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+						return &tool.ToolResult{Data: tsResult}, nil
+					}},
+				"Read": &mockTool{name: "Read", enabled: true,
+					callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+						return &tool.ToolResult{Data: foreignResult}, nil
+					}},
+			}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	for _, name := range []string{"WebFetch", "WebSearch"} {
+		if !eng.toolSearch.IsDiscovered(name) {
+			t.Errorf("tool %q was not registered as discovered", name)
+		}
+	}
+	if eng.toolSearch.IsDiscovered("Sneaky") {
+		t.Error("a non-ToolSearch tool's result registered tools; only ToolSearch results may")
+	}
+	recs := logs.all("toolSearch:discovered")
+	if len(recs) != 1 {
+		t.Fatalf("%d toolSearch:discovered records, want 1", len(recs))
+	}
+	if count, ok := recs[0].attrs["count"].(int64); !ok || count != 2 {
+		t.Errorf("discovery attrs[count] = %#v, want int64(2)", recs[0].attrs["count"])
+	}
+	if recs[0].attrs["names"] != "WebFetch,WebSearch" {
+		t.Errorf("discovery attrs[names] = %#v, want WebFetch,WebSearch", recs[0].attrs["names"])
+	}
+}
+
+// TestToolSearchEmptyExtractionIsNotLogged pins the `len(names) > 0`
+// guard: a ToolSearch call that yields no names must not
+// register or log a discovery.
+func TestToolSearchEmptyExtractionIsNotLogged(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_ts", ToolSearchToolName, `{"query":"nothing"}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	logs := &slogCapture{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: slog.New(logs),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{ToolSearchToolName: &mockTool{name: ToolSearchToolName, enabled: true,
+				callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+					return &tool.ToolResult{Data: "no functions here"}, nil
+				}}}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	if recs := logs.all("toolSearch:discovered"); len(recs) != 0 {
+		t.Errorf("%d toolSearch:discovered records for an empty extraction, want 0", len(recs))
+	}
+	if names := eng.toolSearch.DiscoveredNames(); len(names) != 0 {
+		t.Errorf("discovered tools = %v, want none", names)
+	}
+}
+
+// TestToolNewMessagesLandAfterToolResults pins the NewMessages append
+// and the end-of-round turn_end.
+func TestToolNewMessagesLandAfterToolResults(t *testing.T) {
+	t.Parallel()
+	newMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("skill content")})
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_1", "Read", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: silentLogger(), Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"Read": &mockTool{name: "Read", enabled: true,
+				callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+					return &tool.ToolResult{Data: "ok", NewMessages: []types.Message{newMsg}}, nil
+				}}}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	var injected int
+	for _, m := range eng.Messages() {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && b.Text == "skill content" {
+				injected++
+			}
+		}
+	}
+	if injected != 1 {
+		t.Errorf("%d copies of the tool's NewMessage in history, want exactly 1", injected)
+	}
+	if n := len(ec.FindEvents(types.EventTurnEnd)); n != 2 {
+		t.Errorf("%d turn_end events, want 2 (tool round + terminal round)", n)
+	}
+}
+
+// TestToolTimeAccumulatesAcrossTurns pins the `+=` accumulator behind the
+// query_summary tools_ms field.
+func TestToolTimeAccumulatesAcrossTurns(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_slow", "Slow", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(toolUseStreamEventsWithUsage("m", "tu_fast", "Fast", `{}`, types.Usage{InputTokens: 10}), nil)
+	mp.addResponse(textStreamEventsWithUsage("m", "done", "end_turn", types.Usage{InputTokens: 12}), nil)
+	logs := &slogCapture{}
+	eng := New(&Params{
+		Provider: mp, Model: "m", Logger: slog.New(logs),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Slow": &mockTool{name: "Slow", enabled: true,
+					callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+						time.Sleep(30 * time.Millisecond) // REAL-TIME: tools_ms sums wall-clock call durations
+						return &tool.ToolResult{Data: "slow"}, nil
+					}},
+				"Fast": &mockTool{name: "Fast", enabled: true},
+			}
+		},
+	})
+	t.Cleanup(func() { eng.Close() })
+	if res := eng.QuerySync(context.Background(), "go", ""); res.Error != nil {
+		t.Fatalf("query failed: %v", res.Error)
+	}
+	recs := logs.all("engine:query_summary")
+	if len(recs) != 1 {
+		t.Fatalf("%d query_summary records, want 1", len(recs))
+	}
+	toolsMs, ok := recs[0].attrs["tools_ms"].(int64)
+	if !ok {
+		t.Fatalf("tools_ms attr = %#v, want int64", recs[0].attrs["tools_ms"])
+	}
+	if toolsMs < 25 {
+		t.Errorf("tools_ms = %d, want >= 25 (the 30ms slow tool must accumulate into the total)", toolsMs)
+	}
+}
+
+// TestRunSkillForkQueryStartFields pins every field of the query_start
+// event a forked skill emits.
+func TestRunSkillForkQueryStartFields(t *testing.T) {
+	t.Parallel()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name:      "probe-fork",
+		Type:      "prompt",
+		Context:   "fork",
+		AgentType: "Explore",
+		Source:    types.SkillSourceBundled,
+		Content:   "Do the forked thing.",
+	})
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "sub result"), nil)
+	mp.addResponse(textStreamEvents("test", "main summary"), nil)
+	ec := newEventCollector()
+	eng, _ := skillTestEngine(t, mp, reg, ec)
+	t.Cleanup(func() { eng.Close() })
+	eng.RunSkill(context.Background(), "probe-fork", "", "sys")
+	ec.WaitForResult()
+	starts := ec.FindEvents(types.EventQueryStart)
+	if len(starts) != 1 {
+		t.Fatalf("%d query_start events, want exactly 1", len(starts))
+	}
+	if starts[0].Message == nil {
+		t.Fatal("query_start carries no message")
+	}
+	if got := eventText(starts[0]); got != "/probe-fork" {
+		t.Errorf("query_start message = %q, want /probe-fork", got)
+	}
+	if starts[0].Model != eng.Model() {
+		t.Errorf("query_start Model = %q, want the engine model %q", starts[0].Model, eng.Model())
+	}
+	ends := ec.FindEvents(types.EventToolEnd)
+	if len(ends) != 1 {
+		t.Fatalf("%d tool_end events, want exactly 1", len(ends))
+	}
+	if ends[0].ToolResult == nil {
+		t.Fatal("tool_end carries no ToolResult payload")
+	}
+	if ends[0].ToolResult.DisplayOutput != "sub result" {
+		t.Errorf("tool_end DisplayOutput = %q, want the sub-agent's content", ends[0].ToolResult.DisplayOutput)
+	}
+	if ends[0].ToolResult.IsError {
+		t.Error("a successful forked skill flagged its tool_end as an error")
+	}
+}
+
+// TestRunSkillForkFailureResultText pins the failed-fork arm of the
+// result-text guard: a nil result must not be dereferenced,
+// and the tool card must show the fallback text as an error.
+func TestRunSkillForkFailureResultText(t *testing.T) {
+	t.Parallel()
+	reg := skillRegistryWith(t, types.SkillCommand{
+		Name:      "probe-fork-fail",
+		Type:      "prompt",
+		Context:   "fork",
+		AgentType: "Explore",
+		Source:    types.SkillSourceBundled,
+		Content:   "Do the failing thing.",
+	})
+	mp := &mockProvider{}
+	// The sub-agent's only call fails, so RunAgent returns (nil, err).
+	mp.addResponse(nil, &llm.APIError{Type: "rate_limit_error", Message: "skill sub failed", Status: 429, Retryable: false})
+	ec := newEventCollector()
+	eng, _ := skillTestEngine(t, mp, reg, ec)
+	t.Cleanup(func() { eng.Close() })
+	eng.RunSkill(context.Background(), "probe-fork-fail", "", "sys")
+	// The failed fork ends the skill run with an untagged query_end carrying
+	// the sub-agent error; wait for it instead of sleeping.
+	ec.WaitForResult()
+	ends := ec.FindEvents(types.EventToolEnd)
+	if len(ends) != 1 {
+		t.Fatalf("%d tool_end events, want exactly 1", len(ends))
+	}
+	if ends[0].ToolResult == nil {
+		t.Fatal("tool_end carries no ToolResult payload")
+	}
+	if ends[0].ToolResult.DisplayOutput != "Skill execution completed" {
+		t.Errorf("tool_end DisplayOutput = %q, want the fallback text for a failed fork", ends[0].ToolResult.DisplayOutput)
+	}
+	if !ends[0].ToolResult.IsError {
+		t.Error("a failed fork did not flag its tool_end as an error")
+	}
+	var ownEnds int
+	for _, ev := range ec.FindEvents(types.EventQueryEnd) {
+		if ev.Agent == nil && ev.Error != nil {
+			ownEnds++
+		}
+	}
+	if ownEnds != 1 {
+		t.Errorf("%d untagged error-carrying query_end events, want 1", ownEnds)
+	}
+}
+
+// TestRunAgentInterruptStubFieldValues pins the synthesized interrupt
+// result of a cancelled sub-agent: the guard that picks
+// it and the token/duration fields it carries.
+func TestRunAgentInterruptStubFieldValues(t *testing.T) {
+	t.Parallel()
+	mp := &mockProvider{}
+	// The only turn dies mid-stream under cancellation: no content, no usage.
+	hang := make(chan struct{})
+	mp.responses = append(mp.responses, mockResponse{
+		events: []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 999}}},
+		},
+		hang: hang,
+	})
+	deps := runAgentDeps(t)
+	eng := New(&Params{
+		Provider:      mp,
+		Model:         "parent-model",
+		Logger:        silentLogger(),
+		ToolsProvider: runAgentTools,
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetSharedDeps(&deps)
+	// A fork with no selectable user message is the lastUserIdx < 0 arm.
+	fork := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu_fork", Name: "Read"},
+		}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		waitForCallCount(t, mp, 1, 5*time.Second)
+		time.Sleep(20 * time.Millisecond) // REAL-TIME: TotalDurationMs is wall clock
+		cancel()
+		close(hang)
+	}()
+	res, err := eng.RunAgent(ctx, agenttool.AgentOpts{Prompt: "p", AgentType: "General", ForkMessages: fork})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if res == nil {
+		t.Fatal("RunAgent returned nil result")
+	}
+	if res.Content != "(agent interrupted by user)" {
+		t.Errorf("Content = %q, want the interrupt stub", res.Content)
+	}
+	if res.AgentType != "General" {
+		t.Errorf("AgentType = %q, want General", res.AgentType)
+	}
+	// The stub path is only reached when the fork produced no real content, so
+	// no turn ever landed its usage: the token field is pinned at 0 and the
+	// duration field is the one that carries information.
+	if res.TotalTokens != 0 {
+		t.Errorf("TotalTokens = %d, want 0 (no completed turn on the stub path)", res.TotalTokens)
+	}
+	if res.TotalDurationMs < 15 {
+		t.Errorf("TotalDurationMs = %d, want >= 15 (the cancelled run outlived the 20ms hold)", res.TotalDurationMs)
+	}
+	if res.TotalToolUseCount != 1 {
+		t.Errorf("TotalToolUseCount = %d, want 1 (the fork transcript's tool_use block)", res.TotalToolUseCount)
 	}
 }

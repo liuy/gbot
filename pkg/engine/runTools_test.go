@@ -4,11 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
+	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/memory/long"
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -2778,5 +2787,2571 @@ func TestExecuteTool_SiblingCancelUsesUnifiedMessage(t *testing.T) {
 	wantMsg := "Cancelled: parallel tool call Bash errored"
 	if parsed[0].Text != wantMsg {
 		t.Errorf("sibling-cancel message = %q, want %q", parsed[0].Text, wantMsg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Streaming tool executor pins
+// ---------------------------------------------------------------------------
+
+// emitRecorder collects executor emissions.
+type emitRecorder struct {
+	mu  sync.Mutex
+	evs []types.QueryEvent
+}
+
+func (c *emitRecorder) fn(evt types.QueryEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evs = append(c.evs, evt)
+}
+
+func (c *emitRecorder) all() []types.QueryEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]types.QueryEvent(nil), c.evs...)
+}
+
+// only returns the single event of the given type, failing the test if the
+// count is not exactly one.
+func (c *emitRecorder) only(t *testing.T, kind types.QueryEventType) types.QueryEvent {
+	t.Helper()
+	var hits []types.QueryEvent
+	for _, e := range c.all() {
+		if e.Type == kind {
+			hits = append(hits, e)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("events of type %s = %d, want exactly 1 (total events: %d)", kind, len(hits), len(c.all()))
+	}
+	return hits[0]
+}
+
+// askTap returns an emit function that records like fn and additionally hands
+// every Ask event carrying a response channel to the returned channel, so
+// tests can block on the dialog instead of polling the collector.
+func (c *emitRecorder) askTap() (chan *types.AskEvent, func(types.QueryEvent)) {
+	asks := make(chan *types.AskEvent, 4)
+	return asks, func(evt types.QueryEvent) {
+		c.fn(evt)
+		if evt.Ask != nil && evt.Ask.ResponseCh != nil {
+			asks <- evt.Ask
+		}
+	}
+}
+
+// fakeTool is a configurable tool.Tool for the pins below.
+type fakeTool struct {
+	name       string
+	safe       bool
+	panicSafe  bool
+	callFn     func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
+	renderFn   func(any) string
+	maxSize    int
+	interrupt  tool.InterruptBehavior
+	deferred   bool
+	searchRead *tool.SearchReadKind
+}
+
+func (t *fakeTool) Name() string                                { return t.name }
+func (t *fakeTool) Aliases() []string                           { return nil }
+func (t *fakeTool) Description(json.RawMessage) (string, error) { return t.name + " desc", nil }
+func (t *fakeTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *fakeTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+	if t.callFn != nil {
+		return t.callFn(ctx, input, tctx)
+	}
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (t *fakeTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *fakeTool) IsReadOnly(json.RawMessage) bool    { return true }
+func (t *fakeTool) IsDestructive(json.RawMessage) bool { return false }
+func (t *fakeTool) IsConcurrencySafe(json.RawMessage) bool {
+	if t.panicSafe {
+		panic("concurrency probe exploded")
+	}
+	return t.safe
+}
+func (t *fakeTool) IsEnabled() bool { return true }
+func (t *fakeTool) InterruptBehavior() tool.InterruptBehavior {
+	if t.interrupt != 0 {
+		return t.interrupt
+	}
+	return tool.InterruptCancel
+}
+func (t *fakeTool) Prompt() string     { return "" }
+func (t *fakeTool) MaxResultSize() int { return t.maxSize }
+func (t *fakeTool) IsDeferred() bool   { return t.deferred }
+func (t *fakeTool) RenderResult(data any) string {
+	if t.renderFn != nil {
+		return t.renderFn(data)
+	}
+	return ""
+}
+func (t *fakeTool) IsSearchOrRead(json.RawMessage) tool.SearchReadKind {
+	if t.searchRead != nil {
+		return *t.searchRead
+	}
+	return tool.SearchReadKind{}
+}
+
+// slogCapture captures the package-level slog output for the pins that assert a
+// diagnostic exists. The default logger is swapped once for a fan-out handler,
+// so several pins capture concurrently and the original output stays intact.
+// Records are global, so every lookup must be discriminated by attributes —
+// matching on the message alone would accept another test's identical log call.
+type slogCapture struct {
+	mu    sync.Mutex
+	calls []slogCall
+}
+
+type slogCall struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+func (h *slogCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *slogCapture) Handle(_ context.Context, rec slog.Record) error {
+	attrs := map[string]any{}
+	rec.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, slogCall{level: rec.Level, msg: rec.Message, attrs: attrs})
+	return nil
+}
+
+func (h *slogCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *slogCapture) WithGroup(string) slog.Handler      { return h }
+
+func (h *slogCapture) all(msg string) []slogCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []slogCall
+	for _, c := range h.calls {
+		if c.msg == msg {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// acceptAny matches any record with the requested message.
+func acceptAny(map[string]any) bool { return true }
+
+func (h *slogCapture) find(msg string, want func(map[string]any) bool) (slogCall, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if c.msg == msg && want(c.attrs) {
+			return c, true
+		}
+	}
+	return slogCall{}, false
+}
+
+// slogMux fans every record out to the capture handlers registered by the
+// running tests, then to the handler that was default before the first pin.
+// All slog-capturing tests must register here: a direct slog.SetDefault swap
+// would starve the mux's captures of records for the swap's duration.
+type slogMux struct {
+	mu       sync.Mutex
+	captures []slog.Handler
+	passthru slog.Handler
+}
+
+func (m *slogMux) Enabled(ctx context.Context, l slog.Level) bool {
+	m.mu.Lock()
+	captures := append([]slog.Handler(nil), m.captures...)
+	passthru := m.passthru
+	m.mu.Unlock()
+	for _, c := range captures {
+		if c.Enabled(ctx, l) {
+			return true
+		}
+	}
+	return passthru.Enabled(ctx, l)
+}
+
+func (m *slogMux) Handle(ctx context.Context, rec slog.Record) error {
+	m.mu.Lock()
+	captures := append([]slog.Handler(nil), m.captures...)
+	passthru := m.passthru
+	m.mu.Unlock()
+	for _, c := range captures {
+		_ = c.Handle(ctx, rec)
+	}
+	return passthru.Handle(ctx, rec)
+}
+
+func (m *slogMux) WithAttrs([]slog.Attr) slog.Handler { return m }
+func (m *slogMux) WithGroup(string) slog.Handler      { return m }
+
+var (
+	slogMuxOnce   sync.Once
+	sharedSlogMux *slogMux
+)
+
+func captureSlog(t *testing.T) *slogCapture {
+	t.Helper()
+	slogMuxOnce.Do(func() {
+		// Not slog.Default().Handler(): that wrapper resolves the current
+		// default at call time and would route straight back into the mux.
+		sharedSlogMux = &slogMux{passthru: slog.NewTextHandler(os.Stderr, nil)}
+		slog.SetDefault(slog.New(sharedSlogMux))
+	})
+	h := &slogCapture{}
+	sharedSlogMux.mu.Lock()
+	sharedSlogMux.captures = append(sharedSlogMux.captures, h)
+	sharedSlogMux.mu.Unlock()
+	t.Cleanup(func() {
+		sharedSlogMux.mu.Lock()
+		defer sharedSlogMux.mu.Unlock()
+		for i, c := range sharedSlogMux.captures {
+			if c == h {
+				sharedSlogMux.captures = append(sharedSlogMux.captures[:i], sharedSlogMux.captures[i+1:]...)
+				break
+			}
+		}
+	})
+	return h
+}
+
+// attachSlogCapture registers an existing handler on the shared mux. Tests whose
+// capture type carries its own find API use this instead of swapping the
+// global default — a swap starves every mux-registered capture of records for
+// the swap's duration and makes the whole package's log assertions flaky.
+func attachSlogCapture(t *testing.T, h slog.Handler) {
+	t.Helper()
+	slogMuxOnce.Do(func() {
+		sharedSlogMux = &slogMux{passthru: slog.NewTextHandler(os.Stderr, nil)}
+		slog.SetDefault(slog.New(sharedSlogMux))
+	})
+	sharedSlogMux.mu.Lock()
+	sharedSlogMux.captures = append(sharedSlogMux.captures, h)
+	sharedSlogMux.mu.Unlock()
+	t.Cleanup(func() {
+		sharedSlogMux.mu.Lock()
+		defer sharedSlogMux.mu.Unlock()
+		for i, c := range sharedSlogMux.captures {
+			if c == h {
+				sharedSlogMux.captures = append(sharedSlogMux.captures[:i], sharedSlogMux.captures[i+1:]...)
+				break
+			}
+		}
+	})
+}
+
+// toolResultText decodes a tool_result block's array-form content into the
+// single text payload it carries.
+func toolResultText(t *testing.T, block types.ContentBlock) string {
+	t.Helper()
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(block.Content, &blocks); err != nil {
+		t.Fatalf("result content is not array form: %v (%s)", err, string(block.Content))
+	}
+	if len(blocks) != 1 || blocks[0].Type != types.ContentTypeText {
+		t.Fatalf("result content = %+v, want one text block", blocks)
+	}
+	return blocks[0].Text
+}
+
+// TestSettersAssignTheirFields pins the plain setters that have no other
+// read path in the executor.
+func TestSettersAssignTheirFields(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	e.SetMemoryDir("/tmp/mem-dir")
+	e.SetHooks(nil, "sess-42")
+	if e.memoryDir != "/tmp/mem-dir" {
+		t.Errorf("memoryDir = %q, want %q", e.memoryDir, "/tmp/mem-dir")
+	}
+	if e.sessionID != "sess-42" {
+		t.Errorf("sessionID = %q, want %q", e.sessionID, "sess-42")
+	}
+	e.SetAssistantContent([]types.ContentBlock{types.NewTextBlock("assistant mid-stream")})
+	ctx := e.buildToolCtx("tu_1")
+	if len(ctx.AssistantContent) != 1 || ctx.AssistantContent[0].Text != "assistant mid-stream" {
+		t.Errorf("AssistantContent = %+v, want the block set through SetAssistantContent", ctx.AssistantContent)
+	}
+	e.SetMessages([]types.Message{calibTextMessage("history")})
+	ctx = e.buildToolCtx("tu_1")
+	if len(ctx.Messages) != 1 {
+		t.Errorf("Messages = %+v, want the history set through SetMessages", ctx.Messages)
+	}
+}
+
+// TestDiscardSetsFlagAndReleasesLock pins both halves of Discard: the
+// discarded flag must be set and the mutex must not be left held.
+func TestDiscardSetsFlagAndReleasesLock(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	e.Discard()
+	e.mu.Lock()
+	discarded := e.discarded
+	e.mu.Unlock()
+	if !discarded {
+		t.Error("Discard() left discarded=false — emissions and abort reasons keep working")
+	}
+	if !e.mu.TryLock() {
+		t.Error("Discard() returned with e.mu still held — its Unlock is not running")
+	}
+	e.mu.Unlock()
+	if e.siblingCtx.Err() == nil {
+		t.Error("Discard() did not cancel the sibling context")
+	}
+}
+
+// TestAskUserCacheShortCircuits pins the session-allow cache in front of
+// the dialog, including the re-check after the ask mutex is taken.
+func TestAskUserCacheShortCircuits(t *testing.T) {
+	t.Parallel()
+	tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+
+	// Cache hit on the tool name: no dialog may be emitted.
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+	e.sessionAllowed = map[string]bool{"Bash": true}
+	if got := e.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "why"}, ""); got != types.DecisionAllow {
+		t.Errorf("cached decision = %q, want allow", got)
+	}
+	if len(ev.all()) != 0 {
+		t.Errorf("cached allow emitted %d events, want 0", len(ev.all()))
+	}
+
+	// The cache key is name + ":" + matched content, so a content-scoped entry
+	// only short-circuits asks carrying that same content.
+	ev2 := &emitRecorder{}
+	e2 := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev2.fn, context.Background())
+	e2.sessionAllowed = map[string]bool{"Bash:ls": true}
+	if got := e2.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "why"}, "ls"); got != types.DecisionAllow {
+		t.Errorf("content-keyed cache decision = %q, want allow", got)
+	}
+	if len(ev2.all()) != 0 {
+		t.Errorf("content-keyed cache emitted %d events, want 0", len(ev2.all()))
+	}
+
+	// The ask mutex must be released even though the dialog path returned.
+	if !e.askMu.TryLock() {
+		t.Error("askUser returned with askMu still held")
+	}
+	e.askMu.Unlock()
+}
+
+// TestAskEventCarriesItsFields pins the permission dialog payload.
+func TestAskEventCarriesItsFields(t *testing.T) {
+	t.Parallel()
+	ruleContent := "rm *"
+	decision := permission.Decision{
+		Action:  permission.ActionAsk,
+		Message: "Bash needs approval",
+		Rule: &permission.Rule{
+			Source: "project",
+			Value:  permission.RuleValue{ToolName: "Bash", RuleContent: &ruleContent},
+		},
+	}
+	tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"rm -rf /tmp/x"}`)}
+
+	ev := &emitRecorder{}
+	asks, emit := ev.askTap()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, emit, context.Background())
+	done := make(chan types.UserDecision, 1)
+	go func() {
+		done <- e.askUser(tt, decision, "rm *")
+	}()
+	var ask *types.AskEvent
+	select {
+	case ask = <-asks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no AskEvent emitted")
+	}
+	if ask.Kind != types.AskPermission {
+		t.Errorf("AskEvent.Kind = %v, want %v", ask.Kind, types.AskPermission)
+	}
+	if ask.ToolName != "Bash" {
+		t.Errorf("AskEvent.ToolName = %q, want Bash", ask.ToolName)
+	}
+	if string(ask.Input) != `{"command":"rm -rf /tmp/x"}` {
+		t.Errorf("AskEvent.Input = %s, want the tool input", string(ask.Input))
+	}
+	if ask.Message != "Bash needs approval" {
+		t.Errorf("AskEvent.Message = %q, want the decision message", ask.Message)
+	}
+	if !strings.Contains(ask.RuleDetail, "Bash(rm *) from project settings") {
+		t.Errorf("AskEvent.RuleDetail = %q, want the rule rendering", ask.RuleDetail)
+	}
+	ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+	if got := <-done; got != types.DecisionDeny {
+		t.Errorf("askUser returned %q, want deny", got)
+	}
+}
+
+// TestRichResultDataGates pins every exclusion of the rich-data slot.
+func TestRichResultDataGates(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{"Edit": &fakeTool{name: "Edit"}}
+	e := NewStreamingToolExecutor(tools, nil, nil, context.Background())
+
+	data := map[string]any{"path": "/x"}
+	ok := func(tt *TrackedTool) bool {
+		_, ok := e.richResultData(tt)
+		return ok
+	}
+	if !ok(&TrackedTool{Name: "Edit", Result: &tool.ToolResult{Data: data}}) {
+		t.Error("a successful Edit result must carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Edit", Err: errors.New("boom"), Result: &tool.ToolResult{Data: data}}) {
+		t.Error("an errored tool must not carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Edit", Result: nil}) {
+		t.Error("a nil result must not carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Edit", Result: &tool.ToolResult{Data: nil}}) {
+		t.Error("a nil Data must not carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Ghost", Result: &tool.ToolResult{Data: data}}) {
+		t.Error("a tool absent from the map must not carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Bash", Result: &tool.ToolResult{Data: "plain"}}) {
+		t.Error("a wire-plaintext tool must not carry rich data")
+	}
+	if ok(&TrackedTool{Name: "Edit", Result: &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}}) {
+		t.Error("an async background result must not carry rich data")
+	}
+}
+
+// TestExtractFilePathOnlyForEditWrite pins the tool-name gate and its
+// exact name matching.
+func TestExtractFilePathOnlyForEditWrite(t *testing.T) {
+	t.Parallel()
+	in := json.RawMessage(`{"file_path":"/tmp/a.go"}`)
+	if got := extractFilePath("Edit", in); got != "/tmp/a.go" {
+		t.Errorf("extractFilePath(Edit) = %q, want /tmp/a.go", got)
+	}
+	if got := extractFilePath("Write", in); got != "/tmp/a.go" {
+		t.Errorf("extractFilePath(Write) = %q, want /tmp/a.go", got)
+	}
+	for _, name := range []string{"Read", "Grep", "Bash", ""} {
+		if got := extractFilePath(name, in); got != "" {
+			t.Errorf("extractFilePath(%q) = %q, want empty", name, got)
+		}
+	}
+	if got := extractFilePath("Edit", json.RawMessage(`not json`)); got != "" {
+		t.Errorf("extractFilePath(Edit, invalid json) = %q, want empty", got)
+	}
+}
+
+// TestCanExecuteToolFileConflict pins the same-file serialization without
+// letting an empty path collide with another empty path.
+func TestCanExecuteToolFileConflict(t *testing.T) {
+	t.Parallel()
+	newSafe := func(path string) *TrackedTool {
+		return &TrackedTool{FilePath: path, IsConcurrencySafe: true, Status: StatusQueued}
+	}
+	cases := []struct {
+		name string
+		busy *TrackedTool
+		want bool
+	}{
+		{"no path on either side", &TrackedTool{Status: StatusExecuting, IsConcurrencySafe: true}, true},
+		{"different files", &TrackedTool{Status: StatusExecuting, IsConcurrencySafe: true, FilePath: "/a"}, true},
+		{"same file", &TrackedTool{Status: StatusExecuting, IsConcurrencySafe: true, FilePath: "/a"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := ""
+			if tc.name == "different files" {
+				path = "/b"
+			}
+			if tc.name == "same file" {
+				path = "/a"
+			}
+			e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+			e.tools = []*TrackedTool{tc.busy}
+			if got := e.canExecuteTool(newSafe(path)); got != tc.want {
+				t.Errorf("canExecuteTool(%s, path %q) = %v, want %v", tc.name, path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAbortReasonForDiscarded pins the discard branch of getAbortReason.
+func TestAbortReasonForDiscarded(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	e.mu.Lock()
+	e.discarded = true
+	got := e.getAbortReason(&fakeTool{name: "x"})
+	e.mu.Unlock()
+	if got != AbortReasonStreamingFallback {
+		t.Errorf("getAbortReason(discarded) = %q, want %q", got, AbortReasonStreamingFallback)
+	}
+}
+
+// TestToolDescriptionTruncation pins the 40-char summary cut at its
+// boundary and the malformed-input fallback.
+func TestToolDescriptionTruncation(t *testing.T) {
+	t.Parallel()
+	exact := strings.Repeat("a", 40)
+	if got := getToolDescription(&TrackedTool{Name: "Bash", Input: json.RawMessage(`{"command":"` + exact + `"}`)}); got != "Bash("+exact+")" {
+		t.Errorf("40-char command description = %q, want no truncation", got)
+	}
+	over := strings.Repeat("a", 41)
+	want := "Bash(" + strings.Repeat("a", 40) + "…)"
+	if got := getToolDescription(&TrackedTool{Name: "Bash", Input: json.RawMessage(`{"command":"` + over + `"}`)}); got != want {
+		t.Errorf("41-char command description = %q, want %q", got, want)
+	}
+	if got := getToolDescription(&TrackedTool{Name: "Bash", Input: json.RawMessage(`{`)}); got != "Bash" {
+		t.Errorf("malformed input description = %q, want the bare tool name", got)
+	}
+	if got := getToolDescription(&TrackedTool{Name: "Grep", Input: json.RawMessage(`{"pattern":"x"}`)}); got != "Grep(x)" {
+		t.Errorf("pattern description = %q, want Grep(x)", got)
+	}
+}
+
+// TestMarshalBlocksFailureFallsBack pins the "[]" fallback for content
+// that cannot be marshalled.
+func TestMarshalBlocksFailureFallsBack(t *testing.T) {
+	t.Parallel()
+	bad := []types.ContentBlock{{Type: types.ContentTypeText, Content: json.RawMessage(`{broken`)}}
+	got := marshalBlocks(bad)
+	if string(got) != "[]" {
+		t.Errorf("marshalBlocks(unmarshalable) = %s, want []", string(got))
+	}
+	if string(marshalBlocks(nil)) != "[]" {
+		t.Error("marshalBlocks(nil) must be []")
+	}
+	good := marshalBlocks([]types.ContentBlock{types.NewTextBlock("hi")})
+	if !strings.HasPrefix(string(good), `[{"type":"text"`) {
+		t.Errorf("marshalBlocks(text) = %s, want the encoded array", string(good))
+	}
+}
+
+// TestExtractErrMsgShapes pins each accepted shape of the error payload.
+func TestExtractErrMsgShapes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`[{"type":"text","text":"array text"}]`, "array text"},
+		{`{"error":"map error"}`, "map error"},
+		{`plain bytes`, "plain bytes"},
+		{`[]`, `[]`},
+		{``, ``},
+		{`[{"type":"image"}]`, `[{"type":"image"}]`},
+	}
+	for _, c := range cases {
+		if got := extractErrMsg(json.RawMessage(c.in)); got != c.want {
+			t.Errorf("extractErrMsg(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestBuildToolCtxOverrides pins which base-context fields the executor
+// replaces and which it leaves alone.
+func TestBuildToolCtxOverrides(t *testing.T) {
+	t.Parallel()
+	base := tool.ToolUseContext{
+		ToolUseID:        "stale",
+		Messages:         []types.Message{calibTextMessage("base history")},
+		AssistantContent: []types.ContentBlock{types.NewTextBlock("base assistant")},
+		WorkingDir:       "/base",
+	}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, &base, nil, context.Background())
+
+	ctx := e.buildToolCtx("tu_9")
+	if ctx.ToolUseID != "tu_9" {
+		t.Errorf("ToolUseID = %q, want the per-call id", ctx.ToolUseID)
+	}
+	if len(ctx.Messages) != 1 || ctx.Messages[0].Content[0].Text != "base history" {
+		t.Errorf("Messages = %+v, want the base context's history when the executor has none", ctx.Messages)
+	}
+	if len(ctx.AssistantContent) != 1 || ctx.AssistantContent[0].Text != "base assistant" {
+		t.Errorf("AssistantContent = %+v, want the base context's content when the executor has none", ctx.AssistantContent)
+	}
+
+	// With live state, both are replaced.
+	e.SetMessages([]types.Message{calibTextMessage("live history")})
+	e.SetAssistantContent([]types.ContentBlock{types.NewTextBlock("live assistant")})
+	ctx = e.buildToolCtx("tu_10")
+	if ctx.Messages[0].Content[0].Text != "live history" {
+		t.Errorf("Messages = %+v, want the executor's live history", ctx.Messages)
+	}
+	if ctx.AssistantContent[0].Text != "live assistant" {
+		t.Errorf("AssistantContent = %+v, want the executor's live content", ctx.AssistantContent)
+	}
+
+	// Nil base: the context is built from the executor alone.
+	e2 := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	e2.SetMessages([]types.Message{calibTextMessage("only")})
+	ctx2 := e2.buildToolCtx("tu_11")
+	if ctx2.ToolUseID != "tu_11" || len(ctx2.Messages) != 1 {
+		t.Errorf("nil-base context = %+v, want the id and the executor history", ctx2)
+	}
+
+	// The live working-dir supplier wins over the snapshot.
+	e3 := NewStreamingToolExecutor(map[string]tool.Tool{}, &base, nil, context.Background())
+	e3.SetWorkingDirSupplier(func() string { return "/live" })
+	if got := e3.buildToolCtx("tu_12").WorkingDir; got != "/live" {
+		t.Errorf("WorkingDir = %q, want /live (supplier wins)", got)
+	}
+}
+
+// TestOnAskInputEmitsInputEvent pins the OnAskInput wiring on the tool
+// context.
+func TestOnAskInputEmitsInputEvent(t *testing.T) {
+	t.Parallel()
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+	ctx := e.buildToolCtx("tu_1")
+	if ctx.OnAskInput == nil {
+		t.Fatal("OnAskInput not wired")
+	}
+	// Fixed date: the deadline only has to round-trip through the event.
+	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ch := ctx.OnAskInput("secret?", true, deadline)
+	evt := ev.only(t, types.EventAsk)
+	ask := evt.Ask
+	if ask == nil {
+		t.Fatal("EventAsk carries no AskEvent")
+	}
+	if ask.Kind != types.AskInput {
+		t.Errorf("Kind = %v, want %v", ask.Kind, types.AskInput)
+	}
+	if ask.Prompt != "secret?" {
+		t.Errorf("Prompt = %q, want the prompt argument", ask.Prompt)
+	}
+	if !ask.Masked {
+		t.Error("Masked = false, want true")
+	}
+	if !ask.Deadline.Equal(deadline) {
+		t.Errorf("Deadline = %v, want %v", ask.Deadline, deadline)
+	}
+	if ask.ResponseCh == nil {
+		t.Fatal("ResponseCh missing")
+	}
+	ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
+	if resp := <-ch; resp.Decision != types.DecisionAllow {
+		t.Errorf("channel response = %+v, want the answer posted to the event", resp)
+	}
+}
+
+// TestApplyContextModifierGates pins when a tool's context modifier is
+// allowed to replace the base context.
+func TestApplyContextModifierGates(t *testing.T) {
+	t.Parallel()
+	base := tool.ToolUseContext{WorkingDir: "/base"}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, &base, nil, context.Background())
+	modifier := func(c *tool.ToolUseContext) *tool.ToolUseContext {
+		c.WorkingDir = "/modified"
+		return c
+	}
+
+	e.applyContextModifier(&TrackedTool{IsConcurrencySafe: false}, &tool.ToolResult{ContextModifier: modifier})
+	if e.tctx.WorkingDir != "/modified" {
+		t.Errorf("WorkingDir = %q, want /modified (unsafe tool's modifier applied)", e.tctx.WorkingDir)
+	}
+
+	e.tctx = &tool.ToolUseContext{WorkingDir: "/base"}
+	e.applyContextModifier(&TrackedTool{IsConcurrencySafe: true}, &tool.ToolResult{ContextModifier: modifier})
+	if e.tctx.WorkingDir != "/base" {
+		t.Errorf("WorkingDir = %q, want /base (concurrency-safe tool must not modify context)", e.tctx.WorkingDir)
+	}
+
+	e.applyContextModifier(&TrackedTool{IsConcurrencySafe: false}, &tool.ToolResult{})
+	if e.tctx.WorkingDir != "/base" {
+		t.Errorf("WorkingDir = %q, want /base (no modifier)", e.tctx.WorkingDir)
+	}
+
+	e.applyContextModifier(&TrackedTool{IsConcurrencySafe: false}, nil)
+	if e.tctx.WorkingDir != "/base" {
+		t.Errorf("WorkingDir = %q, want /base (nil result)", e.tctx.WorkingDir)
+	}
+}
+
+// TestMemoryPathWriteBypass pins the memory-directory permission bypass.
+func TestMemoryPathWriteBypass(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	inside := filepath.Join(dir, "notes", "a.md")
+	outside := filepath.Join(dir, "..", "elsewhere.md")
+
+	if !isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"`+inside+`"}`), dir+string(filepath.Separator)) {
+		t.Error("a Write inside the memory override must bypass the permission check")
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"`+outside+`"}`), dir+string(filepath.Separator)) {
+		t.Error("a Write outside the memory override must not bypass the permission check")
+	}
+	if isMemoryPathWrite("Edit", json.RawMessage(`{"file_path":"`+inside+`"}`), dir+string(filepath.Separator)) {
+		t.Error("only Write bypasses; Edit must stay policed")
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{"other":"x"}`), dir+string(filepath.Separator)) {
+		t.Error("a Write with no file_path must not bypass")
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{broken`), dir+string(filepath.Separator)) {
+		t.Error("a Write with malformed input must not bypass")
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{"file_path":""}`), dir+string(filepath.Separator)) {
+		t.Error("an empty file_path must not bypass")
+	}
+	// No override: the cwd-derived memory path decides.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"`+filepath.Join(cwd, "plain-file.md")+`"}`), "") != long.IsMemoryPath(cwd, filepath.Join(cwd, "plain-file.md")) {
+		t.Error("the cwd-derived memory path decision must match long.IsMemoryPath")
+	}
+}
+
+// TestExtractFilePathFromInput pins the pre-edit path probe.
+func TestExtractFilePathFromInput(t *testing.T) {
+	t.Parallel()
+	if got := extractFilePathFromInput(json.RawMessage(`{"file_path":"/tmp/x"}`)); got != "/tmp/x" {
+		t.Errorf("extractFilePathFromInput = %q, want /tmp/x", got)
+	}
+	if got := extractFilePathFromInput(json.RawMessage(`{broken`)); got != "" {
+		t.Errorf("extractFilePathFromInput(malformed) = %q, want empty", got)
+	}
+	if got := extractFilePathFromInput(json.RawMessage(`{"file_path":123}`)); got != "" {
+		t.Errorf("extractFilePathFromInput(wrong type) = %q, want empty", got)
+	}
+}
+
+// hooksWith wires one command hook per queued result, so a test can drive
+// multi-result hook sequences.
+func hooksWith(event, matcher string, exec *integrationHookRecorder, results ...hooks.HookResult) *hooks.Hooks {
+	exec.results = results
+	cfgs := make([]hooks.HookConfig, len(results))
+	for i := range results {
+		cfgs[i] = hooks.HookConfig{Type: hooks.HookTypeCommand, Command: "ptest"}
+	}
+	return hooks.NewHooks(hooks.HooksConfig{
+		event: []hooks.HookMatcher{{Matcher: matcher, Hooks: cfgs}},
+	}, exec)
+}
+
+// scriptablePermChecker is a scriptable permission.PermissionChecker.
+type scriptablePermChecker struct {
+	decision permission.Decision
+	panics   bool
+	onCheck  func()
+}
+
+func (c *scriptablePermChecker) Check(string, json.RawMessage) permission.Decision {
+	if c.onCheck != nil {
+		c.onCheck()
+	}
+	if c.panics {
+		panic("permission checker exploded")
+	}
+	return c.decision
+}
+func (c *scriptablePermChecker) HasRules() bool { return true }
+
+// dynamicWireTool is a tool whose wire blocks are explicit.
+type dynamicWireTool struct {
+	fakeTool
+	wire func(any) []types.ContentBlock
+}
+
+func (t *dynamicWireTool) FormatWireBlocks(data any) []types.ContentBlock {
+	if t.wire != nil {
+		return t.wire(data)
+	}
+	return nil
+}
+
+// TestUnknownToolEventAndTrackedTool pins the AddTool failure path: the
+// emitted event and the completed TrackedTool record.
+func TestUnknownToolEventAndTrackedTool(t *testing.T) {
+	t.Parallel()
+	started := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+	e.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "nope", Input: json.RawMessage(`{"x":1}`)}, started)
+
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr == nil {
+		t.Fatal("EventToolEnd carries no ToolResult")
+	}
+	if tr.ToolUseID != "tu_1" {
+		t.Errorf("ToolUseID = %q, want tu_1", tr.ToolUseID)
+	}
+	if !tr.IsError {
+		t.Error("unknown tool must emit IsError")
+	}
+	wantMsg := "No such tool available: nope"
+	if tr.DisplayOutput != wantMsg {
+		t.Errorf("DisplayOutput = %q, want %q", tr.DisplayOutput, wantMsg)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != wantMsg {
+		t.Errorf("Output payload = %q, want %q", got, wantMsg)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.tools) != 1 {
+		t.Fatalf("tracked tools = %d, want 1", len(e.tools))
+	}
+	tt := e.tools[0]
+	if tt.ID != "tu_1" {
+		t.Errorf("tracked ID = %q, want tu_1", tt.ID)
+	}
+	if tt.Name != "nope" {
+		t.Errorf("tracked Name = %q, want nope", tt.Name)
+	}
+	if string(tt.Input) != `{"x":1}` {
+		t.Errorf("tracked Input = %s, want the tool input", string(tt.Input))
+	}
+	if tt.Status != StatusCompleted {
+		t.Errorf("tracked Status = %v, want completed", tt.Status)
+	}
+	if !tt.IsConcurrencySafe {
+		t.Error("a failed unknown tool must be recorded as concurrency-safe")
+	}
+	if !tt.StartedAt.Equal(started) {
+		t.Errorf("tracked StartedAt = %v, want %v", tt.StartedAt, started)
+	}
+	if len(tt.resultBlocks) != 1 {
+		t.Errorf("tracked resultBlocks = %d, want 1", len(tt.resultBlocks))
+	}
+	select {
+	case <-tt.done:
+	default:
+		t.Error("unknown tool's done channel was never closed")
+	}
+}
+
+// TestDeferredToolHint pins when the ToolSearch discovery hint replaces
+// the generic unknown-tool message.
+func TestDeferredToolHint(t *testing.T) {
+	t.Parallel()
+	deferred := &fakeTool{name: "Secret", deferred: true}
+	plain := &fakeTool{name: "Plain"}
+	tools := map[string]tool.Tool{ToolSearchToolName: &fakeTool{name: ToolSearchToolName}}
+	tctx := &tool.ToolUseContext{Options: tool.ToolUseOptions{Tools: map[string]tool.Tool{"Secret": deferred, "Plain": plain}}}
+
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(tools, tctx, ev.fn, context.Background())
+	e.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_d", Name: "Secret", Input: json.RawMessage(`{}`)}, time.Time{})
+	got := ev.only(t, types.EventToolEnd).ToolResult.DisplayOutput
+	if !strings.Contains(got, "Tool Secret is deferred") || !strings.Contains(got, "ToolSearch") {
+		t.Errorf("deferred tool message = %q, want the ToolSearch discovery hint", got)
+	}
+
+	// A tool that exists in the full map but is not deferred keeps the
+	// generic message.
+	ev2 := &emitRecorder{}
+	e2 := NewStreamingToolExecutor(tools, tctx, ev2.fn, context.Background())
+	e2.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_p", Name: "Plain", Input: json.RawMessage(`{}`)}, time.Time{})
+	got2 := ev2.only(t, types.EventToolEnd).ToolResult.DisplayOutput
+	if got2 != "No such tool available: Plain" {
+		t.Errorf("non-deferred tool message = %q, want the generic message", got2)
+	}
+
+	// A tool absent from the full map keeps the generic message too.
+	ev3 := &emitRecorder{}
+	e3 := NewStreamingToolExecutor(tools, tctx, ev3.fn, context.Background())
+	e3.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_x", Name: "Ghost", Input: json.RawMessage(`{}`)}, time.Time{})
+	if got3 := ev3.only(t, types.EventToolEnd).ToolResult.DisplayOutput; got3 != "No such tool available: Ghost" {
+		t.Errorf("unknown tool message = %q, want the generic message", got3)
+	}
+}
+
+// TestConcurrencyProbePanicIsUnsafe pins the TS-aligned catch behaviour of
+// a panicking IsConcurrencySafe.
+func TestConcurrencyProbePanicIsUnsafe(t *testing.T) {
+	t.Parallel()
+	boom := &fakeTool{name: "boom", panicSafe: true}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"boom": boom}, nil, (&emitRecorder{}).fn, context.Background())
+	e.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "boom", Input: json.RawMessage(`{}`)}, time.Time{})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.tools) != 1 {
+		t.Fatalf("tracked tools = %d, want 1", len(e.tools))
+	}
+	if e.tools[0].IsConcurrencySafe {
+		t.Error("a panicking IsConcurrencySafe probe must be treated as NOT concurrency-safe")
+	}
+}
+
+// TestPanicInCallEmitsError pins the panic recovery: an error event, an
+// error result block and the diagnostic.
+func TestPanicInCallEmitsError(t *testing.T) {
+	t.Parallel()
+	rec := captureSlog(t)
+	boom := &fakeTool{name: "boom", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		panic("tool exploded")
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"boom": boom}, nil, ev.fn, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "boom", Input: json.RawMessage(`{}`)}})
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+	}
+	wantMsg := "internal error in tool boom: tool exploded"
+	block := res.ToolResultBlocks[0]
+	if !block.IsError {
+		t.Error("panic result must be an error block")
+	}
+	if got := toolResultText(t, block); got != wantMsg {
+		t.Errorf("panic result = %q, want %q", got, wantMsg)
+	}
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" {
+		t.Errorf("panic event ToolUseID = %q, want tu_1", tr.ToolUseID)
+	}
+	if !tr.IsError {
+		t.Error("panic event must carry IsError")
+	}
+	if tr.DisplayOutput != wantMsg {
+		t.Errorf("panic event DisplayOutput = %q, want %q", tr.DisplayOutput, wantMsg)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != wantMsg {
+		t.Errorf("panic event Output = %q, want %q", got, wantMsg)
+	}
+	log, ok := rec.find("engine: panic in executeTool", func(a map[string]any) bool {
+		return a["tool"] == "boom" && a["error"] == "tool exploded"
+	})
+	if !ok {
+		t.Fatal("panic diagnostic missing from the log")
+	}
+	if log.attrs["tool"] != "boom" {
+		t.Errorf("panic diagnostic tool attr = %v, want boom", log.attrs["tool"])
+	}
+	if s, _ := log.attrs["stack"].(string); !strings.Contains(s, "goroutine") {
+		t.Errorf("panic diagnostic stack attr = %q, want a stack trace", s)
+	}
+}
+
+// TestMissingToolAtExecute pins the defensive lookup failure inside
+// executeTool, including the merged-tool hint.
+func TestMissingToolAtExecute(t *testing.T) {
+	t.Parallel()
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+	tt := &TrackedTool{ID: "tu_1", Name: "ghost", Input: json.RawMessage(`{}`), done: make(chan struct{})}
+	e.executeTool(tt)
+
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	want := "No such tool available: ghost"
+	if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != want {
+		t.Errorf("missing-tool event = %+v, want an error event with %q", tr, want)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("missing-tool Output = %q, want %q", got, want)
+	}
+	if len(tt.resultBlocks) != 1 || !tt.resultBlocks[0].IsError {
+		t.Errorf("missing-tool result blocks = %+v, want one error block", tt.resultBlocks)
+	}
+
+	// A merged tool name keeps its hint.
+	ev2 := &emitRecorder{}
+	e2 := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev2.fn, context.Background())
+	tt2 := &TrackedTool{ID: "tu_2", Name: "Glob", Input: json.RawMessage(`{}`), done: make(chan struct{})}
+	e2.executeTool(tt2)
+	got := ev2.only(t, types.EventToolEnd).ToolResult.DisplayOutput
+	if got != toolNotFoundHint("Glob") {
+		t.Errorf("merged-tool message = %q, want the Glob→Grep hint", got)
+	}
+}
+
+// TestDurationCoversTheCall pins the zero-start fallback: the duration is
+// the call's wall time, not the distance from the epoch.
+func TestDurationCoversTheCall(t *testing.T) {
+	t.Parallel()
+	slow := &fakeTool{name: "slow", safe: true, callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+		time.Sleep(20 * time.Millisecond) // REAL-TIME: Duration measures the wall-clock call span
+		return &tool.ToolResult{Data: "done"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"slow": slow}, nil, ev.fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "slow", Input: json.RawMessage(`{}`)}})
+
+	evt := ev.only(t, types.EventToolEnd)
+	d := evt.ToolResult.Duration
+	if d <= 0 || d > time.Second {
+		t.Errorf("event Duration = %v, want a few tens of milliseconds", d)
+	}
+	e.mu.Lock()
+	tt := e.tools[0]
+	e.mu.Unlock()
+	if tt.Duration <= 0 || tt.Duration > time.Second {
+		t.Errorf("tracked Duration = %v, want a few tens of milliseconds", tt.Duration)
+	}
+}
+
+// TestPermCheckerPanicDenies pins fail-secure: a broken checker denies
+// and stays installed.
+func TestPermCheckerPanicDenies(t *testing.T) {
+	t.Parallel()
+	rec := captureSlog(t)
+	ran := false
+	tt := &fakeTool{name: "guarded", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"guarded": tt}, nil, (&emitRecorder{}).fn, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{panics: true})
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "guarded", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a panicking permission checker let the tool run")
+	}
+	if len(res.ToolResultBlocks) != 1 || !res.ToolResultBlocks[0].IsError {
+		t.Fatalf("result = %+v, want one error block", res.ToolResultBlocks)
+	}
+	if got := toolResultText(t, res.ToolResultBlocks[0]); got != ruleDenyMessage("guarded") {
+		t.Errorf("deny message = %q, want the rule-deny message", got)
+	}
+	if _, ok := rec.find("engine: permChecker.Check panicked, denying", func(a map[string]any) bool {
+		return a["tool"] == "guarded" && a["error"] == "permission checker exploded"
+	}); !ok {
+		t.Error("the panicking checker left no diagnostic")
+	}
+}
+
+// TestRuleDenyEventShape pins the bare-tool deny event and result block.
+func TestRuleDenyEventShape(t *testing.T) {
+	t.Parallel()
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"guarded": &fakeTool{name: "guarded", safe: true}}, nil, ev.fn, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionDeny, Message: "no"}})
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "guarded", Input: json.RawMessage(`{}`)}})
+
+	want := ruleDenyMessage("guarded")
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != want {
+		t.Errorf("deny event = %+v, want an error event with the rule-deny message", tr)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("deny Output = %q, want the rule-deny message", got)
+	}
+	if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != want {
+		t.Errorf("deny result = %+v, want the rule-deny message", res.ToolResultBlocks)
+	}
+}
+
+// TestPermissionRequestHookAsk pins the PermissionRequest hook phase:
+// the dispatch payload, that a result without a decision falls through to the
+// dialog, and — as written today — that an "allow" decision does NOT skip it
+// either (the allow branch only `continue`s the result loop; see the bug note
+// in the report).
+func TestPermissionRequestHookAsk(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc    string
+		outcome hooks.HookOutcome
+		output  *hooks.HookOutput
+	}{
+		{"no decision", hooks.HookOutcomeSuccess, nil},
+		{"allow", hooks.HookOutcomeSuccess, &hooks.HookOutput{Decision: "allow"}},
+	}
+	for _, tc := range cases {
+		ran := false
+		toolx := &fakeTool{name: "ptest_perm", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "ran"}, nil
+		}}
+		ev := &emitRecorder{}
+		asks, emit := ev.askTap()
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, emit, context.Background())
+		hexec := &integrationHookRecorder{}
+		e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec,
+			hooks.HookResult{Outcome: tc.outcome, Output: tc.output},
+		), "sess-1")
+		e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk}})
+		go func() {
+			ask := <-asks
+			ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+		}()
+		e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}})
+
+		in := hexec.lastInput(t)
+		if in.HookEventName != "PermissionRequest" {
+			t.Errorf("%s: hook event = %q, want PermissionRequest", tc.desc, in.HookEventName)
+		}
+		if in.ToolName != "ptest_perm" {
+			t.Errorf("%s: hook ToolName = %q, want ptest_perm", tc.desc, in.ToolName)
+		}
+		if in.Cwd != "" {
+			t.Errorf("%s: hook Cwd = %q, want the unset engine default", tc.desc, in.Cwd)
+		}
+		var ask *types.AskEvent
+		for _, evt := range ev.all() {
+			if evt.Ask != nil {
+				ask = evt.Ask
+			}
+		}
+		if ask == nil {
+			t.Fatalf("%s: the permission dialog never opened", tc.desc)
+		}
+		if ask.ToolName != "ptest_perm" {
+			t.Errorf("%s: ask ToolName = %q, want ptest_perm", tc.desc, ask.ToolName)
+		}
+		if ran {
+			t.Errorf("%s: a rejected ask let the tool run", tc.desc)
+		}
+	}
+}
+
+// TestPermissionRequestHookBlock pins that a later blocking result wins
+// over an earlier approval.
+func TestPermissionRequestHookBlock(t *testing.T) {
+	t.Parallel()
+	hexec := &integrationHookRecorder{}
+	ran := false
+	toolx := &fakeTool{name: "ptest_perm", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, ev.fn, context.Background())
+	e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec,
+		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
+		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "block"}},
+	), "sess-hook")
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk, Message: "ask"}})
+
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a blocked tool ran")
+	}
+	want := ruleDenyMessage("ptest_perm")
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != want {
+		t.Errorf("hook-block event = %+v, want an error event with the rule-deny message", tr)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("hook-block Output = %q, want the rule-deny message", got)
+	}
+	if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != want {
+		t.Errorf("hook-block result = %+v, want the rule-deny message", res.ToolResultBlocks)
+	}
+}
+
+// TestAskDecisionHandlesEveryAnswer pins the reject gate after a dialog.
+func TestAskDecisionHandlesEveryAnswer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		answer  types.UserDecision
+		wantRan bool
+		wantMsg string
+	}{
+		{answer: types.DecisionDeny, wantRan: false, wantMsg: userRejectMessage},
+		{answer: types.DecisionAllow, wantRan: true},
+		{answer: types.DecisionAllowAlways, wantRan: true},
+	}
+	for _, tc := range cases {
+		answer := tc.answer
+		ev := &emitRecorder{}
+		ran := false
+		toolx := &fakeTool{name: "ptest_ask", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "ran"}, nil
+		}}
+		asks, emit := ev.askTap()
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_ask": toolx}, nil, emit, context.Background())
+		e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk, Message: "please"}})
+		go func() {
+			ask := <-asks
+			ask.ResponseCh <- types.AskResponse{Decision: answer}
+		}()
+		res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_ask", Input: json.RawMessage(`{}`)}})
+		if ran != tc.wantRan {
+			t.Errorf("answer %v: tool ran = %v, want %v", answer, ran, tc.wantRan)
+		}
+		if len(res.ToolResultBlocks) != 1 {
+			t.Fatalf("answer %v: result blocks = %d, want 1", answer, len(res.ToolResultBlocks))
+		}
+		if tc.wantMsg == "" {
+			if res.ToolResultBlocks[0].IsError {
+				t.Errorf("answer %v: result must succeed, got %s", answer, toolResultText(t, res.ToolResultBlocks[0]))
+			}
+			continue
+		}
+		if got := toolResultText(t, res.ToolResultBlocks[0]); got != tc.wantMsg {
+			t.Errorf("answer %v: reject message = %q, want %q", answer, got, tc.wantMsg)
+		}
+		evt := ev.only(t, types.EventToolEnd)
+		if evt.ToolResult.ToolUseID != "tu_1" || !evt.ToolResult.IsError || evt.ToolResult.DisplayOutput != tc.wantMsg {
+			t.Errorf("answer %v: reject event = %+v, want an error event with the reject message", answer, evt.ToolResult)
+		}
+		if got := toolResultText(t, types.ContentBlock{Content: evt.ToolResult.Output}); got != tc.wantMsg {
+			t.Errorf("answer %v: reject Output = %q, want the reject message", answer, got)
+		}
+	}
+}
+
+// TestSubEngineRejectMessage pins the sub-engine variant of the reject text.
+func TestSubEngineRejectMessage(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	if got := e.userOrSubRejectMessage(); got != userRejectMessage {
+		t.Errorf("main-engine reject = %q, want the user reject message", got)
+	}
+	e.SetSubEngine(true)
+	if got := e.userOrSubRejectMessage(); got != subAgentRejectMessage {
+		t.Errorf("sub-engine reject = %q, want the sub-agent reject message", got)
+	}
+}
+
+// TestContentRuleDeny pins the content-level deny phase, including the
+// gate that only runs it when the decision carries content rules.
+func TestContentRuleDeny(t *testing.T) {
+	t.Parallel()
+	permission.RegisterContentChecker("ptest_content", func(_ json.RawMessage, rules []permission.Rule) permission.RuleAction {
+		if len(rules) == 0 {
+			return permission.ActionAllow
+		}
+		return permission.ActionDeny
+	})
+	ran := false
+	toolx := &fakeTool{name: "ptest_content", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_content": toolx}, nil, ev.fn, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{
+		Action:       permission.ActionAllow,
+		ContentRules: []permission.Rule{{Action: permission.ActionDeny, Value: permission.RuleValue{ToolName: "ptest_content"}}},
+	}})
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_content", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a content-rule deny let the tool run")
+	}
+	want := ruleDenyMessage("ptest_content")
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != want {
+		t.Errorf("content-deny event = %+v, want an error event with the rule-deny message", tr)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("content-deny Output = %q, want the rule-deny message", got)
+	}
+	if len(res.ToolResultBlocks) != 1 || !res.ToolResultBlocks[0].IsError {
+		t.Errorf("content-deny result = %+v, want one error block", res.ToolResultBlocks)
+	}
+
+	// No content rules → the content phase must not run at all.
+	ran2 := false
+	tool2 := &fakeTool{name: "ptest_content", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran2 = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev2 := &emitRecorder{}
+	e2 := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_content": tool2}, nil, ev2.fn, context.Background())
+	e2.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAllow}})
+	res2 := e2.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "ptest_content", Input: json.RawMessage(`{}`)}})
+	if !ran2 {
+		t.Errorf("an allow decision without content rules was blocked: %s", toolResultText(t, res2.ToolResultBlocks[0]))
+	}
+}
+
+// TestContentRuleAsk pins the content-level ask phase: the dialog carries
+// the generated message and the matched pattern, and a denial rejects.
+func TestContentRuleAsk(t *testing.T) {
+	t.Parallel()
+	permission.RegisterContentChecker("ptest_cask", func(_ json.RawMessage, rules []permission.Rule) permission.RuleAction {
+		if len(rules) == 0 {
+			return permission.ActionAllow
+		}
+		return permission.ActionAsk
+	})
+	permission.RegisterContentChecker("ptest_callow", func(_ json.RawMessage, rules []permission.Rule) permission.RuleAction {
+		if len(rules) == 0 {
+			return permission.ActionAllow
+		}
+		return permission.ActionAsk
+	})
+
+	ev := &emitRecorder{}
+	ran := false
+	toolx := &fakeTool{name: "ptest_cask", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	asks, emit := ev.askTap()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_cask": toolx}, nil, emit, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{
+		Action: permission.ActionAllow,
+		ContentRules: []permission.Rule{{
+			Action: permission.ActionAsk,
+			Value:  permission.RuleValue{ToolName: "ptest_cask", RuleContent: new("danger")},
+		}},
+	}})
+	go func() {
+		ask := <-asks
+		ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+	}()
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_cask", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a denied content-rule ask let the tool run")
+	}
+	var ask *types.AskEvent
+	for _, evt := range ev.all() {
+		if evt.Ask != nil {
+			ask = evt.Ask
+		}
+	}
+	if ask == nil {
+		t.Fatal("content-rule ask opened no dialog")
+	}
+	if ask.Message != "tool ptest_cask requires permission by content rule" {
+		t.Errorf("ask Message = %q, want the generated content-rule message", ask.Message)
+	}
+	if ask.Kind != types.AskPermission {
+		t.Errorf("ask Kind = %v, want %v", ask.Kind, types.AskPermission)
+	}
+	if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != userRejectMessage {
+		t.Errorf("content-ask reject result = %+v, want the reject message", res.ToolResultBlocks)
+	}
+}
+
+//go:fix inline
+
+// TestPreToolUseHookInputAndBlock pins the hook payload and the blocking
+// decision's event.
+func TestPreToolUseHookInputAndBlock(t *testing.T) {
+	t.Parallel()
+	hexec := &integrationHookRecorder{}
+	ran := false
+	toolx := &fakeTool{name: "ptest_hook", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_hook": toolx}, nil, ev.fn, context.Background())
+	e.SetHooks(hooksWith("PreToolUse", "ptest_hook", hexec,
+		hooks.HookResult{Outcome: hooks.HookOutcomeBlocking, Stderr: "nope"},
+	), "sess-pre")
+	e.SetWorkingDirSupplier(func() string { return "/work/dir" })
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_hook", Input: json.RawMessage(`{"a":1}`)}})
+	if ran {
+		t.Error("a blocking PreToolUse hook did not stop the tool")
+	}
+	in := hexec.lastInput(t)
+	if in.SessionID != "sess-pre" {
+		t.Errorf("hook SessionID = %q, want sess-pre", in.SessionID)
+	}
+	if in.ToolUseID != "tu_1" {
+		t.Errorf("hook ToolUseID = %q, want tu_1", in.ToolUseID)
+	}
+	if string(in.ToolInput) != `{"a":1}` {
+		t.Errorf("hook ToolInput = %s, want the tool input", string(in.ToolInput))
+	}
+	if in.Cwd != "/work/dir" {
+		t.Errorf("hook Cwd = %q, want the live working dir", in.Cwd)
+	}
+	want := "Execution stopped by PreToolUse hook for tool ptest_hook"
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != want {
+		t.Errorf("hook-block event = %+v, want an error event with %q", tr, want)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("hook-block Output = %q, want %q", got, want)
+	}
+}
+
+// TestDiscardAfterAbortCheck pins the second discard probe inside
+// executeTool: a tool discarded after the first check must not reach Call.
+func TestDiscardAfterAbortCheck(t *testing.T) {
+	t.Parallel()
+	ran := false
+	toolx := &fakeTool{name: "ptest_disc", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_disc": toolx}, nil, ev.fn, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{
+		decision: permission.Decision{Action: permission.ActionAllow},
+		onCheck:  func() { e.mu.Lock(); e.discarded = true; e.mu.Unlock() },
+	})
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_disc", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a tool discarded mid-check reached Call")
+	}
+	// Emissions are suppressed once the executor is discarded, so the pin is
+	// on the recorded result: the synthetic fallback block must be there.
+	want := "Error: Streaming fallback - tool execution discarded"
+	e.mu.Lock()
+	blocks := e.tools[0].resultBlocks
+	e.mu.Unlock()
+	if len(blocks) != 1 || !blocks[0].IsError {
+		t.Fatalf("discard result blocks = %+v, want one error block", blocks)
+	}
+	if got := toolResultText(t, blocks[0]); got != want {
+		t.Errorf("discard result = %q, want %q", got, want)
+	}
+	if n := len(ev.all()); n != 0 {
+		t.Errorf("discarded executor emitted %d events, want 0", n)
+	}
+}
+
+// TestProgressEmitsDeltaEvents pins the streaming progress gate and the
+// delta payload.
+func TestProgressEmitsDeltaEvents(t *testing.T) {
+	t.Parallel()
+	toolx := &fakeTool{name: "ptest_stream", safe: true, callFn: func(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+		tctx.OnProgress(tool.ProgressUpdate{Lines: nil})
+		tctx.OnProgress(tool.ProgressUpdate{Lines: []string{}})
+		tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"one"}})
+		tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"two", "three"}})
+		return &tool.ToolResult{Data: "done"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_stream": toolx}, nil, ev.fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_stream", Input: json.RawMessage(`{}`)}})
+
+	deltas := []types.QueryEvent{}
+	for _, evt := range ev.all() {
+		if evt.Type == types.EventToolOutputDelta {
+			deltas = append(deltas, evt)
+		}
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("progress deltas = %d, want 2 (empty progress must not emit)", len(deltas))
+	}
+	if deltas[0].ToolResult.DisplayOutput != "one" || deltas[1].ToolResult.DisplayOutput != "two\nthree" {
+		t.Errorf("delta payloads = %q, %q, want %q and %q",
+			deltas[0].ToolResult.DisplayOutput, deltas[1].ToolResult.DisplayOutput, "one", "two\nthree")
+	}
+	for _, d := range deltas {
+		if d.ToolResult.ToolUseID != "tu_1" {
+			t.Errorf("delta ToolUseID = %q, want tu_1", d.ToolResult.ToolUseID)
+		}
+		if d.ToolResult.IsError {
+			t.Error("a progress delta must not be marked as an error")
+		}
+	}
+}
+
+// TestDisplayOutputFallsBackToProgress pins the last-progress fallback when
+// the tool renders nothing.
+func TestDisplayOutputFallsBackToProgress(t *testing.T) {
+	t.Parallel()
+	toolx := &fakeTool{name: "ptest_fb", safe: true, callFn: func(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+		tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"first chunk"}})
+		tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"last chunk"}})
+		return &tool.ToolResult{Data: "done"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_fb": toolx}, nil, ev.fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_fb", Input: json.RawMessage(`{}`)}})
+	evt := ev.only(t, types.EventToolEnd)
+	if got := evt.ToolResult.DisplayOutput; got != "last chunk" {
+		t.Errorf("DisplayOutput = %q, want the last progress line (the tool renders nothing)", got)
+	}
+}
+
+// TestEmptyWireResultGetsMarker pins that the post-processing of the wire
+// content (empty-result marker) reaches both the event and the result block.
+func TestEmptyWireResultGetsMarker(t *testing.T) {
+	t.Parallel()
+	toolx := &dynamicWireTool{name: "ptest_empty", safe: true}
+	toolx.wire = func(any) []types.ContentBlock { return nil }
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_empty": toolx}, nil, ev.fn, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_empty", Input: json.RawMessage(`{}`)}})
+	want := "(ptest_empty completed with no output)"
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+	}
+	if got := toolResultText(t, res.ToolResultBlocks[0]); got != want {
+		t.Errorf("empty-result block = %q, want %q", got, want)
+	}
+	evt := ev.only(t, types.EventToolEnd)
+	if got := toolResultText(t, types.ContentBlock{Content: evt.ToolResult.Output}); got != want {
+		t.Errorf("empty-result event Output = %q, want %q", got, want)
+	}
+}
+
+// TestSuccessEventShape pins every field the success ToolEnd carries.
+func TestSuccessEventShape(t *testing.T) {
+	t.Parallel()
+	toolx := &fakeTool{
+		name: "ptest_ok", safe: true,
+		renderFn:   func(any) string { return "rendered result" },
+		searchRead: &tool.SearchReadKind{IsSearch: true, IsRead: true, IsList: true, IsLsp: true, IsTask: true},
+		callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "payload", NewMessages: []types.Message{calibTextMessage("injected")}}, nil
+		},
+	}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_ok": toolx}, nil, ev.fn, context.Background())
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_ok", Input: json.RawMessage(`{}`)}})
+
+	evt := ev.only(t, types.EventToolEnd)
+	tr := evt.ToolResult
+	if tr.ToolUseID != "tu_1" {
+		t.Errorf("ToolUseID = %q, want tu_1", tr.ToolUseID)
+	}
+	if tr.DisplayOutput != "rendered result" {
+		t.Errorf("DisplayOutput = %q, want the tool's rendering", tr.DisplayOutput)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != `"payload"` {
+		t.Errorf("Output = %q, want the JSON-encoded data", got)
+	}
+	if tr.IsError || tr.IsBackground {
+		t.Errorf("flags = error %v background %v, want both false", tr.IsError, tr.IsBackground)
+	}
+	if !tr.IsSearch || !tr.IsRead || !tr.IsList || !tr.IsLsp || !tr.IsTask {
+		t.Errorf("kind flags = %+v, want search/read/list/lsp/task all true", tr)
+	}
+	if tr.Duration <= 0 || tr.Duration > time.Second {
+		t.Errorf("Duration = %v, want the call's wall time", tr.Duration)
+	}
+	if len(res.NewMessages) != 1 {
+		t.Errorf("NewMessages = %d, want the injected message", len(res.NewMessages))
+	}
+	if len(res.ToolResultBlocks) != 1 || res.ToolResultBlocks[0].ToolDurationNs <= 0 {
+		t.Errorf("result block = %+v, want a positive ToolDurationNs", res.ToolResultBlocks)
+	}
+}
+
+// TestBackgroundResultFlag pins the async-launch flag on the end event.
+func TestBackgroundResultFlag(t *testing.T) {
+	t.Parallel()
+	toolx := &fakeTool{name: "ptest_bg", safe: true, renderFn: func(any) string { return "launched" }, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_bg": toolx}, nil, ev.fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_bg", Input: json.RawMessage(`{}`)}})
+	tr := ev.only(t, types.EventToolEnd).ToolResult
+	if !tr.IsBackground {
+		t.Errorf("IsBackground = %v, want true for an async-launched sub-query", tr.IsBackground)
+	}
+}
+
+// TestPostExecAbort pins the abort check that runs after a successful
+// Call (a tool killed mid-flight reports the unified abort message).
+func TestPostExecAbort(t *testing.T) {
+	t.Parallel()
+	t.Run("user interrupt", func(t *testing.T) {
+		root, cancel := context.WithCancel(context.Background())
+		toolx := &fakeTool{name: "ptest_abort", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			cancel()
+			return &tool.ToolResult{Data: "killed mid-flight"}, nil
+		}}
+		ev := &emitRecorder{}
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_abort": toolx}, nil, ev.fn, root)
+		res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_abort", Input: json.RawMessage(`{}`)}})
+		if len(res.ToolResultBlocks) != 1 || !res.ToolResultBlocks[0].IsError {
+			t.Fatalf("result = %+v, want an error block", res.ToolResultBlocks)
+		}
+		if got := toolResultText(t, res.ToolResultBlocks[0]); got != userRejectMessage {
+			t.Errorf("post-cancel result = %q, want the user-reject message", got)
+		}
+		tr := ev.only(t, types.EventToolEnd).ToolResult
+		if !tr.IsError || tr.DisplayOutput != userRejectMessage {
+			t.Errorf("post-cancel event = %+v, want an error event with the user-reject message", tr)
+		}
+	})
+
+	t.Run("sibling error", func(t *testing.T) {
+		var nestedErrored bool
+		toolx := &fakeTool{name: "ptest_sib", safe: true, callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			// A fresh executor must not inherit the sibling chain's error
+			// state: cancellation travels through the shared context, never
+			// through package globals.
+			nested := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+			nested.mu.Lock()
+			nestedErrored = nested.hasErrored
+			nested.mu.Unlock()
+			return &tool.ToolResult{Data: "ok"}, nil
+		}}
+		root := t.Context()
+		ev := &emitRecorder{}
+		ex := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_sib": toolx}, nil, ev.fn, root)
+		// Cancel only the sibling chain (a sibling errored, the user did not interrupt).
+		ex.siblingCancel(errors.New("sibling_error"))
+		ex.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_sib", Input: json.RawMessage(`{}`)}})
+		if nestedErrored {
+			t.Error("a fresh executor inherited the sibling chain's error state")
+		}
+		want := "Cancelled: parallel tool call errored"
+		tr := ev.only(t, types.EventToolEnd).ToolResult
+		if !tr.IsError || tr.DisplayOutput != want {
+			t.Errorf("sibling-cancelled event = %+v, want an error event with %q", tr, want)
+		}
+		if tr.ToolUseID != "tu_1" {
+			t.Errorf("sibling-cancelled ToolUseID = %q, want tu_1", tr.ToolUseID)
+		}
+		if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+			t.Errorf("sibling-cancelled Output = %q, want the abort block carrying %q", got, want)
+		}
+	})
+}
+
+// TestSiblingErrorMessage pins both renderings of the sibling-cancel
+// message in emitToolError.
+func TestSiblingErrorMessage(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc string
+		want string
+	}{
+		{"Bash(rm -rf)", "Cancelled: parallel tool call Bash(rm -rf) errored"},
+		{"", "Cancelled: parallel tool call errored"},
+	}
+	for _, tc := range cases {
+		root := t.Context()
+		ev := &emitRecorder{}
+		e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, root)
+		e.siblingCancel(errors.New("sibling_error"))
+		e.mu.Lock()
+		e.errToolDesc = tc.desc
+		e.mu.Unlock()
+		tt := &TrackedTool{ID: "tu_1", Name: "slow", Input: json.RawMessage(`{}`), done: make(chan struct{})}
+		e.emitToolError(&fakeTool{name: "slow"}, tt, errors.New("boom"))
+
+		evt := ev.only(t, types.EventToolEnd)
+		tr := evt.ToolResult
+		if tr.ToolUseID != "tu_1" || !tr.IsError {
+			t.Errorf("desc %q: event = %+v, want an error event for tu_1", tc.desc, tr)
+		}
+		if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != tc.want {
+			t.Errorf("desc %q: Output = %q, want %q", tc.desc, got, tc.want)
+		}
+		if tr.DisplayOutput != tc.want {
+			t.Errorf("desc %q: DisplayOutput = %q, want %q", tc.desc, tr.DisplayOutput, tc.want)
+		}
+		if tt.Err == nil || tt.Err.Error() != "boom" {
+			t.Errorf("desc %q: tracked Err = %v, want the original error", tc.desc, tt.Err)
+		}
+		if len(tt.resultBlocks) != 1 || !tt.resultBlocks[0].IsError {
+			t.Errorf("desc %q: result blocks = %+v, want one error block", tc.desc, tt.resultBlocks)
+		}
+	}
+}
+
+// TestBashErrorCancelsSiblings pins the Bash-only sibling abort and the
+// error bookkeeping it leaves behind.
+func TestBashErrorCancelsSiblings(t *testing.T) {
+	t.Parallel()
+	bash := &fakeTool{name: "Bash", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return nil, errors.New("signal: killed")
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Bash": bash}, nil, ev.fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_b", Name: "Bash", Input: json.RawMessage(`{"command":"sleep 5"}`)}})
+
+	e.mu.Lock()
+	errored, desc := e.hasErrored, e.errToolDesc
+	tt := e.tools[0]
+	e.mu.Unlock()
+	if !errored {
+		t.Error("a Bash error did not mark the executor as errored")
+	}
+	if desc != "Bash(sleep 5)" {
+		t.Errorf("errToolDesc = %q, want Bash(sleep 5)", desc)
+	}
+	if tt.Err == nil || tt.Err.Error() != "signal: killed" {
+		t.Errorf("tracked Err = %v, want the Bash error", tt.Err)
+	}
+	if e.siblingCtx.Err() == nil {
+		t.Error("a Bash error did not cancel the sibling context")
+	}
+}
+
+// TestPostToolUseHookInputs pins the success and failure hook payloads.
+func TestPostToolUseHookInputs(t *testing.T) {
+	t.Parallel()
+	hexec := &integrationHookRecorder{}
+	toolx := &fakeTool{name: "ptest_post", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return nil, errors.New("post failure")
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_post": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+	e.SetHooks(hooksWith("PostToolUseFailure", "ptest_post", hexec, hooks.HookResult{Outcome: hooks.HookOutcomeSuccess}), "sess-post")
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_post", Input: json.RawMessage(`{"in":7}`)}})
+
+	in := hexec.lastInput(t)
+	if in.HookEventName != "PostToolUseFailure" {
+		t.Errorf("hook event = %q, want PostToolUseFailure", in.HookEventName)
+	}
+	if in.SessionID != "sess-post" {
+		t.Errorf("hook SessionID = %q, want sess-post", in.SessionID)
+	}
+	if in.ToolUseID != "tu_1" {
+		t.Errorf("hook ToolUseID = %q, want tu_1", in.ToolUseID)
+	}
+	if string(in.ToolInput) != `{"in":7}` {
+		t.Errorf("hook ToolInput = %s, want the tool input", string(in.ToolInput))
+	}
+	if in.ToolName != "ptest_post" {
+		t.Errorf("hook ToolName = %q, want ptest_post", in.ToolName)
+	}
+}
+
+// TestFileHistoryTracksBeforeEdit pins the pre-edit backup and the
+// skip diagnostic.
+func TestFileHistoryTracksBeforeEdit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(src, []byte("original"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	histDir := filepath.Join(dir, "history")
+	ran := false
+	toolx := &fakeTool{name: "Edit", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "edited"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+	e.SetFileHistory(filehistory.NewTracker(histDir))
+	e.currentTurnMsgID = "msg-1"
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Edit", Input: json.RawMessage(`{"file_path":"` + src + `"}`)}})
+	if !ran {
+		t.Fatal("the tracked Edit did not run")
+	}
+	entries, err := os.ReadDir(histDir)
+	if err != nil || len(entries) == 0 {
+		t.Errorf("no backup written for a tracked Edit (dir err=%v entries=%d)", err, len(entries))
+	}
+}
+
+// TestFileHistorySkipWarned pins the diagnostic when an edit runs without
+// a history tracker, and its attributes.
+func TestFileHistorySkipWarned(t *testing.T) {
+	t.Parallel()
+	rec := captureSlog(t)
+	toolx := &fakeTool{name: "Write", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: "written"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Write": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Write", Input: json.RawMessage(`{"file_path":"/tmp/x"}`)}})
+
+	log, ok := rec.find("engine:file_history_skip", func(a map[string]any) bool {
+		return a["tool"] == "Write" && a["currentTurnMsgID"] == ""
+	})
+	if !ok {
+		t.Fatal("an untracked Write left no file-history skip diagnostic")
+	}
+	if log.attrs["tool"] != "Write" {
+		t.Errorf("skip tool attr = %v, want Write", log.attrs["tool"])
+	}
+	hasFH, _ := log.attrs["hasFileHistory"].(bool)
+	if hasFH {
+		t.Error("hasFileHistory attr must be false on the skip branch")
+	}
+	if id, _ := log.attrs["currentTurnMsgID"].(string); id != "" {
+		t.Errorf("currentTurnMsgID attr = %q, want empty", id)
+	}
+
+	// A non-edit tool is not warned about.
+	rec2 := captureSlog(t)
+	reader := &fakeTool{name: "Read", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: "read"}, nil
+	}}
+	e2 := NewStreamingToolExecutor(map[string]tool.Tool{"Read": reader}, nil, (&emitRecorder{}).fn, context.Background())
+	e2.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/x"}`)}})
+	if _, ok := rec2.find("engine:file_history_skip", func(a map[string]any) bool {
+		return a["tool"] == "Read"
+	}); ok {
+		t.Error("a Read was warned about as an untracked edit")
+	}
+}
+
+// TestTrackEditFailureWarnedAndContinues pins that a failed backup warns
+// but does not stop the edit.
+func TestTrackEditFailureWarnedAndContinues(t *testing.T) {
+	t.Parallel()
+	rec := captureSlog(t)
+	dir := t.TempDir()
+	notAFile := dir // a directory as file_path makes the backup copy fail
+	ran := false
+	toolx := &fakeTool{name: "Edit", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "edited"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+	e.SetFileHistory(filehistory.NewTracker(filepath.Join(dir, "history")))
+	e.currentTurnMsgID = "msg-1"
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Edit", Input: json.RawMessage(`{"file_path":"` + notAFile + `"}`)}})
+	if !ran {
+		t.Error("a failed backup stopped the edit")
+	}
+	if _, ok := rec.find("filehistory:track_edit_failed", func(a map[string]any) bool {
+		return a["file"] == notAFile
+	}); !ok {
+		t.Error("a failed TrackEdit left no warning")
+	}
+}
+
+// TestAskCacheFastPathSkipsMutex pins that a cached allow is answered
+// before the ask mutex is taken: the fast path must not serialize behind a
+// pending dialog.
+func TestAskCacheReadsUnderTheAskMutex(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, (&emitRecorder{}).fn, context.Background())
+	e.sessionAllowed = map[string]bool{"Bash": true}
+	if !e.askMu.TryLock() {
+		t.Fatal("askMu was already held before the probe")
+	}
+	tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+	done := make(chan types.UserDecision, 1)
+	go func() { done <- e.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "why"}, "") }()
+	// The cache read lives under askMu (a lock-free read races the
+	// allow-always write), so a held mutex must block even a cached allow…
+	select {
+	case got := <-done:
+		t.Fatalf("askUser returned %q while askMu was held", got)
+	case <-time.After(1500 * time.Millisecond):
+	}
+	// …and the cached decision must come back once the mutex is free.
+	e.askMu.Unlock()
+	select {
+	case got := <-done:
+		if got != types.DecisionAllow {
+			t.Errorf("cached decision = %q, want allow", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("askUser never returned after askMu was released")
+	}
+}
+
+// TestAskCacheMissOpensDialog pins that a populated cache without the
+// matching key still asks, and that the dialog path releases the ask mutex.
+func TestAskCacheMissOpensDialog(t *testing.T) {
+	t.Parallel()
+	ev := &emitRecorder{}
+	asks, emit := ev.askTap()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, emit, context.Background())
+	e.sessionAllowed = map[string]bool{"Read": true}
+	tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+	go func() {
+		ask := <-asks
+		ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+	}()
+	if got := e.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "why"}, ""); got != types.DecisionDeny {
+		t.Errorf("uncached decision = %q, want deny", got)
+	}
+	if len(ev.all()) != 1 || ev.all()[0].Ask == nil {
+		t.Errorf("events = %d, want one permission dialog", len(ev.all()))
+	}
+	if !e.askMu.TryLock() {
+		t.Error("askUser returned with askMu still held")
+	}
+	e.askMu.Unlock()
+}
+
+// TestExecuteAllReleasesExecutorLock pins that both the queue pump and the
+// result-collection phase hand the executor mutex back.
+func TestExecuteAllReleasesExecutorLock(t *testing.T) {
+	t.Parallel()
+	toolx := &fakeTool{name: "ptest_lock", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_lock": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+	e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_lock", Input: json.RawMessage(`{}`)}})
+	if !e.mu.TryLock() {
+		t.Error("ExecuteAll returned holding the executor mutex")
+	}
+	e.mu.Unlock()
+}
+
+// TestRichReplayToolsNames pins which tools keep a rich replay payload.
+func TestRichReplayToolsNames(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"mcp__srv__tool", "mcp__x", "Edit", "Write"} {
+		if !richReplayTools(name) {
+			t.Errorf("richReplayTools(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"Bash", "Read", "Grep", "", "mcp_"} {
+		if richReplayTools(name) {
+			t.Errorf("richReplayTools(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestRichResultDataUnknownTool pins the tool-map gate on its own: a
+// rich-replay name that is not in the map must still be rejected.
+func TestRichResultDataUnknownTool(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	got, ok := e.richResultData(&TrackedTool{Name: "Edit", Result: &tool.ToolResult{Data: map[string]any{"path": "/x"}}})
+	if ok || got != nil {
+		t.Errorf("richResultData for a tool absent from the map = (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// TestFileHistoryGates pins the two preconditions of the pre-edit backup
+// and the warning that fires when they are missing.
+func TestFileHistoryGates(t *testing.T) {
+	t.Parallel()
+	t.Run("no turn id means no backup", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "target.txt")
+		if err := os.WriteFile(src, []byte("original"), 0o644); err != nil {
+			t.Fatalf("write source: %v", err)
+		}
+		histDir := filepath.Join(dir, "history")
+		ran := false
+		toolx := &fakeTool{name: "Edit", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "edited"}, nil
+		}}
+		rec := captureSlog(t)
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+		e.SetFileHistory(filehistory.NewTracker(histDir))
+		e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Edit", Input: json.RawMessage(`{"file_path":"` + src + `"}`)}})
+		if !ran {
+			t.Fatal("the Edit did not run")
+		}
+		entries, err := os.ReadDir(histDir)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read history dir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("a turn-less Edit wrote %d backups, want none", len(entries))
+		}
+		if _, ok := rec.find("engine:file_history_skip", func(a map[string]any) bool {
+			has, _ := a["hasFileHistory"].(bool)
+			return a["tool"] == "Edit" && has
+		}); !ok {
+			t.Error("an edit without a turn id left no skip diagnostic")
+		}
+	})
+
+	t.Run("turn id without a tracker is warned, not dereferenced", func(t *testing.T) {
+		ran := false
+		toolx := &fakeTool{name: "Edit", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "edited"}, nil
+		}}
+		ev := &emitRecorder{}
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": toolx}, nil, ev.fn, context.Background())
+		e.currentTurnMsgID = "msg-1"
+		res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Edit", Input: json.RawMessage(`{"file_path":"/tmp/x"}`)}})
+		if !ran {
+			t.Error("an Edit with no tracker was aborted")
+		}
+		if len(res.ToolResultBlocks) != 1 || res.ToolResultBlocks[0].IsError {
+			t.Errorf("result = %+v, want a successful edit block", res.ToolResultBlocks)
+		}
+	})
+
+	t.Run("Edit is warned about, not just Write", func(t *testing.T) {
+		rec := captureSlog(t)
+		toolx := &fakeTool{name: "Edit", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "edited"}, nil
+		}}
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": toolx}, nil, (&emitRecorder{}).fn, context.Background())
+		e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Edit", Input: json.RawMessage(`{"file_path":"/tmp/x"}`)}})
+		log, ok := rec.find("engine:file_history_skip", func(a map[string]any) bool {
+			has, _ := a["hasFileHistory"].(bool)
+			return a["tool"] == "Edit" && !has
+		})
+		if !ok {
+			t.Fatal("an untracked Edit left no skip diagnostic")
+		}
+		if log.attrs["tool"] != "Edit" {
+			t.Errorf("skip tool attr = %v, want Edit", log.attrs["tool"])
+		}
+	})
+}
+
+// TestContentPhaseNeedsRules pins that the content-level phase only runs
+// when the decision carries content rules.
+func TestContentPhaseNeedsRules(t *testing.T) {
+	t.Parallel()
+	permission.RegisterContentChecker("ptest_norules", func(_ json.RawMessage, rules []permission.Rule) permission.RuleAction {
+		if len(rules) == 0 {
+			return permission.ActionDeny
+		}
+		return permission.ActionAllow
+	})
+	ran := false
+	toolx := &fakeTool{name: "ptest_norules", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_norules": toolx}, nil, ev.fn, context.Background())
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAllow, ContentRules: []permission.Rule{}}})
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_norules", Input: json.RawMessage(`{}`)}})
+	if !ran {
+		t.Errorf("an empty rule list entered the content phase: %s", toolResultText(t, res.ToolResultBlocks[0]))
+	}
+	if len(ev.all()) != 1 || ev.only(t, types.EventToolEnd).ToolResult.IsError {
+		t.Errorf("events = %+v, want one successful tool_end", ev.all())
+	}
+}
+
+// TestMemoryPathWriteNeedsAutoMemory pins the auto-memory gate: with the
+// feature disabled no Write bypasses the permission check.
+func TestMemoryPathWriteNeedsAutoMemory(t *testing.T) {
+	// Not parallel: the environment gate is process-global.
+	dir := t.TempDir()
+	inside := filepath.Join(dir, "notes", "a.md")
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "false")
+	if isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"`+inside+`"}`), dir+string(filepath.Separator)) {
+		t.Error("a Write bypassed permissions while auto-memory is disabled")
+	}
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "true")
+	if !isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"`+inside+`"}`), dir+string(filepath.Separator)) {
+		t.Error("a Write inside the override was policed while auto-memory is enabled")
+	}
+}
+
+// TestContentRuleAskAnswers pins every answer the content-rule dialog
+// accepts and the rejection event it produces.
+func TestContentRuleAskAnswers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		answer  types.UserDecision
+		wantRan bool
+	}{
+		{"allow", types.DecisionAllow, true},
+		{"allow_always", types.DecisionAllowAlways, true},
+		{"deny", types.DecisionDeny, false},
+	}
+	for i, tc := range cases {
+		toolName := "ptest_cask_" + tc.name
+		permission.RegisterContentChecker(toolName, func(_ json.RawMessage, rules []permission.Rule) permission.RuleAction {
+			if len(rules) == 0 {
+				return permission.ActionAllow
+			}
+			return permission.ActionAsk
+		})
+		ran := false
+		toolx := &fakeTool{name: toolName, safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "ran"}, nil
+		}}
+		ev := &emitRecorder{}
+		asks, emit := ev.askTap()
+		e := NewStreamingToolExecutor(map[string]tool.Tool{toolName: toolx}, nil, emit, context.Background())
+		e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{
+			Action: permission.ActionAllow,
+			ContentRules: []permission.Rule{{
+				Action: permission.ActionAsk,
+				Value:  permission.RuleValue{ToolName: toolName, RuleContent: new("danger")},
+			}},
+		}})
+		go func() {
+			ask := <-asks
+			ask.ResponseCh <- types.AskResponse{Decision: tc.answer}
+		}()
+		res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_" + string(rune('0'+i)), Name: toolName, Input: json.RawMessage(`{}`)}})
+
+		if ran != tc.wantRan {
+			t.Errorf("%s: tool ran = %v, want %v", tc.name, ran, tc.wantRan)
+		}
+		if tc.wantRan {
+			continue
+		}
+		want := userRejectMessage
+		if len(res.ToolResultBlocks) != 1 || !res.ToolResultBlocks[0].IsError {
+			t.Fatalf("%s: result = %+v, want one error block", tc.name, res.ToolResultBlocks)
+		}
+		if got := toolResultText(t, res.ToolResultBlocks[0]); got != want {
+			t.Errorf("%s: result text = %q, want the reject message", tc.name, got)
+		}
+		evt := ev.only(t, types.EventToolEnd)
+		tr := evt.ToolResult
+		if tr.ToolUseID != "tu_"+string(rune('0'+i)) {
+			t.Errorf("%s: reject event ToolUseID = %q, want the tool call id", tc.name, tr.ToolUseID)
+		}
+		if !tr.IsError {
+			t.Errorf("%s: reject event IsError = false, want true", tc.name)
+		}
+		if tr.DisplayOutput != want {
+			t.Errorf("%s: reject event DisplayOutput = %q, want the reject message", tc.name, tr.DisplayOutput)
+		}
+		if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+			t.Errorf("%s: reject event Output = %q, want the block carrying the reject message", tc.name, got)
+		}
+	}
+}
+
+// TestMemoryPathWriteEmptyPath pins that an empty file_path never matches
+// the memory override, even when the override is the working directory itself.
+func TestMemoryPathWriteEmptyPath(t *testing.T) {
+	t.Parallel()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if isMemoryPathWrite("Write", json.RawMessage(`{"file_path":""}`), cwd) {
+		t.Error("an empty file_path resolved to the memory override")
+	}
+}
+
+// TestPreExecAbortEventShape pins the abort event emitted before a tool
+// ever runs, when a sibling already errored.
+func TestPreExecAbortEventShape(t *testing.T) {
+	t.Parallel()
+	ran := false
+	toolx := &fakeTool{name: "ptest_pre", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_pre": toolx}, nil, ev.fn, context.Background())
+	e.mu.Lock()
+	e.hasErrored = true
+	e.mu.Unlock()
+	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_pre", Input: json.RawMessage(`{}`)}})
+	if ran {
+		t.Error("a tool ran after a sibling error was recorded")
+	}
+	want := "Cancelled: parallel tool call errored"
+	if len(res.ToolResultBlocks) != 1 || !res.ToolResultBlocks[0].IsError {
+		t.Fatalf("result = %+v, want one error block", res.ToolResultBlocks)
+	}
+	if got := toolResultText(t, res.ToolResultBlocks[0]); got != want {
+		t.Errorf("pre-abort result = %q, want %q", got, want)
+	}
+	tr := ev.only(t, types.EventToolEnd).ToolResult
+	if tr.ToolUseID != "tu_1" {
+		t.Errorf("pre-abort ToolUseID = %q, want tu_1", tr.ToolUseID)
+	}
+	if !tr.IsError {
+		t.Error("pre-abort IsError = false, want true")
+	}
+	if tr.DisplayOutput != want {
+		t.Errorf("pre-abort DisplayOutput = %q, want %q", tr.DisplayOutput, want)
+	}
+	if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != want {
+		t.Errorf("pre-abort Output = %q, want the block carrying %q", got, want)
+	}
+	if tr.Duration != 0 {
+		t.Errorf("pre-abort Duration = %v, want zero (the tool never ran)", tr.Duration)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// askUser dialog pins
+// ---------------------------------------------------------------------------
+
+// askTapRecorder forwards ask events to a channel so a test can wait for the
+// dialog without polling.
+type askTapRecorder struct {
+	mu     sync.Mutex
+	asks   []types.QueryEvent
+	ch     chan types.QueryEvent
+	others int
+}
+
+func (c *askTapRecorder) fn(evt types.QueryEvent) {
+	switch evt.Type {
+	case types.EventAsk:
+		c.mu.Lock()
+		c.asks = append(c.asks, evt)
+		c.mu.Unlock()
+		c.ch <- evt
+	case types.EventToolEnd:
+		c.mu.Lock()
+		c.others++
+		c.mu.Unlock()
+	}
+}
+
+func (c *askTapRecorder) askCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.asks)
+}
+
+// askUserWithDecision runs askUser in the background and returns its decision
+// after answering the dialog it opens with d.
+func askUserWithDecision(t *testing.T, e *StreamingToolExecutor, ev *askTapRecorder, tt *TrackedTool, d types.UserDecision) types.UserDecision {
+	t.Helper()
+	done := make(chan types.UserDecision, 1)
+	go func() {
+		done <- e.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "allow?"}, "")
+	}()
+	select {
+	case ask := <-ev.ch:
+		ask.Ask.ResponseCh <- types.AskResponse{Decision: d}
+	case <-time.After(5 * time.Second):
+		t.Fatal("askUser never opened a dialog")
+	}
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("askUser did not return after the dialog was answered")
+	}
+	return ""
+}
+
+// A session-allow cache only short-circuits the dialog when it holds this
+// exact cache key; a non-nil cache that misses must still ask.
+func TestAskUserCacheHitRequiresTheMatchingKey(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		cache map[string]bool
+	}{
+		{"empty cache", map[string]bool{}},
+		{"cache without this tool", map[string]bool{"Read": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ev := &askTapRecorder{ch: make(chan types.QueryEvent, 4)}
+			e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+			e.sessionAllowed = tc.cache
+			tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+			if got := askUserWithDecision(t, e, ev, tt, types.DecisionDeny); got != types.DecisionDeny {
+				t.Errorf("decision = %q, want deny (a cache miss must reach the user)", got)
+			}
+			if n := ev.askCount(); n != 1 {
+				t.Errorf("ask events = %d, want 1", n)
+			}
+		})
+	}
+}
+
+// The ask mutex must still be held while the dialog is in flight: that is what
+// keeps two concurrent asks from prompting the user at the same time.
+func TestAskUserHoldsAskMutexWhileEmittingTheDialog(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	held := make(chan bool, 1)
+	e.emitEvent = func(evt types.QueryEvent) {
+		if evt.Type != types.EventAsk {
+			return
+		}
+		free := e.askMu.TryLock()
+		if free {
+			e.askMu.Unlock()
+		}
+		held <- !free
+		evt.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
+	}
+	tt := &TrackedTool{ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+	done := make(chan types.UserDecision, 1)
+	go func() {
+		done <- e.askUser(tt, permission.Decision{Action: permission.ActionAsk, Message: "allow?"}, "")
+	}()
+	select {
+	case got := <-held:
+		if !got {
+			t.Error("askMu was already released while the dialog was being emitted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("askUser never emitted the dialog")
+	}
+	select {
+	case got := <-done:
+		if got != types.DecisionAllow {
+			t.Errorf("decision = %q, want allow", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("askUser did not return")
+	}
+}
+
+// A second ask for the same tool must be settled by the cache re-check taken
+// after the ask mutex, not by opening another dialog.
+func TestAskUserRechecksCacheAfterTakingTheAskMutex(t *testing.T) {
+	t.Parallel()
+	ev := &askTapRecorder{ch: make(chan types.QueryEvent, 4)}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, ev.fn, context.Background())
+	ask := permission.Decision{Action: permission.ActionAsk, Message: "allow?"}
+	ttA := &TrackedTool{ID: "tu_a", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+	ttB := &TrackedTool{ID: "tu_b", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}
+	resA := make(chan types.UserDecision, 1)
+	resB := make(chan types.UserDecision, 1)
+	go func() { resA <- e.askUser(ttA, ask, "") }()
+	var firstAsk types.QueryEvent
+	select {
+	case firstAsk = <-ev.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first ask never opened a dialog")
+	}
+	// B passes the pre-lock cache check (still empty) and then waits for the
+	// ask mutex A holds.
+	go func() { resB <- e.askUser(ttB, ask, "") }()
+	firstAsk.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllowAlways}
+	select {
+	case d := <-resA:
+		if d != types.DecisionAllowAlways {
+			t.Fatalf("A decision = %q, want allow-always", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("A never returned after being answered")
+	}
+	select {
+	case d := <-resB:
+		if d != types.DecisionAllow {
+			t.Errorf("B decision = %q, want allow from the post-lock cache re-check", d)
+		}
+	case a := <-ev.ch:
+		a.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+		t.Error("B opened a second dialog — the post-lock cache re-check did not short-circuit it")
+	case <-time.After(5 * time.Second):
+		t.Fatal("B never returned: the post-lock cache re-check did not settle it")
+	}
+	if n := ev.askCount(); n != 1 {
+		t.Errorf("ask events = %d, want exactly 1", n)
+	}
+}
+
+// toolUseBlock builds a tool_use block for the executor tests.
+func toolUseBlock(id, name string, input string) types.ContentBlock {
+	return types.ContentBlock{Type: types.ContentTypeToolUse, ID: id, Name: name, Input: json.RawMessage(input)}
+}
+
+// Two Edit calls on different files are independent: the file-conflict rule
+// must not serialize them.
+func TestCanExecuteTool_SerializesOnlyTheSameFile(t *testing.T) {
+	t.Parallel()
+	edits := make(chan string, 4)
+	release := make(chan struct{})
+	ed := &fakeTool{name: "Edit", safe: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+		edits <- extractFilePathFromInput(input)
+		<-release
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Edit": ed}, nil, nil, context.Background())
+	e.AddTool(toolUseBlock("tu_a", "Edit", `{"file_path":"/tmp/a.go"}`), time.Time{})
+	e.AddTool(toolUseBlock("tu_b", "Edit", `{"file_path":"/tmp/b.go"}`), time.Time{})
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case p := <-edits:
+			seen[p] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only these Edit calls started: %v (different files must run together)", seen)
+		}
+	}
+	if !seen["/tmp/a.go"] || !seen["/tmp/b.go"] {
+		t.Errorf("Edit calls = %v, want both files", seen)
+	}
+	close(release)
+}
+
+// A PermissionRequest hook result without parsed output is neither an approval
+// nor a block: the permission phase must fall through to the dialog intact.
+func TestPermissionRequestHookWithoutOutputFallsThroughToAsk(t *testing.T) {
+	t.Parallel()
+	ex := &integrationHookRecorder{}
+	h := hooksWith("PermissionRequest", "*", ex, hooks.HookResult{Outcome: hooks.HookOutcomeSuccess})
+	ev := &askTapRecorder{ch: make(chan types.QueryEvent, 4)}
+	ran := make(chan bool, 1)
+	bash := &fakeTool{name: "Bash", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran <- true
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Bash": bash}, nil, ev.fn, context.Background())
+	e.SetHooks(h, "gtest-session")
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk, Message: "allow?"}})
+	e.AddTool(toolUseBlock("tu_1", "Bash", `{"command":"ls"}`), time.Time{})
+	select {
+	case ask := <-ev.ch:
+		ask.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no permission dialog after a hook result without output")
+	}
+	_ = e.ExecuteAll(nil)
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tool never ran after a hook result without output")
+	}
+}
+
+// An "allow" PermissionRequest hook result must not be read as a block.
+func TestPermissionRequestAllowHookDoesNotBlockTheTool(t *testing.T) {
+	t.Parallel()
+	ex := &integrationHookRecorder{}
+	h := hooksWith("PermissionRequest", "*", ex,
+		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}})
+	ev := &askTapRecorder{ch: make(chan types.QueryEvent, 4)}
+	ran := make(chan bool, 1)
+	bash := &fakeTool{name: "Bash", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran <- true
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Bash": bash}, nil, ev.fn, context.Background())
+	e.SetHooks(h, "gtest-session")
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk, Message: "allow?"}})
+	e.AddTool(toolUseBlock("tu_1", "Bash", `{"command":"ls"}`), time.Time{})
+	select {
+	case ask := <-ev.ch:
+		ask.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no permission dialog after an allow hook result")
+	}
+	_ = e.ExecuteAll(nil)
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tool never ran after an allow hook result")
+	}
+}
+
+// A tool discarded between the abort check and the execution gate is settled
+// by the re-check: its result block is the synthetic streaming-fallback block.
+// The EventToolEnd emitted there is dropped by doEmit's discarded guard, which
+// is why the emission carries no observable payload — pinned below so a change
+// to either half is visible.
+func TestDiscardRecheckSettlesTheToolWithTheFallbackBlock(t *testing.T) {
+	t.Parallel()
+	ex := &integrationHookRecorder{}
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Bash": &fakeTool{name: "Bash", safe: true}}, nil, ev.fn, context.Background())
+	// The PreToolUse hook runs after the pre-execution abort check, so
+	// discarding there lands exactly on the re-check below it.
+	ex.onCall = e.Discard
+	h := hooksWith(string(hooks.HookPreToolUse), "*", ex, hooks.HookResult{Outcome: hooks.HookOutcomeSuccess})
+	e.SetHooks(h, "gtest-session")
+	res := e.ExecuteAll([]types.ContentBlock{toolUseBlock("tu_1", "Bash", `{"command":"ls"}`)})
+	wantOut := string(CreateSyntheticErrorBlock("tu_1", AbortReasonStreamingFallback).Content)
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+	}
+	got := res.ToolResultBlocks[0]
+	if got.Type != types.ContentTypeToolResult || got.ToolUseID != "tu_1" {
+		t.Errorf("result block = %+v, want a tool_result for tu_1", got)
+	}
+	if string(got.Content) != wantOut {
+		t.Errorf("result content = %s, want the streaming-fallback block %s", got.Content, wantOut)
+	}
+	if n := len(ev.all()); n != 0 {
+		t.Errorf("discarded executor emitted %d events, want 0 (doEmit suppresses them)", n)
+	}
+}
+
+// A tool with no renderable result and no progress output must not deref the
+// unset last-progress pointer.
+func TestEmptyRenderResultWithoutProgressLeavesDisplayOutputEmpty(t *testing.T) {
+	t.Parallel()
+	ev := &emitRecorder{}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Plain": &fakeTool{name: "Plain", safe: true}}, nil, ev.fn, context.Background())
+	_ = e.ExecuteAll([]types.ContentBlock{toolUseBlock("tu_1", "Plain", `{}`)})
+	evt := ev.only(t, types.EventToolEnd)
+	if evt.ToolResult == nil {
+		t.Fatal("EventToolEnd carries no ToolResult")
+	}
+	if evt.ToolResult.IsError {
+		t.Errorf("tool end reported an error: %s", evt.ToolResult.DisplayOutput)
+	}
+	if evt.ToolResult.DisplayOutput != "" {
+		t.Errorf("DisplayOutput = %q, want empty", evt.ToolResult.DisplayOutput)
+	}
+}
+
+// extractErrMsg's array branch is gated on the payload actually starting with
+// a bracket: an empty payload must not be indexed, and a payload that only
+// looks like an array later must fall through to the other shapes.
+func TestExtractErrMsgShapeGates(t *testing.T) {
+	t.Parallel()
+	if got := extractErrMsg(nil); got != "" {
+		t.Errorf("extractErrMsg(nil) = %q, want empty", got)
+	}
+	if got := extractErrMsg(json.RawMessage(`[`)); got != "[" {
+		t.Errorf(`extractErrMsg("[") = %q, want the raw payload`, got)
+	}
+	padded := json.RawMessage(` [{"type":"text","text":"hidden"}]`)
+	if got := extractErrMsg(padded); got != string(padded) {
+		t.Errorf("extractErrMsg(leading-space array) = %q, want the raw payload (the gate reads the first byte)", got)
+	}
+	arr := json.RawMessage(`[{"type":"text","text":"shown"}]`)
+	if got := extractErrMsg(arr); got != "shown" {
+		t.Errorf("extractErrMsg(array) = %q, want the first text block", got)
+	}
+}
+
+// The cancelled-path yield window ends as soon as the tool goroutine reaches
+// close(tt.done); it must not burn the whole window.
+func TestExecuteAllYieldWindowEndsWhenTheToolCompletes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	entered := make(chan struct{})
+	finish := make(chan struct{})
+	// InterruptBlock keeps the tool running past the cancelled root context,
+	// which is what puts ExecuteAll in the bounded-yield branch.
+	slow := &fakeTool{name: "Blocker", safe: true, interrupt: tool.InterruptBlock,
+		callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(entered)
+			<-finish
+			return &tool.ToolResult{Data: "ok"}, nil
+		}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Blocker": slow}, nil, nil, ctx)
+	go func() {
+		<-entered
+		close(finish)
+	}()
+	start := time.Now() // REAL-TIME: the 100ms yield window is a wall-clock bound
+	res := e.ExecuteAll([]types.ContentBlock{toolUseBlock("tu_1", "Blocker", `{}`)})
+	elapsed := time.Since(start)
+	if len(res.ToolResultBlocks) != 1 {
+		t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("ExecuteAll waited %v after the tool completed, want well under the 100ms yield window", elapsed)
+	}
+}
+
+// processQueue holds e.mu for its whole scan, so concurrent calls cannot start
+// the same queued tool twice.
+func TestProcessQueueStartsEachQueuedToolExactlyOnce(t *testing.T) {
+	t.Parallel()
+	const queued = 200
+	var starts atomic.Int64
+	release := make(chan struct{})
+	allStarted := make(chan struct{})
+	slow := &fakeTool{name: "Slow", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		if starts.Add(1) == int64(queued) {
+			close(allStarted)
+		}
+		<-release
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"Slow": slow}, nil, nil, context.Background())
+	e.mu.Lock()
+	for i := range queued {
+		e.tools = append(e.tools, &TrackedTool{
+			ID:                fmt.Sprintf("tu_%d", i),
+			Name:              "Slow",
+			IsConcurrencySafe: true,
+			Status:            StatusQueued,
+			done:              make(chan struct{}),
+		})
+	}
+	e.mu.Unlock()
+	var wg sync.WaitGroup
+	gate := make(chan struct{})
+	for range 8 {
+		wg.Go(func() {
+			<-gate
+			e.processQueue()
+		})
+	}
+	close(gate)
+	wg.Wait()
+	select {
+	case <-allStarted:
+	case <-time.After(5 * time.Second):
+	}
+	n := starts.Load()
+	close(release)
+	if n != queued {
+		t.Errorf("tool starts = %d, want %d (a queued tool must be handed to exactly one goroutine)", n, queued)
 	}
 }

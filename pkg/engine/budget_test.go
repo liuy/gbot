@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -179,5 +181,104 @@ func TestTrimMessages_Empty(t *testing.T) {
 	result := TrimMessages(nil, 5)
 	if result != nil {
 		t.Errorf("expected nil for nil input, got %v", result)
+	}
+}
+
+// The nil-logger fallback is the only thing standing between a caller that
+// passes no logger and a nil-pointer dereference inside CheckAndWarn.
+func TestBudget_NilLoggerFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	bt := NewBudgetTracker(1, nil)
+	bt.Consume(types.Usage{InputTokens: 1})
+	if !bt.CheckAndWarn() {
+		t.Fatal("budget of 1 with 1 used must be exhausted")
+	}
+}
+
+// budget > 0 is the "0 means unlimited" sentinel; the boundary that separates
+// it from a real budget is budget == 1.
+func TestBudget_ExhaustedAtBudgetOne(t *testing.T) {
+	t.Parallel()
+	bt := NewBudgetTracker(1, slog.Default())
+	if bt.Exhausted() {
+		t.Error("budget 1 with nothing consumed must not be exhausted")
+	}
+	bt.Consume(types.Usage{InputTokens: 1})
+	if !bt.Exhausted() {
+		t.Error("budget 1 with 1 consumed must be exhausted")
+	}
+}
+
+// CheckAndWarn's whole purpose is the warning line; a silent true return is a
+// no-op stage-13 signal.
+func TestBudget_CheckAndWarnLogsExhaustion(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	bt := NewBudgetTracker(100, slog.New(slog.NewTextHandler(&buf, nil)))
+	bt.Consume(types.Usage{InputTokens: 40, OutputTokens: 70})
+	if !bt.CheckAndWarn() {
+		t.Fatal("110 used against a 100 budget must report exhausted")
+	}
+	got := buf.String()
+	for _, want := range []string{"token budget exhausted", "budget=100", "used=110"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning log missing %q; got %q", want, got)
+		}
+	}
+}
+
+// maxMessages == 1 is a real trim target, not part of the "no limit" sentinel.
+func TestTrimMessages_MaxOneKeepsNewest(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("2")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("3")}},
+	}
+	got := TrimMessages(msgs, 1)
+	if len(got) != 1 {
+		t.Fatalf("TrimMessages(3 msgs, 1) returned %d messages, want 1", len(got))
+	}
+	if got[0].Content[0].Text != "3" {
+		t.Errorf("kept %q, want the newest message %q", got[0].Content[0].Text, "3")
+	}
+}
+
+// start == 1 (exactly one message over the limit) is the smallest trim that
+// still has to preserve a leading system message.
+func TestTrimMessages_SingleDropKeepsSystem(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("sys")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("2")}},
+	}
+	got := TrimMessages(msgs, 2)
+	if len(got) != 3 {
+		t.Fatalf("TrimMessages(3 msgs, 2) returned %d, want 3 (system + 2 newest)", len(got))
+	}
+	if got[0].Role != types.RoleSystem {
+		t.Errorf("first message role = %s, want system", got[0].Role)
+	}
+	if got[1].Content[0].Text != "1" || got[2].Content[0].Text != "2" {
+		t.Errorf("tail = %q,%q want 1,2", got[1].Content[0].Text, got[2].Content[0].Text)
+	}
+}
+
+// A non-system head must be droppable: the guard is role-specific, not
+// positional.
+func TestTrimMessages_NonSystemHeadIsDropped(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("2")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("3")}},
+	}
+	got := TrimMessages(msgs, 2)
+	if len(got) != 2 {
+		t.Fatalf("TrimMessages(3 msgs, 2) returned %d, want 2", len(got))
+	}
+	if got[0].Content[0].Text != "2" {
+		t.Errorf("first kept = %q, want %q", got[0].Content[0].Text, "2")
 	}
 }

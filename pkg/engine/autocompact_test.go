@@ -2095,3 +2095,699 @@ func TestAutoCompactor_Compact_SingleRound_WholeTranscript(t *testing.T) {
 		t.Errorf("result has %d messages, want 2 (boundary + summary)", len(result.Messages))
 	}
 }
+
+// ctxRecordingProvider records the context it was handed and returns a fixed summary.
+type ctxRecordingProvider struct {
+	mu      sync.Mutex
+	sawNil  bool
+	sawDone bool
+	err     error
+	text    string
+}
+
+func (p *ctxRecordingProvider) Name() string { return "ac-prov" }
+
+func (p *ctxRecordingProvider) Stream(context.Context, *llm.Request) (<-chan llm.StreamEvent, error) {
+	return nil, errors.New("ctxRecordingProvider: Stream not used")
+}
+
+func (p *ctxRecordingProvider) Complete(ctx context.Context, _ *llm.Request) (*llm.Response, error) {
+	p.mu.Lock()
+	if ctx == nil {
+		p.sawNil = true
+	} else if ctx.Err() != nil {
+		p.sawDone = true
+	}
+	text := p.text
+	p.mu.Unlock()
+	if p.err != nil {
+		return nil, p.err
+	}
+	if text == "" {
+		text = "<summary>ac summary</summary>"
+	}
+	return &llm.Response{
+		ID:         "ac-prov",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "ac-model",
+		Content:    []types.ContentBlock{{Type: types.ContentTypeText, Text: text}},
+		StopReason: "end_turn",
+	}, nil
+}
+
+func (p *ctxRecordingProvider) state() (sawNil, sawDone bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sawNil, p.sawDone
+}
+
+// TestNewAutoCompactorWiresStore pins the store field of the constructor:
+// a partial compact must reach the store, not a nil receiver.
+func TestNewAutoCompactorWiresStore(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	p := &ctxRecordingProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "ac-store", contextWindow: 10000, provider: p})
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	res, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.BoundaryMarker == nil {
+		t.Error("partial compact produced no boundary marker — the store was not reachable")
+	}
+	if len(res.MessagesToKeep) == 0 {
+		t.Error("partial compact kept no tail — the store split did not run")
+	}
+	if !strings.Contains(res.Summary, "ac summary") {
+		t.Errorf("partial-path CompactResult.Summary = %q, want the LLM summary text", res.Summary)
+	}
+}
+
+// TestPartialCompactOnlyFailsOnBadSplit pins why compact()'s
+// PartialCompact error branch is unreachable: with the split compact()
+// guarantees (0 < keepFrom < len) the store call cannot fail.
+func TestPartialCompactOnlyFailsOnBadSplit(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	msgs := []*short.TranscriptMessage{
+		{UUID: "a", Type: "user", Content: `[{"type":"text","text":"one"}]`},
+		{UUID: "b", Type: "assistant", Content: `[{"type":"text","text":"two"}]`},
+		{UUID: "c", Type: "user", Content: `[{"type":"text","text":"three"}]`},
+	}
+	for _, keepFrom := range []int{1, 2} {
+		res, err := store.PartialCompact("ac-split", msgs, keepFrom, "auto")
+		if err != nil {
+			t.Errorf("PartialCompact(keepFrom=%d) error = %v, want nil", keepFrom, err)
+		}
+		if res == nil {
+			t.Errorf("PartialCompact(keepFrom=%d) returned a nil result", keepFrom)
+		}
+	}
+	if _, err := store.PartialCompact("ac-split", msgs, 0, "auto"); err == nil {
+		t.Error("PartialCompact(keepFrom=0) must reject the split")
+	}
+	if _, err := store.PartialCompact("ac-split", msgs, len(msgs), "auto"); err == nil {
+		t.Error("PartialCompact(keepFrom=len) must reject the split")
+	}
+}
+
+// TestCompactThreadsContext pins the ctx argument on every hop from
+// Compact/CompactWithInstructions down to the provider's Complete.
+func TestCompactThreadsContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Partial path (head summarized, tail kept).
+	p := &ctxRecordingProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-ctx", contextWindow: 10000, provider: p})
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	if _, err := sc.CompactWithInstructions(ctx, msgs, "be brief"); err != nil {
+		t.Fatalf("CompactWithInstructions: %v", err)
+	}
+	// Whole-transcript path.
+	p2 := &ctxRecordingProvider{}
+	sc2 := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-ctx-all", contextWindow: 10000, provider: p2})
+	all := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+	}
+	if _, err := sc2.Compact(ctx, all); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	for name, prov := range map[string]*ctxRecordingProvider{"partial": p, "whole": p2} {
+		sawNil, sawDone := prov.state()
+		if sawNil {
+			t.Errorf("%s path: provider received a nil context", name)
+		}
+		if !sawDone {
+			t.Errorf("%s path: provider did not see the cancelled context — ctx was dropped on the way", name)
+		}
+	}
+}
+
+// TestCompactNoopLogsRecord pins the noop diagnostic: a transcript that
+// fits the tail budget must announce itself as a no-op.
+func TestCompactNoopLogsRecord(t *testing.T) {
+	t.Parallel()
+	rec := &slogCapture{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-noop", contextWindow: 200000, provider: &ctxRecordingProvider{}})
+	sc.logger = slog.New(rec)
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+	res, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(res.Messages) != len(msgs) {
+		t.Fatalf("noop expected, got %d messages", len(res.Messages))
+	}
+	log, ok := rec.find("compact:noop", acceptAny)
+	if !ok {
+		t.Fatal("compact:noop record missing — the noop path is now silent")
+	}
+	if got := attrInt(log.attrs["messages"]); got != 2 {
+		t.Errorf("compact:noop messages attr = %v, want 2", got)
+	}
+	if got := attrInt(log.attrs["tokens"]); got != int64(res.BeforeTokens) {
+		t.Errorf("compact:noop tokens attr = %v, want %d", got, res.BeforeTokens)
+	}
+}
+
+// TestWholeTranscriptResultFields pins the compact-all result: the summary
+// text and the store-basis PreCompactTokens must both be filled in.
+func TestWholeTranscriptResultFields(t *testing.T) {
+	t.Parallel()
+	p := &ctxRecordingProvider{text: "<summary>whole-transcript summary</summary>"}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-all", contextWindow: 10000, provider: p})
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+	}
+	res, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !strings.Contains(res.Summary, "whole-transcript summary") {
+		t.Errorf("CompactResult.Summary = %q, want the LLM summary text", res.Summary)
+	}
+	shortMsgs, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	wantPre := sc.estimateStoreTokens(shortMsgs)
+	if res.PreCompactTokens != wantPre {
+		t.Errorf("PreCompactTokens = %d, want %d (store-estimate basis)", res.PreCompactTokens, wantPre)
+	}
+}
+
+// TestSummarizeErrorWrapsCause pins the wrapping of summarizer failures on
+// both compact paths: the caller must be able to unwrap the provider error.
+func TestSummarizeErrorWrapsCause(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("provider exploded")
+
+	partial := &ctxRecordingProvider{err: sentinel}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-err-partial", contextWindow: 10000, provider: partial})
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	_, err := sc.Compact(context.Background(), msgs)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("partial path error = %v, want it to wrap %v", err, sentinel)
+	}
+
+	whole := &ctxRecordingProvider{err: sentinel}
+	sc2 := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-err-whole", contextWindow: 10000, provider: whole})
+	all := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+	}
+	_, err = sc2.Compact(context.Background(), all)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("whole-transcript path error = %v, want it to wrap %v", err, sentinel)
+	}
+}
+
+// TestSummarizeFailureLogged pins the failure diagnostic emitted before
+// the summarizer error is returned.
+func TestSummarizeFailureLogged(t *testing.T) {
+	t.Parallel()
+	rec := &slogCapture{}
+	p := &ctxRecordingProvider{err: errors.New("boom")}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-faillog", contextWindow: 10000, provider: p})
+	sc.logger = slog.New(rec)
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	if _, err := sc.Compact(context.Background(), msgs); err == nil {
+		t.Fatal("Compact must fail when the summarizer fails")
+	}
+	log, ok := rec.find("compact:summarize_failed", acceptAny)
+	if !ok {
+		t.Fatal("compact:summarize_failed record missing")
+	}
+	if got := log.attrs["error"]; got == nil {
+		t.Error("compact:summarize_failed carries no error attribute")
+	}
+	if got := log.attrs["model"]; got != "m" {
+		t.Errorf("compact:summarize_failed model attr = %v, want %q", got, "m")
+	}
+}
+
+// TestSummarizeRequestLogged pins the request-shape diagnostic, including
+// the max-tokens value the request actually carried.
+func TestSummarizeRequestLogged(t *testing.T) {
+	t.Parallel()
+	rec := &slogCapture{}
+	p := &ctxRecordingProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-reqlog", contextWindow: 10000, provider: p})
+	sc.logger = slog.New(rec)
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	if _, err := sc.Compact(context.Background(), msgs); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	log, ok := rec.find("compact:summarize_request", acceptAny)
+	if !ok {
+		t.Fatal("compact:summarize_request record missing")
+	}
+	if got := attrInt(log.attrs["maxTokens"]); got != 16000 {
+		t.Errorf("compact:summarize_request maxTokens attr = %v, want 16000", got)
+	}
+	if got, _ := log.attrs["model"].(string); got != "m" {
+		t.Errorf("compact:summarize_request model attr = %v, want %q", got, "m")
+	}
+	if got := attrInt(log.attrs["contextWindow"]); got != 10000 {
+		t.Errorf("compact:summarize_request contextWindow attr = %v, want 10000", got)
+	}
+}
+
+// TestSummaryLogPreview pins the llm_summary diagnostic: the preview is
+// capped at exactly 200 chars of the raw (pre-format) summary.
+func TestSummaryLogPreview(t *testing.T) {
+	t.Parallel()
+	rec := &slogCapture{}
+	raw := "<summary>" + strings.Repeat("z", 300) + "</summary>"
+	p := &ctxRecordingProvider{text: raw}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-prev", contextWindow: 10000, provider: p})
+	sc.logger = slog.New(rec)
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	if _, err := sc.Compact(context.Background(), msgs); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	log, ok := rec.find("compact:llm_summary", acceptAny)
+	if !ok {
+		t.Fatal("compact:llm_summary record missing")
+	}
+	preview, _ := log.attrs["raw_preview"].(string)
+	if len(preview) != 200 {
+		t.Errorf("raw_preview length = %d, want exactly 200 (raw summary is %d chars)", len(preview), len(raw))
+	}
+	if got := attrInt(log.attrs["raw_len"]); got != int64(len(raw)) {
+		t.Errorf("raw_len attr = %v, want %d", got, len(raw))
+	}
+	if got, _ := log.attrs["has_summary_tag"].(bool); !got {
+		t.Errorf("has_summary_tag attr = %v, want true", got)
+	}
+	if got, _ := log.attrs["formatted_len"].(int64); got == 0 {
+		t.Errorf("formatted_len attr = %v, want the formatted summary length", got)
+	}
+}
+
+// TestEstimateStoreTokensExact pins the accumulator's start value: the sum
+// must be the estimator values and nothing else.
+func TestEstimateStoreTokensExact(t *testing.T) {
+	t.Parallel()
+	sc := &AutoCompactor{estimator: func(string) int { return 7 }}
+	msgs := []*short.TranscriptMessage{
+		{UUID: "a", Type: "user", Content: "one"},
+		{UUID: "b", Type: "assistant", Content: "two"},
+		{UUID: "c", Type: "user", Content: "three"},
+	}
+	if got := sc.estimateStoreTokens(msgs); got != 21 {
+		t.Errorf("estimateStoreTokens = %d, want 21 (3 × 7)", got)
+	}
+	if got := sc.estimateStoreTokens(nil); got != 0 {
+		t.Errorf("estimateStoreTokens(nil) = %d, want 0", got)
+	}
+}
+
+// TestFindKeepFromBudgetBoundary pins the budget test at the exact
+// boundary: a tail whose total equals the budget still fits.
+func TestFindKeepFromBudgetBoundary(t *testing.T) {
+	t.Parallel()
+	sc := &AutoCompactor{estimator: func(string) int { return 100 }}
+	msgs := []*short.TranscriptMessage{
+		{UUID: "m0", Type: "user", Content: "a"},
+		{UUID: "m1", Type: "assistant", Content: "b"},
+		{UUID: "m2", Type: "user", Content: "c"},
+		{UUID: "m3", Type: "assistant", Content: "d"},
+	}
+	// Tail m1..m3 costs exactly 300: an exactly-fitting tail is kept.
+	if got := sc.findKeepFromBudget(msgs, 300); got != 1 {
+		t.Errorf("findKeepFromBudget(budget 300) = %d, want 1 (m1..m3 = 300 fits exactly)", got)
+	}
+	// One token less and m1 no longer fits.
+	if got := sc.findKeepFromBudget(msgs, 299); got != 2 {
+		t.Errorf("findKeepFromBudget(budget 299) = %d, want 2", got)
+	}
+}
+
+// TestRescaleOnlyWhenMeasuredExceedsBudget pins the rescale gate at
+// beforeTokens == keepBudget: an exactly-fitting measured context must not be
+// rescaled (which would rescale the budget to the full estimate and noop).
+func TestRescaleOnlyWhenMeasuredExceedsBudget(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("z", 20000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+	}
+	before := TokenCountWithEstimation(msgs)
+	if before < 2000 || before > 30000 {
+		t.Fatalf("fixture measured %d tokens, want it inside the keepBudget clamp [2000,30000]", before)
+	}
+	p := &ctxRecordingProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-gate", contextWindow: 5 * before, provider: p})
+
+	shortMsgs, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	if sc.estimateStoreTokens(shortMsgs) <= before {
+		t.Fatalf("fixture must estimate above the measured context for the split to matter")
+	}
+
+	res, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.BoundaryMarker == nil {
+		t.Errorf("compact noop'd at beforeTokens == keepBudget: the rescale gate must be strictly greater")
+	}
+	if res.AfterTokens >= res.BeforeTokens {
+		t.Errorf("AfterTokens = %d, BeforeTokens = %d: an exactly-fitting measured context must still split",
+			res.AfterTokens, res.BeforeTokens)
+	}
+}
+
+// TestSummarizeScansAllHeadMessages pins the conversation-text scan: a
+// head whose first message has no extractable text must still be summarizable.
+func TestSummarizeScansAllHeadMessages(t *testing.T) {
+	t.Parallel()
+	p := &ctxRecordingProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-scan", contextWindow: 10000, provider: p})
+
+	shortMsgs := []*short.TranscriptMessage{
+		{UUID: "a", Type: "user", Content: `[{"type":"image"}]`},
+		{UUID: "b", Type: "user", Content: `[{"type":"text","text":"real content"}]`},
+	}
+	// The scan's only effect is the extractable-text gate: stopping at the
+	// first (textless) message turns a summarizable head into an error.
+	if _, err := sc.summarizeMessages(context.Background(), shortMsgs, ""); err != nil {
+		t.Fatalf("summarizeMessages: %v — the conversation scan stopped at the first (textless) message", err)
+	}
+}
+
+// TestSummarizeRequestShape pins the summarizer request: max tokens, the
+// media strip and the API normalization (empty thinking blocks dropped).
+func TestSummarizeRequestShape(t *testing.T) {
+	t.Parallel()
+	p := &compactCaptureProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-req", contextWindow: 10000, provider: p})
+
+	shortMsgs := []*short.TranscriptMessage{
+		{UUID: "u", Type: "user", Content: `[{"type":"text","text":"look at this"},{"type":"image","source":{"type":"base64"}}]`},
+		{UUID: "a", Type: "assistant", Content: `[{"type":"thinking","thinking":""},{"type":"text","text":"noted"}]`},
+	}
+	if _, err := sc.summarizeMessages(context.Background(), shortMsgs, ""); err != nil {
+		t.Fatalf("summarizeMessages: %v", err)
+	}
+	req := p.lastReq
+	if req == nil {
+		t.Fatal("Complete was not called")
+	}
+	if req.MaxTokens != 16000 {
+		t.Errorf("request MaxTokens = %d, want 16000", req.MaxTokens)
+	}
+	var images, emptyThinking int
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			switch b.Type {
+			case types.ContentTypeImage:
+				images++
+			case types.ContentTypeThinking:
+				if b.Thinking == "" {
+					emptyThinking++
+				}
+			}
+		}
+	}
+	if images != 0 {
+		t.Errorf("summarizer request carries %d image blocks, want 0 (media stripped)", images)
+	}
+	if emptyThinking != 0 {
+		t.Errorf("summarizer request carries %d empty thinking blocks, want 0 (normalized)", emptyThinking)
+	}
+}
+
+// TestSummaryBlockSelection pins which response block becomes the summary:
+// the first text block that actually carries text.
+func TestSummaryBlockSelection(t *testing.T) {
+	t.Parallel()
+	p := &blockOnlyProvider{}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-blocks", contextWindow: 10000, provider: p})
+
+	shortMsgs := []*short.TranscriptMessage{
+		{UUID: "u", Type: "user", Content: `[{"type":"text","text":"content"}]`},
+	}
+	text, err := sc.summarizeMessages(context.Background(), shortMsgs, "")
+	if err != nil {
+		t.Fatalf("summarizeMessages: %v", err)
+	}
+	if !strings.Contains(text, "the real summary") {
+		t.Errorf("summary = %q, want the FIRST usable text block (non-text and empty blocks skipped, later blocks ignored)", text)
+	}
+}
+
+// blockOnlyProvider answers with a block sequence that separates the three
+// selection conditions.
+type blockOnlyProvider struct{}
+
+func (p *blockOnlyProvider) Name() string { return "ac-blocks" }
+
+func (p *blockOnlyProvider) Stream(context.Context, *llm.Request) (<-chan llm.StreamEvent, error) {
+	return nil, errors.New("blockOnlyProvider: Stream not used")
+}
+
+func (p *blockOnlyProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return &llm.Response{
+		ID:   "blocks",
+		Type: "message",
+		Role: "assistant",
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "wrong block"},
+			{Type: types.ContentTypeText, Text: ""},
+			{Type: types.ContentTypeText, Text: "<summary>the real summary</summary>"},
+			{Type: types.ContentTypeText, Text: "<summary>a later text block</summary>"},
+		},
+		StopReason: "end_turn",
+	}, nil
+}
+
+// TestSummaryMessageSuppressesFollowUp pins the continuation instruction
+// on the post-compact summary message.
+func TestSummaryMessageSuppressesFollowUp(t *testing.T) {
+	t.Parallel()
+	p := &ctxRecordingProvider{text: "<summary>keep going</summary>"}
+	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-followup", contextWindow: 10000, provider: p})
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
+	}
+	res, err := sc.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	var found bool
+	for _, m := range res.Messages {
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, "Continue the conversation from where it left off") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("summary message lost the resume-directly continuation (suppressFollowUp)")
+	}
+}
+
+// TestRemoveOrphanedToolResults pins the orphan filter block by block:
+// matched results and plain text stay, unmatched results go, and only user
+// messages are rewritten.
+func TestRemoveOrphanedToolResults(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("keep me"),
+			{Type: types.ContentTypeToolResult, ToolUseID: "gone"},
+			{Type: types.ContentTypeToolResult, ToolUseID: "kept_1"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "kept_1", Name: "Bash"},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "kept_1"},
+			types.NewTextBlock("tail"),
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "assistant_orphan"},
+		}},
+	}
+
+	got := removeOrphanedToolResults(msgs)
+	if len(got) != 4 {
+		t.Fatalf("message count = %d, want 4 (no message is dropped whole)", len(got))
+	}
+	type blockKey struct {
+		msg  int
+		kind string
+		id   string
+	}
+	var keys []blockKey
+	for i, m := range got {
+		for _, b := range m.Content {
+			keys = append(keys, blockKey{i, string(b.Type), b.ToolUseID + b.ID})
+		}
+	}
+	want := []blockKey{
+		{0, string(types.ContentTypeText), ""},
+		{0, string(types.ContentTypeToolResult), "kept_1"},
+		{1, string(types.ContentTypeToolUse), "kept_1"},
+		{2, string(types.ContentTypeToolResult), "kept_1"},
+		{2, string(types.ContentTypeText), ""},
+		{3, string(types.ContentTypeToolResult), "assistant_orphan"},
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("blocks after filtering = %v, want %v", keys, want)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("blocks after filtering = %v, want %v", keys, want)
+		}
+	}
+}
+
+// TestExtractTextToolResultSeparator pins the space that separates a tool
+// result's text from the following block in the summarizer transcript.
+func TestExtractTextToolResultSeparator(t *testing.T) {
+	t.Parallel()
+	content := `[{"type":"tool_result","tool_use_id":"t1","content":"\"first\""},{"type":"tool_result","tool_use_id":"t2","content":"\"second\""}]`
+	if got := extractTextFromShortContent(content); got != `"first" "second"` {
+		t.Errorf("extractTextFromShortContent = %q, want %q (space-separated)", got, `"first" "second"`)
+	}
+}
+
+// TestEngineMessagesToStoreNeverErrors pins the premise behind the dead
+// conversion-error branch in compact(): the converter degrades unserializable
+// messages instead of returning an error.
+func TestEngineMessagesToStoreNeverErrors(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "t1", Name: "Bash", Input: json.RawMessage(`{"broken":`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "t1", Content: json.RawMessage(`{"also":`)},
+		}},
+	}
+	stored, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore returned an error: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("converted %d messages, want 2", len(stored))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Extraction-wait rescale pins
+// ---------------------------------------------------------------------------
+
+// transcriptMsgs builds a store transcript with the given content strings,
+// alternating user/assistant so each message is its own API round.
+func transcriptMsgs(contents ...string) []*short.TranscriptMessage {
+	roles := []string{"user", "assistant"}
+	out := make([]*short.TranscriptMessage, 0, len(contents))
+	for i, c := range contents {
+		out = append(out, &short.TranscriptMessage{
+			UUID:    fmt.Sprintf("acg-%d", i),
+			Type:    roles[i%2],
+			Content: c,
+		})
+	}
+	return out
+}
+
+// The rescale trigger is "the estimate total is usable", i.e. non-zero: a
+// transcript estimated at exactly one token must still be rescaled, otherwise
+// a measured context of 100k against an 8k keep budget keeps the whole tail.
+func TestRescaledKeepFrom_RescalesWhenEstimateIsOneToken(t *testing.T) {
+	t.Parallel()
+	ac := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "acg-rescale", contextWindow: 40000})
+	// utils.EstimateTokens("hello") == 1, so the transcript estimate is 1.
+	msgs := transcriptMsgs("hello", "", "")
+	if got := ac.rescaledKeepFrom(msgs, 100000); got != 1 {
+		t.Errorf("rescaledKeepFrom = %d, want 1 (estTotal 1 must still rescale the budget)", got)
+	}
+}
+
+// estTotal 0 (every store content empty) has no usable ratio: the plain scan's
+// verdict stands, and the rescale branch must not divide by it.
+func TestRescaledKeepFrom_SkipsRescaleWhenEstimateIsZero(t *testing.T) {
+	t.Parallel()
+	ac := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "acg-rescale0", contextWindow: 40000})
+	msgs := transcriptMsgs("", "", "")
+	if got := ac.rescaledKeepFrom(msgs, 100000); got != len(msgs) {
+		t.Errorf("rescaledKeepFrom = %d, want %d (estTotal 0 keeps the plain scan)", got, len(msgs))
+	}
+}
+
+// With nothing orphaned the function must hand back the caller's own slice:
+// the copy path is reserved for messages that actually lost a block.
+func TestRemoveOrphanedToolResults_KeepsInputSliceWhenNothingIsOrphaned(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("boundary")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewToolUseBlock("tu_1", "Read", json.RawMessage(`{}`))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("plain user turn"),
+			types.NewToolResultBlock("tu_1", json.RawMessage(`"ok"`), false),
+		}},
+		{Role: types.RoleUser},
+	}
+	out := removeOrphanedToolResults(msgs)
+	if len(out) != len(msgs) {
+		t.Fatalf("result length = %d, want %d", len(out), len(msgs))
+	}
+	if &out[0] != &msgs[0] {
+		t.Error("nothing was orphaned but a copy was returned — the no-op path must return the input slice")
+	}
+	if out[3].Content != nil {
+		t.Errorf("user message with no blocks got Content %#v, want nil (it was not rebuilt)", out[3].Content)
+	}
+	if len(out[2].Content) != 2 || string(out[2].Content[1].Content) != `"ok"` {
+		t.Errorf("user message content = %+v, want the original two blocks", out[2].Content)
+	}
+}

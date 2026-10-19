@@ -585,3 +585,276 @@ func TestStripMediaFromMessages_NoMutatesWhenNoMedia(t *testing.T) {
 		t.Errorf("text = %q, want 'just text'", result[0].Content[0].Text)
 	}
 }
+
+// --- TestM_*: second-round mutation gaps in EnsureToolResultPairing and
+// its helpers.
+
+func trBlock(id string) types.ContentBlock {
+	return types.NewToolResultBlock(id, json.RawMessage(`"r"`), false)
+}
+
+func tuBlock(id string) types.ContentBlock {
+	return types.NewToolUseBlock(id, "Read", json.RawMessage(`{"file_path":"x"}`))
+}
+
+func countBlocks(msgs []types.Message, ctype types.ContentType) int {
+	n := 0
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if c.Type == ctype {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestM_ExtractTextBlocksSkipsEmptyAndNonText(t *testing.T) {
+	msg := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{
+		types.NewTextBlock("kept"),
+		types.NewTextBlock(""),
+		{Type: types.ContentTypeToolResult, ToolUseID: "tu_1", Text: "tool result text"},
+	}}
+	got := ExtractTextBlocks(msg)
+	if len(got) != 1 || got[0] != "kept" {
+		t.Fatalf("ExtractTextBlocks = %q, want [\"kept\"]", got)
+	}
+}
+
+func TestM_OrphanStripOnlyAppliesToUserMessages(t *testing.T) {
+	sys := types.Message{ID: "mutf-sys-tr", Role: types.RoleSystem, Content: []types.ContentBlock{trBlock("tu_1")}}
+	got := EnsureToolResultPairing([]types.Message{sys})
+	if len(got) != 1 {
+		t.Fatalf("pairing result = %d messages, want 1: %+v", len(got), got)
+	}
+	if got[0].Role != types.RoleSystem {
+		t.Errorf("role = %q, want system", got[0].Role)
+	}
+	if len(got[0].Content) != 1 || got[0].Content[0].Type != types.ContentTypeToolResult ||
+		got[0].Content[0].ToolUseID != "tu_1" {
+		t.Errorf("system message content = %+v, want the tool_result block untouched", got[0].Content)
+	}
+}
+
+func TestM_OrphanStripWhenPrevRoleIsUser(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		CreateUserMessage("question"),
+		{Role: types.RoleUser, Content: []types.ContentBlock{trBlock("tu_orphan")}},
+	})
+	if len(got) != 1 {
+		t.Fatalf("pairing result = %d messages, want 1 (tool_result after a user message is orphaned): %+v",
+			len(got), got)
+	}
+	if countBlocks(got, types.ContentTypeToolResult) != 0 {
+		t.Errorf("orphaned tool_result survived: %+v", got)
+	}
+}
+
+func TestM_PairedToolResultAfterAssistantSurvives(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{tuBlock("tu_1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{trBlock("tu_1")}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if got[1].Role != types.RoleUser || countBlocks([]types.Message{got[1]}, types.ContentTypeToolResult) != 1 {
+		t.Errorf("paired user message = %+v, want its tool_result kept", got[1])
+	}
+}
+
+func TestM_StripKeepsSingleRemainingBlock(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("keep"), trBlock("tu_1")}},
+	})
+	if len(got) != 1 {
+		t.Fatalf("pairing result = %d messages, want 1: %+v", len(got), got)
+	}
+	if len(got[0].Content) != 1 || got[0].Content[0].Type != types.ContentTypeText ||
+		got[0].Content[0].Text != "keep" {
+		t.Errorf("content = %+v, want the single non-tool_result block kept", got[0].Content)
+	}
+}
+
+func TestM_DuplicateToolUseDropsOnlyTheDuplicate(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			tuBlock("tu_dup"), types.NewTextBlock("mid"), tuBlock("tu_dup"), types.NewTextBlock("tail"),
+		},
+	}})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2 (assistant + synthetic result): %+v", len(got), got)
+	}
+	if len(got[0].Content) != 3 {
+		t.Fatalf("assistant content = %d blocks, want 3 (dup dropped, later blocks kept): %+v",
+			len(got[0].Content), got[0].Content)
+	}
+	if got[0].Content[2].Type != types.ContentTypeText || got[0].Content[2].Text != "tail" {
+		t.Errorf("last block = %+v, want text \"tail\"", got[0].Content[2])
+	}
+}
+
+func TestM_EmptyAssistantGetsInterruptedPlaceholder(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{{Role: types.RoleAssistant}})
+	if len(got) != 1 {
+		t.Fatalf("pairing result = %d messages, want 1", len(got))
+	}
+	if len(got[0].Content) != 1 || got[0].Content[0].Text != "[Tool use interrupted]" {
+		t.Fatalf("assistant content = %+v, want the interrupted placeholder", got[0].Content)
+	}
+}
+
+func TestM_CleanPairingDoesNotRewriteNextMessage(t *testing.T) {
+	// Nothing is missing, orphaned, or duplicated: the assistant must not enter
+	// the patch path, so the following empty user message survives untouched
+	// instead of being replaced by the "[No content]" placeholder.
+	got := EnsureToolResultPairing([]types.Message{
+		CreateAssistantMessage("all fine"),
+		{Role: types.RoleUser},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if len(got[1].Content) != 0 {
+		t.Errorf("empty user message rewritten to %+v, want its empty content preserved", got[1].Content)
+	}
+	if got[1].Flags&types.FlagMeta != 0 {
+		t.Errorf("empty user message Flags = %v, want no FlagMeta (message was not synthesized)", got[1].Flags)
+	}
+}
+
+func TestM_DuplicateToolResultsDedupedInPlace(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{tuBlock("tu_1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			trBlock("tu_1"), trBlock("tu_1"), types.NewTextBlock("after"),
+		}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if n := countBlocks([]types.Message{got[1]}, types.ContentTypeToolResult); n != 1 {
+		t.Errorf("tool_result blocks after dedup = %d, want 1: %+v", n, got[1].Content)
+	}
+	if len(got[1].Content) != 2 || got[1].Content[1].Text != "after" {
+		t.Errorf("patched content = %+v, want [tool_result, text \"after\"]", got[1].Content)
+	}
+}
+
+func TestM_OrphanedToolResultStrippedFromNextMessage(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		CreateAssistantMessage("no tool use here"),
+		{Role: types.RoleUser, Content: []types.ContentBlock{trBlock("tu_orphan"), types.NewTextBlock("keep")}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if len(got[1].Content) != 1 || got[1].Content[0].Text != "keep" {
+		t.Errorf("patched content = %+v, want only the text block (orphan stripped)", got[1].Content)
+	}
+}
+
+func TestM_PatchPathOnlyConsumesUserMessages(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{tuBlock("tu_1")}},
+		CreateAssistantMessage("next assistant"),
+	})
+	if len(got) != 3 {
+		t.Fatalf("pairing result = %d messages, want 3 (synthetic user between the assistants): %+v", len(got), got)
+	}
+	if got[1].Role != types.RoleUser || countBlocks([]types.Message{got[1]}, types.ContentTypeToolResult) != 1 {
+		t.Errorf("message 1 = %+v, want synthetic user carrying the missing tool_result", got[1])
+	}
+	if got[2].Role != types.RoleAssistant || len(got[2].Content) != 1 ||
+		got[2].Content[0].Text != "next assistant" {
+		t.Errorf("message 2 = %+v, want the following assistant untouched", got[2])
+	}
+}
+
+func TestM_MissingResultWhenAssistantIsLastMessage(t *testing.T) {
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{tuBlock("tu_last")}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if got[1].Role != types.RoleUser || got[1].Flags&types.FlagMeta == 0 {
+		t.Errorf("synthetic message = %+v, want user role with FlagMeta", got[1])
+	}
+	if len(got[1].Content) != 1 || got[1].Content[0].Type != types.ContentTypeToolResult ||
+		got[1].Content[0].ToolUseID != "tu_last" {
+		t.Errorf("synthetic content = %+v, want one tool_result for tu_last", got[1].Content)
+	}
+}
+
+func TestM_EmptyPatchInsertsNoContentMetaMessage(t *testing.T) {
+	// The only tool_result in the next user message is orphaned, so after
+	// stripping and with nothing missing, the patched content is empty.
+	got := EnsureToolResultPairing([]types.Message{
+		CreateAssistantMessage("no tool use"),
+		{Role: types.RoleUser, Content: []types.ContentBlock{trBlock("tu_orphan")}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("pairing result = %d messages, want 2: %+v", len(got), got)
+	}
+	if got[1].Role != types.RoleUser {
+		t.Errorf("placeholder role = %q, want user", got[1].Role)
+	}
+	if len(got[1].Content) != 1 || got[1].Content[0].Type != types.ContentTypeText ||
+		got[1].Content[0].Text != "[No content]" {
+		t.Errorf("placeholder content = %+v, want one text block \"[No content]\"", got[1].Content)
+	}
+	if got[1].Flags&types.FlagMeta == 0 {
+		t.Errorf("placeholder Flags = %v, want FlagMeta set", got[1].Flags)
+	}
+}
+
+func TestStripToolResults(t *testing.T) {
+	in := []types.ContentBlock{types.NewTextBlock("a"), trBlock("tu_1"), types.NewTextBlock("b")}
+	got := stripToolResults(types.Message{Role: types.RoleUser, Content: in})
+	if len(got) != 2 {
+		t.Fatalf("stripToolResults returned %d blocks, want 2: %+v", len(got), got)
+	}
+	if got[0].Text != "a" || got[1].Text != "b" {
+		t.Errorf("stripToolResults = %+v, want the two text blocks in order", got)
+	}
+	if all := stripToolResults(types.Message{Role: types.RoleUser,
+		Content: []types.ContentBlock{trBlock("tu_1")}}); len(all) != 0 {
+		t.Errorf("stripToolResults(all tool_results) = %+v, want empty", all)
+	}
+}
+
+func TestLastRoleEmptySlice(t *testing.T) {
+	if got := lastRole(nil); got != "" {
+		t.Errorf("lastRole(nil) = %q, want empty role", got)
+	}
+	if got := lastRole([]types.Message{}); got != "" {
+		t.Errorf("lastRole(empty) = %q, want empty role", got)
+	}
+	if got := lastRole([]types.Message{{Role: types.RoleUser}, {Role: types.RoleAssistant}}); got != types.RoleAssistant {
+		t.Errorf("lastRole = %q, want assistant", got)
+	}
+}
+
+func TestM_NextMessageScanRespectsRole(t *testing.T) {
+	// The existing-result scan must look only at a following USER message: an
+	// assistant carrying a stray tool_result must not satisfy the pairing.
+	got := EnsureToolResultPairing([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{tuBlock("tu_1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{trBlock("tu_1")}},
+	})
+	if len(got) != 3 {
+		t.Fatalf("pairing result = %d messages, want 3 (assistant, synthetic user, assistant): %+v", len(got), got)
+	}
+	if got[1].Role != types.RoleUser || got[1].Flags&types.FlagMeta == 0 {
+		t.Errorf("message 1 = %+v, want synthetic user with FlagMeta", got[1])
+	}
+	if countBlocks([]types.Message{got[1]}, types.ContentTypeToolResult) != 1 ||
+		got[1].Content[0].ToolUseID != "tu_1" {
+		t.Errorf("synthetic content = %+v, want one tool_result for tu_1", got[1].Content)
+	}
+	if got[2].Role != types.RoleAssistant {
+		t.Errorf("message 2 role = %q, want assistant", got[2].Role)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 )
 
 // Decision is the result of a permission check.
@@ -438,19 +439,26 @@ var _ PermissionChecker = (*Checker)(nil)
 type ContentCheckFunc func(input json.RawMessage, contentRules []Rule) RuleAction
 
 // contentCheckers maps tool names to their content-level permission checkers.
+// Guarded: tests register dynamically in parallel, and a runtime plugin host
+// may too — an unguarded map read here panics the process, not just a test.
+var contentCheckersMu sync.RWMutex
 var contentCheckers = map[string]ContentCheckFunc{}
 
 // RegisterContentChecker registers a content-level permission checker for a tool.
 // Each tool that needs content matching (Bash, Write, Edit) calls this in its
 // constructor. New tools register themselves — engine doesn't need modification.
 func RegisterContentChecker(toolName string, fn ContentCheckFunc) {
+	contentCheckersMu.Lock()
+	defer contentCheckersMu.Unlock()
 	contentCheckers[toolName] = fn
 }
 
 // CheckContent dispatches content-level matching to registered checkers.
 // Returns ActionAllow for tools without registered checkers.
 func CheckContent(toolName string, input json.RawMessage, contentRules []Rule) RuleAction {
+	contentCheckersMu.RLock()
 	fn, ok := contentCheckers[toolName]
+	contentCheckersMu.RUnlock()
 	if !ok {
 		return ActionAllow
 	}

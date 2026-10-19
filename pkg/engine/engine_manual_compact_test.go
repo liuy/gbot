@@ -318,7 +318,7 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 
 // TestEngine_ManualCompact_EmitsToolEvents verifies that ManualCompact emits
 // the EventToolStart/Run/ParamDelta/End sequence mirroring the pre-turn
-// auto-compact path (engine.go:1356). The tool ID must use the compact-manual-
+// auto-compact path. The tool ID must use the compact-manual-
 // prefix so the TUI's toolEndMsg handler finalizes the stream.
 func TestEngine_ManualCompact_EmitsToolEvents(t *testing.T) {
 	t.Parallel()

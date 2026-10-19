@@ -374,6 +374,25 @@ func TestAlignKeepFromToRoundBoundary(t *testing.T) {
 	}
 }
 
+// A negative index is out of range on both sides, so it must pass through
+// untouched like the >= len sentinel does — snapping it to the first group
+// start would silently turn "drop nothing" into "drop everything".
+func TestAlignKeepFrom_NegativePassesThrough(t *testing.T) {
+	t.Parallel()
+	rounds := []*short.TranscriptMessage{
+		storeMsg("u0", "user"),
+		storeMsg("a1", "assistant"),
+		storeMsg("u2", "user"),
+		storeMsg("a3", "assistant"),
+		storeMsg("u4", "user"),
+	}
+	for _, keepFrom := range []int{-1, -5} {
+		if got := alignKeepFromToRoundBoundary(rounds, keepFrom); got != keepFrom {
+			t.Errorf("alignKeepFromToRoundBoundary(keepFrom=%d) = %d, want %d (pass-through)", keepFrom, got, keepFrom)
+		}
+	}
+}
+
 // TestCompact_SingleApiRound_SummarizesAll covers the single-group sentinel:
 // a history with no assistant turn has no API-round boundary, so the aligned
 // split is 0 and compact() summarizes everything, retaining no tail — TS
