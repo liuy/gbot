@@ -312,6 +312,26 @@ func TestLogEngineEvent_ExactRecords(t *testing.T) {
 			want:  []logRecord{info("engine:connector_user_message")},
 		},
 		{
+			name:  "job_started_nil_emits_nothing",
+			event: Event{Type: types.EventJobStarted},
+			want:  nil,
+		},
+		{
+			name:  "job_started",
+			event: Event{Type: types.EventJobStarted, Job: &types.JobEvent{ID: "bg-1", Status: "running"}},
+			want:  []logRecord{info("engine:job_started", "id", "bg-1", "status", "running")},
+		},
+		{
+			name:  "job_status",
+			event: Event{Type: types.EventJobStatus, Job: &types.JobEvent{ID: "bg-2", Status: "running"}},
+			want:  []logRecord{info("engine:job_status", "id", "bg-2", "status", "running")},
+		},
+		{
+			name:  "job_terminated",
+			event: Event{Type: types.EventJobTerminated, Job: &types.JobEvent{ID: "agent-1", Status: "killed"}},
+			want:  []logRecord{info("engine:job_terminated", "id", "agent-1", "status", "killed")},
+		},
+		{
 			name:  "unknown_type",
 			event: Event{Type: "custom_event_type"},
 			want:  []logRecord{info("engine:unknown", "type", types.QueryEventType("custom_event_type"))},

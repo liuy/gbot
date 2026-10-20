@@ -168,14 +168,12 @@ func wireDupAutoTurnEngine(t *testing.T, prov *dupAutoTurnProvider, park *dupPar
 	// keeps routing events for "main" — onEngineEvent looks the slot up by ID.
 	c := newTestConnectorWithHub(t, h)
 	slot := &engineSlot{
-		engineID:           "main",
-		engine:             &engineAdapter{eng: eng},
-		hub:                h,
-		taskToolIDs:        make(map[string]bool),
-		jobView:            make(map[string]*jobViewEntry),
-		jobFeeds:           make(map[string]*jobFeedState),
-		innerToolToFeed:    make(map[string]string),
-		pendingAgentEvents: make(map[string]*pendingAgentEvents),
+		engineID:    "main",
+		engine:      &engineAdapter{eng: eng},
+		hub:         h,
+		taskToolIDs: make(map[string]bool),
+		jobView:     make(map[string]*jobViewEntry),
+		streams:     map[string]*streamState{"": {}},
 	}
 	slot.active.Store(true)
 	c.slots["main"] = slot

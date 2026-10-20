@@ -1321,6 +1321,37 @@ func TestCurrentUsage_AccumulatesSubAgentToolAndThinking(t *testing.T) {
 	}
 }
 
+// A background job's own tool/thinking progress must not move the parent's
+// progress bar (the browser live filter skips them too — takeover must not
+// jump), while usage stays unconditional: it is total query COST.
+func TestCurrentUsage_JobToolThinkingExcludedUsageKept(t *testing.T) {
+	c := newTestConnector(t)
+
+	jobMeta := &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9"}
+	syncMeta := &types.AgentMeta{ParentToolUseID: "tu_sync"}
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: jobMeta,
+		ToolUse: &types.ToolUseEvent{ID: "j1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: jobMeta,
+		Thinking: &types.ThinkingEvent{Duration: 2 * time.Second}})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: syncMeta,
+		ToolUse: &types.ToolUseEvent{ID: "s1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Agent: syncMeta,
+		Thinking: &types.ThinkingEvent{Duration: 1 * time.Second}})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Agent: jobMeta,
+		Usage: &types.UsageEvent{InputTokens: 7}})
+
+	qs := &c.slots["main"].queryStats
+	if got := qs.toolCount.Load(); got != 1 {
+		t.Errorf("toolCount = %d, want 1 (job tool excluded, sync sub-agent tool counted)", got)
+	}
+	if got := qs.thinkingMs.Load(); got != 1000 {
+		t.Errorf("thinkingMs = %d, want 1000 (job thinking excluded, sync sub-agent thinking counted)", got)
+	}
+	if got := qs.inputTokens.Load(); got != 7 {
+		t.Errorf("inputTokens = %d, want 7 (job usage still counts — total query cost)", got)
+	}
+}
+
 func TestBuildStatsMessage_WithUsage(t *testing.T) {
 	c := newTestConnector(t)
 
@@ -2172,7 +2203,7 @@ func TestMutA1_OnEngineEventQueryEndReset(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "task1", Name: "Task"}})
 
 	slot.ssMu.Lock()
-	blocks := len(slot.streamState.blocks)
+	blocks := len(slot.streams[""].blocks)
 	slot.ssMu.Unlock()
 	if blocks != 2 {
 		t.Fatalf("setup: blocks = %d, want 2 (text + tool)", blocks)
@@ -2187,7 +2218,7 @@ func TestMutA1_OnEngineEventQueryEndReset(t *testing.T) {
 	// Sub-agent query_end must NOT reset per-engine state.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Agent: &types.AgentMeta{ParentToolUseID: "p"}})
 	slot.ssMu.Lock()
-	blocks = len(slot.streamState.blocks)
+	blocks = len(slot.streams[""].blocks)
 	slot.ssMu.Unlock()
 	if blocks != 2 {
 		t.Errorf("sub-agent query_end reset blocks to %d, want 2 preserved", blocks)
@@ -2202,7 +2233,7 @@ func TestMutA1_OnEngineEventQueryEndReset(t *testing.T) {
 	// Top-level query_end resets stream state, stats, and task tracking.
 	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 	slot.ssMu.Lock()
-	blocks = len(slot.streamState.blocks)
+	blocks = len(slot.streams[""].blocks)
 	tasks := len(slot.taskToolIDs)
 	slot.ssMu.Unlock()
 	if blocks != 0 {
@@ -4453,18 +4484,16 @@ func (nonHubDispatcherA3) Dispatch(types.QueryEvent) {}
 
 func newMockSlotA3(id string, m engineClient) *engineSlot {
 	return &engineSlot{
-		engineID:           id,
-		engine:             m,
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+		engineID:    id,
+		engine:      m,
+		taskToolIDs: map[string]bool{},
+		jobView:     map[string]*jobViewEntry{},
+		streams:     map[string]*streamState{"": {}},
 	}
 }
 
 // bareConnectorA3 builds a WUIConnector with NO background goroutines (no
-// wsWriter, no jobs watcher): outbound frames stay in the queue so tests can
+// wsWriter, no tail loop): outbound frames stay in the queue so tests can
 // inspect them deterministically via takeAllFramesA3.
 func bareConnectorA3(t *testing.T, m *mockEngine) (*WUIConnector, *mockEngine) {
 	t.Helper()

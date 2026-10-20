@@ -613,3 +613,256 @@ func TestSpawn_UnifiedAgentIDs(t *testing.T) {
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
 }
+
+// ---------------------------------------------------------------------------
+// Job lifecycle event emission (registry-level onJobEvent)
+// ---------------------------------------------------------------------------
+
+// agentEventRecorder captures lifecycle emissions and notifications in one
+// ordered log so tests can pin the emit-before-notify ordering (a notification
+// can kick the parent's idle path, whose events must never overtake
+// job_terminated) alongside the shell contents.
+type agentEventRecorder struct {
+	mu    sync.Mutex
+	log   []string
+	kinds map[string]types.JobEvent
+}
+
+func (r *agentEventRecorder) onJobEvent(et types.QueryEventType, ev types.JobEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.log = append(r.log, "emit:"+string(et))
+	if r.kinds == nil {
+		r.kinds = make(map[string]types.JobEvent)
+	}
+	r.kinds[string(et)] = ev
+}
+
+func (r *agentEventRecorder) notifyFn(agentID, toolUseID string, result *types.SubQueryResult, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.log = append(r.log, "notify")
+}
+
+func (r *agentEventRecorder) events() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.log...)
+}
+
+func (r *agentEventRecorder) shell(et types.QueryEventType) (types.JobEvent, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ev, ok := r.kinds[string(et)]
+	return ev, ok
+}
+
+// TestSpawn_EmitsJobStarted: Spawn emits job_started after registration and
+// before the run goroutine starts; nil emitter is a no-op.
+func TestSpawn_EmitsJobStarted(t *testing.T) {
+	t.Parallel()
+	reg := NewBackgroundAgentRegistry()
+	rec := &agentEventRecorder{}
+	reg.SetOnJobEvent(rec.onJobEvent)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	state, err := reg.Spawn(context.Background(),
+		func(context.Context, string) (*types.SubQueryResult, error) {
+			<-release
+			return &types.SubQueryResult{}, nil
+		},
+		nil, "started probe", "tu_s", "Explore")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	ev, ok := rec.shell(types.EventJobStarted)
+	if !ok {
+		t.Fatal("Spawn emitted no job_started event")
+	}
+	if ev.ID != state.ID {
+		t.Errorf("job_started ID = %q, want %q", ev.ID, state.ID)
+	}
+	if ev.Kind != "agent" {
+		t.Errorf("job_started Kind = %q, want agent", ev.Kind)
+	}
+	if ev.Status != "running" {
+		t.Errorf("job_started Status = %q, want running", ev.Status)
+	}
+	if ev.AgentType != "Explore" {
+		t.Errorf("job_started AgentType = %q, want Explore", ev.AgentType)
+	}
+	if ev.ParentToolUseID != "tu_s" {
+		t.Errorf("job_started ParentToolUseID = %q, want tu_s", ev.ParentToolUseID)
+	}
+	if ev.Description != "started probe" {
+		t.Errorf("job_started Description = %q, want started probe", ev.Description)
+	}
+	if ev.StartedMs <= 0 {
+		t.Errorf("job_started StartedMs = %d, want > 0", ev.StartedMs)
+	}
+	if ev.ExitCode != 0 {
+		t.Errorf("job_started ExitCode = %d, want 0 (started carries no exit code)", ev.ExitCode)
+	}
+	// Started must precede everything else: no other emission may be logged yet.
+	if got := rec.events(); len(got) != 1 {
+		t.Errorf("emissions after Spawn = %v, want only job_started", got)
+	}
+
+	// Nil emitter: Spawn must not panic, must not emit, and must register.
+	quiet := NewBackgroundAgentRegistry()
+	if _, err := quiet.Spawn(context.Background(),
+		func(context.Context, string) (*types.SubQueryResult, error) { return &types.SubQueryResult{}, nil },
+		nil, "nil emitter", "tu_n", "General"); err != nil {
+		t.Fatalf("Spawn without an emitter: %v", err)
+	}
+}
+
+// TestSpawnPanic_EmitsTerminatedFailed: the recover path funnels through
+// finalize too — a panicking runFn yields a failed job_terminated event and
+// closes done (Wait returns).
+func TestSpawnPanic_EmitsTerminatedFailed(t *testing.T) {
+	t.Parallel()
+	reg := NewBackgroundAgentRegistry()
+	rec := &agentEventRecorder{}
+	reg.SetOnJobEvent(rec.onJobEvent)
+
+	state, err := reg.Spawn(context.Background(),
+		func(context.Context, string) (*types.SubQueryResult, error) {
+			panic("boom")
+		},
+		rec.notifyFn, "panic job", "tu_p", "Explore")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	final, ok := reg.Wait(state.ID)
+	if !ok {
+		t.Fatal("Wait returned false — done never closed after panic")
+	}
+	if final.Status != AgentFailed {
+		t.Fatalf("final Status = %q, want %q", final.Status, AgentFailed)
+	}
+
+	ev, ok := rec.shell(types.EventJobTerminated)
+	if !ok {
+		t.Fatal("panic path emitted no job_terminated event")
+	}
+	if ev.Status != "failed" || ev.ExitCode != 1 {
+		t.Errorf("shell = {status:%s exit:%d}, want {failed 1}", ev.Status, ev.ExitCode)
+	}
+	if ev.AgentType != "Explore" {
+		t.Errorf("shell AgentType = %q, want Explore (no result — spawn type wins)", ev.AgentType)
+	}
+	if got := rec.events(); len(got) != 3 || got[0] != "emit:job_started" ||
+		got[1] != "emit:job_terminated" || got[2] != "notify" {
+		t.Errorf("ordered log = %v, want [emit:job_started emit:job_terminated notify]", got)
+	}
+}
+
+// TestFinalize_AllBranches pins every terminal branch's event shell and exit
+// code mapping (mirroring convertState), including the cancelled branch's
+// partial-result retention.
+func TestFinalize_AllBranches(t *testing.T) {
+	t.Parallel()
+	t.Run("completed", func(t *testing.T) {
+		t.Parallel()
+		reg := NewBackgroundAgentRegistry()
+		rec := &agentEventRecorder{}
+		reg.SetOnJobEvent(rec.onJobEvent)
+
+		state, _ := reg.Spawn(context.Background(),
+			func(context.Context, string) (*types.SubQueryResult, error) {
+				return &types.SubQueryResult{Content: "done", AgentType: "Explore"}, nil
+			},
+			rec.notifyFn, "ok job", "tu_c", "General")
+		final, _ := reg.Wait(state.ID)
+		if final.Status != AgentCompleted {
+			t.Fatalf("final Status = %q, want completed", final.Status)
+		}
+		ev, ok := rec.shell(types.EventJobTerminated)
+		if !ok {
+			t.Fatal("completed branch emitted no job_terminated")
+		}
+		if ev.Status != "completed" || ev.ExitCode != 0 {
+			t.Errorf("shell = {status:%s exit:%d}, want {completed 0}", ev.Status, ev.ExitCode)
+		}
+		// Result's resolved type overrides the spawn-time display type — the
+		// same rule convertState applies on the merge path.
+		if ev.AgentType != "Explore" {
+			t.Errorf("shell AgentType = %q, want Explore (Result.AgentType override)", ev.AgentType)
+		}
+		if got := rec.events(); len(got) != 3 || got[0] != "emit:job_started" ||
+			got[1] != "emit:job_terminated" || got[2] != "notify" {
+			t.Errorf("ordered log = %v, want emit:job_started, then terminated, then notify", got)
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		t.Parallel()
+		reg := NewBackgroundAgentRegistry()
+		rec := &agentEventRecorder{}
+		reg.SetOnJobEvent(rec.onJobEvent)
+
+		state, _ := reg.Spawn(context.Background(),
+			func(context.Context, string) (*types.SubQueryResult, error) {
+				return nil, errors.New("boom")
+			},
+			rec.notifyFn, "failing job", "tu_f", "General")
+		final, _ := reg.Wait(state.ID)
+		if final.Status != AgentFailed {
+			t.Fatalf("final Status = %q, want failed", final.Status)
+		}
+		if final.Result != nil {
+			t.Error("failed branch must not store a result")
+		}
+		ev, ok := rec.shell(types.EventJobTerminated)
+		if !ok {
+			t.Fatal("failed branch emitted no job_terminated")
+		}
+		if ev.Status != "failed" || ev.ExitCode != 1 {
+			t.Errorf("shell = {status:%s exit:%d}, want {failed 1}", ev.Status, ev.ExitCode)
+		}
+		if ev.AgentType != "General" {
+			t.Errorf("shell AgentType = %q, want General (no result — spawn type wins)", ev.AgentType)
+		}
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		t.Parallel()
+		reg := NewBackgroundAgentRegistry()
+		rec := &agentEventRecorder{}
+		reg.SetOnJobEvent(rec.onJobEvent)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // registry observes childCtx.Err() ≠ nil regardless of runFn
+		state, _ := reg.Spawn(ctx,
+			func(context.Context, string) (*types.SubQueryResult, error) {
+				return &types.SubQueryResult{Content: "partial"}, nil
+			},
+			rec.notifyFn, "killed fork", "tu_k", "fork")
+		final, _ := reg.Wait(state.ID)
+		if final.Status != AgentCancelled {
+			t.Fatalf("final Status = %q, want cancelled", final.Status)
+		}
+		if final.Result == nil || final.Result.Content != "partial" {
+			t.Errorf("cancelled branch result = %+v, want the partial result retained", final.Result)
+		}
+		ev, ok := rec.shell(types.EventJobTerminated)
+		if !ok {
+			t.Fatal("cancelled branch emitted no job_terminated")
+		}
+		// AgentCancelled maps to the wire vocabulary "killed" — a literal
+		// "cancelled" would never freeze (isTerminalJobStatus misses it).
+		if ev.Status != "killed" || ev.ExitCode != -1 {
+			t.Errorf("shell = {status:%s exit:%d}, want {killed -1}", ev.Status, ev.ExitCode)
+		}
+		if ev.Kind != "fork" {
+			t.Errorf("shell Kind = %q, want fork", ev.Kind)
+		}
+		if ev.AgentType != "fork" {
+			t.Errorf("shell AgentType = %q, want fork (partial result has no type — spawn type wins)", ev.AgentType)
+		}
+	})
+}

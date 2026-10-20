@@ -449,9 +449,9 @@ func (m *mockEngine) Jobs() []*job.JobInfo {
 	return nil
 }
 
-// SetJobsFn sets jobsFn under the mock's lock: the jobs watcher goroutine
-// (started by newTestConnectorWithConfig) polls JobSummaries, which reads
-// this field — an unlocked write would race under -test -race.
+// SetJobsFn sets jobsFn under the mock's lock: sendMetadata's takeover
+// reconcile calls JobSummaries (which reads this field), possibly from a test
+// goroutine racing the setter — an unlocked write would race under -race.
 func (m *mockEngine) SetJobsFn(fn func() []*job.JobInfo) {
 	m.mu.Lock()
 	m.jobsFn = fn
@@ -541,14 +541,12 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 	activeID := engineID
 	c.active.Store(&activeID)
 	slot := &engineSlot{
-		engineID:           engineID,
-		engine:             mock,
-		hub:                h,
-		taskToolIDs:        make(map[string]bool),
-		jobView:            make(map[string]*jobViewEntry),
-		jobFeeds:           make(map[string]*jobFeedState),
-		innerToolToFeed:    make(map[string]string),
-		pendingAgentEvents: make(map[string]*pendingAgentEvents),
+		engineID:    engineID,
+		engine:      mock,
+		hub:         h,
+		taskToolIDs: make(map[string]bool),
+		jobView:     make(map[string]*jobViewEntry),
+		streams:     map[string]*streamState{"": {}},
 	}
 	slot.active.Store(true)
 	if h != nil {
@@ -564,9 +562,9 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 		slot.ssMu.Unlock()
 	}
 	go c.wsWriter()
-	// Without the watcher, TestJobTick_* would hang waiting for frames: the
-	// mock slot bypasses registerEngine. Exits via c.done (t.Cleanup(c.Stop)).
-	c.startJobsWatcher(slot)
+	// Without the tail loop, TestBashTailTick_* would hang waiting for frames:
+	// the mock slot bypasses registerEngine. Exits via c.done (t.Cleanup(c.Stop)).
+	c.startBashTailLoop(slot)
 	t.Cleanup(c.Stop)
 	return c
 }
@@ -659,18 +657,20 @@ func dialAndStore(t *testing.T, c *WUIConnector) *websocket.Conn {
 }
 
 // activeStreamBufLen returns the number of blocks in the active engine's
-// streamState. Test accessor for verifying in-flight state.
+// chat-root region. Test accessor for verifying in-flight state.
 func (c *WUIConnector) activeStreamBufLen() int {
 	c.slotsMu.RLock()
 	defer c.slotsMu.RUnlock()
 	if s := c.slots[c.ActiveID()]; s != nil {
-		return len(s.streamState.blocks)
+		if root := s.streams[""]; root != nil {
+			return len(root.blocks)
+		}
 	}
 	return 0
 }
 
 // streamStateCount returns the number of blocks in the named engine's
-// streamState. Test accessor for multi-engine tests.
+// chat-root region. Test accessor for multi-engine tests.
 func streamStateCount(c *WUIConnector, engineID string) int {
 	c.slotsMu.RLock()
 	defer c.slotsMu.RUnlock()
@@ -678,7 +678,10 @@ func streamStateCount(c *WUIConnector, engineID string) int {
 	if s == nil {
 		return 0
 	}
-	return len(s.streamState.blocks)
+	if root := s.streams[""]; root != nil {
+		return len(root.blocks)
+	}
+	return 0
 }
 
 // activeEngineTest returns the active engine's engineClient for test use.

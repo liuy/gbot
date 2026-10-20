@@ -229,3 +229,39 @@ func TestContentBlockMarshalJSON_BlankToolUseInputAsEmptyObject(t *testing.T) {
 		t.Errorf("valid input wire form = %s, input rewritten", b)
 	}
 }
+
+// AgentMeta.JobID rides the event wire as job_id (omitempty): old frames
+// without it must deserialize to "" — the sync-sub-agent routing value —
+// and new frames must round-trip the job id for consumers that route by it.
+func TestAgentMetaJobIDWire(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(QueryEvent{
+		Type:  EventTextDelta,
+		Agent: &AgentMeta{ParentToolUseID: "p", JobID: "agent-9"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"job_id":"agent-9"`) {
+		t.Errorf("wire form = %s, want it to carry job_id", raw)
+	}
+
+	var legacy QueryEvent
+	if err := json.Unmarshal([]byte(`{"type":"text_delta","agent":{"parent_tool_use_id":"p"}}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy frame: %v", err)
+	}
+	if legacy.Agent == nil {
+		t.Fatal("legacy frame lost its agent meta")
+	}
+	if legacy.Agent.JobID != "" {
+		t.Errorf("legacy JobID = %q, want \"\"", legacy.Agent.JobID)
+	}
+
+	var missing QueryEvent
+	if err := json.Unmarshal([]byte(`{"type":"text_delta"}`), &missing); err != nil {
+		t.Fatalf("unmarshal agent-less frame: %v", err)
+	}
+	if missing.Agent != nil {
+		t.Errorf("agent-less frame grew meta: %+v", missing.Agent)
+	}
+}

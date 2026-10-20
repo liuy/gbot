@@ -3390,4 +3390,39 @@ describe('queued message history rendering', () => {
     expect(spans[0].className).toContain('text-t3')
     expect(document.body.textContent).not.toContain('<system-reminder>')
   })
+  it('job-tagged events stay out of the chat timeline (single delivery)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+    ])
+    const jobAgent = { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1, job_id: 'agent-9' }
+    dispatchEvents([
+      { type: 'turn_start', agent: jobAgent },
+      { type: 'tool_start', agent: jobAgent, tool_use: { id: 'sub-tool-1', name: 'Bash' } },
+      { type: 'text_delta', agent: jobAgent, text: 'job text' },
+    ])
+    // The job's own content belongs to the jobs feed: no nested Bash block,
+    // no job text in the chat timeline.
+    expect(document.querySelector('[data-tool-root][data-tool-name="Bash"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('job text')
+    // turn_start is exempt: the launch card keeps the agent-type name.
+    expect(document.querySelector('[data-tool-root][data-tool-name="Agent Explorer"]')).toBeTruthy()
+
+    // Control: the same sequence without a job_id (sync sub-agent) renders
+    // as before — the filter must not over-skip.
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-2', name: 'Agent' } },
+    ])
+    const syncAgent = { parent_tool_use_id: 'agent-2', agent_type: 'Explorer', depth: 1 }
+    dispatchEvents([
+      { type: 'turn_start', agent: syncAgent },
+      { type: 'tool_start', agent: syncAgent, tool_use: { id: 'sub-tool-2', name: 'Bash' } },
+    ])
+    expect(document.querySelector('[data-tool-root][data-tool-name="Bash"]')).toBeTruthy()
+  })
 })

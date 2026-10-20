@@ -246,6 +246,17 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	if eng != nil {
 		refs.Agent.SetEngineID(eng.EngineID())
 		refs.Message.SetSelfID(eng.EngineID())
+
+		// Job lifecycle emitters → this engine's dispatcher. Root wiring is
+		// the session-root panel feed; a sub-engine's wiring lands on its own
+		// permanently-empty private registries (root-bound tools never spawn
+		// there), so it stays inert. Sub-engines created by RunAgent are
+		// wired by their own WireEngine call with the same shape.
+		emitJob := func(et types.QueryEventType, ev types.JobEvent) {
+			eng.emitEvent(types.QueryEvent{Type: et, Job: &ev})
+		}
+		refs.BashReg.OnJobEvent = emitJob
+		refs.Agent.BgRegistry().SetOnJobEvent(emitJob)
 	}
 
 	// Register this engine's background table with the manager so

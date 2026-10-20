@@ -1373,6 +1373,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   function handleEvent(e: QueryEvent) {
+    // Background-job events are owned by the jobs feed (single delivery):
+    // the chat timeline shows only the launch card. turn_start stays so the
+    // card keeps its agent-type name; usage stays — job cost still lands in
+    // the parent's token totals (server-side accumulateStats counts usage
+    // unconditionally). Job tool_start/thinking_end are skipped here AND
+    // server-side, so the progress bar matches the takeover restore exactly
+    // instead of jumping.
+    if (e.agent?.job_id && e.type !== 'turn_start' && e.type !== 'usage') return
     switch (e.type) {
       case 'query_start': {
         if (e.agent) return

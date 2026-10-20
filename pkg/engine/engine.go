@@ -284,6 +284,11 @@ type Engine struct {
 	// 0 = main engine, 1 = direct child, 2 = grandchild, etc.
 	agentMetaDepth int
 
+	// jobID is the enclosing background job's id when this engine runs
+	// inside one ("" = none). Stamped onto the dispatcher meta and
+	// inherited by deeper sync spawns.
+	jobID string
+
 	// onCloseFn is called during Close() so callers (main.go) can wire
 	// session-scoped cleanup (e.g. REPL CleanSession) without Engine
 	// knowing about REPLTool directly.
@@ -1124,6 +1129,15 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		maxTurns = opts.MaxTurns
 	}
 
+	// opts.AgentID is the registry id spawnBackground set for background
+	// spawns — the job id the wui panel routes events by. Sync spawns ("")
+	// inherit the spawning engine's ambient job id so grandchildren of a
+	// background job address its feed.
+	jobID := opts.AgentID
+	if jobID == "" {
+		jobID = e.jobID
+	}
+
 	subEng := e.NewSubEngine(SubEngineOptions{
 		Tools:           subTools,
 		SystemPrompt:    systemPrompt,
@@ -1132,6 +1146,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		ParentToolUseID: opts.ParentToolUseID,
 		AgentType:       agentType,
 		WorkingDir:      opts.Cwd,
+		JobID:           jobID,
 	})
 
 	// Stamped after construction because only RunAgent has the agent definition
@@ -5095,7 +5110,7 @@ func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
 	if event.Agent == nil {
 		event.Agent = d.meta
 	}
-	slog.Info("tagged:dispatch", "type", event.Type, "agentType", d.meta.AgentType, "parentID", d.meta.ParentToolUseID, "depth", d.meta.Depth, "toolID", eventToolID(event), "eventAgentDepth", agentDepthField(event.Agent), "text", truncate(event.Text, 40))
+	slog.Info("tagged:dispatch", "type", event.Type, "agentType", d.meta.AgentType, "parentID", d.meta.ParentToolUseID, "depth", d.meta.Depth, "jobID", d.meta.JobID, "toolID", eventToolID(event), "eventAgentDepth", agentDepthField(event.Agent), "text", truncate(event.Text, 40))
 	d.parent.Dispatch(event)
 }
 
@@ -5128,6 +5143,7 @@ type SubEngineOptions struct {
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
 	AgentType       string               // "General", "Explore", "Planner", etc.
 	WorkingDir      string               // absolute cwd override; "" = inherit the parent's live dir
+	JobID           string               // enclosing background job id; "" = none (stamped onto the dispatcher meta and inherited by deeper sync spawns)
 }
 
 // NewSubEngine creates a new Engine that shares the Provider and Logger
@@ -5156,6 +5172,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 				ParentToolUseID: opts.ParentToolUseID,
 				AgentType:       opts.AgentType,
 				Depth:           depth,
+				JobID:           opts.JobID,
 			},
 		}
 	}
@@ -5190,6 +5207,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		reminderEngine:  attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
 		isSubagent:      true,
 		agentMetaDepth:  e.agentMetaDepth + 1,
+		jobID:           opts.JobID,
 		agentType:       opts.AgentType,
 		maxTurns:        subMaxTurns(opts.MaxTurns),
 		// Share the parent's context map as it stands right now (read-only;

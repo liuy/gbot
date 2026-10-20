@@ -37,10 +37,12 @@ export interface JobsStoreHandle {
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
 // Mirror of the connector's jobFeedMaxBlocks (pkg/connector/wui/jobs_panel.go).
-// The server caps its feed cache per event, so the live client feed must cap
-// identically — otherwise the live view and a reconnect hydration (served from
-// the capped cache) would diverge, and a hours-long agent would grow the
-// client feed without bound.
+// The 400 cap still governs LIVE jobs: the server keeps the live region at
+// ≤400 blocks and the client must cap identically or the live view diverges
+// from a reconnect hydration. TERMINAL jobs are the deliberate exception: the
+// server truncates their region to the last jobTerminalLastN (20) blocks at
+// job_terminated and freezes it, so a post-terminal reconnect hydrates with
+// ≤20 blocks by design — the client renders whatever the snapshot carries.
 const JOB_FEED_MAX_BLOCKS = 400
 
 // findBlock mirrors the connector's findBlock: depth-first search of the
@@ -60,11 +62,12 @@ export function findBlock(blocks: Block[], id: string): ToolBlock | null {
 export function createJobsStore(): JobsStoreHandle {
   let items = new Map<string, JobWireItem>()
   const feeds = new Map<string, JobFeedState>()
-  // parent → job resolution at two depths, mirroring the connector's
-  // jobFeeds + innerToolToFeed pair: a job's own parentToolUseID routes to
-  // the feed root, tool ids opened inside a feed route back to that feed.
-  // toolID → jobID here (connector keys feeds by parent id; jobs are keyed
-  // by job id in this store).
+  // parent → job resolution at two depths: a job's own parentToolUseID
+  // routes to the feed root, tool ids opened inside a feed route back to
+  // that feed. The connector routes server-side by job id (single delivery);
+  // this store keeps the parent-id routing because job_list frames now
+  // arrive on job lifecycle transitions (no polling cadence), and the
+  // "belongs to no job → drop" filter must keep working for early events.
   const innerToolToJob = new Map<string, string>()
   const changeCbs = new Set<(jobID?: string) => void>()
   const feedCbs = new Set<(c: FeedChange) => void>()
@@ -228,12 +231,12 @@ export function createJobsStore(): JobsStoreHandle {
       }
       items = next
       dropRoutesForGoneJobs()
-      // Agent feeds exist from discovery (Go creates jobFeeds when the
-      // watcher sees the job), so applyEvent never has to create one on the
-      // hot path and feed() is defined for every agent row. The agent family
-      // is everything that is not a bash tail — background agents only:
-      // engines never appear in this feed, the Go MultiRegistry exposes the
-      // bash and background-agent adapters.
+      // Agent feeds exist from discovery (Go creates the region when the
+      // job_started lifecycle event lands), so applyEvent never has to create
+      // one on the hot path and feed() is defined for every agent row. The
+      // agent family is everything that is not a bash tail — background
+      // agents only: engines never appear in this feed, the Go
+      // MultiRegistry exposes the bash and background-agent adapters.
       for (const j of items.values()) {
         if (j.kind !== 'bash' && j.parentToolUseID) ensureFeed(j.id)
       }

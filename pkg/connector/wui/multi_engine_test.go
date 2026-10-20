@@ -26,6 +26,7 @@ func addMockEngine(t *testing.T, c *WUIConnector, engineID string) (*mockEngine,
 		engine:      mock,
 		hub:         h,
 		taskToolIDs: make(map[string]bool),
+		streams:     map[string]*streamState{"": {}},
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: engineID, c: c})
 	c.slotsMu.Lock()
@@ -247,7 +248,9 @@ func TestMultiEngine_QueryEndClearsOnlyTargetEngine(t *testing.T) {
 	slotB := c.slots["engineB"]
 	c.slotsMu.RUnlock()
 	if slotB != nil {
-		slotB.streamState = streamState{}
+		slotB.ssMu.Lock()
+		slotB.streams[""] = &streamState{}
+		slotB.ssMu.Unlock()
 		resetQueryStats(&slotB.queryStats)
 		slotB.taskToolIDs = make(map[string]bool)
 	}
@@ -417,10 +420,10 @@ func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
 	}
 
 	// Should have: [text:"Let me check", tool(agent1, children:[text, tool(grep1, done)])]
-	if len(mainSlot.streamState.blocks) != 2 {
-		t.Fatalf("expected 2 root blocks (text + Agent tool), got %d", len(mainSlot.streamState.blocks))
+	if len(mainSlot.streams[""].blocks) != 2 {
+		t.Fatalf("expected 2 root blocks (text + Agent tool), got %d", len(mainSlot.streams[""].blocks))
 	}
-	agentBlock := mainSlot.streamState.blocks[1]
+	agentBlock := mainSlot.streams[""].blocks[1]
 	if agentBlock.Kind != "tool" || agentBlock.Name != "Agent" {
 		t.Fatalf("expected Agent tool at index 1, got kind=%s name=%s", agentBlock.Kind, agentBlock.Name)
 	}
@@ -452,7 +455,7 @@ func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
 		c.slotsMu.RLock()
 		s := c.slots["main"]
 		c.slotsMu.RUnlock()
-		return s != nil && len(s.streamState.blocks) >= 2 && len(s.streamState.blocks[1].Children) >= 3
+		return s != nil && len(s.streams[""].blocks) >= 2 && len(s.streams[""].blocks[1].Children) >= 3
 	}) {
 		t.Fatal("sub-agent text should be buffered while inactive")
 	}
@@ -543,8 +546,8 @@ func TestIntegration_QueryEndClearsMidQuery(t *testing.T) {
 	c.slotsMu.RLock()
 	mainSlot := c.slots["main"]
 	c.slotsMu.RUnlock()
-	if mainSlot.streamState.blocks[0].Text != "Based on results" {
-		t.Errorf("turn 2 text = %q, want 'Based on results'", mainSlot.streamState.blocks[0].Text)
+	if mainSlot.streams[""].blocks[0].Text != "Based on results" {
+		t.Errorf("turn 2 text = %q, want 'Based on results'", mainSlot.streams[""].blocks[0].Text)
 	}
 }
 
@@ -568,7 +571,7 @@ func TestIntegration_SnapshotHasCorrectNestedJSON(t *testing.T) {
 		Agent:   &types.AgentMeta{ParentToolUseID: "a1", AgentType: "Reviewer"},
 	})
 
-	payload := buildPendingBlocks(c.slots["main"].streamState)
+	payload := buildPendingBlocks(*c.slots["main"].streams[""])
 
 	var snap struct {
 		Type   string        `json:"type"`
@@ -650,7 +653,7 @@ func TestIntegration_LiveEventsAfterSnapshotWithChildren(t *testing.T) {
 	mainSlot := c.slots["main"]
 	c.slotsMu.RUnlock()
 
-	agent := mainSlot.streamState.blocks[0]
+	agent := mainSlot.streams[""].blocks[0]
 	if agent.Kind != "tool" || agent.Name != "Agent" {
 		t.Fatalf("expected Agent tool at root, got %+v", agent)
 	}

@@ -471,6 +471,7 @@ func Start(opts Options) (*Instance, error) {
 					ParentToolUseID: "",
 					WorkingDir:      "",
 					AgentType:       "session_memory",
+					JobID:           "",
 				})
 				defer subEng.Close()
 

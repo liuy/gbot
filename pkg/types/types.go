@@ -560,7 +560,28 @@ const (
 	// calling engine.Query, because the TUI's own commitInput path already calls
 	// AddUserMessage — reusing QueryStart would double-render.
 	EventConnectorUserMessage QueryEventType = "connector_user_message"
+
+	// Background job lifecycle. Emitted by the job registries at their state
+	// transition points and consumed by UI panels; never forwarded to browsers
+	// as generic event frames.
+	EventJobStarted    QueryEventType = "job_started"
+	EventJobStatus     QueryEventType = "job_status"
+	EventJobTerminated QueryEventType = "job_terminated"
 )
+
+// JobEvent carries one background-job lifecycle transition. Field parity
+// with the wui panel row (jobWireItem): the event IS the row shell.
+type JobEvent struct {
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`   // "bash" | "agent" | "fork"
+	Status          string `json:"status"` // running|completed|failed|killed
+	Command         string `json:"command,omitempty"`
+	Description     string `json:"description,omitempty"`
+	AgentType       string `json:"agentType,omitempty"`
+	ParentToolUseID string `json:"parentToolUseID,omitempty"`
+	ExitCode        int    `json:"exitCode,omitempty"`
+	StartedMs       int64  `json:"startedMs,omitempty"`
+}
 
 // AgentMeta tags events originating from a sub-agent.
 // When non-nil on a QueryEvent, the event comes from a child engine
@@ -569,6 +590,10 @@ type AgentMeta struct {
 	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 	AgentType       string `json:"agent_type,omitempty"`
 	Depth           int    `json:"depth,omitempty"`
+	// JobID is the enclosing background job's registry id ("agent-N") when
+	// this event originates inside one; "" for root/sync sub-agent events.
+	// Consumers route by it (jobs feed) instead of guessing from ParentToolUseID.
+	JobID string `json:"job_id,omitempty"`
 }
 
 // QueryEvent represents an event emitted during the query loop.
@@ -584,6 +609,7 @@ type QueryEvent struct {
 	PartialInput *PartialInputEvent `json:"partial_input,omitempty"`
 	Usage        *UsageEvent        `json:"usage_event,omitempty"`
 	Agent        *AgentMeta         `json:"agent,omitempty"`
+	Job          *JobEvent          `json:"job,omitempty"`
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
 	Ask          *AskEvent          `json:"ask,omitempty"`
 	RetryAttempt *RetryAttemptEvent `json:"retry_attempt,omitempty"`

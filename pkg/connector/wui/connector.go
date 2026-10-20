@@ -118,7 +118,8 @@ type engineClient interface {
 	// JobTail returns the rolling tail of a background bash job's output.
 	JobTail(id string) (string, bool)
 	// JobSummaries lists background jobs without materializing per-job
-	// output buffers — the watcher polls this at 2Hz. See job.SummaryLister.
+	// output buffers — sendMetadata enumerates it once per takeover to
+	// reconcile the panel. See job.SummaryLister.
 	JobSummaries() []*job.JobInfo
 }
 
@@ -348,9 +349,10 @@ type streamBlock struct {
 	Children      []streamBlock `json:"children"`                // kind == "tool"
 }
 
-// streamState is the per-engine real-time streaming state, equivalent to TUI's
-// ReplState. Protected by slot.ssMu (hub goroutine in onEngineEvent, readLoop
-// goroutine in sendMetadata). Reset on query_end.
+// streamState is one region of a slot's stream (blocks plus the query-active
+// boundary marker). Everything — the map and every region's contents — is
+// protected by slot.ssMu (hub goroutine in onEngineEvent, readLoop goroutine
+// in sendMetadata, tail-loop goroutine in bashTailTick).
 type streamState struct {
 	blocks []streamBlock
 	// queryActive marks the two-region boundary: while turns are running,
@@ -358,11 +360,20 @@ type streamState struct {
 	// queryStartMsgIdx so this is their only representation); idle, history
 	// owns every appended row and an echo block would double-render on
 	// takeover. Set by top-level turn_start, cleared implicitly by the
-	// query_end streamState reset.
+	// query_end reset of the "" region.
 	queryActive bool
+	// feedAnchor is the job's own parent tool id: the job engine's events
+	// carry it in Agent.ParentToolUseID and are masked to the region root;
+	// deeper parents nest by block tree. The chat root's anchor is always ""
+	// and never read.
+	feedAnchor string
+	// frozen marks a terminated job's region. Phase C truncates it to the
+	// last jobTerminalLastN blocks and drops later process events (a late
+	// idle-kick query on a dead job must not resurrect the card).
+	frozen bool
 }
 
-// engineSlot holds the per-engine state. Each engine gets its own streamState,
+// engineSlot holds the per-engine state. Each engine gets its own streams map,
 // queryStats, and taskToolIDs so background engines accumulate state
 // independently of the active one. The active flag + ssMu mutex are
 // atomic because they are set by switchEngine (readLoop goroutine) and read
@@ -373,7 +384,22 @@ type engineSlot struct {
 	hub         *hub.Hub
 	unsubscribe func()
 	ssMu        sync.Mutex
-	streamState streamState
+	// streams is ONE stream partitioned by lifetime region, not several
+	// streams. Key "" is the query-world region — the chat timeline, born at
+	// query start, reset at query_end, its content lands in the DB — and a
+	// job id keys that job's session-world region — the job card, born at
+	// job_started, dying at job_terminated. Inside every region the same
+	// streamState + tool-id nesting rules apply, and the chat view and the
+	// jobs-panel view are disjoint projections of the same stream: a
+	// JobID-tagged event lands in exactly one region.
+	//
+	// Locking: the map AND every region's contents (the whole jobs panel
+	// state below included) are one unified ssMu domain. engineClient calls
+	// (JobSummaries, JobTail) are ALWAYS made holding NO connector lock —
+	// under ssMu they would close the cycle ssMu → s.mu (StreamingOutput.Write
+	// holds s.mu across onProgress → hub.Dispatch → onEngineEvent taking
+	// ssMu) → ssMu.
+	streams     map[string]*streamState
 	queryStats  queryStats
 	taskToolIDs map[string]bool
 	// cancelEpoch bumps on every cancel_queued for this engine. The async
@@ -389,17 +415,13 @@ type engineSlot struct {
 	name   string
 	system bool
 
-	// Background-jobs panel state, guarded by jobsMu (written by the watcher
-	// goroutine, readLoop handlers, and onEngineEvent's capture). Lock order
-	// is ssMu → jobsMu: captureJobEvent and buildJobsMetadata run inside an
-	// ssMu section and take jobsMu; no path may hold jobsMu and then touch
-	// ssMu. Maps are nil on slots built directly by tests (guarded).
-	jobsMu             sync.Mutex
-	jobView            map[string]*jobViewEntry       // id → display snapshot (terminal kept until cleared)
-	jobFeeds           map[string]*jobFeedState       // key = parentToolUseID (agent jobs)
-	innerToolToFeed    map[string]string              // tool id inside a feed → feed key
-	pendingAgentEvents map[string]*pendingAgentEvents // events parked before job discovery
-	lastJobsPush       string                         // last job_list JSON, diff baseline
+	// Background-jobs panel state, guarded by ssMu (same unified domain as
+	// streams: written by onEngineEvent's lifecycle/stream branches, the bash
+	// tail loop, and the readLoop's session/takeover paths). Maps are nil on
+	// slots built directly by tests (guarded); the streams map always carries
+	// the "" chat-root region on built slots.
+	jobView      map[string]*jobViewEntry // id → display snapshot (terminal kept until cleared)
+	lastJobsPush string                   // last job_list JSON, diff baseline
 }
 
 // wsMsg carries one outbound WS frame through the outbound queue. isBinary
@@ -788,16 +810,14 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 		return
 	}
 	slot := &engineSlot{
-		engineID:           vs.ID,
-		engine:             &engineAdapter{eng: vs.Engine},
-		hub:                h,
-		taskToolIDs:        map[string]bool{},
-		name:               vs.Name,
-		system:             vs.System,
-		jobView:            make(map[string]*jobViewEntry),
-		jobFeeds:           make(map[string]*jobFeedState),
-		innerToolToFeed:    make(map[string]string),
-		pendingAgentEvents: make(map[string]*pendingAgentEvents),
+		engineID:    vs.ID,
+		engine:      &engineAdapter{eng: vs.Engine},
+		hub:         h,
+		taskToolIDs: map[string]bool{},
+		name:        vs.Name,
+		system:      vs.System,
+		jobView:     make(map[string]*jobViewEntry),
+		streams:     map[string]*streamState{"": {}},
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
 
@@ -805,10 +825,11 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 	c.slots[vs.ID] = slot
 	c.slotsMu.Unlock()
 
-	// Jobs watcher per slot — started here (not in New) because slots are
-	// registered dynamically (engine_new flow); the register-twice guard
-	// above keeps it single. Exits via c.done in Stop.
-	c.startJobsWatcher(slot)
+	// Bash tail sampler per slot — started here (not in New) because slots
+	// are registered dynamically (engine_new flow); the register-twice guard
+	// above keeps it single. Exits via c.done in Stop. Rows themselves are
+	// event-driven; this loop is only the tail poller.
+	c.startBashTailLoop(slot)
 }
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
@@ -998,8 +1019,11 @@ func resetQueryStats(qs *queryStats) {
 }
 
 // accumulateStats adds the event's usage/tool/thinking contributions into
-// the slot's atomic queryStats. Called by onEngineEvent for every event
-// (sub-agent events included so stats reflect the full query cost).
+// the slot's atomic queryStats. Called by onEngineEvent for every event.
+// usage counts sub-agent events too — it is total query COST. A background
+// job's own tool/thinking progress is excluded: the browser's live filter
+// skips job-tagged tool_start/thinking_end, and buildStats feeds the takeover
+// restore — both sides must skip in lockstep or the numbers jump on takeover.
 func accumulateStats(qs *queryStats, event hub.Event) {
 	if event.Type == types.EventUsage && event.Usage != nil {
 		qs.inputTokens.Add(int64(event.Usage.InputTokens))
@@ -1010,10 +1034,12 @@ func accumulateStats(qs *queryStats, event hub.Event) {
 	if event.Type == types.EventQueryStart && event.Agent == nil {
 		qs.startMs.Store(time.Now().UnixMilli())
 	}
-	if event.Type == types.EventToolStart && event.ToolUse != nil {
+	if event.Type == types.EventToolStart && event.ToolUse != nil &&
+		(event.Agent == nil || event.Agent.JobID == "") {
 		qs.toolCount.Add(1)
 	}
-	if event.Type == types.EventThinkingEnd && event.Thinking != nil {
+	if event.Type == types.EventThinkingEnd && event.Thinking != nil &&
+		(event.Agent == nil || event.Agent.JobID == "") {
 		qs.thinkingMs.Add(event.Thinking.Duration.Milliseconds())
 	}
 }
@@ -1299,6 +1325,19 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		return
 	}
 
+	// Job lifecycle events feed the panel fast path and stop here: they are
+	// never forwarded to browsers as generic event frames (wire compat —
+	// browsers keep consuming only job_list/job_output).
+	if isJobLifecycleEventType(event.Type) {
+		if event.Job == nil {
+			return
+		}
+		for _, p := range c.applyJobLifecycleEvent(slot, event) {
+			c.sendWS([]byte(p))
+		}
+		return
+	}
+
 	// Track Task tool calls so tool_end can push task_list. Sub-agents share
 	// the parent engine's task list (RunAgent passes e.taskList to CreateTools),
 	// so we MUST track sub-agent Task calls too — otherwise panel updates only
@@ -1340,11 +1379,27 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
 
 	slot.ssMu.Lock()
-	updateStreamState(&slot.streamState, event)
-	// Feed cache for the jobs panel: runs under ssMu and takes jobsMu
-	// itself (order ssMu → jobsMu). Before the isQueryEnd reset so a
-	// query's last blocks still land in any live job feed.
-	c.captureJobEvent(slot, event)
+	// Single delivery: events stamped with a background job id belong to the
+	// jobs feed only. turn_start is exempt so the parent Agent block's name
+	// enrichment ("Agent Explore") stays in the snapshot, mirroring the
+	// browser's live updateAgentToolName path.
+	if event.Agent == nil || event.Agent.JobID == "" || event.Type == types.EventTurnStart {
+		// Construction always installs the "" region; the lazy init only
+		// covers slots built directly by tests that dispatch events.
+		if slot.streams == nil {
+			slot.streams = make(map[string]*streamState)
+		}
+		root := slot.streams[""]
+		if root == nil {
+			root = &streamState{}
+			slot.streams[""] = root
+		}
+		updateStreamState(root, event)
+	}
+	// Job regions of the same stream, same ssMu section (unified lock
+	// domain; the caller holds ssMu). Before the isQueryEnd reset so a
+	// query's last blocks still land in any live job region.
+	c.applyJobStreamEvent(slot, event)
 	var q *outQueue
 	if slot.active.Load() && c.activeWS.Load() != nil {
 		// Capture decision MUST be under the lock: active flips false→true
@@ -1354,7 +1409,10 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		q = c.outQ.Load()
 	}
 	if isQueryEnd {
-		slot.streamState = streamState{}
+		// Only the "" region dies with the query; job regions outlive it.
+		// The map is non-nil here: isQueryEnd implies event.Agent == nil,
+		// which took the root-update branch above and lazy-initialized it.
+		slot.streams[""] = &streamState{}
 		resetQueryStats(&slot.queryStats)
 		slot.taskToolIDs = make(map[string]bool)
 	}
@@ -2723,9 +2781,9 @@ func (c *WUIConnector) handleSessionSwitch(sessionID string) {
 	// before the metadata push below renders the new session's panel.
 	// Running jobs belong to the engine and survive the switch.
 	if slot.jobView != nil {
-		slot.jobsMu.Lock()
+		slot.ssMu.Lock()
 		c.clearTerminalJobsLocked(slot)
-		slot.jobsMu.Unlock()
+		slot.ssMu.Unlock()
 	}
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(slot)
@@ -2766,9 +2824,9 @@ func (c *WUIConnector) handleSessionNew() {
 	// terminal entries here are residue from the session this engine just
 	// left (engine switch without session switch leaves them behind).
 	if slot.jobView != nil {
-		slot.jobsMu.Lock()
+		slot.ssMu.Lock()
 		c.clearTerminalJobsLocked(slot)
-		slot.jobsMu.Unlock()
+		slot.ssMu.Unlock()
 	}
 	if c.activeWS.Load() != nil {
 		c.sendMetadata(slot)
@@ -2961,13 +3019,24 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Jobs json.RawMessage `json:"jobs,omitempty"`
 	}
 
+	// Reconcile inputs, gathered BEFORE the ssMu section and in this order:
+	// now must precede the enumeration — the vanish predicate treats rows
+	// whose StartedMs is ≥ now as "minted after the snapshot" (a job_started
+	// event that landed between the two reads) and spares them. Both calls
+	// run with NO connector lock (see the ssMu deadlock-cycle note on
+	// engineSlot).
+	now := time.Now()
+	summaries := slot.engine.JobSummaries()
+
 	slot.ssMu.Lock()
+	c.reconcileJobsFromRegistry(slot, summaries, now)
 	history := c.buildHistory(slot, "", 30)
+	root := slot.streams[""]
 	var snapshot json.RawMessage
-	if len(slot.streamState.blocks) > 0 {
+	if root != nil && len(root.blocks) > 0 {
 		snapshot, _ = json.Marshal(struct {
 			Blocks []streamBlock `json:"blocks"`
-		}{Blocks: slot.streamState.blocks})
+		}{Blocks: root.blocks})
 	}
 
 	payload, _ := json.Marshal(metaPayload{

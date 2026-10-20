@@ -231,6 +231,7 @@ export type QueryEvent = {
     parent_tool_use_id: string
     agent_type: string
     depth: number
+    job_id?: string
   }
   thinking?: {
     duration?: number // NANOSECONDS

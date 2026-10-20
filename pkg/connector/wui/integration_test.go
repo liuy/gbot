@@ -141,12 +141,20 @@ func TestRegisterEngine_CreatesSlotAndSubscribes(t *testing.T) {
 	}
 	// Field-clear mutants on the slot literal must fail here: a nil
 	// taskToolIDs panics on the first Task tool event, and nil jobs maps
-	// panic in the watcher/capture paths.
+	// panic in the lifecycle/tail/capture paths.
 	if e2Slot.taskToolIDs == nil {
 		t.Error("taskToolIDs map is nil")
 	}
-	if e2Slot.jobView == nil || e2Slot.jobFeeds == nil || e2Slot.innerToolToFeed == nil || e2Slot.pendingAgentEvents == nil {
-		t.Error("jobs watcher maps are nil — registerEngine must initialize them")
+	if e2Slot.jobView == nil || e2Slot.streams == nil {
+		t.Error("jobs maps are nil — registerEngine must initialize them")
+	}
+	// The streams map must carry the "" chat-root region from construction:
+	// a slot without it renders no takeover snapshot until an event arrives.
+	e2Slot.ssMu.Lock()
+	root := e2Slot.streams[""]
+	e2Slot.ssMu.Unlock()
+	if root == nil {
+		t.Error("streams map has no \"\" chat-root region — registerEngine must install it")
 	}
 }
 

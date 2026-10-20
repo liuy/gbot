@@ -7,6 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,10 @@ type BackgroundJob struct {
 	AgentID string
 	// Notification callback — copied from registry at spawn time.
 	onNotify func(JobNotification)
+	// Lifecycle-event callback — copied from registry at spawn time, same
+	// contract as onNotify. Called outside job.mu (the emission chain runs
+	// synchronously into the engine hub and the wui panel).
+	onJobEvent func(types.QueryEventType, types.JobEvent)
 	// evictAfter is set when the job enters a terminal state.
 	// CleanupCompleted() removes tasks whose evictAfter has passed.
 	// Source: utils/job/framework.ts:213-249 — applyTaskOffsetsAndEvictions
@@ -159,6 +165,11 @@ type BackgroundJobRegistry struct {
 	// Set by the caller (e.g., engine integration) to route notifications
 	// into the LLM conversation. Source: LocalShellTask.tsx:89-94 + 166-171
 	OnNotify func(JobNotification)
+	// OnJobEvent is called on every lifecycle transition (started at Spawn,
+	// terminated at Kill/Complete). Set by the engine integration to surface
+	// the transition as a job lifecycle event on its hub. Called outside both
+	// registry and job locks — same discipline as OnNotify.
+	OnJobEvent func(types.QueryEventType, types.JobEvent)
 }
 
 // NewBackgroundJobRegistry creates a new registry.
@@ -187,7 +198,6 @@ func DefaultRegistry() *BackgroundJobRegistry {
 // TS sets isBackgrounded=true at line 212.
 func (r *BackgroundJobRegistry) Spawn(command string, pid int, output *StreamingOutput) *BackgroundJob {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	r.nextID++
 	id := fmt.Sprintf("bg-%d", r.nextID)
@@ -203,9 +213,14 @@ func (r *BackgroundJobRegistry) Spawn(command string, pid int, output *Streaming
 		IsBackgrounded: true,
 		Kind:           "bash",
 		onNotify:       r.OnNotify,
+		onJobEvent:     r.OnJobEvent,
 	}
 
 	r.jobs[id] = job
+	// Explicit unlock (no defer): the started emission must run outside r.mu —
+	// emitting under it would add a r.mu → hub → wui (ssMu) lock edge.
+	r.mu.Unlock()
+	job.emitJobEvent(types.EventJobStarted, string(JobRunning))
 	return job
 }
 
@@ -443,6 +458,11 @@ func (r *BackgroundJobRegistry) Kill(id string) error {
 	close(job.done)
 	job.mu.Unlock()
 
+	// Emit before notifying: the notification injects XML into the parent
+	// conversation and may kick a new parent query whose events must never
+	// overtake job_terminated.
+	job.emitJobEvent(types.EventJobTerminated, "killed")
+
 	// Send outside lock
 	r.sendNotification(notify)
 
@@ -501,10 +521,48 @@ func (t *BackgroundJob) Complete(exitCode int, interrupted bool) {
 	close(t.done)
 	t.mu.Unlock()
 
+	// Emit before notifying (same ordering rule as Kill): the notification
+	// can kick the parent's idle path, whose events must never overtake
+	// job_terminated. Emitted even when the LLM notification is suppressed —
+	// the event is the panel's source of truth, not the conversation's.
+	t.emitJobEvent(types.EventJobTerminated, string(t.Status))
+
 	// Send notification outside lock
 	if notify != nil && t.onNotify != nil {
 		t.onNotify(*notify)
 	}
+}
+
+// buildJobEventLocked renders the wui panel row shell for this job at the
+// given wire status. Must be called with job.mu held. Mirrors
+// backgroundJobToInfo's field set: bash rows never carry AgentType or
+// ParentToolUseID.
+func (t *BackgroundJob) buildJobEventLocked(status string) types.JobEvent {
+	startedMs := int64(0)
+	if !t.StartTime.IsZero() {
+		startedMs = t.StartTime.UnixMilli()
+	}
+	return types.JobEvent{
+		ID:          t.ID,
+		Kind:        t.Kind,
+		Status:      status,
+		Command:     t.Command,
+		Description: t.Description,
+		ExitCode:    t.ExitCode,
+		StartedMs:   startedMs,
+	}
+}
+
+// emitJobEvent builds the row shell under job.mu and dispatches the
+// lifecycle event outside it. Caller must NOT hold job.mu.
+func (t *BackgroundJob) emitJobEvent(et types.QueryEventType, status string) {
+	if t.onJobEvent == nil {
+		return
+	}
+	t.mu.Lock()
+	ev := t.buildJobEventLocked(status)
+	t.mu.Unlock()
+	t.onJobEvent(et, ev)
 }
 
 // buildNotification creates a JobNotification from the job's current state.

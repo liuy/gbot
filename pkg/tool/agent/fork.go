@@ -58,6 +58,15 @@ type BackgroundAgentRegistry struct {
 	mu     sync.Mutex
 	agents map[string]*BackgroundAgentState
 	minter *IDMinter
+	// onJobEvent is called on every lifecycle transition (started at Spawn,
+	// terminated at finalize). Called outside r.mu — the emission chain runs
+	// synchronously into the engine hub and the wui panel.
+	onJobEvent func(types.QueryEventType, types.JobEvent)
+}
+
+// SetOnJobEvent installs the lifecycle-event emitter (engine wiring).
+func (r *BackgroundAgentRegistry) SetOnJobEvent(fn func(types.QueryEventType, types.JobEvent)) {
+	r.onJobEvent = fn
 }
 
 // NewBackgroundAgentRegistry creates a new registry for background agents.
@@ -122,13 +131,17 @@ func (r *BackgroundAgentRegistry) Spawn(
 	snapshot := *state
 	r.mu.Unlock()
 
+	// Started emission after unlock, before the run goroutine exists:
+	// structurally first — no process event of this job can precede it.
+	if r.onJobEvent != nil {
+		r.onJobEvent(types.EventJobStarted, agentShellEvent(&snapshot, string(AgentRunning)))
+	}
+
 	go func() {
 		defer close(state.done)
 		defer func() {
 			if p := recover(); p != nil {
-				r.mu.Lock()
-				state.Status = AgentFailed
-				r.mu.Unlock()
+				r.finalize(state, AgentFailed, nil)
 				if notifyFn != nil {
 					notifyFn(id, parentToolUseID, nil, fmt.Errorf("panic: %v", p))
 				}
@@ -137,8 +150,8 @@ func (r *BackgroundAgentRegistry) Spawn(
 
 		result, err := runFn(childCtx, id)
 
-		r.mu.Lock()
-		if childCtx.Err() != nil {
+		switch {
+		case childCtx.Err() != nil:
 			// Killed via Cancel, regardless of how runFn reported it —
 			// engine.RunAgent converts a cancellation into a normal
 			// "(agent interrupted by user)" result with nil error, so the
@@ -148,17 +161,12 @@ func (r *BackgroundAgentRegistry) Spawn(
 			// Preserve the partial result so the notification includes
 			// what the agent accomplished before being killed.
 			// Source: AgentTool.tsx:1006 + agentToolUtils.ts:658
-			state.Status = AgentCancelled
-			if result != nil {
-				state.Result = result
-			}
-		} else if err != nil {
-			state.Status = AgentFailed
-		} else {
-			state.Status = AgentCompleted
-			state.Result = result
+			r.finalize(state, AgentCancelled, result)
+		case err != nil:
+			r.finalize(state, AgentFailed, nil)
+		default:
+			r.finalize(state, AgentCompleted, result)
 		}
-		r.mu.Unlock()
 
 		if notifyFn != nil {
 			notifyFn(id, parentToolUseID, result, err)
@@ -166,6 +174,72 @@ func (r *BackgroundAgentRegistry) Spawn(
 	}()
 
 	return &snapshot, nil
+}
+
+// agentShellEvent renders the wui panel row shell for an agent registry
+// entry. The status vocabulary mirrors convertState (adapter.go:116-128):
+// AgentCancelled maps to "killed" — the panel's terminal-status set never
+// contains "cancelled", and a shell stuck on it would never freeze. started
+// events carry no exit code (zero).
+func agentShellEvent(state *BackgroundAgentState, status string) types.JobEvent {
+	kind := "agent"
+	if state.AgentType == "fork" {
+		kind = "fork"
+	}
+	// The registry vocabulary and the wire vocabulary only diverge on
+	// failed/cancelled exit codes and the cancelled→killed rename; completed
+	// and running pass through the initializer unchanged.
+	wireStatus, exitCode := status, 0
+	switch status {
+	case string(AgentFailed):
+		exitCode = 1
+	case string(AgentCancelled):
+		wireStatus = "killed"
+		exitCode = -1
+	}
+	return types.JobEvent{
+		ID:              state.ID,
+		Kind:            kind,
+		Status:          wireStatus,
+		Description:     state.Description,
+		AgentType:       state.AgentType,
+		ParentToolUseID: state.ParentToolUseID,
+		ExitCode:        exitCode,
+		StartedMs:       state.StartTime.UnixMilli(),
+	}
+}
+
+// finalize is the single terminal-state write point: it records the
+// transition under r.mu (branch semantics preserved — a cancelled agent
+// keeps a partial result, a failed one stores nothing, a completed one
+// stores the full result) and emits job_terminated outside the lock, BEFORE
+// the caller's notification: the notification injects XML into the parent
+// conversation and may kick a new parent query whose events must never
+// overtake job_terminated. The emitted shell's AgentType override mirrors
+// convertState (adapter.go:129-135): a resolved Result.AgentType wins,
+// otherwise the spawn-time display type stands.
+func (r *BackgroundAgentRegistry) finalize(state *BackgroundAgentState,
+	status BackgroundAgentStatus, result *types.SubQueryResult) {
+	r.mu.Lock()
+	state.Status = status
+	switch status {
+	case AgentCancelled:
+		if result != nil {
+			state.Result = result
+		}
+	case AgentCompleted:
+		state.Result = result
+	}
+	stored := state.Result
+	r.mu.Unlock()
+
+	if r.onJobEvent != nil {
+		shell := agentShellEvent(state, string(status))
+		if stored != nil && stored.AgentType != "" {
+			shell.AgentType = stored.AgentType
+		}
+		r.onJobEvent(types.EventJobTerminated, shell)
+	}
 }
 
 // copyState clones a state entry including its Result. Callers read the

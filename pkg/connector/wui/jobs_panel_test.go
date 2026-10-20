@@ -25,19 +25,13 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// withJobsWatcherInterval swaps the watcher cadence for the test's lifetime.
+// withBashTailInterval swaps the tail-loop cadence for the test's lifetime.
 // Must run BEFORE the connector is constructed: the ticker interval is read
-// when the watcher goroutine starts.
-func withJobsWatcherInterval(t *testing.T, d time.Duration) {
+// when the loop goroutine starts.
+func withBashTailInterval(t *testing.T, d time.Duration) {
 	t.Helper()
-	old := jobsWatcherIntervalNS.Swap(int64(d))
-	t.Cleanup(func() { jobsWatcherIntervalNS.Store(old) })
-}
-
-func withJobsPendingTTL(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := jobsPendingTTLNS.Swap(int64(d))
-	t.Cleanup(func() { jobsPendingTTLNS.Store(old) })
+	old := bashTailIntervalNS.Swap(int64(d))
+	t.Cleanup(func() { bashTailIntervalNS.Store(old) })
 }
 
 // dialJobsServer dials without draining — the caller wants the takeover
@@ -61,7 +55,7 @@ func dialJobsServer(t *testing.T, c *WUIConnector) *websocket.Conn {
 
 // readMetadataJobs reads until the metadata frame and returns its embedded
 // jobs entries, or nil when the metadata carries no jobs field. Non-metadata
-// frames along the way are skipped: a watcher job_list can slip into the new
+// frames along the way are skipped: a tail-loop job_list can slip into the new
 // era in the window between sendMetadata's queue swap and its metadata push
 // (harmless ordering — metadata is the authoritative snapshot).
 func readMetadataJobs(t *testing.T, ws *websocket.Conn) []jobWireItemHydrated {
@@ -106,7 +100,7 @@ func readJobOutput(t *testing.T, ws *websocket.Conn) jobOutputOutbound {
 }
 
 // assertNoFrameWithin fails if any frame arrives within window. Used with a
-// window spanning multiple watcher beats: unchanged state must stay silent.
+// window spanning multiple tail beats: unchanged state must stay silent.
 func assertNoFrameWithin(t *testing.T, ws *websocket.Conn, window time.Duration) {
 	t.Helper()
 	_ = ws.SetReadDeadline(time.Now().Add(window)) // REAL-TIME
@@ -149,97 +143,45 @@ func bgBashJob(id, status, command string, startedMs int64) *job.JobInfo {
 	}
 }
 
-func TestJobTick_PushesJobListOnNewJob(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	started := time.Now().UnixMilli() // REAL-TIME
-	// Dial BEFORE any job exists: the first sighting must then serialize the
-	// new-entry literal itself. Dialing after SetJobsFn races the watcher —
-	// the first tick can fire pre-dial, where the activeWS guard silently
-	// swallows the frame and the update branch heals fields by the next tick,
-	// hiding new-literal field-clear mutants.
+// dispatchBashStarted pushes a bash job row through the real event path so a
+// tail-loop test starts from a panel that knows the job (rows are
+// event-driven; the registry no longer feeds the live panel).
+func dispatchBashStarted(h *hub.Hub, id, command string, startedMs int64) {
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: id, Kind: "bash", Status: "running", Command: command, StartedMs: startedMs,
+	}})
+}
+
+// TestBashTailTick_DiffSilence pins the tail loop's diff gate: an unchanged
+// tail pushes nothing across several beats.
+func TestBashTailTick_DiffSilence(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{
-			bgBashJob("bg-1", "running", "make check", started),
-			{
-				ID:           "bg-2",
-				Type:         "bash",
-				Status:       "failed",
-				Command:      "make lint",
-				Backgrounded: true,
-				ExitCode:     130,
-				StartedMs:    started + 1,
-			},
+	dispatchBashStarted(h, "bg-1", "sleep 5", time.Now().UnixMilli()) // REAL-TIME
+	c.mock().SetJobTailFn(func(id string) (string, bool) {
+		if id != "bg-1" {
+			return "", false
 		}
-	})
-	raw := readUntilType(t, ws, "job_list")
-	var out jobListOutbound
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("unmarshal job_list: %v", err)
-	}
-	if len(out.Jobs) != 2 {
-		t.Fatalf("jobs len = %d, want 2", len(out.Jobs))
-	}
-	got := out.Jobs[0]
-	if got.ID != "bg-1" || got.Kind != "bash" || got.Status != "running" {
-		t.Errorf("job = {id:%s kind:%s status:%s}, want {bg-1 bash running}", got.ID, got.Kind, got.Status)
-	}
-	if got.Command != "make check" {
-		t.Errorf("command = %q, want %q", got.Command, "make check")
-	}
-	if got.StartedMs != started || got.StartedMs <= 0 {
-		t.Errorf("startedMs = %d, want %d (>0)", got.StartedMs, started)
-	}
-	// The terminal entry must carry its exit code straight from the
-	// new-entry literal (field-clear at construction would zero it).
-	term := out.Jobs[1]
-	if term.Status != "failed" || term.ExitCode != 130 {
-		t.Errorf("terminal job = {status:%s exitCode:%d}, want {failed 130}", term.Status, term.ExitCode)
-	}
-	// job_list is scalar-only; blocks only exist on metadata hydration entries.
-	if strings.Contains(string(raw), "blocks") {
-		t.Errorf("job_list frame must not carry blocks: %s", string(raw))
-	}
-}
-
-func TestJobTick_SkipsForegroundBash(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{{
-			ID:           "bg-9",
-			Type:         "bash",
-			Status:       "running",
-			Command:      "foreground cmd",
-			Backgrounded: false,
-			StartedMs:    time.Now().UnixMilli(), // REAL-TIME
-		}}
+		return "a\n", true
 	})
 
-	ws := dialAndStore(t, c)
-	assertNoFrameWithin(t, ws, 150*time.Millisecond)
-}
-
-func TestJobTick_DiffSilence(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "sleep 5", time.Now().UnixMilli())} // REAL-TIME
-	})
-
-	ws := dialAndStore(t, c)
 	readJobList(t, ws)
-	// Unchanged summary and absent tail: several beats, zero frames.
+	readJobOutput(t, ws) // first sighting pushes the tail once
+	// Unchanged tail: several beats, zero frames.
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
-func TestJobTick_BashTailPushOnChange(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", time.Now().UnixMilli())} // REAL-TIME
-	})
+// TestBashTailTick_PushesOnChange pins the tail loop's push path: a changed
+// tail reaches the wire as a job_output frame on the next beat, and only
+// then — a stable tail never repeats.
+func TestBashTailTick_PushesOnChange(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
 	var tailMu sync.Mutex
 	cur := "a\n"
 	c.mock().SetJobTailFn(func(id string) (string, bool) {
@@ -251,7 +193,6 @@ func TestJobTick_BashTailPushOnChange(t *testing.T) {
 		return cur, true
 	})
 
-	ws := dialAndStore(t, c)
 	readJobList(t, ws)
 	first := readJobOutput(t, ws)
 	if first.JobID != "bg-1" || first.Tail != "a\n" {
@@ -270,44 +211,51 @@ func TestJobTick_BashTailPushOnChange(t *testing.T) {
 	assertOnlyJobListWithin(t, ws, 150*time.Millisecond)
 }
 
-func TestJobTick_InactiveSlotNoPush(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestBashTail_InactiveSlotNoPush pins the push gate: a non-active slot's
+// bash row keeps its tail cache warm (fetched every beat) but nothing ever
+// reaches the wire.
+func TestBashTail_InactiveSlotNoPush(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 
-	// A second slot with a fully initialized jobs view and watcher, but NOT
-	// active: its job must never reach the wire.
+	// A second, fully wired slot with a bash row, but NOT active: its tail
+	// must never reach the wire.
 	h := hub.NewHub()
 	mockB := &mockEngine{}
 	slotB := &engineSlot{
-		engineID:           "engineB",
-		engine:             mockB,
-		hub:                h,
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+		engineID:    "engineB",
+		engine:      mockB,
+		hub:         h,
+		taskToolIDs: map[string]bool{},
+		jobView:     map[string]*jobViewEntry{},
+		streams:     map[string]*streamState{"": {}},
 	}
+	slotB.unsubscribe = h.Subscribe(&engineHubShim{engineID: "engineB", c: c})
 	c.slotsMu.Lock()
 	c.slots["engineB"] = slotB
 	c.slotsMu.Unlock()
-	c.startJobsWatcher(slotB)
-	mockB.SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "build", time.Now().UnixMilli())} // REAL-TIME
+	c.startBashTailLoop(slotB)
+	ws := dialAndStore(t, c)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "bg-1", Kind: "bash", Status: "running", Command: "build", StartedMs: time.Now().UnixMilli(), // REAL-TIME
+	}})
+	mockB.SetJobTailFn(func(id string) (string, bool) {
+		if id != "bg-1" {
+			return "", false
+		}
+		return "warm tail\n", true
 	})
 
-	ws := dialAndStore(t, c)
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
 func TestJobStop_KillsAndPushes(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", time.Now().UnixMilli())} // REAL-TIME
-	})
-
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
+
 	readJobList(t, ws) // warm the view so the forced push has content
 	// The mock keeps reporting bg-1 as running after the kill, so the ack
 	// frame's payload equals the baseline — only pushJobsSnapshot's "\x00"
@@ -329,7 +277,7 @@ func TestJobStop_KillsAndPushes(t *testing.T) {
 }
 
 func TestJobStop_KillErrorSendsErrorFrame(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetKillJobFn(func(id string) error {
 		return errors.New("no such job")
@@ -350,44 +298,8 @@ func TestJobStop_KillErrorSendsErrorFrame(t *testing.T) {
 	}
 }
 
-// TestJobTick_EmptyViewPushesEmptyList pins that a view transitioning to
-// empty still pushes the clearing frame: with jobs_clear retired, the live
-// trigger is the last running job vanishing from the registry. A diff
-// baseline reset to "" would suppress exactly that frame (collect's
-// never-pushed guard), leaving the client rendering gone jobs until
-// reconnect.
-func TestJobTick_EmptyViewPushesEmptyList(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	var jobsMu sync.Mutex
-	visible := []*job.JobInfo{bgBashJob("bg-1", "running", "doomed cmd", 1000)}
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		jobsMu.Lock()
-		defer jobsMu.Unlock()
-		return visible
-	})
-
-	ws := dialAndStore(t, c)
-	first := readJobList(t, ws)
-	if len(first.Jobs) != 1 {
-		t.Fatalf("initial jobs len = %d, want 1", len(first.Jobs))
-	}
-
-	// The registry drops the job (engine restart / registry eviction): the
-	// emptied view must reach the wire as an empty job_list.
-	jobsMu.Lock()
-	visible = nil
-	jobsMu.Unlock()
-	second := readJobList(t, ws)
-	if len(second.Jobs) != 0 {
-		t.Fatalf("after the last job vanishes, jobs len = %d, want 0: %+v", len(second.Jobs), second.Jobs)
-	}
-	// Baseline settled on the real empty-payload JSON: watcher stays silent.
-	assertNoFrameWithin(t, ws, 150*time.Millisecond)
-}
-
 func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -401,7 +313,17 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 			StartedMs:       1234,
 		}}
 	})
-	parent := &types.AgentMeta{ParentToolUseID: "toolu_parent"}
+	ws := dialJobsServer(t, c)
+	// job_started creates the stream region (anchor = the shell's parent id)
+	// before the job's process events arrive; the started frame is the row's
+	// own event push.
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "explore the repo", AgentType: "Explore",
+		ParentToolUseID: "toolu_parent", StartedMs: 1234,
+	}})
+	readJobList(t, ws)
+	parent := &types.AgentMeta{ParentToolUseID: "toolu_parent", JobID: "agent-1"}
 	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: parent,
 		ToolUse: &types.ToolUseEvent{ID: "toolu_inner", Name: "Bash", Summary: "echo hi"}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: parent, Text: "agent says "})
@@ -409,8 +331,6 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventToolEnd, Agent: parent,
 		ToolResult: &types.ToolResultEvent{ToolUseID: "toolu_inner"}})
 
-	ws := dialJobsServer(t, c)
-	readJobList(t, ws) // discovery (+ pending flush) proven before re-dial
 	ws2 := dialJobsServer(t, c)
 	items := readMetadataJobs(t, ws2)
 	if len(items) != 1 {
@@ -444,9 +364,10 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 	}
 }
 
-func TestCaptureJobEvent_MaskingAndNesting(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
+func TestStreams_MaskingAndNesting(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
 			ID: "agent-1", Type: "agent", Status: "running",
@@ -454,23 +375,27 @@ func TestCaptureJobEvent_MaskingAndNesting(t *testing.T) {
 			Backgrounded: true, StartedMs: 100,
 		}}
 	})
-	// Discovery first, then events — production ordering: the bg agent's
-	// nested sub-agent can only emit events after its own tool_start was
-	// applied to the feed (which itself follows discovery). Events keyed by
-	// an inner tool id arriving pre-discovery have no feed to route into.
+	// Row + region via the lifecycle event first, then process events —
+	// production ordering (Spawn emits started before the job's first turn).
 	ws := dialJobsServer(t, c)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "nested test", ParentToolUseID: "toolu_p", StartedMs: 100,
+	}})
 	readJobList(t, ws)
 
-	// Job's own events (parent == toolu_p) → masked to the feed root.
-	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_p"},
+	// Job's own events (parent == toolu_p) → masked to the region root.
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: "agent-1"},
 		ToolUse: &types.ToolUseEvent{ID: "toolu_outer", Name: "Bash", Summary: "outer"}})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_p"}, Text: "outer text"})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: "agent-1"}, Text: "outer text"})
 	// Nested agent events (parent == an inner tool id) → children, no masking.
-	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_outer"},
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_outer", JobID: "agent-1"},
 		ToolUse: &types.ToolUseEvent{ID: "toolu_deep", Name: "Grep", Summary: "deep"}})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_deep"}, Text: "deep text"})
-	// Unrelated parent → parked as pending, must pollute no feed.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_deep", JobID: "agent-1"}, Text: "deep text"})
+	// No-JobID event (sync sub-agent somewhere else): chat-only, never any job region.
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_unrelated"}, Text: "stray"})
+	// Different JobID with no region yet: dropped — must not pollute agent-1's.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_other", JobID: "agent-2"}, Text: "other job text"})
 
 	ws2 := dialJobsServer(t, c)
 	items := readMetadataJobs(t, ws2)
@@ -496,35 +421,62 @@ func TestCaptureJobEvent_MaskingAndNesting(t *testing.T) {
 	}
 	for _, b := range blocks {
 		if strings.Contains(b.Text, "stray") || strings.Contains(b.Summary, "stray") {
-			t.Errorf("unrelated-parent event leaked into feed: %+v", b)
+			t.Errorf("no-JobID event leaked into the job region: %+v", b)
 		}
+		if strings.Contains(b.Text, "other job") || strings.Contains(b.Summary, "other job") {
+			t.Errorf("foreign-JobID event leaked into the job region: %+v", b)
+		}
+	}
+	// The foreign job gets its region from its own started event and its
+	// event lands there (single delivery per job).
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-2", Kind: "agent", Status: "running", ParentToolUseID: "toolu_other", StartedMs: 101,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_other", JobID: "agent-2"}, Text: "other job text"})
+	slot := c.slots["main"]
+	slot.ssMu.Lock()
+	foreign := slot.streams["agent-2"]
+	var foreignBlocks []streamBlock
+	if foreign != nil {
+		foreignBlocks = append([]streamBlock(nil), foreign.blocks...)
+	}
+	slot.ssMu.Unlock()
+	if foreign == nil || len(foreignBlocks) != 1 || foreignBlocks[0].Text != "other job text" {
+		t.Fatalf("agent-2 region blocks = %+v, want exactly [text %q]", foreignBlocks, "other job text")
 	}
 }
 
-func TestPendingAgentEvents_FlushedOnDiscovery(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// Events can arrive before any registry enumeration sees the job: job_started
+// holds the region from the spawn moment, so discovery finds it already
+// populated.
+func TestCaptureJobEvent_FeedExistsBeforeDiscovery(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	agentJob := &job.JobInfo{
 		ID: "agent-1", Type: "agent", Status: "running",
 		Description: "late discovery", ParentToolUseID: "toolu_late",
 		Backgrounded: true, StartedMs: 100,
 	}
-	parent := &types.AgentMeta{ParentToolUseID: "toolu_late"}
+	// started precedes the job's process events (production ordering).
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "late discovery", ParentToolUseID: "toolu_late", StartedMs: 100,
+	}})
+	parent := &types.AgentMeta{ParentToolUseID: "toolu_late", JobID: "agent-1"}
 	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: parent,
 		ToolUse: &types.ToolUseEvent{ID: "toolu_x", Name: "Read", Summary: "read file"}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: parent, Text: "flushed text"})
-	// Job appears only after the events were parked.
+	// The job is enumerated by the registry only after the events were folded
+	// (discovery = the dial's takeover reconcile).
 	c.mock().SetJobsFn(func() []*job.JobInfo { return []*job.JobInfo{agentJob} })
 
 	ws := dialJobsServer(t, c)
-	readJobList(t, ws) // discovery → pending flush
-	ws2 := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws2)
+	items := readMetadataJobs(t, ws)
 	if len(items) != 1 {
 		t.Fatalf("metadata jobs len = %d, want 1", len(items))
 	}
 	if len(items[0].Blocks) != 2 {
-		t.Fatalf("blocks len = %d, want 2 (tool + text from pending): %+v", len(items[0].Blocks), items[0].Blocks)
+		t.Fatalf("blocks len = %d, want 2 (tool + text folded before discovery): %+v", len(items[0].Blocks), items[0].Blocks)
 	}
 	if items[0].Blocks[0].Kind != "tool" || items[0].Blocks[0].ID != "toolu_x" {
 		t.Errorf("blocks[0] = %+v, want tool toolu_x", items[0].Blocks[0])
@@ -537,31 +489,30 @@ func TestPendingAgentEvents_FlushedOnDiscovery(t *testing.T) {
 // Fork jobs are agent-family: the panel's family rule is "not bash", so a
 // fork-kind entry must get a live feed exactly like an agent-kind one, and
 // must not be routed down the bash tail path.
-func TestPendingAgentEvents_FlushedOnDiscovery_ForkKind(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+func TestCaptureJobEvent_FeedExistsBeforeDiscovery_ForkKind(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	forkJob := &job.JobInfo{
 		ID: "agent-1", Type: "fork", Status: "running",
 		Description: "fork feed", ParentToolUseID: "toolu_fk",
 		Backgrounded: true, StartedMs: 100,
 	}
-	parent := &types.AgentMeta{ParentToolUseID: "toolu_fk"}
+	// started creates the fork's region (fork is agent-family).
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "fork", Status: "running",
+		Description: "fork feed", ParentToolUseID: "toolu_fk", StartedMs: 100,
+	}})
+	parent := &types.AgentMeta{ParentToolUseID: "toolu_fk", JobID: "agent-1"}
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Agent: parent, Text: "fork text"})
 	c.mock().SetJobsFn(func() []*job.JobInfo { return []*job.JobInfo{forkJob} })
 
 	ws := dialJobsServer(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 1 {
-		t.Fatalf("wire jobs len = %d, want 1", len(out.Jobs))
-	}
-	if out.Jobs[0].Kind != "fork" {
-		t.Errorf("wire kind = %q, want fork (JobInfo.Type rides the wire verbatim)", out.Jobs[0].Kind)
-	}
-
-	ws2 := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws2)
+	items := readMetadataJobs(t, ws)
 	if len(items) != 1 {
 		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	}
+	if items[0].Kind != "fork" {
+		t.Errorf("wire kind = %q, want fork (JobInfo.Type rides the wire verbatim)", items[0].Kind)
 	}
 	if len(items[0].Blocks) != 1 {
 		t.Fatalf("fork feed blocks len = %d, want 1 — fork kind must own a feed: %+v", len(items[0].Blocks), items[0].Blocks)
@@ -574,8 +525,11 @@ func TestPendingAgentEvents_FlushedOnDiscovery_ForkKind(t *testing.T) {
 	}
 }
 
-func TestJobTick_JobViewCapEvictsUntilAtCap(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestReconcile_JobViewCapEvictsUntilAtCap pins the cap on the reconcile
+// path (takeover): a registry snapshot over the cap evicts the OLDEST
+// TERMINAL rows until at cap; each eviction logs the wui:jobs line.
+func TestReconcile_JobViewCapEvictsUntilAtCap(t *testing.T) {
+	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -584,14 +538,15 @@ func TestJobTick_JobViewCapEvictsUntilAtCap(t *testing.T) {
 		}
 		return jobs
 	})
+	rec := mutDCaptureSlog(t)
 
-	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 200 {
-		t.Fatalf("jobs len = %d, want 200 (capped)", len(out.Jobs))
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 200 {
+		t.Fatalf("jobs len = %d, want 200 (capped)", len(items))
 	}
 	ids := map[string]bool{}
-	for _, j := range out.Jobs {
+	for _, j := range items {
 		ids[j.ID] = true
 	}
 	if ids["bg-001"] {
@@ -600,10 +555,16 @@ func TestJobTick_JobViewCapEvictsUntilAtCap(t *testing.T) {
 	if !ids["bg-201"] {
 		t.Error("bg-201 (largest startedMs) must survive the cap, but is absent")
 	}
+	if rec.count(slog.LevelInfo, "wui:jobs: view over cap, evicting oldest terminal") != 1 {
+		t.Fatal("the single over-cap eviction must log the wui:jobs eviction line exactly once")
+	}
 }
 
-func TestJobTick_CapNeverEvictsRunning(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestReconcile_CapNeverEvictsRunning pins that the reconcile cap's victim
+// scan is restricted to terminal rows: a running row survives even when the
+// view is over cap.
+func TestReconcile_CapNeverEvictsRunning(t *testing.T) {
+	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -614,14 +575,14 @@ func TestJobTick_CapNeverEvictsRunning(t *testing.T) {
 		return jobs
 	})
 
-	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 200 {
-		t.Fatalf("jobs len = %d, want 200 (199 terminal + 1 running)", len(out.Jobs))
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 200 {
+		t.Fatalf("jobs len = %d, want 200 (199 terminal + 1 running)", len(items))
 	}
 	ids := map[string]bool{}
 	running := 0
-	for _, j := range out.Jobs {
+	for _, j := range items {
 		ids[j.ID] = true
 		if j.Status == "running" {
 			running++
@@ -639,15 +600,20 @@ func TestJobTick_CapNeverEvictsRunning(t *testing.T) {
 }
 
 // TestMetadata_TailFromCacheNeverCallsJobTail locks the deadlock-cycle middle
-// edge: metadata's tail must come from the watcher-warmed entry cache, never
-// from a JobTail call inside the ssMu → jobsMu section. The 1h interval makes
+// edge: metadata's tail must come from the tail-loop-warmed entry cache, never
+// from a JobTail call inside the ssMu section. The 1h interval makes
 // the test deterministic — no legitimate background tick can bump the count.
 func TestMetadata_TailFromCacheNeverCallsJobTail(t *testing.T) {
-	withJobsWatcherInterval(t, time.Hour)
-	c := newTestConnector(t)
+	withBashTailInterval(t, time.Hour)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	startedMs := time.Now().UnixMilli() // REAL-TIME
+	// The dial's reconcile enumerates the registry; an unlisted running row
+	// is a vanish-drop, so the mock must keep listing the job it lists.
 	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", time.Now().UnixMilli())} // REAL-TIME
+		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", startedMs)}
 	})
+	dispatchBashStarted(h, "bg-1", "make check", startedMs)
 	var tailCalls atomic.Int32
 	c.mock().SetJobTailFn(func(id string) (string, bool) {
 		if id != "bg-1" {
@@ -658,12 +624,12 @@ func TestMetadata_TailFromCacheNeverCallsJobTail(t *testing.T) {
 	})
 
 	// Warm the cache with one direct tick (fetches the tail outside any
-	// connector lock, writes it back under jobsMu).
+	// connector lock, writes it back under ssMu).
 	slot := c.activeSlotTest(t)
-	c.jobTick(slot)
+	c.bashTailTick(slot)
 	n := tailCalls.Load()
 	if n != 1 {
-		t.Fatalf("jobTick tail calls = %d, want 1", n)
+		t.Fatalf("bashTailTick tail calls = %d, want 1", n)
 	}
 
 	ws := dialJobsServer(t, c)
@@ -679,12 +645,11 @@ func TestMetadata_TailFromCacheNeverCallsJobTail(t *testing.T) {
 	}
 }
 
-// TestCaptureJobEvent_FeedCapDropsHead pins the 400-block feed cap. Plan
-// drafted this with text_delta events, but consecutive text deltas merge
-// into ONE text block (updateStreamState append semantics), so they can
-// never reach the cap; tool_start blocks never merge and do.
-func TestCaptureJobEvent_FeedCapDropsHead(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestStreams_FeedCapDropsHead pins the 400-block region cap. Only
+// non-merging blocks can reach it: consecutive text deltas fold into one text
+// block, tool_start blocks never merge.
+func TestStreams_FeedCapDropsHead(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -693,9 +658,13 @@ func TestCaptureJobEvent_FeedCapDropsHead(t *testing.T) {
 			Backgrounded: true, StartedMs: 100,
 		}}
 	})
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "cap test", ParentToolUseID: "toolu_cap", StartedMs: 100,
+	}})
 	for i := 1; i <= 401; i++ {
 		c.Handle(types.QueryEvent{Type: types.EventToolStart,
-			Agent:   &types.AgentMeta{ParentToolUseID: "toolu_cap"},
+			Agent:   &types.AgentMeta{ParentToolUseID: "toolu_cap", JobID: "agent-1"},
 			ToolUse: &types.ToolUseEvent{ID: fmt.Sprintf("toolu_%03d", i), Name: "Bash", Summary: fmt.Sprintf("step %d", i)}})
 	}
 
@@ -718,38 +687,10 @@ func TestCaptureJobEvent_FeedCapDropsHead(t *testing.T) {
 	}
 }
 
-func TestPendingAgentEvents_TTLSwept(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	withJobsPendingTTL(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "toolu_ghost"}, Text: "stale text"})
-	// Several beats pass with the job absent — the TTL sweep must discard
-	// the parked events before the job ever materializes.
-	time.Sleep(100 * time.Millisecond) // REAL-TIME
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{{
-			ID: "agent-ghost", Type: "agent", Status: "running",
-			Description: "ghost", ParentToolUseID: "toolu_ghost",
-			Backgrounded: true, StartedMs: 100,
-		}}
-	})
-
-	ws := dialJobsServer(t, c)
-	readJobList(t, ws) // discovery — flushed events would land here if sweeping failed
-	ws2 := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws2)
-	if len(items) != 1 {
-		t.Fatalf("metadata jobs len = %d, want 1", len(items))
-	}
-	if len(items[0].Blocks) != 0 {
-		t.Errorf("blocks = %+v, want none — TTL sweep should have discarded the parked events", items[0].Blocks)
-	}
-}
-
 func TestSessionSwitch_ClearsTerminalJobs(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	var jobsMu sync.Mutex
 	terminalVisible := true
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -763,15 +704,21 @@ func TestSessionSwitch_ClearsTerminalJobs(t *testing.T) {
 		}
 		return []*job.JobInfo{bgBashJob("bg-2", "running", "live cmd", 2000)}
 	})
-
 	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "old session cmd", 1000)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobTerminated, Job: &types.JobEvent{
+		ID: "bg-1", Kind: "bash", Status: "completed", Command: "old session cmd", StartedMs: 1000,
+	}})
+	dispatchBashStarted(h, "bg-2", "live cmd", 2000)
 	first := readJobList(t, ws)
 	if len(first.Jobs) != 2 {
 		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
 	}
 
-	// The old session's jobs leave the registry with the session itself;
-	// the frozen terminal entry would survive without the explicit clear.
+	// The old session's jobs leave the registry with the session itself; the
+	// frozen terminal entry would survive without the explicit clear — and
+	// with the registry still listing it, the takeover reconcile would simply
+	// re-add it.
 	jobsMu.Lock()
 	terminalVisible = false
 	jobsMu.Unlock()
@@ -987,70 +934,28 @@ func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
 	}
 }
 
-// TestJobsPanel_DefaultCadence pins the production watcher cadence (500ms
-// tick, 5s pending TTL — the documented contract; panel update frequency is
-// user-visible). Tests override both knobs, so nothing else observes the
-// defaults; a direct value pin is the only deterministic observable.
-func TestJobsPanel_DefaultCadence(t *testing.T) {
-	if got := jobsWatcherInterval(); got != 500*time.Millisecond {
-		t.Errorf("default watcher interval = %v, want 500ms", got)
-	}
-	if got := jobsPendingTTL(); got != 5*time.Second {
-		t.Errorf("default pending TTL = %v, want 5s", got)
+// TestBashTail_DefaultCadence pins the production tail cadence (500ms tick —
+// the documented contract; tail update frequency is user-visible). Tests
+// override the knob, so nothing else observes the default; a direct value pin
+// is the only deterministic observable.
+func TestBashTail_DefaultCadence(t *testing.T) {
+	if got := bashTailInterval(); got != 500*time.Millisecond {
+		t.Errorf("default tail interval = %v, want 500ms", got)
 	}
 }
 
-// TestPendingAgentEvents_ShortDelayBeforeDiscoveryStillFlushes locks the TTL
-// semantics: events parked for well under the default 5s TTL must survive
-// several job-less ticks and still flush when the job is finally discovered.
-// A zeroed TTL (or a zero firstSeen) sweeps them on the first tick and the
-// feed would hydrate empty.
-func TestPendingAgentEvents_ShortDelayBeforeDiscoveryStillFlushes(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.Handle(types.QueryEvent{Type: types.EventToolStart,
-		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_slow"},
-		ToolUse: &types.ToolUseEvent{ID: "toolu_slow_tool", Name: "Read", Summary: "read file"}})
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "toolu_slow"}, Text: "slow flushed text"})
-	// Several job-less ticks pass; the default 5s TTL must keep them parked.
-	time.Sleep(100 * time.Millisecond) // REAL-TIME
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{{
-			ID: "agent-slow", Type: "agent", Status: "running",
-			Description: "late", ParentToolUseID: "toolu_slow",
-			Backgrounded: true, StartedMs: 100,
-		}}
-	})
-
-	ws := dialJobsServer(t, c)
-	readJobList(t, ws) // discovery — the parked events must flush here
-	ws2 := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws2)
-	if len(items) != 1 {
-		t.Fatalf("metadata jobs len = %d, want 1", len(items))
-	}
-	if len(items[0].Blocks) != 2 {
-		t.Fatalf("blocks = %+v, want 2 (tool + text survived the delay)", items[0].Blocks)
-	}
-	if items[0].Blocks[0].ID != "toolu_slow_tool" || items[0].Blocks[1].Text != "slow flushed text" {
-		t.Errorf("blocks = [%+v %+v], want [toolu_slow_tool, \"slow flushed text\"]",
-			items[0].Blocks[0], items[0].Blocks[1])
-	}
-}
-
-// TestJobsWatcher_ExitsOnStop pins the watcher's lifecycle: Stop closes
-// c.done and the watcher's select must take the done case. A watcher that
-// ignores done keeps polling the engine forever after the connector died.
-func TestJobsWatcher_ExitsOnStop(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestBashTailLoop_ExitsOnStop pins the tail loop's lifecycle: Stop closes
+// c.done and the loop's select must take the done case. A loop that ignores
+// done keeps sampling the engine forever after the connector died.
+func TestBashTailLoop_ExitsOnStop(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
 	// Hand-built connector: the test itself owns Stop (newTestConnector
 	// registers a second Stop in cleanup — closing c.done twice panics).
 	var calls atomic.Int32
 	m := &mockEngine{}
-	m.SetJobsFn(func() []*job.JobInfo {
+	m.SetJobTailFn(func(id string) (string, bool) {
 		calls.Add(1)
-		return nil
+		return "t", true
 	})
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
@@ -1063,27 +968,28 @@ func TestJobsWatcher_ExitsOnStop(t *testing.T) {
 	activeID := "main"
 	c.active.Store(&activeID)
 	slot := &engineSlot{
-		engineID:           "main",
-		engine:             m,
-		hub:                hub.NewHub(),
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+		engineID:    "main",
+		engine:      m,
+		hub:         hub.NewHub(),
+		taskToolIDs: map[string]bool{},
+		jobView:     map[string]*jobViewEntry{},
+		streams:     map[string]*streamState{"": {}},
 	}
 	slot.active.Store(true)
+	// One bash row so each beat has something to sample; the row is written
+	// directly (loop lifecycle is the subject here, not row creation).
+	slot.jobView["bg-1"] = &jobViewEntry{item: jobWireItem{ID: "bg-1", Kind: "bash", Status: "running", StartedMs: 1}}
 	c.slots["main"] = slot
-	c.startJobsWatcher(slot)
+	c.startBashTailLoop(slot)
 
 	if !waitFor(2*time.Second, func() bool { return calls.Load() > 0 }) {
-		t.Fatal("watcher never ticked before Stop")
+		t.Fatal("tail loop never sampled before Stop")
 	}
 	c.Stop()
 	after := calls.Load()
 	time.Sleep(150 * time.Millisecond) // REAL-TIME
 	if got := calls.Load(); got != after {
-		t.Errorf("JobSummaries calls after Stop = %d (was %d) — watcher must exit on done", got, after)
+		t.Errorf("JobTail calls after Stop = %d (was %d) — tail loop must exit on done", got, after)
 	}
 }
 
@@ -1092,16 +998,14 @@ func TestJobsWatcher_ExitsOnStop(t *testing.T) {
 // the bash/agent/fork vocabulary reaches the client unchanged instead of
 // collapsing to "".
 func TestJobWire_UnknownTypePassthrough(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{{
-			ID: "x-1", Type: "custom_kind", Status: "running",
-			Backgrounded: true, StartedMs: 42,
-		}}
-	})
-
+	withBashTailInterval(t, time.Hour)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "x-1", Kind: "custom_kind", Status: "running", StartedMs: 42,
+	}})
+
 	out := readJobList(t, ws)
 	if len(out.Jobs) != 1 {
 		t.Fatalf("jobs len = %d, want 1", len(out.Jobs))
@@ -1111,71 +1015,40 @@ func TestJobWire_UnknownTypePassthrough(t *testing.T) {
 	}
 }
 
-// TestJobTick_NilViewSlotNoPanic pins the nil-map guard: slots built directly
-// (bypassing registerEngine) have no jobs maps, and a tick on such a slot must
-// be a silent no-op, not a nil-map write panic.
-func TestJobTick_NilViewSlotNoPanic(t *testing.T) {
+// TestBashTailTick_NilViewSlotNoPanic pins the nil-map guard: slots built
+// directly (bypassing registerEngine) have no jobs maps, and a tick on such a
+// slot must be a silent no-op, not a nil-map write panic.
+func TestBashTailTick_NilViewSlotNoPanic(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", 1)}
 	})
 	ghost := &engineSlot{engineID: "ghost", engine: c.mock()}
-	c.jobTick(ghost) // must return at the guard, not panic on the nil jobView
+	c.bashTailTick(ghost) // must return at the guard, not panic on the nil jobView
 }
 
-// TestCaptureJobEvent_NilViewNoPanic pairs with TestJobTick_NilViewSlotNoPanic
-// for the event path: an agent-meta event on a map-less slot must park
-// nowhere and panic nowhere.
-func TestCaptureJobEvent_NilViewNoPanic(t *testing.T) {
+// TestApplyJobStreamEvent_NilViewNoPanic pairs with
+// TestJobTick_NilViewSlotNoPanic for the event path: a JobID-carrying event
+// on a map-less slot must create no region and panic nowhere.
+func TestApplyJobStreamEvent_NilViewNoPanic(t *testing.T) {
 	c := newTestConnector(t)
 	ghost := &engineSlot{engineID: "ghost", hub: hub.NewHub()}
-	c.captureJobEvent(ghost, types.QueryEvent{Type: types.EventTextDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "toolu_x"}, Text: "stray"})
+	c.applyJobStreamEvent(ghost, types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_x", JobID: "agent-1"}, Text: "stray"})
 }
 
-// TestJobTick_MergeSkipsNilAndForegroundEntries covers the merge filter's
-// three-way contract in one fixture: a nil summary is skipped (no panic), a
-// foreground job is skipped without abandoning the loop (a later background
-// job still merges), and a fresh completed entry carries its exit code onto
-// the wire.
-func TestJobTick_MergeSkipsNilAndForegroundEntries(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{
-			nil,
-			{ID: "bg-fg", Type: "bash", Status: "running", Command: "fg cmd",
-				Backgrounded: false, StartedMs: 900},
-			{ID: "bg-1", Type: "bash", Status: "completed", Command: "done cmd",
-				Backgrounded: true, StartedMs: 7777, ExitCode: 3},
-		}
-	})
-
-	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 1 {
-		t.Fatalf("jobs len = %d, want 1 (nil + foreground skipped): %+v", len(out.Jobs), out.Jobs)
-	}
-	got := out.Jobs[0]
-	if got.ID != "bg-1" || got.Status != "completed" || got.ExitCode != 3 {
-		t.Errorf("job = {%s %s exit:%d}, want {bg-1 completed exit:3}", got.ID, got.Status, got.ExitCode)
-	}
-}
-
-// TestJobTick_TailsOnlyBashJobs pins the tailID filter: only bash jobs are
-// tailed (agent feeds come from events, not tails), and a non-bash entry in
-// the middle of the summaries must not abort the scan for later bash ids.
-func TestJobTick_TailsOnlyBashJobs(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{
-			{ID: "agent-1", Type: "agent", Status: "running",
-				Description: "no tails", ParentToolUseID: "toolu_p",
-				Backgrounded: true, StartedMs: 100},
-			bgBashJob("bg-1", "running", "make check", 200),
-		}
-	})
+// TestBashTailTick_TailsOnlyBashJobs pins the tail filter: only bash rows are
+// tailed (agent feeds come from events, not tails), and an agent row in the
+// view must not abort the scan for later bash ids.
+func TestBashTailTick_TailsOnlyBashJobs(t *testing.T) {
+	withBashTailInterval(t, time.Hour) // the test drives one beat directly
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "no tails", ParentToolUseID: "toolu_p", StartedMs: 100,
+	}})
+	dispatchBashStarted(h, "bg-1", "make check", 200)
 	var tailMu sync.Mutex
 	var tailIDs []string
 	c.mock().SetJobTailFn(func(id string) (string, bool) {
@@ -1185,91 +1058,21 @@ func TestJobTick_TailsOnlyBashJobs(t *testing.T) {
 		return "tail of " + id, true
 	})
 
-	ws := dialAndStore(t, c)
-	readJobList(t, ws)
-	if out := readJobOutput(t, ws); out.JobID != "bg-1" {
-		t.Fatalf("first job_output = %s, want bg-1", out.JobID)
-	}
-	time.Sleep(80 * time.Millisecond) // REAL-TIME: several more beats
+	c.bashTailTick(c.activeSlotTest(t))
+
 	tailMu.Lock()
 	defer tailMu.Unlock()
-	for _, id := range tailIDs {
-		if id != "bg-1" {
-			t.Errorf("JobTail called for %q — only bash jobs may be tailed (calls: %v)", id, tailIDs)
-		}
+	if len(tailIDs) != 1 || tailIDs[0] != "bg-1" {
+		t.Errorf("JobTail calls = %v, want exactly [bg-1] — only bash rows may be tailed", tailIDs)
 	}
 }
 
-// TestJobTick_UpdatesExistingEntryStatusAndExitCode pins the update path of
-// an already-known job: a status/exit transition must reach the wire as a new
-// job_list frame with the new values (the entry is not re-created).
-func TestJobTick_UpdatesExistingEntryStatusAndExitCode(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	var jobsMu sync.Mutex
-	info := bgBashJob("bg-1", "running", "long cmd", 5555)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		jobsMu.Lock()
-		defer jobsMu.Unlock()
-		return []*job.JobInfo{info}
-	})
-
-	ws := dialAndStore(t, c)
-	first := readJobList(t, ws)
-	if first.Jobs[0].Status != "running" {
-		t.Fatalf("initial status = %s, want running", first.Jobs[0].Status)
-	}
-
-	jobsMu.Lock()
-	info = bgBashJob("bg-1", "failed", "long cmd", 5555)
-	info.ExitCode = 3
-	jobsMu.Unlock()
-	second := readJobList(t, ws)
-	if len(second.Jobs) != 1 {
-		t.Fatalf("updated jobs len = %d, want 1", len(second.Jobs))
-	}
-	if second.Jobs[0].Status != "failed" || second.Jobs[0].ExitCode != 3 {
-		t.Errorf("updated job = {%s exit:%d}, want {failed exit:3}", second.Jobs[0].Status, second.Jobs[0].ExitCode)
-	}
-}
-
-// TestJobTick_RunningJobVanishesFromRegistry pins the drop path: a running
-// entry that disappears from the registry is removed from the view (frame
-// with it gone), while jobs still listed survive.
-func TestJobTick_RunningJobVanishesFromRegistry(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	var jobsMu sync.Mutex
-	visible := []*job.JobInfo{
-		bgBashJob("bg-1", "running", "doomed cmd", 1000),
-		bgBashJob("bg-2", "running", "live cmd", 2000),
-	}
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		jobsMu.Lock()
-		defer jobsMu.Unlock()
-		return visible
-	})
-
-	ws := dialAndStore(t, c)
-	first := readJobList(t, ws)
-	if len(first.Jobs) != 2 {
-		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
-	}
-
-	jobsMu.Lock()
-	visible = visible[1:]
-	jobsMu.Unlock()
-	second := readJobList(t, ws)
-	if len(second.Jobs) != 1 || second.Jobs[0].ID != "bg-2" {
-		t.Fatalf("after vanish jobs = %+v, want only bg-2", second.Jobs)
-	}
-}
-
-// TestJobTick_CapRunningOldestNeverEvicted pins that the cap's victim scan is
-// restricted to TERMINAL entries: a running job with the smallest StartedMs
-// must survive while the oldest terminal is the one evicted.
-func TestJobTick_CapRunningOldestNeverEvicted(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// TestReconcile_CapRunningOldestNeverEvicted pins that the reconcile cap's
+// victim scan is restricted to TERMINAL entries: a running job with the
+// smallest StartedMs must survive while the oldest terminal is the one
+// evicted.
+func TestReconcile_CapRunningOldestNeverEvicted(t *testing.T) {
+	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := []*job.JobInfo{bgBashJob("bg-run", "running", "oldest but live", 500)}
@@ -1279,13 +1082,13 @@ func TestJobTick_CapRunningOldestNeverEvicted(t *testing.T) {
 		return jobs
 	})
 
-	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 200 {
-		t.Fatalf("jobs len = %d, want 200 (capped)", len(out.Jobs))
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 200 {
+		t.Fatalf("jobs len = %d, want 200 (capped)", len(items))
 	}
 	ids := map[string]bool{}
-	for _, j := range out.Jobs {
+	for _, j := range items {
 		ids[j.ID] = true
 	}
 	if !ids["bg-run"] {
@@ -1296,11 +1099,11 @@ func TestJobTick_CapRunningOldestNeverEvicted(t *testing.T) {
 	}
 }
 
-// TestJobTick_CapAllRunningRetainsAll pins the cap's escape hatch: with no
+// TestReconcile_CapAllRunningRetainsAll pins the cap's escape hatch: with no
 // terminal entries to evict, the loop gives up and the over-cap view is
-// pushed in full — a live job is never dropped and the loop never spins.
-func TestJobTick_CapAllRunningRetainsAll(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+// embedded in full — a live job is never dropped and the loop never spins.
+func TestReconcile_CapAllRunningRetainsAll(t *testing.T) {
+	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -1310,13 +1113,13 @@ func TestJobTick_CapAllRunningRetainsAll(t *testing.T) {
 		return jobs
 	})
 
-	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
-	if len(out.Jobs) != 201 {
-		t.Fatalf("jobs len = %d, want 201 (all running, cap cannot evict)", len(out.Jobs))
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 201 {
+		t.Fatalf("jobs len = %d, want 201 (all running, cap cannot evict)", len(items))
 	}
 	running := 0
-	for _, j := range out.Jobs {
+	for _, j := range items {
 		if j.Status == "running" {
 			running++
 		}
@@ -1326,12 +1129,91 @@ func TestJobTick_CapAllRunningRetainsAll(t *testing.T) {
 	}
 }
 
-// sortedJobsFixture mints jobs whose startedMs order and ID order disagree,
-// plus a 2-way and a 4-way startedMs tie so both sort keys are exercised (the
-// 4-way tie also makes an always-false tiebreak comparator survive only ~2%
-// of runs rather than ~25%). wantOrder is the (startedMs asc, ID asc)
-// expectation.
-func sortedJobsFixture() ([]*job.JobInfo, []string) {
+// TestReconcile_NilViewAndRegionGuards kills the guard mutants around the
+// reconcile's region creation: a nil jobView slot must be a no-op (not a nil
+// map write), a nil streams map must not panic, bash rows never get a
+// region, and an already-present region's blocks survive the reconcile's
+// first sighting (never overwrite).
+func TestReconcile_NilViewAndRegionGuards(t *testing.T) {
+	c := &WUIConnector{}
+	summaries := []*job.JobInfo{
+		bgBashJob("bg-1", "running", "cmd", 10),
+		{ID: "agent-1", Type: "agent", Status: "running", Description: "d",
+			ParentToolUseID: "tu_a", Backgrounded: true, StartedMs: 20},
+	}
+	now := time.Now() // REAL-TIME
+
+	// nil jobView: no-op (the panic on a nil map write is the kill signal).
+	c.reconcileJobsFromRegistry(&engineSlot{}, summaries, now)
+
+	// nil streams: rows are built, the region-creation gate must skip — the
+	// mutant that drops the nil check writes to a nil map and panics.
+	bare := &engineSlot{jobView: map[string]*jobViewEntry{}}
+	c.reconcileJobsFromRegistry(bare, summaries, now)
+	if _, ok := bare.jobView["bg-1"]; !ok {
+		t.Fatal("reconcile skipped the bash row entirely")
+	}
+	if _, ok := bare.jobView["agent-1"]; !ok {
+		t.Fatal("reconcile skipped the agent row entirely")
+	}
+
+	// Region rules: bash never gets one; an existing region (events folded
+	// under an id whose row was never built — the missed-started case)
+	// survives the first sighting untouched.
+	slot := &engineSlot{
+		jobView: map[string]*jobViewEntry{},
+		streams: map[string]*streamState{
+			"":        {},
+			"agent-1": {feedAnchor: "tu_pre", blocks: []streamBlock{{Text: "kept"}}},
+		},
+	}
+	c.reconcileJobsFromRegistry(slot, summaries, now)
+	if slot.streams["bg-1"] != nil {
+		t.Error("bash row got a stream region — regions are agent-family only")
+	}
+	region := slot.streams["agent-1"]
+	if region == nil || len(region.blocks) != 1 || region.blocks[0].Text != "kept" || region.feedAnchor != "tu_pre" {
+		t.Errorf("existing region overwritten by the reconcile's first sighting: %+v", region)
+	}
+}
+
+// TestCaptureJobFrames_EmptyViewGate kills the operand-removal mutants on
+// the always-empty gate: an always-empty view captures NOTHING (a client
+// that never had jobs hears silence), while an empty view over a non-empty
+// baseline still captures — the transition to empty must push the clearing
+// frame and settle the baseline on it.
+func TestCaptureJobFrames_EmptyViewGate(t *testing.T) {
+	c := &WUIConnector{}
+	c.activeWS.Store(&websocket.Conn{})
+	slot := mutDSlot()
+	slot.active.Store(true)
+
+	if snap := c.captureJobFramesLocked(slot); snap != nil {
+		t.Fatalf("always-empty view captured %+v, want nil (silence)", snap)
+	}
+	slot.lastJobsPush = `{"type":"job_list","jobs":[{"id":"gone"}]}`
+	snap := c.captureJobFramesLocked(slot)
+	if snap == nil {
+		t.Fatal("empty view over a non-empty baseline must capture — the clearing frame is the transition signal")
+	}
+	frames := c.renderJobFrames(slot, snap)
+	if len(frames) != 1 || !strings.Contains(frames[0], `"jobs":[]`) {
+		t.Fatalf("clearing frames = %v, want exactly one empty job_list frame", frames)
+	}
+	slot.ssMu.Lock()
+	settled := slot.lastJobsPush
+	slot.ssMu.Unlock()
+	if settled != frames[0] {
+		t.Errorf("baseline settled on %q, want the clearing frame %q", settled, frames[0])
+	}
+}
+
+// sortedJobsFixture mints started-event shells whose startedMs order and ID
+// order disagree, plus a 2-way and a 4-way startedMs tie so both sort keys
+// are exercised (the 4-way tie also makes an always-false tiebreak comparator
+// survive only ~2% of runs rather than ~25%). wantOrder is the (startedMs
+// asc, ID asc) expectation.
+func sortedJobsFixture() ([]jobWireItem, []string) {
 	specs := []struct {
 		id string
 		ms int64
@@ -1340,25 +1222,43 @@ func sortedJobsFixture() ([]*job.JobInfo, []string) {
 		{"bg-a", 2000}, {"bg-b", 2000}, {"bg-c", 2000}, {"bg-d", 2000},
 		{"bg-j", 5000}, {"bg-i", 6000},
 	}
-	jobs := make([]*job.JobInfo, 0, len(specs))
+	items := make([]jobWireItem, 0, len(specs))
 	for _, s := range specs {
-		jobs = append(jobs, bgBashJob(s.id, "running", "cmd "+s.id, s.ms))
+		items = append(items, jobWireItem{ID: s.id, Kind: "bash", Status: "running", Command: "cmd " + s.id, StartedMs: s.ms})
 	}
-	return jobs, []string{"bg-e", "bg-h", "bg-a", "bg-b", "bg-c", "bg-d", "bg-j", "bg-i"}
+	return items, []string{"bg-e", "bg-h", "bg-a", "bg-b", "bg-c", "bg-d", "bg-j", "bg-i"}
+}
+
+// dispatchJobRows pushes one started event per fixture row.
+func dispatchJobRows(h *hub.Hub, items []jobWireItem) {
+	for _, it := range items {
+		h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+			ID: it.ID, Kind: it.Kind, Status: it.Status, Command: it.Command, StartedMs: it.StartedMs,
+		}})
+	}
 }
 
 // TestJobList_SortedByStartedMsThenID pins the job_list ordering: startedMs
 // ascending, ID ascending as the tiebreak. jobView is a map, so without the
 // sort the order would be random; the fixture's ID-vs-started disagreement
-// also separates the startedMs key from an ID-only sort.
+// also separates the startedMs key from an ID-only sort. Each started event
+// pushes its own diff frame, so frames are read until one carries them all.
 func TestJobList_SortedByStartedMsThenID(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	jobs, wantOrder := sortedJobsFixture()
-	c.mock().SetJobsFn(func() []*job.JobInfo { return jobs })
-
+	withBashTailInterval(t, time.Hour)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	items, wantOrder := sortedJobsFixture()
 	ws := dialAndStore(t, c)
-	out := readJobList(t, ws)
+	dispatchJobRows(h, items)
+
+	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	var out jobListOutbound
+	for time.Now().Before(deadline) { // REAL-TIME
+		out = readJobList(t, ws)
+		if len(out.Jobs) == len(wantOrder) {
+			break
+		}
+	}
 	if len(out.Jobs) != len(wantOrder) {
 		t.Fatalf("jobs len = %d, want %d", len(out.Jobs), len(wantOrder))
 	}
@@ -1372,22 +1272,30 @@ func TestJobList_SortedByStartedMsThenID(t *testing.T) {
 // TestMetadata_JobsSortedByStartedMsThenID pins the same ordering contract
 // for the metadata hydration snapshot (a separate sort call site).
 func TestMetadata_JobsSortedByStartedMsThenID(t *testing.T) {
-	// Deterministic pre-warm: a background tick racing the dial can leave the
-	// jobView empty when metadata serializes (dial won, tick never ran).
-	withJobsWatcherInterval(t, time.Hour)
-	c := newTestConnector(t)
-	jobs, wantOrder := sortedJobsFixture()
-	c.mock().SetJobsFn(func() []*job.JobInfo { return jobs })
-	c.jobTick(c.activeSlotTest(t))
+	withBashTailInterval(t, time.Hour)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	items, wantOrder := sortedJobsFixture()
+	// Registry backing for the running rows: an unlisted running row is a
+	// vanish-drop at the dial's reconcile.
+	summaries := make([]*job.JobInfo, 0, len(items))
+	for _, it := range items {
+		summaries = append(summaries, &job.JobInfo{
+			ID: it.ID, Type: it.Kind, Status: it.Status,
+			Command: it.Command, Backgrounded: true, StartedMs: it.StartedMs,
+		})
+	}
+	c.mock().SetJobsFn(func() []*job.JobInfo { return summaries })
+	dispatchJobRows(h, items)
 
 	ws := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws)
-	if len(items) != len(wantOrder) {
-		t.Fatalf("metadata jobs len = %d, want %d", len(items), len(wantOrder))
+	got := readMetadataJobs(t, ws)
+	if len(got) != len(wantOrder) {
+		t.Fatalf("metadata jobs len = %d, want %d", len(got), len(wantOrder))
 	}
 	for i, want := range wantOrder {
-		if items[i].ID != want {
-			t.Errorf("metadata jobs[%d] = %s, want %s (full order: %v)", i, items[i].ID, want, hydratedIDs(items))
+		if got[i].ID != want {
+			t.Errorf("metadata jobs[%d] = %s, want %s (full order: %v)", i, got[i].ID, want, hydratedIDs(got))
 		}
 	}
 }
@@ -1411,19 +1319,16 @@ func hydratedIDs(items []jobWireItemHydrated) []string {
 // TestJobOutput_FramesSortedByJobID pins the job_output send order: frames
 // for simultaneously-changed tails go out in ascending job id order.
 func TestJobOutput_FramesSortedByJobID(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	ids := []string{"bg-d", "bg-a", "bg-c", "bg-b"}
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		jobs := make([]*job.JobInfo, 0, len(ids))
-		for i, id := range ids {
-			jobs = append(jobs, bgBashJob(id, "running", "cmd "+id, int64(1000+i)))
-		}
-		return jobs
-	})
 	c.mock().SetJobTailFn(func(id string) (string, bool) { return "tail " + id, true })
 
 	ws := dialAndStore(t, c)
+	for i, id := range ids {
+		dispatchBashStarted(h, id, "cmd "+id, int64(1000+i))
+	}
 	readJobList(t, ws)
 	want := []string{"bg-a", "bg-b", "bg-c", "bg-d"}
 	for _, wantID := range want {
@@ -1441,14 +1346,9 @@ func TestJobOutput_FramesSortedByJobID(t *testing.T) {
 // bash entry whose tail is unchanged must be skipped (continue), not abort
 // the scan (break) — later jobs with changed tails still get their frame.
 func TestJobOutput_StableTailDoesNotBlockLaterJobs(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{
-			bgBashJob("bg-1", "running", "quiet cmd", 1000),
-			bgBashJob("bg-2", "running", "loud cmd", 2000),
-		}
-	})
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	var tailMu sync.Mutex
 	tails := map[string]string{"bg-1": "stable", "bg-2": "first"}
 	c.mock().SetJobTailFn(func(id string) (string, bool) {
@@ -1458,6 +1358,8 @@ func TestJobOutput_StableTailDoesNotBlockLaterJobs(t *testing.T) {
 	})
 
 	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "quiet cmd", 1000)
+	dispatchBashStarted(h, "bg-2", "loud cmd", 2000)
 	readJobList(t, ws)
 	for _, want := range []string{"bg-1", "bg-2"} { // warm both baselines (id order)
 		if out := readJobOutput(t, ws); out.JobID != want {
@@ -1478,7 +1380,7 @@ func TestJobOutput_StableTailDoesNotBlockLaterJobs(t *testing.T) {
 // push: a map-less (test-built) slot must push nothing, even though the
 // sentinel baseline reset would otherwise force an empty job_list out.
 func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
@@ -1492,7 +1394,7 @@ func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
 // no jobs must omit the metadata jobs field entirely (nil raw JSON), not emit
 // an empty {"jobs":[]} envelope.
 func TestMetadata_EmptyViewOmitsJobsField(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 
 	ws := dialJobsServer(t, c)
@@ -1505,8 +1407,9 @@ func TestMetadata_EmptyViewOmitsJobsField(t *testing.T) {
 // clear: the previous session's terminal entries must not leak into the new
 // session's metadata snapshot; running entries belong to the engine and stay.
 func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 	var jobsMu sync.Mutex
 	terminalVisible := true
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -1520,13 +1423,20 @@ func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
 		}
 		return []*job.JobInfo{bgBashJob("bg-2", "running", "live cmd", 2000)}
 	})
-
 	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "old session cmd", 1000)
+	h.Dispatch(types.QueryEvent{Type: types.EventJobTerminated, Job: &types.JobEvent{
+		ID: "bg-1", Kind: "bash", Status: "completed", Command: "old session cmd", StartedMs: 1000,
+	}})
+	dispatchBashStarted(h, "bg-2", "live cmd", 2000)
 	first := readJobList(t, ws)
 	if len(first.Jobs) != 2 {
 		t.Fatalf("initial jobs len = %d, want 2", len(first.Jobs))
 	}
 
+	// Same registry turn-over as the switch test: the old session's terminal
+	// row leaves the registry, or the takeover reconcile legitimately
+	// re-lists it.
 	jobsMu.Lock()
 	terminalVisible = false
 	jobsMu.Unlock()
@@ -1544,14 +1454,13 @@ func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
 // an empty jobID must be dropped before the handler — no kill call, no ack
 // frame, no error frame.
 func TestJobStop_EmptyJobIDIgnored(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
-	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", time.Now().UnixMilli())} // REAL-TIME
-	})
+	withBashTailInterval(t, 10*time.Millisecond)
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
 
 	ws := dialAndStore(t, c)
-	readJobList(t, ws) // warm the view
+	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
+	readJobList(t, ws)                                                   // warm the view
 
 	sendJSON(t, ws, map[string]string{"type": "job_stop", "jobID": ""})
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
@@ -1589,13 +1498,12 @@ func TestEngineAdapter_NilRegistries(t *testing.T) {
 }
 
 // TestRegisterEngine_SlotFullyWiredForJobs exercises the registerEngine slot
-// literal end to end through real engines: the jobs maps exist (merge, feed
-// creation, route registration, pending parking — nil maps would panic), the
-// watcher is started (frames arrive), taskToolIDs accepts Task calls, and the
-// slot name/system drive BusyReport (running job named, system engine
-// excluded).
+// literal end to end through real engines: the jobs maps exist (lifecycle,
+// feed creation and capture — nil maps would panic), the tail loop is started
+// (frames arrive), taskToolIDs accepts Task calls, and the slot name/system
+// drive BusyReport (running job named, system engine excluded).
 func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	mgr := engine.NewEngineManager()
 	h1 := hub.NewHub()
 	eng1 := engine.New(&engine.Params{EngineID: "main", Model: "test-model"})
@@ -1607,7 +1515,8 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 
 	// e2: named engine with a running bg bash job and a running bg agent.
 	bashReg := bash.NewBackgroundJobRegistry()
-	bt := bashReg.Spawn("sleep 30", 0, bash.NewStreamingOutput(nil))
+	bgOut := bash.NewStreamingOutput(nil)
+	bt := bashReg.Spawn("sleep 30", 0, bgOut)
 	t.Cleanup(func() { _ = bashReg.Kill(bt.ID) })
 	agentReg := agent.NewBackgroundAgentRegistry()
 	state, err := agentReg.Spawn(context.Background(),
@@ -1646,9 +1555,11 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 
 	ws := dialAndStore(t, c)
 	sendJSON(t, ws, map[string]string{"type": "engine_switch", "engineID": "e2"})
-	list := readJobList(t, ws)
+	// Rows for registry jobs the panel never saw an event for come from the
+	// takeover reconcile embedded in the engine_switch metadata frame.
+	items := readMetadataJobs(t, ws)
 	got := map[string]string{} // id -> kind
-	for _, j := range list.Jobs {
+	for _, j := range items {
 		got[j.ID] = j.Kind
 	}
 	if got[bt.ID] != "bash" {
@@ -1660,18 +1571,33 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("job list = %v, want exactly the bash and agent entries", got)
 	}
+	// The tail loop that registerEngine started: real output arriving on the
+	// bash job must reach the wire as a job_output frame WITHOUT any event or
+	// direct tick — only the loop's beat can deliver it. This is the sole
+	// observation point of the production startBashTailLoop call.
+	_, _ = bgOut.Write([]byte("sleeping\n"))
+	tail := readJobOutput(t, ws)
+	if tail.JobID != bt.ID || !strings.Contains(tail.Tail, "sleeping") {
+		t.Errorf("loop-pushed job_output = {%s %q}, want {%s …sleeping…}", tail.JobID, tail.Tail, bt.ID)
+	}
 
-	// Agent events through the registerEngine-built maps: an own-parent
-	// tool_start registers an inner route (nil innerToolToFeed would panic)
-	// and an unroutable parent parks (nil pendingAgentEvents would panic).
+	// Agent events through the registerEngine-built maps: job_started creates
+	// the stream region (nil streams would panic) and the job's own
+	// tool_start folds into it; a no-JobID event (sync sub-agent) is dropped
+	// without touching any map.
+	h2.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: state.ID, Kind: "agent", Status: "running",
+		Description: "explore wiring", AgentType: "Explore",
+		ParentToolUseID: "toolu_p", StartedMs: 100,
+	}})
 	h2.Dispatch(types.QueryEvent{Type: types.EventToolStart,
-		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_p"},
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: state.ID},
 		ToolUse: &types.ToolUseEvent{ID: "toolu_inner", Name: "Grep", Summary: "inner"}})
 	h2.Dispatch(types.QueryEvent{Type: types.EventTextDelta,
 		Agent: &types.AgentMeta{ParentToolUseID: "toolu_unrelated"}, Text: "stray"})
 
 	ws2 := dialJobsServer(t, c)
-	items := readMetadataJobs(t, ws2)
+	items = readMetadataJobs(t, ws2)
 	var agentItem *jobWireItemHydrated
 	for i := range items {
 		if items[i].ID == state.ID {
@@ -1731,110 +1657,83 @@ func TestHandleJobStop_NilGuards(t *testing.T) {
 	c2.handleJobStop("bg-1")
 }
 
-// TestApplyAgentEventLocked_Guards pins applyAgentEventLocked's defensive
-// branches directly: an unknown feed key is a no-op, an Agent-nil event is
-// applied unmasked at the feed root, and a tool_start without a ToolUse
-// registers no route — none of them panic.
-func TestApplyAgentEventLocked_Guards(t *testing.T) {
+// TestApplyJobStreamEvent_Guards pins applyJobStreamEvent's contract on a
+// region handed to it directly: a tool_start without a ToolUse applies no
+// block and panics nowhere, an event whose parent matches the region anchor
+// is masked to the root, and a deeper parent nests under that root block
+// instead.
+func TestApplyJobStreamEvent_Guards(t *testing.T) {
 	c := newTestConnector(t)
-	slot := &engineSlot{
-		engineID:           "s1",
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{"toolu_p": {}},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+	slot := mutDSlot()
+	slot.streams["agent-1"] = &streamState{feedAnchor: "toolu_p"}
+
+	// tool_start without a ToolUse: no block, no panic.
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventToolStart,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: "agent-1"}})
+
+	// Parent matches the anchor: masked, so it lands at the region root.
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: "agent-1"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_outer", Name: "Bash"}})
+
+	// Deeper parent: nests under the root tool block, unmasked.
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_outer", JobID: "agent-1"}, Text: "nested"})
+
+	stream := slot.streams["agent-1"]
+	blocks := stream.blocks
+	if len(blocks) != 1 || blocks[0].Kind != "tool" || blocks[0].ID != "toolu_outer" {
+		t.Fatalf("root blocks = %+v, want exactly [tool toolu_outer]", blocks)
 	}
-
-	// Unknown feed key: ignored.
-	c.applyAgentEventLocked(slot, "ghost", types.QueryEvent{Type: types.EventTextDelta, Text: "nowhere"})
-
-	// tool_start without a ToolUse: no block, no route registration, no panic.
-	c.applyAgentEventLocked(slot, "toolu_p", types.QueryEvent{Type: types.EventToolStart,
-		Agent: &types.AgentMeta{ParentToolUseID: "toolu_p"}})
-
-	// Agent-nil event: applied unmasked — lands as a root text block.
-	c.applyAgentEventLocked(slot, "toolu_p", types.QueryEvent{Type: types.EventTextDelta, Text: "root text"})
-
-	feed := slot.jobFeeds["toolu_p"]
-	blocks := feed.streamState.blocks
-	if len(blocks) != 1 || blocks[0].Kind != "text" || blocks[0].Text != "root text" {
-		t.Errorf("feed blocks = %+v, want [text \"root text\"]", blocks)
-	}
-	if len(slot.innerToolToFeed) != 0 {
-		t.Errorf("innerToolToFeed = %v, want no routes registered", slot.innerToolToFeed)
+	if len(blocks[0].Children) != 1 || blocks[0].Children[0].Kind != "text" || blocks[0].Children[0].Text != "nested" {
+		t.Errorf("outer children = %+v, want [text %q]", blocks[0].Children, "nested")
 	}
 }
 
 // newBlankJobsSlot builds a slot with every jobs map initialised and nothing
-// in it, for the locked-function tests that drive the watcher's internals
+// in it, for the locked-function tests that drive the panel internals
 // directly.
 func newBlankJobsSlot(id string) *engineSlot {
 	return &engineSlot{
-		engineID:           id,
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+		engineID:    id,
+		taskToolIDs: map[string]bool{},
+		jobView:     map[string]*jobViewEntry{},
+		streams:     map[string]*streamState{"": {}},
 	}
 }
 
-// TestMergeJobSummariesLocked_FeedAndTailGates pins both family gates: a feed
-// is created only for agent-family kinds that carry a parent tool-use id, and
-// tail fetching stays bash-only.
-func TestMergeJobSummariesLocked_FeedAndTailGates(t *testing.T) {
-	c := newTestConnector(t)
-	slot := newBlankJobsSlot("s1")
-	tailIDs := c.mergeJobSummariesLocked(slot, []*job.JobInfo{
-		nil,
-		{ID: "agent-1", Type: "fork", Status: "running", ParentToolUseID: "toolu_fk", Backgrounded: true, StartedMs: 1},
-		{ID: "agent-0", Type: "agent", Status: "running", Backgrounded: true, StartedMs: 2},
-		{ID: "bg-1", Type: "bash", Status: "running", ParentToolUseID: "toolu_b", Backgrounded: true, StartedMs: 3},
-	})
-	if _, ok := slot.jobFeeds["toolu_fk"]; !ok {
-		t.Error("fork job with a parent tool-use id must get a feed")
-	}
-	if len(slot.jobFeeds) != 1 {
-		t.Errorf("jobFeeds len = %d, want 1 — agent-0 has no parent id and bash never owns a feed", len(slot.jobFeeds))
-	}
-	if len(tailIDs) != 1 || tailIDs[0] != "bg-1" {
-		t.Errorf("tailIDs = %v, want [bg-1] — tail fetching is bash-only", tailIDs)
-	}
-}
-
-// TestDeleteJobEntryLocked_FamilyFeedReclaim pins the cleanup guard: an
-// agent-family row reclaims its feed and inner tool routes, while a bash row
-// (which never owns a feed) must leave the feed set untouched.
-func TestDeleteJobEntryLocked_FamilyFeedReclaim(t *testing.T) {
+// TestStreams_RowRemovalDropsStream pins the cleanup guard: an agent-family
+// row removal reclaims its stream region, while a bash row (which never owns
+// a region) must leave the region set untouched — and the "" chat root is
+// never a deletion candidate.
+func TestStreams_RowRemovalDropsStream(t *testing.T) {
 	c := newTestConnector(t)
 	slot := newBlankJobsSlot("s1")
 	slot.jobView["agent-1"] = &jobViewEntry{item: jobWireItem{ID: "agent-1", Kind: "fork", ParentToolUseID: "toolu_fk"}}
 	slot.jobView["agent-0"] = &jobViewEntry{item: jobWireItem{ID: "agent-0", Kind: "agent"}}
 	slot.jobView["bg-1"] = &jobViewEntry{item: jobWireItem{ID: "bg-1", Kind: "bash", ParentToolUseID: "toolu_b"}}
-	slot.jobFeeds["toolu_fk"] = &jobFeedState{}
-	slot.jobFeeds["toolu_b"] = &jobFeedState{}
-	slot.innerToolToFeed["inner-1"] = "toolu_fk"
+	slot.streams["agent-1"] = &streamState{}
+	slot.streams["bg-1"] = &streamState{}
 
 	c.deleteJobEntryLocked(slot, "agent-1")
-	if _, ok := slot.jobFeeds["toolu_fk"]; ok {
-		t.Error("fork row must reclaim its feed")
-	}
-	if _, ok := slot.innerToolToFeed["inner-1"]; ok {
-		t.Error("fork row must reclaim its inner tool routes")
+	if _, ok := slot.streams["agent-1"]; ok {
+		t.Error("fork row removal must reclaim its stream region")
 	}
 
 	c.deleteJobEntryLocked(slot, "bg-1")
-	if _, ok := slot.jobFeeds["toolu_b"]; !ok {
-		t.Error("bash row must not touch the feed set")
+	if _, ok := slot.streams["bg-1"]; !ok {
+		t.Error("bash row removal must not touch the region set")
 	}
 
 	c.deleteJobEntryLocked(slot, "agent-0")
 	if len(slot.jobView) != 0 {
 		t.Errorf("jobView len = %d, want 0", len(slot.jobView))
 	}
-	if len(slot.jobFeeds) != 1 {
-		t.Errorf("jobFeeds len = %d, want 1 (only the bash row's leftover entry)", len(slot.jobFeeds))
+	if len(slot.streams) != 2 {
+		t.Errorf("streams len = %d, want 2 (chat root + the bash row's leftover entry)", len(slot.streams))
+	}
+	if _, ok := slot.streams[""]; !ok {
+		t.Error("the \"\" chat root must never be dropped by a row removal")
 	}
 }
 
@@ -1843,12 +1742,10 @@ func TestDeleteJobEntryLocked_FamilyFeedReclaim(t *testing.T) {
 func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
 	c := newTestConnector(t)
 	slot := &engineSlot{
-		engineID:           "s1",
-		taskToolIDs:        map[string]bool{},
-		jobView:            map[string]*jobViewEntry{},
-		jobFeeds:           map[string]*jobFeedState{},
-		innerToolToFeed:    map[string]string{},
-		pendingAgentEvents: map[string]*pendingAgentEvents{},
+		engineID:    "s1",
+		taskToolIDs: map[string]bool{},
+		jobView:     map[string]*jobViewEntry{},
+		streams:     map[string]*streamState{"": {}},
 	}
 	c.deleteJobEntryLocked(slot, "never-existed")
 	if len(slot.jobView) != 0 {
@@ -1856,13 +1753,13 @@ func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
 	}
 }
 
-// TestSessionNew_RelistDoesNotReplayFlushedPending pins the pending-events
-// bookkeeping: events flushed into a feed at discovery are consumed (deleted
-// from pendingAgentEvents). If they were left behind, a terminal agent
-// relisted after the session-new clear would rebuild the feed's blocks —
-// replaying stale history into the fresh entry.
+// TestSessionNew_RelistDoesNotReplayFlushedPending pins the feed lifecycle
+// across a session-new clear: events folded into a feed are consumed by the
+// clear (the feed dies with its view entry). If the feed survived, a terminal
+// agent relisted after the clear would hydrate with its stale blocks —
+// replaying dead history into the fresh entry.
 func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
-	withJobsWatcherInterval(t, 10*time.Millisecond)
+	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -1871,57 +1768,45 @@ func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
 			Backgrounded: true, StartedMs: 100,
 		}}
 	})
-	// Park events BEFORE the watcher ever sees the job.
+	// Fold events into the region before any registry enumeration sees the
+	// job (job_started precedes them, as in production).
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "completed",
+		Description: "clear replay", ParentToolUseID: "toolu_234", StartedMs: 100,
+	}})
 	c.Handle(types.QueryEvent{Type: types.EventToolStart,
-		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_234"},
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_234", JobID: "agent-1"},
 		ToolUse: &types.ToolUseEvent{ID: "toolu_once", Name: "Read", Summary: "read file"}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "toolu_234"}, Text: "flushed once"})
+		Agent: &types.AgentMeta{ParentToolUseID: "toolu_234", JobID: "agent-1"}, Text: "flushed once"})
 
 	// Each dial takes over the previous connection, so only the newest ws is
 	// readable — re-dial per phase.
 	ws := dialJobsServer(t, c)
-	readJobList(t, ws) // discovery: flush + consume
-	ws = dialJobsServer(t, c)
 	items := readMetadataJobs(t, ws)
 	if len(items) != 1 || len(items[0].Blocks) != 2 {
-		t.Fatalf("pre-clear blocks = %+v, want the flushed tool+text", items)
+		t.Fatalf("pre-clear blocks = %+v, want the folded tool+text", items)
 	}
 
 	// Terminal agent is still listed by the registry; the session-new clear
-	// drops the view entry (and must have consumed the pending events at
-	// discovery). The cleared state is observable only on the metadata frame
-	// (jobs field omitted): the watcher's merge re-adds the still-listed
-	// entry within the same beat, so the job_list diff never sees the empty
-	// view and pushes no clearing frame on this path.
+	// drops the view entry and its feed. The same metadata frame's takeover
+	// reconcile re-lists the still-registered terminal entry — with a FRESH
+	// empty region: the cleared feed must not replay.
 	sendJSON(t, ws, map[string]string{"type": "session_new"})
-	if items = readMetadataJobs(t, ws); items != nil {
-		t.Fatalf("post-new metadata jobs = %+v, want the field omitted (terminal cleared)", items)
-	}
-
-	// The relist lands on the next watcher beat and pushes no frame (the
-	// re-added entry marshals back to the pre-clear baseline), so the wire
-	// offers nothing to synchronize on — wait out a beat before the final dial.
-	time.Sleep(100 * time.Millisecond) // REAL-TIME
-
-	ws = dialJobsServer(t, c)
-	items = readMetadataJobs(t, ws)
-	if len(items) != 1 {
-		t.Fatalf("post-relist metadata jobs = %v, want the agent entry", hydratedIDs(items))
+	if items = readMetadataJobs(t, ws); len(items) != 1 || items[0].ID != "agent-1" {
+		t.Fatalf("post-new metadata jobs = %+v, want the re-listed terminal entry and nothing else", items)
 	}
 	if len(items[0].Blocks) != 0 {
-		t.Errorf("post-relist blocks = %+v, want none — flushed pending events must not replay", items[0].Blocks)
+		t.Fatalf("post-new blocks = %+v, want none — the cleared feed must not replay into the reconciled entry", items[0].Blocks)
 	}
 }
 
 // mutDSlot builds a slot whose jobs maps exist, for direct calls into the
-// merge/capture helpers without a running watcher.
+// panel helpers without a running loop.
 func mutDSlot() *engineSlot {
 	return &engineSlot{
-		jobView:            make(map[string]*jobViewEntry),
-		jobFeeds:           make(map[string]*jobFeedState),
-		innerToolToFeed:    make(map[string]string),
-		pendingAgentEvents: make(map[string]*pendingAgentEvents),
+		jobView: make(map[string]*jobViewEntry),
+		streams: map[string]*streamState{"": {}},
 	}
 }
 
@@ -1941,79 +1826,6 @@ func TestMutD_IsTerminalJobStatus_AllThree(t *testing.T) {
 		if isTerminalJobStatus(s) {
 			t.Errorf("isTerminalJobStatus(%q) = true, want false", s)
 		}
-	}
-}
-
-// Kills jobs_panel.go:236 (statement/remove: vanish-drop log).
-func TestMutD_MergeLogs_RunningJobVanishDrop(t *testing.T) {
-	rec := mutDCaptureSlog(t)
-	slot := mutDSlot()
-	slot.jobView["gone"] = &jobViewEntry{item: jobWireItem{ID: "gone", Kind: "bash", Status: "running", StartedMs: 1}}
-	c := &WUIConnector{}
-	c.mergeJobSummariesLocked(slot, nil)
-	if _, ok := slot.jobView["gone"]; ok {
-		t.Error("running job missing from the registry must be dropped from the view")
-	}
-	if rec.count(slog.LevelInfo, "wui:jobs: running job missing from registry, dropping") != 1 {
-		t.Fatal("vanish drop must log the wui:jobs drop line exactly once")
-	}
-}
-
-// Kills jobs_panel.go:254 (statement/remove: cap-eviction log).
-func TestMutD_MergeLogs_CapEviction(t *testing.T) {
-	rec := mutDCaptureSlog(t)
-	slot := mutDSlot()
-	summaries := make([]*job.JobInfo, 0, 201)
-	for i := 1; i <= 201; i++ {
-		summaries = append(summaries, bgBashJob(mutDCapID(i), "completed", "cmd", int64(1000+i)))
-	}
-	c := &WUIConnector{}
-	c.mergeJobSummariesLocked(slot, summaries)
-	if len(slot.jobView) != jobsViewCap {
-		t.Fatalf("view len = %d, want %d", len(slot.jobView), jobsViewCap)
-	}
-	if rec.count(slog.LevelInfo, "wui:jobs: view over cap, evicting oldest terminal") != 1 {
-		t.Fatal("cap eviction must log the wui:jobs eviction line exactly once")
-	}
-}
-
-func mutDCapID(i int) string {
-	return "cap-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-}
-
-// Kills jobs_panel.go:262 (statement/remove: TTL sweep log).
-func TestMutD_MergeLogs_StalePendingSweep(t *testing.T) {
-	rec := mutDCaptureSlog(t)
-	slot := mutDSlot()
-	slot.pendingAgentEvents["toolu_stale"] = &pendingAgentEvents{
-		firstSeen: time.Now().Add(-jobsPendingTTL() - 5*time.Second), // REAL-TIME
-		events:    []types.QueryEvent{{Type: types.EventTextDelta, Text: "stale"}},
-	}
-	c := &WUIConnector{}
-	c.mergeJobSummariesLocked(slot, nil)
-	if len(slot.pendingAgentEvents) != 0 {
-		t.Fatalf("pendingAgentEvents len = %d, want 0 after the TTL sweep", len(slot.pendingAgentEvents))
-	}
-	if rec.count(slog.LevelInfo, "wui:jobs: sweeping stale pending agent events") != 1 {
-		t.Fatal("TTL sweep must log the wui:jobs sweep line exactly once")
-	}
-}
-
-// Kills jobs_panel.go:269 (expression/remove): nil entries must not panic and
-// foreground jobs must not be tailed — only backgrounded bash jobs.
-func TestMutD_MergeTailIDs_FiltersNilForegroundAndFeeds(t *testing.T) {
-	slot := mutDSlot()
-	slot.jobView["f1"] = &jobViewEntry{item: jobWireItem{ID: "f1", Kind: "bash", Status: "completed"}}
-	slot.jobView["b1"] = &jobViewEntry{item: jobWireItem{ID: "b1", Kind: "bash", Status: "running"}}
-	summaries := []*job.JobInfo{
-		nil,
-		{ID: "f1", Type: "bash", Status: "completed", Backgrounded: false},
-		{ID: "b1", Type: "bash", Status: "running", Backgrounded: true},
-	}
-	c := &WUIConnector{}
-	got := c.mergeJobSummariesLocked(slot, summaries)
-	if len(got) != 1 || got[0] != "b1" {
-		t.Fatalf("tailIDs = %v, want exactly [b1] (backgrounded bash only)", got)
 	}
 }
 
@@ -2041,7 +1853,12 @@ func TestMutD_JobSort_TiebreakOrdersBothOutputs(t *testing.T) {
 			slot.jobView[id] = &jobViewEntry{item: jobWireItem{ID: id, Kind: "bash", Status: "running", StartedMs: 7777}}
 		}
 
-		frames := c.collectJobFramesLocked(slot)
+		frames := func() []string {
+			slot.ssMu.Lock()
+			snap := c.captureJobFramesLocked(slot)
+			slot.ssMu.Unlock()
+			return c.renderJobFrames(slot, snap)
+		}()
 		if len(frames) != 1 {
 			t.Fatalf("round %d: frames = %d, want exactly one job_list push", round, len(frames))
 		}
@@ -2053,7 +1870,9 @@ func TestMutD_JobSort_TiebreakOrdersBothOutputs(t *testing.T) {
 			t.Fatalf("round %d: job_list tie order = %v, want %v", round, got, want)
 		}
 
+		slot.ssMu.Lock()
 		raw := c.buildJobsMetadata(slot)
+		slot.ssMu.Unlock()
 		if raw == nil {
 			t.Fatalf("round %d: metadata jobs = nil, want snapshot", round)
 		}
@@ -2079,147 +1898,373 @@ func mutDStringSlicesEqual(a, b []string) bool {
 	return true
 }
 
-// Kills jobs_panel.go:346 (statement/remove: Unlock dropped): the forced
-// snapshot must release jobsMu or every later watcher beat deadlocks.
+// Kills the pushJobsSnapshot Unlock mutant: the forced snapshot must release
+// ssMu or every later event/beat deadlocks.
 func TestMutD_PushJobsSnapshot_ReleasesLock(t *testing.T) {
 	c := &WUIConnector{}
 	slot := mutDSlot()
 	c.pushJobsSnapshot(slot)
-	if !waitFor(time.Second, func() bool { return slot.jobsMu.TryLock() }) {
-		t.Fatal("pushJobsSnapshot must release jobsMu before returning")
+	if !waitFor(time.Second, func() bool { return slot.ssMu.TryLock() }) {
+		t.Fatal("pushJobsSnapshot must release ssMu before returning")
 	}
-	slot.jobsMu.Unlock()
+	slot.ssMu.Unlock()
 }
 
-// Kills jobs_panel.go:359 (statement/defer-remove): with the unlock made
-// immediate, buildJobsMetadata iterates jobView without the lock while a
-// locked writer mutates the same map — the Go runtime aborts the process on
-// concurrent map iteration and map write.
-func TestMutD_BuildJobsMetadata_HoldsLockDuringRead(t *testing.T) {
-	slot := mutDSlot()
-	slot.jobView["k"] = &jobViewEntry{item: jobWireItem{ID: "k", Kind: "bash", Status: "running", StartedMs: 1}}
-	c := &WUIConnector{}
-	stop := make(chan struct{})
+// TestStreams_UnifiedLockDomain_ConcurrentRegionWriteVsRootRead is the
+// lock-domain unification anchor: job-region map writes (applyJobLifecycleEvent
+// via started events) and root-region reads/writes (onEngineEvent's root
+// branch) run on two concurrent dispatch goroutines. Both paths must be
+// serialized by the ONE ssMu domain — under -race any path that drops ssMu
+// reports a map race; without -race, concurrent map write+read statistically
+// aborts the runtime. Ends with the region census: all job regions present,
+// root reset by query_end while job regions survive.
+func TestStreams_UnifiedLockDomain_ConcurrentRegionWriteVsRootRead(t *testing.T) {
+	withBashTailInterval(t, time.Hour) // no loop interference
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	slot := c.activeSlotTest(t)
+
+	const n = 24
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			slot.jobsMu.Lock()
-			for i := 0; i < 64; i++ {
-				slot.jobView["k"] = &jobViewEntry{item: jobWireItem{ID: "k", Kind: "bash", Status: "running", StartedMs: int64(i)}}
-			}
-			slot.jobsMu.Unlock()
+		for i := 0; i < n; i++ {
+			h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+				ID: fmt.Sprintf("agent-%02d", i), Kind: "agent", Status: "running",
+				ParentToolUseID: fmt.Sprintf("tu_%02d", i), StartedMs: int64(i + 1),
+			}})
 		}
 	}()
-	var last json.RawMessage
-	for range 2000 {
-		if raw := c.buildJobsMetadata(slot); raw != nil {
-			last = raw
+	// Root-region traffic on the main thread: no-JobID deltas fold into the
+	// chat root while the map is being written next door.
+	for i := range 400 {
+		h.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: fmt.Sprintf("chat %d ", i)})
+	}
+	wg.Wait()
+
+	slot.ssMu.Lock()
+	root := slot.streams[""]
+	rootBlocks := 0
+	if root != nil {
+		rootBlocks = len(root.blocks)
+	}
+	slot.ssMu.Unlock()
+	if rootBlocks == 0 {
+		t.Fatal("chat root collected no blocks — the root-branch writes never ran")
+	}
+
+	h.Dispatch(types.QueryEvent{Type: types.EventQueryEnd})
+
+	slot.ssMu.Lock()
+	root = slot.streams[""]
+	rootLen := 0
+	if root != nil {
+		rootLen = len(root.blocks)
+	}
+	regions := 0
+	for id := range slot.streams {
+		if id != "" {
+			regions++
 		}
 	}
-	close(stop)
-	wg.Wait()
-	if last == nil {
-		t.Fatal("buildJobsMetadata never produced a snapshot")
+	slot.ssMu.Unlock()
+	if regions != n {
+		t.Fatalf("job regions = %d, want all %d to survive the concurrent phase and the query_end reset", regions, n)
+	}
+	if rootLen != 0 {
+		t.Fatalf("root blocks after query_end = %d, want 0 (only the \"\" region resets)", rootLen)
 	}
 }
 
-// Kills jobs_panel.go:465 (statement/defer-remove): with the unlock made
-// immediate, two captureJobEvent callers append to the same pending list
-// without the lock and updates are lost. Serialized by jobsMu the count is
-// exact.
-func TestMutD_CaptureJobEvent_HoldsLockDuringAppend(t *testing.T) {
-	slot := mutDSlot()
-	c := &WUIConnector{}
-	ev := types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_ghost"}, Text: "x"}
-	const iters = 30000
-	var wg sync.WaitGroup
-	for g := 0; g < 2; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range iters {
-				c.captureJobEvent(slot, ev)
-			}
-		}()
-	}
-	wg.Wait()
-	slot.jobsMu.Lock()
-	n := len(slot.pendingAgentEvents["toolu_ghost"].events)
-	slot.jobsMu.Unlock()
-	if n != 2*iters {
-		t.Fatalf("pending events = %d, want exactly %d (the append must run under jobsMu)", n, 2*iters)
+// Kills the onEngineEvent ssMu-entry mutant on the job-region path: two
+// goroutines dispatch the same job's process events through the REAL hub;
+// onEngineEvent's ssMu section serializes the region appends and the count is
+// exact. With the entry lock dropped (or made immediate), the appends race —
+// blocks are lost or the runtime aborts on concurrent map writes. Each
+// goroutine mints its own tool ids so no dedupe can mask a lost append;
+// iters stays under jobFeedMaxBlocks/2 so the cap never drops a block (the
+// exact-count assertion must not be vacuous); the start-gate forces the two
+// goroutines to overlap, and the outer rounds rebuild the scenario per
+// attempt — make mutate runs without -race, so the kill relies on
+// statistical loss/concurrent-map-write detection.
+func TestMutD_ApplyJobStreamEvent_HoldsLockDuringAppend(t *testing.T) {
+	withBashTailInterval(t, time.Hour) // no loop interference
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+
+	// Region first, through the real lifecycle path.
+	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running", ParentToolUseID: "tu_job", StartedMs: 1,
+	}})
+
+	const iters = 150
+	for round := 0; round < 100; round++ {
+		// Reset the region's blocks without dropping the region itself.
+		slot := c.activeSlotTest(t)
+		slot.ssMu.Lock()
+		slot.streams["agent-1"] = &streamState{feedAnchor: "tu_job"}
+		slot.ssMu.Unlock()
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for g := 0; g < 2; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				<-start
+				for i := 0; i < iters; i++ {
+					h.Dispatch(types.QueryEvent{Type: types.EventToolStart,
+						Agent:   &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-1"},
+						ToolUse: &types.ToolUseEvent{ID: fmt.Sprintf("tu_r%d_g%d_%d", round, g, i), Name: "Bash"}})
+				}
+			}(g)
+		}
+		close(start)
+		wg.Wait()
+		slot.ssMu.Lock()
+		stream := slot.streams["agent-1"]
+		n := 0
+		if stream != nil {
+			n = len(stream.blocks)
+		}
+		slot.ssMu.Unlock()
+		if n != 2*iters {
+			t.Fatalf("round %d: region root blocks = %d, want exactly %d (the append must run inside onEngineEvent's ssMu section)", round, n, 2*iters)
+		}
 	}
 }
 
-// Kills jobs_panel.go:456 (expression/remove: both operand mutants) and :460
-// (branch/if): nil Agent and empty-parent events return early; non-feed event
-// types park nothing.
-func TestMutD_CaptureJobEvent_Guards(t *testing.T) {
+// Kills the applyJobStreamEvent guard mutants: nil Agent, empty JobID, and
+// non-feed event types must all return before folding any block — and none
+// may create a region.
+func TestMutD_ApplyJobStreamEvent_Guards(t *testing.T) {
 	c := &WUIConnector{}
-	// nil Agent: the guard must return before touching event.Agent
-	c.captureJobEvent(mutDSlot(), types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+	// nil Agent: the guard must return before touching event.Agent.
+	c.applyJobStreamEvent(mutDSlot(), types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 
-	// Agent present but empty parent: nothing may be parked under ""
+	// Agent present but no JobID (root/sync event): chat-only, no region.
 	slot := mutDSlot()
-	c.captureJobEvent(slot, types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{}, Text: "x"})
-	if len(slot.pendingAgentEvents) != 0 {
-		t.Errorf("pendingAgentEvents = %+v, want empty for an empty-parent event", slot.pendingAgentEvents)
+	slot.streams["agent-1"] = &streamState{feedAnchor: "tu_job"}
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "tu_sync"}, Text: "x"})
+	if n := len(slot.streams); n != 2 {
+		t.Errorf("streams = %d keys, want 2 (root + the pre-seeded agent-1) for a no-JobID event", n)
+	}
+	if s := slot.streams["agent-1"]; s == nil || len(s.blocks) != 0 {
+		t.Errorf("agent-1 region blocks = %+v, want none for a no-JobID event", slot.streams["agent-1"])
 	}
 
-	// Non-feed event type: usage/lifecycle events contribute no blocks and
-	// must not be parked for later replay.
+	// Non-feed event type: usage/lifecycle events contribute no blocks.
 	slot2 := mutDSlot()
-	c.captureJobEvent(slot2, types.QueryEvent{Type: types.EventQueryEnd, Agent: &types.AgentMeta{ParentToolUseID: "toolu_ghost"}})
-	if len(slot2.pendingAgentEvents) != 0 {
-		t.Errorf("pendingAgentEvents = %+v, want empty for a non-feed event type", slot2.pendingAgentEvents)
+	slot2.streams["agent-1"] = &streamState{feedAnchor: "tu_job"}
+	c.applyJobStreamEvent(slot2, types.QueryEvent{Type: types.EventQueryEnd, Agent: &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-1"}})
+	if n := len(slot2.streams); n != 2 {
+		t.Errorf("streams = %d keys, want 2 for a non-feed event type", n)
+	}
+	if s := slot2.streams["agent-1"]; s == nil || len(s.blocks) != 0 {
+		t.Errorf("agent-1 region blocks = %+v, want none for a non-feed event type", slot2.streams["agent-1"])
 	}
 }
 
-// Kills jobs_panel.go:399 (expression/remove: !jobHasFeed term dropped): a
-// bash entry must not reclaim the feed of its (still live) parent agent job.
+// Kills the deleteJobEntryLocked family-guard mutant (!jobHasFeed term
+// dropped): a bash entry must not reclaim a foreign job's region on this
+// call — with job-id keying, that means never touching any foreign job's
+// region (a region dies only with its own row's deleteJobEntryLocked, not
+// this call).
 func TestMutD_DeleteJobEntry_BashKeepsForeignFeed(t *testing.T) {
 	slot := mutDSlot()
 	slot.jobView["bashjob"] = &jobViewEntry{item: jobWireItem{ID: "bashjob", Kind: "bash", Status: "completed", ParentToolUseID: "toolu_live"}}
-	slot.jobFeeds["toolu_live"] = &jobFeedState{}
-	slot.innerToolToFeed["inner_t"] = "toolu_live"
+	slot.streams["agent-live"] = &streamState{}
 	c := &WUIConnector{}
 	c.deleteJobEntryLocked(slot, "bashjob")
 	if _, ok := slot.jobView["bashjob"]; ok {
 		t.Error("the bash entry itself must be deleted")
 	}
-	if _, ok := slot.jobFeeds["toolu_live"]; !ok {
-		t.Error("feed toolu_live must survive: it belongs to a live agent job, not the bash entry")
-	}
-	if _, ok := slot.innerToolToFeed["inner_t"]; !ok {
-		t.Error("route inner_t must survive the bash entry deletion")
+	if _, ok := slot.streams["agent-live"]; !ok {
+		t.Error("region agent-live must survive: it belongs to a live agent job, not the bash entry")
 	}
 }
 
-// Kills jobs_panel.go:507 (expression/remove: both operand mutants):
-// ToolStart with a nil ToolUse must not panic, and a non-ToolStart event
-// carrying a ToolUse must not register an inner route.
-func TestMutD_ApplyAgentEvent_RouteRegistrationGuard(t *testing.T) {
-	slot := mutDSlot()
-	slot.jobFeeds["toolu_f"] = &jobFeedState{}
-	c := &WUIConnector{}
-	c.applyAgentEventLocked(slot, "toolu_f", types.QueryEvent{
-		Type: types.EventToolStart, Agent: &types.AgentMeta{ParentToolUseID: "toolu_f"},
-	})
-	if len(slot.innerToolToFeed) != 0 {
-		t.Errorf("innerToolToFeed = %v, want empty for ToolStart without a ToolUse payload", slot.innerToolToFeed)
+// ---------------------------------------------------------------------------
+// JobID routing (single delivery)
+// ---------------------------------------------------------------------------
+
+// A sync sub-agent event (no JobID) belongs to the chat region only: no job
+// region may be created for it, and its text must never surface inside any
+// job's region — not even after an unrelated job is discovered.
+func TestStreams_SyncSubAgentReachesNoRegion(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_sync"}, Text: "sync text"})
+
+	slot := c.slots["main"]
+	slot.ssMu.Lock()
+	n := len(slot.streams)
+	slot.ssMu.Unlock()
+	if n != 1 {
+		t.Fatalf("streams holds %d keys, want 1 (only the chat root) — a no-JobID event must not create a region", n)
 	}
-	c.applyAgentEventLocked(slot, "toolu_f", types.QueryEvent{
-		Type: types.EventTextDelta, Agent: &types.AgentMeta{ParentToolUseID: "toolu_f"},
-		ToolUse: &types.ToolUseEvent{ID: "t9"}, Text: "x",
+
+	// An unrelated job gets its row+region from its started event and runs
+	// its own event through the region: the sync text still reaches no feed.
+	// The registry lists the job (it is genuinely running) — an unlisted
+	// running row would be a vanish-drop at the dial's reconcile.
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{{
+			ID: "agent-1", Type: "agent", Status: "running",
+			Description: "unrelated", ParentToolUseID: "tu_other",
+			Backgrounded: true, StartedMs: 100,
+		}}
 	})
-	if len(slot.innerToolToFeed) != 0 {
-		t.Errorf("innerToolToFeed = %v, want empty: only ToolStart registers routes", slot.innerToolToFeed)
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "unrelated", ParentToolUseID: "tu_other", StartedMs: 100,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_other", JobID: "agent-1"}, Text: "job text"})
+	ws := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws)
+	if len(items) != 1 {
+		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	}
+	// Exactly one text block — the job's own. If the sync event had leaked
+	// (extra block or merged text), the count or the exact text breaks.
+	if len(items[0].Blocks) != 1 || items[0].Blocks[0].Text != "job text" {
+		t.Fatalf("feed blocks = %+v, want exactly the job's own %q text block", items[0].Blocks, "job text")
+	}
+}
+
+// A region held from the job's started event must survive the takeover
+// reconcile's discovery of the job: reconcile must not reset it, or events
+// folded before the dial are lost.
+func TestStreams_FeedSurvivesDiscovery(t *testing.T) {
+	withBashTailInterval(t, 10*time.Millisecond)
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-1", Kind: "agent", Status: "running",
+		Description: "survive discovery", ParentToolUseID: "tu_job", StartedMs: 100,
+	}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-1"}, Text: "pre text"})
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{{
+			ID: "agent-1", Type: "agent", Status: "running",
+			Description: "survive discovery", ParentToolUseID: "tu_job",
+			Backgrounded: true, StartedMs: 100,
+		}}
+	})
+
+	// Discovery = the dial's reconcile enumerating the registry.
+	ws := dialJobsServer(t, c)
+	if items := readMetadataJobs(t, ws); len(items) != 1 || len(items[0].Blocks) != 1 ||
+		!strings.Contains(items[0].Blocks[0].Text, "pre text") {
+		t.Fatalf("post-discovery blocks = %+v, want the pre-discovery text block intact", items)
+	}
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-1"}, Text: "post text"})
+
+	ws2 := dialJobsServer(t, c)
+	items := readMetadataJobs(t, ws2)
+	if len(items) != 1 {
+		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	}
+	blocks := items[0].Blocks
+	if len(blocks) != 1 || !strings.Contains(blocks[0].Text, "pre text") || !strings.Contains(blocks[0].Text, "post text") {
+		t.Fatalf("feed blocks = %+v, want one text block carrying both the pre- and post-discovery text", blocks)
+	}
+}
+
+// A grandchild sync-spawned inside a background job inherits the job id and
+// nests inside the job's own tool block in the job's region (three-level
+// tree).
+func TestStreams_GrandchildNestsByJobID(t *testing.T) {
+	withBashTailInterval(t, time.Hour) // no loop interference
+	c := newTestConnector(t)
+	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
+		ID: "agent-9", Kind: "agent", Status: "running", ParentToolUseID: "tu_job", StartedMs: 1,
+	}})
+	// Job's own tool_start: masked to the region root.
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9"},
+		ToolUse: &types.ToolUseEvent{ID: "tu_outer", Name: "Agent"}})
+	// Grandchild (sync spawn inside the job): same JobID, parent = the job's inner tool id.
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "tu_outer", JobID: "agent-9"},
+		ToolUse: &types.ToolUseEvent{ID: "tu_deep", Name: "Grep"}})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_deep", JobID: "agent-9"}, Text: "deep"})
+
+	slot := c.slots["main"]
+	slot.ssMu.Lock()
+	stream := slot.streams["agent-9"]
+	var blocks []streamBlock
+	if stream != nil {
+		blocks = append([]streamBlock(nil), stream.blocks...)
+	}
+	slot.ssMu.Unlock()
+	if stream == nil {
+		t.Fatal("streams[\"agent-9\"] missing — job_started must create the region")
+	}
+	if len(blocks) != 1 || blocks[0].Kind != "tool" || blocks[0].ID != "tu_outer" {
+		t.Fatalf("root blocks = %+v, want exactly [tool tu_outer]", blocks)
+	}
+	outer := &blocks[0]
+	if len(outer.Children) != 1 || outer.Children[0].Kind != "tool" || outer.Children[0].ID != "tu_deep" {
+		t.Fatalf("outer children = %+v, want [tool tu_deep]", outer.Children)
+	}
+	deep := &outer.Children[0]
+	if len(deep.Children) != 1 || deep.Children[0].Kind != "text" || deep.Children[0].Text != "deep" {
+		t.Fatalf("deep children = %+v, want [text %q]", deep.Children, "deep")
+	}
+}
+
+// Single delivery: a JobID-tagged event belongs to the jobs feed only — it
+// must not nest into the chat stream. Sync sub-agent events (no JobID) keep
+// nesting, and turn_start keeps updating the parent Agent block's name.
+func TestOnEngineEvent_ChatSkipsJobEvents(t *testing.T) {
+	c := newTestConnector(t)
+	// Parent Agent tool block in the chat stream (non-agent event).
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_job", Name: "Agent"}})
+	// Background job event: single delivery — must not nest into chat.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9"}, Text: "bg"})
+
+	slot := c.slots["main"]
+	slot.ssMu.Lock()
+	parent := findBlock(slot.streams[""].blocks, "tu_job")
+	var n int
+	if parent != nil {
+		n = len(parent.Children)
+	}
+	slot.ssMu.Unlock()
+	if parent == nil {
+		t.Fatal("parent Agent block missing from the chat stream")
+	}
+	if n != 0 {
+		t.Fatalf("parent block children = %d, want 0 — job events must not nest into the chat stream", n)
+	}
+
+	// Reverse guard: a sync sub-agent event (no JobID) still nests.
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_job"}, Text: "sync"})
+	slot.ssMu.Lock()
+	parent = findBlock(slot.streams[""].blocks, "tu_job")
+	n = len(parent.Children)
+	slot.ssMu.Unlock()
+	if n != 1 || parent.Children[0].Kind != "text" || parent.Children[0].Text != "sync" {
+		t.Fatalf("parent children after the sync event = %+v, want [text %q]", parent.Children, "sync")
+	}
+
+	// turn_start exemption: the parent block's name keeps the agent type.
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart,
+		Agent: &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9", AgentType: "Explore"}})
+	slot.ssMu.Lock()
+	parent = findBlock(slot.streams[""].blocks, "tu_job")
+	name := parent.Name
+	slot.ssMu.Unlock()
+	if !strings.Contains(name, "Explore") {
+		t.Fatalf("parent block name = %q, want it to contain %q (turn_start is exempt from the skip)", name, "Explore")
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool/job"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestNewBackgroundJobRegistry(t *testing.T) {
@@ -2455,4 +2456,197 @@ func TestBackgroundJobRegistry_RegistryMethodsSerialiseMap(t *testing.T) {
 		}
 		seen[j.ID] = struct{}{}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Job lifecycle event emission (registry-level OnJobEvent)
+// ---------------------------------------------------------------------------
+
+// jobEventRecorder captures emissions and notifications in one ordered log so
+// tests can pin the emit-before-notify ordering alongside the shell contents.
+type jobEventRecorder struct {
+	mu    sync.Mutex
+	log   []string
+	kinds map[string]types.JobEvent
+}
+
+func (r *jobEventRecorder) onJobEvent(et types.QueryEventType, ev types.JobEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.log = append(r.log, "emit:"+string(et))
+	if r.kinds == nil {
+		r.kinds = make(map[string]types.JobEvent)
+	}
+	r.kinds[string(et)] = ev
+}
+
+func (r *jobEventRecorder) onNotify(n JobNotification) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.log = append(r.log, "notify:"+n.Status)
+}
+
+func (r *jobEventRecorder) events() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.log...)
+}
+
+func (r *jobEventRecorder) shell(et types.QueryEventType) (types.JobEvent, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ev, ok := r.kinds[string(et)]
+	return ev, ok
+}
+
+// TestSpawn_EmitsJobStarted: registration emits job_started synchronously
+// with the full row shell; a registry without an emitter is unaffected.
+func TestSpawn_EmitsJobStarted(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	rec := &jobEventRecorder{}
+	r.OnJobEvent = rec.onJobEvent
+
+	job := r.Spawn("echo hi", 0, nil)
+
+	ev, ok := rec.shell(types.EventJobStarted)
+	if !ok {
+		t.Fatal("Spawn emitted no job_started event")
+	}
+	if ev.ID != job.ID {
+		t.Errorf("job_started ID = %q, want %q", ev.ID, job.ID)
+	}
+	if ev.Kind != "bash" {
+		t.Errorf("job_started Kind = %q, want bash", ev.Kind)
+	}
+	if ev.Status != "running" {
+		t.Errorf("job_started Status = %q, want running", ev.Status)
+	}
+	if ev.Command != "echo hi" {
+		t.Errorf("job_started Command = %q, want echo hi", ev.Command)
+	}
+	if ev.StartedMs <= 0 {
+		t.Errorf("job_started StartedMs = %d, want > 0", ev.StartedMs)
+	}
+	if ev.ExitCode != 0 {
+		t.Errorf("job_started ExitCode = %d, want 0 (started carries no exit code)", ev.ExitCode)
+	}
+
+	// Nil emitter: registration must not panic and must not emit.
+	NewBackgroundJobRegistry().Spawn("no emitter", 0, nil)
+}
+
+// TestComplete_EmitsJobTerminated covers both completion statuses: the
+// terminated event carries the real exit code and fires BEFORE the
+// completion notification (a notification can kick the parent's idle path,
+// whose events must never overtake job_terminated).
+func TestComplete_EmitsJobTerminated(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		exitCode    int
+		interrupted bool
+		wantStatus  string
+	}{
+		{"completed", 0, false, "completed"},
+		{"failed", 1, true, "failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := NewBackgroundJobRegistry()
+			rec := &jobEventRecorder{}
+			r.OnNotify = rec.onNotify
+			r.OnJobEvent = rec.onJobEvent
+			job := r.Spawn("cmd "+tc.name, 0, nil)
+
+			job.Complete(tc.exitCode, tc.interrupted)
+
+			ev, ok := rec.shell(types.EventJobTerminated)
+			if !ok {
+				t.Fatalf("%s: Complete emitted no job_terminated event", tc.name)
+			}
+			if ev.ID != job.ID || ev.Kind != "bash" {
+				t.Errorf("%s: shell = {id:%s kind:%s}, want {%s bash}", tc.name, ev.ID, ev.Kind, job.ID)
+			}
+			if ev.Status != tc.wantStatus {
+				t.Errorf("%s: shell Status = %q, want %q", tc.name, ev.Status, tc.wantStatus)
+			}
+			if ev.ExitCode != tc.exitCode {
+				t.Errorf("%s: shell ExitCode = %d, want %d", tc.name, ev.ExitCode, tc.exitCode)
+			}
+			if ev.StartedMs <= 0 {
+				t.Errorf("%s: shell StartedMs = %d, want > 0", tc.name, ev.StartedMs)
+			}
+			want := []string{"emit:job_started", "emit:job_terminated", "notify:" + tc.wantStatus}
+			if got := rec.events(); !equalStrings(got, want) {
+				t.Errorf("%s: ordered log = %v, want %v (emit must precede notify)", tc.name, got, want)
+			}
+		})
+	}
+}
+
+// TestKill_EmitsJobTerminated: Kill emits killed/137 before the killed
+// notification; both reach their callbacks exactly once.
+func TestKill_EmitsJobTerminated(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	rec := &jobEventRecorder{}
+	r.OnNotify = rec.onNotify
+	r.OnJobEvent = rec.onJobEvent
+	job := r.Spawn("sleep 60", 0, nil)
+
+	if err := r.Kill(job.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	ev, ok := rec.shell(types.EventJobTerminated)
+	if !ok {
+		t.Fatal("Kill emitted no job_terminated event")
+	}
+	if ev.Status != "killed" || ev.ExitCode != 137 {
+		t.Errorf("shell = {status:%s exit:%d}, want {killed 137}", ev.Status, ev.ExitCode)
+	}
+	if ev.ID != job.ID || ev.Kind != "bash" {
+		t.Errorf("shell = {id:%s kind:%s}, want {%s bash}", ev.ID, ev.Kind, job.ID)
+	}
+	want := []string{"emit:job_started", "emit:job_terminated", "notify:killed"}
+	if got := rec.events(); !equalStrings(got, want) {
+		t.Errorf("ordered log = %v, want %v (emit must precede notify)", got, want)
+	}
+}
+
+// TestComplete_TerminalEarlyReturnNoEmit: the already-terminal guard must
+// also suppress a second event — one transition, one terminated emission.
+func TestComplete_TerminalEarlyReturnNoEmit(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	rec := &jobEventRecorder{}
+	r.OnJobEvent = rec.onJobEvent
+	job := r.Spawn("once only", 0, nil)
+
+	job.Complete(0, false)
+	job.Complete(1, false)
+
+	log := rec.events()
+	want := []string{"emit:job_started", "emit:job_terminated"}
+	if !equalStrings(log, want) {
+		t.Errorf("emissions = %v, want %v (one started + one terminated)", log, want)
+	}
+	ev, _ := rec.shell(types.EventJobTerminated)
+	if ev.Status != "completed" {
+		t.Errorf("shell Status = %q, want completed (first transition wins)", ev.Status)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

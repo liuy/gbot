@@ -1470,3 +1470,72 @@ func TestNewSystemMessage_AssignsUUID(t *testing.T) {
 		t.Error("Timestamp is zero, want non-zero")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Job lifecycle event types and payload
+// ---------------------------------------------------------------------------
+
+func TestJobEventTypeConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		et   types.QueryEventType
+		want string
+	}{
+		{"job_started", types.EventJobStarted, "job_started"},
+		{"job_status", types.EventJobStatus, "job_status"},
+		{"job_terminated", types.EventJobTerminated, "job_terminated"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.et) != tc.want {
+				t.Errorf("QueryEventType %s = %q, want %q", tc.name, tc.et, tc.want)
+			}
+		})
+	}
+}
+
+// TestJobEventJSON pins the wire vocabulary and the omitempty discipline:
+// zero-valued scalars drop out, a killed shell keeps its -1 exit code, and
+// QueryEvent omits the job key entirely when no payload is set.
+func TestJobEventJSON(t *testing.T) {
+	t.Parallel()
+
+	started := types.JobEvent{
+		ID: "bg-1", Kind: "bash", Status: "running", Command: "make check", StartedMs: 42,
+	}
+	data, err := json.Marshal(started)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"id":"bg-1"`) || !strings.Contains(got, `"kind":"bash"`) ||
+		!strings.Contains(got, `"status":"running"`) || !strings.Contains(got, `"command":"make check"`) ||
+		!strings.Contains(got, `"startedMs":42`) {
+		t.Errorf("started shell JSON = %s, want all populated fields present", got)
+	}
+	if strings.Contains(got, "exitCode") {
+		t.Errorf("started shell JSON = %s, must omit a zero exit code", got)
+	}
+
+	killed := types.JobEvent{ID: "agent-1", Kind: "agent", Status: "killed", ExitCode: -1, StartedMs: 7}
+	data, err = json.Marshal(types.QueryEvent{Type: types.EventJobTerminated, Job: &killed})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got = string(data)
+	if !strings.Contains(got, `"job":{"id":"agent-1","kind":"agent","status":"killed","exitCode":-1,"startedMs":7}`) {
+		t.Errorf("terminated event JSON = %s, want the embedded job payload with exitCode -1", got)
+	}
+
+	plain, err := json.Marshal(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "job") {
+		t.Errorf("event without a payload = %s, want no job key", string(plain))
+	}
+}
