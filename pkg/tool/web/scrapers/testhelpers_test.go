@@ -1,11 +1,13 @@
 package scrapers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -113,4 +115,38 @@ func mustParseURL(t *testing.T, s string) *neturl.URL {
 		t.Fatalf("parse URL %q: %v", s, err)
 	}
 	return u
+}
+
+// Scraper tests differ only in what the fake site serves, how the client is
+// pointed at it, which entry point is called and which substrings the markdown
+// must contain; the server lifecycle, the env pinning and the error/result
+// checks are identical everywhere, so they live here instead of in many copies.
+type scraperTest struct {
+	env     map[string]string // env vars pinned before the call (e.g. API tokens)
+	fixture func(w http.ResponseWriter, r *http.Request)
+	client  func(srv *httptest.Server) *http.Client
+	handle  Handler // a Handler, or a closure into an internal render* when the test bypasses URL parsing
+	url     string  // parsed and handed to handle; empty when handle ignores it
+	want    []string
+}
+
+func runScraperTest(t *testing.T, tt scraperTest) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(tt.fixture))
+	defer srv.Close()
+	for k, v := range tt.env {
+		t.Setenv(k, v)
+	}
+	result, err := tt.handle(context.Background(), mustParseURL(t, tt.url), tt.client(srv), nil)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	for _, want := range tt.want {
+		if !strings.Contains(result.Content, want) {
+			t.Errorf("expected %q, got: %q", want, result.Content)
+		}
+	}
 }

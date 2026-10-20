@@ -93,30 +93,25 @@ func TestHandleNpm_NotFound(t *testing.T) {
 }
 
 func TestHandleNpm_DependenciesSection(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/downloads/point/") {
-			_, _ = w.Write([]byte(`{"downloads":100}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"name":"my-pkg","version":"1.0.0","description":"d","license":"MIT","dependencies":{"express":"^4.0.0","lodash":"^4.17.0"}}`))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &pathRoutingTransport{server: srv, hosts: map[string]string{
-		"registry.npmjs.org": "",
-		"api.npmjs.org":      "",
-	}}}
-	result, err := HandleNpm(context.Background(), mustParseURL(t, "https://www.npmjs.com/package/my-pkg"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "express") {
-		t.Errorf("expected dependency, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/downloads/point/") {
+				_, _ = w.Write([]byte(`{"downloads":100}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"my-pkg","version":"1.0.0","description":"d","license":"MIT","dependencies":{"express":"^4.0.0","lodash":"^4.17.0"}}`))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &pathRoutingTransport{server: srv, hosts: map[string]string{
+				"registry.npmjs.org": "",
+				"api.npmjs.org":      "",
+			}}}
+		},
+		handle: HandleNpm,
+		url:    "https://www.npmjs.com/package/my-pkg",
+		want:   []string{"express"},
+	})
 }
 
 func TestExtractRepoURL_StringForm(t *testing.T) {
@@ -172,30 +167,25 @@ func TestHandleNpm_EmptyNameFromAPI(t *testing.T) {
 }
 
 func TestHandleNpm_NoDependencies(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/downloads/point/") {
-			_, _ = w.Write([]byte(`{"downloads":0}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"name":"simple","version":"1.0.0","description":"test","license":"MIT"}`))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &pathRoutingTransport{server: srv, hosts: map[string]string{
-		"registry.npmjs.org": "",
-		"api.npmjs.org":      "",
-	}}}
-	result, err := HandleNpm(context.Background(), mustParseURL(t, "https://www.npmjs.com/package/simple"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "None") {
-		t.Errorf("expected 'None' for no deps, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/downloads/point/") {
+				_, _ = w.Write([]byte(`{"downloads":0}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"simple","version":"1.0.0","description":"test","license":"MIT"}`))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &pathRoutingTransport{server: srv, hosts: map[string]string{
+				"registry.npmjs.org": "",
+				"api.npmjs.org":      "",
+			}}}
+		},
+		handle: HandleNpm,
+		url:    "https://www.npmjs.com/package/simple",
+		want:   []string{"None"},
+	})
 }
 
 func TestHandleNpm_DownloadStatsError(t *testing.T) {

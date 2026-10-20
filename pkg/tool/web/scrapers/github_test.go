@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 )
@@ -170,84 +171,66 @@ func TestHandleGitHub_Blob(t *testing.T) {
 }
 
 func TestHandleGitHub_Tree(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/contents/") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"name":"main.go","path":"src/main.go","type":"file","size":1024},{"name":"README.md","path":"src/README.md","type":"file","size":256}]`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/tree/main/src"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "main.go") {
-		t.Errorf("expected file name, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/contents/") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"name":"main.go","path":"src/main.go","type":"file","size":1024},{"name":"README.md","path":"src/README.md","type":"file","size":256}]`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/tree/main/src",
+		want:   []string{"main.go"},
+	})
 }
 
 func TestHandleGitHub_TreeRoot(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/contents/") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"name":"README.md","path":"README.md","type":"file","size":1024}]`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/tree/main"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "root") {
-		t.Errorf("expected 'root' marker, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/contents/") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[{"name":"README.md","path":"README.md","type":"file","size":1024}]`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/tree/main",
+		want:   []string{"root"},
+	})
 }
 
 func TestHandleGitHub_Pull(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/pulls/42"):
-			_, _ = w.Write([]byte(`{"title":"PR title","body":"PR body","state":"open","number":42,"user":{"login":"alice"},"labels":[],"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z"}`))
-		case strings.Contains(r.URL.Path, "/issues/42/comments"):
-			_, _ = w.Write([]byte(`[]`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/pull/42"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "PR title") {
-		t.Errorf("expected PR title, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "/pulls/42"):
+				_, _ = w.Write([]byte(`{"title":"PR title","body":"PR body","state":"open","number":42,"user":{"login":"alice"},"labels":[],"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z"}`))
+			case strings.Contains(r.URL.Path, "/issues/42/comments"):
+				_, _ = w.Write([]byte(`[]`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/pull/42",
+		want:   []string{"PR title"},
+	})
 }
 
 func TestHandleGitHub_IssuesList(t *testing.T) {
@@ -388,88 +371,76 @@ func TestHandleGitHub_ActionInvalidRunID(t *testing.T) {
 }
 
 func TestHandleGitHub_ActionsJobFromFragment(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/actions/jobs/100/logs"):
-			_, _ = w.Write([]byte("2024-01-15T00:00:00.0000000Z line 1\nplain line\n"))
-		case strings.Contains(r.URL.Path, "/actions/jobs/100"):
-			_, _ = w.Write([]byte(`{"id":100,"name":"build","status":"completed","conclusion":"success","runner_name":"r1","steps":[]}`))
-		case strings.Contains(r.URL.Path, "/actions/runs/1"):
-			_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":1,"jobs_url":"x"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/actions/runs/1/attempts/1#summary-100"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "/actions/jobs/100/logs"):
+				_, _ = w.Write([]byte("2024-01-15T00:00:00.0000000Z line 1\nplain line\n"))
+			case strings.Contains(r.URL.Path, "/actions/jobs/100"):
+				_, _ = w.Write([]byte(`{"id":100,"name":"build","status":"completed","conclusion":"success","runner_name":"r1","steps":[]}`))
+			case strings.Contains(r.URL.Path, "/actions/runs/1"):
+				_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":1,"jobs_url":"x"}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/actions/runs/1/attempts/1#summary-100",
+		want:   []string{"build", "Runner:** r1", "line 1"},
+	})
 }
 
 func TestHandleGitHub_ActionsRunFull(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/actions/runs/1/jobs"):
-			_, _ = w.Write([]byte(`{"jobs":[{"id":100,"name":"build","status":"completed","conclusion":"success","runner_name":"runner1"}]}`))
-		case strings.Contains(r.URL.Path, "/actions/runs/1"):
-			_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":1,"jobs_url":"x"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/actions/runs/1"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "build") {
-		t.Errorf("expected job name, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "/actions/runs/1/jobs"):
+				_, _ = w.Write([]byte(`{"jobs":[{"id":100,"name":"build","status":"completed","conclusion":"success","runner_name":"runner1"}]}`))
+			case strings.Contains(r.URL.Path, "/actions/runs/1"):
+				_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":1,"jobs_url":"x"}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/actions/runs/1",
+		want:   []string{"build"},
+	})
 }
 
 func TestHandleGitHub_ActionsRunViaFragment(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/actions/jobs/100/logs"):
-			_, _ = w.Write([]byte("2024-01-15T00:00:00.0000000Z log line\n"))
-		case strings.Contains(r.URL.Path, "/actions/jobs/100"):
-			_, _ = w.Write([]byte(`{"id":100,"name":"build","status":"completed","conclusion":"success","steps":[{"name":"step1","status":"completed","conclusion":"success","number":1}]}`))
-		case strings.Contains(r.URL.Path, "/actions/runs/1"):
-			_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":2,"jobs_url":"x"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/owner/repo/actions/runs/1/attempts/2#summary-100"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "/actions/jobs/100/logs"):
+				_, _ = w.Write([]byte("2024-01-15T00:00:00.0000000Z log line\n"))
+			case strings.Contains(r.URL.Path, "/actions/jobs/100"):
+				_, _ = w.Write([]byte(`{"id":100,"name":"build","status":"completed","conclusion":"success","steps":[{"name":"step1","status":"completed","conclusion":"success","number":1}]}`))
+			case strings.Contains(r.URL.Path, "/actions/runs/1"):
+				_, _ = w.Write([]byte(`{"id":1,"name":"CI","status":"completed","conclusion":"success","head_branch":"main","event":"push","html_url":"x","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T01:00:00Z","run_attempt":2,"jobs_url":"x"}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/owner/repo/actions/runs/1/attempts/2#summary-100",
+		want:   []string{"build", "step1", "log line"},
+	})
 }
 
 func TestFetchAllComments_MultiplePages(t *testing.T) {
@@ -842,26 +813,27 @@ func TestFetchGitHubURL_GH_TOKEN(t *testing.T) {
 // ===== renderRepo coverage =====
 
 func TestRenderRepo_NoDescriptionNoLanguageNoLicense(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/git/trees/") {
-			_, _ = w.Write([]byte(`{"tree":[]}`))
-			return
-		}
-		if strings.Contains(r.URL.Path, "/readme") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_, _ = w.Write([]byte(`{"stargazers_count":0,"forks_count":0,"open_issues_count":0,"default_branch":"main"}`))
-	}))
-	defer server.Close()
 	gh := &ghURL{urlType: "repo", owner: "o", repo: "r"}
-	got, err := renderRepo(context.Background(), &http.Client{Transport: &redirectTransport{server: server}}, gh)
-	if err != nil {
-		t.Fatalf("renderRepo error = %v", err)
-	}
-	if !strings.Contains(got.Content, "(no README found)") {
-		t.Errorf("missing no-readme notice: %q", got.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/git/trees/") {
+				_, _ = w.Write([]byte(`{"tree":[]}`))
+				return
+			}
+			if strings.Contains(r.URL.Path, "/readme") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"stargazers_count":0,"forks_count":0,"open_issues_count":0,"default_branch":"main"}`))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: func(ctx context.Context, _ *neturl.URL, client *http.Client, _ JSFetcher) (*Result, error) {
+			return renderRepo(ctx, client, gh)
+		},
+		want: []string{"(no README found)"},
+	})
 }
 
 func TestRenderRepo_WithSubdirsAndFiles(t *testing.T) {
@@ -896,29 +868,30 @@ func TestRenderRepo_WithSubdirsAndFiles(t *testing.T) {
 }
 
 func TestRenderRepo_TreeUnmarshalErrGivesFallback(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/git/trees/") {
-			_, _ = w.Write([]byte(`not json`))
-			return
-		}
-		if strings.Contains(r.URL.Path, "/readme") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_, _ = w.Write([]byte(`{"stargazers_count":0,"forks_count":0,"open_issues_count":0,"default_branch":"main"}`))
-	}))
-	defer server.Close()
 	gh := &ghURL{urlType: "repo", owner: "o", repo: "r"}
-	got, err := renderRepo(context.Background(), &http.Client{Transport: &redirectTransport{server: server}}, gh)
-	if err != nil {
-		t.Fatalf("renderRepo error = %v", err)
-	}
-	// Bad JSON in tree: HTTP succeeds (treeErr == nil), JSON parse fails silently.
-	// Result: tree section exists but empty (no "(unable to fetch tree)" marker).
-	// Verify the repo still renders.
-	if !strings.Contains(got.Content, "# o/r") {
-		t.Errorf("renderRepo missing header: %q", got.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/git/trees/") {
+				_, _ = w.Write([]byte(`not json`))
+				return
+			}
+			if strings.Contains(r.URL.Path, "/readme") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"stargazers_count":0,"forks_count":0,"open_issues_count":0,"default_branch":"main"}`))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: func(ctx context.Context, _ *neturl.URL, client *http.Client, _ JSFetcher) (*Result, error) {
+			return renderRepo(ctx, client, gh)
+		},
+		// Bad JSON in tree: HTTP succeeds (treeErr == nil), JSON parse fails silently.
+		// Result: tree section exists but empty (no "(unable to fetch tree)" marker).
+		// Verify the repo still renders.
+		want: []string{"# o/r"},
+	})
 }
 
 // ===== renderTree coverage =====
@@ -951,28 +924,22 @@ func TestRenderTree_SubdirWithReadme(t *testing.T) {
 
 func TestRenderTree_DirType(t *testing.T) {
 	// Test that "dir" type renders as [dir] in output
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/contents/") {
-			_, _ = w.Write([]byte(`[{"name":"subdir","type":"dir"},{"name":"file.go","type":"file"}]`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: server}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/o/r/tree/main"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "[dir] subdir/") {
-		t.Errorf("expected dir marker, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/contents/") {
+				_, _ = w.Write([]byte(`[{"name":"subdir","type":"dir"},{"name":"file.go","type":"file"}]`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/o/r/tree/main",
+		want:   []string{"[dir] subdir/"},
+	})
 }
 
 func TestRenderTree_ReadmeEncodingNotBase64(t *testing.T) {
@@ -1006,28 +973,22 @@ func TestRenderTree_ReadmeEncodingNotBase64(t *testing.T) {
 }
 
 func TestRenderTree_RootDisplayPath(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/contents/") {
-			_, _ = w.Write([]byte(`[{"name":"f.go","type":"file"}]`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	client := &http.Client{Transport: &redirectTransport{server: server}}
-	result, err := HandleGitHub(context.Background(), mustParseURL(t, "https://github.com/o/r/tree/HEAD"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "root") {
-		t.Errorf("expected 'root' display path, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		env: map[string]string{"GITHUB_TOKEN": "", "GH_TOKEN": ""},
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/contents/") {
+				_, _ = w.Write([]byte(`[{"name":"f.go","type":"file"}]`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleGitHub,
+		url:    "https://github.com/o/r/tree/HEAD",
+		want:   []string{"root"},
+	})
 }
 
 // ===== renderActionsRun coverage =====

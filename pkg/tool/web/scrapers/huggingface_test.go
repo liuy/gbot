@@ -16,78 +16,60 @@ func TestHandleHuggingFace_NoMatch(t *testing.T) {
 }
 
 func TestHandleHuggingFace_Model(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/api/models/") {
-			_, _ = w.Write([]byte(`{"id":"bert-base","modelId":"bert-base","author":"google","downloads":1000000,"likes":50,"tags":["transformer","bert"],"pipeline_tag":"fill-mask","library_name":"transformers"}`))
-			return
-		}
-		_, _ = w.Write([]byte("# BERT\n\nBidirectional encoder."))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleHuggingFace(context.Background(), mustParseURL(t, "https://huggingface.co/bert-base"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "bert-base") {
-		t.Errorf("expected model name, got: %q", result.Content)
-	}
-	if !strings.Contains(result.Content, "1,000,000") {
-		t.Errorf("expected downloads, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/api/models/") {
+				_, _ = w.Write([]byte(`{"id":"bert-base","modelId":"bert-base","author":"google","downloads":1000000,"likes":50,"tags":["transformer","bert"],"pipeline_tag":"fill-mask","library_name":"transformers"}`))
+				return
+			}
+			_, _ = w.Write([]byte("# BERT\n\nBidirectional encoder."))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleHuggingFace,
+		url:    "https://huggingface.co/bert-base",
+		want:   []string{"bert-base", "1,000,000"},
+	})
 }
 
 func TestHandleHuggingFace_Dataset(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/api/datasets/") {
-			_, _ = w.Write([]byte(`{"id":"squad","author":"rajpurkar","downloads":500000}`))
-			return
-		}
-		_, _ = w.Write([]byte("# SQuAD"))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleHuggingFace(context.Background(), mustParseURL(t, "https://huggingface.co/datasets/squad"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "squad") {
-		t.Errorf("expected dataset name, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/api/datasets/") {
+				_, _ = w.Write([]byte(`{"id":"squad","author":"rajpurkar","downloads":500000}`))
+				return
+			}
+			_, _ = w.Write([]byte("# SQuAD"))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleHuggingFace,
+		url:    "https://huggingface.co/datasets/squad",
+		want:   []string{"squad"},
+	})
 }
 
 func TestHandleHuggingFace_Space(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/api/spaces/") {
-			_, _ = w.Write([]byte(`{"id":"gradio/chatbot","author":"gradio","likes":100}`))
-			return
-		}
-		_, _ = w.Write([]byte("# Chatbot"))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleHuggingFace(context.Background(), mustParseURL(t, "https://huggingface.co/spaces/gradio/chatbot"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "gradio") {
-		t.Errorf("expected author, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/api/spaces/") {
+				_, _ = w.Write([]byte(`{"id":"gradio/chatbot","author":"gradio","likes":100}`))
+				return
+			}
+			_, _ = w.Write([]byte("# Chatbot"))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleHuggingFace,
+		url:    "https://huggingface.co/spaces/gradio/chatbot",
+		want:   []string{"gradio"},
+	})
 }
 
 func TestHandleHuggingFace_User(t *testing.T) {
@@ -152,27 +134,22 @@ func TestHandleHuggingFace_DatasetWithCardData(t *testing.T) {
 }
 
 func TestHandleHuggingFace_SpaceFull(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/api/spaces/") {
-			_, _ = w.Write([]byte(`{"id":"gradio/chatbot","author":"gradio","likes":100,"tags":["gradio","chatbot"],"sdk":"gradio","private":true,"gated":false}`))
-			return
-		}
-		_, _ = w.Write([]byte("# Chatbot"))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleHuggingFace(context.Background(), mustParseURL(t, "https://huggingface.co/spaces/gradio/chatbot"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "gradio") {
-		t.Errorf("expected author, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/api/spaces/") {
+				_, _ = w.Write([]byte(`{"id":"gradio/chatbot","author":"gradio","likes":100,"tags":["gradio","chatbot"],"sdk":"gradio","private":true,"gated":false}`))
+				return
+			}
+			_, _ = w.Write([]byte("# Chatbot"))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleHuggingFace,
+		url:    "https://huggingface.co/spaces/gradio/chatbot",
+		want:   []string{"gradio"},
+	})
 }
 
 func TestRenderHFModel_FullCardData(t *testing.T) {
@@ -401,30 +378,22 @@ func TestHandleHuggingFace_BothFail(t *testing.T) {
 }
 
 func TestHandleHuggingFace_ModelGated(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/api/models/") {
-			_, _ = w.Write([]byte(`{"id":"gated-model","modelId":"gated-model","gated":"manual","private":true,"downloads":100,"library_name":"transformers","tags":["nlp"]}`))
-			return
-		}
-		_, _ = w.Write([]byte("# Model Card"))
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &redirectTransport{server: srv}}
-	result, err := HandleHuggingFace(context.Background(), mustParseURL(t, "https://huggingface.co/owner/gated-model"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "Gated") {
-		t.Errorf("expected Gated marker, got: %q", result.Content)
-	}
-	if !strings.Contains(result.Content, "Private") {
-		t.Errorf("expected Private marker, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/api/models/") {
+				_, _ = w.Write([]byte(`{"id":"gated-model","modelId":"gated-model","gated":"manual","private":true,"downloads":100,"library_name":"transformers","tags":["nlp"]}`))
+				return
+			}
+			_, _ = w.Write([]byte("# Model Card"))
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &redirectTransport{server: srv}}
+		},
+		handle: HandleHuggingFace,
+		url:    "https://huggingface.co/owner/gated-model",
+		want:   []string{"Gated", "Private"},
+	})
 }
 
 func TestParseHuggingFaceURL(t *testing.T) {

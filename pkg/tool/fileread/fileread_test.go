@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -791,30 +792,11 @@ func TestExecute_NullBytesWithOffsetLimit(t *testing.T) {
 // --- Dedup: same file read twice ---
 func TestExecute_DedupSameRange(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "dedup.txt")
-	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	tctx := &tool.ToolUseContext{
-		ReadFileState: make(map[string]tool.FileState),
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-
-	// First read
-	_, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("first Execute() error: %v", err)
-	}
-
-	// Second read same file - should return file_unchanged
-	result2, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("second Execute() error: %v", err)
-	}
-	unchanged, ok := result2.Data.(fileread.FileUnchangedOutput)
+	second := executeFileRead(t, "dedup.txt", "line1\nline2\nline3\n",
+		`{"file_path":"%s"}`, &tool.ToolUseContext{ReadFileState: make(map[string]tool.FileState)}, 2)
+	unchanged, ok := second.(fileread.FileUnchangedOutput)
 	if !ok {
-		t.Fatalf("second Data type = %T, want FileUnchangedOutput", result2.Data)
+		t.Fatalf("second Data type = %T, want FileUnchangedOutput", second)
 	}
 	if unchanged.Type != "file_unchanged" {
 		t.Errorf("Type = %q, want %q", unchanged.Type, "file_unchanged")
@@ -824,34 +806,37 @@ func TestExecute_DedupSameRange(t *testing.T) {
 // --- Dedup skipped for partial view ---
 func TestExecute_DedupPartialNotSkipped(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "partial.txt")
-	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	tctx := &tool.ToolUseContext{
-		ReadFileState: make(map[string]tool.FileState),
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `","offset":1,"limit":1}`)
-
-	// First read with limit
-	_, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("first Execute() error: %v", err)
-	}
-
-	// Second read with limit - should NOT dedup (partial view)
-	result2, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("second Execute() error: %v", err)
-	}
-	textOut, ok := result2.Data.(fileread.TextOutput)
+	second := executeFileRead(t, "partial.txt", "line1\nline2\nline3\n",
+		`{"file_path":"%s","offset":1,"limit":1}`, &tool.ToolUseContext{ReadFileState: make(map[string]tool.FileState)}, 2)
+	textOut, ok := second.(fileread.TextOutput)
 	if !ok {
-		t.Fatalf("Data type = %T, want TextOutput (partial not deduped)", result2.Data)
+		t.Fatalf("Data type = %T, want TextOutput (partial not deduped)", second)
 	}
 	if textOut.Type != "text" {
 		t.Errorf("Type = %q, want %q (partial view not deduped)", textOut.Type, "text")
 	}
+}
+
+// Seeds a temp file and runs Execute over it once per pass with the same read
+// state, returning the last pass's Data. Dedup tests need two passes over one
+// input; the uncapped-output tests need a single pass.
+func executeFileRead(t *testing.T, name, content, inputFormat string, tctx *tool.ToolUseContext, passes int) any {
+	t.Helper()
+	fp := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	input := json.RawMessage(fmt.Sprintf(inputFormat, fp))
+
+	var data any
+	for pass := 1; pass <= passes; pass++ {
+		result, err := fileread.Execute(context.Background(), input, tctx)
+		if err != nil {
+			t.Fatalf("Execute pass %d: %v", pass, err)
+		}
+		data = result.Data
+	}
+	return data
 }
 
 // --- Dedup skipped for different offset/limit ---
@@ -1405,27 +1390,12 @@ func TestExecute_MaxTokens_Exceeded(t *testing.T) {
 // MaxFileReadBytes (256KB) succeeds when UncappedOutput is true.
 func TestExecute_UncappedOutput_SkipsMaxSizeBytes(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "big.txt")
 	// 300KB file — exceeds 256KB limit
-	bigContent := strings.Repeat("x", 300*1024)
-	if err := os.WriteFile(fp, []byte(bigContent), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	tctx := &tool.ToolUseContext{
-		Ctx:            context.Background(),
-		UncappedOutput: true,
-	}
-
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	result, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("with UncappedOutput, should succeed, got: %v", err)
-	}
-	output, ok := result.Data.(fileread.TextOutput)
+	data := executeFileRead(t, "big.txt", strings.Repeat("x", 300*1024),
+		`{"file_path":"%s"}`, &tool.ToolUseContext{Ctx: context.Background(), UncappedOutput: true}, 1)
+	output, ok := data.(fileread.TextOutput)
 	if !ok {
-		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+		t.Fatalf("Data type = %T, want fileread.TextOutput", data)
 	}
 	if len(output.Content) == 0 {
 		t.Error("Content is empty, expected full file content")
@@ -1436,27 +1406,12 @@ func TestExecute_UncappedOutput_SkipsMaxSizeBytes(t *testing.T) {
 // MaxFileReadTokens (25000 tokens) succeeds when UncappedOutput is true.
 func TestExecute_UncappedOutput_SkipsMaxTokens(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "dense.txt")
 	// ~120KB of text, under 256KB byte limit, but ~30K tokens > 25K limit
-	denseContent := strings.Repeat("a", 120*1024)
-	if err := os.WriteFile(fp, []byte(denseContent), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	tctx := &tool.ToolUseContext{
-		Ctx:            context.Background(),
-		UncappedOutput: true,
-	}
-
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	result, err := fileread.Execute(context.Background(), input, tctx)
-	if err != nil {
-		t.Fatalf("with UncappedOutput, should succeed, got: %v", err)
-	}
-	output, ok := result.Data.(fileread.TextOutput)
+	data := executeFileRead(t, "dense.txt", strings.Repeat("a", 120*1024),
+		`{"file_path":"%s"}`, &tool.ToolUseContext{Ctx: context.Background(), UncappedOutput: true}, 1)
+	output, ok := data.(fileread.TextOutput)
 	if !ok {
-		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+		t.Fatalf("Data type = %T, want fileread.TextOutput", data)
 	}
 	if len(output.Content) == 0 {
 		t.Error("Content is empty, expected full file content")

@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -457,25 +458,7 @@ func TestComputer_FormatWireBlocks_Screenshot(t *testing.T) {
 
 func TestComputer_DecodeResult_ScreenshotArrayForm(t *testing.T) {
 	t.Parallel()
-	tt := New(nil)
-	// Build the wire format inline (cannot use pkg/engine's marshalBlocks —
-	// it is unexported and pkg/engine imports pkg/tool, so importing it
-	// back from package computer would form a cycle).
-	raw, err := json.Marshal([]types.ContentBlock{
-		types.NewTextBlock("Screenshot captured (1080x2400)."),
-		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "abc"}),
-	})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	v, err := tt.(tool.ToolWithDecodeResult).DecodeResult(raw)
-	if err != nil {
-		t.Fatalf("DecodeResult: %v", err)
-	}
-	shot, ok := v.(*Screenshot)
-	if !ok {
-		t.Fatalf("DecodeResult returned %T, want *Screenshot", v)
-	}
+	shot := decodeScreenshotBlocks(t, "Screenshot captured (1080x2400).", "abc")
 	if shot.Width != 1080 || shot.Height != 2400 {
 		t.Errorf("dims = %dx%d, want 1080x2400", shot.Width, shot.Height)
 	}
@@ -489,12 +472,29 @@ func TestComputer_DecodeResult_ScreenshotArrayForm(t *testing.T) {
 
 func TestComputer_DecodeResult_NoDimsGraceful(t *testing.T) {
 	t.Parallel()
-	tt := New(nil)
+	shot := decodeScreenshotBlocks(t, "no dimensions here", "xyz")
 	// Text block does not match the dimension regex — dims stay 0/0 but
 	// MIMEType and DataB64 are still populated from the image block.
+	if shot.Width != 0 || shot.Height != 0 {
+		t.Errorf("dims = %dx%d, want 0x0 (regex didn't match)", shot.Width, shot.Height)
+	}
+	if shot.MIMEType != "image/jpeg" {
+		t.Errorf("MIMEType = %q, want %q", shot.MIMEType, "image/jpeg")
+	}
+	if shot.DataB64 != "xyz" {
+		t.Errorf("DataB64 = %q, want %q", shot.DataB64, "xyz")
+	}
+}
+
+// The wire format is built inline because pkg/engine's marshalBlocks is
+// unexported and pkg/engine imports pkg/tool, so importing it back from
+// package computer would form a cycle.
+func decodeScreenshotBlocks(t *testing.T, text, dataB64 string) *Screenshot {
+	t.Helper()
+	tt := New(nil)
 	raw, err := json.Marshal([]types.ContentBlock{
-		types.NewTextBlock("no dimensions here"),
-		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "xyz"}),
+		types.NewTextBlock(text),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: dataB64}),
 	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -507,15 +507,7 @@ func TestComputer_DecodeResult_NoDimsGraceful(t *testing.T) {
 	if !ok {
 		t.Fatalf("DecodeResult returned %T, want *Screenshot", v)
 	}
-	if shot.Width != 0 || shot.Height != 0 {
-		t.Errorf("dims = %dx%d, want 0x0 (regex didn't match)", shot.Width, shot.Height)
-	}
-	if shot.MIMEType != "image/jpeg" {
-		t.Errorf("MIMEType = %q, want %q", shot.MIMEType, "image/jpeg")
-	}
-	if shot.DataB64 != "xyz" {
-		t.Errorf("DataB64 = %q, want %q", shot.DataB64, "xyz")
-	}
+	return shot
 }
 
 func TestComputer_Screenshot_DataB64_IsResized(t *testing.T) {
@@ -565,25 +557,8 @@ func TestComputer_Screenshot_DataB64_IsResized(t *testing.T) {
 
 func TestComputer_Execute_TypeEmptyText(t *testing.T) {
 	t.Parallel()
-	tt, b, _ := newTestTool()
-	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
-	fc := b.client.(*fakeCaller)
-	callsBefore := fc.callCount()
-	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "type", "text": ""}), &tool.ToolUseContext{})
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	er, ok := res.Data.(*ErrorResult)
-	if !ok {
-		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
-	}
-	if !contains(er.Error, "non-empty text") {
-		t.Errorf("error = %q, want 'non-empty text'", er.Error)
-	}
-	if fc.callCount() != callsBefore {
-		t.Errorf("wire calls changed from %d to %d (empty type must not reach wire)", callsBefore, fc.callCount())
-	}
+	assertRejectedBeforeWire(t, map[string]any{"action": "type", "text": ""},
+		"non-empty text", "empty type must not reach wire")
 }
 
 func TestComputer_Execute_TypeBlockedText(t *testing.T) {
@@ -615,39 +590,25 @@ func TestComputer_Execute_TypeBlockedText(t *testing.T) {
 
 func TestComputer_Execute_TypeSuccess(t *testing.T) {
 	t.Parallel()
-	tt, b, _ := newTestTool()
-	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
-	fc := b.client.(*fakeCaller)
-	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
-		"action": "type", "text": "hello",
-	}), &tool.ToolUseContext{})
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	last := fc.lastCall()
-	if last.Command != "set_text" {
-		t.Errorf("command = %q, want set_text", last.Command)
-	}
-	ar, ok := res.Data.(*ActionResult)
-	if !ok {
-		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
-	}
-	if ar.Action != "type" {
-		t.Errorf("action = %q, want type", ar.Action)
-	}
+	assertActionOnWire(t, map[string]any{"action": "type", "text": "hello"}, "type", "set_text", nil)
 }
 
 func TestComputer_Execute_SendKeyUnknown(t *testing.T) {
 	t.Parallel()
+	assertRejectedBeforeWire(t, map[string]any{"action": "send_key", "key": "escape"},
+		"unknown key", "unknown key must not reach wire")
+}
+
+// Input validation must reject the action before the backend is touched: the
+// wire call count has to be unchanged across the rejected Call.
+func assertRejectedBeforeWire(t *testing.T, args map[string]any, want, why string) {
+	t.Helper()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
 	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
 	fc := b.client.(*fakeCaller)
 	callsBefore := fc.callCount()
-	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
-		"action": "send_key", "key": "escape",
-	}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, args), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -655,11 +616,11 @@ func TestComputer_Execute_SendKeyUnknown(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want *ErrorResult", res.Data)
 	}
-	if !contains(er.Error, "unknown key") {
-		t.Errorf("error = %q, want 'unknown key'", er.Error)
+	if !contains(er.Error, want) {
+		t.Errorf("error = %q, want '%s'", er.Error, want)
 	}
 	if fc.callCount() != callsBefore {
-		t.Errorf("wire calls changed from %d to %d (unknown key must not reach wire)", callsBefore, fc.callCount())
+		t.Errorf("wire calls changed from %d to %d (%s)", callsBefore, fc.callCount(), why)
 	}
 }
 
@@ -923,30 +884,8 @@ func TestComputer_Execute_ClickElementSuccess(t *testing.T) {
 
 func TestComputer_Execute_ScrollSuccess(t *testing.T) {
 	t.Parallel()
-	tt, b, _ := newTestTool()
-	ctx := context.Background()
-	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
-	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
-		"action": "scroll", "direction": "down",
-	}), &tool.ToolUseContext{})
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	ar, ok := res.Data.(*ActionResult)
-	if !ok {
-		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
-	}
-	if ar.Action != "scroll" {
-		t.Errorf("action = %q, want scroll", ar.Action)
-	}
-	// Confirm the scroll command reached the wire with direction down.
-	last := b.client.(*fakeCaller).lastCall()
-	if last.Command != "scroll" {
-		t.Errorf("wire command = %q, want scroll", last.Command)
-	}
-	if last.Params["direction"] != "down" {
-		t.Errorf("wire direction = %v, want down", last.Params["direction"])
-	}
+	assertActionOnWire(t, map[string]any{"action": "scroll", "direction": "down"},
+		"scroll", "scroll", map[string]any{"direction": "down"})
 }
 
 func TestComputer_Execute_ZoomSuccess(t *testing.T) {
@@ -1267,12 +1206,19 @@ func TestComputer_Execute_ClickBackendError(t *testing.T) {
 
 func TestComputer_Execute_OpenAppSuccess(t *testing.T) {
 	t.Parallel()
+	assertActionOnWire(t, map[string]any{"action": "open_app", "package": "com.android.chrome"},
+		"open_app", "open_app", map[string]any{"package": "com.android.chrome"})
+}
+
+// A successful action is only proven by what the backend received. The
+// ActionResult echoes the tool-level action while the wire command is the
+// backend's own name for it (type → set_text), so both are checked separately.
+func assertActionOnWire(t *testing.T, args map[string]any, action, command string, wantParams map[string]any) {
+	t.Helper()
 	tt, b, _ := newTestTool()
 	ctx := context.Background()
 	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
-	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
-		"action": "open_app", "package": "com.android.chrome",
-	}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, args), &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -1280,15 +1226,17 @@ func TestComputer_Execute_OpenAppSuccess(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want *ActionResult", res.Data)
 	}
-	if ar.Action != "open_app" {
-		t.Errorf("action = %q, want open_app", ar.Action)
+	if ar.Action != action {
+		t.Errorf("action = %q, want %s", ar.Action, action)
 	}
 	last := b.client.(*fakeCaller).lastCall()
-	if last.Command != "open_app" {
-		t.Errorf("wire command = %q, want open_app", last.Command)
+	if last.Command != command {
+		t.Errorf("wire command = %q, want %s", last.Command, command)
 	}
-	if last.Params["package"] != "com.android.chrome" {
-		t.Errorf("wire package = %v, want com.android.chrome", last.Params["package"])
+	for key, want := range wantParams {
+		if !reflect.DeepEqual(last.Params[key], want) {
+			t.Errorf("wire %s = %v, want %v", key, last.Params[key], want)
+		}
 	}
 }
 

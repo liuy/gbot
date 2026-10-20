@@ -260,30 +260,25 @@ func TestHandleHackerNews_ListingDeletedItem(t *testing.T) {
 }
 
 func TestHandleHackerNews_ListingEmptyTitle(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/topstories.json") {
-			_, _ = w.Write([]byte(`[1]`))
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/item/1.json") {
-			_, _ = w.Write([]byte(`{"id":1,"type":"story","by":"alice","time":1700000000,"score":10,"descendants":0}`))
-			return
-		}
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &rewriteTransport{server: srv, host: "hacker-news.firebaseio.com"}}
-	result, err := HandleHackerNews(context.Background(), mustParseURL(t, "https://news.ycombinator.com/"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "[deleted]") {
-		t.Errorf("expected [deleted] for empty title, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/topstories.json") {
+				_, _ = w.Write([]byte(`[1]`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/item/1.json") {
+				_, _ = w.Write([]byte(`{"id":1,"type":"story","by":"alice","time":1700000000,"score":10,"descendants":0}`))
+				return
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &rewriteTransport{server: srv, host: "hacker-news.firebaseio.com"}}
+		},
+		handle: HandleHackerNews,
+		url:    "https://news.ycombinator.com/",
+		want:   []string{"[deleted]"},
+	})
 }
 
 func TestHandleHackerNews_BadIDFormat(t *testing.T) {
@@ -554,28 +549,23 @@ func TestHandleHackerNews_ItemBadJSON(t *testing.T) {
 }
 
 func TestHandleHackerNews_ListingItemSelfURL(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/topstories.json") {
-			_, _ = w.Write([]byte(`[1]`))
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/item/1.json") {
-			_, _ = w.Write([]byte(`{"id":1,"title":"Self Post","type":"story","by":"alice","time":1700000000,"score":10,"url":"","descendants":0}`))
-			return
-		}
-	}))
-	defer srv.Close()
-
-	client := &http.Client{Transport: &rewriteTransport{server: srv, host: "hacker-news.firebaseio.com"}}
-	result, err := HandleHackerNews(context.Background(), mustParseURL(t, "https://news.ycombinator.com/"), client, nil)
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
-	if !strings.Contains(result.Content, "news.ycombinator.com/item?id=1") {
-		t.Errorf("expected HN self-link for item without URL, got: %q", result.Content)
-	}
+	runScraperTest(t, scraperTest{
+		fixture: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/topstories.json") {
+				_, _ = w.Write([]byte(`[1]`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/item/1.json") {
+				_, _ = w.Write([]byte(`{"id":1,"title":"Self Post","type":"story","by":"alice","time":1700000000,"score":10,"url":"","descendants":0}`))
+				return
+			}
+		},
+		client: func(srv *httptest.Server) *http.Client {
+			return &http.Client{Transport: &rewriteTransport{server: srv, host: "hacker-news.firebaseio.com"}}
+		},
+		handle: HandleHackerNews,
+		url:    "https://news.ycombinator.com/",
+		want:   []string{"news.ycombinator.com/item?id=1"},
+	})
 }

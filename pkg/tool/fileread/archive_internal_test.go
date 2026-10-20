@@ -236,42 +236,34 @@ func TestTryArchivePath_OffsetBeyondEndWireWarningVariant(t *testing.T) {
 	// has content — the wire warning must be the offset variant with the real
 	// line count, not "contents are empty" (which would send the model
 	// re-reading the member looking for an empty file).
-	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "lines.zip")
-	if err := makeZip(zipPath, map[string]string{
-		"notes.txt": "one\ntwo\nthree\nfour",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	in := Input{FilePath: zipPath + ":notes.txt", Offset: 100}
-	result, handled, err := tryArchivePath(context.Background(), in)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !handled {
-		t.Fatal("expected handled=true")
-	}
-	wb := New().(tool.ToolWithWireBlocks)
-	blocks := wb.FormatWireBlocks(result.Data)
-	if len(blocks) != 1 || blocks[0].Type != "text" {
-		t.Fatalf("blocks = %+v, want single text block", blocks)
-	}
+	got := archiveWireText(t, "lines.zip", "notes.txt", 100, "one\ntwo\nthree\nfour")
 	want := "<system-reminder>Warning: the file exists but is shorter than the provided offset (100). The file has 4 lines.</system-reminder>"
-	if blocks[0].Text != want {
-		t.Errorf("wire text = %q, want %q", blocks[0].Text, want)
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
 	}
 }
 
 func TestTryArchivePath_MemberOffsetWireNumbersFromOffset(t *testing.T) {
 	t.Parallel()
+	got := archiveWireText(t, "six.zip", "notes.txt", 5, "l1\nl2\nl3\nl4\nl5\nl6")
+	// Locks max(in.Offset,1): an offset read numbers from the requested
+	// line, not from 1 — the model relies on the numbers to seek further.
+	want := "5\tl5\n6\tl6"
+	if got != want {
+		t.Errorf("wire text = %q, want %q", got, want)
+	}
+}
+
+// Reads one member of a seeded zip through tryArchivePath and returns the
+// single wire text block, so each test pins only the text it expects.
+func archiveWireText(t *testing.T, zipName, member string, offset int, content string) string {
+	t.Helper()
 	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "six.zip")
-	if err := makeZip(zipPath, map[string]string{
-		"notes.txt": "l1\nl2\nl3\nl4\nl5\nl6",
-	}); err != nil {
+	zipPath := filepath.Join(dir, zipName)
+	if err := makeZip(zipPath, map[string]string{member: content}); err != nil {
 		t.Fatal(err)
 	}
-	in := Input{FilePath: zipPath + ":notes.txt", Offset: 5}
+	in := Input{FilePath: zipPath + ":" + member, Offset: offset}
 	result, handled, err := tryArchivePath(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -284,12 +276,7 @@ func TestTryArchivePath_MemberOffsetWireNumbersFromOffset(t *testing.T) {
 	if len(blocks) != 1 || blocks[0].Type != "text" {
 		t.Fatalf("blocks = %+v, want single text block", blocks)
 	}
-	// Locks max(in.Offset,1): an offset read numbers from the requested
-	// line, not from 1 — the model relies on the numbers to seek further.
-	want := "5\tl5\n6\tl6"
-	if blocks[0].Text != want {
-		t.Errorf("wire text = %q, want %q", blocks[0].Text, want)
-	}
+	return blocks[0].Text
 }
 
 func TestTryArchivePath_BinaryMember(t *testing.T) {

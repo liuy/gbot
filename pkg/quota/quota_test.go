@@ -797,47 +797,32 @@ func TestMinimaxFetcher_Fetch_CancelledContext(t *testing.T) {
 // flood the status bar; the boundary is exact.
 func TestZhipuFetcher_Fetch_HTTPErrorBodyTruncation(t *testing.T) {
 	t.Parallel()
-	body200 := strings.Repeat("x", 200)
-
-	cases := []struct {
-		name string
-		body string
-		want string
-	}{
-		{"exactly 200", body200, "zhipu quota: HTTP 500: " + body200},
-		{"201 truncated", body200 + "y", "zhipu quota: HTTP 500: " + body200 + "..."},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			defer srv.Close()
-
-			f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
-			_, err := f.Fetch(context.Background())
-			if err == nil {
-				t.Fatal("Fetch HTTP 500: got nil error")
-			}
-			if err.Error() != tc.want {
-				t.Errorf("error = %q, want %q", err.Error(), tc.want)
-			}
+	assertHTTPErrorBodyTruncation(t, "zhipu quota:", strings.Repeat("x", 200),
+		func(baseURL string, client *http.Client) Fetcher {
+			return &ZhipuFetcher{BaseURL: baseURL, APIKey: "k", Client: client}
 		})
-	}
 }
 
 func TestMinimaxFetcher_Fetch_HTTPErrorBodyTruncation(t *testing.T) {
 	t.Parallel()
-	body200 := strings.Repeat("z", 200)
+	assertHTTPErrorBodyTruncation(t, "minimax quota:", strings.Repeat("z", 200),
+		func(baseURL string, client *http.Client) Fetcher {
+			return &MinimaxFetcher{BaseURL: baseURL, APIKey: "k", Client: client}
+		})
+}
+
+// The fetchers share the HTTP-error path verbatim; only the message prefix and
+// the constructor differ, so the 200-byte boundary is asserted once per fetcher.
+func assertHTTPErrorBodyTruncation(t *testing.T, prefix, body200 string, newFetcher func(baseURL string, client *http.Client) Fetcher) {
+	t.Helper()
 
 	cases := []struct {
 		name string
 		body string
 		want string
 	}{
-		{"exactly 200", body200, "minimax quota: HTTP 500: " + body200},
-		{"201 truncated", body200 + "y", "minimax quota: HTTP 500: " + body200 + "..."},
+		{"exactly 200", body200, prefix + " HTTP 500: " + body200},
+		{"201 truncated", body200 + "y", prefix + " HTTP 500: " + body200 + "..."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -847,8 +832,7 @@ func TestMinimaxFetcher_Fetch_HTTPErrorBodyTruncation(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
-			_, err := f.Fetch(context.Background())
+			_, err := newFetcher(srv.URL, srv.Client()).Fetch(context.Background())
 			if err == nil {
 				t.Fatal("Fetch HTTP 500: got nil error")
 			}
@@ -930,44 +914,35 @@ func TestZhipuFetcher_Fetch_ExactWindowMatch(t *testing.T) {
 // the first match rather than at the last.
 func TestZhipuFetcher_Fetch_FirstExactMatchWins(t *testing.T) {
 	t.Parallel()
-	body := mustJSON(t, map[string]any{
-		"code":    200,
-		"success": true,
-		"data": map[string]any{
-			"limits": []map[string]any{
-				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 15},
-				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 99},
-			},
-		},
+	used := fetchZhipuUsed(t, []map[string]any{
+		{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 15},
+		{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 99},
 	})
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(body))
-	}))
-	defer srv.Close()
-
-	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
-	info, err := f.Fetch(context.Background())
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	if info.Used != 15 {
-		t.Errorf("Used = %d, want 15 (first matching entry, not the last)", info.Used)
+	if used != 15 {
+		t.Errorf("Used = %d, want 15 (first matching entry, not the last)", used)
 	}
 }
 
 // With no exact 5h entry the fallback takes the FIRST TOKENS_LIMIT entry.
 func TestZhipuFetcher_Fetch_FallbackTakesFirstTokensLimit(t *testing.T) {
 	t.Parallel()
+	used := fetchZhipuUsed(t, []map[string]any{
+		{"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 70},
+		{"type": "TOKENS_LIMIT", "unit": 3, "number": 9, "percentage": 80},
+	})
+	if used != 70 {
+		t.Errorf("Used = %d, want 70 (first TOKENS_LIMIT entry)", used)
+	}
+}
+
+// Serves a limits array and reports the Used percentage the fetcher settled on,
+// leaving each test to pin which entry won.
+func fetchZhipuUsed(t *testing.T, limits []map[string]any) int {
+	t.Helper()
 	body := mustJSON(t, map[string]any{
 		"code":    200,
 		"success": true,
-		"data": map[string]any{
-			"limits": []map[string]any{
-				{"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 70},
-				{"type": "TOKENS_LIMIT", "unit": 3, "number": 9, "percentage": 80},
-			},
-		},
+		"data":    map[string]any{"limits": limits},
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -980,9 +955,7 @@ func TestZhipuFetcher_Fetch_FallbackTakesFirstTokensLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if info.Used != 70 {
-		t.Errorf("Used = %d, want 70 (first TOKENS_LIMIT entry)", info.Used)
-	}
+	return info.Used
 }
 
 // Detect matches on provider name OR host; each of the four name/host
