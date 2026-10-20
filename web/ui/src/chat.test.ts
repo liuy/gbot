@@ -305,6 +305,56 @@ describe('chat integration', () => {
     expect(sec).toBeLessThanOrEqual(elapsed + 2)
   })
 
+  it('main-stream tool_output_delta renders live into the running tool block', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'live-bash-1', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-1', display_output: 'building 1/100' } },
+    ])
+    const toolRoot = document.querySelector('[data-tool-root]') as HTMLElement
+    const body = toolRoot.children[1] as HTMLElement
+    expect(body.textContent).toContain('building 1/100')
+    expect(body.classList.contains('hidden')).toBe(false)
+  })
+
+  it('tool_output_delta: empty delta inert, first content expands, morph patches in place', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'live-bash-2', name: 'Bash' } },
+    ])
+    const toolRoot = document.querySelector('[data-tool-root]') as HTMLElement
+    const body = toolRoot.children[1] as HTMLElement
+    // Segment 1 — empty delta must neither expand nor write (UI contract;
+    // the engine never dispatches empty payloads, this guards regressions).
+    dispatchEvents([
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: '' } },
+    ])
+    expect(body.classList.contains('hidden')).toBe(true)
+    expect(body.textContent).toBe('')
+    // Segment 2 — first content-bearing delta renders and expands.
+    dispatchEvents([
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: 'step 1' } },
+    ])
+    expect(body.textContent).toContain('step 1')
+    expect(body.classList.contains('hidden')).toBe(false)
+    const pBefore = body.querySelector('p')
+    // Segment 3 — innerHTML replacement would swap in a fresh <p>;
+    // morph must patch the existing text node in place.
+    dispatchEvents([
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: 'step 1\nstep 2' } },
+    ])
+    expect(body.textContent).toContain('step 2')
+    expect(body.querySelector('p')).toBe(pBefore)
+  })
+
   it('usage updates progress bar', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

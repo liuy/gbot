@@ -497,7 +497,15 @@ export function setToolSummary(handles: ToolDomHandles, summary: string, toolNam
 }
 
 export function setToolOutput(handles: ToolDomHandles, output: string, skipHighlight = false): void {
-  handles.body.innerHTML = renderToolOutput(output, skipHighlight)
+  const html = renderToolOutput(output, skipHighlight)
+  // Same shape as writeThinkingText: first frame takes a plain innerHTML
+  // write; re-renders morph so progressive tool output patches the changed
+  // text nodes instead of destroying the subtree on every delta.
+  if (handles.body.children.length > 0) {
+    morphHtml(handles.body, html)
+  } else {
+    handles.body.innerHTML = html
+  }
 }
 
 export function refreshToolDuration(handles: ToolDomHandles, startedAt: number): void {

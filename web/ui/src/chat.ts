@@ -1780,14 +1780,21 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'tool_output_delta': {
-        if (e.agent && e.tool_result) {
-          const targetId = e.tool_result.tool_use_id
-          const output = e.tool_result.display_output ?? ''
-          const entry = toolEntries.get(targetId)
-          if (entry) setToolOutput(entry.handles, output)
-          const pending = pendingToolByID.get(targetId)
-          if (pending) pending.displayOutput = output
+        if (!e.tool_result) return
+        const targetId = e.tool_result.tool_use_id
+        const output = e.tool_result.display_output ?? ''
+        const entry = toolEntries.get(targetId)
+        if (entry) {
+          // First content-bearing delta expands the body so streaming output
+          // is visible while the tool runs (TUI parity). The check runs BEFORE
+          // the write so a user collapse mid-run is never undone by a later
+          // delta; the same path serves sub-agent deltas via the shared tables.
+          const expand = output !== '' && entry.handles.body.children.length === 0
+          setToolOutput(entry.handles, output)
+          if (expand) entry.handles.body.classList.remove('hidden')
         }
+        const pending = pendingToolByID.get(targetId)
+        if (pending) pending.displayOutput = output
         return
       }
       case 'tool_end': {

@@ -229,6 +229,24 @@ describe('setToolOutput', () => {
     setToolOutput(h, 'clean output')
     expect(h.body.innerHTML).toContain('clean output')
   })
+
+  it('updates content across successive calls preserving element identity (morph path)', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    setToolOutput(h, 'step 1')
+    const pBefore = h.body.querySelector('p')
+    setToolOutput(h, 'step 1\nstep 2')
+    expect(h.body.textContent).toContain('step 2')
+    expect(h.body.querySelector('p')).toBe(pBefore)
+  })
+
+  it('clears rendered output when output becomes empty', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    setToolOutput(h, 'temporary')
+    setToolOutput(h, '')
+    expect(h.body.children.length).toBe(0)
+  })
 })
 
 describe('finishTool', () => {
