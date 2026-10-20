@@ -8170,22 +8170,24 @@ func TestToolDeltaCoalesce(t *testing.T) {
 	}
 	var out []sent
 	tc := &toolDeltaCoalesce{}
-	flush := func() { tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) }) }
+	flush := func() {
+		tc.flush(func(id, text string, meta any, _ *types.AgentMeta) { out = append(out, sent{id, text, meta}) })
+	}
 
 	tc.write("t1", "alpha", "meta1", time.Hour, flush)
 	tc.write("t2", "", nil, time.Hour, flush)
 	if len(out) != 0 {
 		t.Errorf("flushes during the window = %d, want 0", len(out))
 	}
-	tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) })
+	tc.flush(func(id, text string, meta any, _ *types.AgentMeta) { out = append(out, sent{id, text, meta}) })
 	if len(out) != 1 {
 		t.Fatalf("%d payloads after flush, want 1 (the empty buffer is skipped): %+v", len(out), out)
 	}
 	if out[0].id != "t1" || out[0].text != "alpha" || out[0].meta != any("meta1") {
 		t.Errorf("flushed payload = %+v, want {t1 alpha meta1}", out[0])
 	}
-	if tc.bufs != nil || tc.meta != nil {
-		t.Errorf("buffers after flush = %v/%v, want both cleared", tc.bufs, tc.meta)
+	if tc.bufs != nil || tc.meta != nil || tc.agents != nil {
+		t.Errorf("buffers after flush = %v/%v/%v, want all cleared", tc.bufs, tc.meta, tc.agents)
 	}
 	// Same unstamped-clock rule for the per-id buffer: nothing drains yet.
 	seeded := &toolDeltaCoalesce{}
@@ -8193,7 +8195,7 @@ func TestToolDeltaCoalesce(t *testing.T) {
 	seeded.bufs["t1"].WriteString("seed")
 	var seededOut []string
 	seeded.write("t2", "x", nil, time.Hour, func() {
-		seeded.flush(func(id, text string, meta any) { seededOut = append(seededOut, id+":"+text) })
+		seeded.flush(func(id, text string, _ any, _ *types.AgentMeta) { seededOut = append(seededOut, id+":"+text) })
 	})
 	if len(seededOut) != 0 {
 		t.Errorf("first write with an unstamped clock drained %v, want nothing", seededOut)
@@ -8202,7 +8204,7 @@ func TestToolDeltaCoalesce(t *testing.T) {
 	// A later write without metadata must not resurrect the old payload.
 	out = nil
 	tc.write("t1", "beta", nil, time.Hour, flush)
-	tc.flush(func(id, text string, meta any) { out = append(out, sent{id, text, meta}) })
+	tc.flush(func(id, text string, meta any, _ *types.AgentMeta) { out = append(out, sent{id, text, meta}) })
 	if len(out) != 1 || out[0].text != "beta" || out[0].meta != nil {
 		t.Errorf("second flush = %+v, want {t1 beta <nil>}", out)
 	}
@@ -8211,7 +8213,7 @@ func TestToolDeltaCoalesce(t *testing.T) {
 func TestToolDeltaCoalesceFlushStampsClock(t *testing.T) {
 	t.Parallel()
 	tc := &toolDeltaCoalesce{}
-	tc.flush(func(id, text string, meta any) {})
+	tc.flush(func(id, text string, meta any, _ *types.AgentMeta) {})
 	if tc.lastFlush.IsZero() {
 		t.Fatal("flush must stamp the coalesce clock even with nothing buffered")
 	}
@@ -10762,7 +10764,7 @@ func TestToolDeltaCoalesceSkipsEmptyBuffers(t *testing.T) {
 		tr.write("empty", "", nil, time.Hour, nil)
 		tr.write("kept", "payload", nil, time.Hour, nil)
 		var dispatched []string
-		tr.flush(func(id, text string, _ any) { dispatched = append(dispatched, id+":"+text) })
+		tr.flush(func(id, text string, _ any, _ *types.AgentMeta) { dispatched = append(dispatched, id+":"+text) })
 		if len(dispatched) != 1 || dispatched[0] != "kept:payload" {
 			t.Fatalf("iteration %d: flush dispatched %v, want [kept:payload]", i, dispatched)
 		}

@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -313,7 +314,9 @@ func TestEmitEvent_CoalescesToolParamDeltas(t *testing.T) {
 
 // TestEmitEvent_CoalescesToolOutputDeltas verifies that multiple
 // tool_output_delta events for the same tool_use_id are buffered and flushed
-// as a single coalesced event.
+// as a single coalesced event. Output deltas carry window snapshots, not
+// fragments: the flush must replay only the newest window (replace, not
+// concat) and carry the event's Agent tag through the coalesce round-trip.
 func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 	md := &mockDispatcher{}
 	eng := New(&Params{
@@ -325,19 +328,21 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	eng.emitEvent(types.QueryEvent{
-		Type: types.EventToolOutputDelta,
+		Type:  types.EventToolOutputDelta,
+		Agent: &types.AgentMeta{JobID: "job-x"},
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "tool_1",
-			DisplayOutput: "line1\n",
+			DisplayOutput: "line1\nline2",
 			IsSearch:      true,
 			IsTask:        true,
 		},
 	})
 	eng.emitEvent(types.QueryEvent{
-		Type: types.EventToolOutputDelta,
+		Type:  types.EventToolOutputDelta,
+		Agent: &types.AgentMeta{JobID: "job-x"},
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "tool_1",
-			DisplayOutput: "line2\n",
+			DisplayOutput: "line2\nline3",
 			IsSearch:      true,
 			IsTask:        true,
 		},
@@ -361,7 +366,7 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 	if md.events[0].ToolResult.ToolUseID != "tool_1" {
 		t.Errorf("coalesced output id = %q, want %q", md.events[0].ToolResult.ToolUseID, "tool_1")
 	}
-	wantOutput := "line1\nline2\n"
+	wantOutput := "line2\nline3"
 	if md.events[0].ToolResult.DisplayOutput != wantOutput {
 		t.Errorf("coalesced output = %q, want %q", md.events[0].ToolResult.DisplayOutput, wantOutput)
 	}
@@ -370,6 +375,9 @@ func TestEmitEvent_CoalescesToolOutputDeltas(t *testing.T) {
 	}
 	if !md.events[0].ToolResult.IsTask {
 		t.Error("coalesced output lost IsTask metadata")
+	}
+	if md.events[0].Agent == nil || md.events[0].Agent.JobID != "job-x" {
+		t.Errorf("coalesced output Agent tag must survive the flush, got %+v", md.events[0].Agent)
 	}
 	if md.events[1].Type != types.EventToolEnd {
 		t.Fatalf("second event should be tool_end, got %s", md.events[1].Type)
@@ -745,8 +753,11 @@ func TestEmitEvent_E2E_ToolParamDeltaPreservesMetadata(t *testing.T) {
 }
 
 // TestEmitEvent_E2E_ConcurrentToolOutputDeltas simulates tool workers on
-// separate goroutines emitting output deltas. Verifies coalescing is safe
-// under -race and each id gets its own coalesced event.
+// separate goroutines emitting output window snapshots. Verifies coalescing
+// is safe under -race, each id gets its own coalesced event, every flushed
+// payload is exactly one window snapshot (never a splice of two windows —
+// the replace-semantics contract), and the newest window is the last to
+// flush per id.
 func TestEmitEvent_E2E_ConcurrentToolOutputDeltas(t *testing.T) {
 	md := &mockDispatcher{}
 	eng := New(&Params{
@@ -779,30 +790,87 @@ func TestEmitEvent_E2E_ConcurrentToolOutputDeltas(t *testing.T) {
 
 	eng.emitEvent(types.QueryEvent{Type: types.EventToolEnd})
 
-	outputByID := make(map[string]string)
+	eventsByID := make(map[string][]string)
 	for _, evt := range md.events {
 		if evt.Type == types.EventToolOutputDelta && evt.ToolResult != nil {
-			outputByID[evt.ToolResult.ToolUseID] += evt.ToolResult.DisplayOutput
+			eventsByID[evt.ToolResult.ToolUseID] = append(eventsByID[evt.ToolResult.ToolUseID], evt.ToolResult.DisplayOutput)
 		}
 	}
 
-	if len(outputByID) != n {
-		t.Errorf("expected %d distinct tool output events, got %d", n, len(outputByID))
+	if len(eventsByID) != n {
+		t.Fatalf("expected %d distinct tool output events, got %d", n, len(eventsByID))
 	}
 
+	snapshotRe := regexp.MustCompile(`^line_\d+_\d\n$`)
 	for i := range n {
 		id := fmt.Sprintf("tool_%d", i)
-		got, ok := outputByID[id]
-		if !ok {
+		got, ok := eventsByID[id]
+		if !ok || len(got) == 0 {
 			t.Errorf("missing output for %s", id)
 			continue
 		}
-		for j := range 5 {
-			want := fmt.Sprintf("line_%d_%d\n", i, j)
-			if !strings.Contains(got, want) {
-				t.Errorf("output for %s missing %q, got: %s", id, want, got)
+		for _, snap := range got {
+			if !snapshotRe.MatchString(snap) {
+				t.Errorf("output for %s is a spliced window %q, want a single snapshot", id, snap)
 			}
 		}
+		lastWindow := fmt.Sprintf("line_%d_4\n", i)
+		if got[len(got)-1] != lastWindow {
+			t.Errorf("last flushed window for %s = %q, want %q", id, got[len(got)-1], lastWindow)
+		}
+	}
+}
+
+// TestToolDeltaCoalesce_ReplaceWindowExpiry pins replace's window clock: the
+// first write only stamps, a replace at exactly one window of elapsed time
+// flushes the pending buffer (the >= boundary), and a replace inside the
+// window does not. Virtual time makes the boundary comparison exact — this is
+// the 100ms cadence background bash tails ride between non-delta events.
+func TestToolDeltaCoalesce_ReplaceWindowExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flushes := 0
+		tc := &toolDeltaCoalesce{}
+		onFlush := func() {
+			flushes++
+			tc.flush(func(id, text string, _ any, _ *types.AgentMeta) {})
+		}
+
+		tc.replace("t1", "a", nil, nil, time.Hour, onFlush)
+		if flushes != 0 {
+			t.Fatalf("first replace flushed %d times, want 0 (unstamped clock only stamps)", flushes)
+		}
+
+		time.Sleep(time.Hour)
+		tc.replace("t1", "b", nil, nil, time.Hour, onFlush)
+		if flushes != 1 {
+			t.Fatalf("replace at exactly one window flushed %d times, want 1", flushes)
+		}
+
+		time.Sleep(30 * time.Minute)
+		tc.replace("t1", "c", nil, nil, time.Hour, onFlush)
+		if flushes != 1 {
+			t.Fatalf("in-window replace flushed %d times, want the count steady at 1", flushes)
+		}
+	})
+}
+
+// TestToolDeltaCoalesce_MixedWriteReplaceAgent pins write's lazy-init of the
+// agents map: a write→replace sequence on one coalesce (param path first,
+// output path later) must not assign into a nil map, and the Agent set by the
+// replace survives the flush.
+func TestToolDeltaCoalesce_MixedWriteReplaceAgent(t *testing.T) {
+	t.Parallel()
+	tc := &toolDeltaCoalesce{}
+	tc.write("t1", "frag", nil, time.Hour, nil)
+	tc.replace("t1", "snap", nil, &types.AgentMeta{JobID: "job-x"}, time.Hour, nil)
+	var got *types.AgentMeta
+	tc.flush(func(id, text string, _ any, agent *types.AgentMeta) {
+		if id == "t1" {
+			got = agent
+		}
+	})
+	if got == nil || got.JobID != "job-x" {
+		t.Fatalf("flush agent = %+v, want the job-x tag to survive the mixed sequence", got)
 	}
 }
 

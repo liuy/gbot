@@ -1610,11 +1610,16 @@ func (c *coalesceBuf) flush(dispatch func(string)) {
 // separate buffer per id because multiple tool calls can stream concurrently.
 // meta preserves the last metadata payload per id so flush can reconstruct
 // full events (Name/Summary/classification for params, nothing extra for
-// output yet) instead of just the accumulated text.
+// output yet) instead of just the accumulated text. agents preserves the last
+// Agent tag per id so flush can re-attach it — the root engine has no
+// taggedDispatcher, so without this the tag set by emitters dies at the
+// coalesce boundary (sub-engines re-tag upstream; root-engine bash job
+// deltas never get a second chance).
 type toolDeltaCoalesce struct {
 	bufs      map[string]*strings.Builder
 	meta      map[string]any
 	order     []string // first-seen id order: flush must not depend on map iteration
+	agents    map[string]*types.AgentMeta
 	lastFlush time.Time
 }
 
@@ -1625,6 +1630,7 @@ func (t *toolDeltaCoalesce) write(id, text string, meta any, window time.Duratio
 	if t.bufs == nil {
 		t.bufs = make(map[string]*strings.Builder)
 		t.meta = make(map[string]any)
+		t.agents = make(map[string]*types.AgentMeta)
 	}
 	b := t.bufs[id]
 	if b == nil {
@@ -1641,19 +1647,55 @@ func (t *toolDeltaCoalesce) write(id, text string, meta any, window time.Duratio
 	}
 }
 
-func (t *toolDeltaCoalesce) flush(dispatch func(id, text string, meta any)) {
+// replace buffers text as the id's sole content — output deltas carry window
+// snapshots, not fragments, so the coalesced flush must replay only the
+// newest window; appending would splice the previous window's tail into the
+// next one (duplicate lines on fast output). Param deltas stay on write:
+// those payloads ARE fragments. agent is re-attached by flush: the root
+// engine dispatches straight to the hub (no taggedDispatcher upstream),
+// so this map is the only carrier of the tag across the coalesce window.
+func (t *toolDeltaCoalesce) replace(id, text string, meta any, agent *types.AgentMeta, window time.Duration, onFlush func()) {
+	if !t.lastFlush.IsZero() && time.Since(t.lastFlush) >= window {
+		onFlush()
+	}
+	if t.bufs == nil {
+		t.bufs = make(map[string]*strings.Builder)
+		t.meta = make(map[string]any)
+		t.agents = make(map[string]*types.AgentMeta)
+	}
+	b := t.bufs[id]
+	if b == nil {
+		b = &strings.Builder{}
+		t.bufs[id] = b
+		t.order = append(t.order, id)
+	}
+	b.Reset()
+	b.WriteString(text)
+	if meta != nil {
+		t.meta[id] = meta
+	}
+	if agent != nil {
+		t.agents[id] = agent
+	}
+	if t.lastFlush.IsZero() {
+		t.lastFlush = time.Now()
+	}
+}
+
+func (t *toolDeltaCoalesce) flush(dispatch func(id, text string, meta any, agent *types.AgentMeta)) {
 	for _, id := range t.order {
-		// order and bufs are written together in write(), so every id here has
-		// a builder; only the empty-buffer case is a real skip.
+		// order and bufs are written together in write()/replace(), so every id
+		// here has a builder; only the empty-buffer case is a real skip.
 		b := t.bufs[id]
 		if b.Len() == 0 {
 			continue
 		}
-		dispatch(id, b.String(), t.meta[id])
+		dispatch(id, b.String(), t.meta[id], t.agents[id])
 	}
 	t.bufs = nil
 	t.meta = nil
 	t.order = nil
+	t.agents = nil
 	t.lastFlush = time.Now()
 }
 
@@ -1693,7 +1735,10 @@ func (e *Engine) emitEvent(event types.QueryEvent) {
 
 	case types.EventToolOutputDelta:
 		if event.ToolResult != nil && event.ToolResult.DisplayOutput != "" {
-			e.outputCoalesce.write(event.ToolResult.ToolUseID, event.ToolResult.DisplayOutput, event.ToolResult, e.effectiveWindow(), e.flushOutputBuf)
+			// Output deltas are window snapshots: replace keeps the buffer at
+			// the newest window; Agent rides the agents map because the root
+			// engine has no re-tag layer upstream of this flush.
+			e.outputCoalesce.replace(event.ToolResult.ToolUseID, event.ToolResult.DisplayOutput, event.ToolResult, event.Agent, e.effectiveWindow(), e.flushOutputBuf)
 		}
 		return
 	}
@@ -1742,7 +1787,7 @@ func (e *Engine) flushThinkBuf() {
 }
 
 func (e *Engine) flushParamBuf() {
-	e.paramCoalesce.flush(func(id, text string, meta any) {
+	e.paramCoalesce.flush(func(id, text string, meta any, _ *types.AgentMeta) {
 		pi := &types.PartialInputEvent{
 			ID:    id,
 			Delta: text,
@@ -1764,7 +1809,7 @@ func (e *Engine) flushParamBuf() {
 }
 
 func (e *Engine) flushOutputBuf() {
-	e.outputCoalesce.flush(func(id, text string, meta any) {
+	e.outputCoalesce.flush(func(id, text string, meta any, agent *types.AgentMeta) {
 		tr := &types.ToolResultEvent{
 			ToolUseID:     id,
 			DisplayOutput: text,
@@ -1780,6 +1825,7 @@ func (e *Engine) flushOutputBuf() {
 		}
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:       types.EventToolOutputDelta,
+			Agent:      agent,
 			ToolResult: tr,
 		})
 	})
