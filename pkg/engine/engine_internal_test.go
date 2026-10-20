@@ -2873,6 +2873,41 @@ func TestShouldAutoCompact(t *testing.T) {
 	if eng4.shouldAutoCompact() {
 		t.Error("should be false with default circuit breaker at 3 failures")
 	}
+
+	// Two failures with the default limit of 3: the breaker has NOT tripped, so
+	// a token-heavy context must still be compacted. Pinning the positive side
+	// is what makes the default value of 3 observable at all.
+	eng5 := New(&Params{Model: "test"})
+	eng5.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		ContextWindow: 100,
+	})
+	eng5.consecutiveCompactFailures = 2
+	eng5.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if !eng5.shouldAutoCompact() {
+		t.Error("should be true at 2 failures with the default limit of 3")
+	}
+
+	// An explicit limit of 1 must not be swallowed by the zero-default branch:
+	// one failure trips the breaker.
+	eng6 := New(&Params{Model: "test"})
+	eng6.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		ContextWindow:          100,
+		MaxConsecutiveFailures: 1,
+	})
+	eng6.consecutiveCompactFailures = 1
+	eng6.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if eng6.shouldAutoCompact() {
+		t.Error("should be false at 1 failure with an explicit limit of 1")
+	}
+	// ...and the same engine one failure short of that limit still compacts.
+	eng6.consecutiveCompactFailures = 0
+	if !eng6.shouldAutoCompact() {
+		t.Error("should be true with an explicit limit of 1 and no failures")
+	}
 }
 
 // TestShouldAutoCompact_SubAgentCanCompact verifies that sub-agents CAN trigger
@@ -2906,6 +2941,116 @@ func TestShouldAutoCompact_SubAgentCanCompact(t *testing.T) {
 	if !sub.shouldAutoCompact() {
 		t.Error("sub-agent with compactor and high tokens should trigger auto-compact")
 	}
+}
+
+// TestShouldAutoCompact_ForkGuardIsPerSource pins each source of the recursion
+// guard on its own: dropping any single comparison has to leave that forked
+// agent still able to compact, so one sub-engine per guarded agent type is the
+// only way to see each operand. The General sub-agent above is the positive
+// control that keeps these negatives meaningful.
+func TestShouldAutoCompact_ForkGuardIsPerSource(t *testing.T) {
+	t.Parallel()
+	parent := New(&Params{Model: "test"})
+	t.Cleanup(func() { parent.Close() })
+	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 100})
+
+	for _, agentType := range []string{"compact", "session_memory", "auto_dream"} {
+		sub := parent.NewSubEngine(SubEngineOptions{AgentType: agentType, Tools: map[string]tool.Tool{}})
+		t.Cleanup(func() { sub.Close() })
+		if got := sub.querySource(); got != QuerySourceCompact && got != QuerySourceSessionMemory && got != QuerySourceAutoDream {
+			t.Fatalf("agentType %q maps to source %q, which the guard does not cover", agentType, got)
+		}
+		sub.SetMessages([]types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+		})
+		if sub.shouldAutoCompact() {
+			t.Errorf("shouldAutoCompact for agentType %q = true, want false (forking this agent would deadlock)", agentType)
+		}
+	}
+}
+
+// TestShouldAutoCompact_ZeroWindowIsTheOnlyDisable pins that the window guard
+// disables proactive compaction for a non-positive window and for nothing else:
+// a one-token window is nonsense sizing but must still route through the token
+// comparison, not through the disable branch.
+func TestShouldAutoCompact_ZeroWindowIsTheOnlyDisable(t *testing.T) {
+	t.Parallel()
+	one := New(&Params{Model: "test"})
+	t.Cleanup(func() { one.Close() })
+	one.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 1})
+	one.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if !one.shouldAutoCompact() {
+		t.Error("ContextWindow=1: shouldAutoCompact = false, want true (only window <= 0 disables)")
+	}
+	disabled := New(&Params{Model: "test"})
+	t.Cleanup(func() { disabled.Close() })
+	disabled.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 0})
+	disabled.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if disabled.shouldAutoCompact() {
+		t.Error("ContextWindow=0: shouldAutoCompact = true, want false")
+	}
+}
+
+// TestShouldAutoCompact_ThresholdIsExclusive places the token count exactly on
+// the threshold and one token over it: the boundary itself must not trigger, so
+// an inclusive comparison is visible.
+func TestShouldAutoCompact_ThresholdIsExclusive(t *testing.T) {
+	t.Parallel()
+	// A transcript with no messages estimates to zero, and the window is sized
+	// so the threshold lands on zero: reserved tokens leave a 3000-token
+	// effective window, whose buffer is the 3000 floor.
+	on := New(&Params{Model: "test", MaxTokens: 1000})
+	t.Cleanup(func() { on.Close() })
+	on.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 4000})
+	wantTokens := 0 // an empty transcript with no request-shape overhead bills nothing
+	if got := on.currentInputTokens(); got != wantTokens {
+		t.Fatalf("empty transcript estimated %d tokens, want %d (the fixture pins the boundary on it)", got, wantTokens)
+	}
+	if on.shouldAutoCompact() {
+		t.Error("tokens == threshold: shouldAutoCompact = true, want false (the threshold is exclusive)")
+	}
+
+	// One token below the threshold trips it: without this side the empty
+	// transcript would pass for any comparison, including a constant false.
+	over := New(&Params{Model: "test", MaxTokens: 1000})
+	t.Cleanup(func() { over.Close() })
+	over.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 3999})
+	if !over.shouldAutoCompact() {
+		t.Error("tokens == threshold+1: shouldAutoCompact = false, want true")
+	}
+}
+
+// TestShouldAutoCompact_ReleasesReadLock probes the engine lock after each early
+// return and after the full evaluation: the deferred unlock must run on every
+// path, not just the one that reaches the end.
+func TestShouldAutoCompact_ReleasesReadLock(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
+	_ = eng.shouldAutoCompact() // no compactor
+	lockProbe(t, &eng.mu)
+
+	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{})
+	_ = eng.shouldAutoCompact() // zero window
+	lockProbe(t, &eng.mu)
+
+	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{ContextWindow: 100})
+	eng.consecutiveCompactFailures = 3
+	_ = eng.shouldAutoCompact() // circuit breaker
+	lockProbe(t, &eng.mu)
+
+	eng.consecutiveCompactFailures = 0
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if !eng.shouldAutoCompact() {
+		t.Fatal("the full-evaluation path must trigger for the probe to mean anything")
+	}
+	lockProbe(t, &eng.mu)
 }
 
 // TestNewSubEngine_SharesCompactor verifies that NewSubEngine passes compactor

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1029,10 +1030,11 @@ func TestRunAgent_InvalidModelHardFails(t *testing.T) {
 	cfg.Providers[0].Models.Set("glm-x", config.ModelConfig{})
 
 	cases := []struct {
-		name      string
-		model     string
-		setDeps   func(d *SharedDeps)
-		wantInErr []string
+		name       string
+		model      string
+		setDeps    func(d *SharedDeps)
+		wantInErr  []string
+		wantUnwrap string // the cause that must stay reachable via errors.Unwrap
 	}{
 		{
 			name:  "bare-name",
@@ -1051,6 +1053,9 @@ func TestRunAgent_InvalidModelHardFails(t *testing.T) {
 				d.Cfg = cfg
 			},
 			wantInErr: []string{"ghostprov"},
+			// The config-level cause must survive the wrap: a %v format verb
+			// flattens the text and callers lose the unwrap chain.
+			wantUnwrap: `provider "ghostprov" not found`,
 		},
 		{
 			name:  "no-live-instance",
@@ -1088,6 +1093,14 @@ func TestRunAgent_InvalidModelHardFails(t *testing.T) {
 			for _, want := range tc.wantInErr {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("%s: error %q lacks %q", tc.name, err.Error(), want)
+				}
+			}
+			if tc.wantUnwrap != "" {
+				cause := errors.Unwrap(err)
+				if cause == nil {
+					t.Errorf("%s: error %q has no wrapped cause, want the config error reachable", tc.name, err.Error())
+				} else if !strings.Contains(cause.Error(), tc.wantUnwrap) {
+					t.Errorf("%s: unwrapped cause %q lacks %q", tc.name, cause.Error(), tc.wantUnwrap)
 				}
 			}
 		}

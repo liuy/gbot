@@ -1614,6 +1614,7 @@ func (c *coalesceBuf) flush(dispatch func(string)) {
 type toolDeltaCoalesce struct {
 	bufs      map[string]*strings.Builder
 	meta      map[string]any
+	order     []string // first-seen id order: flush must not depend on map iteration
 	lastFlush time.Time
 }
 
@@ -1629,6 +1630,7 @@ func (t *toolDeltaCoalesce) write(id, text string, meta any, window time.Duratio
 	if b == nil {
 		b = &strings.Builder{}
 		t.bufs[id] = b
+		t.order = append(t.order, id)
 	}
 	b.WriteString(text)
 	if meta != nil {
@@ -1640,7 +1642,10 @@ func (t *toolDeltaCoalesce) write(id, text string, meta any, window time.Duratio
 }
 
 func (t *toolDeltaCoalesce) flush(dispatch func(id, text string, meta any)) {
-	for id, b := range t.bufs {
+	for _, id := range t.order {
+		// order and bufs are written together in write(), so every id here has
+		// a builder; only the empty-buffer case is a real skip.
+		b := t.bufs[id]
 		if b.Len() == 0 {
 			continue
 		}
@@ -1648,6 +1653,7 @@ func (t *toolDeltaCoalesce) flush(dispatch func(id, text string, meta any)) {
 	}
 	t.bufs = nil
 	t.meta = nil
+	t.order = nil
 	t.lastFlush = time.Now()
 }
 
@@ -4100,6 +4106,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	isSubagent := e.isSubagent
 	omitClaudeMd := e.omitClaudeMd
 	model := e.model
+	modalities := e.inputModalities
 	maxTokens := e.maxTokens
 	contextWindow := e.autoCompactConfig.ContextWindow
 	contextTokens := e.ContextTokens
@@ -4184,6 +4191,10 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	}
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SOUL}}", soulText, 1)
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{MODEL}}", model, 1)
+	if len(modalities) == 0 {
+		modalities = []string{"text"}
+	}
+	systemPromptRaw = strings.Replace(systemPromptRaw, "{{MODALITIES}}", strings.Join(modalities, "+"), 1)
 
 	return &APIRequestDump{
 		Model:         model,

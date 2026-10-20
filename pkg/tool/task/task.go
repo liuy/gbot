@@ -86,6 +86,9 @@ func (l *List) Dir() string {
 
 // SetDir updates the storage directory and creates it (idempotent).
 // Use for deferred initialization when sessionID is not available at construction time.
+// The dir is committed before MkdirAll on purpose: on failure the list must
+// still point at the NEW session's (unreadable → empty) directory, never at
+// the previous session's tasks.
 func (l *List) SetDir(dir string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -346,7 +346,28 @@ func TestRemoteCallReconnectFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("call against permanently dead remote must fail")
 	}
-	if !strings.Contains(err.Error(), "connection died") || !strings.Contains(err.Error(), "reconnect returned state failed") {
+	// Two legitimate surfacing shapes: the established session died mid-call
+	// (retry → reconnect reports failure), or the transport re-dial hit the
+	// downed listener directly. Either way the failure must surface verbatim.
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "connection refused"):
+	case strings.Contains(msg, "connection died") && strings.Contains(msg, "reconnect returned state failed"):
+	default:
 		t.Errorf("error must surface dead connection + failed reconnect state, got: %v", err)
+	}
+	// The first failure alone can be a bare transport error that never entered
+	// the dead-connection branch. By now the dead connection has been evicted
+	// or replaced by a failed entry, so the registry lookup itself must route
+	// through reconnect — a bare dial error here would mean the eviction and
+	// reconnect bookkeeping never happened.
+	_, err2 := tool.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err2 == nil {
+		t.Fatal("second call against a permanently dead remote must fail")
+	}
+	if msg2 := err2.Error(); !(strings.Contains(msg2, "reconnect") ||
+		strings.Contains(msg2, "connection died") ||
+		strings.Contains(msg2, "not connected")) {
+		t.Errorf("second call must surface the reconnect path (evicted/failed registry entry), got: %v", err2)
 	}
 }
