@@ -5,26 +5,12 @@ import (
 	"log/slog"
 	"math"
 	"sort"
-	"sync/atomic"
 	"time"
 
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
 )
-
-// bashTailInterval is a package-level, test-overridable cadence knob for the
-// bash tail sampling loop. Atomic-backed because the loop goroutine reads it
-// on every beat while tests rewrite it around construction/teardown — a plain
-// var would race under -race when a not-yet-exited loop ticks during a test's
-// cleanup restore.
-var bashTailIntervalNS = atomic.Int64{}
-
-func init() {
-	bashTailIntervalNS.Store(int64(500 * time.Millisecond))
-}
-
-func bashTailInterval() time.Duration { return time.Duration(bashTailIntervalNS.Load()) }
 
 // View/feed bounds. Over-cap actions log: they indicate either a runaway
 // spawn loop or a job id that never resolves to a registry row.
@@ -92,34 +78,13 @@ type jobsMetadataOutbound struct {
 // updating: its last value is the frozen terminal tail.
 type jobViewEntry struct {
 	item     jobWireItem
-	tail     string // last JobTail result (fetched outside ssMu, written back under it)
+	tail     string // latest delta payload; JobTail snapshot at takeover
 	tailSent string // job_output baseline already pushed to the client
 }
 
 // ---------------------------------------------------------------------------
-// Bash tail sampling loop (the only remaining poller)
+// Tail cache plumbing
 // ---------------------------------------------------------------------------
-
-// startBashTailLoop launches the per-slot bash tail sampler. One goroutine per
-// slot; it exits when the connector's done channel closes (Stop). Rows
-// themselves are event-driven (job lifecycle events); this loop only samples
-// bash output tails.
-func (c *WUIConnector) startBashTailLoop(slot *engineSlot) {
-	go c.bashTailLoop(slot)
-}
-
-func (c *WUIConnector) bashTailLoop(slot *engineSlot) {
-	ticker := time.NewTicker(bashTailInterval())
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-ticker.C:
-			c.bashTailTick(slot)
-		}
-	}
-}
 
 // jobHasFeed reports whether a wire kind belongs to the agent family
 // (agent-N registry jobs, forks included) — everything the panel streams a
@@ -128,57 +93,6 @@ func jobHasFeed(kind string) bool { return kind != "bash" }
 
 func isTerminalJobStatus(status string) bool {
 	return status == "completed" || status == "failed" || status == "killed"
-}
-
-// bashTailTick is one tail beat. Lock discipline (deadlock-critical):
-//   - engineClient methods (JobTail) are called holding NO connector lock.
-//     StreamingOutput.Write holds s.mu across its synchronous onProgress →
-//     hub.Dispatch → onEngineEvent chain, which takes ssMu. Calling JobTail
-//     (which takes s.mu) while holding ssMu would close the cycle
-//     ssMu → s.mu → ssMu.
-//   - the ssMu critical sections do pure local work only (cache write-back,
-//     snapshot capture) — never engineClient calls; frame marshal/diff runs
-//     outside via renderJobFrames.
-func (c *WUIConnector) bashTailTick(slot *engineSlot) {
-	// Slots built directly by tests bypass registerEngine and have no jobs
-	// maps; a nil map write would panic. Production slots always have them.
-	if slot.jobView == nil {
-		return
-	}
-
-	slot.ssMu.Lock()
-	tailIDs := make([]string, 0, len(slot.jobView))
-	for id, entry := range slot.jobView {
-		if entry.item.Kind == "bash" {
-			tailIDs = append(tailIDs, id)
-		}
-	}
-	slot.ssMu.Unlock()
-
-	// Tail fetch, lock-free: results are staged locally and written back in
-	// the next critical section. Activity does not gate this — caches stay
-	// fresh while disconnected so reconnect metadata is current. Terminal
-	// bash rows stay listed until cleared; the registry answers not-found
-	// for evicted ids and the row simply keeps its frozen tail.
-	tails := make(map[string]string, len(tailIDs))
-	for _, id := range tailIDs {
-		if tail, ok := slot.engine.JobTail(id); ok {
-			tails[id] = tail
-		}
-	}
-
-	slot.ssMu.Lock()
-	for id, tail := range tails {
-		if entry, ok := slot.jobView[id]; ok {
-			entry.tail = tail
-		}
-	}
-	snap := c.captureJobFramesLocked(slot)
-	slot.ssMu.Unlock()
-
-	for _, p := range c.renderJobFrames(slot, snap) {
-		c.sendWS([]byte(p))
-	}
 }
 
 // evictTerminalOverCapLocked drops the oldest terminal rows until the view
@@ -344,6 +258,33 @@ func (c *WUIConnector) applyJobLifecycleEvent(slot *engineSlot, event hub.Event)
 	return c.renderJobFrames(slot, snap)
 }
 
+// applyJobOutputDelta folds a background bash job's output snapshot into the
+// panel tail cache and returns the diff-gated frames plus whether the event
+// was routed here. Only bash rows route (agent-family deltas keep the
+// generic stream path). Same lock shape as applyJobLifecycleEvent: mutate +
+// capture under ssMu, marshal/diff/render outside it — renderJobFrames takes
+// ssMu itself, so it must never run inside the section.
+func (c *WUIConnector) applyJobOutputDelta(slot *engineSlot, event hub.Event) ([]string, bool) {
+	slot.ssMu.Lock()
+	routed := false
+	var snap *jobsFrameCapture
+	if slot.jobView != nil && event.ToolResult != nil {
+		if entry, ok := slot.jobView[event.ToolResult.ToolUseID]; ok && entry.item.Kind == "bash" {
+			entry.tail = event.ToolResult.DisplayOutput
+			snap = c.captureJobFramesLocked(slot)
+			routed = true
+		}
+	}
+	slot.ssMu.Unlock()
+	if !routed {
+		return nil, false
+	}
+	if snap == nil {
+		return nil, true // inactive slot: cache stays warm, nothing to push
+	}
+	return c.renderJobFrames(slot, snap), true
+}
+
 // jobsFrameCapture is the snapshot copied out of the ssMu critical section;
 // renderJobFrames marshals and diffs it outside the lock so frame
 // serialization never sits on the ssMu hot path.
@@ -354,9 +295,9 @@ type jobsFrameCapture struct {
 }
 
 // captureJobFramesLocked snapshots the view and advances the tail baselines.
-// Gated on an active client: inactive slots keep caches fresh (tails are
-// still written back in bashTailTick) but push nothing. Caller holds ssMu;
-// the payloads come back from renderJobFrames, outside the lock.
+// Gated on an active client: inactive slots keep caches warm (tails are
+// still written back by applyJobOutputDelta) but push nothing. Caller holds
+// ssMu; the payloads come back from renderJobFrames, outside the lock.
 //
 // An always-empty view captures nothing: a client that never had jobs has
 // nothing to clear, and silence keeps loop noise off every WS session. A
@@ -428,7 +369,7 @@ func (c *WUIConnector) renderJobFrames(slot *engineSlot, snap *jobsFrameCapture)
 
 // pushJobsSnapshot force-pushes the current job_list (job_stop ack). Clears
 // the diff baseline instead of re-fetching tails: the client already holds
-// each job's tail; a changed tail arrives on the next beat.
+// each job's tail; a changed tail arrives on the next delta.
 func (c *WUIConnector) pushJobsSnapshot(slot *engineSlot) {
 	if slot.jobView == nil {
 		return
@@ -450,9 +391,9 @@ func (c *WUIConnector) pushJobsSnapshot(slot *engineSlot) {
 // buildJobsMetadata renders the metadata frame's embedded jobs snapshot.
 // Caller holds ssMu (sendMetadata) — the unified lock domain; the marshal
 // stays inside the ssMu section on purpose: the handshake is a one-shot
-// assembly, not a per-event hot path. It must NOT call JobTail: that is the
-// middle edge of the deadlock cycle documented on bashTailTick. Tails come
-// from the entry cache, which the tail loop refreshes outside ssMu.
+// assembly, not a per-event hot path. It must NOT call JobTail: that call
+// happens once per takeover in sendMetadata, strictly outside ssMu. Tails
+// otherwise come from the entry cache, which delta events keep warm.
 func (c *WUIConnector) buildJobsMetadata(slot *engineSlot) json.RawMessage {
 	if len(slot.jobView) == 0 {
 		return nil

@@ -365,9 +365,9 @@ func TestRemoteCallReconnectFailureSurfaces(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second call against a permanently dead remote must fail")
 	}
-	if msg2 := err2.Error(); !(strings.Contains(msg2, "reconnect") ||
-		strings.Contains(msg2, "connection died") ||
-		strings.Contains(msg2, "not connected")) {
+	if msg2 := err2.Error(); !strings.Contains(msg2, "reconnect") &&
+		!strings.Contains(msg2, "connection died") &&
+		!strings.Contains(msg2, "not connected") {
 		t.Errorf("second call must surface the reconnect path (evicted/failed registry entry), got: %v", err2)
 	}
 }

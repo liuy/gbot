@@ -17,7 +17,6 @@ import (
 // lifetime). started builds the row from the event shell; terminated updates
 // status/exitCode; an identical repeat is diff-silent.
 func TestApplyJobLifecycleEvent_ImmediateFrame(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
@@ -91,7 +90,6 @@ func TestApplyJobLifecycleEvent_ImmediateFrame(t *testing.T) {
 // discipline: an event-built row over the cap evicts only the oldest TERMINAL
 // rows; running rows (including the event's own) always survive.
 func TestApplyJobLifecycleEvent_NeverEvictsRunning(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
@@ -140,7 +138,6 @@ func TestApplyJobLifecycleEvent_NeverEvictsRunning(t *testing.T) {
 // onEngineEvent (not through the hub) so a removed guard panics in the test
 // instead of being swallowed by Dispatch's per-handler recover.
 func TestOnEngineEvent_JobEventNilPayloadIgnored(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
@@ -154,7 +151,6 @@ func TestOnEngineEvent_JobEventNilPayloadIgnored(t *testing.T) {
 // anchor: job lifecycle events are consumed by the panel branch and never
 // marshaled into the generic event frame — browsers only ever see job_list.
 func TestOnEngineEvent_JobEventNotForwardedAsEventFrame(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)

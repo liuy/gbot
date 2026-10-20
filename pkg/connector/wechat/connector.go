@@ -156,6 +156,15 @@ func (c *WeChatConnector) Stop() {
 }
 
 func (c *WeChatConnector) Handle(event hub.Event) {
+	// Background-job output deltas are not conversation activity; without this
+	// guard an idle-time bg job would pulse the typing indicator forever. The
+	// JobID clause is the discriminator: sync sub-agent deltas also carry Agent
+	// (JobID == "") and their typing refresh is existing behavior — a bare
+	// Agent != nil check would silence it.
+	if event.Type == types.EventToolOutputDelta && event.Agent != nil && event.Agent.JobID != "" {
+		return
+	}
+
 	// Refresh typing indicator if >5s since last refresh. iLink's typing
 	// pulse fades after a few seconds; periodic events keep it alive.
 	if c.activeUserID != "" && c.typingAPI != nil &&

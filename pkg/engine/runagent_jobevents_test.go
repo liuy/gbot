@@ -8,6 +8,7 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
+	"github.com/liuy/gbot/pkg/tool/bash"
 )
 
 // indexOfType returns the collector position of the first event of the given
@@ -170,6 +171,60 @@ func TestWireEngine_AttachesJobEventEmitters(t *testing.T) {
 	bgJob := refs.BashReg.Spawn("wiring bash probe", 0, nil)
 	if i := waitForEventType(collector, types.EventJobStarted, bgJob.ID, 5*time.Second); i < 0 {
 		t.Fatalf("no job_started for bash job %s — WireEngine did not attach refs.BashReg.OnJobEvent", bgJob.ID)
+	}
+}
+
+// TestWireEngine_BashJobOutputDeltaFlow proves the bash tail pipeline through
+// the root engine: job_started at Spawn, the output snapshot converted into a
+// coalesced EventToolOutputDelta carrying {ToolUseID = job id,
+// DisplayOutput = window snapshot, Agent.JobID = job id}, and job_terminated
+// strictly after the delta (the terminated emission flushes buffers first).
+// The Agent.JobID assertion is the coalesce-passthrough witness — the root
+// engine has no taggedDispatcher to re-tag the flushed event.
+func TestWireEngine_BashJobOutputDeltaFlow(t *testing.T) {
+	deps, mgr, _ := msgDeps(t)
+	parent, refs := msgWiredParent(t, &mockProvider{}, "main", deps)
+	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
+	collector := newEventCollector()
+	parent.SetDispatcher(collector)
+
+	out := bash.NewStreamingOutput(nil)
+	bgJob := refs.BashReg.Spawn("delta probe", 0, out)
+	if _, err := out.Write([]byte("hello\nworld\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	bgJob.Complete(0, false)
+
+	events := collector.Events()
+	startedIdx, deltaIdx, termIdx := -1, -1, -1
+	for i, ev := range events {
+		switch {
+		case ev.Type == types.EventJobStarted && ev.Job != nil && ev.Job.ID == bgJob.ID:
+			startedIdx = i
+		case ev.Type == types.EventToolOutputDelta && ev.ToolResult != nil && ev.ToolResult.ToolUseID == bgJob.ID:
+			deltaIdx = i
+		case ev.Type == types.EventJobTerminated && ev.Job != nil && ev.Job.ID == bgJob.ID:
+			termIdx = i
+		}
+	}
+	if startedIdx < 0 {
+		t.Fatal("no job_started for the bash job on the root dispatcher")
+	}
+	if deltaIdx < 0 {
+		t.Fatal("no tool_output_delta with ToolUseID == bash job id on the root dispatcher — bootstrap did not convert the job tail line")
+	}
+	delta := events[deltaIdx]
+	if delta.ToolResult.DisplayOutput != "hello\nworld" {
+		t.Errorf("delta DisplayOutput = %q, want %q", delta.ToolResult.DisplayOutput, "hello\nworld")
+	}
+	if delta.Agent == nil || delta.Agent.JobID != bgJob.ID {
+		t.Errorf("delta Agent = %+v, want JobID %q (coalesce must carry the tag)", delta.Agent, bgJob.ID)
+	}
+	if termIdx < 0 {
+		t.Fatal("no job_terminated for the bash job on the root dispatcher")
+	}
+	if startedIdx >= deltaIdx || deltaIdx >= termIdx {
+		t.Errorf("order started(%d) < delta(%d) < terminated(%d) violated", startedIdx, deltaIdx, termIdx)
 	}
 }
 

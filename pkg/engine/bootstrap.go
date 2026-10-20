@@ -202,6 +202,31 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 // WireEngine wires notification callbacks and injects the engine into tools.
 // Each sub-engine created through RunAgent gets its own fresh tool instances
 // via CreateTools.
+// JobEventEmitter converts the job-event line into QueryEvents on this
+// engine's dispatcher. Exported so multi-engine tests can wire a registry
+// with the exact production conversion without a full WireEngine.
+func JobEventEmitter(eng *Engine) func(types.QueryEventType, types.JobEvent) {
+	return func(et types.QueryEventType, ev types.JobEvent) {
+		if et == types.EventToolOutputDelta {
+			// Bash job output snapshots ride this line with ToolResult
+			// payload semantics: ToolUseID = job id (coalesce key + panel
+			// routing), DisplayOutput = the rolling-window snapshot. The
+			// Agent tag keeps the delta out of the chat-root stream in
+			// hub consumers.
+			eng.emitEvent(types.QueryEvent{
+				Type:  types.EventToolOutputDelta,
+				Agent: &types.AgentMeta{JobID: ev.ID},
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     ev.ID,
+					DisplayOutput: ev.Tail,
+				},
+			})
+			return
+		}
+		eng.emitEvent(types.QueryEvent{Type: et, Job: &ev})
+	}
+}
+
 func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	// One closure, two hook points. Registry-level OnNotify serves the jobs
 	// the registry notifies as its owner (after root binding, the session-root
@@ -252,9 +277,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		// permanently-empty private registries (root-bound tools never spawn
 		// there), so it stays inert. Sub-engines created by RunAgent are
 		// wired by their own WireEngine call with the same shape.
-		emitJob := func(et types.QueryEventType, ev types.JobEvent) {
-			eng.emitEvent(types.QueryEvent{Type: et, Job: &ev})
-		}
+		emitJob := JobEventEmitter(eng)
 		refs.BashReg.OnJobEvent = emitJob
 		refs.Agent.BgRegistry().SetOnJobEvent(emitJob)
 	}

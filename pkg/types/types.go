@@ -569,8 +569,10 @@ const (
 	EventJobTerminated QueryEventType = "job_terminated"
 )
 
-// JobEvent carries one background-job lifecycle transition. Field parity
-// with the wui panel row (jobWireItem): the event IS the row shell.
+// JobEvent carries one background-job lifecycle transition. Lifecycle fields
+// keep parity with the wui panel row (jobWireItem); Tail extends this line to
+// carry transient output snapshots that jobWireItem never holds (the panel
+// row renders them as the tail body, not as row fields).
 type JobEvent struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`   // "bash" | "agent" | "fork"
@@ -581,6 +583,10 @@ type JobEvent struct {
 	ParentToolUseID string `json:"parentToolUseID,omitempty"`
 	ExitCode        int    `json:"exitCode,omitempty"`
 	StartedMs       int64  `json:"startedMs,omitempty"`
+	// Tail carries the rolling output-window snapshot when the event line is
+	// used for EventToolOutputDelta (background bash job output). Empty on all
+	// lifecycle events; omitempty keeps those frames unchanged.
+	Tail string `json:"tail,omitempty"`
 }
 
 // AgentMeta tags events originating from a sub-agent.

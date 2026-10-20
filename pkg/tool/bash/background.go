@@ -220,6 +220,16 @@ func (r *BackgroundJobRegistry) Spawn(command string, pid int, output *Streaming
 	// Explicit unlock (no defer): the started emission must run outside r.mu —
 	// emitting under it would add a r.mu → hub → wui (ssMu) lock edge.
 	r.mu.Unlock()
+	// Single wiring point for spawnBackground + transitionToBackground: the
+	// job's delta line replaces whatever progress callback the output carried
+	// (for transitioned outputs this is the deliberate swap that stops
+	// foreground progress). The s.mu write is the guard; writer goroutines may
+	// already be live for transitioned outputs, hence outside r.mu.
+	if output != nil {
+		output.mu.Lock()
+		output.onProgress = job.emitOutputDelta
+		output.mu.Unlock()
+	}
 	job.emitJobEvent(types.EventJobStarted, string(JobRunning))
 	return job
 }
@@ -563,6 +573,22 @@ func (t *BackgroundJob) emitJobEvent(et types.QueryEventType, status string) {
 	ev := t.buildJobEventLocked(status)
 	t.mu.Unlock()
 	t.onJobEvent(et, ev)
+}
+
+// emitOutputDelta is the StreamingOutput onProgress adapter for background
+// jobs: forwards the rolling-window snapshot onto the job-event line as
+// EventToolOutputDelta. Runs on the job's writer goroutine with s.mu held
+// (the s.mu → coalesceMu → hub → ssMu chain is the documented foreground
+// discipline) — must never take job.mu; the payload needs no job state.
+func (t *BackgroundJob) emitOutputDelta(u StreamingUpdate) {
+	if t == nil || t.onJobEvent == nil || len(u.Lines) == 0 {
+		return
+	}
+	t.onJobEvent(types.EventToolOutputDelta, types.JobEvent{
+		ID:   t.ID,
+		Kind: t.Kind,
+		Tail: strings.Join(u.Lines, "\n"),
+	})
 }
 
 // buildNotification creates a JobNotification from the job's current state.

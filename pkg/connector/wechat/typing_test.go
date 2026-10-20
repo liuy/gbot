@@ -172,6 +172,81 @@ func TestHandleInbound_TypingRefreshedDuringLongQuery(t *testing.T) {
 	})
 }
 
+// TestHandle_TypingGuardForJobDeltas pins the pre-switch guard: background-job
+// output deltas are not conversation activity and must return BEFORE the
+// typing-refresh block (an idle-time bg job would otherwise pulse the typing
+// indicator forever), while a sync sub-agent delta (Agent non-nil, JobID
+// empty) still refreshes typing — a bare Agent != nil guard would silence it.
+// The guard's placement (before the switch, not inside it) is pinned by the
+// same fixture: inside the switch the typing block has already run.
+func TestHandle_TypingGuardForJobDeltas(t *testing.T) {
+	typingAPI := &mockTypingAPI{}
+	c := &WeChatConnector{
+		hub:               hub.NewHub(),
+		inboundCh:         make(chan inboundMessage, 10),
+		typingCache:       newTypingTicketCache(600 * time.Second),
+		typingAPI:         typingAPI,
+		activeUserID:      "user1",
+		lastTypingRefresh: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+		sendToUserFn:      func(_ context.Context, _, _ string) error { return nil },
+	}
+
+	if calls := typingAPI.getCalls(); len(calls) != 0 {
+		t.Fatalf("baseline typing calls = %d, want 0", len(calls))
+	}
+
+	// Fixture 1 — job-tagged delta, the exact shape bootstrap produces: the
+	// guard must return before the typing-refresh block runs.
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		Agent:      &types.AgentMeta{JobID: "bg-1"},
+		ToolResult: &types.ToolResultEvent{ToolUseID: "bg-1", DisplayOutput: "x"},
+	})
+	if calls := typingAPI.getCalls(); len(calls) != 0 {
+		t.Fatalf("job-tagged delta made %d typing calls, want 0 (guard must precede the refresh block): %+v", len(calls), calls)
+	}
+
+	// Fixture 2 — sync sub-agent delta (Agent non-nil, JobID empty): the
+	// refresh condition is still live, so exactly one TypingStart fires.
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		Agent:      &types.AgentMeta{ParentToolUseID: "toolu_p"},
+		ToolResult: &types.ToolResultEvent{ToolUseID: "toolu_p", DisplayOutput: "y"},
+	})
+	calls := typingAPI.getCalls()
+	if len(calls) != 1 || calls[0].userID != "user1" || calls[0].status != TypingStart {
+		t.Fatalf("sync sub-agent delta calls = %+v, want exactly one TypingStart for user1", calls)
+	}
+
+	// Fixture 3 — a NON-delta event carrying a JobID (a background job's
+	// process event): still conversation activity — the guard's Type clause
+	// must not swallow it. Backdate the stamp so the refresh condition is
+	// live again after fixture 2's startTyping re-stamped it.
+	c.lastTypingRefresh = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.Handle(types.QueryEvent{
+		Type:  types.EventTextDelta,
+		Agent: &types.AgentMeta{JobID: "bg-1"},
+		Text:  "bg text",
+	})
+	calls = typingAPI.getCalls()
+	if len(calls) != 2 || calls[1].status != TypingStart {
+		t.Fatalf("non-delta job-tagged event calls = %+v, want a second TypingStart", calls)
+	}
+
+	// Fixture 4 — a foreground output delta (Agent nil): the guard's nil
+	// check must short-circuit before the JobID read; a removed nil clause
+	// panics inside the hub's recover and the refresh never fires.
+	c.lastTypingRefresh = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.Handle(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "toolu_fg", DisplayOutput: "fg"},
+	})
+	calls = typingAPI.getCalls()
+	if len(calls) != 3 || calls[2].status != TypingStart {
+		t.Fatalf("foreground delta calls = %+v, want a third TypingStart", calls)
+	}
+}
+
 // Chain test: inbound → startTyping → async query → reply via Handle →
 // stopTyping in QueryEnd. Verifies the user sees "typing..." while the engine
 // works, and it stops when the query ends.

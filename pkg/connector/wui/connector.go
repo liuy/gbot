@@ -352,7 +352,7 @@ type streamBlock struct {
 // streamState is one region of a slot's stream (blocks plus the query-active
 // boundary marker). Everything — the map and every region's contents — is
 // protected by slot.ssMu (hub goroutine in onEngineEvent, readLoop goroutine
-// in sendMetadata, tail-loop goroutine in bashTailTick).
+// in sendMetadata).
 type streamState struct {
 	blocks []streamBlock
 	// queryActive marks the two-region boundary: while turns are running,
@@ -395,10 +395,10 @@ type engineSlot struct {
 	//
 	// Locking: the map AND every region's contents (the whole jobs panel
 	// state below included) are one unified ssMu domain. engineClient calls
-	// (JobSummaries, JobTail) are ALWAYS made holding NO connector lock —
-	// under ssMu they would close the cycle ssMu → s.mu (StreamingOutput.Write
-	// holds s.mu across onProgress → hub.Dispatch → onEngineEvent taking
-	// ssMu) → ssMu.
+	// (JobSummaries, JobTail — the latter only at takeover hydration) are
+	// ALWAYS made holding NO connector lock — under ssMu they would close the
+	// cycle ssMu → s.mu (StreamingOutput.Write holds s.mu across onProgress →
+	// hub.Dispatch → onEngineEvent taking ssMu) → ssMu.
 	streams     map[string]*streamState
 	queryStats  queryStats
 	taskToolIDs map[string]bool
@@ -416,10 +416,10 @@ type engineSlot struct {
 	system bool
 
 	// Background-jobs panel state, guarded by ssMu (same unified domain as
-	// streams: written by onEngineEvent's lifecycle/stream branches, the bash
-	// tail loop, and the readLoop's session/takeover paths). Maps are nil on
-	// slots built directly by tests (guarded); the streams map always carries
-	// the "" chat-root region on built slots.
+	// streams: written by onEngineEvent's lifecycle/delta/stream branches and
+	// the readLoop's session/takeover paths). Maps are nil on slots built
+	// directly by tests (guarded); the streams map always carries the ""
+	// chat-root region on built slots.
 	jobView      map[string]*jobViewEntry // id → display snapshot (terminal kept until cleared)
 	lastJobsPush string                   // last job_list JSON, diff baseline
 }
@@ -824,12 +824,6 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 	c.slotsMu.Lock()
 	c.slots[vs.ID] = slot
 	c.slotsMu.Unlock()
-
-	// Bash tail sampler per slot — started here (not in New) because slots
-	// are registered dynamically (engine_new flow); the register-twice guard
-	// above keeps it single. Exits via c.done in Stop. Rows themselves are
-	// event-driven; this loop is only the tail poller.
-	c.startBashTailLoop(slot)
 }
 
 // RegisterEngine is the exported wrapper around registerEngine, used by
@@ -1336,6 +1330,19 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 			c.sendWS([]byte(p))
 		}
 		return
+	}
+
+	// Background bash job output snapshots route to the jobs panel tail;
+	// never forwarded as generic event frames (wire compat — browsers consume
+	// only job_list/job_output for jobs). Agent-family deltas fall through to
+	// the generic path: they address stream regions, not the bash tail.
+	if event.Type == types.EventToolOutputDelta && event.Agent != nil && event.Agent.JobID != "" {
+		if frames, routed := c.applyJobOutputDelta(slot, event); routed {
+			for _, p := range frames {
+				c.sendWS([]byte(p))
+			}
+			return
+		}
 	}
 
 	// Track Task tool calls so tool_end can push task_list. Sub-agents share
@@ -3030,6 +3037,34 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 
 	slot.ssMu.Lock()
 	c.reconcileJobsFromRegistry(slot, summaries, now)
+	// Takeover tail refresh, fill-empty-only: bash rows with no event-fed
+	// tail (reconcile-born rows, foreground-completed rows, slots built
+	// before events) take a one-time registry snapshot. The fetch runs
+	// between the ssMu sections holding NO connector lock (JobTail takes the
+	// output's s.mu — under ssMu it would close the s.mu → ssMu → s.mu
+	// cycle); an event-fed tail written during the gap makes the row
+	// non-empty and the write-back skips it, so event freshness always wins.
+	bashIDs := make([]string, 0, len(slot.jobView))
+	for id, entry := range slot.jobView {
+		if entry.item.Kind == "bash" {
+			bashIDs = append(bashIDs, id)
+		}
+	}
+	slot.ssMu.Unlock()
+
+	tails := make(map[string]string, len(bashIDs))
+	for _, id := range bashIDs {
+		if tail, ok := slot.engine.JobTail(id); ok && tail != "" {
+			tails[id] = tail
+		}
+	}
+
+	slot.ssMu.Lock()
+	for id, tail := range tails {
+		if entry, ok := slot.jobView[id]; ok && entry.tail == "" {
+			entry.tail = tail
+		}
+	}
 	history := c.buildHistory(slot, "", 30)
 	root := slot.streams[""]
 	var snapshot json.RawMessage

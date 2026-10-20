@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
@@ -21,7 +20,6 @@ import (
 // event lands only in the chat root, and a process event for a job with no
 // region (no lifecycle event, no discovery) is dropped without a panic.
 func TestStreams_JobFeedAddressing(t *testing.T) {
-	withBashTailInterval(t, time.Hour) // no loop interference
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -86,7 +84,6 @@ func TestStreams_JobFeedAddressing(t *testing.T) {
 // existing block is dropped rather than adopted as the anchor by first-event
 // inference.
 func TestStreams_AnchorFromLifecycleEvent(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -137,7 +134,6 @@ func TestStreams_AnchorFromLifecycleEvent(t *testing.T) {
 // only the "" region (the chat timeline dies with the query); a job region
 // and its blocks survive — the job's lifetime outlives any one query.
 func TestStreams_RootResetOnQueryEnd(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 

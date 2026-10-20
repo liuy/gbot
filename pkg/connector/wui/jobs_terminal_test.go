@@ -37,7 +37,6 @@ func dispatchJobBlocks(h *hub.Hub, jobID, anchor string, from, n int) {
 // job_terminated lands, and process events arriving after termination are
 // dropped — the frozen card never grows.
 func TestJobTerminated_TruncatesAndFreezes(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	rec := mutDCaptureSlog(t)
@@ -83,7 +82,6 @@ func TestJobTerminated_TruncatesAndFreezes(t *testing.T) {
 // metadata snapshot embeds terminal agent rows with their frozen last-N
 // blocks and live agent rows with the full tree.
 func TestMetadata_TerminalJobsEmbedLastN(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	// The registry lists both jobs (an unlisted running row is a vanish-drop
@@ -181,7 +179,6 @@ func waitForRecord(t *testing.T, rec *jobEventRecorder, timeout time.Duration, c
 // prompts) and a non-empty ParentToolUseID (the taggedDispatcher install
 // condition) or the kick's events would never carry the dead job id.
 func TestJobTerminated_LateIdleKickEventsDropped(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -333,7 +330,6 @@ func TestJobTerminated_LateIdleKickEventsDropped(t *testing.T) {
 // enumeration — nil and foreground-registered entries are skipped, agent
 // family rows also get their stream region (terminal ones born frozen).
 func TestSendMetadata_ReconcilesMissingRows(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	startedMs := time.Now().UnixMilli() // REAL-TIME
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -398,7 +394,6 @@ func TestSendMetadata_ReconcilesMissingRows(t *testing.T) {
 // a row minted after the snapshot (job_started event landed between snapshot
 // and ssMu) must survive for the next reconcile.
 func TestSendMetadata_DropsRunningVanished(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	c.mock().SetJobsFn(func() []*job.JobInfo { return nil })
@@ -432,7 +427,6 @@ func TestSendMetadata_DropsRunningVanished(t *testing.T) {
 // outbound queue pins the era-flip ordering (no push onto the old era while
 // holding ssMu).
 func TestSendMetadata_LocksOutsideEngineCalls(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	slot := c.activeSlotTest(t)
 	c.mock().SetJobSummariesFn(func() []*job.JobInfo {
@@ -456,5 +450,41 @@ func TestSendMetadata_LocksOutsideEngineCalls(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second): // REAL-TIME
 		t.Fatal("sendMetadata deadlocked — engineClient call suspected under ssMu")
+	}
+}
+
+// TestSendMetadata_JobTailOutsideSsMu guards the takeover fetch's lock
+// discipline: the one-time JobTail calls must run OUTSIDE ssMu. The mock's
+// JobTail grabs ssMu itself — correct code (fetch between the ssMu sections)
+// glides through, while a regression that fetches under ssMu self-deadlocks
+// against the non-reentrant mutex and the watchdog turns the hang into a red
+// test.
+func TestSendMetadata_JobTailOutsideSsMu(t *testing.T) {
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	slot := c.activeSlotTest(t)
+	startedMs := time.Now().UnixMilli() // REAL-TIME
+	c.mock().SetJobsFn(func() []*job.JobInfo {
+		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", startedMs)}
+	})
+	c.mock().SetJobTailFn(func(id string) (string, bool) {
+		slot.ssMu.Lock()
+		_ = slot.lastJobsPush // read exists only so SA2001 sees a non-empty section
+		slot.ssMu.Unlock()
+		if id != "bg-1" {
+			return "", false
+		}
+		return "takeover-tail", true
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.sendMetadata(slot)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("sendMetadata deadlocked — JobTail suspected under ssMu")
 	}
 }

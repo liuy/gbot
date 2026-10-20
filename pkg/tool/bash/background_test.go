@@ -2536,6 +2536,175 @@ func TestSpawn_EmitsJobStarted(t *testing.T) {
 	NewBackgroundJobRegistry().Spawn("no emitter", 0, nil)
 }
 
+// capturedJobEvent preserves emission order across concurrent writers.
+type capturedJobEvent struct {
+	et types.QueryEventType
+	ev types.JobEvent
+}
+
+type jobEventLog struct {
+	mu   sync.Mutex
+	logs []capturedJobEvent
+}
+
+func (l *jobEventLog) onJobEvent(et types.QueryEventType, ev types.JobEvent) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, capturedJobEvent{et: et, ev: ev})
+}
+
+func (l *jobEventLog) snapshot() []capturedJobEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]capturedJobEvent(nil), l.logs...)
+}
+
+// TestBackgroundJob_EmitOutputDelta: Spawn wires the output's progress
+// callback onto the job-event line as EventToolOutputDelta snapshots —
+// ordered captures from Write/ReplaceLastLine/FinalUpdate, plus the
+// empty-window gate (len(u.Lines) == 0 emits nothing).
+func TestBackgroundJob_EmitOutputDelta(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	caplog := &jobEventLog{}
+	r.OnJobEvent = caplog.onJobEvent
+
+	job := r.Spawn("cmd", 0, NewStreamingOutput(nil))
+
+	logs := caplog.snapshot()
+	if len(logs) != 1 || logs[0].et != types.EventJobStarted {
+		t.Fatalf("first capture = %+v, want exactly one job_started", logs)
+	}
+
+	if _, err := job.Output.Write([]byte("a\nb\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	logs = caplog.snapshot()
+	if len(logs) != 2 || logs[1].et != types.EventToolOutputDelta {
+		t.Fatalf("captures after Write = %+v, want a tool_output_delta", logs)
+	}
+	if logs[1].ev.ID != job.ID || logs[1].ev.Kind != "bash" {
+		t.Errorf("delta event = {%q %q}, want {%q bash}", logs[1].ev.ID, logs[1].ev.Kind, job.ID)
+	}
+	if logs[1].ev.Tail != "a\nb" {
+		t.Errorf("delta tail = %q, want %q (window join, no trailing newline)", logs[1].ev.Tail, "a\nb")
+	}
+
+	job.Output.ReplaceLastLine("b2")
+	logs = caplog.snapshot()
+	if len(logs) != 3 || logs[2].ev.Tail != "a\nb2" {
+		t.Fatalf("captures after ReplaceLastLine(b2) = %+v, want tail %q", logs, "a\nb2")
+	}
+
+	// Clearing lines one at a time: window [a b2] -> [a] still emits...
+	job.Output.ReplaceLastLine("")
+	logs = caplog.snapshot()
+	if len(logs) != 4 || logs[3].ev.Tail != "a" {
+		t.Fatalf("captures after first clear = %+v, want tail %q", logs, "a")
+	}
+	// ...but the empty window (one-line window cleared) must emit nothing.
+	job.Output.ReplaceLastLine("")
+	logs = caplog.snapshot()
+	if len(logs) != 4 {
+		t.Fatalf("empty window emitted %d captures, want the count frozen at 4", len(logs))
+	}
+
+	// FinalUpdate replays the current window as the closing snapshot.
+	if _, err := job.Output.Write([]byte("z\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	logs = caplog.snapshot()
+	if len(logs) != 5 || logs[4].ev.Tail != "z" {
+		t.Fatalf("captures after second Write = %+v, want tail %q", logs, "z")
+	}
+	job.Output.FinalUpdate()
+	logs = caplog.snapshot()
+	if len(logs) != 6 || logs[5].et != types.EventToolOutputDelta || logs[5].ev.Tail != "z" {
+		t.Fatalf("captures after FinalUpdate = %+v, want one delta with tail %q", logs, "z")
+	}
+	// FinalUpdate on an empty window (the cleared case above) is already
+	// proven silent by the frozen count at 4.
+}
+
+// TestBackgroundJob_EmitOutputDelta_NoEmitterNoPanic: a registry without
+// OnJobEvent must tolerate the full write path without panicking, and a nil
+// receiver must be a no-op (the adapter is a bare method value).
+func TestBackgroundJob_EmitOutputDelta_NoEmitterNoPanic(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	job := r.Spawn("cmd", 0, NewStreamingOutput(nil))
+	if _, err := job.Output.Write([]byte("a\nb\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	job.Output.FinalUpdate()
+
+	var nilJob *BackgroundJob
+	nilJob.emitOutputDelta(StreamingUpdate{Lines: []string{"x"}})
+}
+
+// TestBackgroundJob_EmitOutputDelta_NilOutputNoPanic: Spawn with a nil
+// output (the wiring-probe shape) must not panic on the wiring.
+func TestBackgroundJob_EmitOutputDelta_NilOutputNoPanic(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundJobRegistry()
+	r.OnJobEvent = func(types.QueryEventType, types.JobEvent) {}
+	if job := r.Spawn("cmd", 0, nil); job.Output != nil {
+		t.Fatal("Spawn must store the nil output untouched")
+	}
+}
+
+// TestTransitionToBackground_SwitchesProgressToJobLine: after the
+// transition, output progress flows to the job-event line and the old
+// foreground callback is never invoked.
+func TestTransitionToBackground_SwitchesProgressToJobLine(t *testing.T) {
+	t.Parallel()
+	var fgMu sync.Mutex
+	fgCalls := 0
+	foregroundRecorder := func(StreamingUpdate) {
+		fgMu.Lock()
+		defer fgMu.Unlock()
+		fgCalls++
+	}
+	s := NewStreamingOutput(foregroundRecorder)
+
+	r := NewBackgroundJobRegistry()
+	caplog := &jobEventLog{}
+	r.OnJobEvent = caplog.onJobEvent
+
+	res, err := transitionToBackground(r, "cmd", 1, s, Input{}, t.TempDir(), func(*BackgroundJob) {}, nil)
+	if err != nil {
+		t.Fatalf("transitionToBackground: %v", err)
+	}
+
+	if _, err := s.Write([]byte("x\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	fgMu.Lock()
+	gotFg := fgCalls
+	fgMu.Unlock()
+	if gotFg != 0 {
+		t.Errorf("foreground progress called %d times after transition, want 0", gotFg)
+	}
+
+	wantID := res.Data.(*Output).BackgroundJobID
+	logs := caplog.snapshot()
+	found := false
+	for _, l := range logs {
+		if l.et == types.EventToolOutputDelta && l.ev.ID == wantID && l.ev.Tail == "x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no job-line delta {id=%s tail=x} in captures %+v", wantID, logs)
+	}
+
+	// Cancel the stall watchdog started by the transition (goleak).
+	for _, j := range r.List() {
+		j.Complete(0, false)
+	}
+}
+
 // TestComplete_EmitsJobTerminated covers both completion statuses: the
 // terminated event carries the real exit code and fires BEFORE the
 // completion notification (a notification can kick the parent's idle path,

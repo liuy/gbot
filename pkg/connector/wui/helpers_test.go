@@ -562,9 +562,6 @@ func newTestConnectorWithConfig(t *testing.T, h *hub.Hub, providers map[string]l
 		slot.ssMu.Unlock()
 	}
 	go c.wsWriter()
-	// Without the tail loop, TestBashTailTick_* would hang waiting for frames:
-	// the mock slot bypasses registerEngine. Exits via c.done (t.Cleanup(c.Stop)).
-	c.startBashTailLoop(slot)
 	t.Cleanup(c.Stop)
 	return c
 }

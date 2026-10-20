@@ -11260,19 +11260,6 @@ func TestRunAgent_BuiltInDefinitionsOpenNoMCP(t *testing.T) {
 	}
 }
 
-// usageStreamEvents builds a tool_use turn whose usage is exactly in/out —
-// distinct small values so token arithmetic is observable.
-func usageToolUseStreamEvents(model, toolID, toolName, toolInput string, in, out int) []llm.StreamEvent {
-	return []llm.StreamEvent{
-		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: in}}},
-		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: toolID, Name: toolName}},
-		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: toolInput}},
-		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: out}},
-		{Type: "message_stop"},
-	}
-}
-
 // emptyTextOverflowEvents builds a turn whose only content block is an empty
 // text block and whose stop reason is model_context_window_exceeded — the one
 // assistant shape that is both "real enough" to carry usage and "synthetic
@@ -11724,7 +11711,7 @@ func TestToolDeltaCoalesce_WindowFlush(t *testing.T) {
 			t.Errorf("flushes at the window edge = %d, want 1", flushes)
 		}
 		var seen []string
-		tc.flush(func(id, text string, _ any) { seen = append(seen, id+":"+text) })
+		tc.flush(func(id, text string, _ any, _ *types.AgentMeta) { seen = append(seen, id+":"+text) })
 		if len(seen) != 2 || seen[0] != "tu_1:ab" || seen[1] != "tu_2:c" {
 			t.Errorf("flushed = %v, want [tu_1:ab tu_2:c]", seen)
 		}

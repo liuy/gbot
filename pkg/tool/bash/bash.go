@@ -1050,11 +1050,6 @@ func transitionToBackground(registry *BackgroundJobRegistry, command string, pid
 	}
 	job.startStallWatchdog()
 
-	// Stop foreground progress updates
-	s.mu.Lock()
-	s.onProgress = nil
-	s.mu.Unlock()
-
 	go completionFunc(job)
 
 	return &tool.ToolResult{

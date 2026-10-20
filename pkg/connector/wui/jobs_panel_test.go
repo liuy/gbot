@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,15 +23,6 @@ import (
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
-
-// withBashTailInterval swaps the tail-loop cadence for the test's lifetime.
-// Must run BEFORE the connector is constructed: the ticker interval is read
-// when the loop goroutine starts.
-func withBashTailInterval(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := bashTailIntervalNS.Swap(int64(d))
-	t.Cleanup(func() { bashTailIntervalNS.Store(old) })
-}
 
 // dialJobsServer dials without draining — the caller wants the takeover
 // metadata frame itself (dialAndStore discards it).
@@ -55,9 +45,9 @@ func dialJobsServer(t *testing.T, c *WUIConnector) *websocket.Conn {
 
 // readMetadataJobs reads until the metadata frame and returns its embedded
 // jobs entries, or nil when the metadata carries no jobs field. Non-metadata
-// frames along the way are skipped: a tail-loop job_list can slip into the new
-// era in the window between sendMetadata's queue swap and its metadata push
-// (harmless ordering — metadata is the authoritative snapshot).
+// frames along the way are skipped: an event-driven job_list can slip into
+// the new era in the window between sendMetadata's queue swap and its
+// metadata push (harmless ordering — metadata is the authoritative snapshot).
 func readMetadataJobs(t *testing.T, ws *websocket.Conn) []jobWireItemHydrated {
 	t.Helper()
 	raw := readUntilType(t, ws, "metadata")
@@ -100,7 +90,8 @@ func readJobOutput(t *testing.T, ws *websocket.Conn) jobOutputOutbound {
 }
 
 // assertNoFrameWithin fails if any frame arrives within window. Used with a
-// window spanning multiple tail beats: unchanged state must stay silent.
+// window spanning multiple delta opportunities: unchanged state must stay
+// silent.
 func assertNoFrameWithin(t *testing.T, ws *websocket.Conn, window time.Duration) {
 	t.Helper()
 	_ = ws.SetReadDeadline(time.Now().Add(window)) // REAL-TIME
@@ -109,27 +100,6 @@ func assertNoFrameWithin(t *testing.T, ws *websocket.Conn, window time.Duration)
 		t.Fatalf("expected no frame within %v, got %q", window, string(data))
 	}
 	_ = ws.SetReadDeadline(time.Time{})
-}
-
-// assertOnlyJobListWithin reads frames for window and fails on anything but
-// job_list: the bug it guards against is a repeated job_output for an
-// unchanged tail, while an incidental job_list (summary churn) is legal.
-func assertOnlyJobListWithin(t *testing.T, ws *websocket.Conn, window time.Duration) {
-	t.Helper()
-	_ = ws.SetReadDeadline(time.Now().Add(window)) // REAL-TIME
-	defer func() { _ = ws.SetReadDeadline(time.Time{}) }()
-	for {
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			return // window elapsed with no (more) frames
-		}
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(data, &head) != nil || head.Type != "job_list" {
-			t.Fatalf("unexpected frame within %v (only job_list allowed): %s", window, string(data))
-		}
-	}
 }
 
 func bgBashJob(id, status, command string, startedMs int64) *job.JobInfo {
@@ -152,70 +122,76 @@ func dispatchBashStarted(h *hub.Hub, id, command string, startedMs int64) {
 	}})
 }
 
-// TestBashTailTick_DiffSilence pins the tail loop's diff gate: an unchanged
-// tail pushes nothing across several beats.
-func TestBashTailTick_DiffSilence(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
-	h := hub.NewHub()
-	c := newTestConnectorWithHub(t, h)
-	ws := dialAndStore(t, c)
-	dispatchBashStarted(h, "bg-1", "sleep 5", time.Now().UnixMilli()) // REAL-TIME
-	c.mock().SetJobTailFn(func(id string) (string, bool) {
-		if id != "bg-1" {
-			return "", false
-		}
-		return "a\n", true
+// dispatchBashTailDelta pushes a job output snapshot through the real event
+// path (the shape bootstrap's emitJob produces for background bash output).
+func dispatchBashTailDelta(h *hub.Hub, id, tail string) {
+	h.Dispatch(types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		Agent:      &types.AgentMeta{JobID: id},
+		ToolResult: &types.ToolResultEvent{ToolUseID: id, DisplayOutput: tail},
 	})
-
-	readJobList(t, ws)
-	readJobOutput(t, ws) // first sighting pushes the tail once
-	// Unchanged tail: several beats, zero frames.
-	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
-// TestBashTailTick_PushesOnChange pins the tail loop's push path: a changed
-// tail reaches the wire as a job_output frame on the next beat, and only
-// then — a stable tail never repeats.
-func TestBashTailTick_PushesOnChange(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
+// TestJobOutputDelta_PushesTailAndSkipsEventFrame pins the routing contract:
+// a bash tail delta reaches browsers ONLY as a job_output frame — never as a
+// generic event frame (wire compat: browsers consume job_list/job_output).
+func TestJobOutputDelta_PushesTailAndSkipsEventFrame(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
 	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
-	var tailMu sync.Mutex
-	cur := "a\n"
-	c.mock().SetJobTailFn(func(id string) (string, bool) {
-		if id != "bg-1" {
-			return "", false
-		}
-		tailMu.Lock()
-		defer tailMu.Unlock()
-		return cur, true
-	})
 
-	readJobList(t, ws)
+	dispatchBashTailDelta(h, "bg-1", "a\nb\n")
+	out := readJobOutput(t, ws)
+	if out.JobID != "bg-1" || out.Tail != "a\nb\n" {
+		t.Fatalf("job_output = {%s %q}, want {bg-1 \"a\\nb\\n\"}", out.JobID, out.Tail)
+	}
+	// The delta must not leak a generic event frame after the job_output.
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
+}
+
+// TestJobOutputDelta_DiffGate: an identical snapshot re-dispatched is
+// diff-silent — exactly one job_output ever reaches the wire.
+func TestJobOutputDelta_DiffGate(t *testing.T) {
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "quiet cmd", time.Now().UnixMilli()) // REAL-TIME
+
+	dispatchBashTailDelta(h, "bg-1", "same\n")
+	out := readJobOutput(t, ws)
+	if out.JobID != "bg-1" || out.Tail != "same\n" {
+		t.Fatalf("job_output = {%s %q}, want {bg-1 \"same\\n\"}", out.JobID, out.Tail)
+	}
+	dispatchBashTailDelta(h, "bg-1", "same\n")
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
+}
+
+// TestJobOutputDelta_ChangedTailPushes: each changed snapshot pushes its own
+// job_output frame, and a stable tail never repeats.
+func TestJobOutputDelta_ChangedTailPushes(t *testing.T) {
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
+
+	dispatchBashTailDelta(h, "bg-1", "a\n")
 	first := readJobOutput(t, ws)
 	if first.JobID != "bg-1" || first.Tail != "a\n" {
 		t.Fatalf("first job_output = {%s %q}, want {bg-1 \"a\\n\"}", first.JobID, first.Tail)
 	}
-
-	tailMu.Lock()
-	cur = "a\nb\n"
-	tailMu.Unlock()
+	dispatchBashTailDelta(h, "bg-1", "a\nb\n")
 	second := readJobOutput(t, ws)
 	if second.JobID != "bg-1" || second.Tail != "a\nb\n" {
 		t.Fatalf("second job_output = {%s %q}, want {bg-1 \"a\\nb\\n\"}", second.JobID, second.Tail)
 	}
-	// Tail stops changing: any frame in the window may only be a job_list,
-	// never a repeated job_output.
-	assertOnlyJobListWithin(t, ws, 150*time.Millisecond)
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
-// TestBashTail_InactiveSlotNoPush pins the push gate: a non-active slot's
-// bash row keeps its tail cache warm (fetched every beat) but nothing ever
-// reaches the wire.
-func TestBashTail_InactiveSlotNoPush(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
+// TestJobOutputDelta_InactiveSlotCacheWarm pins the push gate: a non-active
+// slot's bash row keeps its tail cache warm (the delta lands in the entry)
+// but nothing ever reaches the wire.
+func TestJobOutputDelta_InactiveSlotCacheWarm(t *testing.T) {
 	c := newTestConnector(t)
 
 	// A second, fully wired slot with a bash row, but NOT active: its tail
@@ -234,23 +210,25 @@ func TestBashTail_InactiveSlotNoPush(t *testing.T) {
 	c.slotsMu.Lock()
 	c.slots["engineB"] = slotB
 	c.slotsMu.Unlock()
-	c.startBashTailLoop(slotB)
 	ws := dialAndStore(t, c)
 	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
 		ID: "bg-1", Kind: "bash", Status: "running", Command: "build", StartedMs: time.Now().UnixMilli(), // REAL-TIME
 	}})
-	mockB.SetJobTailFn(func(id string) (string, bool) {
-		if id != "bg-1" {
-			return "", false
-		}
-		return "warm tail\n", true
-	})
+	dispatchBashTailDelta(h, "bg-1", "warm tail\n")
 
 	assertNoFrameWithin(t, ws, 150*time.Millisecond)
+	slotB.ssMu.Lock()
+	var tail string
+	if entry := slotB.jobView["bg-1"]; entry != nil {
+		tail = entry.tail
+	}
+	slotB.ssMu.Unlock()
+	if tail != "warm tail\n" {
+		t.Fatalf("inactive slot cache tail = %q, want %q (cache warm without push)", tail, "warm tail\n")
+	}
 }
 
 func TestJobStop_KillsAndPushes(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
@@ -277,7 +255,6 @@ func TestJobStop_KillsAndPushes(t *testing.T) {
 }
 
 func TestJobStop_KillErrorSendsErrorFrame(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetKillJobFn(func(id string) error {
 		return errors.New("no such job")
@@ -299,7 +276,6 @@ func TestJobStop_KillErrorSendsErrorFrame(t *testing.T) {
 }
 
 func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -314,6 +290,7 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 		}}
 	})
 	ws := dialJobsServer(t, c)
+	drainInitialFrames(t, ws) // barrier: activation completed before the dispatch
 	// job_started creates the stream region (anchor = the shell's parent id)
 	// before the job's process events arrive; the started frame is the row's
 	// own event push.
@@ -365,7 +342,6 @@ func TestMetadata_EmbedsJobsWithBlocks(t *testing.T) {
 }
 
 func TestStreams_MaskingAndNesting(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
@@ -378,6 +354,7 @@ func TestStreams_MaskingAndNesting(t *testing.T) {
 	// Row + region via the lifecycle event first, then process events —
 	// production ordering (Spawn emits started before the job's first turn).
 	ws := dialJobsServer(t, c)
+	drainInitialFrames(t, ws) // barrier: activation completed before the dispatch
 	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
 		ID: "agent-1", Kind: "agent", Status: "running",
 		Description: "nested test", ParentToolUseID: "toolu_p", StartedMs: 100,
@@ -450,7 +427,6 @@ func TestStreams_MaskingAndNesting(t *testing.T) {
 // holds the region from the spawn moment, so discovery finds it already
 // populated.
 func TestCaptureJobEvent_FeedExistsBeforeDiscovery(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	agentJob := &job.JobInfo{
 		ID: "agent-1", Type: "agent", Status: "running",
@@ -490,7 +466,6 @@ func TestCaptureJobEvent_FeedExistsBeforeDiscovery(t *testing.T) {
 // fork-kind entry must get a live feed exactly like an agent-kind one, and
 // must not be routed down the bash tail path.
 func TestCaptureJobEvent_FeedExistsBeforeDiscovery_ForkKind(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	forkJob := &job.JobInfo{
 		ID: "agent-1", Type: "fork", Status: "running",
@@ -529,7 +504,6 @@ func TestCaptureJobEvent_FeedExistsBeforeDiscovery_ForkKind(t *testing.T) {
 // path (takeover): a registry snapshot over the cap evicts the OLDEST
 // TERMINAL rows until at cap; each eviction logs the wui:jobs line.
 func TestReconcile_JobViewCapEvictsUntilAtCap(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -564,7 +538,6 @@ func TestReconcile_JobViewCapEvictsUntilAtCap(t *testing.T) {
 // scan is restricted to terminal rows: a running row survives even when the
 // view is over cap.
 func TestReconcile_CapNeverEvictsRunning(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -599,49 +572,40 @@ func TestReconcile_CapNeverEvictsRunning(t *testing.T) {
 	}
 }
 
-// TestMetadata_TailFromCacheNeverCallsJobTail locks the deadlock-cycle middle
-// edge: metadata's tail must come from the tail-loop-warmed entry cache, never
-// from a JobTail call inside the ssMu section. The 1h interval makes
-// the test deterministic — no legitimate background tick can bump the count.
-func TestMetadata_TailFromCacheNeverCallsJobTail(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
+// TestMetadata_TakeoverRefreshesTailsViaJobTail pins the takeover hydration:
+// rows with no event history (reconcile-born) take a one-time JobTail
+// snapshot at takeover, while an event-fed tail wins over the registry
+// snapshot (fill-empty-only).
+func TestMetadata_TakeoverRefreshesTailsViaJobTail(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	startedMs := time.Now().UnixMilli() // REAL-TIME
-	// The dial's reconcile enumerates the registry; an unlisted running row
-	// is a vanish-drop, so the mock must keep listing the job it lists.
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", startedMs)}
 	})
-	dispatchBashStarted(h, "bg-1", "make check", startedMs)
-	var tailCalls atomic.Int32
 	c.mock().SetJobTailFn(func(id string) (string, bool) {
 		if id != "bg-1" {
 			return "", false
 		}
-		tailCalls.Add(1)
-		return "fixed-tail", true
+		return "registry-tail", true
 	})
 
-	// Warm the cache with one direct tick (fetches the tail outside any
-	// connector lock, writes it back under ssMu).
-	slot := c.activeSlotTest(t)
-	c.bashTailTick(slot)
-	n := tailCalls.Load()
-	if n != 1 {
-		t.Fatalf("bashTailTick tail calls = %d, want 1", n)
-	}
-
+	// Part 1 — reconcile-born row (no event history): the takeover snapshot
+	// hydrates the tail.
 	ws := dialJobsServer(t, c)
 	items := readMetadataJobs(t, ws)
-	if len(items) != 1 {
-		t.Fatalf("metadata jobs len = %d, want 1", len(items))
+	if len(items) != 1 || items[0].Tail != "registry-tail" {
+		t.Fatalf("metadata jobs = %+v, want one bg-1 entry with the takeover tail %q", items, "registry-tail")
 	}
-	if items[0].Tail != "fixed-tail" {
-		t.Errorf("metadata tail = %q, want the cached %q", items[0].Tail, "fixed-tail")
-	}
-	if got := tailCalls.Load(); got != n {
-		t.Errorf("JobTail called %d times after metadata (was %d) — metadata must read the cache, not call JobTail", got, n)
+
+	// Part 2 — event-fed row wins: the delta warmed the entry, so the later
+	// registry snapshot must not overwrite it.
+	dispatchBashStarted(h, "bg-1", "make check", startedMs)
+	dispatchBashTailDelta(h, "bg-1", "event-tail")
+	ws2 := dialJobsServer(t, c)
+	items = readMetadataJobs(t, ws2)
+	if len(items) != 1 || items[0].Tail != "event-tail" {
+		t.Fatalf("post-delta metadata jobs = %+v, want one bg-1 entry with the event-fed tail %q", items, "event-tail")
 	}
 }
 
@@ -649,7 +613,6 @@ func TestMetadata_TailFromCacheNeverCallsJobTail(t *testing.T) {
 // non-merging blocks can reach it: consecutive text deltas fold into one text
 // block, tool_start blocks never merge.
 func TestStreams_FeedCapDropsHead(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -669,7 +632,7 @@ func TestStreams_FeedCapDropsHead(t *testing.T) {
 	}
 
 	ws := dialJobsServer(t, c)
-	readJobList(t, ws)
+	readMetadataJobs(t, ws) // consume the takeover frame: connection fully live
 	ws2 := dialJobsServer(t, c)
 	items := readMetadataJobs(t, ws2)
 	if len(items) != 1 {
@@ -688,7 +651,6 @@ func TestStreams_FeedCapDropsHead(t *testing.T) {
 }
 
 func TestSessionSwitch_ClearsTerminalJobs(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	var jobsMu sync.Mutex
@@ -934,71 +896,11 @@ func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
 	}
 }
 
-// TestBashTail_DefaultCadence pins the production tail cadence (500ms tick —
-// the documented contract; tail update frequency is user-visible). Tests
-// override the knob, so nothing else observes the default; a direct value pin
-// is the only deterministic observable.
-func TestBashTail_DefaultCadence(t *testing.T) {
-	if got := bashTailInterval(); got != 500*time.Millisecond {
-		t.Errorf("default tail interval = %v, want 500ms", got)
-	}
-}
-
-// TestBashTailLoop_ExitsOnStop pins the tail loop's lifecycle: Stop closes
-// c.done and the loop's select must take the done case. A loop that ignores
-// done keeps sampling the engine forever after the connector died.
-func TestBashTailLoop_ExitsOnStop(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
-	// Hand-built connector: the test itself owns Stop (newTestConnector
-	// registers a second Stop in cleanup — closing c.done twice panics).
-	var calls atomic.Int32
-	m := &mockEngine{}
-	m.SetJobTailFn(func(id string) (string, bool) {
-		calls.Add(1)
-		return "t", true
-	})
-	c := &WUIConnector{
-		slots:       make(map[string]*engineSlot),
-		pendingAsks: make(map[string]*types.AskEvent),
-		done:        make(chan struct{}),
-		testMock:    m,
-		thumbs:      newThumbCache(),
-	}
-	c.outQ.Store(newOutQueue(outQueueCapacity))
-	activeID := "main"
-	c.active.Store(&activeID)
-	slot := &engineSlot{
-		engineID:    "main",
-		engine:      m,
-		hub:         hub.NewHub(),
-		taskToolIDs: map[string]bool{},
-		jobView:     map[string]*jobViewEntry{},
-		streams:     map[string]*streamState{"": {}},
-	}
-	slot.active.Store(true)
-	// One bash row so each beat has something to sample; the row is written
-	// directly (loop lifecycle is the subject here, not row creation).
-	slot.jobView["bg-1"] = &jobViewEntry{item: jobWireItem{ID: "bg-1", Kind: "bash", Status: "running", StartedMs: 1}}
-	c.slots["main"] = slot
-	c.startBashTailLoop(slot)
-
-	if !waitFor(2*time.Second, func() bool { return calls.Load() > 0 }) {
-		t.Fatal("tail loop never sampled before Stop")
-	}
-	c.Stop()
-	after := calls.Load()
-	time.Sleep(150 * time.Millisecond) // REAL-TIME
-	if got := calls.Load(); got != after {
-		t.Errorf("JobTail calls after Stop = %d (was %d) — tail loop must exit on done", got, after)
-	}
-}
-
 // TestJobWire_UnknownTypePassthrough pins that JobInfo.Type rides the wire
 // verbatim: with the unified field there is no mapper left, so a type outside
 // the bash/agent/fork vocabulary reaches the client unchanged instead of
 // collapsing to "".
 func TestJobWire_UnknownTypePassthrough(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ws := dialAndStore(t, c)
@@ -1015,16 +917,24 @@ func TestJobWire_UnknownTypePassthrough(t *testing.T) {
 	}
 }
 
-// TestBashTailTick_NilViewSlotNoPanic pins the nil-map guard: slots built
-// directly (bypassing registerEngine) have no jobs maps, and a tick on such a
-// slot must be a silent no-op, not a nil-map write panic.
-func TestBashTailTick_NilViewSlotNoPanic(t *testing.T) {
+// TestJobOutputDelta_NilViewSlotNoPanic pins the nil-map guard: slots built
+// directly (bypassing registerEngine) have no jobs maps, and a routed delta
+// on such a slot must be a silent no-op, not a nil-map write panic.
+func TestJobOutputDelta_NilViewSlotNoPanic(t *testing.T) {
 	c := newTestConnector(t)
-	c.mock().SetJobsFn(func() []*job.JobInfo {
-		return []*job.JobInfo{bgBashJob("bg-1", "running", "make check", 1)}
-	})
+	ws := dialAndStore(t, c)
 	ghost := &engineSlot{engineID: "ghost", engine: c.mock()}
-	c.bashTailTick(ghost) // must return at the guard, not panic on the nil jobView
+	c.slotsMu.Lock()
+	c.slots["ghost"] = ghost
+	c.slotsMu.Unlock()
+
+	c.onEngineEvent("ghost", types.QueryEvent{
+		Type:       types.EventToolOutputDelta,
+		Agent:      &types.AgentMeta{JobID: "bg-1"},
+		ToolResult: &types.ToolResultEvent{ToolUseID: "bg-1", DisplayOutput: "x"},
+	})
+
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
 // TestApplyJobStreamEvent_NilViewNoPanic pairs with
@@ -1037,34 +947,64 @@ func TestApplyJobStreamEvent_NilViewNoPanic(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "toolu_x", JobID: "agent-1"}, Text: "stray"})
 }
 
-// TestBashTailTick_TailsOnlyBashJobs pins the tail filter: only bash rows are
-// tailed (agent feeds come from events, not tails), and an agent row in the
-// view must not abort the scan for later bash ids.
-func TestBashTailTick_TailsOnlyBashJobs(t *testing.T) {
-	withBashTailInterval(t, time.Hour) // the test drives one beat directly
+// TestJobOutputDelta_AgentFamilyNotIntercepted pins the bash-row filter:
+// agent-family deltas keep the generic stream path (their event frames feed
+// the browser job feeds) and never produce a job_output.
+func TestJobOutputDelta_AgentFamilyNotIntercepted(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
 	h.Dispatch(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
-		ID: "agent-1", Kind: "agent", Status: "running",
-		Description: "no tails", ParentToolUseID: "toolu_p", StartedMs: 100,
+		ID: "agent-1", Kind: "agent", Status: "running", ParentToolUseID: "tu_p", StartedMs: 100,
 	}})
-	dispatchBashStarted(h, "bg-1", "make check", 200)
-	var tailMu sync.Mutex
-	var tailIDs []string
-	c.mock().SetJobTailFn(func(id string) (string, bool) {
-		tailMu.Lock()
-		tailIDs = append(tailIDs, id)
-		tailMu.Unlock()
-		return "tail of " + id, true
-	})
+	readJobList(t, ws)
 
-	c.bashTailTick(c.activeSlotTest(t))
+	dispatchBashTailDelta(h, "agent-1", "agent tail")
 
-	tailMu.Lock()
-	defer tailMu.Unlock()
-	if len(tailIDs) != 1 || tailIDs[0] != "bg-1" {
-		t.Errorf("JobTail calls = %v, want exactly [bg-1] — only bash rows may be tailed", tailIDs)
+	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
+	_, data, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("no frame after the agent-family delta: %v", err)
 	}
+	var head struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(data, &head) != nil || head.Type != "event" {
+		t.Fatalf("frame after the agent-family delta = %s, want a generic event frame", string(data))
+	}
+}
+
+// TestJobOutputDelta_GuardClauses pins the interception branch's operand
+// discrimination: only tool_output_delta events with a non-nil Agent tag
+// carrying a JobID may route to the tail path. Everything else — foreground
+// deltas (Agent nil), sync sub-agent deltas (JobID empty, even when the
+// ToolUseID matches a bash row), and payload-less deltas — keeps the generic
+// stream path.
+func TestJobOutputDelta_GuardClauses(t *testing.T) {
+	h := hub.NewHub()
+	c := newTestConnectorWithHub(t, h)
+	ws := dialAndStore(t, c)
+	dispatchBashStarted(h, "bg-1", "make check", time.Now().UnixMilli()) // REAL-TIME
+	readJobList(t, ws)
+
+	// Foreground delta (Agent nil): generic path — event frame, never routed.
+	h.Dispatch(types.QueryEvent{Type: types.EventToolOutputDelta,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "tool_fg", DisplayOutput: "fg"}})
+	readUntilType(t, ws, "event")
+
+	// Sync sub-agent delta (Agent non-nil, JobID empty) whose ToolUseID
+	// matches a bash row: still generic — the JobID is the routing key.
+	h.Dispatch(types.QueryEvent{Type: types.EventToolOutputDelta,
+		Agent:      &types.AgentMeta{ParentToolUseID: "toolu_p"},
+		ToolResult: &types.ToolResultEvent{ToolUseID: "bg-1", DisplayOutput: "sync"}})
+	readUntilType(t, ws, "event")
+
+	// Payload-less delta: no ToolResult to route by — generic path.
+	h.Dispatch(types.QueryEvent{Type: types.EventToolOutputDelta,
+		Agent: &types.AgentMeta{JobID: "bg-1"}})
+	readUntilType(t, ws, "event")
+
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
 // TestReconcile_CapRunningOldestNeverEvicted pins that the reconcile cap's
@@ -1072,7 +1012,6 @@ func TestBashTailTick_TailsOnlyBashJobs(t *testing.T) {
 // smallest StartedMs must survive while the oldest terminal is the one
 // evicted.
 func TestReconcile_CapRunningOldestNeverEvicted(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := []*job.JobInfo{bgBashJob("bg-run", "running", "oldest but live", 500)}
@@ -1103,7 +1042,6 @@ func TestReconcile_CapRunningOldestNeverEvicted(t *testing.T) {
 // terminal entries to evict, the loop gives up and the over-cap view is
 // embedded in full — a live job is never dropped and the loop never spins.
 func TestReconcile_CapAllRunningRetainsAll(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		jobs := make([]*job.JobInfo, 0, 201)
@@ -1244,7 +1182,6 @@ func dispatchJobRows(h *hub.Hub, items []jobWireItem) {
 // also separates the startedMs key from an ID-only sort. Each started event
 // pushes its own diff frame, so frames are read until one carries them all.
 func TestJobList_SortedByStartedMsThenID(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	items, wantOrder := sortedJobsFixture()
@@ -1272,7 +1209,6 @@ func TestJobList_SortedByStartedMsThenID(t *testing.T) {
 // TestMetadata_JobsSortedByStartedMsThenID pins the same ordering contract
 // for the metadata hydration snapshot (a separate sort call site).
 func TestMetadata_JobsSortedByStartedMsThenID(t *testing.T) {
-	withBashTailInterval(t, time.Hour)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	items, wantOrder := sortedJobsFixture()
@@ -1316,71 +1252,82 @@ func hydratedIDs(items []jobWireItemHydrated) []string {
 	return ids
 }
 
-// TestJobOutput_FramesSortedByJobID pins the job_output send order: frames
-// for simultaneously-changed tails go out in ascending job id order.
-func TestJobOutput_FramesSortedByJobID(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
+// TestJobOutputDelta_FramesSortedOnActivation pins the job_output send order:
+// pending tails accumulated while inactive flush in ascending job id order on
+// the first capture after activation.
+func TestJobOutputDelta_FramesSortedOnActivation(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	ids := []string{"bg-d", "bg-a", "bg-c", "bg-b"}
-	c.mock().SetJobTailFn(func(id string) (string, bool) { return "tail " + id, true })
+	summaries := make([]*job.JobInfo, 0, len(ids))
+	for i, id := range ids {
+		summaries = append(summaries, bgBashJob(id, "running", "cmd "+id, int64(1000+i)))
+	}
+	// Registry backing keeps the running rows past the dial's reconcile.
+	c.mock().SetJobsFn(func() []*job.JobInfo { return summaries })
 
-	ws := dialAndStore(t, c)
+	// Rows + tails accumulate while no client is connected (capture is nil,
+	// caches warm).
 	for i, id := range ids {
 		dispatchBashStarted(h, id, "cmd "+id, int64(1000+i))
+		dispatchBashTailDelta(h, id, "tail "+id)
 	}
-	readJobList(t, ws)
+	ws := dialAndStore(t, c) // activate: metadata hydrates the rows
+	dispatchBashTailDelta(h, "bg-b", "tail bg-b v2")
+
 	want := []string{"bg-a", "bg-b", "bg-c", "bg-d"}
 	for _, wantID := range want {
 		out := readJobOutput(t, ws)
 		if out.JobID != wantID {
 			t.Fatalf("job_output order broke at %q, want %q", out.JobID, wantID)
 		}
-		if out.Tail != "tail "+wantID {
-			t.Fatalf("job_output tail = %q, want %q", out.Tail, "tail "+wantID)
+		wantTail := "tail " + wantID
+		if wantID == "bg-b" {
+			wantTail = "tail bg-b v2"
+		}
+		if out.Tail != wantTail {
+			t.Fatalf("job_output tail for %s = %q, want %q", wantID, out.Tail, wantTail)
 		}
 	}
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
-// TestJobOutput_StableTailDoesNotBlockLaterJobs pins the tail-diff loop: a
-// bash entry whose tail is unchanged must be skipped (continue), not abort
-// the scan (break) — later jobs with changed tails still get their frame.
-func TestJobOutput_StableTailDoesNotBlockLaterJobs(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
+// TestJobOutputDelta_StableTailDoesNotBlockLaterJobs pins the tail-diff scan:
+// a bash entry whose tail is unchanged must be skipped (continue), not abort
+// the capture scan (break) — later jobs with changed tails still get their
+// frame.
+func TestJobOutputDelta_StableTailDoesNotBlockLaterJobs(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
-	var tailMu sync.Mutex
-	tails := map[string]string{"bg-1": "stable", "bg-2": "first"}
-	c.mock().SetJobTailFn(func(id string) (string, bool) {
-		tailMu.Lock()
-		defer tailMu.Unlock()
-		return tails[id], true
-	})
-
 	ws := dialAndStore(t, c)
 	dispatchBashStarted(h, "bg-1", "quiet cmd", 1000)
 	dispatchBashStarted(h, "bg-2", "loud cmd", 2000)
 	readJobList(t, ws)
-	for _, want := range []string{"bg-1", "bg-2"} { // warm both baselines (id order)
-		if out := readJobOutput(t, ws); out.JobID != want {
+
+	// Warm both baselines (id order).
+	dispatchBashTailDelta(h, "bg-1", "stable")
+	dispatchBashTailDelta(h, "bg-2", "first")
+	for _, want := range []string{"bg-1", "bg-2"} {
+		out := readJobOutput(t, ws)
+		if out.JobID != want {
 			t.Fatalf("warm-up frame = %s, want %s", out.JobID, want)
 		}
 	}
 
-	tailMu.Lock()
-	tails["bg-2"] = "second"
-	tailMu.Unlock()
+	// Identical bg-1 snapshot again + changed bg-2: exactly one frame.
+	dispatchBashTailDelta(h, "bg-1", "stable")
+	dispatchBashTailDelta(h, "bg-2", "second")
 	out := readJobOutput(t, ws)
 	if out.JobID != "bg-2" || out.Tail != "second" {
 		t.Fatalf("post-flip frame = {%s %q}, want {bg-2 \"second\"}", out.JobID, out.Tail)
 	}
+	assertNoFrameWithin(t, ws, 150*time.Millisecond)
 }
 
 // TestPushJobsSnapshot_NilViewNoFrame pins the nil-view guard of the forced
 // push: a map-less (test-built) slot must push nothing, even though the
 // sentinel baseline reset would otherwise force an empty job_list out.
 func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
@@ -1394,7 +1341,6 @@ func TestPushJobsSnapshot_NilViewNoFrame(t *testing.T) {
 // no jobs must omit the metadata jobs field entirely (nil raw JSON), not emit
 // an empty {"jobs":[]} envelope.
 func TestMetadata_EmptyViewOmitsJobsField(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 
 	ws := dialJobsServer(t, c)
@@ -1407,7 +1353,6 @@ func TestMetadata_EmptyViewOmitsJobsField(t *testing.T) {
 // clear: the previous session's terminal entries must not leak into the new
 // session's metadata snapshot; running entries belong to the engine and stay.
 func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	var jobsMu sync.Mutex
@@ -1454,7 +1399,6 @@ func TestSessionNew_ClearsTerminalJobs(t *testing.T) {
 // an empty jobID must be dropped before the handler — no kill call, no ack
 // frame, no error frame.
 func TestJobStop_EmptyJobIDIgnored(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -1499,11 +1443,11 @@ func TestEngineAdapter_NilRegistries(t *testing.T) {
 
 // TestRegisterEngine_SlotFullyWiredForJobs exercises the registerEngine slot
 // literal end to end through real engines: the jobs maps exist (lifecycle,
-// feed creation and capture — nil maps would panic), the tail loop is started
-// (frames arrive), taskToolIDs accepts Task calls, and the slot name/system
-// drive BusyReport (running job named, system engine excluded).
+// feed creation and capture — nil maps would panic), taskToolIDs accepts Task
+// calls, the bash job's output deltas reach the wire through the event line
+// (registry → engine → hub → panel), and the slot name/system drive
+// BusyReport (running job named, system engine excluded).
 func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	mgr := engine.NewEngineManager()
 	h1 := hub.NewHub()
 	eng1 := engine.New(&engine.Params{EngineID: "main", Model: "test-model"})
@@ -1514,11 +1458,20 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	t.Cleanup(c.Stop)
 
 	// e2: named engine with a running bg bash job and a running bg agent.
+	// The bash registry's OnJobEvent is wired BEFORE the spawn: the job's
+	// delta line copies the registry callback at Spawn time. Same conversion
+	// branch as bootstrap's WireEngine.
+	h2 := hub.NewHub()
+	eng2 := engine.New(&engine.Params{EngineID: "e2", Model: "test-model"})
+	eng2.SetDispatcher(h2)
 	bashReg := bash.NewBackgroundJobRegistry()
+	agentReg := agent.NewBackgroundAgentRegistry()
+	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), agent.NewBackgroundAgentJobAdapter(agentReg))
+	eng2.SetToolRefs(engine.ToolRefs{BashReg: bashReg, JobReg: jobReg})
+	bashReg.OnJobEvent = engine.JobEventEmitter(eng2)
 	bgOut := bash.NewStreamingOutput(nil)
 	bt := bashReg.Spawn("sleep 30", 0, bgOut)
 	t.Cleanup(func() { _ = bashReg.Kill(bt.ID) })
-	agentReg := agent.NewBackgroundAgentRegistry()
 	state, err := agentReg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
@@ -1528,11 +1481,6 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 		t.Fatalf("spawn bg agent: %v", err)
 	}
 	t.Cleanup(func() { _ = agentReg.Cancel(state.ID) })
-	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), agent.NewBackgroundAgentJobAdapter(agentReg))
-	h2 := hub.NewHub()
-	eng2 := engine.New(&engine.Params{EngineID: "e2", Model: "test-model"})
-	eng2.SetDispatcher(h2)
-	eng2.SetToolRefs(engine.ToolRefs{BashReg: bashReg, JobReg: jobReg})
 	c.RegisterEngine(&engine.EngineViewState{ID: "e2", Name: "agent-2", Engine: eng2})
 
 	// e3: SYSTEM engine with a running job — BusyReport must exclude it.
@@ -1570,15 +1518,6 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("job list = %v, want exactly the bash and agent entries", got)
-	}
-	// The tail loop that registerEngine started: real output arriving on the
-	// bash job must reach the wire as a job_output frame WITHOUT any event or
-	// direct tick — only the loop's beat can deliver it. This is the sole
-	// observation point of the production startBashTailLoop call.
-	_, _ = bgOut.Write([]byte("sleeping\n"))
-	tail := readJobOutput(t, ws)
-	if tail.JobID != bt.ID || !strings.Contains(tail.Tail, "sleeping") {
-		t.Errorf("loop-pushed job_output = {%s %q}, want {%s …sleeping…}", tail.JobID, tail.Tail, bt.ID)
 	}
 
 	// Agent events through the registerEngine-built maps: job_started creates
@@ -1626,6 +1565,19 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	}
 	if bashItem.Engine != "agent-2" {
 		t.Errorf("e2 item Engine = %q, want the registered name %q", bashItem.Engine, "agent-2")
+	}
+
+	// The event-fed tail line, observed AFTER BusyReport (completion turns
+	// the row terminal and would drop it from the busy list): real output
+	// arriving on the bash job reaches the wire as a job_output frame through
+	// Spawn's progress wiring, the engine's coalesce, and the hub — no poller
+	// involved. Complete flushes the buffered delta deterministically
+	// (terminated's emitEvent drains buffers first).
+	_, _ = bgOut.Write([]byte("sleeping\n"))
+	bt.Complete(0, false)
+	tail := readJobOutput(t, ws2)
+	if tail.JobID != bt.ID || tail.Tail != "sleeping" {
+		t.Errorf("event-pushed job_output = {%s %q}, want {%s sleeping}", tail.JobID, tail.Tail, bt.ID)
 	}
 }
 
@@ -1759,7 +1711,6 @@ func TestDeleteJobEntryLocked_GhostIDNoPanic(t *testing.T) {
 // agent relisted after the clear would hydrate with its stale blocks —
 // replaying dead history into the fresh entry.
 func TestSessionNew_RelistDoesNotReplayFlushedPending(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.mock().SetJobsFn(func() []*job.JobInfo {
 		return []*job.JobInfo{{
@@ -1919,7 +1870,6 @@ func TestMutD_PushJobsSnapshot_ReleasesLock(t *testing.T) {
 // aborts the runtime. Ends with the region census: all job regions present,
 // root reset by query_end while job regions survive.
 func TestStreams_UnifiedLockDomain_ConcurrentRegionWriteVsRootRead(t *testing.T) {
-	withBashTailInterval(t, time.Hour) // no loop interference
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 	slot := c.activeSlotTest(t)
@@ -1989,7 +1939,6 @@ func TestStreams_UnifiedLockDomain_ConcurrentRegionWriteVsRootRead(t *testing.T)
 // attempt — make mutate runs without -race, so the kill relies on
 // statistical loss/concurrent-map-write detection.
 func TestMutD_ApplyJobStreamEvent_HoldsLockDuringAppend(t *testing.T) {
-	withBashTailInterval(t, time.Hour) // no loop interference
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -2093,7 +2042,6 @@ func TestMutD_DeleteJobEntry_BashKeepsForeignFeed(t *testing.T) {
 // region may be created for it, and its text must never surface inside any
 // job's region — not even after an unrelated job is discovered.
 func TestStreams_SyncSubAgentReachesNoRegion(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta,
 		Agent: &types.AgentMeta{ParentToolUseID: "tu_sync"}, Text: "sync text"})
@@ -2139,7 +2087,6 @@ func TestStreams_SyncSubAgentReachesNoRegion(t *testing.T) {
 // reconcile's discovery of the job: reconcile must not reset it, or events
 // folded before the dial are lost.
 func TestStreams_FeedSurvivesDiscovery(t *testing.T) {
-	withBashTailInterval(t, 10*time.Millisecond)
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
 		ID: "agent-1", Kind: "agent", Status: "running",
@@ -2179,7 +2126,6 @@ func TestStreams_FeedSurvivesDiscovery(t *testing.T) {
 // nests inside the job's own tool block in the job's region (three-level
 // tree).
 func TestStreams_GrandchildNestsByJobID(t *testing.T) {
-	withBashTailInterval(t, time.Hour) // no loop interference
 	c := newTestConnector(t)
 	c.Handle(types.QueryEvent{Type: types.EventJobStarted, Job: &types.JobEvent{
 		ID: "agent-9", Kind: "agent", Status: "running", ParentToolUseID: "tu_job", StartedMs: 1,
