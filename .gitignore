@@ -65,3 +65,4 @@ app/android/app/src/main/jniLibs/
 wails
 gbot-android
 local.properties
+go-mutesting-*.json
