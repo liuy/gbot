@@ -1321,10 +1321,11 @@ func TestCurrentUsage_AccumulatesSubAgentToolAndThinking(t *testing.T) {
 	}
 }
 
-// A background job's own tool/thinking progress must not move the parent's
-// progress bar (the browser live filter skips them too — takeover must not
-// jump), while usage stays unconditional: it is total query COST.
-func TestCurrentUsage_JobToolThinkingExcludedUsageKept(t *testing.T) {
+// A background job's token/tool/thinking all bill to the job's own account
+// (its completion notification <tokens>), never the parent's progress bar;
+// the browser live filter skips them too — takeover must not jump. Sync
+// sub-agents count as before.
+func TestCurrentUsage_JobEventsExcluded_SyncKept(t *testing.T) {
 	c := newTestConnector(t)
 
 	jobMeta := &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9"}
@@ -1347,8 +1348,30 @@ func TestCurrentUsage_JobToolThinkingExcludedUsageKept(t *testing.T) {
 	if got := qs.thinkingMs.Load(); got != 1000 {
 		t.Errorf("thinkingMs = %d, want 1000 (job thinking excluded, sync sub-agent thinking counted)", got)
 	}
-	if got := qs.inputTokens.Load(); got != 7 {
-		t.Errorf("inputTokens = %d, want 7 (job usage still counts — total query cost)", got)
+	if got := qs.inputTokens.Load(); got != 0 {
+		t.Errorf("inputTokens = %d, want 0 (job usage bills to the job notification <tokens>)", got)
+	}
+}
+
+func TestCurrentUsage_BackgroundJobUsageExcluded_SyncKept(t *testing.T) {
+	c := newTestConnector(t)
+
+	syncMeta := &types.AgentMeta{ParentToolUseID: "tu_sync"}
+	jobMeta := &types.AgentMeta{ParentToolUseID: "tu_job", JobID: "agent-9"}
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Agent: syncMeta,
+		Usage: &types.UsageEvent{InputTokens: 60}})
+	c.Handle(types.QueryEvent{Type: types.EventUsage, Agent: jobMeta,
+		Usage: &types.UsageEvent{InputTokens: 500}})
+
+	qs := &c.slots["main"].queryStats
+	if got := qs.inputTokens.Load(); got != 60 {
+		t.Fatalf("inputTokens = %d, want 60 (sync sub-agent counted, background job excluded)", got)
+	}
+
+	c.Handle(types.QueryEvent{Type: types.EventUsage,
+		Usage: &types.UsageEvent{InputTokens: 40}})
+	if got := qs.inputTokens.Load(); got != 100 {
+		t.Fatalf("inputTokens = %d, want 100 (mainline event counted: 60+40)", got)
 	}
 }
 
@@ -5349,6 +5372,7 @@ func TestMutA3_BuildStats(t *testing.T) {
 
 	accumulateStats(&slot.queryStats, hub.Event{Type: types.EventUsage, Usage: &types.UsageEvent{
 		InputTokens: 11, OutputTokens: 22, CacheReadInputTokens: 33, CacheCreationInputTokens: 44}})
+	accumulateStats(&slot.queryStats, hub.Event{Type: types.EventUsage, Agent: &types.AgentMeta{JobID: "agent-9"}, Usage: &types.UsageEvent{InputTokens: 77}})
 	accumulateStats(&slot.queryStats, hub.Event{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t", Name: "Bash"}})
 	accumulateStats(&slot.queryStats, hub.Event{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 1500 * time.Millisecond}})
 	accumulateStats(&slot.queryStats, hub.Event{Type: types.EventQueryStart})

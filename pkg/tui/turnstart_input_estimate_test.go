@@ -46,10 +46,10 @@ func TestTurnStartMsg_SetsInputTokenTarget(t *testing.T) {
 	}
 }
 
-// A background job bills into the same token totals while the main engine's
-// turn is still in flight. Its usage event covers the job's request, not the
-// main turn's, so it must leave that turn's estimate standing.
-func TestUsageMsg_JobTaggedKeepsInFlightEstimate(t *testing.T) {
+// A background job's usage never reaches the mainline counters — its tokens
+// bill to the job's own notification <tokens> — so the in-flight estimate
+// survives it trivially.
+func TestUsageMsg_BackgroundJobIgnored_EstimateSurvives(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
@@ -65,37 +65,41 @@ func TestUsageMsg_JobTaggedKeepsInFlightEstimate(t *testing.T) {
 
 	job := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "Explore", Depth: 1, JobID: "agent-9"}
 	app.updateRepl(usageMsg{InputTokens: 111, OutputTokens: 5, Agent: job})
-	if got := app.repl.inputTokenTarget; got != 811 {
-		t.Errorf("inputTokenTarget = %d, want 811 (411 billed + the 400 estimate still in flight)", got)
+	if got := app.repl.inputTokenTarget; got != 700 {
+		t.Errorf("inputTokenTarget = %d, want 700 (background job usage must not touch the totals)", got)
 	}
-	if got := app.repl.displayedInputTokens; got != 811 {
-		t.Errorf("displayedInputTokens = %d, want 811 (the snap must keep the estimate)", got)
+	if got := app.repl.displayedInputTokens; got != 300 {
+		t.Errorf("displayedInputTokens = %d, want 300 (background job usage must not snap the display)", got)
 	}
 
-	// The spinner tick animates toward max(billed, target): a target that
-	// dropped to billed-only would drag the display back down.
+	// The spinner tick animates toward max(billed, target) = the 700 target:
+	// step 1 below 1000, so one tick reads 301 — climbing toward the estimate,
+	// never dragged down to billed-only.
 	app.updateRepl(spinnerTickMsg{})
-	if got := app.repl.displayedInputTokens; got != 811 {
-		t.Errorf("displayedInputTokens = %d, want 811 after the tick (no drop to 411)", got)
+	if got := app.repl.displayedInputTokens; got != 301 {
+		t.Errorf("displayedInputTokens = %d, want 301 after the tick (animating toward 700, no drop)", got)
 	}
 
 	// The main engine's own usage covers turn 2: the estimate retires and the
-	// billed total takes over — 411 + 1200, with no 400 left riding on top.
+	// billed total takes over — 300 + 1200, with no 400 left riding on top.
 	app.updateRepl(usageMsg{InputTokens: 1200, OutputTokens: 10})
-	if got := app.repl.inputTokenTarget; got != 1611 {
-		t.Errorf("inputTokenTarget = %d, want 1611 (estimate retired)", got)
+	if got := app.repl.inputTokenTarget; got != 1500 {
+		t.Errorf("inputTokenTarget = %d, want 1500 (estimate retired)", got)
 	}
-	if got := app.repl.displayedInputTokens; got != 1611 {
-		t.Errorf("displayedInputTokens = %d, want 1611", got)
+	if got := app.repl.displayedInputTokens; got != 1500 {
+		t.Errorf("displayedInputTokens = %d, want 1500", got)
 	}
 	app.updateRepl(spinnerTickMsg{})
-	if got := app.repl.displayedInputTokens; got != 1611 {
-		t.Errorf("displayedInputTokens = %d, want 1611 after the tick (estimate must not reappear)", got)
+	if got := app.repl.displayedInputTokens; got != 1500 {
+		t.Errorf("displayedInputTokens = %d, want 1500 after the tick (estimate must not reappear)", got)
 	}
 }
 
 // An estimate that never got its usage (the query was interrupted) must not
-// ride into the next query, where it would inflate a job's billed total.
+// ride into the next query, where it would inflate a sub-agent's billed total.
+// Sync sub-agent usage passes the background filter, and the usageMsg handler
+// does not clear the estimate for agent events — so 111 here can only come
+// from StartQuery's zeroing, proving the stale 4000 did not carry over.
 func TestStartQuery_DropsStaleTurnEstimate(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -112,8 +116,8 @@ func TestStartQuery_DropsStaleTurnEstimate(t *testing.T) {
 	app.status.SetUsage(types.Usage{})
 	app.repl.SetInputTokenTarget(900)
 
-	job := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "Explore", Depth: 1, JobID: "agent-9"}
-	app.updateRepl(usageMsg{InputTokens: 111, OutputTokens: 5, Agent: job})
+	agent := &types.AgentMeta{ParentToolUseID: "tu-1", AgentType: "Explore", Depth: 1}
+	app.updateRepl(usageMsg{InputTokens: 111, OutputTokens: 5, Agent: agent})
 	if got := app.repl.inputTokenTarget; got != 111 {
 		t.Errorf("inputTokenTarget = %d, want 111 (query 1's 4000 estimate must not carry over)", got)
 	}

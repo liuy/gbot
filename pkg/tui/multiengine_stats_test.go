@@ -86,3 +86,38 @@ func TestMultiEngine_BackgroundQueryEnd_StatsReflectsUsage(t *testing.T) {
 		t.Errorf("stats line should show 250 output tokens, got: %q", statsText)
 	}
 }
+
+// TestMultiEngine_Drain_UsageMsgDoesNotFeedStats pins the drain contract:
+// usageMsg is not a drain case at all — a background engine's stats come
+// solely from queryEndMsg.TotalUsage. If someone adds a usageMsg case to the
+// drain, the background-agent guard must travel with it.
+func TestMultiEngine_Drain_UsageMsgDoesNotFeedStats(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newMultiEngineIntegrationApp(t)
+
+	e2VS := a.engineMgr.Get("e2")
+	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
+	drain := a.buildBackgroundDrainFn(e2VS)
+
+	jobMeta := &types.AgentMeta{ParentToolUseID: "tu_bg", JobID: "agent-9"}
+	drain(turnStartMsg{})
+	drain(usageMsg{InputTokens: 999, Agent: jobMeta})
+	drain(queryEndMsg{TotalUsage: types.Usage{InputTokens: 100}})
+
+	last := e2Repl.Messages()[len(e2Repl.Messages())-1]
+	var statsText string
+	for _, blk := range last.Blocks {
+		if blk.Type == BlockStats {
+			statsText = blk.Text
+		}
+	}
+	if statsText == "" {
+		t.Fatal("BlockStats missing — see TestMultiEngine_BackgroundQueryEnd_AppendsStatsBlock")
+	}
+	if !strings.Contains(statsText, "100") {
+		t.Errorf("stats line should show 100 input tokens, got: %q", statsText)
+	}
+	if strings.Contains(statsText, "999") {
+		t.Errorf("stats line must not contain the drained usageMsg tokens (999), got: %q", statsText)
+	}
+}

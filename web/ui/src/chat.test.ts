@@ -597,7 +597,7 @@ describe('chat integration', () => {
     expect(inEl?.textContent).toBe('↑1.0k')
   })
 
-  it('job-tagged usage leaves the in-flight ↑input estimate of the main engine alone', () => {
+  it('job-tagged usage is stripped: the mainline estimate and totals stay untouched', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('q')
@@ -613,15 +613,31 @@ describe('chat integration', () => {
       s.textContent?.startsWith('↑'),
     )
     expect(inEl?.textContent).toBe('↑700')
+    const outEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↓'),
+    )
+    const outBefore = outEl?.textContent
 
-    // A background job bills into the same token totals but belongs to a
-    // different engine: turn 2 of the main engine is still in flight, so its
-    // estimate must survive. Billed 300 + 111, estimate 400 on top.
+    // A background job's tokens belong entirely to the job (its completion
+    // notification <tokens>): mainline estimate and totals stay exactly as
+    // they were.
     dispatchEvents([
       {
         type: 'usage',
         usage_event: { input_tokens: 111, output_tokens: 5 },
         agent: { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1, job_id: 'agent-9' },
+      },
+    ])
+    expect(inEl?.textContent).toBe('↑700')
+    expect(outEl?.textContent).toBe(outBefore)
+
+    // Sync sub-agent usage still accumulates into the mainline totals:
+    // billed 300 + 111 with the 400 estimate riding on top.
+    dispatchEvents([
+      {
+        type: 'usage',
+        usage_event: { input_tokens: 111, output_tokens: 5 },
+        agent: { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1 },
       },
     ])
     expect(inEl?.textContent).toBe('↑811')

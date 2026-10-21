@@ -213,3 +213,9 @@ type retryAttemptMsg struct {
 	ErrorType  string
 	Error      string
 }
+
+// isBackgroundAgent reports whether a message's agent meta belongs to a
+// background job spawn (run_in_background): its tokens bill to the job's
+// own account (notification <tokens>), not the mainline displays. Nil meta
+// and sync sub-agents return false.
+func isBackgroundAgent(m *types.AgentMeta) bool { return m != nil && m.JobID != "" }

@@ -1014,12 +1014,14 @@ func resetQueryStats(qs *queryStats) {
 
 // accumulateStats adds the event's usage/tool/thinking contributions into
 // the slot's atomic queryStats. Called by onEngineEvent for every event.
-// usage counts sub-agent events too — it is total query COST. A background
-// job's own tool/thinking progress is excluded: the browser's live filter
-// skips job-tagged tool_start/thinking_end, and buildStats feeds the takeover
-// restore — both sides must skip in lockstep or the numbers jump on takeover.
+// Sub-agent events count, but a background job's own token/tool/thinking
+// progress is excluded — the job's tokens bill to its completion notification
+// <tokens>. The browser's live filter skips job-tagged events the same way,
+// and buildStats feeds the takeover restore — both sides must skip in
+// lockstep or the numbers jump on takeover.
 func accumulateStats(qs *queryStats, event hub.Event) {
-	if event.Type == types.EventUsage && event.Usage != nil {
+	if event.Type == types.EventUsage && event.Usage != nil &&
+		(event.Agent == nil || event.Agent.JobID == "") {
 		qs.inputTokens.Add(int64(event.Usage.InputTokens))
 		qs.outputTokens.Add(int64(event.Usage.OutputTokens))
 		qs.cacheReadInputTokens.Add(int64(event.Usage.CacheReadInputTokens))

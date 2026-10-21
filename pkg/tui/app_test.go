@@ -1827,6 +1827,119 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	}
 }
 
+// TestApp_UsageMsg_BackgroundJobExcludedFromMainline verifies the three-state
+// split: mainline and sync sub-agent usage accumulate into the totals, while
+// a background job's usage never reaches them, the status bar, the input
+// display, or the parent card.
+func TestApp_UsageMsg_BackgroundJobExcludedFromMainline(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.PendingToolStarted("tu_bg", "Agent", "bg job", "{}", tool.SearchReadKind{})
+
+	app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 10})
+	if app.repl.usage.InputTokens != 100 {
+		t.Fatalf("after mainline usageMsg, usage.InputTokens = %d, want 100", app.repl.usage.InputTokens)
+	}
+
+	sync := &types.AgentMeta{ParentToolUseID: "tu_sync", AgentType: "Explore", Depth: 1}
+	app.updateRepl(usageMsg{InputTokens: 50, OutputTokens: 5, Agent: sync})
+	if app.repl.usage.InputTokens != 150 {
+		t.Fatalf("after sync sub-agent usageMsg, usage.InputTokens = %d, want 150", app.repl.usage.InputTokens)
+	}
+	if app.repl.displayedInputTokens != 150 {
+		t.Errorf("displayedInputTokens = %d, want 150 (sync sub-agent snaps the display)", app.repl.displayedInputTokens)
+	}
+
+	bg := &types.AgentMeta{ParentToolUseID: "tu_bg", AgentType: "Explore", Depth: 1, JobID: "agent-9"}
+	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 50, Agent: bg})
+	if app.repl.usage.InputTokens != 150 {
+		t.Errorf("after background usageMsg, usage.InputTokens = %d, want 150 (job usage excluded)", app.repl.usage.InputTokens)
+	}
+	if app.status.usage.InputTokens != 150 {
+		t.Errorf("status.usage.InputTokens = %d, want 150 (job usage must not leak into the status bar)", app.status.usage.InputTokens)
+	}
+	if app.repl.displayedInputTokens != 150 {
+		t.Errorf("displayedInputTokens = %d, want 150 (job usage must not snap the display)", app.repl.displayedInputTokens)
+	}
+	tcv := app.repl.findToolView("tu_bg")
+	if tcv == nil {
+		t.Fatal("parent card view missing — the token-leak assertions below cannot run")
+	}
+	if tcv.TokensIn != 0 || tcv.TokensOut != 0 {
+		t.Errorf("parent card tokens = (%d, %d), want (0, 0) (job usage must not bill the parent card)", tcv.TokensIn, tcv.TokensOut)
+	}
+}
+
+// TestApp_BackgroundDeltasAndToolRun_DoNotTouchRateMeter verifies the main
+// token-rate meter only tracks mainline and sync sub-agent flow: background
+// deltas (text/thinking/param) are dropped and a background tool_run must
+// not pause the clock mid-stream, while a sync sub-agent delta still feeds it.
+func TestApp_BackgroundDeltasAndToolRun_DoNotTouchRateMeter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		for range 4 {
+			app.updateRepl(textDeltaMsg{Text: "a", Tokens: 100})
+			time.Sleep(500 * time.Millisecond)
+		}
+		r1, ok := app.repl.TokenRate().Rate()
+		if !ok || r1 <= 0 {
+			t.Fatalf("Rate() after main stream = (%.1f, %v), want ok and > 0", r1, ok)
+		}
+
+		job := &types.AgentMeta{ParentToolUseID: "tu_bg", AgentType: "Explore", Depth: 1, JobID: "agent-9"}
+		app.updateRepl(thinkingDeltaMsg{Text: "thought", Tokens: 1000, Agent: job})
+		app.updateRepl(textDeltaMsg{Text: "sub", Tokens: 100, Agent: job})
+		app.updateRepl(toolParamDeltaMsg{ID: "t_bg", Delta: "x", Tokens: 100, Agent: job})
+		// Same virtual instant as r1: Rate() is a pure read, so identical
+		// sums must yield an identical reading — any Add would move it.
+		if r2, ok := app.repl.TokenRate().Rate(); !ok || r2 != r1 {
+			t.Errorf("Rate() after background deltas = (%.9f, %v), want (%.9f, ok) — the meter must not be fed", r2, ok, r1)
+		}
+
+		app.updateRepl(toolRunMsg{ID: "t_bg", Name: "Bash", Agent: job})
+		if _, ok := app.repl.TokenRate().Rate(); !ok {
+			t.Error("Rate() after background toolRunMsg = not ok, want ok (a background tool run must not pause the main clock)")
+		}
+
+		sync := &types.AgentMeta{ParentToolUseID: "tu_sync", AgentType: "Explore", Depth: 1}
+		app.updateRepl(textDeltaMsg{Text: "sub", Tokens: 100, Agent: sync})
+		if r3, ok := app.repl.TokenRate().Rate(); !ok || r3 <= r1 {
+			t.Errorf("Rate() after sync sub-agent delta = (%.9f, %v), want ok and > %.9f (sync sub-agent flow still feeds the meter)", r3, ok, r1)
+		}
+	})
+}
+
+// TestApp_QueryEnd_FallbackStats_ExcludeBackgroundUsage verifies the query
+// stats line (fallback path: queryEndMsg carries no TotalUsage) only counts
+// mainline usage — a background job's tokens must not inflate the ↑ number.
+func TestApp_QueryEnd_FallbackStats_ExcludeBackgroundUsage(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+
+	app.updateRepl(usageMsg{InputTokens: 100})
+	bg := &types.AgentMeta{ParentToolUseID: "tu_bg", AgentType: "Explore", Depth: 1, JobID: "agent-9"}
+	app.updateRepl(usageMsg{InputTokens: 500, Agent: bg})
+	app.updateRepl(queryEndMsg{})
+
+	last := app.repl.Messages()[len(app.repl.Messages())-1]
+	var statsText string
+	for _, blk := range last.Blocks {
+		if blk.Type == BlockStats {
+			statsText = blk.Text
+		}
+	}
+	if statsText == "" {
+		t.Fatal("last message has no BlockStats block")
+	}
+	// Positive assertion only: on a leak the line renders ↑600 and this fails.
+	if !strings.Contains(statsText, "↑100") {
+		t.Errorf("stats line = %q, want it to contain ↑100 (background usage excluded)", statsText)
+	}
+}
+
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})

@@ -938,7 +938,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.AppendChunk(m.Text)
 		}
-		a.repl.AddResponseChars(m.Text, m.Tokens)
+		if !isBackgroundAgent(m.Agent) {
+			a.repl.AddResponseChars(m.Text, m.Tokens)
+		}
 		return true, a.readEvents()
 
 	case textStartMsg:
@@ -952,8 +954,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case toolRunMsg:
 		// Execution boundary (omp end): tool_start only opens the block —
 		// params stream after it and are generation tokens. The clock stops
-		// here, where execution actually begins.
-		a.repl.TokenRate().Pause()
+		// here, where execution actually begins. A background job's tool run
+		// is not a mainline boundary — pausing here would fold its silence
+		// into the main stream's rate.
+		if !isBackgroundAgent(m.Agent) {
+			a.repl.TokenRate().Pause()
+		}
 		return true, a.readEvents()
 
 	case turnStartMsg:
@@ -1070,7 +1076,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
-		a.repl.AddResponseChars(m.Delta, m.Tokens)
+		if !isBackgroundAgent(m.Agent) {
+			a.repl.AddResponseChars(m.Delta, m.Tokens)
+		}
 		return true, a.readEvents()
 
 	case toolOutputDeltaMsg:
@@ -1205,6 +1213,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
+		// A background job's tokens bill to the job's own account (its
+		// notification <tokens>), never the mainline totals or context bar.
+		if isBackgroundAgent(m.Agent) {
+			return true, a.readEvents()
+		}
 		// Each turn reports its own delta input/output tokens. Accumulate
 		// across turns within a single query. Reset happens in turnStartMsg.
 		a.repl.usage.InputTokens += m.InputTokens
@@ -1214,8 +1227,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Sync to StatusBar for rendering.
 		a.status.SetUsage(a.repl.usage)
 		// Only the main engine's usage covers the turn its estimate stands in
-		// for. A job/sub-agent usage event bills into these same totals while
-		// that turn is still in flight, so its estimate must survive it.
+		// for. A sync sub-agent's usage event bills into these same totals
+		// while that turn is still in flight, so its estimate must survive it.
 		if m.Agent == nil {
 			a.repl.pendingTurnEstimate = 0
 		}
@@ -1299,7 +1312,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.PendingThinkingDelta(m.Text)
 		}
-		a.repl.TokenRate().Add(m.Text, m.Tokens)
+		if !isBackgroundAgent(m.Agent) {
+			a.repl.TokenRate().Add(m.Text, m.Tokens)
+		}
 		return true, a.readEvents()
 
 	case thinkingEndMsg:
