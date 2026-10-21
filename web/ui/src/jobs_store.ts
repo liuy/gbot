@@ -36,7 +36,7 @@ export interface JobsStoreHandle {
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
-// Mirror of the connector's jobFeedMaxBlocks (pkg/connector/wui/jobs_panel.go).
+// Mirror of the connector's jobFeedMaxBlocks (pkg/wui/jobs_panel.go).
 // The 400 cap still governs LIVE jobs: the server keeps the live region at
 // ≤400 blocks and the client must cap identically or the live view diverges
 // from a reconnect hydration. TERMINAL jobs are the deliberate exception: the

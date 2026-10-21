@@ -808,23 +808,7 @@ func TestUpdateStreamState_AttachmentAgentNestsUnderParent(t *testing.T) {
 	}
 }
 
-// ---- Section 6: Start / Send / SetCreateEngineFn ----
-
-// TestStart_ReturnsNil verifies Start is a no-op returning nil.
-func TestStart_ReturnsNil(t *testing.T) {
-	c := newTestConnector(t)
-	if err := c.Start(context.Background()); err != nil {
-		t.Errorf("Start() error = %v, want nil", err)
-	}
-}
-
-// TestSend_ReturnsNil verifies Send is a no-op returning nil.
-func TestSend_ReturnsNil(t *testing.T) {
-	c := newTestConnector(t)
-	if err := c.Send("user-1", "hello"); err != nil {
-		t.Errorf("Send() error = %v, want nil", err)
-	}
-}
+// ---- Section 6: SetCreateEngineFn ----
 
 // TestSetCreateEngineFn verifies SetCreateEngineFn stores the closure
 // so handleEngineNew can invoke it.

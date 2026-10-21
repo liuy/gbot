@@ -4,7 +4,7 @@ import { resolve } from 'path'
 
 // Single source of truth: the lib and the game code are extracted from the
 // embedded template itself — no copied lib file can drift.
-const html = readFileSync(resolve(__dirname, '../../../../pkg/connector/wui/games/chess.html'), 'utf-8')
+const html = readFileSync(resolve(__dirname, '../../../../pkg/wui/games/chess.html'), 'utf-8')
 
 function extractScript(id: string): string {
   const m = html.match(new RegExp(`<script id="${id}">\\n([\\s\\S]*?)\\n</script>`))

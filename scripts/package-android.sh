@@ -43,7 +43,7 @@ mkdir -p "${CACHE}" "${DIST}" "${ASSETS}"
 # 1. Build the WUI frontend
 echo "Building WUI frontend..."
 cd "${ROOT}/web/ui" && npm install && npm run build
-gzip -kf "${ROOT}/pkg/connector/wui/assets/index.html"
+gzip -kf "${ROOT}/pkg/wui/assets/index.html"
 
 # 2. Download Termux bootstrap (cached, used as-is)
 if [ ! -f "${BOOTSTRAP_CACHE}" ]; then

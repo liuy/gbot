@@ -178,7 +178,7 @@ var requiredScenarios = []RequiredScenario{
 	},
 	{
 		Feature:     "hot-restart",
-		Package:     "pkg/connector/wui",
+		Package:     "pkg/wui",
 		NamePattern: `AdminRestart|RequestRestart`,
 		Description: "admin restart endpoint + shared gated entry: busy 409 with live activity list, idle 202, GET state",
 	},

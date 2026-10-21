@@ -547,11 +547,11 @@ func (q *outQueue) len() int {
 	return len(q.frames)
 }
 
-// WUIConnector implements connector.Connector for the web chat. It owns
-// an EngineManager, subscribes to every engine's hub, and routes events to
-// the single active WS connection. Inbound WS messages operate on the
-// active engine; engine_switch swaps the active engine via atomic flag flip
-// and pushes metadata (with embedded streamState snapshot).
+// WUIConnector drives the web chat. It owns an EngineManager, subscribes
+// to every engine's hub, and routes events to the single active WS
+// connection. Inbound WS messages operate on the active engine;
+// engine_switch swaps the active engine via atomic flag flip and pushes
+// metadata (with embedded streamState snapshot).
 type WUIConnector struct {
 	mgr   *engine.EngineManager
 	slots map[string]*engineSlot // keyed by engine ID
@@ -832,10 +832,6 @@ func (c *WUIConnector) RegisterEngine(vs *engine.EngineViewState) {
 	c.registerEngine(vs)
 }
 
-// Start is a no-op: the HTTP/WS server is registered separately via
-// RegisterChatWS in main.go, and the connector is request-driven.
-func (c *WUIConnector) Start(ctx context.Context) error { return nil }
-
 // Stop unsubscribes from all engine hubs, aborts any pending asks, and clears
 // the active WS. Does NOT abort the active query — a brief disconnect (e.g.
 // mobile browser backgrounding) should not interrupt the LLM.
@@ -855,11 +851,6 @@ func (c *WUIConnector) Stop() {
 		c.cleanupConn()
 	})
 }
-
-// Send is an interface no-op: wui has no outbound platform. Nobody calls
-// Send on the wui connector; it exists solely to satisfy the
-// connector.Connector contract.
-func (c *WUIConnector) Send(userID, text string) error { return nil }
 
 // CloseForUpgrade closes the active chat WS with 1012 (Service Restart)
 // so the client enters upgrade mode (fast reconnect, no error visuals)

@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/liuy/gbot/pkg/connector/wui"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // notifyUpgradeSignal funnels SIGUSR2 through the same wui.RequestRestart

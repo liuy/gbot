@@ -17,7 +17,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/connector/wechat"
-	"github.com/liuy/gbot/pkg/connector/wui"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hooks"
@@ -35,6 +34,7 @@ import (
 	"github.com/liuy/gbot/pkg/project"
 	"github.com/liuy/gbot/pkg/reload"
 	"github.com/liuy/gbot/pkg/tool/repl"
+	"github.com/liuy/gbot/pkg/wui"
 
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"

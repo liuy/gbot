@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tui"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // createEngineForWUI builds a new engine via engineFactory, registers it

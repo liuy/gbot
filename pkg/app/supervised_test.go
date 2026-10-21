@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/connector/wui"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 func idleReport() wui.BusyReport { return wui.BusyReport{Busy: false} }

@@ -336,7 +336,7 @@ func TestSameSinkReopenReplacesLeakedBinding(t *testing.T) {
 
 // TestCloseChannelByName: the mid-connecting close has no id — the name is
 // the only handle. In-package coverage for the hub-side name-keyed teardown
-// (the behavioral test lives in pkg/connector/wui).
+// (the behavioral test lives in pkg/wui).
 func TestCloseChannelByName(t *testing.T) {
 	hub := New()
 	startProvider(t, hub, "plugA")

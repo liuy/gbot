@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/project"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // pidReclaimTTL: after a stepdown releases the PID lock, how long to wait

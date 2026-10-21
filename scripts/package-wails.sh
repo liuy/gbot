@@ -53,7 +53,7 @@ mkdir -p "${STAGING}" "${DIST}"
 # 1. Build frontend
 echo "Building WUI frontend..."
 cd "${ROOT}/web/ui" && npm install && npm run build
-gzip -kf "${ROOT}/pkg/connector/wui/assets/index.html"
+gzip -kf "${ROOT}/pkg/wui/assets/index.html"
 
 # 2. Build gbot.exe (cross-compile from Linux, or native on Windows)
 echo "Building gbot.exe..."

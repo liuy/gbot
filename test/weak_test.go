@@ -548,7 +548,7 @@ func isInSynctestBubble(lines []string, lineIdx int) bool {
 		if strings.Contains(trimmed, "synctest.Test(") {
 			return true
 		}
-		// Project bubble helpers (pkg/connector/wui/hermetic_test.go) wrap
+		// Project bubble helpers (pkg/wui/hermetic_test.go) wrap
 		// synctest.Test; time use inside their closures is virtual-clock and
 		// exempt for the same reason as a direct synctest.Test call.
 		if strings.Contains(trimmed, "hermeticWUI(") ||

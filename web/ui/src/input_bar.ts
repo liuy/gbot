@@ -59,7 +59,7 @@ function countNewlines(text: string): number {
 // PASTED_EXT maps clipboard mimes to filename extensions for pasted blobs
 // that arrive without a usable name. Everything unmapped (including empty
 // and octet-stream) becomes .bin; the server sniffs magic bytes anyway
-// (pkg/connector/wui/attachment.go classifyAttachment), so this only
+// (pkg/wui/attachment.go classifyAttachment), so this only
 // affects display.
 const PASTED_EXT: Record<string, string> = {
   'image/png': 'png',

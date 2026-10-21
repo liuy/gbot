@@ -13,7 +13,7 @@ export default defineConfig({
     // served as a separate prebundle and loaded at runtime (see
     // src/rfb_loader.ts). es2022 is kept for the rest of the app.
     target: 'es2022',
-    outDir: path.resolve(__dirname, '../../pkg/connector/wui/assets'),
+    outDir: path.resolve(__dirname, '../../pkg/wui/assets'),
     // false: assets/ also holds the committed novnc.esm.js (regenerated via
     // npm run build:novnc). Tradeoff: any OTHER stale file in assets/ also
     // survives a build, so assets/ must hold tracked artifacts only.

@@ -277,11 +277,11 @@ app-check:
 	$(MAKE) -C app/android check
 
 # web-build regenerates the React SPA embedded into the Go binary.
-# Assets are checked into pkg/connector/wui/assets/ so go build works
+# Assets are checked into pkg/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
 web-build: web-mv-gen
 	cd web/ui && export LD_PRELOAD="$${LD_PRELOAD:-$${PREFIX:+$$PREFIX/lib/libtermux-exec.so}}" && npm ci && npm run build
-	gzip -kf pkg/connector/wui/assets/index.html
+	gzip -kf pkg/wui/assets/index.html
 
 web-test:
 	cd web/ui && npm test

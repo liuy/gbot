@@ -26,7 +26,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const ui = join(here, '..')
 const novnc = join(ui, 'node_modules', '@novnc', 'novnc')
 const esbuild = join(ui, 'node_modules', '.bin', 'esbuild')
-const out = join(ui, '..', '..', 'pkg', 'connector', 'wui', 'assets', 'novnc.esm.js')
+const out = join(ui, '..', '..', 'pkg', 'wui', 'assets', 'novnc.esm.js')
 const check = process.argv.includes('--check')
 
 // anchor must be unique within the file — a dependency bump that adds a

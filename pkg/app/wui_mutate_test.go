@@ -8,12 +8,12 @@ import (
 	"testing"
 
 	"github.com/liuy/gbot/pkg/config"
-	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // wuiFactory builds a fully wired engine (ToolRefs + WireEngine) the way the

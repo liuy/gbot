@@ -1,6 +1,6 @@
 // Document parse cache + LLM-context expansion for document content blocks.
 //
-// Moved from pkg/connector/wui/server.go parseDocument so both the live
+// Moved from pkg/wui/server.go parseDocument so both the live
 // send path and history-context replay share one parse chain (fileread.Execute
 // → markitdown) and one disk cache.
 

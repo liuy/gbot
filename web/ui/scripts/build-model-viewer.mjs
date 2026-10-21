@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os'
 const here = dirname(fileURLToPath(import.meta.url))
 const ui = join(here, '..')
 const entry = join(ui, 'src', 'model-viewer', 'model-viewer.ts')
-const out = join(ui, '..', '..', 'pkg', 'connector', 'wui', 'assets', 'model-viewer.esm.js')
+const out = join(ui, '..', '..', 'pkg', 'wui', 'assets', 'model-viewer.esm.js')
 const check = process.argv.includes('--check')
 
 // Deterministic output: same sources → same bytes, which is what --check

@@ -1,5 +1,5 @@
 // Transport client: multiplexes named byte channels over the single chat WS.
-// Wire protocol (server contract, pkg/connector/wui/server.go):
+// Wire protocol (server contract, pkg/wui/server.go):
 //   text   {"type":"channel_open","channel":name} → channel_opened{channelId}
 //          {"type":"channel_close","channelId":N} (both directions)
 //   binary [1-byte channelId][payload]            (0x00 is the upload lane)

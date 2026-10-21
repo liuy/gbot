@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/connector/wui"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // fakeUpgrader records Upgrade() calls without touching tableflip — the

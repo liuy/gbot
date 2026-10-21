@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/cloudflare/tableflip"
-	"github.com/liuy/gbot/pkg/connector/wui"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // Upgrader is the tableflip surface Start needs. An interface keeps the
