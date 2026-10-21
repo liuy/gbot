@@ -670,7 +670,8 @@ describe('chat integration', () => {
     ])
     const upSpans = () =>
       Array.from(document.querySelectorAll('span'))
-        .filter((s) => s.textContent?.startsWith('↑'))
+        // .ch = per-char sweep span inside inEl; only segment spans count
+        .filter((s) => s.textContent?.startsWith('↑') && !s.classList.contains('ch'))
         .map((s) => s.textContent)
     // The finalized bar bills what the estimate never covered: 0.
     expect(upSpans()).toEqual(['↑0'])
@@ -1282,12 +1283,12 @@ describe('chat integration', () => {
   })
 
   // The rate span is the progress-bar child right after the ↑/↓ token spans
-  // (root children: dot, inEl, outEl, suffix, ·, rateEl, ...).
+  // (root children: inEl, outEl, suffix, ·, rateEl, ...).
   function findRateSpan(): HTMLElement | null {
     const inEl = Array.from(document.querySelectorAll('span')).find(
       (s) => s.textContent?.startsWith('↑'),
     )
-    return (inEl?.parentElement?.children[5] as HTMLElement) ?? null
+    return (inEl?.parentElement?.children[4] as HTMLElement) ?? null
   }
 
   it('live ↓output counts wire tokens and reconciles on usage', () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   appendTextBlock,
   appendToolBlock,
@@ -14,6 +14,7 @@ import {
   refreshProgressBar,
   finalizeProgressBar,
 } from './stream_dom'
+import { stopStatusSweep } from './status_sweep'
 
 function newParent(): HTMLElement {
   return document.createElement('div')
@@ -416,23 +417,34 @@ describe('toggleToolExpanded', () => {
 })
 
 describe('appendProgressBar', () => {
+  // appendProgressBar starts the sweep singleton; kill it between tests so no
+  // 110ms chain (fake or real) leaks into later tests.
+  afterEach(() => {
+    stopStatusSweep()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
   it('creates a progress bar with all spans', () => {
     const parent = newParent()
     const h = appendProgressBar(parent)
-    expect(h.dotEl.classList.contains('heartbeat')).toBe(true)
+    expect(h.root.classList.contains('status-line')).toBe(true)
+    expect(h.root.querySelector('.heartbeat')).toBeNull()
     expect(h.elapsedEl.textContent).toBe('0s')
     expect(h.inEl.textContent).toBe('↑0')
     expect(h.outEl.textContent).toBe('↓0')
     expect(h.rateEl.textContent).toBe('0.0 t/s')
+    // Segment text is span-per-char so the sweep cursor can address it.
+    expect(h.inEl.children.length).toBe(2)
+    expect(h.inEl.children[0].classList.contains('ch')).toBe(true)
+    expect(h.inEl.children[1].classList.contains('ch')).toBe(true)
   })
 
-  it('dot is w-3 ● with heartbeat and text-blue', () => {
+  it('no heartbeat dot on the status line', () => {
     const parent = newParent()
     const h = appendProgressBar(parent)
-    expect(h.dotEl.className).toContain('w-3')
-    expect(h.dotEl.textContent).toBe('●')
-    expect(h.dotEl.classList.contains('heartbeat')).toBe(true)
-    expect(h.dotEl.classList.contains('text-blue')).toBe(true)
+    expect(h.root.querySelector('.heartbeat')).toBeNull()
+    expect(h.root.textContent.startsWith('●')).toBe(false)
   })
 
   it('setProgressBarUsage updates token counts', () => {
@@ -474,14 +486,19 @@ describe('appendProgressBar', () => {
     expect(h.rateEl.textContent).toBe('0.0 t/s')
   })
 
-  it('finalizeProgressBar stops heartbeat and shows final stats', () => {
+  it('finalizeProgressBar stops the sweep and shows final stats', () => {
+    vi.useFakeTimers()
     const parent = newParent()
+    // Sweep self-stops on detached roots, so the bar must be connected for
+    // the liveness assertions to mean anything.
+    document.body.appendChild(parent)
     const h = appendProgressBar(parent)
+    vi.advanceTimersByTime(110)
+    expect(parent.querySelectorAll('.p1').length).toBe(1)
     setProgressBarUsage(h, { inputTokens: 16311, outputTokens: 1854, cacheRead: 4096, cacheCreation: 0 })
     refreshProgressBar(h, Date.now() - 12000, 7, 1854)
     finalizeProgressBar(h, { inputTokens: 16311, outputTokens: 1854, cacheRead: 4096, cacheCreation: 0 }, 12000, 7)
-    // Heartbeat stopped
-    expect(h.dotEl.classList.contains('heartbeat')).toBe(false)
+    expect(parent.querySelectorAll('.p1, .t1, .t2').length).toBe(0)
     // totalInput = 16311+4096+0 = 20407 ≈ 19.9k, output = 1854 ≈ 1.8k
     expect(h.inEl.textContent).toContain('19')
     expect(h.outEl.textContent).toContain('1.8')
@@ -508,8 +525,6 @@ describe('appendProgressBar', () => {
     h.root.childNodes.forEach((n) => {
       const el = n as HTMLElement
       if (el.classList?.contains('hidden')) return
-      // Skip the dot wrapper (contains only the ● dot)
-      if (el.classList?.contains('w-6')) return
       const t = (el.textContent ?? '').trim()
       if (t) parts.push(t)
     })
@@ -536,9 +551,9 @@ describe('appendProgressBar', () => {
       if (t) parts.push(t)
     })
     const line = parts.join(' ')
-    // Format: ● ↑180.3k ↓227 · 8.8 t/s · 8 tools · 56s
+    // Format: ↑180.3k ↓227 · 8.8 t/s · 8 tools · 56s
     const dot = '\\u00B7'
-    expect(line).toMatch(RegExp('^\\u25CF \\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' 8 tools ' + dot + ' \\d+s$'))
+    expect(line).toMatch(RegExp('^\\u2191[\\d.]+[kM] \\u2193\\d+ ' + dot + ' [\\d.]+ t/s ' + dot + ' 8 tools ' + dot + ' \\d+s$'))
     expect(line).not.toContain('cached')
     expect(line).not.toContain('warmed')
     expect(line).not.toMatch(/ · · /)

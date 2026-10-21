@@ -128,11 +128,10 @@ describe('stream_dom className snapshot guards', () => {
   })
 
   describe('appendProgressBar', () => {
-    it('root and dotEl className match current literals', () => {
+    it('root className matches current literal', () => {
       const parent = document.createElement('div')
       const h = appendProgressBar(parent)
-      expect(h.root.className).toBe('mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3')
-      expect(h.dotEl.className).toBe('text-[10px] leading-none align-middle inline-block w-3 text-center text-blue heartbeat')
+      expect(h.root.className).toBe('mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3 status-line')
     })
   })
 

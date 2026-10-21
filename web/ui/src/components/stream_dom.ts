@@ -36,6 +36,7 @@ import {
   progressBar,
 } from '../styles/recipes'
 import { createElement, createNode } from '../dom'
+import { writeSweepChars, startStatusSweep, stopStatusSweep } from './status_sweep'
 
 export function createUserTextSpan(text: string): HTMLSpanElement {
   const span = createNode('span', { className: userTextSpan(), text })
@@ -117,7 +118,6 @@ export interface ProgressDomHandles {
   outEl: HTMLSpanElement
   rateEl: HTMLSpanElement
   toolCountEl: HTMLSpanElement
-  dotEl: HTMLSpanElement
   cacheEl: HTMLSpanElement
   thinkingEl: HTMLSpanElement
   tokensSuffix: HTMLSpanElement
@@ -613,18 +613,12 @@ export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
 export function appendProgressBar(parent: HTMLElement, before?: Node | null): ProgressDomHandles {
   const root = createElement('div', progressBar())
 
-  const dotWrap = createElement('span', toolPrefix())
-  const dotEl = createElement('span', runningDot({ color: 'blue' }))
-  dotEl.textContent = '●'
-  dotWrap.appendChild(dotEl)
-  root.appendChild(dotWrap)
-
   const inEl = createElement('span')
-  inEl.textContent = '↑' + formatTokenCount(0)
+  writeSweepChars(inEl, '↑' + formatTokenCount(0))
   root.appendChild(inEl)
 
   const outEl = createElement('span')
-  outEl.textContent = '↓' + formatTokenCount(0)
+  writeSweepChars(outEl, '↓' + formatTokenCount(0))
   root.appendChild(outEl)
 
   const tokensSuffix = createElement('span', 'hidden')
@@ -632,34 +626,34 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
   root.appendChild(tokensSuffix)
 
   const sep1 = createElement('span')
-  sep1.textContent = '·'
+  writeSweepChars(sep1, '·')
   root.appendChild(sep1)
 
   const rateEl = createElement('span')
-  rateEl.textContent = '0.0 t/s'
+  writeSweepChars(rateEl, '0.0 t/s')
   root.appendChild(rateEl)
 
   const sep2 = createElement('span', 'sep-cache hidden')
-  sep2.textContent = '·'
+  writeSweepChars(sep2, '·')
   root.appendChild(sep2)
 
   const cacheEl = createElement('span')
   root.appendChild(cacheEl)
 
   const sep3 = createElement('span', 'sep-tools hidden')
-  sep3.textContent = '·'
+  writeSweepChars(sep3, '·')
   root.appendChild(sep3)
 
   const toolCountEl = createElement('span')
-  toolCountEl.textContent = ''
+  writeSweepChars(toolCountEl, '')
   root.appendChild(toolCountEl)
 
   const sep4 = createElement('span', 'sep-elapsed')
-  sep4.textContent = '·'
+  writeSweepChars(sep4, '·')
   root.appendChild(sep4)
 
   const elapsedEl = createElement('span')
-  elapsedEl.textContent = '0s'
+  writeSweepChars(elapsedEl, '0s')
   root.appendChild(elapsedEl)
 
   const thinkingEl = createElement('span', 'hidden')
@@ -667,7 +661,10 @@ export function appendProgressBar(parent: HTMLElement, before?: Node | null): Pr
 
   insertBefore(parent, root, before ?? null)
 
-  return { root, elapsedEl, inEl, outEl, rateEl, toolCountEl, dotEl, cacheEl, thinkingEl, tokensSuffix }
+  // Only after insertion: the sweep engine self-stops on detached roots.
+  startStatusSweep(root)
+
+  return { root, elapsedEl, inEl, outEl, rateEl, toolCountEl, cacheEl, thinkingEl, tokensSuffix }
 }
 
 export function setProgressBarUsage(
@@ -676,11 +673,11 @@ export function setProgressBarUsage(
 ): void {
   // Streaming line uses totalInput (matches TUI streaming tokensStr).
   const totalInput = u.inputTokens + u.cacheRead + u.cacheCreation
-  h.inEl.textContent = '↑' + formatTokenCount(totalInput)
-  h.outEl.textContent = '↓' + formatTokenCount(u.outputTokens)
+  writeSweepChars(h.inEl, '↑' + formatTokenCount(totalInput))
+  writeSweepChars(h.outEl, '↓' + formatTokenCount(u.outputTokens))
   // Streaming does NOT show cache info — TUI streaming progress line has no
   // cacheStr (only AppendStatsLine does). Keep cacheEl/sep-cache hidden.
-  h.cacheEl.textContent = ''
+  writeSweepChars(h.cacheEl, '')
   const sep = h.root.querySelector('.sep-cache') as HTMLElement | null
   if (sep) sep.classList.add('hidden')
 }
@@ -692,10 +689,10 @@ export function refreshProgressBar(
   outputTokens: number,
 ): void {
   const elapsedSec = (Date.now() - startedAt) / 1000
-  h.elapsedEl.textContent = formatDurationNs(elapsedSec * 1e9)
+  writeSweepChars(h.elapsedEl, formatDurationNs(elapsedSec * 1e9))
   const rate = elapsedSec > 0 ? outputTokens / elapsedSec : 0
-  h.rateEl.textContent = rate.toFixed(1) + ' t/s'
-  h.toolCountEl.textContent = toolCount === 1 ? '1 tool' : toolCount + ' tools'
+  writeSweepChars(h.rateEl, rate.toFixed(1) + ' t/s')
+  writeSweepChars(h.toolCountEl, toolCount === 1 ? '1 tool' : toolCount + ' tools')
   const sep = h.root.querySelector('.sep-tools') as HTMLElement | null
   if (sep) sep.classList.toggle('hidden', !(toolCount > 0))
   h.toolCountEl.classList.toggle('hidden', !(toolCount > 0))
@@ -708,17 +705,16 @@ export function finalizeProgressBar(
   toolCount: number,
   _thinkingDurationMs?: number,
 ): void {
-  h.dotEl.classList.remove('heartbeat')
-  if (h.dotEl.parentElement) h.dotEl.parentElement.classList.add('hidden')
+  stopStatusSweep()
   h.root.dataset.progress = '1'
   const totalInput = usage.inputTokens + usage.cacheRead + usage.cacheCreation
-  h.inEl.textContent = '↑' + formatTokenCount(totalInput)
-  h.outEl.textContent = '↓' + formatTokenCount(usage.outputTokens)
+  writeSweepChars(h.inEl, '↑' + formatTokenCount(totalInput))
+  writeSweepChars(h.outEl, '↓' + formatTokenCount(usage.outputTokens))
   const elapsedSec = elapsedMs / 1000
   const rate = elapsedSec > 0 && usage.outputTokens > 0 ? usage.outputTokens / elapsedSec : 0
-  h.rateEl.textContent = rate > 0 ? rate.toFixed(1) + ' t/s' : ''
-  h.elapsedEl.textContent = formatDurationNs(elapsedMs * 1e6)
-  h.toolCountEl.textContent = toolCount === 1 ? '1 tool' : toolCount > 0 ? toolCount + ' tools' : ''
+  writeSweepChars(h.rateEl, rate > 0 ? rate.toFixed(1) + ' t/s' : '')
+  writeSweepChars(h.elapsedEl, formatDurationNs(elapsedMs * 1e6))
+  writeSweepChars(h.toolCountEl, toolCount === 1 ? '1 tool' : toolCount > 0 ? toolCount + ' tools' : '')
   const sepTools = h.root.querySelector('.sep-tools') as HTMLElement | null
   if (sepTools) sepTools.classList.toggle('hidden', !(toolCount > 0))
   // Cache line matching TUI AppendStatsLine.
@@ -729,11 +725,11 @@ export function finalizeProgressBar(
     if (total > 0 && usage.cacheRead > 0) {
       const pct = usage.cacheRead * 100 / total
       // Truncate (not round) so 99.96% shows as 99.9%, not 100.0%.
-      h.cacheEl.textContent = (Math.floor(pct * 10) / 10).toFixed(1) + '% cached'
+      writeSweepChars(h.cacheEl, (Math.floor(pct * 10) / 10).toFixed(1) + '% cached')
     } else if (usage.cacheCreation > 0) {
-      h.cacheEl.textContent = formatTokenCount(usage.cacheCreation) + ' warmed'
+      writeSweepChars(h.cacheEl, formatTokenCount(usage.cacheCreation) + ' warmed')
     }
   } else {
-    h.cacheEl.textContent = 'cache missed'
+    writeSweepChars(h.cacheEl, 'cache missed')
   }
 }

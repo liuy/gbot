@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
 	appendToolBlock,
 	appendProgressBar,
 } from './stream_dom'
+import { stopStatusSweep } from './status_sweep'
 
 function setup() {
 	const container = document.createElement('div')
@@ -15,6 +16,10 @@ function setup() {
 // tool, so the second tool still groups with the first even with a progress
 // bar in between.
 describe('grouping with progress bar between tools', () => {
+	// appendProgressBar (container is body-attached here) starts a live sweep
+	// chain; afterEach (not it-tail) also cleans up mid-assertion failures.
+	afterEach(() => stopStatusSweep())
+
 	it('two collapsible tools group even when progress bar sits between them', () => {
 		const container = setup()
 

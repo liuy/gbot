@@ -29,7 +29,7 @@ export const toolPrefix = tv({ base: 'shrink-0 w-6' })
 export const toolHeaderContent = tv({ base: 'flex-1 min-w-0 break-all' })
 export const runningDot = tv({
   base: 'text-[10px] leading-none align-middle inline-block w-3 text-center',
-  variants: { color: { white: 'text-white heartbeat', blue: 'text-blue heartbeat' } },
+  variants: { color: { white: 'text-white heartbeat' } },
 })
 export const chevron = tv({
   base: 'inline-block align-middle text-t3 transition-transform',
@@ -70,7 +70,9 @@ export const contentArea = tv({
   },
 })
 
-export const progressBar = tv({ base: 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3' })
+// status-line is the stable hook for the comet sweep engine and tests; the
+// streaming status line is pure DOM, outside React's message list.
+export const progressBar = tv({ base: 'mt-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap text-xs text-t3 status-line' })
 
 export const shellOuter = tv({ base: 'px-1.5' })
 export const shellGrid = tv({ base: 'grid grid-cols-[1.25rem_1fr_1.25rem] items-start gap-x-1.5' })
