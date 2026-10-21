@@ -66,6 +66,10 @@ type ReplState struct {
 	displayedOutputTokens int
 	cacheReadTokens       int
 	cacheCreationTokens   int
+	// The turn's engine-side input estimate, held apart from the billed sums:
+	// a job/sub-agent usage event bills into the same totals while the main
+	// turn is still in flight, and only that turn's own usage may retire it.
+	pendingTurnEstimate int
 
 	// Tracks partial input accumulation per tool ID for summary updates
 	pendingInput map[string]string
@@ -221,10 +225,17 @@ func (s *ReplState) StartQuery() {
 	}
 	s.outputTokenTarget = 0
 	s.inputTokenTarget = 0
+	s.pendingTurnEstimate = 0
 	s.displayedInputTokens = 0
 	s.displayedOutputTokens = 0
 	s.cacheReadTokens = 0
 	s.cacheCreationTokens = 0
+	// The billed accumulator is per-query too: callers used to reset it by
+	// hand and the /skill, /compact and bash-shortcut paths missed it,
+	// leaking the prior query's totals into the next query's status bar.
+	// Resetting at the query boundary covers every entry point; the StatusBar
+	// sync (an App object, unreachable from ReplState) stays caller-side.
+	s.usage = types.Usage{}
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
 	s.toolCount = 0
@@ -269,6 +280,7 @@ func (s *ReplState) ResetStreamingUIState() {
 	}
 	s.outputTokenTarget = 0
 	s.inputTokenTarget = 0
+	s.pendingTurnEstimate = 0
 	s.displayedInputTokens = 0
 	s.displayedOutputTokens = 0
 	s.cacheReadTokens = 0
@@ -960,7 +972,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.status.SetStreaming(true)
 			a.spinner.Start()
 			a.status.SetUsage(types.Usage{})
-			a.repl.usage = types.Usage{}
+		}
+		// Input is billed per turn over the whole context and has no streaming
+		// phase, so the engine's estimate stands in for this turn until its
+		// usage event replaces the total. Replace, not add: the submit path
+		// already seeded a cruder estimate for this same turn.
+		if m.InputEstimate > 0 {
+			a.repl.pendingTurnEstimate = m.InputEstimate
+			a.repl.SetInputTokenTarget(a.status.usage.TotalInputTokens() + m.InputEstimate)
 		}
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
@@ -1181,10 +1200,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.repl.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
 		// Sync to StatusBar for rendering.
 		a.status.SetUsage(a.repl.usage)
+		// Only the main engine's usage covers the turn its estimate stands in
+		// for. A job/sub-agent usage event bills into these same totals while
+		// that turn is still in flight, so its estimate must survive it.
+		if m.Agent == nil {
+			a.repl.pendingTurnEstimate = 0
+		}
 		// Input tokens arrive all at once — snap immediately
-		totalIn := a.status.usage.TotalInputTokens()
-		a.repl.displayedInputTokens = totalIn
-		a.repl.inputTokenTarget = totalIn
+		targetIn := a.status.usage.TotalInputTokens() + a.repl.pendingTurnEstimate
+		a.repl.displayedInputTokens = targetIn
+		a.repl.inputTokenTarget = targetIn
 		a.repl.outputTokenTarget = a.status.usage.OutputTokens
 		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
 		a.status.SetContext(contextSize, a.engine.ContextWindow())
@@ -1412,7 +1437,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			if a.toolBlinkTick%10 == 0 {
 				a.repl.UpdateRunningToolElapsed()
 			}
-			// Animate displayed tokens toward actual values
+			// Animate displayed tokens toward actual values. inputTokenTarget
+			// already carries the in-flight turn's estimate (both turn_start
+			// and usage fold it in), so the billed term stays billed-only.
 			target := max(a.status.usage.TotalInputTokens(), a.repl.inputTokenTarget)
 			a.repl.displayedInputTokens = animateTokenValue(a.repl.displayedInputTokens, target)
 			outputTarget := max(a.repl.ResponseCharCount()/4, a.repl.outputTokenTarget)
@@ -1589,7 +1616,6 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.status.SetStreaming(true)
 	a.spinner.Start()
 	a.status.SetUsage(types.Usage{})
-	a.repl.usage = types.Usage{}
 	a.repl.displayedInputTokens = 0
 	a.repl.displayedOutputTokens = 0
 	// Estimate input tokens: use engine's precise ContextTokens (from last

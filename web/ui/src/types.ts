@@ -175,6 +175,10 @@ export type QueryEvent = {
    * events only; absent when zero). Single estimation source for the
    * display-side rate meters. */
   tokens?: number
+  /** Engine-side calibrated estimate of the input tokens this turn is about
+   * to bill (turn_start only; absent when zero). Stands in for ↑input until
+   * the turn's usage event arrives. */
+  input_estimate?: number
   session_id?: string
   /** Attachment/query_start payload (Go types.Message JSON tags). Attachment
    * mode "prompt" carries the original user text in prompt; queued-message

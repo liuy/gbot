@@ -561,6 +561,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const tokenRate = new TokenRate()
   let progressHandles: ProgressDomHandles | null = null
   let progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+  // The turn's wire estimate of input tokens, shown until its usage event
+  // lands. Held outside progressUsage so finalized query stats and takeover
+  // baselines stay billed-only.
+  let pendingInputEstimate = 0
+  const displayedProgressUsage = () =>
+    pendingInputEstimate === 0
+      ? progressUsage
+      : { ...progressUsage, inputTokens: progressUsage.inputTokens + pendingInputEstimate }
   let refreshInterval: number | null = null
   const pendingBlocks: Block[] = []
   const pendingToolByID = new Map<string, ToolBlock>()
@@ -954,6 +962,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const resetProgressUsage = () => {
     progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+    pendingInputEstimate = 0
     committedToolCount = 0
     accumulatedThinkingMs = 0
     streamStartedAt = 0
@@ -1123,7 +1132,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (!progressHandles) {
       progressHandles = appendProgressBar(streamContainer)
     }
-    setProgressBarUsage(progressHandles, progressUsage)
+    setProgressBarUsage(progressHandles, displayedProgressUsage())
     refreshInterval = window.setInterval(() => {
       toolEntries.forEach((entry) => {
         if (entry.pendingBlock.state === 'running') {
@@ -1403,7 +1412,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           updateAgentToolName(e.agent.parent_tool_use_id, e.agent.agent_type)
           return
         }
-        if (streaming) return
+        // ↑input has no streaming phase to animate — the request is fixed
+        // before the first token — so the turn's estimate stands in until
+        // that turn's usage event replaces the billed sum.
+        if (typeof e.input_estimate === 'number' && e.input_estimate > 0) {
+          pendingInputEstimate = e.input_estimate
+        }
+        if (streaming) {
+          if (progressHandles) setProgressBarUsage(progressHandles, displayedProgressUsage())
+          return
+        }
         cleanupStreamingRefs()
         initStreaming('turn_start')
         return
@@ -1847,6 +1865,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'usage': {
         if (!e.usage_event) return
         const u = e.usage_event
+        // The estimate stood in for this turn; its own billed usage replaces
+        // it. Only main-engine usage may do that: a job/sub-agent usage event
+        // bills into the same totals while the main turn is still in flight.
+        if (!e.agent) pendingInputEstimate = 0
         progressUsage.inputTokens += u.input_tokens
         progressUsage.outputTokens += u.output_tokens
         // The billed count now covers the streamed deltas: drop the local
@@ -1858,7 +1880,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const ctxUsed = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + u.output_tokens
         header.setContext(ctxUsed, contextTotal)
         if (progressHandles) {
-          setProgressBarUsage(progressHandles, progressUsage)
+          setProgressBarUsage(progressHandles, displayedProgressUsage())
         }
         const last = messages[messages.length - 1]
         if (last && last.role === 'assistant' && last.status === 'streaming') {

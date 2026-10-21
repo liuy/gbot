@@ -982,6 +982,32 @@ func TestQueryEventJSON(t *testing.T) {
 	if strings.Contains(string(zero), `"tokens"`) {
 		t.Errorf("marshal without Tokens = %s, want tokens omitted", zero)
 	}
+
+	// Wire round-trip of the turn_start input estimate the clients read for
+	// the ↑input counter.
+	withEstimate := types.QueryEvent{Type: types.EventTurnStart, InputEstimate: 4321}
+	data, err = json.Marshal(withEstimate)
+	if err != nil {
+		t.Fatalf("Marshal withEstimate: %v", err)
+	}
+	if !strings.Contains(string(data), `"input_estimate":4321`) {
+		t.Errorf("marshal with InputEstimate = %s, want it to contain \"input_estimate\":4321", data)
+	}
+	var gotEstimate types.QueryEvent
+	if err := json.Unmarshal(data, &gotEstimate); err != nil {
+		t.Fatalf("Unmarshal withEstimate: %v", err)
+	}
+	if gotEstimate.Type != types.EventTurnStart || gotEstimate.InputEstimate != 4321 {
+		t.Errorf("InputEstimate round-trip = {Type:%q InputEstimate:%d}, want {Type:%q InputEstimate:%d}",
+			gotEstimate.Type, gotEstimate.InputEstimate, types.EventTurnStart, 4321)
+	}
+	zeroEstimate, err := json.Marshal(types.QueryEvent{Type: types.EventTurnStart})
+	if err != nil {
+		t.Fatalf("Marshal zeroEstimate: %v", err)
+	}
+	if strings.Contains(string(zeroEstimate), `"input_estimate"`) {
+		t.Errorf("marshal without InputEstimate = %s, want input_estimate omitted", zeroEstimate)
+	}
 }
 
 // ---------------------------------------------------------------------------

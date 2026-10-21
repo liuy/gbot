@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // newCompactTestApp builds a minimal App with a non-nil engine for compact
@@ -191,6 +192,31 @@ func TestHandleCompact_NilEngine_Rejects(t *testing.T) {
 	}
 	if len(a.repl.pendingTool) != 0 {
 		t.Error("reject path must NOT create a tool block")
+	}
+}
+
+// TestHandleCompact_ResetsUsageLedger is the regression for the polluted
+// status bar after /compact: the handler synced the StatusBar to zero but
+// not the repl's accumulation ledger (repl.usage), so the first usage event
+// of the compact query added onto the PREVIOUS query's totals.
+func TestHandleCompact_ResetsUsageLedger(t *testing.T) {
+	t.Parallel()
+	a := newCompactTestApp(t)
+
+	// Simulate a finished prior query's billed residue.
+	a.repl.usage = types.Usage{InputTokens: 1000, OutputTokens: 500, CacheReadInputTokens: 300}
+	a.status.SetUsage(a.repl.usage)
+
+	a.handleCompact("", nil)
+
+	// The compact query's first usage event must bill only its own turn.
+	a.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 20})
+
+	if a.repl.usage.InputTokens != 100 || a.repl.usage.OutputTokens != 20 || a.repl.usage.CacheReadInputTokens != 0 {
+		t.Errorf("repl.usage after compact query usage = %+v, want {InputTokens:100 OutputTokens:20} (previous query's residue leaked into the accumulator)", a.repl.usage)
+	}
+	if got := a.status.usage.TotalInputTokens(); got != 100 {
+		t.Errorf("status TotalInputTokens after compact query usage = %d, want 100 (status bar shows the inflated sum)", got)
 	}
 }
 

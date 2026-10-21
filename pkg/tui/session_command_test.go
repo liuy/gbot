@@ -280,6 +280,7 @@ func TestResetDisplayState(t *testing.T) {
 	a.repl.displayedOutputTokens = 200
 	a.repl.outputTokenTarget = 300
 	a.repl.inputTokenTarget = 1100
+	a.repl.pendingTurnEstimate = 4000
 
 	a.resetDisplayState()
 
@@ -324,6 +325,9 @@ func TestResetDisplayState(t *testing.T) {
 	}
 	if a.repl.inputTokenTarget != 0 {
 		t.Errorf("inputTokenTarget = %d, want 0", a.repl.inputTokenTarget)
+	}
+	if a.repl.pendingTurnEstimate != 0 {
+		t.Errorf("pendingTurnEstimate = %d, want 0 (a stale estimate must not survive a session clear)", a.repl.pendingTurnEstimate)
 	}
 	if a.toolBlink {
 		t.Error("toolBlink should be false")

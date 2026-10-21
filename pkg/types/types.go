@@ -605,22 +605,27 @@ type AgentMeta struct {
 // QueryEvent represents an event emitted during the query loop.
 // In TS this is yielded by an async generator; in Go sent on a channel.
 type QueryEvent struct {
-	Type         QueryEventType     `json:"type"`
-	Text         string             `json:"text,omitempty"`
-	Tokens       int                `json:"tokens,omitempty"` // calibrated estimate of Text/delta content (delta events only)
-	SessionID    string             `json:"session_id,omitempty"`
-	Model        string             `json:"model,omitempty"`
-	ToolUse      *ToolUseEvent      `json:"tool_use,omitempty"`
-	ToolResult   *ToolResultEvent   `json:"tool_result,omitempty"`
-	Message      *Message           `json:"message,omitempty"`
-	PartialInput *PartialInputEvent `json:"partial_input,omitempty"`
-	Usage        *UsageEvent        `json:"usage_event,omitempty"`
-	Agent        *AgentMeta         `json:"agent,omitempty"`
-	Job          *JobEvent          `json:"job,omitempty"`
-	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
-	Ask          *AskEvent          `json:"ask,omitempty"`
-	RetryAttempt *RetryAttemptEvent `json:"retry_attempt,omitempty"`
-	Error        error              `json:"-"`
+	Type   QueryEventType `json:"type"`
+	Text   string         `json:"text,omitempty"`
+	Tokens int            `json:"tokens,omitempty"` // calibrated estimate of Text/delta content (delta events only)
+	// InputEstimate is the calibrated estimate of the input tokens this turn
+	// is about to bill (turn_start only). Input has no streaming phase — the
+	// request is fixed the moment it goes out — so the counter is estimated
+	// up front and corrected by the turn's usage event.
+	InputEstimate int                `json:"input_estimate,omitempty"`
+	SessionID     string             `json:"session_id,omitempty"`
+	Model         string             `json:"model,omitempty"`
+	ToolUse       *ToolUseEvent      `json:"tool_use,omitempty"`
+	ToolResult    *ToolResultEvent   `json:"tool_result,omitempty"`
+	Message       *Message           `json:"message,omitempty"`
+	PartialInput  *PartialInputEvent `json:"partial_input,omitempty"`
+	Usage         *UsageEvent        `json:"usage_event,omitempty"`
+	Agent         *AgentMeta         `json:"agent,omitempty"`
+	Job           *JobEvent          `json:"job,omitempty"`
+	Thinking      *ThinkingEvent     `json:"thinking,omitempty"`
+	Ask           *AskEvent          `json:"ask,omitempty"`
+	RetryAttempt  *RetryAttemptEvent `json:"retry_attempt,omitempty"`
+	Error         error              `json:"-"`
 }
 
 // UsageEvent carries token usage from the LLM provider during streaming.

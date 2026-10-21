@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // freshState creates a ReplState with a started query and one assistant message.
@@ -70,6 +71,21 @@ func TestStartQuery_SetsStreaming(t *testing.T) {
 	}
 	if msgs[0].Role != "assistant" {
 		t.Errorf("expected role assistant, got %q", msgs[0].Role)
+	}
+}
+
+// TestStartQuery_ResetsUsageLedger: StartQuery is the per-query boundary and
+// resets every per-query counter, so the billed accumulator (repl.usage) must
+// reset with them. It didn't — callers compensated manually and the /skill,
+// /compact and bash-shortcut paths forgot to, leaking the previous query's
+// totals into the next status bar.
+func TestStartQuery_ResetsUsageLedger(t *testing.T) {
+	t.Parallel()
+	s := NewReplState()
+	s.usage = types.Usage{InputTokens: 1000, OutputTokens: 500, CacheReadInputTokens: 300, CacheCreationInputTokens: 40}
+	s.StartQuery()
+	if s.usage != (types.Usage{}) {
+		t.Errorf("repl.usage after StartQuery = %+v, want zeroed (per-query accumulator must not survive a query boundary)", s.usage)
 	}
 }
 

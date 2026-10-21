@@ -529,6 +529,142 @@ describe('chat integration', () => {
     expect(outEl?.textContent).toBe('↓5.5k')
   })
 
+  it('turn_start estimate drives ↑input before usage arrives', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start', input_estimate: 1234 },
+    ])
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑1.2k')
+
+    // Billed usage replaces the estimate instead of adding to it:
+    // 1000 new + 300 cache read = 1300, not 1300 + 1234.
+    dispatchEvents([
+      { type: 'usage', usage_event: { input_tokens: 1000, output_tokens: 20, cache_read_input_tokens: 300 } },
+    ])
+    expect(inEl?.textContent).toBe('↑1.3k')
+  })
+
+  it('turn_start estimate accumulates over turns and never double-counts', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start', input_estimate: 1000 },
+      { type: 'usage', usage_event: { input_tokens: 1000, output_tokens: 500 } },
+      // Turn 2 estimates ride on the billed turn 1: 1000 + 2000 = 3000.
+      { type: 'turn_start', input_estimate: 2000 },
+    ])
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑2.9k')
+
+    // Turn 2's billed 2048 replaces its 2000 estimate: 1000 + 2048 = 3048.
+    dispatchEvents([
+      { type: 'usage', usage_event: { input_tokens: 2048, output_tokens: 1000 } },
+    ])
+    expect(inEl?.textContent).toBe('↑3.0k')
+  })
+
+  it('sub-agent turn_start estimate leaves ↑input alone', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start', input_estimate: 1000 },
+      { type: 'usage', usage_event: { input_tokens: 1000, output_tokens: 500 } },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      {
+        type: 'turn_start',
+        input_estimate: 9000,
+        agent: { parent_tool_use_id: 'agent-1', agent_type: 'Explore', depth: 1 },
+      },
+    ])
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑1.0k')
+  })
+
+  it('job-tagged usage leaves the in-flight ↑input estimate of the main engine alone', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start', input_estimate: 300 },
+      { type: 'usage', usage_event: { input_tokens: 300, output_tokens: 20 } },
+      // Turn 2's estimate rides on turn 1's billed input: 300 + 400 = 700.
+      { type: 'turn_start', input_estimate: 400 },
+    ])
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑700')
+
+    // A background job bills into the same token totals but belongs to a
+    // different engine: turn 2 of the main engine is still in flight, so its
+    // estimate must survive. Billed 300 + 111, estimate 400 on top.
+    dispatchEvents([
+      {
+        type: 'usage',
+        usage_event: { input_tokens: 111, output_tokens: 5 },
+        agent: { parent_tool_use_id: 'agent-1', agent_type: 'Explorer', depth: 1, job_id: 'agent-9' },
+      },
+    ])
+    expect(inEl?.textContent).toBe('↑811')
+  })
+
+  it('bare turn_start estimate reaches ↑input via initStreaming', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // No query_start ahead of it: an auto-turn or drained-attachment query
+    // arrives as a bare turn_start, which opens the stream through
+    // initStreaming instead of the mid-query guard.
+    dispatchEvents([{ type: 'turn_start', input_estimate: 777 }])
+    const inEl = Array.from(document.querySelectorAll('span')).find((s) =>
+      s.textContent?.startsWith('↑'),
+    )
+    expect(inEl?.textContent).toBe('↑777')
+  })
+
+  it('query_end retires an uncleared estimate: the next query starts at 0', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q1')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      // Query 1's turn never gets its usage event, so the estimate is still
+      // standing when the query ends.
+      { type: 'turn_start', input_estimate: 4000 },
+      { type: 'query_end' },
+    ])
+    const upSpans = () =>
+      Array.from(document.querySelectorAll('span'))
+        .filter((s) => s.textContent?.startsWith('↑'))
+        .map((s) => s.textContent)
+    // The finalized bar bills what the estimate never covered: 0.
+    expect(upSpans()).toEqual(['↑0'])
+
+    // Query 2 opens with no turn_start of its own yet — the fresh bar must
+    // read 0, not carry query 1's leftover estimate.
+    dispatchEvents([{ type: 'query_start' }])
+    expect(upSpans()).toEqual(['↑0', '↑0'])
+  })
+
   it('error renders red block on streaming assistant', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

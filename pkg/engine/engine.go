@@ -2093,8 +2093,15 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			}
 		}
 
-		// Stage 14-15: API call streaming loop
-		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
+		// Stage 14-15: API call streaming loop.
+		// The estimate rides on turn_start so the ↑input counter moves before
+		// the provider answers; history at this point already carries what
+		// this turn sends (the query's user message, prior turns' tool
+		// results), so it can never describe the previous turn.
+		// Sub-agents compute it too and the value is simply unused: both
+		// clients drop agent-tagged turn_start events before reading the
+		// estimate, so the filter sits on the consumer side, not here.
+		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart, InputEstimate: e.currentInputTokens()})
 
 		// Watermark: everything appended to history so far is about to be
 		// observed by this LLM call. An queued message arriving afterwards

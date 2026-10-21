@@ -2970,7 +2970,8 @@ func (c *WUIConnector) SetTransport(h *transport.Hub) {
 // streamed block). Wire shape mirrors onEngineEvent's marshal exactly so
 // the client cannot distinguish a replay from a live event; its native
 // query_start path builds the streaming shell, and the later real
-// turn_start is swallowed by the existing `if (streaming) return` guard.
+// turn_start only refreshes the ↑input estimate under the client's
+// `if (streaming)` guard before returning — it cannot rebuild the shell.
 // Returns nil when no query is in flight or the recorded index no longer
 // resolves (messages mutated between the two engine reads).
 func (c *WUIConnector) buildQueryStartReplay(slot *engineSlot) []byte {
