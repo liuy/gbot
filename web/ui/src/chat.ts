@@ -47,6 +47,7 @@ import {
   collapseToolChildrenOnDone,
   markToolCollapsible,
 } from './components/stream_dom'
+import { writeSweepChars, stopStatusSweep } from './components/status_sweep'
 import { createHeader } from './header'
 import { createTakeoverBar } from './takeover_bar'
 import { createSidebar } from './sidebar'
@@ -943,6 +944,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   const cleanupStreamingRefs = () => {
     cancelStreamHydration()
+    // Covers every non-finalize exit (appendError, resetAllState, next
+    // query_start pre-clean); idempotent when finalize already stopped it.
+    stopStatusSweep()
     if (refreshInterval !== null) {
       clearInterval(refreshInterval)
       refreshInterval = null
@@ -1157,10 +1161,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         )
         // Live ↓output: authoritative usage-so-far plus wire tokens since the
         // last usage event, so the counter moves during streaming.
-        progressHandles.outEl.textContent = '↓' + formatTokenCount(progressUsage.outputTokens + tokenRate.localTokens())
+        writeSweepChars(progressHandles.outEl, '↓' + formatTokenCount(progressUsage.outputTokens + tokenRate.localTokens()))
         // null only while paused (tool execution): display 0.0 rather than
         // an em-dash (user preference — the dash reads as a visual glitch).
-        progressHandles.rateEl.textContent = r !== null ? r.toFixed(1) + ' t/s' : '0.0 t/s'
+        writeSweepChars(progressHandles.rateEl, r !== null ? r.toFixed(1) + ' t/s' : '0.0 t/s')
       }
     }, 200)
   }

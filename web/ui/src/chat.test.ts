@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createChat, mapHistoryToChatMessages } from './chat'
 import { TokenRate } from './token_rate'
+import { stopStatusSweep } from './components/status_sweep'
 
 // jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
 class MockIntersectionObserver {
@@ -692,6 +693,114 @@ describe('chat integration', () => {
     const red = document.querySelectorAll('.text-red')
     const errorEl = Array.from(red).find(el => el.textContent?.includes('boom'))
     expect(errorEl?.textContent).toContain('boom')
+  })
+
+  it('comet sweep cold start: cursor walks the full visible string', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
+
+    const root = document.querySelector('.status-line') as HTMLElement
+    const p1s = () => Array.from(root.querySelectorAll<HTMLElement>('.p1'))
+    // k=0 is the synchronous first step: highlight exists the instant the
+    // query starts.
+    expect(p1s().length).toBe(1)
+    expect(p1s()[0].textContent).toBe('↑')
+
+    vi.advanceTimersByTime(110)
+    expect(p1s()[0].textContent).toBe('0')
+    expect((p1s()[0].previousElementSibling as HTMLElement).classList.contains('t1')).toBe(true)
+
+    // Walk k=2..14 (14 advances total). The 200ms refresh ticks interleave:
+    // elapsedEl rewrites itself every tick, and the tick at t=1000 shrinks
+    // '0.8s'→'1s' (a real span rebuild) — the last two highlights must land
+    // on the rebuilt '1','s' spans, not the initial '0','s'.
+    const seq = ['↑', '0']
+    for (let k = 2; k <= 14; k++) {
+      vi.advanceTimersByTime(110)
+      seq.push(p1s()[0].textContent ?? '')
+    }
+    expect(seq).toEqual(['↑', '0', '↓', '0', '·', '0', '.', '0', ' ', 't', '/', 's', '·', '1', 's'])
+    stopStatusSweep()
+    vi.useRealTimers()
+  })
+
+  it('comet sweep follows numeric refreshes across a real rebuild', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+
+    // tick@200 has run: toolCountEl got its one-time '0 tools', elapsedEl
+    // reads '0.2s'.
+    vi.advanceTimersByTime(250)
+    const root = document.querySelector('.status-line') as HTMLElement
+    const before = root.textContent
+    expect(before).toBe('↑0↓0·0.0 t/s··0 tools·0.2s')
+
+    // Crosses tick@1000 where '0.8s'→'1s' rebuilds the elapsed spans; every
+    // other segment's text must be untouched (token counts stay 0).
+    vi.advanceTimersByTime(1000)
+    expect(root.textContent).toBe(before.replace('0.2s', '1s'))
+
+    // The cursor keeps advancing over the rebuilt DOM: one of each class per
+    // step, and the peak node changes identity every step.
+    let prev = root.querySelector('.p1')
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(110)
+      expect(root.querySelectorAll('.p1').length).toBe(1)
+      expect(root.querySelectorAll('.t1').length).toBe(1)
+      expect(root.querySelectorAll('.t2').length).toBe(1)
+      const cur = root.querySelector('.p1')
+      expect(cur).not.toBe(prev)
+      prev = cur
+    }
+    stopStatusSweep()
+    vi.useRealTimers()
+  })
+
+  it('query_end freezes the sweep for good', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    vi.advanceTimersByTime(110)
+    const root = document.querySelector('.status-line') as HTMLElement
+    expect(root.querySelectorAll('.p1').length).toBe(1)
+
+    dispatchEvents([{
+      type: 'query_end',
+      usage_event: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }])
+    expect(root.querySelectorAll('.p1, .t1, .t2').length).toBe(0)
+    vi.advanceTimersByTime(5000)
+    expect(root.querySelectorAll('.p1, .t1, .t2').length).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('error path stops the sweep without finalize', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    vi.advanceTimersByTime(110)
+    const root = document.querySelector('.status-line') as HTMLElement
+    expect(root.querySelectorAll('.p1').length).toBe(1)
+
+    dispatch({ type: 'error', message: 'boom' })
+    expect(root.querySelectorAll('.p1, .t1, .t2').length).toBe(0)
+    vi.advanceTimersByTime(5000)
+    expect(root.querySelectorAll('.p1, .t1, .t2').length).toBe(0)
+    vi.useRealTimers()
   })
 
   it('connect_status resets state for fresh history', () => {
