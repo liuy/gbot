@@ -8,12 +8,15 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/web/providers"
-	"unicode/utf8"
 )
 
 func TestIsURL(t *testing.T) {
@@ -1084,5 +1087,177 @@ func TestExtractProxyURL_ProxyReturnsNil(t *testing.T) {
 	}
 	if got := extractProxyURL(client); got != "" {
 		t.Errorf("expected empty when Proxy returns nil, got %q", got)
+	}
+}
+
+func TestSearchChain_Composition(t *testing.T) {
+	client := &http.Client{}
+	chain := searchChain(client, map[string]string{"anysearch": "", "jina": "jk", "tavily": "tk", "zhipu": "a.b"})
+	want := []string{"anysearch", "jina", "tavily", "zhipu", "duckduckgo"}
+	if got := chain.AvailableProviders(); !slices.Equal(got, want) {
+		t.Errorf("full keys: AvailableProviders() = %v, want %v", got, want)
+	}
+
+	// Wiring: each keyed provider must carry the injected client and key.
+	var sawJina, sawTavily bool
+	for _, p := range chain.Providers {
+		switch v := p.(type) {
+		case *providers.JinaProvider:
+			sawJina = true
+			if v.Client != client || v.APIKey != "jk" {
+				t.Errorf("jina wiring = (%p, %q), want injected client and jk", v.Client, v.APIKey)
+			}
+		case *providers.TavilyProvider:
+			sawTavily = true
+			if v.Client != client || v.APIKey != "tk" {
+				t.Errorf("tavily wiring = (%p, %q), want injected client and tk", v.Client, v.APIKey)
+			}
+		}
+	}
+	if !sawJina || !sawTavily {
+		t.Errorf("chain lacks jina/tavily registrations (jina=%v tavily=%v)", sawJina, sawTavily)
+	}
+
+	chain = searchChain(nil, map[string]string{"tavily": "tk"})
+	want = []string{"tavily", "duckduckgo"}
+	if got := chain.AvailableProviders(); !slices.Equal(got, want) {
+		t.Errorf("tavily only: AvailableProviders() = %v, want %v", got, want)
+	}
+
+	chain = searchChain(nil, nil)
+	want = []string{"duckduckgo"}
+	if got := chain.AvailableProviders(); !slices.Equal(got, want) {
+		t.Errorf("no keys: AvailableProviders() = %v, want %v", got, want)
+	}
+}
+
+// The ddg registration must carry the headless-Chrome escalation closure
+// and the injected client.
+func TestSearchChain_DDGBrowseWired(t *testing.T) {
+	client := &http.Client{}
+	chain := searchChain(client, nil)
+	for _, p := range chain.Providers {
+		ddg, ok := p.(*providers.DuckDuckGoProvider)
+		if !ok {
+			continue
+		}
+		if ddg.Browse == nil {
+			t.Fatal("duckduckgo provider has nil Browse closure")
+		}
+		if ddg.Client != client {
+			t.Errorf("duckduckgo Client = %p, want the injected client %p", ddg.Client, client)
+		}
+		return
+	}
+	t.Fatal("chain lacks a duckduckgo registration")
+}
+
+// Full escalation seam: provider → chromedpFetch → real Chrome → parse.
+// Dual-role server: the plain UA gets 403, any other UA (the stealth-rendered
+// browser) gets results. Counters track only real search requests (q!=""),
+// because Chrome fires automatic favicon/subresource fetches that would
+// otherwise pollute the browser-side count.
+func TestDDGBrowserFallback_RealChrome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+
+	const plainUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	resultsHTML := `<!DOCTYPE html><html><body>
+<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2Fdoc%2Fgo1.18&amp;rut=abc">Go 1.18 Release Notes</a><a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2Fdoc%2Fgo1.18">Go 1.18 adds support for generics...</a></div>
+<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fgo-generics&amp;rut=def">Go Generics Tutorial</a><a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fgo-generics">Learn how to use generics in Go...</a></div>
+<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fblog.com%2Fgo-generics-deep-dive&amp;rut=ghi">Deep Dive into Go Generics</a><a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fblog.com%2Fgo-generics-deep-dive">A comprehensive guide to type parameters...</a></div>
+</body></html>`
+
+	var plainHits, chromeHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("User-Agent") == plainUA {
+			plainHits.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		chromeHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, resultsHTML)
+	}))
+	defer server.Close()
+
+	saved := providers.DDGSearchURL
+	providers.DDGSearchURL = server.URL
+	t.Cleanup(func() { providers.DDGSearchURL = saved })
+
+	defaultPool.reset()
+	t.Cleanup(func() { defaultPool.reset() })
+
+	d := &providers.DuckDuckGoProvider{
+		Browse: func(ctx context.Context, u string, timeout time.Duration) (string, error) {
+			return chromedpFetch(ctx, u, timeout, "")
+		},
+	}
+	resp, err := d.Search(context.Background(), providers.SearchParams{Query: "go generics", Limit: 3})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(resp.Sources) != 3 {
+		t.Fatalf("expected 3 sources, got %d", len(resp.Sources))
+	}
+	if resp.Sources[0].Title != "Go 1.18 Release Notes" {
+		t.Errorf("Sources[0].Title = %q, want %q", resp.Sources[0].Title, "Go 1.18 Release Notes")
+	}
+	if got := plainHits.Load(); got != 1 {
+		t.Errorf("plain hits = %d, want exactly 1", got)
+	}
+	if got := chromeHits.Load(); got != 1 {
+		t.Errorf("chrome hits = %d, want exactly 1", got)
+	}
+}
+
+// An empty settings key must not register the provider, even when the env
+// fallback could make it available.
+func TestSearchChain_EmptyKeySkipsProvider(t *testing.T) {
+	t.Setenv("JINA_API_KEY", "env-key")
+	t.Setenv("TAVILY_API_KEY", "env-key")
+
+	chain := searchChain(nil, map[string]string{"jina": "", "tavily": ""})
+	want := []string{"duckduckgo"}
+	if got := chain.AvailableProviders(); !slices.Equal(got, want) {
+		t.Errorf("AvailableProviders() = %v, want %v (empty keys skip registration)", got, want)
+	}
+}
+
+func TestExecuteSearch_RendersAnswerAndDates(t *testing.T) {
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
+			&mockProvider{
+				id:        "dated",
+				available: true,
+				resp: &providers.SearchResponse{
+					Provider: "dated",
+					Answer:   "Go is a statically typed language",
+					Sources: []providers.SearchSource{
+						{Title: "Go", URL: "https://go.dev", Snippet: "types", PublishedDate: "2019-06-01", AgeSeconds: 3 * 86400},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := executeSearch(context.Background(), Input{Query: "go"}, chain)
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if !strings.HasPrefix(output.Content, "Go is a statically typed language\n") {
+		t.Errorf("content should lead with the answer line, got: %q", output.Content)
+	}
+	if !strings.Contains(output.Content, "- [1] Go (3d ago)\n  https://go.dev") {
+		t.Errorf("content should render the dated source with an age suffix, got: %q", output.Content)
 	}
 }

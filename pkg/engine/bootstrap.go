@@ -167,8 +167,9 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 	replTool := repl.New()
 	reg.MustRegister(replTool)
 
-	// Web tool: zhipu API key and proxy come from config; the tool itself
-	// wires up its own search providers and scraper registry.
+	// Web tool: search provider API keys (anysearch/jina/tavily/zhipu) and
+	// proxy come from config; the tool itself wires up its own search
+	// providers and scraper registry.
 	var proxyClient *http.Client
 	var webKeys map[string]string
 	if deps.Cfg != nil {

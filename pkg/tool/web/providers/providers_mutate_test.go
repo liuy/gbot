@@ -76,6 +76,51 @@ func TestProviderRequestTimeouts(t *testing.T) {
 	if got <= 29*time.Second || got > 30*time.Second {
 		t.Errorf("anysearch request deadline = %v, want ~30s", got)
 	}
+
+	// Tavily and jina get their own transports: the shared one above returns
+	// an empty body, whose failed unmarshal would push both down their
+	// parse-error SPEs and break the err check.
+	tavilyTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		dl, ok := req.Context().Deadline()
+		if ok {
+			got = time.Until(dl)
+		} else {
+			got = -1
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+	tv := &TavilyProvider{Client: &http.Client{Transport: tavilyTransport}, APIKey: "k"}
+	if _, err := tv.Search(context.Background(), SearchParams{Query: "q"}); err != nil {
+		t.Fatalf("tavily request: %v", err)
+	}
+	if got <= 59*time.Second || got > 60*time.Second {
+		t.Errorf("tavily request deadline = %v, want ~60s", got)
+	}
+
+	jinaTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		dl, ok := req.Context().Deadline()
+		if ok {
+			got = time.Until(dl)
+		} else {
+			got = -1
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(`[]`)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+	jp := &JinaProvider{Client: &http.Client{Transport: jinaTransport}, APIKey: "k"}
+	if _, err := jp.Search(context.Background(), SearchParams{Query: "q"}); err != nil {
+		t.Fatalf("jina request: %v", err)
+	}
+	if got <= 59*time.Second || got > 60*time.Second {
+		t.Errorf("jina request deadline = %v, want ~60s", got)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

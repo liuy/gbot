@@ -523,11 +523,24 @@ func searchChain(client *http.Client, keys map[string]string) *providers.SearchC
 	if _, ok := keys["anysearch"]; ok {
 		ps = append(ps, &providers.AnySearchProvider{Client: client, APIKey: keys["anysearch"]})
 	}
+	if key, ok := keys["jina"]; ok && key != "" {
+		ps = append(ps, &providers.JinaProvider{Client: client, APIKey: key})
+	}
+	if key, ok := keys["tavily"]; ok && key != "" {
+		ps = append(ps, &providers.TavilyProvider{Client: client, APIKey: key})
+	}
 	if key, ok := keys["zhipu"]; ok && key != "" {
 		ps = append(ps, &providers.ZhipuProvider{Client: client, APIKey: key})
 	}
-	// DuckDuckGo always available (no key needed).
-	ps = append(ps, &providers.DuckDuckGoProvider{Client: client})
+	// DuckDuckGo always available (no key needed). Browse wires the lazy
+	// headless-Chrome escalation for blocked plain fetches.
+	ps = append(ps, &providers.DuckDuckGoProvider{
+		Client: client,
+		Browse: func(ctx context.Context, u string, timeout time.Duration) (string, error) {
+			slog.Info("web: ddg browser fallback", "url", u)
+			return chromedpFetch(ctx, u, timeout, extractProxyURL(client))
+		},
+	})
 	return &providers.SearchChain{Providers: ps}
 }
 

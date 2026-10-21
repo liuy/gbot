@@ -28,6 +28,28 @@ type ChromePool struct {
 
 var defaultPool = &ChromePool{}
 
+// pageCloseTimeout bounds tab teardown: a dead CDP session can leave
+// chromedp's cancel pending forever (omp issue #8865 lesson — page.close
+// needed its own deadline; .catch covers rejection, not hangs).
+const pageCloseTimeout = 5 * time.Second
+
+// chromeStartupTimeout bounds the startup probe; var so tests shorten it.
+var chromeStartupTimeout = 30 * time.Second
+
+// cancelWithDeadline runs cancel and waits at most d for it to settle,
+// then abandons it — the cancel goroutine finishes on its own.
+func cancelWithDeadline(cancel context.CancelFunc, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
 // findChromeBin probes for a usable browser binary on every call: a cached
 // miss would hide a browser installed after the daemon started (chromedp
 // itself re-runs LookPath per Allocate, so caching buys microseconds and
@@ -89,7 +111,11 @@ func (p *ChromePool) getWithProxy(parentCtx context.Context, proxyURL string) (c
 	testCtx, testCancel := chromedp.NewContext(allocCtx)
 	defer testCancel()
 
-	if err := chromedp.Run(testCtx, chromedp.Navigate("about:blank")); err != nil {
+	// The probe holds p.mu, so a wedged binary would block every
+	// chromedpFetch caller indefinitely — it needs its own deadline.
+	probeCtx, probeCancel := context.WithTimeout(testCtx, chromeStartupTimeout)
+	defer probeCancel()
+	if err := chromedp.Run(probeCtx, chromedp.Navigate("about:blank")); err != nil {
 		allocCancel()
 		return nil, nil, fmt.Errorf("chrome startup failed: %w", err)
 	}
@@ -123,7 +149,7 @@ func realChromedpFetch(parentCtx context.Context, url string, timeout time.Durat
 	if err != nil {
 		return "", fmt.Errorf("chrome not available: %w", err)
 	}
-	defer cancel()
+	defer cancelWithDeadline(cancel, pageCloseTimeout)
 
 	ctx, timeoutCancel := context.WithTimeout(ctx, timeout)
 	defer timeoutCancel()

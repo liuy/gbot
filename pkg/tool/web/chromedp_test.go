@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool/web/scrapers"
@@ -84,6 +85,79 @@ func TestFindChromeBin_IgnoresUnusableEnvOverride(t *testing.T) {
 		if !ok || got != bin {
 			t.Fatalf("CHROME_PATH=%q: expected fallback to %q, got %q ok=%v", bad, bin, got, ok)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cancelWithDeadline / startup probe deadline — teardown and startup must
+// never hang a caller (omp issue #8865 lesson).
+// ---------------------------------------------------------------------------
+
+func TestCancelWithDeadline_Immediate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cancelled := false
+		start := time.Now()
+		cancelWithDeadline(func() { cancelled = true }, time.Second)
+		if elapsed := time.Since(start); elapsed >= time.Second {
+			t.Errorf("immediate cancel took %v, want < 1s", elapsed)
+		}
+		if !cancelled {
+			t.Error("cancel was not invoked")
+		}
+	})
+}
+
+func TestCancelWithDeadline_Hung(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan struct{})
+		cancel := func() {
+			time.Sleep(300 * time.Millisecond)
+			close(done)
+		}
+		start := time.Now()
+		cancelWithDeadline(cancel, 50*time.Millisecond)
+		elapsed := time.Since(start)
+		if elapsed < 50*time.Millisecond || elapsed >= 290*time.Millisecond {
+			t.Errorf("hung cancel returned after %v, want within [50ms, 290ms)", elapsed)
+		}
+		// The helper abandons the hung cancel; it must not have blocked on it.
+		select {
+		case <-done:
+			t.Error("cancel completed within the deadline window; hang was not real")
+		default:
+		}
+		// Drain the abandoned goroutine so the bubble exits without
+		// blocked goroutines left inside it.
+		<-done
+	})
+}
+
+// A wedged binary must not hold the startup probe (and with it p.mu) forever.
+func TestChromePool_StartupProbeDeadline(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "hung-chrome")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CHROME_PATH", script)
+
+	saved := chromeStartupTimeout
+	chromeStartupTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { chromeStartupTimeout = saved })
+
+	pool := &ChromePool{}
+	t.Cleanup(pool.reset)
+
+	// REAL-TIME: bounds a real wedged subprocess, wall-clock is the subject.
+	start := time.Now()
+	_, _, err := pool.getWithProxy(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected startup error from hung binary")
+	}
+	if !strings.Contains(err.Error(), "chrome startup") {
+		t.Errorf("error = %v, want to contain 'chrome startup'", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Errorf("getWithProxy took %v, want < 5s", elapsed)
 	}
 }
 
