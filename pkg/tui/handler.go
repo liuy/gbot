@@ -315,8 +315,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return nil
 
 	case types.EventTurnEnd:
-		// Per-round end; TUI doesn't need to act on this currently.
-		return nil
+		return turnEndMsg{Agent: evt.Agent}
 
 	case types.EventRetryAttempt:
 		if evt.RetryAttempt != nil {

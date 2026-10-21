@@ -1426,6 +1426,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         initStreaming('turn_start')
         return
       }
+      case 'turn_end': {
+        // Turn granularity of the tool_run clock-stop (TUI parity): after
+        // the turn's last delta nothing flows until the next turn's first
+        // delta re-arms, so without this the turn gap ages the sums and
+        // dilutes the reading with non-generation wall time. Sub-agent
+        // turns are interior to a parent Agent tool run and own no
+        // main-meter boundary.
+        if (e.agent) return
+        tokenRate.pause()
+        return
+      }
       case 'query_end': {
         if (e.agent) return
         const wasAborted = !!e.aborted

@@ -1227,6 +1227,136 @@ func TestApp_Update_ToolRunPausesRateClock(t *testing.T) {
 	})
 }
 
+func TestApp_Update_TurnEndPausesRateClock_AgentScenario(t *testing.T) {
+	// The gap the tool_run pause missed: the sub-agent's deltas re-arm the
+	// main meter (their real flow counts), so after the Agent tool_end and
+	// before the next turn's first delta the meter is live with no stream —
+	// the old reading bare-decays over turn-boundary wall time. Main turn_end
+	// stops the clock; the gap is skipped, not aged.
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		app.updateRepl(turnStartMsg{})
+		for range 12 {
+			app.updateRepl(textDeltaMsg{Text: "chunk", Tokens: 100})
+			time.Sleep(500 * time.Millisecond)
+		}
+		if rate, ok := app.repl.TokenRate().Rate(); !ok || rate <= 0 {
+			t.Fatalf("Rate() after main stream = (%.1f, %v), want ok and > 0", rate, ok)
+		}
+
+		agent := &types.AgentMeta{ParentToolUseID: "agent-1", AgentType: "Explore", Depth: 0}
+		app.updateRepl(toolStartMsg{ID: "agent-1", Name: "Agent"})
+		app.updateRepl(toolRunMsg{ID: "agent-1", Name: "Agent"})
+		if _, ok := app.repl.TokenRate().Rate(); ok {
+			t.Fatal("Rate() after toolRunMsg = ok, want false (clock paused for tool execution)")
+		}
+
+		// Sub-agent stream: real flow, re-arms the main meter.
+		for range 6 {
+			app.updateRepl(textDeltaMsg{Text: "sub", Tokens: 100, Agent: agent})
+			time.Sleep(500 * time.Millisecond)
+		}
+		if rate, ok := app.repl.TokenRate().Rate(); !ok || rate <= 0 {
+			t.Fatalf("Rate() after sub-agent stream = (%.1f, %v), want ok and > 0", rate, ok)
+		}
+
+		// Sub-agent turn boundary is interior to the main stream: no pause.
+		// handled+cmd are the event-loop continuation contract — losing the
+		// drain command would stop the TUI reading further events.
+		if handled, cmd := app.updateRepl(turnEndMsg{Agent: agent}); !handled || cmd == nil {
+			t.Fatalf("updateRepl(sub-agent turnEndMsg) = (%v, %v), want handled with a drain cmd", handled, cmd)
+		}
+		if _, ok := app.repl.TokenRate().Rate(); !ok {
+			t.Fatal("Rate() after sub-agent turn_end = not ok, want ok (sub-agent boundary must not pause the main meter)")
+		}
+
+		// Agent tool completes, then the main turn ends: the streamed turn is
+		// over, nothing flows until the next turn's first delta.
+		app.updateRepl(toolEndMsg{ToolUseID: "agent-1"})
+		if handled, cmd := app.updateRepl(turnEndMsg{}); !handled || cmd == nil {
+			t.Fatalf("updateRepl(turnEndMsg) = (%v, %v), want handled with a drain cmd", handled, cmd)
+		}
+		if _, ok := app.repl.TokenRate().Rate(); ok {
+			t.Fatal("Rate() after main turn_end = ok, want false (turn boundary pauses the clock)")
+		}
+
+		time.Sleep(5 * time.Second) // turn-boundary gap must not age the sums
+		app.updateRepl(textDeltaMsg{Text: "next", Tokens: 100})
+		rate, ok := app.repl.TokenRate().Rate()
+		if !ok {
+			t.Fatal("Rate() after next turn's first delta = not ok, want ok")
+		}
+		if rate < 180 {
+			t.Errorf("Rate() = %.1f, want >= 180 (turn gap skipped, not aged into the kernel)", rate)
+		}
+	})
+}
+
+func TestApp_Update_TurnEndPausesRateClock_BashScenario(t *testing.T) {
+	// The short sibling of the Agent gap: bash tool_end → turn_end → next
+	// turn. tool_run already paused the clock, so turn_end's pause is a
+	// no-op there — the scenario pins that it stays a no-op (no double
+	// aging, no un-pause) and the next turn's first delta recovers.
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		app.updateRepl(turnStartMsg{})
+		for range 12 {
+			app.updateRepl(textDeltaMsg{Text: "chunk", Tokens: 100})
+			time.Sleep(500 * time.Millisecond)
+		}
+		app.updateRepl(toolStartMsg{ID: "t1", Name: "Bash"})
+		app.updateRepl(toolRunMsg{ID: "t1", Name: "Bash"})
+		if _, ok := app.repl.TokenRate().Rate(); ok {
+			t.Fatal("Rate() after toolRunMsg = ok, want false")
+		}
+		app.updateRepl(toolEndMsg{ToolUseID: "t1"})
+		app.updateRepl(turnEndMsg{})
+		if _, ok := app.repl.TokenRate().Rate(); ok {
+			t.Fatal("Rate() after turn_end = ok, want false (still paused through the turn boundary)")
+		}
+
+		time.Sleep(5 * time.Second)
+		app.updateRepl(turnStartMsg{})
+		app.updateRepl(textDeltaMsg{Text: "next", Tokens: 100})
+		rate, ok := app.repl.TokenRate().Rate()
+		if !ok {
+			t.Fatal("Rate() after next turn's first delta = not ok, want ok")
+		}
+		if rate < 180 {
+			t.Errorf("Rate() = %.1f, want >= 180 (turn gap skipped, not aged into the kernel)", rate)
+		}
+	})
+}
+
+func TestApp_Update_SubAgentTurnEndDoesNotPauseMainMeter(t *testing.T) {
+	// Main meter live mid-stream when an agent-tagged turn_end arrives: the
+	// sub-agent's turn boundary says nothing about the main stream, so the
+	// reading must survive it untouched.
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		app.updateRepl(turnStartMsg{})
+		for range 12 {
+			app.updateRepl(textDeltaMsg{Text: "chunk", Tokens: 100})
+			time.Sleep(500 * time.Millisecond)
+		}
+		r0, ok := app.repl.TokenRate().Rate()
+		if !ok || r0 <= 0 {
+			t.Fatalf("Rate() after main stream = (%.1f, %v), want ok and > 0", r0, ok)
+		}
+		app.updateRepl(turnEndMsg{Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore", Depth: 0}})
+		r1, ok := app.repl.TokenRate().Rate()
+		if !ok {
+			t.Fatal("Rate() after agent-tagged turn_end = not ok, want ok (main meter must stay live)")
+		}
+		if r1 < 0.9*r0 {
+			t.Errorf("Rate() = %.1f after agent turn_end, want >= 0.9*%.1f (reading unaffected)", r1, r0)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // updateRepl — toolParamDeltaMsg
 // ---------------------------------------------------------------------------

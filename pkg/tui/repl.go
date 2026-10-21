@@ -993,6 +993,19 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, a.readEvents()
 
+	case turnEndMsg:
+		// Turn granularity of the tool_run clock-stop: after the turn's last
+		// delta nothing flows until the next turn's first delta re-arms, so
+		// without this the turn gap ages the sums and dilutes the reading
+		// with non-generation wall time. Sub-agent turns are interior to a
+		// parent Agent tool run of the main stream and own no main-meter
+		// boundary.
+		if m.Agent != nil {
+			return true, a.readEvents()
+		}
+		a.repl.TokenRate().Pause()
+		return true, a.readEvents()
+
 	case retryAttemptMsg:
 		a.retryActive = true
 		a.retryAttempt = m.Attempt

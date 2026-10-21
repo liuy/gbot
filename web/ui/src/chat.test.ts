@@ -1380,6 +1380,112 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it('turn_end pauses the rate display through the Agent tool gap (agent turn_end does not)', () => {
+    // The sub-agent's deltas re-arm the meter, so from the Agent tool_end to
+    // the next turn's first delta the old reading would bare-decay across
+    // the turn gap. Main turn_end stops the clock (TUI parity); the
+    // sub-agent's own turn_end is interior to the parent Agent run and must
+    // not touch the main meter.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('delegate the research')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    const rateValue = () => parseFloat(findRateSpan()?.textContent ?? '')
+    for (let i = 0; i < 12; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'chunk of streamed words', tokens: 100 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(rateValue()).toBeGreaterThan(0)
+
+    const agent = { parent_tool_use_id: 'ag1', agent_type: 'Explore', depth: 1 }
+    dispatchEvents([
+      { type: 'tool_start', tool_use: { id: 'ag1', name: 'Agent' } },
+      { type: 'tool_run', tool_use: { id: 'ag1', name: 'Agent' } },
+    ])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toBe('0.0 t/s')
+
+    // Sub-agent stream re-arms the meter — its real flow counts.
+    for (let i = 0; i < 6; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'sub agent words', tokens: 100, agent }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(rateValue()).toBeGreaterThan(0)
+
+    // Sub-agent turn_end: interior boundary — the reading survives it.
+    dispatchEvents([{ type: 'turn_end', agent }])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).not.toBe('0.0 t/s')
+
+    const r0 = rateValue()
+    // Agent tool completes, then the main turn ends: clock stops.
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'ag1', display_output: 'done' } },
+      { type: 'turn_end' },
+    ])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toBe('0.0 t/s')
+
+    // Turn gap skipped, not aged: with gap-aging this reads ~0.55x r0.
+    vi.advanceTimersByTime(5000)
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'resumed words arrive', tokens: 100 },
+    ])
+    vi.advanceTimersByTime(200)
+    const r1 = rateValue()
+    expect(r1).toBeGreaterThanOrEqual(0.9 * r0)
+    expect(r1).toBeLessThanOrEqual(1.7 * r0)
+    vi.useRealTimers()
+  })
+
+  it('turn_end keeps the bash tool gap paused until the next turn resumes', () => {
+    // tool_run already paused the clock, so turn_end's pause is a no-op
+    // there — the scenario pins that it stays a no-op (no un-pause, no
+    // double aging) and the next turn's first delta recovers the reading.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run the build')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    for (let i = 0; i < 12; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'chunk of streamed words', tokens: 100 }])
+      vi.advanceTimersByTime(500)
+    }
+    dispatchEvents([{ type: 'tool_run', tool_use: { id: 't1', name: 'Bash' } }])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toBe('0.0 t/s')
+
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 't1', display_output: 'done' } },
+      { type: 'turn_end' },
+    ])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toBe('0.0 t/s')
+
+    vi.advanceTimersByTime(5000)
+    dispatchEvents([
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'resumed words arrive', tokens: 100 },
+    ])
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()?.textContent ?? '0')).toBeGreaterThan(0)
+    vi.useRealTimers()
+  })
+
   it('REPRO: param deltas after tool_start un-pause the meter and the rate slides during exec', () => {
     vi.useFakeTimers()
     mount()

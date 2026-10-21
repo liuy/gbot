@@ -505,8 +505,27 @@ func TestConvertEventToMsg_QueryEnd(t *testing.T) {
 func TestConvertEventToMsg_TurnEnd(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventTurnEnd})
-	if msg != nil {
-		t.Errorf("EventTurnEnd should return nil, got %T", msg)
+	te, ok := msg.(turnEndMsg)
+	if !ok {
+		t.Fatalf("EventTurnEnd should return turnEndMsg, got %T", msg)
+	}
+	if te.Agent != nil {
+		t.Errorf("main-engine turn_end Agent = %+v, want nil", te.Agent)
+	}
+}
+
+func TestConvertEventToMsg_TurnEndAgentPassthrough(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventTurnEnd,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore", Depth: 0},
+	})
+	te, ok := msg.(turnEndMsg)
+	if !ok {
+		t.Fatalf("agent EventTurnEnd should return turnEndMsg, got %T", msg)
+	}
+	if te.Agent == nil || te.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent = %+v, want ParentToolUseID p1 (sub-agent meta passes through)", te.Agent)
 	}
 }
 

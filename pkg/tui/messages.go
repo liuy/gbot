@@ -29,6 +29,14 @@ type turnStartMsg struct {
 	InputEstimate int // engine-side calibrated estimate of this turn's request input
 }
 
+// turnEndMsg signals that the engine has finished an agentic turn. Main-engine
+// turns pause the rate meter (the clock-stop tool_run applies, at turn
+// granularity); sub-agent turns (Agent != nil) are interior to a parent Agent
+// tool run and leave the main meter alone.
+type turnEndMsg struct {
+	Agent *types.AgentMeta
+}
+
 // streamMessageMsg delivers a full message added to conversation history.
 // Source: useStreaming hook onMessage callback.
 type streamMessageMsg struct {
