@@ -1,55 +1,112 @@
 package tui
 
 import (
+	"math"
 	"sync"
 	"time"
 
 	"github.com/liuy/gbot/pkg/utils"
 )
 
-// minRateSpan is the shortest observation interval Rate() will divide by.
-// Backlogged deltas (tool-call or turn end) land several samples apart within
-// 1-5ms; tokens over that span is noise with unbounded variance, not a rate.
-// 500ms equals the display's refresh period (app.go samples Rate() every
-// 500ms), so anything shorter can never be rendered stably anyway; Rate()
-// reports 0 until real spread accumulates.
-const minRateSpan = 500 * time.Millisecond
-
 // nowFn is rate.go's clock seam: tests drive exact sub-millisecond arrival
 // patterns without sleeping; production reads the wall clock. Tests that
 // override it must not run in parallel (they write this package variable).
 var nowFn = time.Now
 
-// TokenRate tracks streaming token arrivals in a sliding window for real-time
-// t/s display. All streaming data (text, thinking, tool params) is fed via Add.
+// rateHalfLives are the half-lives of the decayed-sum scales. Summing the
+// scales gives a kernel Σ 2^(-age/τ): the 20s tail lends inertia against
+// bursts (a turn-end backlog shifts the reading in proportion to its token
+// mass instead of replacing it), the 5s tail keeps a sustained rate change
+// visible within a couple of seconds. gbot streams run seconds to tens of
+// seconds, so a minute-scale third scale (the omp reference carries one)
+// would only add state without display value.
+var rateHalfLives = [2]time.Duration{5 * time.Second, 20 * time.Second}
+
+// meterPriorSec is pseudo-time padded into Rate()'s denominator (additive
+// smoothing): the reading starts conservative and converges monotonically to
+// the true rate as real evidence dilutes the pad. There is no evidence gate
+// (user decision): the kernel self-corrects a TTFT dump (a 300-token 5ms
+// burst reads ~600/0.31 ≈ 1.9k t/s instead of ~60k and slides to the true
+// rate within a second or two), and a dead stream's reading decays to zero
+// on its own because the denominator keeps advancing.
+const meterPriorSec = 0.3
+
+// decayedSums holds exponentially decayed token and time sums on one
+// half-life. time is the exact integral of the kernel over streamed time,
+// so tokens/time is a kernel-weighted rate and time doubles as the
+// effective window length.
+type decayedSums struct {
+	tokens   float64
+	time     float64 // seconds
+	halfLife time.Duration
+}
+
+// TokenRate tracks streaming token arrivals as a decayed-sum kernel for the
+// real-time t/s display, plus a burst-aware cumulative stream duration for
+// the query-end average. All streaming data (text, thinking, tool params)
+// is fed via Add. The meter's clock only runs inside a message: Pause
+// (tool_start, gbot's message boundary — omp's end) stops it so tool
+// execution neither ages the sums nor counts as stream time.
 type TokenRate struct {
-	mu      sync.Mutex
-	samples []rateSample
-	window  time.Duration
+	mu   sync.Mutex
+	sums [len(rateHalfLives)]decayedSums
+
+	// advancedTo is the wall time the sums were last decayed to.
+	advancedTo time.Time
+
+	// paused marks the between-messages clock stop. The first Add after a
+	// Pause re-arms the clock at its own timestamp (omp begin(): the tool
+	// gap is skipped, not decayed through).
+	paused bool
 
 	// Cumulative tracking for query-end average.
 	// totalStreamingNs sums the wall-clock duration of each burst
-	// (lastSampleTs - curBurstStart per burst).
+	// (Pause-time - curBurstStart per burst; the open burst runs to its
+	// last sample).
 	totalStreamingNs int64
 	curBurstStart    time.Time
 	lastSampleTs     time.Time
 }
 
-type rateSample struct {
-	ts     time.Time
-	tokens int
-}
-
 func NewTokenRate() *TokenRate {
-	return &TokenRate{window: 2 * time.Second}
+	r := &TokenRate{}
+	for k, hl := range rateHalfLives {
+		r.sums[k].halfLife = hl
+	}
+	return r
 }
 
-// Add records tokens received at the current time.
-func (r *TokenRate) Add(text string) {
+// Clear wipes the meter entirely, sums included. Session boundary use only
+// (/clear, new session): Reset seeds the next query of the SAME session from
+// the surviving sums, but a different session's rate is another world's
+// recording and must not blend into this one's first delta.
+func (r *TokenRate) Clear() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, hl := range rateHalfLives {
+		r.sums[k] = decayedSums{halfLife: hl}
+	}
+	r.advancedTo = time.Time{}
+	r.paused = false
+	r.totalStreamingNs = 0
+	r.curBurstStart = time.Time{}
+	r.lastSampleTs = time.Time{}
+}
+
+// Add records tokens received at the current time. tokens is the engine's
+// calibrated estimate carried on the wire; when absent (tests, error paths)
+// it falls back to the seed-model estimate of text — same estimator family,
+// just unfitted.
+func (r *TokenRate) Add(text string, tokens int) {
 	if r == nil || text == "" {
 		return
 	}
-	tokens := utils.EstimateTokens(text)
+	if tokens <= 0 {
+		tokens = utils.EstimateTokens(text)
+	}
 	if tokens == 0 {
 		return
 	}
@@ -57,62 +114,147 @@ func (r *TokenRate) Add(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.samples = append(r.samples, rateSample{ts: now, tokens: tokens})
-	r.evict()
+	if r.paused {
+		// First delta of the next message: re-arm the clock here so the
+		// tool gap is skipped entirely (omp: "Tool execution between
+		// messages neither ages the sums nor counts as time").
+		r.paused = false
+		r.advancedTo = now
+	} else if r.advancedTo.IsZero() {
+		r.advancedTo = now
+	} else {
+		// Decay the kernel up to now and accumulate the time integral,
+		// which only grows on an Add, i.e. with new evidence.
+		r.ageLocked(now)
+	}
+	for k := range r.sums {
+		r.sums[k].tokens += float64(tokens)
+	}
 
-	// Burst detection: gap > 2s means new burst (tool exec, thinking pause).
-	// Close previous burst by accumulating its wall-clock duration.
-	if !r.curBurstStart.IsZero() && now.Sub(r.lastSampleTs) > 2*time.Second {
-		r.totalStreamingNs += r.lastSampleTs.Sub(r.curBurstStart).Nanoseconds()
-		r.curBurstStart = now
-	} else if r.curBurstStart.IsZero() {
+	// Bursts are delimited by Pause (message boundaries), not by a sample
+	// gap: a mid-message thinking stall is message span (omp runs stream
+	// time begin→end), so it stays inside one burst.
+	if r.curBurstStart.IsZero() {
 		r.curBurstStart = now
 	}
 	r.lastSampleTs = now
 }
 
-// Rate returns tokens/second over the samples' own span (last - first).
-// Same-instant samples AND any span below minRateSpan return 0: there is no
-// usable observation interval (burst jitter packs deltas into the same
-// millisecond; backlog flushes land several samples a few ms apart, and
-// tokens over such spans displayed thousands of t/s). A later sample that
-// opens the span restores the value.
-func (r *TokenRate) Rate() float64 {
+// ageLocked decays the kernel sums up to now and accumulates the time
+// integral (omp #advance(nowMs)). No-op when the clock has not been armed
+// (advancedTo zero) or now is not past it. Caller holds r.mu.
+//
+// Mutate-exemption note (make mutate): boundary mutants of the dt<=0 guard
+// (dt<0, dt<=-1) are semantically equivalent — the only dt they treat
+// differently is 0, and aging by dt=0 is bit-identical to returning
+// (Exp2(-0)=1.0 exactly, integral (1-f)=0 exactly, advancedTo assigned its
+// own value), so no test can separate them from the original.
+func (r *TokenRate) ageLocked(now time.Time) {
+	if r.advancedTo.IsZero() {
+		return
+	}
+	dt := now.Sub(r.advancedTo)
+	if dt <= 0 {
+		return
+	}
+	for k := range r.sums {
+		f := math.Exp2(-float64(dt) / float64(r.sums[k].halfLife))
+		r.sums[k].tokens *= f
+		// halfLife converts to seconds before the integral: the time
+		// field is seconds, the Durations are nanoseconds.
+		r.sums[k].time = r.sums[k].time*f + r.sums[k].halfLife.Seconds()/math.Ln2*(1-f)
+	}
+	r.advancedTo = now
+}
+
+// Pause stops the meter's clock at a message boundary (tool_start). Like
+// omp end()'s #advance(nowMs), the sums are first aged to the boundary: the
+// silent tail from the last delta to the message end is stream time, so it
+// decays the tokens and lands in the time integral before the clock stops.
+// A Pause while already paused ages nothing — that interval is tool
+// execution, not stream time. The open burst closes at the pause time — a
+// message's span runs from its first delta to the boundary, silent tail
+// included.
+func (r *TokenRate) Pause() {
 	if r == nil {
-		return 0
+		return
+	}
+	now := nowFn()
+	r.mu.Lock()
+	// Mutate-exemption note (make mutate): an unlock-after-return mutant of
+	// this defer is unobservable in the deterministic single-goroutine
+	// tests, but the lock is real in production — the update loop, the tick
+	// cadence and (in the wui twin) WS event batches race here; the
+	// hammer test only catches it under -race.
+	defer r.mu.Unlock()
+	if !r.paused {
+		r.ageLocked(now)
+	}
+	if !r.curBurstStart.IsZero() {
+		r.totalStreamingNs += now.Sub(r.curBurstStart).Nanoseconds()
+		r.curBurstStart = time.Time{}
+	}
+	r.paused = true
+}
+
+// Rate returns the kernel-weighted tokens/second — Σtokens/Σtime across the
+// decayed scales — or ok=false while the evidence gate is closed or the
+// clock is paused for tool execution (the TUI omits the segment, wui shows
+// 0.0 t/s). It is a pure read: the decay to now is previewed, never written
+// back, so reading at a high display cadence cannot distort the sums.
+// Approved divergence from omp: omp freezes its last reading across the gap
+// (rate() computes with dt=0 while between messages); gbot returns no
+// reading — 0.0 t/s is more honest than a stale frozen value.
+func (r *TokenRate) Rate() (float64, bool) {
+	if r == nil {
+		return 0, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.evict()
-	if len(r.samples) == 0 {
-		return 0
+	if r.paused {
+		return 0, false
 	}
-	total := 0
-	for _, s := range r.samples {
-		total += s.tokens
+	// Between Reset and the first delta of the query (TTFT): the seeded sums
+	// are last query's recording, and the bar belongs to this query — no
+	// reading until the first delta arms the clock.
+	if r.advancedTo.IsZero() {
+		return 0, false
 	}
-	elapsed := r.samples[len(r.samples)-1].ts.Sub(r.samples[0].ts)
-	if elapsed < minRateSpan {
-		return 0
+	dt := nowFn().Sub(r.advancedTo)
+	var totalTokens, totalTime float64
+	for k := range r.sums {
+		f := math.Exp2(-float64(dt) / float64(r.sums[k].halfLife))
+		integral := r.sums[k].halfLife.Seconds() / math.Ln2 * (1 - f)
+		totalTokens += r.sums[k].tokens * f
+		totalTime += r.sums[k].time*f + integral
 	}
-	return float64(total) / elapsed.Seconds()
+	return totalTokens / (totalTime + meterPriorSec), true
 }
 
-// Reset clears all state (call at query start).
+// Reset starts a new query. The rate sums are kept on purpose: like omp's
+// seed(), the previous query's evidence carries over ("even short turns
+// read immediately... the reading holds until the next message blends with
+// it"), so the first deltas of the new query blend with a live reading.
+// Keeping the sums is the seed equivalent — and simpler — since the previous
+// query's evidence is still in the kernel and decays naturally into the new
+// one. Per-query accounting (stream duration, burst state, pause flag) still
+// clears, and advancedTo zeroes so no cross-query wall time ages the sums
+// before the first delta re-arms the clock.
 func (r *TokenRate) Reset() {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.samples = nil
+	r.advancedTo = time.Time{}
+	r.paused = false
 	r.totalStreamingNs = 0
 	r.curBurstStart = time.Time{}
 	r.lastSampleTs = time.Time{}
 }
 
 // StreamDuration returns the total wall-clock time spent streaming,
-// excluding gaps between bursts (tool execution, thinking pauses).
+// excluding tool execution between messages (Pause-delimited bursts).
 func (r *TokenRate) StreamDuration() time.Duration {
 	if r == nil {
 		return 0
@@ -127,22 +269,4 @@ func (r *TokenRate) StreamDuration() time.Duration {
 		return 0
 	}
 	return time.Duration(totalNs)
-}
-
-// evict removes expired samples and compacts the backing array to prevent
-// unbounded memory growth over long streaming sessions.
-func (r *TokenRate) evict() {
-	cutoff := nowFn().Add(-r.window)
-	i := 0
-	for i < len(r.samples) && r.samples[i].ts.Before(cutoff) {
-		i++
-	}
-	if i > 0 {
-		n := copy(r.samples, r.samples[i:])
-		r.samples = r.samples[:n]
-	}
-	// Compact if we've drained more than half the capacity.
-	if cap(r.samples) > 32 && len(r.samples) < cap(r.samples)/4 {
-		r.samples = append([]rateSample(nil), r.samples...)
-	}
 }

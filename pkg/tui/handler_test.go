@@ -299,6 +299,7 @@ func TestConvertEventToMsg_ToolUseDelta_WithPartialInput(t *testing.T) {
 			Delta:   `{"file":"a.go"}`,
 			Summary: "a.go",
 		},
+		Tokens: 7,
 	})
 	tdm, ok := msg.(toolParamDeltaMsg)
 	if !ok {
@@ -309,6 +310,9 @@ func TestConvertEventToMsg_ToolUseDelta_WithPartialInput(t *testing.T) {
 	}
 	if tdm.Summary != "a.go" {
 		t.Errorf("Summary = %q, want %q", tdm.Summary, "a.go")
+	}
+	if tdm.Tokens != 7 {
+		t.Errorf("Tokens = %d, want 7 (engine estimate passes through)", tdm.Tokens)
 	}
 }
 
@@ -377,6 +381,8 @@ func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
 	msg := h.convertEventToMsg(types.QueryEvent{
 		Type:     types.EventThinkingDelta,
 		Thinking: &types.ThinkingEvent{Text: "reasoning..."},
+		Tokens:   7,
+		Agent:    &types.AgentMeta{ParentToolUseID: "p9"},
 	})
 	if msg == nil {
 		t.Fatal("EventThinkingDelta with text should not return nil")
@@ -387,6 +393,12 @@ func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
 	}
 	if dm.Text != "reasoning..." {
 		t.Errorf("Text = %q, want %q", dm.Text, "reasoning...")
+	}
+	if dm.Tokens != 7 {
+		t.Errorf("Tokens = %d, want 7 (engine estimate passes through)", dm.Tokens)
+	}
+	if dm.Agent == nil || dm.Agent.ParentToolUseID != "p9" {
+		t.Errorf("Agent = %+v, want ParentToolUseID p9 (sub-agent meta passes through)", dm.Agent)
 	}
 }
 
@@ -685,9 +697,10 @@ func TestConvertEventToMsg_AgentUsage(t *testing.T) {
 func TestConvertEventToMsg_AgentTextDelta_ProducesTextDeltaMsg(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:  types.EventTextDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
-		Text:  "sub-agent text",
+		Type:   types.EventTextDelta,
+		Agent:  &types.AgentMeta{ParentToolUseID: "p1"},
+		Text:   "sub-agent text",
+		Tokens: 7,
 	})
 	td, ok := msg.(textDeltaMsg)
 	if !ok {
@@ -701,6 +714,9 @@ func TestConvertEventToMsg_AgentTextDelta_ProducesTextDeltaMsg(t *testing.T) {
 	}
 	if td.Text != "sub-agent text" {
 		t.Errorf("Text = %q, want %q", td.Text, "sub-agent text")
+	}
+	if td.Tokens != 7 {
+		t.Errorf("Tokens = %d, want 7 (engine estimate passes through)", td.Tokens)
 	}
 }
 

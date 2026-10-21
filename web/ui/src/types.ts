@@ -171,6 +171,10 @@ export type HistoryChatMsg = {
 export type QueryEvent = {
   type: string
   text?: string
+  /** Engine-side calibrated token estimate of the delta payload (delta
+   * events only; absent when zero). Single estimation source for the
+   * display-side rate meters. */
+  tokens?: number
   session_id?: string
   /** Attachment/query_start payload (Go types.Message JSON tags). Attachment
    * mode "prompt" carries the original user text in prompt; queued-message

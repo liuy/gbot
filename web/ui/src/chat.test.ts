@@ -1062,23 +1062,29 @@ describe('chat integration', () => {
       { type: 'thinking_start', agent },
     ])
 
-    // Feed sub-agent thinking text
-    const longThinking = 'B'.repeat(200)
+    // First delta already reads (no gate): 40 wire tokens read at the next
+    // 200ms tick as 80·(decayed) tokens over 0.396s of integral plus the
+    // 0.3s prior ≈ 113 t/s — prior-suppressed, never a fabricated 0.0.
+    dispatchEvents([
+      { type: 'thinking_delta', agent, thinking: { text: 'B'.repeat(40) }, tokens: 40 },
+    ])
+    vi.advanceTimersByTime(200)
+    const firstEl = findRateSpan()
+    expect(firstEl?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
+    const first = parseFloat(firstEl!.textContent!)
+    expect(first).toBeGreaterThan(100)
+    expect(first).toBeLessThan(130)
+
+    // Sustained wire-token deltas keep a numeric reading.
     for (let i = 0; i < 5; i++) {
-      vi.advanceTimersByTime(100)
+      vi.advanceTimersByTime(1000)
       dispatchEvents([
-        { type: 'thinking_delta', agent, thinking: { text: longThinking } },
+        { type: 'thinking_delta', agent, thinking: { text: 'B'.repeat(50) }, tokens: 50 },
       ])
     }
-
-    // Find rate element — should show non-zero after sub-agent thinking
-    const allSpans = document.querySelectorAll('span')
-    let rateEl: HTMLElement | null = null
-    allSpans.forEach(s => {
-      if (s.textContent && s.textContent.includes('t/s')) rateEl = s as HTMLElement
-    })
-    expect(rateEl).toBeTruthy()
-    expect(rateEl!.textContent).not.toMatch(/^0\.0 t\/s$/)
+    vi.advanceTimersByTime(200)
+    const rateEl = findRateSpan()
+    expect(rateEl?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
     vi.useRealTimers()
   })
 
@@ -1099,24 +1105,222 @@ describe('chat integration', () => {
       { type: 'turn_start', agent },
     ])
 
-    const longText = 'B'.repeat(200)
+    // First delta already reads (no gate): a numeric reading from the
+    // first 200ms tick.
+    dispatchEvents([
+      { type: 'text_delta', agent, text: 'B'.repeat(40), tokens: 40 },
+    ])
+    vi.advanceTimersByTime(200)
+    const firstEl = findRateSpan()
+    expect(firstEl?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
+    const first = parseFloat(firstEl!.textContent!)
+    expect(first).toBeGreaterThan(100)
+    expect(first).toBeLessThan(130)
+
     for (let i = 0; i < 5; i++) {
-      vi.advanceTimersByTime(100)
+      vi.advanceTimersByTime(1000)
       dispatchEvents([
-        { type: 'text_delta', agent, text: longText },
+        { type: 'text_delta', agent, text: 'B'.repeat(50), tokens: 50 },
       ])
     }
-
-    const allSpans2 = document.querySelectorAll('span')
-    let rateEl2: HTMLElement | null = null
-    allSpans2.forEach(s => {
-      if (s.textContent && s.textContent.includes('t/s')) rateEl2 = s as HTMLElement
-    })
-    expect(rateEl2).toBeTruthy()
-    expect(rateEl2!.textContent).not.toMatch(/^0\.0 t\/s$/)
+    vi.advanceTimersByTime(200)
+    const rateEl = findRateSpan()
+    expect(rateEl?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
     vi.useRealTimers()
   })
 
+  // The rate span is the progress-bar child right after the ↑/↓ token spans
+  // (root children: dot, inEl, outEl, suffix, ·, rateEl, ...).
+  function findRateSpan(): HTMLElement | null {
+    const inEl = Array.from(document.querySelectorAll('span')).find(
+      (s) => s.textContent?.startsWith('↑'),
+    )
+    return (inEl?.parentElement?.children[5] as HTMLElement) ?? null
+  }
+
+  it('live ↓output counts wire tokens and reconciles on usage', () => {
+    // Full path: text_delta tokens → tokenRate.localTokens → ↓output in the
+    // 200ms tick → usage event zeroes the local sum (authoritative count
+    // takes over, no double counting).
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('write a long answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    const outEl = () => {
+      const el = Array.from(document.querySelectorAll('span')).find(
+        (s) => s.textContent?.startsWith('↓'),
+      )
+      return el as HTMLElement
+    }
+    for (let i = 0; i < 3; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'streamed chunk of text', tokens: 40 }])
+      vi.advanceTimersByTime(1000)
+    }
+    vi.advanceTimersByTime(200)
+    expect(outEl()?.textContent).toBe('↓120')
+
+    dispatchEvents([
+      { type: 'usage', usage_event: { input_tokens: 10, output_tokens: 200 } },
+    ])
+    expect(outEl()?.textContent).toBe('↓200')
+    // The local sum was reconciled away: further ticks keep the
+    // authoritative value instead of re-adding it.
+    vi.advanceTimersByTime(200)
+    expect(outEl()?.textContent).toBe('↓200')
+    vi.useRealTimers()
+  })
+
+  it('rate shows a prior-suppressed reading immediately, then keeps reading', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('long answer please')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    // 90 tokens in one delta: the next tick already shows a number —
+    // 180·(decayed) tokens over 0.396s of integral plus the 0.3s prior ≈
+    // 254 t/s (prior-suppressed; a span-based read would report ~450k).
+    dispatchEvents([{ type: 'text_delta', text: 'a chunk of streamed words', tokens: 90 }])
+    vi.advanceTimersByTime(200)
+    const firstEl = findRateSpan()
+    expect(firstEl?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
+    const first = parseFloat(firstEl!.textContent!)
+    expect(first).toBeGreaterThan(230)
+    expect(first).toBeLessThan(280)
+
+    // 4.4s later another 150 tokens: still numeric — the reading blends.
+    vi.advanceTimersByTime(4400)
+    dispatchEvents([{ type: 'text_delta', text: 'more words stream onward', tokens: 150 }])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toMatch(/^[0-9]+\.[0-9] t\/s$/)
+    vi.useRealTimers()
+  })
+
+  it('tool_run pauses the rate display; the resumed reading excludes the tool gap', () => {
+    // omp: "Tool execution between messages neither ages the sums nor counts
+    // as time" — tool_run is the wui's execution boundary. The display falls
+    // back to 0.0 t/s while paused, and the resumed reading stays near its
+    // pre-tool value instead of sliding down across the tool duration.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('long answer please')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+
+    const rateValue = () => parseFloat(findRateSpan()?.textContent ?? '')
+    for (let i = 0; i < 12; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'chunk of streamed words', tokens: 100 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    const r0 = rateValue()
+    expect(r0).toBeGreaterThan(0)
+
+    dispatchEvents([{ type: 'tool_run', tool_use: { id: 't1', name: 'Bash' } }])
+    vi.advanceTimersByTime(200)
+    expect(findRateSpan()?.textContent).toBe('0.0 t/s')
+
+    vi.advanceTimersByTime(5000) // tool execution
+    dispatchEvents([{ type: 'text_delta', text: 'resumed words arrive', tokens: 100 }])
+    vi.advanceTimersByTime(200)
+    // Gap skipped, not aged: with gap-aging this reads ~0.55x r0.
+    const r1 = rateValue()
+    expect(r1).toBeGreaterThanOrEqual(0.9 * r0)
+    expect(r1).toBeLessThanOrEqual(1.7 * r0)
+    vi.useRealTimers()
+  })
+
+  it('REPRO: param deltas after tool_start un-pause the meter and the rate slides during exec', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run sleep 10')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'thinking_start' },
+    ])
+    for (let i = 0; i < 12; i++) {
+      dispatchEvents([{ type: 'thinking_delta', thinking: { text: 'planning the sleep' }, tokens: 60 }])
+      dispatchEvents([{ type: 'text_delta', text: 'running sleep now', tokens: 60 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()?.textContent ?? '0')).toBeGreaterThan(0)
+    // tool_start only opens the block; params still stream after it.
+    dispatchEvents([{ type: 'tool_start', tool_use: { id: 'tb1', name: 'Bash' } }])
+    dispatchEvents([
+      { type: 'tool_param_delta', partial_input: { id: 'tb1', name: 'Bash', delta: '{"command":"sleep 10 && echo done","timeout"', summary: 'sleep 10' }, tokens: 29 },
+    ])
+    dispatchEvents([{ type: 'tool_run', tool_use: { id: 'tb1', name: 'Bash' } }])
+    for (let i = 0; i < 20; i++) {
+      vi.advanceTimersByTime(500)
+      const got = findRateSpan()?.textContent
+      if (got !== '0.0 t/s') {
+        throw new Error(`tick ${i}: rate = ${got}, want '0.0 t/s'`)
+      }
+    }
+    vi.useRealTimers()
+  })
+  it('second query inherits the previous reading immediately (Reset seeding)', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('first query')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
+    for (let i = 0; i < 12; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'chunk of streamed words', tokens: 100 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    const r0 = parseFloat(findRateSpan()?.textContent ?? '0')
+    expect(r0).toBeGreaterThan(0)
+    dispatchEvents([{ type: 'query_end' }])
+    // Next query: the first tick after query_start must already show the
+    // seeded reading, not a cold 0.0 (omp seed parity).
+    setTextarea('second query')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
+    vi.advanceTimersByTime(200)
+    // TTFT: no delta yet — the seeded reading must not play back over the
+    // new query's wait; the bar reads 0.0.
+    const ttft = document.body.textContent?.match(/([\d.]+) t\/s/g) ?? []
+    expect(ttft.some((s) => parseFloat(s) > 0)).toBe(false)
+    dispatchEvents([{ type: 'text_delta', text: 'first', tokens: 1 }])
+    vi.advanceTimersByTime(200)
+    const seeded = document.body.textContent?.match(/([\d.]+) t\/s/g) ?? []
+    expect(seeded.some((s) => parseFloat(s) > 0)).toBe(true)
+    // Sidebar new-session: connect_status with a different sessionID wipes
+    // the meter — the new session starts with no old-session blend.
+    dispatch({ type: 'connect_status', connected: true, sessionID: 'other-session' })
+    setTextarea('new session query')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
+    dispatchEvents([{ type: 'text_delta', text: 'first', tokens: 1 }])
+    vi.advanceTimersByTime(200)
+    const fresh = parseFloat(findRateSpan()?.textContent ?? '999')
+    expect(fresh).toBeLessThanOrEqual(10) // 2 tokens / 0.3s ≈ 6.7, no blend
+    // Reconnect to the same session keeps the sums (seed survives).
+    dispatch({ type: 'connect_status', connected: true, sessionID: 'other-session' })
+    expect(() => dispatchEvents([{ type: 'text_delta', text: 'x', tokens: 1 }])).not.toThrow()
+    vi.useRealTimers()
+  })
   it('reconnect does not duplicate history messages', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -2587,10 +2791,10 @@ describe('chat integration', () => {
 
     dispatchEvents([
       { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
-      { type: 'tool_param_delta', partial_input: { delta: '{"command":"ls"}', summary: 'ls' } },
+      { type: 'tool_param_delta', partial_input: { delta: '{"command":"ls"}', summary: 'ls' }, tokens: 5 },
     ])
 
-    expect(addSpy).toHaveBeenCalledWith('{"command":"ls"}')
+    expect(addSpy).toHaveBeenCalledWith('{"command":"ls"}', 5)
     addSpy.mockRestore()
   })
 

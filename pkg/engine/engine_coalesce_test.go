@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // TestEmitEvent_CoalescesTextDeltas verifies that multiple text_delta events
@@ -925,4 +926,98 @@ func TestEmitEvent_E2E_DeltaStormReduction(t *testing.T) {
 			t.Errorf("expected 1 coalesced param event from 100 deltas, got %d", paramCount)
 		}
 	})
+}
+
+// TestFlushTextDeltaCarriesTokens verifies the flushed text_delta event
+// carries the calibrated token estimate of the coalesced text: the engine is
+// the single estimation source for display-side rate meters.
+func TestFlushTextDeltaCarriesTokens(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	const text = "hello world this is a streamed chunk"
+	eng.textCoalesce.write(text, time.Hour, eng.flushTextBuf)
+	eng.flushTextBuf()
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 flushed event, got %d", len(md.events))
+	}
+	evt := md.events[0]
+	if evt.Type != types.EventTextDelta {
+		t.Fatalf("event type = %s, want text_delta", evt.Type)
+	}
+	if evt.Text != text {
+		t.Errorf("Text = %q, want %q", evt.Text, text)
+	}
+	// Fresh engine has no fit, so the calibrated estimator is the seed model.
+	if want := utils.EstimateTokens(text); evt.Tokens != want {
+		t.Errorf("Tokens = %d, want %d (seed-model estimate)", evt.Tokens, want)
+	}
+}
+
+// TestFlushThinkDeltaCarriesTokens verifies thinking flush attaches tokens.
+func TestFlushThinkDeltaCarriesTokens(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	const text = "reasoning about the answer step by step"
+	eng.thinkCoalesce.write(text, time.Hour, eng.flushThinkBuf)
+	eng.flushThinkBuf()
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 flushed event, got %d", len(md.events))
+	}
+	evt := md.events[0]
+	if evt.Type != types.EventThinkingDelta {
+		t.Fatalf("event type = %s, want thinking_delta", evt.Type)
+	}
+	if evt.Thinking == nil || evt.Thinking.Text != text {
+		t.Fatalf("Thinking.Text = %+v, want %q", evt.Thinking, text)
+	}
+	if want := utils.EstimateTokens(text); evt.Tokens != want {
+		t.Errorf("Tokens = %d, want %d (seed-model estimate)", evt.Tokens, want)
+	}
+}
+
+// TestFlushParamDeltaCarriesTokens verifies tool-param flush attaches tokens
+// (wui feeds param deltas into the rate meter alongside text).
+func TestFlushParamDeltaCarriesTokens(t *testing.T) {
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &mockProvider{},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	const delta = `{"command":"ls -la /tmp"}`
+	eng.paramCoalesce.write("t1", delta, &types.PartialInputEvent{ID: "t1"}, time.Hour, eng.flushParamBuf)
+	eng.flushParamBuf()
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 flushed event, got %d", len(md.events))
+	}
+	evt := md.events[0]
+	if evt.Type != types.EventToolParamDelta {
+		t.Fatalf("event type = %s, want tool_param_delta", evt.Type)
+	}
+	if evt.PartialInput == nil || evt.PartialInput.Delta != delta {
+		t.Fatalf("PartialInput.Delta = %+v, want %q", evt.PartialInput, delta)
+	}
+	if want := utils.EstimateTokens(delta); evt.Tokens != want {
+		t.Errorf("Tokens = %d, want %d (seed-model estimate)", evt.Tokens, want)
+	}
 }

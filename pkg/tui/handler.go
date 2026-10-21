@@ -191,7 +191,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return textStartMsg{Agent: evt.Agent}
 
 	case types.EventTextDelta:
-		return textDeltaMsg{Text: evt.Text, Agent: evt.Agent}
+		return textDeltaMsg{Text: evt.Text, Tokens: evt.Tokens, Agent: evt.Agent}
 
 	case types.EventTextEnd:
 		return textEndMsg{Agent: evt.Agent}
@@ -265,7 +265,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 
 	case types.EventThinkingDelta:
 		if evt.Thinking != nil && evt.Thinking.Text != "" {
-			return thinkingDeltaMsg{Text: evt.Thinking.Text, Agent: evt.Agent}
+			return thinkingDeltaMsg{Text: evt.Thinking.Text, Tokens: evt.Tokens, Agent: evt.Agent}
 		}
 
 	case types.EventThinkingEnd:
@@ -292,6 +292,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				ID:       evt.PartialInput.ID,
 				Delta:    evt.PartialInput.Delta,
 				Summary:  evt.PartialInput.Summary,
+				Tokens:   evt.Tokens,
 				Agent:    evt.Agent,
 				IsSearch: evt.PartialInput.IsSearch,
 				IsRead:   evt.PartialInput.IsRead,

@@ -958,6 +958,30 @@ func TestQueryEventJSON(t *testing.T) {
 	if got.Text != "hello" {
 		t.Errorf("Text = %q, want %q", got.Text, "hello")
 	}
+
+	// Wire round-trip of the engine-attached token estimate.
+	withTokens := types.QueryEvent{Type: types.EventTextDelta, Text: "hi", Tokens: 37}
+	data, err = json.Marshal(withTokens)
+	if err != nil {
+		t.Fatalf("Marshal withTokens: %v", err)
+	}
+	if !strings.Contains(string(data), `"tokens":37`) {
+		t.Errorf("marshal with Tokens = %s, want it to contain \"tokens\":37", data)
+	}
+	var gotTokens types.QueryEvent
+	if err := json.Unmarshal(data, &gotTokens); err != nil {
+		t.Fatalf("Unmarshal withTokens: %v", err)
+	}
+	if gotTokens.Tokens != 37 {
+		t.Errorf("Tokens round-trip = %d, want 37", gotTokens.Tokens)
+	}
+	zero, err := json.Marshal(types.QueryEvent{Type: types.EventTextDelta, Text: "hi"})
+	if err != nil {
+		t.Fatalf("Marshal zero: %v", err)
+	}
+	if strings.Contains(string(zero), `"tokens"`) {
+		t.Errorf("marshal without Tokens = %s, want tokens omitted", zero)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -522,13 +522,14 @@ func (s *ReplState) ResponseCharCount() int {
 }
 
 // AddResponseChars adds n to the response character counter and the
-// token rate tracker. Called on text/tool-param deltas.
-func (s *ReplState) AddResponseChars(text string) {
+// token rate tracker. Called on text/tool-param deltas. tokens is the
+// engine-attached estimate (0 → Add falls back to local estimation).
+func (s *ReplState) AddResponseChars(text string, tokens int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responseCharCount += len(text)
 	if s.tokenRate != nil {
-		s.tokenRate.Add(text)
+		s.tokenRate.Add(text, tokens)
 	}
 }
 
@@ -870,6 +871,9 @@ func (s *ReplState) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = []MessageView{}
+	if s.tokenRate != nil {
+		s.tokenRate.Clear() // session boundary: sums die with the session
+	}
 	s.streaming = false
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
@@ -922,7 +926,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.AppendChunk(m.Text)
 		}
-		a.repl.AddResponseChars(m.Text)
+		a.repl.AddResponseChars(m.Text, m.Tokens)
 		return true, a.readEvents()
 
 	case textStartMsg:
@@ -934,8 +938,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case toolRunMsg:
-		// No-op: tool execution started after input accumulation.
-		// Sub-agent tool_run is informational; tool_start already added the entry.
+		// Execution boundary (omp end): tool_start only opens the block —
+		// params stream after it and are generation tokens. The clock stops
+		// here, where execution actually begins.
+		a.repl.TokenRate().Pause()
 		return true, a.readEvents()
 
 	case turnStartMsg:
@@ -1032,7 +1038,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask}
 			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
-		a.repl.AddResponseChars(m.Delta)
+		a.repl.AddResponseChars(m.Delta, m.Tokens)
 		return true, a.readEvents()
 
 	case toolOutputDeltaMsg:
@@ -1255,7 +1261,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.PendingThinkingDelta(m.Text)
 		}
-		a.repl.TokenRate().Add(m.Text)
+		a.repl.TokenRate().Add(m.Text, m.Tokens)
 		return true, a.readEvents()
 
 	case thinkingEndMsg:

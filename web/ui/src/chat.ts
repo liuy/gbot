@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, type ReminderRow } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, formatTokenCount, type ReminderRow } from './utils'
 import { initShareMenu, extractShareText, type ShareSource } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -1146,7 +1146,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           committedToolCount,
           progressUsage.outputTokens,
         )
-        progressHandles.rateEl.textContent = r > 0 ? r.toFixed(1) + ' t/s' : '0.0 t/s'
+        // Live ↓output: authoritative usage-so-far plus wire tokens since the
+        // last usage event, so the counter moves during streaming.
+        progressHandles.outEl.textContent = '↓' + formatTokenCount(progressUsage.outputTokens + tokenRate.localTokens())
+        // null only while paused (tool execution): display 0.0 rather than
+        // an em-dash (user preference — the dash reads as a visual glitch).
+        progressHandles.rateEl.textContent = r !== null ? r.toFixed(1) + ' t/s' : '0.0 t/s'
       }
     }, 200)
   }
@@ -1590,19 +1595,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             container.push(newEntry.pendingBlock)
             currentSubAgentThinking.set(parentID, newEntry)
             newEntry.pendingBlock.text += e.thinking.text
-            tokenRate.add(e.thinking.text)
+            tokenRate.add(e.thinking.text, e.tokens ?? 0)
             writeThinkingText(newEntry.p, newEntry.pendingBlock.text)
             domContainer.appendChild(newEntry.p.parentElement!)
             return
           }
           entry.pendingBlock.text += e.thinking.text
-          tokenRate.add(e.thinking.text)
+          tokenRate.add(e.thinking.text, e.tokens ?? 0)
           writeThinkingText(entry.p, entry.pendingBlock.text)
           return
         }
         if (!currentThinking) return
         currentThinking.pendingBlock.text += e.thinking.text
-        tokenRate.add(e.thinking.text)
+        tokenRate.add(e.thinking.text, e.tokens ?? 0)
         writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
         return
       }
@@ -1637,7 +1642,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'text_delta': {
         if (!e.text) return
         if (e.agent) {
-          tokenRate.add(e.text)
+          tokenRate.add(e.text, e.tokens ?? 0)
           const parentID = e.agent.parent_tool_use_id
           const container = pendingChildrenFor(parentID)
           if (!container) return
@@ -1677,7 +1682,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (currentPendingText) {
           currentPendingText.block.text += e.text
-          tokenRate.add(e.text)
+          tokenRate.add(e.text, e.tokens ?? 0)
           if (currentTextDiv) {
             morphHtml(currentTextDiv, renderMarkdown(currentPendingText.block.text))
       wireCopyButtons(currentTextDiv)
@@ -1754,7 +1759,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'tool_param_delta': {
-        if (e.partial_input?.delta) tokenRate.add(e.partial_input.delta)
+        if (e.partial_input?.delta) tokenRate.add(e.partial_input.delta, e.tokens ?? 0)
         if (!e.partial_input || !e.partial_input.summary) return
         const targetId = e.partial_input.id
         const summary = e.partial_input.summary
@@ -1772,6 +1777,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'tool_run': {
+        // Execution boundary (omp end): params may still stream between
+        // tool_start and here — those are generation tokens. From tool_run
+        // until the next delta nothing flows, so the clock stops.
+        tokenRate.pause()
         if (!e.tool_use) return
         const ruEntry = toolEntries.get(e.tool_use.id)
         if (!ruEntry) return
@@ -1840,6 +1849,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const u = e.usage_event
         progressUsage.inputTokens += u.input_tokens
         progressUsage.outputTokens += u.output_tokens
+        // The billed count now covers the streamed deltas: drop the local
+        // running sum so ↓output does not double-count them.
+        tokenRate.reconcileLocal()
         progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
         progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
         // contextUsed = this turn's total tokens in context (not cumulative)
@@ -2325,8 +2337,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModel(msg.model ?? '')
         header.hideContextBreakdown()
         inputBar.setConnected(msg.connected)
-        resetAllState()
-        if (msg.inputHistory) inputHistory.load(msg.inputHistory)
+    resetAllState()
+    if (msg.sessionID && msg.sessionID !== currentSessionID) {
+      // New session (sidebar new / session_new): the meter's sums are the
+      // old session's recording and must not seed this one. A reconnect to
+      // the same session keeps them.
+      tokenRate.clear()
+    }
+    if (msg.inputHistory) inputHistory.load(msg.inputHistory)
         taskPanel.setTasks([])
         scrollBtn.classList.add('opacity-0', 'pointer-events-none')
         if (msg.sessionID) currentSessionID = msg.sessionID

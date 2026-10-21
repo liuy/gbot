@@ -1772,16 +1772,24 @@ func truncate(s string, n int) string {
 func (e *Engine) flushTextBuf() {
 	e.textCoalesce.flush(func(text string) {
 		slog.Info("engine:flush_text", "agent", e.agentType, "len", len(text), "preview", truncate(text, 40))
-		e.dispatcher.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: text})
+		// Token estimate computed once per coalesced flush so every consumer
+		// (TUI, wui) shares one source instead of re-estimating locally.
+		// Lock chain here is coalesceMu (emitEvent, deferred) → e.mu.RLock
+		// (modelKey reads provider/model) → calibMu (ratiosFor); the
+		// e.mu → calibMu segment matches the global order (see Engine
+		// field docs), and no path takes calibMu then coalesceMu.
+		e.dispatcher.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: text, Tokens: e.EstimateTokensCalibrated(text)})
 	})
 }
 
 func (e *Engine) flushThinkBuf() {
 	e.thinkCoalesce.flush(func(text string) {
 		slog.Info("engine:flush_think", "agent", e.agentType, "len", len(text), "preview", truncate(text, 40))
+		// Same coalesceMu → e.mu.RLock → calibMu chain as flushTextBuf.
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:     types.EventThinkingDelta,
 			Thinking: &types.ThinkingEvent{Text: text},
+			Tokens:   e.EstimateTokensCalibrated(text),
 		})
 	})
 }
@@ -1801,9 +1809,11 @@ func (e *Engine) flushParamBuf() {
 			pi.IsLsp = m.IsLsp
 			pi.IsTask = m.IsTask
 		}
+		// Same coalesceMu → e.mu.RLock → calibMu chain as flushTextBuf.
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:         types.EventToolParamDelta,
 			PartialInput: pi,
+			Tokens:       e.EstimateTokensCalibrated(text),
 		})
 	})
 }

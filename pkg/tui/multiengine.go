@@ -133,6 +133,11 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 			}
 		case toolStartMsg:
 			if m.Agent == nil {
+				// No TokenRate().Pause() here: the background drain path
+				// (AppendChunk et al.) never feeds the rate meter, so there
+				// is no clock to stop — if that wiring ever lands, Pause
+				// must come with it or background engines' readings age
+				// through tool gaps.
 				repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input,
 					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp, IsTask: m.IsTask})
 			}

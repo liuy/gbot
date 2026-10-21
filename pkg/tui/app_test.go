@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -1121,7 +1123,7 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	}
 }
 
-func TestApp_View_StreamingRateBacklogFlushShowsZero(t *testing.T) {
+func TestApp_View_StreamingRateBacklogBurstBoundedAndSlidesToZero(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		app := newTestApp(&tuiMockProvider{})
 		app.width = 80
@@ -1129,19 +1131,98 @@ func TestApp_View_StreamingRateBacklogFlushShowsZero(t *testing.T) {
 		app.repl.StartQuery()
 		app.spinner.Start()
 		app.repl.AppendTextItem()
-		// Backlogged deltas: three text deltas within a few ms total span,
-		// as a turn-end flush delivers them.
+		// Sustained ~100 t/s stream: 10 x 100 wire tokens over 10s.
+		for range 10 {
+			app.updateRepl(textDeltaMsg{Text: "chunk", Tokens: 100})
+			time.Sleep(1 * time.Second)
+		}
+		app.rateDisplayTime = time.Now().Add(-time.Second)
+		r0 := extractViewRateTps(t, app.View())
+		if r0 <= 0 || r0 > 200 {
+			t.Fatalf("view rate after sustained stream = %.1f, want in (0, 200]", r0)
+		}
+		// Turn-end backlog: three deltas within ~6ms must not spike the
+		// displayed rate (an unbounded implementation reads >10000 t/s).
 		for range 3 {
-			app.updateRepl(textDeltaMsg{Text: "a chunk of tokens"})
+			app.updateRepl(textDeltaMsg{Text: "backlog", Tokens: 100})
 			time.Sleep(2 * time.Millisecond)
 		}
-		// Force the 500ms-throttled refresh to fire now.
 		app.rateDisplayTime = time.Now().Add(-time.Second)
-		v := app.View()
-		// The " · " separator qualifies the value: bare "0.0 t/s" also
-		// matches " · 3000.0 t/s" (the spike), so it would be vacuous.
-		if !strings.Contains(v, " · 0.0 t/s") {
-			t.Errorf("streaming view after backlog flush should show 0.0 t/s, not a thousands-t/s spike; got:\n%s", v)
+		spike := extractViewRateTps(t, app.View())
+		if spike >= 2*r0 {
+			t.Fatalf("view rate after backlog = %.1f, want < 2*%.1f (bounded burst)", spike, r0)
+		}
+		// Long after the stream stops the segment never disappears (no
+		// gate): the reading decays toward zero on its own — the
+		// construction reads 2.97 t/s at 70s, displayed as 3.0.
+		time.Sleep(70 * time.Second)
+		app.rateDisplayTime = time.Now().Add(-time.Second)
+		late := extractViewRateTps(t, app.View())
+		if late <= 0 || late >= 5 {
+			t.Errorf("view rate 70s after stream stop = %.1f, want in (0, 5) (slides toward zero, never hidden)", late)
+		}
+	})
+}
+
+// extractViewRateTps pulls the "N.N t/s" value out of the progress line.
+func extractViewRateTps(t *testing.T, view string) float64 {
+	t.Helper()
+	m := regexp.MustCompile(`([0-9]+\.[0-9]) t/s`).FindStringSubmatch(view)
+	if m == nil {
+		t.Fatalf("no t/s reading in view:\n%s", view)
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		t.Fatalf("parse %q: %v", m[1], err)
+	}
+	return v
+}
+
+func TestApp_Update_ThinkingDeltaFeedsTokenRate(t *testing.T) {
+	// thinkingDeltaMsg drives the rate meter through its own call site
+	// (repl.go TokenRate().Add), separate from textDeltaMsg's
+	// AddResponseChars path.
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		app.updateRepl(thinkingDeltaMsg{Text: "reasoning", Tokens: 150})
+		time.Sleep(4400 * time.Millisecond)
+		app.updateRepl(thinkingDeltaMsg{Text: "more", Tokens: 150})
+		rate, ok := app.repl.TokenRate().Rate()
+		if !ok {
+			t.Fatal("Rate() after thinking deltas = not ok, want ok")
+		}
+		if rate <= 0 {
+			t.Errorf("Rate() = %.9f, want > 0", rate)
+		}
+	})
+}
+
+func TestApp_Update_ToolRunPausesRateClock(t *testing.T) {
+	// toolRunMsg is gbot's execution boundary (omp end): tool_start only
+	// opens the block and params keep streaming after it. While the tool
+	// runs there is no reading, and the duration never ages the sums — the
+	// next message's first delta resumes at its own timestamp (~238 t/s on
+	// a 200 t/s stream; gap-aging reads ~113 t/s).
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		for range 12 {
+			app.updateRepl(thinkingDeltaMsg{Text: "chunk", Tokens: 100})
+			time.Sleep(500 * time.Millisecond)
+		}
+		app.updateRepl(toolRunMsg{ID: "t1", Name: "Bash"})
+		if _, ok := app.repl.TokenRate().Rate(); ok {
+			t.Fatal("Rate() after toolRunMsg = ok, want false (clock paused for tool execution)")
+		}
+		time.Sleep(5 * time.Second)
+		app.updateRepl(thinkingDeltaMsg{Text: "resumed", Tokens: 100})
+		rate, ok := app.repl.TokenRate().Rate()
+		if !ok {
+			t.Fatal("Rate() after resume delta = not ok, want ok")
+		}
+		if rate < 180 {
+			t.Errorf("Rate() = %.1f, want >= 180 (tool gap skipped, not aged into the kernel)", rate)
 		}
 	})
 }

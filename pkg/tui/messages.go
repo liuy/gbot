@@ -17,8 +17,9 @@ import (
 // textDeltaMsg delivers a chunk of streaming text from the engine.
 // Source: useStreaming hook onTextDelta callback.
 type textDeltaMsg struct {
-	Text  string
-	Agent *types.AgentMeta // non-nil when from a sub-agent
+	Text   string
+	Tokens int              // engine-side calibrated estimate of Text
+	Agent  *types.AgentMeta // non-nil when from a sub-agent
 }
 
 // turnStartMsg signals that the engine has started a new agentic turn.
@@ -52,6 +53,7 @@ type toolParamDeltaMsg struct {
 	ID       string           // tool use ID
 	Delta    string           // partial JSON delta
 	Summary  string           // pre-computed summary from engine
+	Tokens   int              // engine-side calibrated estimate of Delta
 	Agent    *types.AgentMeta // non-nil when from a sub-agent
 	IsSearch bool
 	IsRead   bool
@@ -113,8 +115,9 @@ type thinkingEndMsg struct {
 
 // thinkingDeltaMsg carries a chunk of thinking text from the engine.
 type thinkingDeltaMsg struct {
-	Text  string
-	Agent *types.AgentMeta // non-nil when from a sub-agent
+	Text   string
+	Tokens int              // engine-side calibrated estimate of Text
+	Agent  *types.AgentMeta // non-nil when from a sub-agent
 }
 
 // attachmentMsg signals that a background attachment was drained and injected.

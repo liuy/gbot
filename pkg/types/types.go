@@ -607,6 +607,7 @@ type AgentMeta struct {
 type QueryEvent struct {
 	Type         QueryEventType     `json:"type"`
 	Text         string             `json:"text,omitempty"`
+	Tokens       int                `json:"tokens,omitempty"` // calibrated estimate of Text/delta content (delta events only)
 	SessionID    string             `json:"session_id,omitempty"`
 	Model        string             `json:"model,omitempty"`
 	ToolUse      *ToolUseEvent      `json:"tool_use,omitempty"`

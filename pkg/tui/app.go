@@ -171,8 +171,11 @@ type App struct {
 	// Spinner progress state
 	allToolsExpanded bool
 
-	// Real-time token rate cached for 1s to avoid jitter
+	// Real-time token rate cached for 1s to avoid jitter. ok=false while the
+	// evidence gate is closed: the rate segment is then omitted rather than
+	// shown as a misleading 0.0.
 	rateDisplayVal  float64
+	rateDisplayOk   bool
 	rateDisplayTime time.Time
 
 	// Tool execution blink state
@@ -1392,10 +1395,15 @@ func (a *App) View() string {
 			}
 			// Throttle rate display to one refresh per 500ms to avoid jitter.
 			if time.Since(a.rateDisplayTime) >= 500*time.Millisecond {
-				a.rateDisplayVal = a.repl.TokenRate().Rate()
+				a.rateDisplayVal, a.rateDisplayOk = a.repl.TokenRate().Rate()
 				a.rateDisplayTime = time.Now()
 			}
-			rateStr := fmt.Sprintf(" · %.1f t/s", a.rateDisplayVal)
+			// No evidence yet → no segment: 0.0 t/s would claim "rate is
+			// zero", which we do not know.
+			rateStr := ""
+			if a.rateDisplayOk {
+				rateStr = fmt.Sprintf(" · %.1f t/s", a.rateDisplayVal)
+			}
 			progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + rateStr + toolsStr + thinkingStr + ")"
 			sb.WriteString(progressLine)
 			sb.WriteString("\n")
