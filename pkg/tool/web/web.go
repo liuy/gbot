@@ -38,6 +38,7 @@ type Input struct {
 	Query    string `json:"query"`
 	Provider string `json:"provider,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
+	Recency  string `json:"recency,omitempty"`
 	JS       bool   `json:"js,omitempty"`
 }
 
@@ -81,6 +82,11 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			"limit": {
 				"type": "integer",
 				"description": "Maximum number of search results. Default: 10."
+			},
+			"recency": {
+				"type": "string",
+				"enum": ["day", "week", "month", "year"],
+				"description": "Restrict results to this time window. Pure time filter; providers without time support ignore it."
 			},
 			"js": {
 				"type": "boolean",
@@ -178,14 +184,25 @@ func execute(ctx context.Context, input json.RawMessage, chain *providers.Search
 }
 
 func executeSearch(ctx context.Context, in Input, chain *providers.SearchChain) (*tool.ToolResult, error) {
+	switch in.Recency {
+	case "", "day", "week", "month", "year":
+	default:
+		return nil, fmt.Errorf("invalid recency %q (want day, week, month, or year)", in.Recency)
+	}
+
 	limit := in.Limit
 	if limit <= 0 {
 		limit = defaultLimit
 	}
 
+	// Parse once and hand the structured query to every provider (omp
+	// executeSearch: parsedQuery is invariant across the chain).
+	parsed := providers.ParseSearchQuery(in.Query)
 	params := providers.SearchParams{
-		Query: in.Query,
-		Limit: limit,
+		Query:       in.Query,
+		ParsedQuery: &parsed,
+		Limit:       limit,
+		Recency:     in.Recency,
 	}
 
 	resp, err := chain.SearchWithProvider(ctx, params, in.Provider)
@@ -193,7 +210,22 @@ func executeSearch(ctx context.Context, in Input, chain *providers.SearchChain) 
 		return nil, fmt.Errorf("web search failed: %w", err)
 	}
 
-	content := formatForLLM(resp)
+	// Lenient constraint pass over whatever the provider returned: enforce
+	// site:/inurl:/intitle:/filetype:/date directives the provider could not
+	// (or only partially) honor natively, relaxing any dimension that would
+	// wipe out every result. Answer text stays untouched.
+	var notes []string
+	if parsed.HasConstraints && len(resp.Sources) > 0 {
+		filtered := providers.ApplyQueryConstraints(resp.Sources, parsed)
+		if len(filtered.Sources) != len(resp.Sources) {
+			resp.Sources = filtered.Sources
+		}
+		for _, label := range filtered.Dropped {
+			notes = append(notes, fmt.Sprintf("no results matched `%s`; the constraint was relaxed", label))
+		}
+	}
+
+	content := formatForLLM(resp, notes)
 
 	return &tool.ToolResult{
 		Data: &Output{

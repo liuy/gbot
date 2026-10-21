@@ -60,7 +60,7 @@ func TestIsURL(t *testing.T) {
 func TestFormatForLLM(t *testing.T) {
 	t.Run("empty response", func(t *testing.T) {
 		resp := &providers.SearchResponse{Provider: "test"}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if got != "" {
 			t.Errorf("expected empty output, got %q", got)
 		}
@@ -74,7 +74,7 @@ func TestFormatForLLM(t *testing.T) {
 				{Title: "Go 1.18 Release Notes", URL: "https://go.dev/doc/go1.18"},
 			},
 		}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if got == "" {
 			t.Fatal("expected non-empty output")
 		}
@@ -96,7 +96,7 @@ func TestFormatForLLM(t *testing.T) {
 				{Title: "Test", URL: "https://example.com", AgeSeconds: 86400 * 2},
 			},
 		}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if !strings.Contains(got, "(2d ago)") {
 			t.Errorf("expected age in output, got %q", got)
 		}
@@ -113,7 +113,7 @@ func TestFormatForLLM(t *testing.T) {
 				{Title: "Test", URL: "https://example.com", Snippet: longSnippet.String()},
 			},
 		}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if !strings.Contains(got, "…") {
 			t.Errorf("expected truncated snippet, got output without ellipsis")
 		}
@@ -131,7 +131,7 @@ func TestFormatForLLM(t *testing.T) {
 				{Title: "测试", URL: "https://example.com", Snippet: cjkSnippet.String()},
 			},
 		}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if !strings.Contains(got, "…") {
 			t.Errorf("expected truncated CJK snippet, got output without ellipsis")
 		}
@@ -152,7 +152,7 @@ func TestFormatForLLM(t *testing.T) {
 				{Title: "Go Generics Tutorial", URL: "https://go.dev/doc/tutorial/generics"},
 			},
 		}
-		got := formatForLLM(resp)
+		got := formatForLLM(resp, nil)
 		if !strings.Contains(got, "- [1]") {
 			t.Errorf("source items should use markdown list syntax '- [N] Title', got:\n%s", got)
 		}
@@ -221,7 +221,7 @@ func TestFormatForLLM_SourcesOnly(t *testing.T) {
 			{Title: "Test", URL: "https://example.com"},
 		},
 	}
-	got := formatForLLM(resp)
+	got := formatForLLM(resp, nil)
 	if !strings.Contains(got, "[1] Test") {
 		t.Errorf("expected numbered source, got: %q", got)
 	}
@@ -235,7 +235,7 @@ func TestFormatForLLM_AnswerWithSources(t *testing.T) {
 			{Title: "Source1", URL: "https://example.com"},
 		},
 	}
-	got := formatForLLM(resp)
+	got := formatForLLM(resp, nil)
 	if !strings.Contains(got, "## Sources") {
 		t.Error("expected Sources header when answer has sources")
 	}
@@ -299,7 +299,7 @@ func TestFormatForLLM_PublishedDateFallback(t *testing.T) {
 			{Title: "Old Article", URL: "https://example.com/old", PublishedDate: "2020-01-15"},
 		},
 	}
-	got := formatForLLM(resp)
+	got := formatForLLM(resp, nil)
 	if !strings.Contains(got, "Old Article (2020-01-15)") {
 		t.Errorf("expected title with PublishedDate in parens, got: %q", got)
 	}
@@ -1259,5 +1259,217 @@ func TestExecuteSearch_RendersAnswerAndDates(t *testing.T) {
 	}
 	if !strings.Contains(output.Content, "- [1] Go (3d ago)\n  https://go.dev") {
 		t.Errorf("content should render the dated source with an age suffix, got: %q", output.Content)
+	}
+}
+
+func TestExecuteSearch_SiteDirectiveFilters(t *testing.T) {
+	m := &mockProvider{
+		id: "mock", available: true,
+		resp: &providers.SearchResponse{
+			Provider: "mock",
+			Sources: []providers.SearchSource{
+				{Title: "GH One", URL: "https://github.com/one"},
+				{Title: "Other", URL: "https://example.com/two"},
+				{Title: "GH Two", URL: "https://github.com/two"},
+			},
+		},
+	}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{m}}
+
+	result, err := executeSearch(context.Background(), Input{Query: "site:github.com stuff"}, chain)
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if output.Raw == nil || len(output.Raw.Sources) != 2 {
+		t.Fatalf("Raw.Sources = %+v, want exactly the 2 github sources", output.Raw)
+	}
+	if !strings.Contains(output.Content, "GH One") || !strings.Contains(output.Content, "GH Two") {
+		t.Errorf("Content should list both github sources, got: %q", output.Content)
+	}
+	if strings.Contains(output.Content, "example.com/two") {
+		t.Errorf("Content should exclude the non-matching source, got: %q", output.Content)
+	}
+	if strings.Contains(output.Content, "Note:") {
+		t.Errorf("Content should carry no relaxation note when the filter kept results, got: %q", output.Content)
+	}
+}
+
+func TestExecuteSearch_LenientRelaxationNote(t *testing.T) {
+	m := &mockProvider{
+		id: "mock", available: true,
+		resp: &providers.SearchResponse{
+			Provider: "mock",
+			Answer:   "An answer.",
+			Sources: []providers.SearchSource{
+				{Title: "Other", URL: "https://example.com/one"},
+			},
+		},
+	}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{m}}
+
+	result, err := executeSearch(context.Background(), Input{Query: "site:github.com stuff"}, chain)
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	// Non-empty input must never yield zero results: the dimension relaxes.
+	if output.Raw == nil || len(output.Raw.Sources) != 1 {
+		t.Fatalf("Raw.Sources = %+v, want the source kept despite the mismatch", output.Raw)
+	}
+	wantFirst := "Note: no results matched `site:github.com`; the constraint was relaxed"
+	lines := strings.Split(output.Content, "\n")
+	if lines[0] != wantFirst {
+		t.Fatalf("first line = %q, want %q", lines[0], wantFirst)
+	}
+	if !strings.Contains(output.Content, "An answer.") {
+		t.Errorf("Content should keep the answer after the note, got: %q", output.Content)
+	}
+}
+
+func TestExecuteSearch_DateDirectiveFilters(t *testing.T) {
+	m := &mockProvider{
+		id: "mock", available: true,
+		resp: &providers.SearchResponse{
+			Provider: "mock",
+			Sources: []providers.SearchSource{
+				{Title: "Old", URL: "https://old.com", PublishedDate: "2023-01-01"},
+				{Title: "New", URL: "https://new.com", PublishedDate: "2024-06-01"},
+				{Title: "Undated", URL: "https://undated.com"},
+			},
+		},
+	}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{m}}
+
+	result, err := executeSearch(context.Background(), Input{Query: "x after:2024-01-01"}, chain)
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if len(output.Raw.Sources) != 2 {
+		t.Fatalf("Raw.Sources = %+v, want in-range + undated only", output.Raw)
+	}
+	if output.Raw.Sources[0].Title != "New" || output.Raw.Sources[1].Title != "Undated" {
+		t.Errorf("Raw.Sources = %+v, want New then Undated", output.Raw.Sources)
+	}
+}
+
+func TestExecuteSearch_NoConstraintPassthrough(t *testing.T) {
+	m := &mockProvider{
+		id: "mock", available: true,
+		resp: &providers.SearchResponse{
+			Provider: "mock",
+			Sources: []providers.SearchSource{
+				{Title: "A", URL: "https://a.com"},
+				{Title: "B", URL: "https://b.com"},
+				{Title: "C", URL: "https://c.com"},
+			},
+		},
+	}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{m}}
+
+	result, err := executeSearch(context.Background(), Input{Query: "plain query"}, chain)
+	if err != nil {
+		t.Fatalf("executeSearch() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if len(output.Raw.Sources) != 3 {
+		t.Fatalf("len(Raw.Sources) = %d, want 3 (untouched)", len(output.Raw.Sources))
+	}
+	if strings.Contains(output.Content, "Note:") {
+		t.Errorf("Content should carry no note for a constraint-free query, got: %q", output.Content)
+	}
+}
+
+func TestExecuteSearch_RecencyValidation(t *testing.T) {
+	m := &mockProvider{id: "mock", available: true, resp: &providers.SearchResponse{Provider: "mock"}}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{m}}
+
+	_, err := executeSearch(context.Background(), Input{Query: "x", Recency: "hour"}, chain)
+	if err == nil {
+		t.Fatal("expected an error for an invalid recency value")
+	}
+	want := `invalid recency "hour" (want day, week, month, or year)`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+
+	m.resp = &providers.SearchResponse{Provider: "mock", Sources: []providers.SearchSource{{Title: "t", URL: "https://t.com"}}}
+	if _, err := executeSearch(context.Background(), Input{Query: "x", Recency: "day"}, chain); err != nil {
+		t.Fatalf("Recency=day: executeSearch() error = %v", err)
+	}
+	if m.recorded == nil {
+		t.Fatal("provider did not record params")
+	}
+	if m.recorded.Recency != "day" {
+		t.Errorf("params.Recency = %q, want day", m.recorded.Recency)
+	}
+	if m.recorded.ParsedQuery == nil {
+		t.Error("params.ParsedQuery = nil, want the pipeline-parsed query")
+	}
+	if m.recorded.Query != "x" {
+		t.Errorf("params.Query = %q, want the raw query", m.recorded.Query)
+	}
+	if m.recorded.Limit != defaultLimit {
+		t.Errorf("params.Limit = %d, want %d", m.recorded.Limit, defaultLimit)
+	}
+}
+
+func TestWebSchema_RecencyEnum(t *testing.T) {
+	tl := New(nil)
+	schema := string(tl.InputSchema())
+	for _, want := range []string{`"recency"`, `"day"`, `"week"`, `"month"`, `"year"`} {
+		if !strings.Contains(schema, want) {
+			t.Errorf("schema should contain %s, got: %s", want, schema)
+		}
+	}
+}
+
+func TestWebPrompt_MentionsDirectives(t *testing.T) {
+	prompt := webPrompt()
+	for _, want := range []string{"site:", "after:", "recency", "filetype:"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt should mention %q, got: %q", want, prompt)
+		}
+	}
+}
+
+func TestExecute_FetchModeUnaffectedByRecency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "plain text response")
+	}))
+	defer server.Close()
+
+	result, err := execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"query": %q, "recency": "day"}`, server.URL)), nil, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want fetch (URL routing ignores recency)", output.Mode)
+	}
+}
+
+func TestFormatForLLM_NotesLead(t *testing.T) {
+	resp := &providers.SearchResponse{
+		Provider: "test",
+		Answer:   "The answer.",
+		Sources:  []providers.SearchSource{{Title: "S", URL: "https://s.com"}},
+	}
+	got := formatForLLM(resp, []string{"no results matched `site:x`; the constraint was relaxed"})
+	lines := strings.Split(got, "\n")
+	if lines[0] != "Note: no results matched `site:x`; the constraint was relaxed" {
+		t.Fatalf("first line = %q, want the note line", lines[0])
+	}
+	if !strings.Contains(got, "The answer.") {
+		t.Errorf("answer should follow the note, got: %q", got)
+	}
+	// No notes: byte-identical to the plain rendering.
+	if formatForLLM(resp, nil) != formatForLLM(resp, []string{}) {
+		t.Error("nil and empty notes must render identically")
+	}
+	if strings.Contains(formatForLLM(resp, nil), "Note:") {
+		t.Errorf("no-notes rendering must not contain Note:, got: %q", formatForLLM(resp, nil))
 	}
 }

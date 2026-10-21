@@ -57,8 +57,28 @@ func (j *JinaProvider) Search(ctx context.Context, params SearchParams) (*Search
 
 	numResults := clampNumResults(params.Limit, jinaDefaultResults, jinaMaxResults)
 
+	parsed := params.Parsed()
+	query := params.Query
+	site := ""
+	if parsed.HasDirectives {
+		// Jina's X-Site header takes a single domain; with exactly one
+		// include site, send its host there and strip site: tokens from
+		// the query. Multiple sites stay inline (Bing-backed, parses them).
+		if len(parsed.Sites) == 1 {
+			site = strings.SplitN(parsed.Sites[0], "/", 2)[0]
+		}
+		query = FormatQuery(*parsed, QuerySyntax{
+			Phrases:  true,
+			Negation: true,
+			Site:     site == "",
+			InTitle:  true,
+			InURL:    true,
+			Filetype: true,
+		})
+	}
+
 	q := url.Values{}
-	q.Set("q", params.Query)
+	q.Set("q", query)
 	q.Set("num", strconv.Itoa(numResults))
 	requestURL := jinaSearchURL + "?" + q.Encode()
 
@@ -69,10 +89,12 @@ func (j *JinaProvider) Search(ctx context.Context, params SearchParams) (*Search
 	if err != nil {
 		return nil, fmt.Errorf("jina: build request: %w", err)
 	}
-	// Both X- headers keep payloads lean (omp parity); X-Site arrives with
-	// the batch-2 directive layer.
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
+	if site != "" {
+		req.Header.Set("X-Site", site)
+	}
+	// Both X- headers keep payloads lean (omp parity).
 	req.Header.Set("X-Respond-With", "no-content")
 	req.Header.Set("X-Retain-Images", "none")
 

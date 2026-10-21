@@ -598,3 +598,77 @@ func TestJina_Search_Clamp(t *testing.T) {
 		}
 	}
 }
+
+func TestJina_Search_DirectiveWiring(t *testing.T) {
+	cases := []struct {
+		name     string
+		query    string
+		wantQ    string
+		wantSite string // "" = no X-Site header
+	}{
+		{
+			name:     "single site moves to X-Site and out of q",
+			query:    "site:github.com x",
+			wantQ:    "x",
+			wantSite: "github.com",
+		},
+		{
+			name:     "path site sends host part only",
+			query:    "site:github.com/anthropics x",
+			wantQ:    "x",
+			wantSite: "github.com",
+		},
+		{
+			name:  "multi-site stays inline, no X-Site",
+			query: "site:a.com site:b.com x",
+			wantQ: "x site:a.com site:b.com",
+		},
+		{
+			name:  "plain query untouched, no X-Site",
+			query: "plain query",
+			wantQ: "plain query",
+		},
+		{
+			name:  "phrases and negations survive in q",
+			query: `-spam "a b" x`,
+			wantQ: `-spam "a b" x`,
+		},
+		{
+			name:  "filetype kept in q",
+			query: "filetype:pdf x",
+			wantQ: "x filetype:pdf",
+		},
+		{
+			name:  "unsupported directives stripped from q",
+			query: "after:2024-01-01 inurl:u intitle:t x",
+			wantQ: "x inurl:u intitle:t",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var gotQ, gotSite string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotQ = r.URL.Query().Get("q")
+				gotSite = r.Header.Get("X-Site")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer server.Close()
+
+			p := &JinaProvider{Client: server.Client(), APIKey: "k"}
+			oldURL := jinaSearchURL
+			jinaSearchURL = server.URL
+			defer func() { jinaSearchURL = oldURL }()
+
+			if _, err := p.Search(context.Background(), SearchParams{Query: c.query, Limit: 5}); err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+			if gotQ != c.wantQ {
+				t.Errorf("q = %q, want %q", gotQ, c.wantQ)
+			}
+			if gotSite != c.wantSite {
+				t.Errorf("X-Site = %q, want %q", gotSite, c.wantSite)
+			}
+		})
+	}
+}

@@ -7,8 +7,13 @@ import (
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 )
 
-func formatForLLM(resp *providers.SearchResponse) string {
+// formatForLLM renders a search response for LLM consumption. Notes lead the
+// output (e.g. relaxed-constraint warnings), one `Note: …` line each.
+func formatForLLM(resp *providers.SearchResponse, notes []string) string {
 	var parts []string
+	for _, note := range notes {
+		parts = append(parts, "Note: "+note)
+	}
 
 	if resp.Answer != "" {
 		parts = append(parts, resp.Answer)

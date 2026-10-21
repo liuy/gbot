@@ -2,12 +2,31 @@ package providers
 
 import (
 	"regexp"
+	"strings"
 	"time"
 )
 
-// Helpers shared by the tavily/jina providers. siteHosts/toSearchSources have
-// no callers until the batch-2 directive layer lands; they port with it.
+// Helpers shared by the search providers. toSearchSources remains unported:
+// omp's callers (kagi/parallel/ollama) have no gbot counterparts and none of
+// gbot's providers matches its shape.
 var creditBodyPattern = regexp.MustCompile(`(?i)credits?\s*(?:exhausted|exceeded)|quota|insufficient`)
+
+// SiteHosts returns deduplicated bare hosts from site: values
+// (github.com/anthropics → github.com) for provider domain filters; path
+// parts are enforced by the central lenient post-filter.
+func SiteHosts(sites []string) []string {
+	var hosts []string
+	seen := make(map[string]bool)
+	for _, site := range sites {
+		host, _, _ := strings.Cut(site, "/")
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
 
 // classifyProviderHttpError returns nil when the response matches no known
 // quota/auth signal; the caller then builds its provider-specific fallback.
@@ -42,10 +61,17 @@ func clampNumResults(value, defaultVal, maxVal int) int {
 var dateAgeLayouts = []string{time.RFC3339, "2006-01-02", time.RFC1123Z, time.RFC1123}
 
 func dateToAgeSeconds(s string) int64 {
+	return ageSecondsWith(dateAgeLayouts, s)
+}
+
+// ageSecondsWith is dateToAgeSeconds's parse loop over a caller-supplied
+// layout set, so DDG's no-offset timestamps get their own leniency without
+// widening the shared set (jina/tavily parsing must not drift).
+func ageSecondsWith(layouts []string, s string) int64 {
 	if s == "" {
 		return 0
 	}
-	for _, layout := range dateAgeLayouts {
+	for _, layout := range layouts {
 		t, err := time.Parse(layout, s)
 		if err != nil {
 			continue

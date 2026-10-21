@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -641,5 +642,348 @@ func TestExtractDDGURL_QueryUnescapeError(t *testing.T) {
 	got := extractDDGURL(href)
 	if got == "" {
 		t.Errorf("expected non-empty fallback to raw encoded value")
+	}
+}
+
+// ddgQueryFixture renders a results page whose first row carries the observed
+// publication-timestamp span form (leading &nbsp; entities inside
+// result__extras__url).
+const ddgDateHTML = `<!DOCTYPE html><html><body>
+<div class="result">
+	<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2Fdoc%2Fgo1.18&amp;rut=abc">Go 1.18 Release Notes</a>
+	<div class="result__extras">
+		<div class="result__extras__url">
+			<span class="result__url">&nbsp; &nbsp; 2026-07-30T20:19:00.0000000</span>
+		</div>
+	</div>
+	<a class="result__snippet" href="//x">2026-07-30T20:19:00.0000000 not a publish date</a>
+</div>
+<div class="result">
+	<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fs">Space Separator</a>
+	<div class="result__extras">
+		<div class="result__extras__url"><span class="result__url">2026-07-30 20:19:00</span></div>
+	</div>
+</div>
+</body></html>`
+
+func TestDuckDuckGo_Search_QueryParams(t *testing.T) {
+	cases := []struct {
+		name    string
+		query   string
+		recency string
+		wantQ   string
+		wantKL  string // "" = param absent
+		wantDF  string // "" = param absent
+	}{
+		{
+			name:  "directives canonicalized via scraper dialect",
+			query: "site:github.com inurl:releases x",
+			wantQ: "x releases site:github.com",
+		},
+		{
+			name:  "no-directive query passes byte-identical",
+			query: "go generics tutorial",
+			wantQ: "go generics tutorial",
+		},
+		{
+			name:   "lang alias maps to kl",
+			query:  "lang:ja-jp x",
+			wantQ:  "x",
+			wantKL: "jp-jp",
+		},
+		{
+			name:   "en-gb maps to uk-en",
+			query:  "lang:en-gb x",
+			wantQ:  "x",
+			wantKL: "uk-en",
+		},
+		{
+			name:  "unmapped lang sends no kl",
+			query: "lang:xx-yy x",
+			wantQ: "x",
+		},
+		{
+			name:    "recency month maps to df",
+			query:   "x",
+			recency: "month",
+			wantQ:   "x",
+			wantDF:  "m",
+		},
+		{
+			name:    "recency day maps to df",
+			query:   "x",
+			recency: "day",
+			wantQ:   "x",
+			wantDF:  "d",
+		},
+		{
+			name:    "recency week maps to df",
+			query:   "x",
+			recency: "week",
+			wantQ:   "x",
+			wantDF:  "w",
+		},
+		{
+			name:    "recency year maps to df",
+			query:   "x",
+			recency: "year",
+			wantQ:   "x",
+			wantDF:  "y",
+		},
+		{
+			name:  "every syntax field of the ddg dialect",
+			query: `-inurl:ads x intitle:t intext:k filetype:pdf "a b" -c d OR e`,
+			wantQ: `x "a b" -c (d OR e) -inurl:ads intitle:t intext:k filetype:pdf`,
+		},
+		{
+			name:  "date bounds stripped from q",
+			query: "go after:2024-01-01 before:2024-06-01",
+			wantQ: "go",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var gotQ, gotKL, gotDF string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotQ = r.URL.Query().Get("q")
+				gotKL = r.URL.Query().Get("kl")
+				gotDF = r.URL.Query().Get("df")
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = fmt.Fprint(w, ddgHTMLResponse)
+			}))
+			defer server.Close()
+
+			saved := DDGSearchURL
+			DDGSearchURL = server.URL
+			t.Cleanup(func() { DDGSearchURL = saved })
+
+			d := &DuckDuckGoProvider{Client: server.Client()}
+			resp, err := d.Search(context.Background(), SearchParams{Query: c.query, Recency: c.recency, Limit: 10})
+			if err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+			if gotQ != c.wantQ {
+				t.Errorf("q = %q, want %q", gotQ, c.wantQ)
+			}
+			if gotKL != c.wantKL {
+				t.Errorf("kl = %q, want %q", gotKL, c.wantKL)
+			}
+			if gotDF != c.wantDF {
+				t.Errorf("df = %q, want %q", gotDF, c.wantDF)
+			}
+			if len(resp.Sources) != 3 {
+				t.Errorf("len(Sources) = %d, want 3", len(resp.Sources))
+			}
+		})
+	}
+}
+
+func TestDuckDuckGo_Search_PublishedDateExtraction(t *testing.T) {
+	sources, err := parseDDGHTML(strings.NewReader(ddgDateHTML), 10)
+	if err != nil {
+		t.Fatalf("parseDDGHTML error = %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+
+	first := sources[0]
+	if first.PublishedDate != "2026-07-30T20:19:00.0000000" {
+		t.Errorf("PublishedDate = %q, want the verbatim span text", first.PublishedDate)
+	}
+	// Parsed as UTC (A11): the band kills both the AgeSeconds-0 failure mode
+	// and a JS-local parse (8h off on CST).
+	wantAge := time.Since(time.Date(2026, 7, 30, 20, 19, 0, 0, time.UTC)).Seconds()
+	if diff := float64(first.AgeSeconds) - wantAge; diff < -60 || diff > 60 {
+		t.Errorf("AgeSeconds = %d, want within ±60s of %.0f", first.AgeSeconds, wantAge)
+	}
+
+	second := sources[1]
+	if second.PublishedDate != "2026-07-30 20:19:00" {
+		t.Errorf("space-separated PublishedDate = %q, want 2026-07-30 20:19:00", second.PublishedDate)
+	}
+	if second.AgeSeconds == 0 {
+		t.Error("space-separated AgeSeconds = 0, want a parsed age")
+	}
+}
+
+func TestDuckDuckGo_Search_FirstDateSpanWins(t *testing.T) {
+	html := `<div class="result">
+	<a class="result__a" href="https://example.com/x">Title</a>
+	<div class="result__extras__url">
+		<span class="result__url">2026-07-30T20:19:00</span>
+		<span class="result__url">1999-01-01T00:00:00</span>
+	</div>
+</div>`
+	sources, err := parseDDGHTML(strings.NewReader(html), 10)
+	if err != nil {
+		t.Fatalf("parseDDGHTML error = %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].PublishedDate != "2026-07-30T20:19:00" {
+		t.Errorf("PublishedDate = %q, want the FIRST date-shaped span", sources[0].PublishedDate)
+	}
+}
+
+func TestDuckDuckGo_Search_DateScanContinuesPastNonDateSpans(t *testing.T) {
+	// duckduckgo.ts loops every span of result__extras__url until one matches;
+	// the URL span regularly precedes the date span, so the scan must not
+	// stop at the first non-date span.
+	html := `<div class="result">
+	<a class="result__a" href="https://example.com/x">Title</a>
+	<div class="result__extras__url">
+		<span class="result__url">example.com</span>
+		<span class="result__url">2026-07-30T20:19:00</span>
+	</div>
+</div>`
+	sources, err := parseDDGHTML(strings.NewReader(html), 10)
+	if err != nil {
+		t.Fatalf("parseDDGHTML error = %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].PublishedDate != "2026-07-30T20:19:00" {
+		t.Errorf("PublishedDate = %q, want the date span after the non-date span", sources[0].PublishedDate)
+	}
+	if sources[0].AgeSeconds == 0 {
+		t.Error("AgeSeconds = 0, want a parsed age")
+	}
+}
+
+func TestDuckDuckGo_Search_SnippetDateNotAttributed(t *testing.T) {
+	// A date-shaped value in the snippet span alone must not become a
+	// publication date.
+	html := `<div class="result">
+	<a class="result__a" href="https://example.com/x">Title</a>
+	<a class="result__snippet">2026-07-30T20:19:00.0000000 in the snippet</a>
+</div>`
+	sources, err := parseDDGHTML(strings.NewReader(html), 10)
+	if err != nil {
+		t.Fatalf("parseDDGHTML error = %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].PublishedDate != "" || sources[0].AgeSeconds != 0 {
+		t.Errorf("date fields = %q/%d, want empty/0 (snippet dates are not attributed)", sources[0].PublishedDate, sources[0].AgeSeconds)
+	}
+}
+
+func TestDuckDuckGo_Search_BrowserFallbackFormatsQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	saved := DDGSearchURL
+	DDGSearchURL = server.URL
+	t.Cleanup(func() { DDGSearchURL = saved })
+
+	rec := &browseRecorder{html: ddgHTMLResponse}
+	d := &DuckDuckGoProvider{Client: server.Client(), Browse: rec.browse}
+	if _, err := d.Search(context.Background(), SearchParams{Query: "site:github.com inurl:releases x", Limit: 10}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("browse called %d times, want 1", rec.calls)
+	}
+	// url.Values.Encode() percent-encodes and orders keys, so compare the
+	// decoded q parameter rather than the raw URL string.
+	u, err := url.Parse(rec.urls[0])
+	if err != nil {
+		t.Fatalf("parse browse URL: %v", err)
+	}
+	if got := u.Query().Get("q"); got != "x releases site:github.com" {
+		t.Errorf("browse q = %q, want the formatted query", got)
+	}
+}
+
+func TestLocaleToKl(t *testing.T) {
+	cases := []struct {
+		lang string
+		want string
+	}{
+		{"", ""},
+		{"ja-jp", "jp-jp"},
+		{"ja_JP", "jp-jp"}, // underscore normalized
+		{"en-gb", "uk-en"},
+		{"ca-es", "ct-ca"},
+		{"es-419", "xl-es"},
+		{"zh-hk", "hk-tzh"},
+		{"de-de", "de-de"}, // region-language swap hits the allowlist
+		{"fr-fr", "fr-fr"},
+		{"es-ar", "ar-es"}, // asymmetric swap — symmetric locales cannot pin it
+		{"es-us", "ue-es"},
+		{"ko-kr", "kr-kr"},
+		{"zh-hk", "hk-tzh"},
+		{"zh-tw", "tw-tzh"},
+		{"zh-cn", "cn-zh"},
+		{"en-us", "us-en"},
+		{"wt-wt", "wt-wt"},
+		{"xx-yy", ""}, // swap candidate not in the documented set
+		{"en", ""},    // not a language-region pair
+	}
+	for _, c := range cases {
+		if got := localeToKl(c.lang); got != c.want {
+			t.Errorf("localeToKl(%q) = %q, want %q", c.lang, got, c.want)
+		}
+	}
+}
+
+// TestDDGKLCodes_FullReverseLookup pins every entry of the documented kl set
+// (a verbatim port of duckduckgo.ts:189-258): each code is reachable by
+// swapping the reverse locale. Data regressions (a dropped entry) fail here.
+func TestDDGKLCodes_FullReverseLookup(t *testing.T) {
+	codes := []string{
+		"xa-ar", "xa-en", "ar-es", "au-en", "at-de", "be-fr", "be-nl",
+		"br-pt", "bg-bg", "ca-en", "ca-fr", "ct-ca", "cl-es", "cn-zh",
+		"co-es", "hr-hr", "cz-cs", "dk-da", "ee-et", "fi-fi", "fr-fr",
+		"de-de", "gr-el", "hk-tzh", "hu-hu", "in-en", "id-id", "id-en",
+		"ie-en", "il-he", "it-it", "jp-jp", "kr-kr", "lv-lv", "lt-lt",
+		"xl-es", "my-ms", "my-en", "mx-es", "nl-nl", "nz-en", "no-no",
+		"pe-es", "ph-en", "ph-tl", "pl-pl", "pt-pt", "ro-ro", "ru-ru",
+		"sg-en", "sk-sk", "sl-sl", "za-en", "es-es", "se-sv", "ch-de",
+		"ch-fr", "ch-it", "tw-tzh", "th-th", "tr-tr", "ua-uk", "uk-en",
+		"us-en", "ue-es", "ve-es", "vn-vi", "wt-wt",
+	}
+	// hk-tzh / tw-tzh carry a 3-letter sub-tag: their reverse does not match
+	// the language-region pattern, so they are reachable only through the
+	// zh-hk / zh-tw aliases pinned in TestLocaleToKl.
+	unreachableBySwap := map[string]bool{"hk-tzh": true, "tw-tzh": true}
+	pinned := 0
+	for _, code := range codes {
+		if unreachableBySwap[code] {
+			continue
+		}
+		parts := strings.Split(code, "-")
+		reverse := parts[1] + "-" + parts[0]
+		if got := localeToKl(reverse); got != code {
+			t.Errorf("localeToKl(%q) = %q, want %q", reverse, got, code)
+		}
+		pinned++
+	}
+	if pinned != 66 {
+		t.Fatalf("pinned %d codes via reverse lookup, want 66", pinned)
+	}
+}
+
+func TestNormalizeDDGText(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"plain", "plain"},
+		{"  lead and trail  ", "lead and trail"},
+		{"\u00a0\u00a0 2026-07-30T20:19:00.0000000", "2026-07-30T20:19:00.0000000"},
+		{"a\u00a0\u00a0 b", "a b"},
+		{"a  \t\n b", "a b"},
+	}
+	for _, c := range cases {
+		if got := normalizeDDGText(c.in); got != c.want {
+			t.Errorf("normalizeDDGText(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

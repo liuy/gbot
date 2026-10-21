@@ -9,7 +9,25 @@ import (
 
 type SearchParams struct {
 	Query string
-	Limit int
+	// ParsedQuery is the structured view of Query, parsed once by the search
+	// pipeline: Google-style directives (site:, before:/after:, inurl:,
+	// intitle:, filetype:, quoted phrases, OR groups, -exclusions) extracted
+	// into fields.
+	//
+	// Providers should map constraints onto native API parameters
+	// (domain/date filters) or engine query syntax (FormatQuery) where the
+	// upstream supports them, and lean lenient otherwise: the pipeline
+	// post-filters every response with ApplyQueryConstraints, which relaxes
+	// any constraint that would eliminate all results — so a best-effort
+	// search always beats an empty one. When absent (direct provider calls),
+	// parse with Parsed().
+	ParsedQuery *StructuredQuery
+	Limit       int
+	// Recency narrows results to a time window: day, week, month, or year
+	// ("" = unset). It is a pure time filter — providers without time support
+	// must ignore it silently, never approximating it by rewriting the query
+	// or altering any other request parameter.
+	Recency string
 }
 
 type SearchResponse struct {
@@ -49,6 +67,16 @@ type SearchProvider interface {
 	ID() string
 	IsAvailable() bool
 	Search(ctx context.Context, params SearchParams) (*SearchResponse, error)
+}
+
+// Parsed returns the structured view of Query, parsing lazily when the
+// pipeline did not supply one (omp: params.parsedQuery ?? parseSearchQuery).
+func (p SearchParams) Parsed() *StructuredQuery {
+	if p.ParsedQuery != nil {
+		return p.ParsedQuery
+	}
+	q := ParseSearchQuery(p.Query)
+	return &q
 }
 
 type SearchChain struct {

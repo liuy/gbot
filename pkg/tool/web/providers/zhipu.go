@@ -81,7 +81,28 @@ type zhipuSearchResult struct {
 	Content string `json:"content"`
 }
 
+// zhipuQuerySyntax follows omp zai.ts ZAI_QUERY_SYNTAX: gbot's zhipu endpoint
+// (open.bigmodel.cn/api/mcp/web_search_prime/mcp, tool web_search_prime) is
+// the same MCP service family as omp's Z.AI one (api.z.ai/.../web_search_prime/
+// mcp — z.ai is Zhipu's international brand), whose Bing-flavored backend
+// parses the common inline operators. web_search_prime exposes no native
+// filter args, so dates and language stay with the central lenient
+// post-filter; Recency is ignored silently.
+var zhipuQuerySyntax = QuerySyntax{
+	Phrases:  true,
+	Negation: true,
+	Site:     true,
+	InTitle:  true,
+	InURL:    true,
+	Filetype: true,
+}
+
 func (z *ZhipuProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
+	parsed := params.Parsed()
+	query := params.Query
+	if parsed.HasDirectives {
+		query = FormatQuery(*parsed, zhipuQuerySyntax)
+	}
 	sessionID := uuid.New().String()
 	reqPayload := jsonRPCRequest{
 		JSONRPC: "2.0",
@@ -90,7 +111,7 @@ func (z *ZhipuProvider) Search(ctx context.Context, params SearchParams) (*Searc
 		Params: jsonRPCParams{
 			Name: zhipuToolName,
 			Arguments: map[string]any{
-				"search_query": params.Query,
+				"search_query": query,
 				"count":        params.Limit,
 			},
 		},

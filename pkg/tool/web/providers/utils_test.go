@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -160,4 +161,41 @@ func TestClassifyProviderHttpError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSiteHosts(t *testing.T) {
+	got := SiteHosts([]string{"github.com/anthropics", "github.com", "a.com/"})
+	want := []string{"github.com", "a.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SiteHosts = %v, want %v", got, want)
+	}
+	if got := SiteHosts(nil); len(got) != 0 {
+		t.Errorf("SiteHosts(nil) = %v, want empty", got)
+	}
+	// A site with no host part (leading slash) contributes nothing.
+	if got := SiteHosts([]string{"/x", "a.com"}); !reflect.DeepEqual(got, []string{"a.com"}) {
+		t.Errorf("SiteHosts leading-slash = %v, want [a.com]", got)
+	}
+}
+
+func TestSearchParams_Parsed(t *testing.T) {
+	t.Run("nil parses lazily", func(t *testing.T) {
+		p := SearchParams{Query: "site:github.com x"}
+		parsed := p.Parsed()
+		if !parsed.HasDirectives || len(parsed.Sites) != 1 || parsed.Sites[0] != "github.com" {
+			t.Errorf("Parsed() = %+v, want site:github.com recognized", parsed)
+		}
+	})
+
+	t.Run("pre-set pointer returned as-is", func(t *testing.T) {
+		pre := ParseSearchQuery("pre-parsed")
+		p := SearchParams{Query: "different query", ParsedQuery: &pre}
+		got := p.Parsed()
+		if got != &pre {
+			t.Errorf("Parsed() = %p, want the pre-set pointer %p (no re-parse)", got, &pre)
+		}
+		if got.Raw != "pre-parsed" {
+			t.Errorf("Parsed().Raw = %q, want pre-parsed (pipeline value wins over Query)", got.Raw)
+		}
+	})
 }

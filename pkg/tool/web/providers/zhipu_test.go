@@ -633,3 +633,72 @@ type failingReader struct{}
 func (failingReader) Read(p []byte) (int, error) {
 	return 0, errors.New("read failed")
 }
+
+func TestZhipuSearch_DirectiveDialect(t *testing.T) {
+	cases := []struct {
+		name    string
+		query   string
+		recency string
+		want    string
+	}{
+		{
+			// Dates stripped (no native surface; central filter enforces),
+			// the rest re-emitted in the Bing-flavored dialect.
+			name:  "directives rewritten",
+			query: `x after:2024-01-01 site:github.com -spam "a b"`,
+			want:  `x -spam "a b" site:github.com`,
+		},
+		{
+			name:  "url title filetype kept in dialect",
+			query: "x inurl:u intitle:t filetype:pdf",
+			want:  "x inurl:u intitle:t filetype:pdf",
+		},
+		{
+			name:  "plain query untouched",
+			query: "golang generics",
+			want:  "golang generics",
+		},
+		{
+			name:    "recency ignored silently",
+			query:   "golang generics",
+			recency: "day",
+			want:    "golang generics",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var gotQuery string
+			results := []zhipuSearchResult{{Title: "t", Link: "https://example.com/x", Content: "c"}}
+			sseBody := zhipuSSEResponse(t, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      "s",
+				"result": map[string]any{
+					"content": []map[string]string{{"type": "text", "text": zhipuSearchResults(t, results)}},
+				},
+			})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req jsonRPCRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				args, _ := req.Params.Arguments.(map[string]any)
+				gotQuery, _ = args["search_query"].(string)
+				w.Header().Set("Content-Type", "text/event-stream;charset=UTF-8")
+				_, _ = w.Write([]byte(sseBody))
+			}))
+			defer server.Close()
+
+			origURL := zhipuMCPURL
+			zhipuMCPURL = server.URL
+			defer func() { zhipuMCPURL = origURL }()
+
+			z := &ZhipuProvider{Client: server.Client(), APIKey: "test.key"}
+			if _, err := z.Search(context.Background(), SearchParams{Query: c.query, Recency: c.recency, Limit: 10}); err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+			if gotQuery != c.want {
+				t.Errorf("search_query = %q, want %q", gotQuery, c.want)
+			}
+		})
+	}
+}

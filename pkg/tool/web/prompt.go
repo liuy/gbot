@@ -13,6 +13,8 @@ func webPrompt() string {
 ### Search mode (non-URL query)
 Returns numbered results with title, URL, and snippet.
 
+Query directives are honored: site: / -site: (include/exclude domain), after: / before: YYYY-MM-DD, inurl:, intitle:, filetype:, "exact phrase", -exclusion, and OR groups. Use recency for time windows.
+
 CRITICAL: After answering, you MUST include a "Sources:" section with markdown links:
   Sources:
   - [Title 1](https://example.com/1)

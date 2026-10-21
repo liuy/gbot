@@ -309,3 +309,33 @@ func TestAnySearch_Search_BuildRequestError(t *testing.T) {
 		t.Errorf("error = %v, want to contain 'build request'", err)
 	}
 }
+
+// Passthrough pin: anysearch has no directive dialect — the request body
+// carries the raw query verbatim so the central post-filter is the entire
+// enforcement. A future refactor that starts rewriting the query here fails
+// this test.
+func TestAnySearch_Search_RawQueryPassthrough(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		gotQuery, _ = body["query"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"results":[]}}`))
+	}))
+	defer server.Close()
+
+	a := &AnySearchProvider{Client: server.Client()}
+	origURL := anySearchAPIURL
+	anySearchAPIURL = server.URL
+	defer func() { anySearchAPIURL = origURL }()
+
+	if _, err := a.Search(context.Background(), SearchParams{Query: "site:github.com x", Limit: 5}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if gotQuery != "site:github.com x" {
+		t.Errorf("query = %q, want verbatim %q", gotQuery, "site:github.com x")
+	}
+}

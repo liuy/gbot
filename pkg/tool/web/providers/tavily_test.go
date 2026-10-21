@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -511,5 +512,289 @@ func TestTavily_Search_InvalidJSON(t *testing.T) {
 	}
 	if spe.Status != 0 {
 		t.Errorf("Status = %d, want 0 (parse failure has no HTTP status)", spe.Status)
+	}
+}
+
+func TestTavily_Search_DirectiveMapping(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	_, err := p.Search(context.Background(), SearchParams{Query: `site:github.com -site:twitter.com after:2024-01-01 before:2024-06-01 "exact phrase" x -spam`})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	// Tavily prefers clean natural text: only phrases and -exclusions survive.
+	if body["query"] != `"exact phrase" x -spam` {
+		t.Errorf("query = %v, want %q", body["query"], `"exact phrase" x -spam`)
+	}
+	if got := body["include_domains"]; !reflect.DeepEqual(got, []any{"github.com"}) {
+		t.Errorf("include_domains = %v, want [github.com]", got)
+	}
+	if got := body["exclude_domains"]; !reflect.DeepEqual(got, []any{"twitter.com"}) {
+		t.Errorf("exclude_domains = %v, want [twitter.com]", got)
+	}
+	if body["start_date"] != "2024-01-01" {
+		t.Errorf("start_date = %v, want 2024-01-01", body["start_date"])
+	}
+	if body["end_date"] != "2024-06-01" {
+		t.Errorf("end_date = %v, want 2024-06-01", body["end_date"])
+	}
+	if _, ok := body["time_range"]; ok {
+		t.Errorf("time_range present = %v, want absent (explicit dates suppress it)", body["time_range"])
+	}
+}
+
+func TestTavily_Search_RecencyTimeRange(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		// Renderable first response: a time-filtered search that returns a
+		// source must NOT be retried.
+		_, _ = w.Write([]byte(`{"results":[{"title":"t","url":"https://example.com/x"}]}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	if _, err := p.Search(context.Background(), SearchParams{Query: "go generics", Recency: "week"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("requests = %d, want exactly 1 (renderable response, no retry)", len(bodies))
+	}
+	if bodies[0]["time_range"] != "week" {
+		t.Errorf("time_range = %v, want week", bodies[0]["time_range"])
+	}
+	if bodies[0]["query"] != "go generics" {
+		t.Errorf("query = %v, want passthrough for a directive-free query", bodies[0]["query"])
+	}
+}
+
+func TestTavily_Search_ExplicitDatesSuppressTimeRange(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	if _, err := p.Search(context.Background(), SearchParams{Query: "go after:2024-01-01", Recency: "week"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want exactly 2 (start_date is a time filter; the unrenderable `{}` triggers one retry)", len(bodies))
+	}
+	if _, ok := bodies[0]["time_range"]; ok {
+		t.Errorf("time_range = %v, want absent when explicit dates present", bodies[0]["time_range"])
+	}
+	if bodies[0]["start_date"] != "2024-01-01" {
+		t.Errorf("start_date = %v, want 2024-01-01", bodies[0]["start_date"])
+	}
+	if _, ok := bodies[1]["start_date"]; ok {
+		t.Errorf("retry start_date = %v, want cleared", bodies[1]["start_date"])
+	}
+}
+
+func TestTavily_Search_BeforeOnlySuppressesTimeRange(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	if _, err := p.Search(context.Background(), SearchParams{Query: "go before:2024-06-01", Recency: "week"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	// end_date alone is still a time filter: the unrenderable `{}` first
+	// response must trigger exactly one retry.
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want exactly 2 (end_date is a time filter)", len(bodies))
+	}
+	if _, ok := bodies[0]["time_range"]; ok {
+		t.Errorf("time_range = %v, want absent when an end_date-only bound is present", bodies[0]["time_range"])
+	}
+	if bodies[0]["end_date"] != "2024-06-01" {
+		t.Errorf("end_date = %v, want 2024-06-01", bodies[0]["end_date"])
+	}
+	if _, ok := bodies[1]["end_date"]; ok {
+		t.Errorf("retry end_date = %v, want cleared", bodies[1]["end_date"])
+	}
+}
+
+func TestTavily_Search_TimeFilterRetry(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`{"results":[],"answer":null}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[{"title":"Retry Hit","url":"https://example.com/retry","content":"c"}]}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	resp, err := p.Search(context.Background(), SearchParams{Query: "go generics", Recency: "week", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want exactly 2 (retry after unrenderable first response)", len(bodies))
+	}
+	if bodies[0]["time_range"] != "week" {
+		t.Errorf("first body time_range = %v, want week", bodies[0]["time_range"])
+	}
+	for _, field := range []string{"time_range", "start_date", "end_date"} {
+		if _, ok := bodies[1][field]; ok {
+			t.Errorf("second body %s = %v, want cleared", field, bodies[1][field])
+		}
+	}
+	if bodies[1]["query"] != "go generics" {
+		t.Errorf("second body query = %v, want unchanged", bodies[1]["query"])
+	}
+	if len(resp.Sources) != 1 || resp.Sources[0].URL != "https://example.com/retry" {
+		t.Errorf("Sources = %v, want the second response's source", resp.Sources)
+	}
+}
+
+func TestTavily_Search_NoTimeFilterNoRetry(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	resp, err := p.Search(context.Background(), SearchParams{Query: "go generics"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("requests = %d, want exactly 1 (no time filter → no retry)", requests)
+	}
+	if len(resp.Sources) != 0 {
+		t.Errorf("len(Sources) = %d, want 0", len(resp.Sources))
+	}
+}
+
+func TestTavily_Search_AnswerOnlyNoRetry(t *testing.T) {
+	// omp hasRenderableResponse: a non-empty answer alone is renderable, so
+	// the time-filter retry must not fire for answer-only responses.
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answer":"Go generics landed in 1.18","results":[]}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	resp, err := p.Search(context.Background(), SearchParams{Query: "go generics", Recency: "week", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("requests = %d, want exactly 1 (answer-only response is renderable, no retry)", requests)
+	}
+	if resp.Answer != "Go generics landed in 1.18" {
+		t.Errorf("Answer = %q, want the response answer", resp.Answer)
+	}
+	if len(resp.Sources) != 0 {
+		t.Errorf("len(Sources) = %d, want 0", len(resp.Sources))
+	}
+}
+
+func TestTavily_Search_PresetParsedQuery(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	p := &TavilyProvider{Client: server.Client(), APIKey: "k"}
+	oldURL := tavilyAPIURL
+	tavilyAPIURL = server.URL
+	defer func() { tavilyAPIURL = oldURL }()
+
+	// First call: pipeline-style pre-parsed query whose Raw differs from Query.
+	parsed := ParseSearchQuery(`"exact phrase" -spam site:github.com`)
+	if _, err := p.Search(context.Background(), SearchParams{Query: "ignored by preset", ParsedQuery: &parsed, Limit: 5}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	// Second call: fresh parse of an equivalent query.
+	if _, err := p.Search(context.Background(), SearchParams{Query: `"exact phrase" -spam site:github.com`, Limit: 5}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if bodies[0]["query"] != bodies[1]["query"] {
+		t.Errorf("preset query body = %v, fresh-parse body = %v, want identical", bodies[0]["query"], bodies[1]["query"])
+	}
+	if got := bodies[0]["include_domains"]; !reflect.DeepEqual(got, []any{"github.com"}) {
+		t.Errorf("include_domains = %v, want [github.com]", got)
 	}
 }

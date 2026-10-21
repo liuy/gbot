@@ -44,6 +44,18 @@ func (t *TavilyProvider) client() *http.Client {
 	return http.DefaultClient
 }
 
+// tavilyRequest carries the directive-derived request fields through both
+// the initial call and the time-filter retry.
+type tavilyRequest struct {
+	query          string
+	numResults     int
+	includeDomains []string
+	excludeDomains []string
+	startDate      string
+	endDate        string
+	timeRange      string
+}
+
 func (t *TavilyProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
 	key := t.apiKey()
 	if key == "" {
@@ -56,21 +68,75 @@ func (t *TavilyProvider) Search(ctx context.Context, params SearchParams) (*Sear
 
 	numResults := clampNumResults(params.Limit, tavilyDefaultResults, tavilyMaxResults)
 
+	parsed := params.Parsed()
+	req := tavilyRequest{
+		query:      params.Query,
+		numResults: numResults,
+	}
+	if parsed.HasDirectives {
+		// Tavily prefers clean natural text; re-emit only phrases and -exclusions.
+		req.query = FormatQuery(*parsed, QuerySyntax{Phrases: true, Negation: true})
+		req.includeDomains = SiteHosts(parsed.Sites)
+		req.excludeDomains = SiteHosts(parsed.ExcludedSites)
+		req.startDate = parsed.After
+		req.endDate = parsed.Before
+	}
+	// Explicit before:/after: bounds take precedence over the relative recency
+	// window; sending both would over-restrict.
+	if params.Recency != "" && req.startDate == "" && req.endDate == "" {
+		req.timeRange = params.Recency
+	}
+
+	resp, err := t.callAPI(ctx, key, req)
+	if err != nil {
+		return nil, err
+	}
+	hasTimeFilter := req.timeRange != "" || req.startDate != "" || req.endDate != ""
+	if !hasTimeFilter || hasRenderableTavily(resp) {
+		return resp, nil
+	}
+
+	// Time filters commonly zero out results; retry once without them.
+	req.timeRange, req.startDate, req.endDate = "", "", ""
+	return t.callAPI(ctx, key, req)
+}
+
+// hasRenderableTavily mirrors omp hasRenderableResponse: a trimmed answer or
+// any source makes the response renderable.
+func hasRenderableTavily(resp *SearchResponse) bool {
+	if strings.TrimSpace(resp.Answer) != "" {
+		return true
+	}
+	return len(resp.Sources) != 0
+}
+
+// callAPI builds the request body from the directive-derived fields, performs
+// the HTTP call, and decodes the response.
+func (t *TavilyProvider) callAPI(ctx context.Context, key string, req tavilyRequest) (*SearchResponse, error) {
 	// Anonymous struct so the wire field order stays deterministic, matching
-	// the omp request body. Directives (include/exclude_domains, date bounds)
-	// arrive with the batch-2 query layer.
+	// the omp request body.
 	reqBody := struct {
-		Query             string `json:"query"`
-		SearchDepth       string `json:"search_depth"`
-		MaxResults        int    `json:"max_results"`
-		IncludeAnswer     string `json:"include_answer"`
-		IncludeRawContent bool   `json:"include_raw_content"`
+		Query             string   `json:"query"`
+		SearchDepth       string   `json:"search_depth"`
+		MaxResults        int      `json:"max_results"`
+		IncludeAnswer     string   `json:"include_answer"`
+		IncludeRawContent bool     `json:"include_raw_content"`
+		IncludeDomains    []string `json:"include_domains,omitempty"`
+		ExcludeDomains    []string `json:"exclude_domains,omitempty"`
+		StartDate         string   `json:"start_date,omitempty"`
+		EndDate           string   `json:"end_date,omitempty"`
+		TimeRange         string   `json:"time_range,omitempty"`
 	}{
-		Query:             params.Query,
+		Query:             req.query,
 		SearchDepth:       "basic",
-		MaxResults:        numResults,
+		MaxResults:        req.numResults,
 		IncludeAnswer:     "advanced",
 		IncludeRawContent: false,
+		IncludeDomains:    req.includeDomains,
+		ExcludeDomains:    req.excludeDomains,
+		StartDate:         req.startDate,
+		EndDate:           req.endDate,
+		TimeRange:         req.timeRange,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -80,14 +146,14 @@ func (t *TavilyProvider) Search(ctx context.Context, params SearchParams) (*Sear
 	reqCtx, cancel := context.WithTimeout(ctx, tavilyTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, tavilyAPIURL, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, tavilyAPIURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("tavily: build request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+key)
 
-	resp, err := t.client().Do(req)
+	resp, err := t.client().Do(httpReq)
 	if err != nil {
 		return nil, &SearchProviderError{
 			Provider: "tavily",
@@ -188,8 +254,8 @@ func (t *TavilyProvider) Search(ctx context.Context, params SearchParams) (*Sear
 		answer = strings.TrimSpace(a)
 	}
 
-	if len(sources) > numResults {
-		sources = sources[:numResults]
+	if len(sources) > req.numResults {
+		sources = sources[:req.numResults]
 	}
 
 	return &SearchResponse{Provider: "tavily", Answer: answer, Sources: sources}, nil
