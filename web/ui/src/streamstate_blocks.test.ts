@@ -44,6 +44,12 @@ function mount() {
   return chat
 }
 
+// Finished tools fold with render-on-visible — expanding the header renders
+// the deferred output before assertions can see it.
+function expandTool(toolRoot: HTMLElement) {
+  ;(toolRoot.querySelector('[data-tool-header]') as HTMLElement).click()
+}
+
 beforeEach(() => {
   listeners.clear()
   sent.length = 0
@@ -142,9 +148,12 @@ describe('streamState block tree rendering', () => {
     const durEl = toolRoot.querySelector('.font-mono.text-xs') as HTMLElement
     expect(durEl.textContent!.trim()).toBe('1s')
 
-    // Output should be rendered in the body div (children[1] of tool root).
+    // Output is folded with the finished body (render-on-visible); expanding
+    // the header renders it into the body div (children[1] of tool root).
     const bodyEl = toolRoot.children[1] as HTMLElement
     expect(bodyEl.classList.contains('hidden')).toBe(true)
+    expandTool(toolRoot)
+    expect(bodyEl.classList.contains('hidden')).toBe(false)
     expect(bodyEl.textContent).toContain('line1')
     expect(bodyEl.textContent).toContain('line2')
   })
@@ -240,7 +249,8 @@ describe('streamState block tree rendering', () => {
     )
     expect(nestedTool).not.toBeNull()
 
-    // Verify nested Read tool shows output.
+    // Verify nested Read tool shows output (folded until expanded).
+    expandTool(nestedTool as HTMLElement)
     expect(nestedTool!.textContent).toContain('package main')
   })
 
@@ -357,8 +367,11 @@ describe('streamState block tree rendering', () => {
     expect(toolRoot.querySelector('.text-green')).not.toBeNull()
     expect(toolRoot.querySelector('.heartbeat')).toBeNull()
 
-    // Output should be rendered in the body div (children[1] of tool root).
+    // Output is deferred while the finished body stays folded; expanding
+    // renders it into the body div (children[1] of tool root).
     const bodyEl = toolRoot.children[1] as HTMLElement
+    expect(bodyEl.textContent).not.toContain('hi')
+    expandTool(toolRoot)
     expect(bodyEl.textContent).toContain('hi')
   })
 
@@ -473,7 +486,11 @@ describe('streamState block tree rendering', () => {
     // The sub-agent text should be visible inside the Agent tool
     const allText = document.body.textContent ?? ''
     expect(allText).toContain('sub-agent text')
-    expect(allText).toContain('found 3 matches')
+    // The finished sub-tool's output is folded (render-on-visible); expanding
+    // its header renders it.
+    const subTool = document.querySelector('[data-tool-root][data-tool-name="Grep"]') as HTMLElement
+    expandTool(subTool)
+    expect(subTool.textContent).toContain('found 3 matches')
   })
 
   it('query_end after streamState with undefined children does not throw', () => {

@@ -34,6 +34,7 @@ import {
   appendProgressBar,
   setToolSummary,
   setToolOutput,
+  setToolBodyVisible,
   setProgressBarUsage,
   refreshProgressBar,
   finalizeProgressBar,
@@ -1786,12 +1787,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const entry = toolEntries.get(targetId)
         if (entry) {
           // First content-bearing delta expands the body so streaming output
-          // is visible while the tool runs (TUI parity). The check runs BEFORE
-          // the write so a user collapse mid-run is never undone by a later
-          // delta; the same path serves sub-agent deltas via the shared tables.
-          const expand = output !== '' && entry.handles.body.children.length === 0
+          // is visible while the tool runs (TUI parity). Visibility is set
+          // BEFORE the write — setToolOutput defers folded bodies — and only
+          // while the user has not touched the fold, so a mid-run collapse is
+          // never undone by a later delta.
+          if (output !== '' && !entry.handles.userTouched) {
+            setToolBodyVisible(entry.handles, true)
+          }
           setToolOutput(entry.handles, output)
-          if (expand) entry.handles.body.classList.remove('hidden')
         }
         const pending = pendingToolByID.get(targetId)
         if (pending) pending.displayOutput = output

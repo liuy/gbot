@@ -12832,8 +12832,7 @@ func TestCallLLMWithRetry_ExhaustsConfiguredAttempts(t *testing.T) {
 	if res.Error == nil {
 		t.Fatal("expected the stream error to end the query")
 	}
-	var se *StreamEndedError
-	if !errors.As(res.Error, &se) {
+	if _, ok := errors.AsType[*StreamEndedError](res.Error); !ok {
 		t.Errorf("terminal error = %v (%T), want the StreamEndedError itself — falling out of the loop must return it, not a synthetic", res.Error, res.Error)
 	}
 	if got := mp.callCount(); got != 2 {
@@ -13398,8 +13397,7 @@ func TestCallLLM_CtxCancelMidStream_AppendsPartialAndSynthetics(t *testing.T) {
 		cancel()
 	}()
 	res := eng.QuerySync(ctx, "q", "")
-	var ab *AbortError
-	if !errors.As(res.Error, &ab) {
+	if _, ok := errors.AsType[*AbortError](res.Error); !ok {
 		t.Fatalf("error = %v, want the abort error", res.Error)
 	}
 	// [user, assistant(tool_use), user(synthetic tool_result)]
@@ -13857,7 +13855,7 @@ type gatedProbeTool struct {
 }
 
 func newGatedProbeTool(name string) *gatedProbeTool {
-	t := &gatedProbeTool{mockTool: mockTool{name: name, enabled: true}, release: make(chan struct{})}
+	t := &gatedProbeTool{name: name, enabled: true, release: make(chan struct{})}
 	t.callFn = func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		<-t.release
 		return &tool.ToolResult{Data: "late"}, nil
@@ -13941,8 +13939,7 @@ func TestCallLLM_InterruptedWithStartedTool_Discards(t *testing.T) {
 	eng.retryConfig = &llm.RetryConfig{MaxRetries: 0, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond}
 
 	res := eng.QuerySync(context.Background(), "q", "")
-	var se *StreamInterruptedError
-	if !errors.As(res.Error, &se) {
+	if _, ok := errors.AsType[*StreamInterruptedError](res.Error); !ok {
 		t.Fatalf("error = %v (%T), want StreamInterruptedError", res.Error, res.Error)
 	}
 	assertNoToolEndAfterRelease(t, ec, probe, "tu_id1")
@@ -14188,8 +14185,7 @@ func TestCallLLM_StreamEndedLogs(t *testing.T) {
 	eng.retryConfig = &llm.RetryConfig{MaxRetries: 0, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond}
 
 	res := eng.QuerySync(context.Background(), "q", "")
-	var ee *StreamEndedError
-	if !errors.As(res.Error, &ee) {
+	if _, ok := errors.AsType[*StreamEndedError](res.Error); !ok {
 		t.Fatalf("error = %v (%T), want StreamEndedError", res.Error, res.Error)
 	}
 	lc.find(t, "stream ended without content or completion signal", func(a map[string]any) bool { return true })

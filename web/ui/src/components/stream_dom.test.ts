@@ -226,6 +226,7 @@ describe('setToolOutput', () => {
   it('renders output as markdown HTML', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h) // visible body — setToolOutput defers folded bodies
     setToolOutput(h, 'clean output')
     expect(h.body.innerHTML).toContain('clean output')
   })
@@ -233,6 +234,7 @@ describe('setToolOutput', () => {
   it('updates content across successive calls preserving element identity (morph path)', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h) // visible body — setToolOutput defers folded bodies
     setToolOutput(h, 'step 1')
     const pBefore = h.body.querySelector('p')
     setToolOutput(h, 'step 1\nstep 2')
@@ -243,9 +245,44 @@ describe('setToolOutput', () => {
   it('clears rendered output when output becomes empty', () => {
     const parent = newParent()
     const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h) // visible body — setToolOutput defers folded bodies
     setToolOutput(h, 'temporary')
     setToolOutput(h, '')
     expect(h.body.children.length).toBe(0)
+  })
+
+  it('defers rendering while the body is folded: stores pending, touches no DOM', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h) // expand so the first frame renders
+    setToolOutput(h, 'visible frame')
+    toggleToolExpanded(h) // user folds
+    const frozen = h.body.innerHTML
+    setToolOutput(h, 'hidden frame 1')
+    setToolOutput(h, 'hidden frame 2', true)
+    expect(h.body.innerHTML).toBe(frozen)
+    expect(h.pendingOutput).toBe('hidden frame 2')
+    expect(h.pendingSkipHighlight).toBe(true)
+  })
+
+  it('pending tracks only the latest frame while folded', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    // Body starts folded (factory default) — a never-expanded running block.
+    setToolOutput(h, 'frame 1')
+    setToolOutput(h, 'frame 2')
+    expect(h.pendingOutput).toBe('frame 2')
+    expect(h.body.children.length).toBe(0)
+  })
+
+  it('visible render clears pending', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    setToolOutput(h, 'frame 1') // folded → pending
+    toggleToolExpanded(h) // expand → flush pending
+    setToolOutput(h, 'frame 2') // visible → renders, nothing pending
+    expect(h.pendingOutput).toBeNull()
+    expect(h.body.textContent).toContain('frame 2')
   })
 })
 
@@ -258,7 +295,6 @@ describe('finishTool', () => {
     expect(h.dot.classList.contains('text-green')).toBe(true)
     expect(h.dot.classList.contains('text-red')).toBe(false)
     expect(h.durEl.textContent).toBe(' 2s')
-    expect(h.body.innerHTML).toContain('done')
     expect(h.durEl.classList.contains('text-t3')).toBe(true)
   })
 
@@ -277,6 +313,67 @@ describe('finishTool', () => {
     finishTool(h, { isError: false, durationNs: 0, output: '' })
     expect(h.durEl.textContent).toBe(' 0s')
   })
+
+  it('folds a system-expanded body and defers final output to pending', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    // System auto-expand (first-delta path) unhides the body directly; no
+    // user gesture, so userTouched stays false.
+    h.body.classList.remove('hidden')
+    finishTool(h, { isError: false, durationNs: 0, output: 'final' })
+    expect(h.body.classList.contains('hidden')).toBe(true)
+    expect(h.body.children.length).toBe(0)
+    expect(h.pendingOutput).toBe('final')
+    // Chevron must follow the fold.
+    expect(h.header.querySelector('svg')?.getAttribute('class')).not.toContain('rotate-90')
+  })
+
+  it('leaves a user-touched expanded body expanded and renders into it', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h) // user gesture: userTouched = true, body visible
+    finishTool(h, { isError: false, durationNs: 0, output: 'final' })
+    expect(h.body.classList.contains('hidden')).toBe(false)
+    expect(h.body.textContent).toContain('final')
+    expect(h.pendingOutput).toBeNull()
+  })
+
+  it('Edit/Write auto-expand on finish renders directly and beats the settle fold', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Edit')
+    finishTool(h, { isError: false, durationNs: 0, output: '+ added' })
+    expect(h.body.classList.contains('hidden')).toBe(false)
+    expect(h.body.textContent).toContain('added')
+    expect(h.header.querySelector('svg')?.getAttribute('class')).toContain('rotate-90')
+  })
+
+  it('visible render retires pending: Edit finish after folded deltas leaves no stale flush', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Edit')
+    toggleToolExpanded(h) // user opens
+    toggleToolExpanded(h) // user folds — later deltas defer
+    setToolOutput(h, 'streaming delta')
+    expect(h.pendingOutput).toBe('streaming delta')
+    // Edit finish forces the body visible and renders the final output; the
+    // stale pending must be retired so a later fold+expand never flushes it.
+    finishTool(h, { isError: false, durationNs: 0, output: 'final diff' })
+    toggleToolExpanded(h) // fold
+    toggleToolExpanded(h) // expand
+    expect(h.body.textContent).toContain('final diff')
+    expect(h.body.textContent).not.toContain('streaming delta')
+  })
+
+  it('already-folded body stays folded with output deferred (loadHistory path)', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Read')
+    finishTool(h, { isError: false, durationNs: 0, output: 'file contents' })
+    expect(h.body.classList.contains('hidden')).toBe(true)
+    expect(h.body.children.length).toBe(0)
+    expect(h.pendingOutput).toBe('file contents')
+    toggleToolExpanded(h)
+    expect(h.body.classList.contains('hidden')).toBe(false)
+    expect(h.body.textContent).toContain('file contents')
+  })
 })
 
 describe('toggleToolExpanded', () => {
@@ -290,6 +387,31 @@ describe('toggleToolExpanded', () => {
     toggleToolExpanded(h)
     expect(h.body.classList.contains('hidden')).toBe(true)
     expect(h.childrenContainer.classList.contains('hidden')).toBe(true)
+  })
+
+  it('marks user intent on either direction (userTouched)', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    toggleToolExpanded(h)
+    expect(h.userTouched).toBe(true)
+    toggleToolExpanded(h)
+    expect(h.userTouched).toBe(true)
+  })
+
+  it('expanding flushes the pending output exactly once', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    setToolOutput(h, 'streamed frame') // folded → pending
+    expect(h.body.children.length).toBe(0)
+    toggleToolExpanded(h)
+    expect(h.body.classList.contains('hidden')).toBe(false)
+    expect(h.body.textContent).toContain('streamed frame')
+    expect(h.pendingOutput).toBeNull()
+    // A second expand (fold → expand) must not re-render or duplicate: the
+    // rendered DOM persists, pending stays empty.
+    toggleToolExpanded(h)
+    toggleToolExpanded(h)
+    expect(h.body.textContent.match(/streamed frame/g)?.length).toBe(1)
   })
 })
 

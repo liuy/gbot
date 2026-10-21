@@ -83,6 +83,12 @@ function summaryTextOfRow(row: HTMLElement): string {
   return span ? span.textContent ?? '' : ''
 }
 
+// Row bodies are folded with render-on-visible — expanding the header renders
+// the deferred body before assertions can see it.
+function clickRowHeader(row: HTMLElement) {
+  ;(row.querySelector('[role="button"]') as HTMLElement).click()
+}
+
 const BASH_ENVELOPE =
   '<system-reminder>\nA background command completed:\n<job-notification>\n<job-id>bg-1</job-id>\n' +
   '<status>completed</status>\n<summary>Background command &quot;make check&quot; completed (exit code 0)</summary>\n' +
@@ -127,9 +133,11 @@ describe('injected reminder history rendering', () => {
     const dot = row.querySelector('.text-green')
     expect(dot?.classList.contains('text-green')).toBe(true)
     expect(document.querySelectorAll('.heartbeat').length).toBe(0)
-    // Body starts collapsed with the raw envelope inside.
+    // Body starts folded; the raw envelope renders on expand.
     const body = row.querySelector('.md-body') as HTMLElement
     expect(body.classList.contains('hidden')).toBe(true)
+    clickRowHeader(row)
+    expect(body.classList.contains('hidden')).toBe(false)
     expect(body.textContent).toContain('</job-notification>')
     // No user bubble carries the raw envelope.
     expect(bubbleSpans().some(s => s.textContent?.includes('<system-reminder>'))).toBe(false)
@@ -149,6 +157,7 @@ describe('injected reminder history rendering', () => {
     expect(rows.length).toBe(1)
     expect(rows[0].dataset.toolName).toBe('Reminder')
     expect(summaryTextOfRow(rows[0])).toBe(' (got a message from main)')
+    clickRowHeader(rows[0])
     expect(document.body.textContent).toContain('报数：e3→main 第一条')
   })
 
@@ -333,8 +342,12 @@ describe('live reminder insertion', () => {
     const dot = row.querySelector('.text-green')
     expect(dot?.classList.contains('text-green')).toBe(true)
     expect(dot?.classList.contains('heartbeat')).toBe(false)
+    // Row anatomy matches the settled tool path: green settled dot (no
+    // pulse), folded body that renders the raw envelope on expand. The
+    // streaming shell's own progress pulse is outside the row.
     const body = row.querySelector('.md-body') as HTMLElement
     expect(body.classList.contains('hidden')).toBe(true)
+    clickRowHeader(row)
     expect(body.textContent).toContain('</job-notification>')
     // The live row shares the shell grid with tool rows, and no gray
     // queued-echo bubble carries the envelope — the row replaces it.
@@ -351,6 +364,7 @@ describe('live reminder insertion', () => {
     expect(rows.length).toBe(1)
     expect(rows[0].dataset.toolName).toBe('Reminder')
     expect(summaryTextOfRow(rows[0])).toBe(' (got a message from main)')
+    clickRowHeader(rows[0])
     expect(document.body.textContent).toContain('报数')
   })
 

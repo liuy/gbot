@@ -355,6 +355,152 @@ describe('chat integration', () => {
     expect(body.querySelector('p')).toBe(pBefore)
   })
 
+  // ── Think-style fold trio: finish-time settle fold, render-on-visible,
+  // intent guard. Shared helpers below exercise the full event pipeline
+  // (tool_start → tool_output_delta → tool_end) like the tests above.
+  function liveBashBody(): HTMLElement {
+    const toolRoot = document.querySelector(`[data-tool-root][data-tool-name="Bash"]`) as HTMLElement
+    expect(toolRoot).toBeTruthy()
+    return toolRoot.children[1] as HTMLElement
+  }
+
+  function clickToolHeader() {
+    const header = document.querySelector('[data-tool-root] [data-tool-header]') as HTMLElement
+    expect(header).toBeTruthy()
+    header.click()
+  }
+
+  it('tool_end folds a system-expanded body; expand renders the final output', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run tests')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'fold-1', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-1', display_output: 'building 1/100' } },
+    ])
+    const body = liveBashBody()
+    const header = document.querySelector('[data-tool-root] [data-tool-header]') as HTMLElement
+    expect(body.classList.contains('hidden')).toBe(false)
+    // The system expand rotates the chevron with the body.
+    expect(header.querySelector('svg')?.getAttribute('class')).toContain('rotate-90')
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'fold-1', display_output: 'building 100/100\nok' } },
+    ])
+    // Think-style settle: the system expanded this body (first delta), the
+    // user never touched the fold → tool_end must fold it back.
+    expect(body.classList.contains('hidden')).toBe(true)
+    // The settle fold un-rotates the chevron with the body.
+    expect(header.querySelector('svg')?.getAttribute('class')).not.toContain('rotate-90')
+    // The final output is not lost: expanding renders it (render-on-visible).
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(false)
+    expect(body.textContent).toContain('building 100/100')
+  })
+
+  it('user-folded block stays folded through later deltas and tool_end (intent guard)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run tests')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'fold-2', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-2', display_output: 'step 1' } },
+    ])
+    const body = liveBashBody()
+    expect(body.classList.contains('hidden')).toBe(false)
+    // The user folds mid-run.
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(true)
+    // A later delta must not re-expand the user's fold.
+    dispatchEvents([
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-2', display_output: 'step 1\nstep 2' } },
+    ])
+    expect(body.classList.contains('hidden')).toBe(true)
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'fold-2', display_output: 'step 1\nstep 2\ndone' } },
+    ])
+    // tool_end must leave the user's fold alone.
+    expect(body.classList.contains('hidden')).toBe(true)
+  })
+
+  it('user-expanded block stays expanded through tool_end (intent guard)', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run tests')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'fold-3', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-3', display_output: 'step 1' } },
+    ])
+    const body = liveBashBody()
+    // The user folds then re-expands: the last gesture is expand.
+    clickToolHeader()
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(false)
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'fold-3', display_output: 'done' } },
+    ])
+    // User intent wins over the settle fold.
+    expect(body.classList.contains('hidden')).toBe(false)
+    expect(body.textContent).toContain('done')
+  })
+
+  it('folded running block receives no DOM writes; expand renders the latest snapshot', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run tests')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'fold-4', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1' } },
+    ])
+    const body = liveBashBody()
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(true)
+    const frozen = body.innerHTML
+    // Deltas while folded must not touch the hidden DOM (no markdown, no
+    // morph — the payload is a replace window, intermediate frames carry no
+    // information).
+    dispatchEvents([
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1\nstep 2' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1\nstep 2\nstep 3' } },
+    ])
+    expect(body.innerHTML).toBe(frozen)
+    expect(body.classList.contains('hidden')).toBe(true)
+    // Expanding renders the LATEST snapshot exactly once — 'step 3' present,
+    // no duplicate 'step 2' accumulation.
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(false)
+    expect(body.textContent).toContain('step 3')
+    expect(body.textContent.match(/step 2/g)?.length).toBe(1)
+  })
+
+  it('terminal fold: tool_end output stays pending until expand renders it', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('run tests')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'fold-5', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-5', display_output: 'streaming…' } },
+    ])
+    const body = liveBashBody()
+    clickToolHeader()
+    expect(body.classList.contains('hidden')).toBe(true)
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'fold-5', display_output: 'FINAL OUTPUT' } },
+    ])
+    expect(body.classList.contains('hidden')).toBe(true)
+    clickToolHeader()
+    expect(body.textContent).toContain('FINAL OUTPUT')
+  })
+
   it('usage updates progress bar', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

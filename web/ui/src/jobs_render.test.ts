@@ -335,6 +335,9 @@ describe('jobs section — agent feed', () => {
       (s) => s.className.includes('text-t3') && s.textContent?.includes('<system-reminder>'),
     )
     expect(echo).toHaveLength(0)
+    // The envelope lives in the folded row body — rendered on expand
+    // (render-on-visible), never as a bare gray echo span.
+    ;(rows[0].querySelector('[data-tool-header]') as HTMLElement).click()
     expect(rows[0].querySelector('.md-body')?.textContent).toContain('</job-notification>')
   })
 
@@ -354,10 +357,12 @@ describe('jobs section — agent feed', () => {
     expect(rows[0].dataset.toolName).toBe('Reminder')
     const summary = rows[0].querySelector('span.font-light')
     expect(summary?.textContent).toBe(' (command make check · exit 0)')
-    // Display text in the collapsed body — never the raw XML, never a gray
-    // echo of the envelope.
-    expect(rows[0].querySelector('.md-body')?.textContent).toContain('Background command "make check" completed (exit code 0)')
-    expect(rows[0].querySelector('.md-body')?.textContent).not.toContain('<job-notification>')
+    // Display text in the folded body — rendered on expand (render-on-visible)
+    // — never the raw XML, never a gray echo of the envelope.
+    ;(rows[0].querySelector('[data-tool-header]') as HTMLElement).click()
+    const bodyText = rows[0].querySelector('.md-body')?.textContent ?? ''
+    expect(bodyText).toContain('Background command "make check" completed (exit code 0)')
+    expect(bodyText).not.toContain('<job-notification>')
     const echo = Array.from(feed.querySelectorAll('span')).filter(
       (s) => s.className.includes('text-t3') && s.textContent?.includes('<job-notification>'),
     )

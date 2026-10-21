@@ -101,6 +101,13 @@ export interface ToolDomHandles {
   durEl: HTMLSpanElement
   body: HTMLDivElement
   childrenContainer: HTMLDivElement
+  // Any manual fold (header/body click) marks user intent — the finish-time
+  // settle fold must never override it afterwards.
+  userTouched: boolean
+  // Latest output while the body is folded (render-on-visible): rendered
+  // exactly once when the body next becomes visible, then null.
+  pendingOutput: string | null
+  pendingSkipHighlight: boolean
 }
 
 export interface ProgressDomHandles {
@@ -382,6 +389,18 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
 
   // Collapsible tool grouping: if previous sibling is a group, append.
   // If previous sibling is also a standalone collapsible tool, create group.
+  const handles: ToolDomHandles = {
+    root,
+    header,
+    dot,
+    summaryEl,
+    durEl,
+    body,
+    childrenContainer,
+    userTouched: false,
+    pendingOutput: null,
+    pendingSkipHighlight: false,
+  }
   if (collapsible) {
     const sibling = findPrevToolSibling(before ?? null, parent)
     if (sibling?.dataset.toolGroup) {
@@ -397,7 +416,6 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
         sibling.appendChild(root)
       }
       updateGroupSummary(sibling as HTMLElement)
-      const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
       body.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
@@ -418,7 +436,6 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
       for (const th of postThinking) toolsContainer.appendChild(th)
       toolsContainer.appendChild(root)
       updateGroupSummary(group)
-      const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
       header.addEventListener('click', () => toggleToolExpanded(handles))
       body.addEventListener('click', () => toggleToolExpanded(handles))
       return handles
@@ -426,8 +443,6 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
   }
 
   insertBefore(parent, root, before ?? null)
-
-  const handles: ToolDomHandles = { root, header, dot, summaryEl, durEl, body, childrenContainer }
 
   header.addEventListener('click', () => toggleToolExpanded(handles))
   body.addEventListener('click', () => toggleToolExpanded(handles))
@@ -497,6 +512,15 @@ export function setToolSummary(handles: ToolDomHandles, summary: string, toolNam
 }
 
 export function setToolOutput(handles: ToolDomHandles, output: string, skipHighlight = false): void {
+  if (handles.body.classList.contains('hidden')) {
+    // Render-on-visible: a folded body skips markdown+morph entirely — the
+    // payload is a replace window, so intermediate frames carry no
+    // information; the latest string renders once on expand.
+    handles.pendingOutput = output
+    handles.pendingSkipHighlight = skipHighlight
+    return
+  }
+  handles.pendingOutput = null
   const html = renderToolOutput(output, skipHighlight)
   // Same shape as writeThinkingText: first frame takes a plain innerHTML
   // write; re-renders morph so progressive tool output patches the changed
@@ -513,6 +537,15 @@ export function refreshToolDuration(handles: ToolDomHandles, startedAt: number):
   handles.durEl.textContent = ' ' + formatDurationNs(seconds * 1e9)
 }
 
+// Programmatic fold driver (first-delta expand, finish-time settle): unlike
+// toggleToolExpanded it is not a user action — never marks userTouched — but
+// like it, keeps the chevron synced with the body.
+export function setToolBodyVisible(handles: ToolDomHandles, visible: boolean): void {
+  handles.body.classList.toggle('hidden', !visible)
+  const svg = handles.header.querySelector('svg')
+  if (svg) svg.setAttribute('class', chevron({ expanded: visible }))
+}
+
 export function finishTool(
   handles: ToolDomHandles,
   opts: { isError: boolean; durationNs: number; output: string; skipHighlight?: boolean },
@@ -525,10 +558,17 @@ export function finishTool(
   handles.durEl.textContent = ' ' + (isError ? `FAIL · ${dur}` : dur)
   handles.durEl.className = toolDuration({ state: isError ? 'error' : 'done' })
   if (output) {
-    setToolOutput(handles, output, skipHighlight)
-    if (shouldAutoExpand(handles.root.dataset.toolName ?? '')) {
-      handles.body.classList.remove('hidden')
+    const name = handles.root.dataset.toolName ?? ''
+    if (shouldAutoExpand(name)) {
+      // Edit/Write diffs are the deliverable — finish is when they become
+      // worth showing; the settle fold below never applies to them.
+      setToolBodyVisible(handles, true)
+    } else if (!handles.userTouched) {
+      // Think-style settle: fold a body the system expanded on the first
+      // delta. A user-touched fold (either direction) is intent — leave it.
+      setToolBodyVisible(handles, false)
     }
+    setToolOutput(handles, output, skipHighlight)
   }
   // If tool is inside a group, update group dot/summary/duration.
   const group = handles.root.closest('[data-tool-group]') as HTMLElement | null
@@ -536,6 +576,8 @@ export function finishTool(
 }
 
 export function toggleToolExpanded(handles: ToolDomHandles): void {
+  // Any manual fold marks intent — finishTool must respect it afterwards.
+  handles.userTouched = true
   const collapsed = !handles.body.classList.contains('hidden')
   if (collapsed) {
     handles.body.classList.add('hidden')
@@ -543,6 +585,13 @@ export function toggleToolExpanded(handles: ToolDomHandles): void {
   } else {
     handles.body.classList.remove('hidden')
     handles.childrenContainer.classList.remove('hidden')
+    if (handles.pendingOutput !== null) {
+      // Body is visible now, so this renders (render-on-visible flush).
+      const pending = handles.pendingOutput
+      const skip = handles.pendingSkipHighlight
+      handles.pendingOutput = null
+      setToolOutput(handles, pending, skip)
+    }
   }
   const svg = handles.header.querySelector('svg')
   if (svg) svg.setAttribute('class', chevron({ expanded: !collapsed }))

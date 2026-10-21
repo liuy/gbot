@@ -170,6 +170,9 @@ describe('feed sink — tool patch', () => {
     const { sink, feedEl } = makeSink(src)
     sink.hydrate()
     const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    // Running feed bodies never auto-expand; the user watches by expanding,
+    // after which live patches render into the visible body.
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
 
     const b = src[0] as ToolBlockT
     b.summary = 'make check'
@@ -192,6 +195,35 @@ describe('feed sink — tool patch', () => {
     sink.patchTool('t1')
     expect(textOf(root)).toContain('final output')
     expect(textOf(root)).not.toContain('should not appear')
+  })
+
+  it('folded feed tool defers patches; finish settles folded and expand renders the final output', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    const body = root.children[1] as HTMLElement
+    expect(body.classList.contains('hidden')).toBe(true)
+
+    // Running patches while folded write no DOM (render-on-visible).
+    const b = src[0] as ToolBlockT
+    b.displayOutput = 'halfway'
+    sink.patchTool('t1')
+    expect(textOf(body)).toBe('')
+
+    b.state = 'done'
+    b.displayOutput = 'final output'
+    b.timingNs = 3_000_000_000
+    sink.patchTool('t1')
+    // Untouched body stays folded with the terminal output deferred.
+    expect(body.classList.contains('hidden')).toBe(true)
+    expect(textOf(body)).toBe('')
+
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(body.classList.contains('hidden')).toBe(false)
+    expect(textOf(body)).toContain('final output')
+    expect(textOf(body)).not.toContain('halfway')
   })
 
   it('tool_end collapses the children container and purges nested registries', () => {

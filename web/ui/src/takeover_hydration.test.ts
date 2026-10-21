@@ -233,8 +233,10 @@ describe('takeover snapshot hydration', () => {
     expect(mdBodyCount()).toBe(expectedMdBodies(blocks))
 
     const text = containerText()
-    // Ascending spot pairs across kind boundaries, including the last block.
-    for (const [a, b] of [[0, 1], [139, 140], [209, 210], [300, 301], [418, 419]]) {
+    // Ascending spot pairs across kind boundaries (non-tool kinds — tool
+    // output bodies defer rendering until expanded, render-on-visible),
+    // including the last block.
+    for (const [a, b] of [[0, 2], [138, 140], [209, 210], [299, 300], [417, 419]]) {
       const ia = text.indexOf(`block-${a}:`)
       const ib = text.indexOf(`block-${b}:`)
       expect(ia, `block-${a}: marker must be present`).toBeGreaterThanOrEqual(0)
@@ -247,10 +249,16 @@ describe('takeover snapshot hydration', () => {
     expect(sampleText).toBeDefined()
     expect(sampleText!.innerHTML).toContain('<strong>md</strong>')
 
-    // Tool output body carries its rendered marker lines.
-    const sampleTool = mdBodies.find((el) => (el.textContent ?? '').includes('block-1: line-0 of output'))
-    expect(sampleTool).toBeDefined()
-    expect(sampleTool!.textContent).toContain('block-1: line-39 of output')
+    // Tool output defers while folded; expanding the header renders it —
+    // the body carries its rendered marker lines exactly once.
+    const toolRoot = Array.from(document.querySelectorAll('[data-tool-root]')).find(
+      (el) => (el.textContent ?? '').includes('file-1.txt'),
+    ) as HTMLElement | undefined
+    expect(toolRoot).toBeDefined()
+    ;(toolRoot!.querySelector('[data-tool-header]') as HTMLElement).click()
+    const toolBody = toolRoot!.querySelector('.md-body') as HTMLElement
+    expect(toolBody.textContent).toContain('block-1: line-0 of output')
+    expect(toolBody.textContent).toContain('block-1: line-39 of output')
 
     // Copy-button wiring ran for the fenced code block.
     const fenced = mdBodies.find((el) => (el.textContent ?? '').includes('fence-0'))
@@ -322,7 +330,15 @@ describe('takeover snapshot hydration', () => {
     // must use a text marker to detect double renders.
     const occurrences = text.split('block-9:').length - 1
     expect(occurrences).toBe(1)
-    const toolLineOccurrences = text.split('block-7: line-0 of output').length - 1
+    // Same no-double-render check on a tool body (expanded so its deferred
+    // output is observable — render-on-visible).
+    const tool7 = Array.from(document.querySelectorAll('[data-tool-root]')).find(
+      (el) => (el.textContent ?? '').includes('file-7.txt'),
+    ) as HTMLElement | undefined
+    expect(tool7).toBeDefined()
+    ;(tool7!.querySelector('[data-tool-header]') as HTMLElement).click()
+    const toolLineOccurrences =
+      (tool7!.querySelector('.md-body')?.textContent ?? '').split('block-7: line-0 of output').length - 1
     expect(toolLineOccurrences).toBe(1)
     expect(text).toContain('live-tail-text')
     expect(mdBodyCount()).toBe(expectedMdBodies(blocks) + 1)
