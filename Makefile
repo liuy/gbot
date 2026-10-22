@@ -1,4 +1,4 @@
-.PHONY: web-novnc web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate flaky check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc web-deps web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate flaky check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -67,7 +67,7 @@ else
 	go test $(PKG) ./cmd/... -race -count=1 -timeout 180s -coverprofile=coverage.out
 endif
 	go test ./test/ -count=1 -timeout 180s
-	cd web/ui && npm test
+	$(MAKE) -s web-test
 	@echo ""
 	@echo "Coverage:"
 	@go tool cover -func=coverage.out
@@ -279,11 +279,24 @@ app-check:
 # web-build regenerates the React SPA embedded into the Go binary.
 # Assets are checked into pkg/wui/assets/ so go build works
 # without Node. Run this after changing web/ui source.
-web-build: web-mv-gen
-	cd web/ui && export LD_PRELOAD="$${LD_PRELOAD:-$${PREFIX:+$$PREFIX/lib/libtermux-exec.so}}" && npm ci && npm run build
+# web-build used to run `npm ci` unconditionally: rm -rf on every check, so an
+# interrupted check left a half-corrupt tree (empty .bin, missing platform
+# pkgs) — the repeated ENOENT failures. Reinstall only when the dep files
+# changed (stamp) or a binary the web targets exec is gone.
+# npm ci --prefer-offline keeps 7eedf975's intent: strict install from the
+# lock, never rewrites it.
+web-deps:
+	@cd web/ui && stamp=$$(cat package-lock.json package.json | md5sum | cut -d" " -f1); \
+	if [ "$$(cat node_modules/.gbot-deps-stamp 2>/dev/null)" != "$$stamp" ] || \
+	   [ ! -x node_modules/.bin/esbuild ] || [ ! -x node_modules/.bin/vitest ] || [ ! -x node_modules/.bin/vite ]; then \
+	  echo "web-deps: deps changed or node_modules broken — npm ci --prefer-offline"; \
+	  npm ci --prefer-offline && echo "$$stamp" > node_modules/.gbot-deps-stamp; \
+	fi
+web-build: web-deps web-mv-gen
+	cd web/ui && export LD_PRELOAD="$${LD_PRELOAD:-$${PREFIX:+$$PREFIX/lib/libtermux-exec.so}}" && npm run build
 	gzip -kf pkg/wui/assets/index.html
 
-web-test:
+web-test: web-deps
 	cd web/ui && npm test
 
 web-check: web-build web-test web-lint web-weak web-novnc web-mv
@@ -296,11 +309,11 @@ web-mv:
 
 # Regenerates (not checks) the model-viewer bundle so `make build` can never
 # embed a stale one — fork source edits need no remembered pre-step.
-web-mv-gen:
+web-mv-gen: web-deps
 	cd web/ui && npm run build:mv
 
-web-lint:
+web-lint: web-deps
 	cd web/ui && npm run lint
 
-web-weak:
+web-weak: web-deps
 	cd web/ui && npx vitest run test/weak.test.ts
