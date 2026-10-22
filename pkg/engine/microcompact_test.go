@@ -21,12 +21,6 @@ import (
 // Constants
 // ---------------------------------------------------------------------------
 
-func TestTimeBasedMCClearedMessage(t *testing.T) {
-	if TimeBasedMCClearedMessage != "[Old tool result content cleared]" {
-		t.Errorf("TimeBasedMCClearedMessage = %q, want %q", TimeBasedMCClearedMessage, "[Old tool result content cleared]")
-	}
-}
-
 func TestImageMaxTokenSize(t *testing.T) {
 	if ImageMaxTokenSize != 2000 {
 		t.Errorf("ImageMaxTokenSize = %d, want 2000", ImageMaxTokenSize)
@@ -388,364 +382,6 @@ func TestEstimateMessagesTokens_Padding(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// evaluateTimeBasedTrigger
-// ---------------------------------------------------------------------------
-
-func TestEvaluateTimeBasedTrigger_Disabled(t *testing.T) {
-	orig := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = orig }()
-
-	defaultMicrocompactConfig.TimeBased.Enabled = false
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
-	}
-	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
-	if result != nil {
-		t.Error("evaluateTimeBasedTrigger should return nil when disabled")
-	}
-}
-
-func TestEvaluateTimeBasedTrigger_NoAssistant(t *testing.T) {
-	messages := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
-	}
-	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
-	if result != nil {
-		t.Error("evaluateTimeBasedTrigger should return nil with no assistant message")
-	}
-}
-
-func TestEvaluateTimeBasedTrigger_UnderThreshold(t *testing.T) {
-	// Message from 5 minutes ago — under 60 minute threshold
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
-	}
-	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
-	if result != nil {
-		t.Error("evaluateTimeBasedTrigger should return nil when gap < threshold")
-	}
-}
-
-func TestEvaluateTimeBasedTrigger_OverThreshold(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		// Assistant message from 61 minutes ago
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
-		}
-		result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
-		if result == nil {
-			t.Fatal("evaluateTimeBasedTrigger should fire when gap >= threshold")
-		}
-		if result.GapMinutes < 60 {
-			t.Errorf("gap should be >= 60, got %f", result.GapMinutes)
-		}
-	})
-}
-
-func TestEvaluateTimeBasedTrigger_WrongSource(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		// Empty querySource → nil (time-based requires explicit source)
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)},
-		}
-		result := EvaluateTimeBasedTrigger(messages, "")
-		if result != nil {
-			t.Error("evaluateTimeBasedTrigger should return nil for empty querySource")
-		}
-
-		result = EvaluateTimeBasedTrigger(messages, "agent:builtin:Explore")
-		if result != nil {
-			t.Error("evaluateTimeBasedTrigger should return nil for non-main-thread source")
-		}
-	})
-}
-
-func TestEvaluateTimeBasedTrigger_PrefixSource(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
-		}
-		result := EvaluateTimeBasedTrigger(messages, "repl_main_thread:outputStyle:custom")
-		if result == nil {
-			t.Error("evaluateTimeBasedTrigger should fire for prefix-matched source")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// maybeTimeBasedMicrocompact
-// ---------------------------------------------------------------------------
-
-func TestMaybeTimeBasedMicrocompact_NoTrigger(t *testing.T) {
-	// Gap under threshold → no trigger
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
-	}
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	if result != nil {
-		t.Error("maybeTimeBasedMicrocompact should return nil when no trigger")
-	}
-}
-
-func TestMaybeTimeBasedMicrocompact_ClearsOldResults(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		// Create messages: assistant with 3 tool_uses, user with 3 tool_results
-		// keepRecent=5 → all kept, none cleared → should return nil
-		// Let's use a custom config with keepRecent=1
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 1
-
-		messages := []types.Message{
-			0: {Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("tool3", "Read", json.RawMessage(`{}`)),
-			}},
-			1: {Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("tool1", json.RawMessage(`"file content 1"`), false),
-				types.NewToolResultBlock("tool2", json.RawMessage(`"file content 2"`), false),
-				types.NewToolResultBlock("tool3", json.RawMessage(`"file content 3"`), false),
-			}},
-		}
-
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		if result == nil {
-			t.Fatal("maybeTimeBasedMicrocompact should clear results")
-		}
-
-		// keepRecent=1 → tool3 kept, tool1+tool2 cleared
-		resultMsg := result.Messages[1] // user message with tool_results
-		cleared := 0
-		kept := 0
-		for _, block := range resultMsg.Content {
-			if block.Type == types.ContentTypeToolResult {
-				content := string(block.Content)
-				if content == `"[Old tool result content cleared]"` {
-					cleared++
-				} else {
-					kept++
-				}
-			}
-		}
-		if cleared != 2 {
-			t.Errorf("cleared %d tool_results, want 2", cleared)
-		}
-		if kept != 1 {
-			t.Errorf("kept %d tool_results, want 1", kept)
-		}
-	})
-}
-
-func TestMaybeTimeBasedMicrocompact_KeepsMinOne(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // should floor to 1
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
-			}},
-		}
-
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		// keepRecent=0 → floor to 1 → tool1 kept → clearSet empty → nil
-		if result != nil {
-			t.Error("with 1 tool and keepRecent=0 (floored to 1), nothing to clear → nil")
-		}
-	})
-}
-
-func TestMaybeTimeBasedMicrocompact_NothingToClear(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 100 // keep all
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
-			}},
-		}
-
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		if result != nil {
-			t.Error("keepRecent=100 with 1 tool → nothing to clear → nil")
-		}
-	})
-}
-
-func TestMaybeTimeBasedMicrocompact_AlreadyCleared(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // floor to 1
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				// Already cleared — should be skipped, tokensSaved = 0
-				types.NewToolResultBlock("tool1", json.RawMessage(`"[Old tool result content cleared]"`), false),
-			}},
-		}
-
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		// tool1 is already cleared, tool2 has no result → tokensSaved = 0 → nil
-		if result != nil {
-			t.Error("already-cleared results should be skipped, tokensSaved=0 → nil")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// MicrocompactMessages
-// ---------------------------------------------------------------------------
-
-func TestMicrocompactMessages_TimeBasedFires(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"content1"`), false),
-				types.NewToolResultBlock("t2", json.RawMessage(`"content2"`), false),
-			}},
-		}
-
-		result := MicrocompactMessages(messages, QuerySourceReplMainThread, nil)
-		if result.CompactionInfo != nil {
-			t.Error("time-based MC should not set CompactionInfo (that's cached-MC)")
-		}
-
-		// Verify content was cleared
-		cleared := 0
-		for _, block := range result.Messages[1].Content {
-			if block.Type == types.ContentTypeToolResult {
-				if string(block.Content) == `"[Old tool result content cleared]"` {
-					cleared++
-				}
-			}
-		}
-		if cleared != 1 { // keepRecent=0 → floor 1 → keep t2, clear t1
-			t.Errorf("cleared %d, want 1", cleared)
-		}
-	})
-}
-
-func TestMicrocompactMessages_TimeBasedSkips(t *testing.T) {
-	// Recent message, no trigger
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
-	}
-	result := MicrocompactMessages(messages, QuerySourceReplMainThread, nil)
-	if len(result.Messages) != len(messages) {
-		t.Error("MicrocompactMessages should return original messages when no trigger")
-	}
-}
-
-func TestMicrocompactMessages_ClearsWarningSuppression(t *testing.T) {
-	compactWarningSuppressed.Store(true)
-	_ = MicrocompactMessages(nil, QuerySourceReplMainThread, nil)
-	if compactWarningSuppressed.Load() {
-		t.Error("MicrocompactMessages should clear warning suppression at start")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Logging integration
-// ---------------------------------------------------------------------------
-
-func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
-
-		var buf bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&buf, nil))
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
-				types.NewToolResultBlock("t2", json.RawMessage(`"data content two"`), false),
-			}},
-		}
-
-		maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, logger)
-		if !strings.Contains(buf.String(), "engine:time_based_mc") {
-			t.Errorf("expected engine:time_based_mc in log output, got: %s", buf.String())
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// NotifyCacheDeletion integration
-// ---------------------------------------------------------------------------
-
-func TestMaybeTimeBasedMicrocompact_CallsNotifyCacheDeletion(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
-				types.NewToolResultBlock("t2", json.RawMessage(`"data content two"`), false),
-			}},
-		}
-
-		// This should not panic — NotifyCacheDeletion is a real function
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		if result == nil {
-			t.Fatal("expected non-nil result")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 
@@ -774,50 +410,6 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(multiple) = %d, want %d", got, want)
 	}
-}
-
-func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
-
-		messages := []types.Message{
-			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-				types.NewToolUseBlock("t2", "Bash", json.RawMessage(`{}`)),
-			}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
-				types.NewTextBlock("keep this text"),
-				types.NewToolResultBlock("t2", json.RawMessage(`"bash output here"`), false),
-			}},
-			{Role: types.RoleAssistant, Content: []types.ContentBlock{
-				types.NewTextBlock("response"),
-			}},
-		}
-
-		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-		if result == nil {
-			t.Fatal("expected non-nil result")
-		}
-		if len(result.Messages) != 3 {
-			t.Fatalf("expected 3 messages, got %d", len(result.Messages))
-		}
-		// Text block should be preserved
-		if result.Messages[1].Content[1].Text != "keep this text" {
-			t.Error("non-tool-result blocks should be preserved")
-		}
-		// Tool result t1 should be cleared (oldest), t2 kept (keepRecent=1)
-		if string(result.Messages[1].Content[0].Content) != `"[Old tool result content cleared]"` {
-			t.Error("tool result t1 should be cleared")
-		}
-		if string(result.Messages[1].Content[2].Content) != `"bash output here"` {
-			t.Error("tool result t2 should be kept")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,20 +814,8 @@ func TestEstimateMessagesTokens_ImageBlock(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Per-provider microcompact gate
-// ---------------------------------------------------------------------------
-
-// mcOptOutProvider is a mockProvider whose cache has no TTL, so it opts out
-// of the microcompact chain.
-type mcOptOutProvider struct {
-	mockProvider
-}
-
-func (m *mcOptOutProvider) MicrocompactEnabled() bool { return false }
-
-// mcGapMessages builds Read tool_use/tool_result pairs timestamped past the
-// 60-minute time-based trigger.
+// mcGapMessages builds Read tool_use/tool_result pairs timestamped past a
+// 60-minute idle gap (historical shape: idle gaps no longer clear anything).
 func mcGapMessages(oldTime time.Time, pairs, resultSize int) []types.Message {
 	content := strings.Repeat("z", resultSize)
 	var messages []types.Message
@@ -1265,8 +845,7 @@ func mcCountToolResults(msgs []types.Message) (intact, cleared int) {
 			if block.Type != types.ContentTypeToolResult {
 				continue
 			}
-			if string(block.Content) == `"`+TimeBasedMCClearedMessage+`"` ||
-				string(block.Content) == `"`+TokenPrunedMessage+`"` {
+			if string(block.Content) == `"`+TokenPrunedMessage+`"` {
 				cleared++
 			} else if bytes.Contains(block.Content, []byte("zzz")) {
 				intact++
@@ -1276,15 +855,15 @@ func mcCountToolResults(msgs []types.Message) (intact, cleared int) {
 	return intact, cleared
 }
 
-// TestQuery_TimeBasedMC_DisabledByProviderOptOut: with the provider flag off,
-// a gap-past-threshold sequence must reach the LLM verbatim — no cleared
-// markers, no engine:time_based_mc log. For TTL-less caches a clear is a
-// cache break plus a full re-read, not a saving.
-func TestQuery_TimeBasedMC_DisabledByProviderOptOut(t *testing.T) {
+// TestQuery_IdleGapDoesNotClearToolResults pins the removal of the time-based
+// pre-query clear: a 61-minute idle gap must leave every old tool result
+// intact. Nothing may clear content by wall-clock age, and no
+// engine:time_based_mc log may fire.
+func TestQuery_IdleGapDoesNotClearToolResults(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		baseTime := time.Now()
 
-		mp := &mcOptOutProvider{}
+		mp := &mockProvider{}
 		mp.addResponse(textStreamEvents("test-model", "ok."), nil)
 
 		var logBuf bytes.Buffer
@@ -1294,13 +873,15 @@ func TestQuery_TimeBasedMC_DisabledByProviderOptOut(t *testing.T) {
 			Provider: mp,
 			Model:    "test-model",
 			Logger:   logger,
-			// Large window: auto-compact must stay out of the way so the only
-			// thing that could touch the sequence is time-based mc.
+			// Large window: auto-compact and the token prune stay out of the
+			// way, so the only thing that could touch the sequence is an
+			// idle-gap clear.
 			AutoCompact: AutoCompactConfig{ContextWindow: 100000},
 		})
 		t.Cleanup(func() { eng.Close() })
 
-		// 6 pairs, default KeepRecent=5 → mc would clear exactly 1 if enabled.
+		// 6 pairs timestamped past a 60-minute idle gap (historical shape:
+		// idle gaps no longer clear anything).
 		eng.SetMessages(mcGapMessages(baseTime.Add(-61*time.Minute), 6, 40))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1312,85 +893,23 @@ func TestQuery_TimeBasedMC_DisabledByProviderOptOut(t *testing.T) {
 
 		intact, cleared := mcCountToolResults(mp.lastRequestMessages())
 		if intact != 6 {
-			t.Errorf("intact tool_results sent to LLM = %d, want 6 (provider opted out of mc)", intact)
+			t.Errorf("intact tool_results sent to LLM = %d, want 6 (idle gap must not clear)", intact)
 		}
 		if cleared != 0 {
 			t.Errorf("cleared tool_results sent to LLM = %d, want 0", cleared)
 		}
 		if strings.Contains(logBuf.String(), "engine:time_based_mc") {
-			t.Errorf("time-based mc fired despite provider opt-out, log:\n%s", logBuf.String())
+			t.Errorf("engine:time_based_mc fired on an idle gap, log:\n%s", logBuf.String())
+		}
+		intact, cleared = mcCountToolResults(eng.Messages())
+		if intact != 6 || cleared != 0 {
+			t.Errorf("engine messages after query: intact = %d, cleared = %d, want 6/0", intact, cleared)
 		}
 	})
 }
 
-// TestQuery_TimeBasedMC_FiresWithDefaultProvider: same sequence, provider
-// without the opt-out capability (historical default) → mc clears the oldest
-// result. Pairs with the opt-out test to isolate the flag as the only
-// variable.
-func TestQuery_TimeBasedMC_FiresWithDefaultProvider(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		mp := &mockProvider{}
-		mp.addResponse(textStreamEvents("test-model", "ok."), nil)
-
-		eng := New(&Params{
-			Provider:    mp,
-			Model:       "test-model",
-			Logger:      slog.Default(),
-			AutoCompact: AutoCompactConfig{ContextWindow: 100000},
-		})
-		t.Cleanup(func() { eng.Close() })
-
-		eng.SetMessages(mcGapMessages(baseTime.Add(-61*time.Minute), 6, 40))
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		result := eng.QuerySync(ctx, "next", "")
-		if result.Error != nil {
-			t.Fatalf("QuerySync error: %v", result.Error)
-		}
-
-		intact, cleared := mcCountToolResults(mp.lastRequestMessages())
-		if cleared != 1 {
-			t.Errorf("cleared tool_results sent to LLM = %d, want 1 (6 pairs, KeepRecent=5)", cleared)
-		}
-		if intact != 5 {
-			t.Errorf("intact tool_results sent to LLM = %d, want 5", intact)
-		}
-	})
-}
-
-// TestMaybeTokenPrune_DisabledByProviderOptOut: token pressure past the
-// budget must not clear tool results when the provider opted out.
-func TestMaybeTokenPrune_DisabledByProviderOptOut(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		baseTime := time.Now()
-
-		eng := New(&Params{
-			Provider: &mcOptOutProvider{},
-			Model:    "test-model",
-			Logger:   slog.Default(),
-			// Budget = 40000 - min(16000, 20000) - 3000 = 21000; 100 results of
-			// 3000 chars estimate ~33k, well past that.
-			AutoCompact: AutoCompactConfig{ContextWindow: 40000},
-		})
-		t.Cleanup(func() { eng.Close() })
-
-		eng.SetMessages(mcGapMessages(baseTime, 100, 3000))
-
-		if pruned := eng.maybeTokenPrune(); pruned != nil {
-			t.Fatalf("maybeTokenPrune cleared %d results (%d tokens) despite provider opt-out",
-				pruned.Cleared, pruned.TokensSaved)
-		}
-		if _, cleared := mcCountToolResults(eng.Messages()); cleared != 0 {
-			t.Errorf("engine messages contain %d cleared tool_results despite provider opt-out", cleared)
-		}
-	})
-}
-
-// TestMaybeTokenPrune_FiresWithDefaultProvider: same pressure, provider
-// without the opt-out capability → prune clears all but KeepRecent.
+// TestMaybeTokenPrune_FiresWithDefaultProvider: token pressure past the
+// budget → prune clears all but KeepRecent.
 func TestMaybeTokenPrune_FiresWithDefaultProvider(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		baseTime := time.Now()
@@ -1454,8 +973,7 @@ func TestLastAnchoredTokenCount_Contract(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Batch-D mutation coverage: exact-value estimation, trigger boundary,
-// clear/keep sets, provider capability.
+// Batch-D mutation coverage: exact-value estimation, clear/keep sets.
 // ---------------------------------------------------------------------------
 
 // One message carrying every block type: the per-case `+=` must accumulate, so
@@ -1549,32 +1067,15 @@ func TestMC_LastAnchoredTokenCount_PicksNewestUsageBearingAssistant(t *testing.T
 	}
 }
 
-func TestMC_DefaultTimeBasedConfigConstants(t *testing.T) {
+// The token prune defaults: on, keeping the five most recent results.
+func TestTokenPrune_DefaultConfig(t *testing.T) {
 	t.Parallel()
-	cfg := getTimeBasedMCConfig()
-	if cfg.GapThresholdMinutes != 60 {
-		t.Errorf("GapThresholdMinutes = %d, want 60 (prompt cache TTL)", cfg.GapThresholdMinutes)
-	}
-	if cfg.KeepRecent != 5 {
-		t.Errorf("KeepRecent = %d, want 5", cfg.KeepRecent)
-	}
+	cfg := getTokenPruneConfig()
 	if !cfg.Enabled {
 		t.Error("Enabled = false, want the default on")
 	}
-}
-
-// The suppression flag is the whole contract of the two helpers.
-// Not parallel: compactWarningSuppressed is process-global, and parallel
-// prune tests set it while this test asserts both polarities.
-func TestMC_SuppressAndClearCompactWarning(t *testing.T) {
-	clearCompactWarningSuppression()
-	suppressCompactWarning()
-	if !compactWarningSuppressed.Load() {
-		t.Error("suppressCompactWarning did not set the suppression flag")
-	}
-	clearCompactWarningSuppression()
-	if compactWarningSuppressed.Load() {
-		t.Error("clearCompactWarningSuppression did not clear the suppression flag")
+	if cfg.KeepRecent != 5 {
+		t.Errorf("KeepRecent = %d, want 5", cfg.KeepRecent)
 	}
 }
 
@@ -1600,153 +1101,6 @@ func TestMC_CollectCompactableToolIds_FiltersRoleAndTool(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("collectCompactableToolIds = %v, want %v", got, want)
 	}
-}
-
-// gap == threshold fires (the guard rejects only a strictly smaller gap);
-// gap one minute under does not.
-func TestMC_EvaluateTimeBasedTrigger_ThresholdBoundary(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		now := time.Now()
-		at := func(d time.Duration) []types.Message {
-			return []types.Message{{Role: types.RoleAssistant, ID: "a-old", Timestamp: now.Add(d),
-				Content: []types.ContentBlock{types.NewTextBlock("a")}}}
-		}
-		if r := EvaluateTimeBasedTrigger(at(-59*time.Minute), QuerySourceReplMainThread); r != nil {
-			t.Errorf("59-minute gap fired (gap=%v), want nil below the 60-minute threshold", r.GapMinutes)
-		}
-		r := EvaluateTimeBasedTrigger(at(-60*time.Minute), QuerySourceReplMainThread)
-		if r == nil {
-			t.Fatal("a gap of exactly 60 minutes must fire")
-		}
-		if r.GapMinutes != 60 {
-			t.Errorf("GapMinutes = %v, want exactly 60", r.GapMinutes)
-		}
-	})
-}
-
-// The scan walks back to the LAST assistant, and the trigger reports which
-// message anchored the gap.
-func TestMC_EvaluateTimeBasedTrigger_LastAssistantEvidence(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		now := time.Now()
-		old := now.Add(-90 * time.Minute)
-		msgs := []types.Message{
-			{Role: types.RoleAssistant, ID: "a-old", Timestamp: old,
-				Content: []types.ContentBlock{types.NewTextBlock("a")}},
-			{Role: types.RoleUser, ID: "u-new", Timestamp: now,
-				Content: []types.ContentBlock{types.NewTextBlock("u")}},
-		}
-		r := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread)
-		if r == nil {
-			t.Fatal("an assistant 90 minutes back must fire even when the newest message is a user turn")
-		}
-		if r.LastAssistantID != "a-old" {
-			t.Errorf("LastAssistantID = %q, want %q", r.LastAssistantID, "a-old")
-		}
-		if !r.LastAssistantTS.Equal(old) {
-			t.Errorf("LastAssistantTS = %v, want %v", r.LastAssistantTS, old)
-		}
-		if r.Config.GapThresholdMinutes != 60 {
-			t.Errorf("Config.GapThresholdMinutes = %d, want the config echoed back", r.Config.GapThresholdMinutes)
-		}
-	})
-}
-
-// mcClearScenario builds 7 compactable rounds; with KeepRecent=5 the two
-// oldest tool_results are cleared and the five newest stay intact. The caller
-// supplies the clock read so base derives from the bubble's virtual now.
-func mcClearScenario(t *testing.T, keepRecent int, now time.Time) ([]types.Message, int) {
-	t.Helper()
-	origCfg := defaultMicrocompactConfig
-	t.Cleanup(func() { defaultMicrocompactConfig = origCfg })
-	defaultMicrocompactConfig.TimeBased.KeepRecent = keepRecent
-	base := now.Add(-61 * time.Minute)
-	var msgs []types.Message
-	for i := 1; i <= 7; i++ {
-		id := fmt.Sprintf("t%d", i)
-		msgs = append(msgs, types.Message{
-			Role:      types.RoleAssistant,
-			Timestamp: base,
-			Content:   []types.ContentBlock{types.NewToolUseBlock(id, "Read", json.RawMessage(`{}`))},
-		})
-		msgs = append(msgs, types.Message{
-			Role:      types.RoleUser,
-			Timestamp: base,
-			Content:   []types.ContentBlock{types.NewToolResultBlock(id, json.RawMessage(`"payload-`+id+`"`), false)},
-		})
-	}
-	return msgs, 7
-}
-
-func mcClearedIDs(msgs []types.Message) []string {
-	var out []string
-	for _, m := range msgs {
-		for _, b := range m.Content {
-			if b.Type == types.ContentTypeToolResult &&
-				string(b.Content) == `"`+TimeBasedMCClearedMessage+`"` {
-				out = append(out, b.ToolUseID)
-			}
-		}
-	}
-	return out
-}
-
-func TestMC_TimeBased_ClearsExactlyTheOldRounds(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		msgs, _ := mcClearScenario(t, 5, time.Now())
-		var buf bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&buf, nil))
-		res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, logger)
-		if res == nil {
-			t.Fatal("expected a microcompact result")
-		}
-		got := mcClearedIDs(res.Messages)
-		want := []string{"t1", "t2"}
-		if !slices.Equal(got, want) {
-			t.Errorf("cleared tool_results = %v, want %v (KeepRecent 5 of 7)", got, want)
-		}
-		wantSaved := calculateToolResultTokens(json.RawMessage(`"payload-t1"`)) +
-			calculateToolResultTokens(json.RawMessage(`"payload-t2"`))
-		logged := buf.String()
-		if !strings.Contains(logged, fmt.Sprintf("tokens_saved=%d", wantSaved)) {
-			t.Errorf("log missing tokens_saved=%d; got:\n%s", wantSaved, logged)
-		}
-		if !strings.Contains(logged, "cleared=2") || !strings.Contains(logged, "kept=5") {
-			t.Errorf("log must report cleared=2 kept=5; got:\n%s", logged)
-		}
-	})
-}
-
-// A tool_result parked in an assistant message is out of scope: only user
-// messages carry tool_results the clearer may touch.
-func TestMC_TimeBased_IgnoresToolResultsOutsideUserMessages(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
-		base := time.Now().Add(-61 * time.Minute)
-		msgs := []types.Message{{
-			Role:      types.RoleAssistant,
-			Timestamp: base,
-			Content: []types.ContentBlock{
-				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-				types.NewToolResultBlock("t1", json.RawMessage(`"in-assistant"`), false),
-			},
-		}}
-		if res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil); res != nil {
-			t.Errorf("result = non-nil, want nil: the only tool_result sits in an assistant message")
-		}
-	})
-}
-
-// Nothing to clear (every compactable id is kept) must be a no-op.
-func TestMC_TimeBased_NothingToClear(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		msgs, _ := mcClearScenario(t, 7, time.Now())
-		if res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil); res != nil {
-			t.Error("result = non-nil, want nil when KeepRecent covers every compactable tool use")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1826,9 +1180,8 @@ func TestMC_TokenPrune_KeepRecentFlooredAtOne(t *testing.T) {
 }
 
 // Exactly one clearable id is still a prune, and the log must report it.
-// Not parallel: the closing assertion reads the process-global suppression
-// flag, which the parallel SuppressAndClear test clears mid-flight.
 func TestMC_TokenPrune_SingleClearLogs(t *testing.T) {
+	t.Parallel()
 	msgs := mcPruneScenario(3)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
@@ -1849,10 +1202,6 @@ func TestMC_TokenPrune_SingleClearLogs(t *testing.T) {
 			t.Errorf("log missing %q; got:\n%s", want, logged)
 		}
 	}
-	if !compactWarningSuppressed.Load() {
-		t.Error("a token prune must suppress the autocompact warning")
-	}
-	clearCompactWarningSuppression()
 }
 
 // A tool_result living in an assistant message is out of scope for the pruner.
@@ -1873,28 +1222,11 @@ func TestMC_TokenPrune_IgnoresToolResultsOutsideUserMessages(t *testing.T) {
 	}
 }
 
-// The provider capability probe is honored: a provider that reports the chain
-// off must not be pruned.
-func TestMC_MicrocompactEnabledFollowsProvider(t *testing.T) {
-	t.Parallel()
-	eng := New(&Params{Provider: &mcOptOutProvider{}, Model: "test-model"})
-	t.Cleanup(func() { eng.Close() })
-	if eng.microcompactEnabled() {
-		t.Error("microcompactEnabled = true, want false for a provider reporting the chain off")
-	}
-	eng2 := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
-	t.Cleanup(func() { eng2.Close() })
-	if !eng2.microcompactEnabled() {
-		t.Error("microcompactEnabled = false, want true for a provider without the capability")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Microcompact message-shape pins
 // ---------------------------------------------------------------------------
 
-// toolPairMessages builds an assistant tool_use + user tool_result pair for the
-// time-based pins. Default KeepRecent is 5, so 7 pairs leave 2 to clear.
+// toolPairMessages builds an assistant tool_use + user tool_result pair.
 func toolPairMessages(id, tool, result string) []types.Message {
 	return []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -1906,9 +1238,11 @@ func toolPairMessages(id, tool, result string) []types.Message {
 	}
 }
 
-// gapMessages builds n Read pairs older than the 60-minute trigger.
+// gapMessages builds n Read pairs. Timestamps are transcript history shape
+// only — the token prune orders by transcript position and never reads the
+// clock.
 func gapMessages(n int) []types.Message {
-	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: the trigger measures the wall-clock gap
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var msgs []types.Message
 	for i := range n {
 		pair := toolPairMessages(fmt.Sprintf("g%d", i), "Read", fmt.Sprintf("content-%d", i))
@@ -1990,167 +1324,6 @@ func TestTokenCountWithEstimation_SkipsAssistantWithNilUsage(t *testing.T) {
 	}
 }
 
-// The gap is measured from the NEWEST assistant message, not the first one
-// the backward scan meets.
-func TestEvaluateTimeBasedTrigger_AnchorsOnNewestAssistant(t *testing.T) {
-	t.Parallel()
-	base := time.Now() // REAL-TIME: the trigger compares against the wall clock
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, ID: "old", Timestamp: base.Add(-120 * time.Minute),
-			Content: []types.ContentBlock{types.NewTextBlock("older")}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("ask")}},
-		{Role: types.RoleAssistant, ID: "new", Timestamp: base.Add(-90 * time.Minute),
-			Content: []types.ContentBlock{types.NewTextBlock("newer")}},
-	}
-	tr := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread)
-	if tr == nil {
-		t.Fatal("EvaluateTimeBasedTrigger = nil, want a trigger (90 min gap)")
-	}
-	if tr.LastAssistantID != "new" {
-		t.Errorf("LastAssistantID = %q, want %q", tr.LastAssistantID, "new")
-	}
-	if tr.GapMinutes < 89 || tr.GapMinutes > 92 {
-		t.Errorf("GapMinutes = %v, want ~90", tr.GapMinutes)
-	}
-}
-
-// A gap under the threshold must not trigger, whatever the Inf/NaN guards do.
-func TestEvaluateTimeBasedTrigger_UnderThresholdReturnsNil(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{{Role: types.RoleAssistant, ID: "recent",
-		Timestamp: time.Now().Add(-5 * time.Minute), // REAL-TIME: gap vs the 60 min threshold
-		Content:   []types.ContentBlock{types.NewTextBlock("recent")}}}
-	if tr := EvaluateTimeBasedTrigger(msgs, QuerySourceReplMainThread); tr != nil {
-		t.Errorf("EvaluateTimeBasedTrigger = %+v, want nil for a 5 minute gap", tr)
-	}
-}
-
-// The clear loop must not rewrite blocks it never touched: a user message
-// with no clearable content keeps its original (nil) content slice.
-func TestMaybeTimeBasedMicrocompact_UntouchedMessageKeepsNilContent(t *testing.T) {
-	t.Parallel()
-	msgs := gapMessages(7)
-	msgs = append(msgs, types.Message{Role: types.RoleUser})
-	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
-	if res == nil {
-		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears (7 pairs, keepRecent 5)")
-	}
-	last := res.Messages[len(res.Messages)-1]
-	if last.Role != types.RoleUser {
-		t.Fatalf("last message role = %q, want user", last.Role)
-	}
-	if last.Content != nil {
-		t.Errorf("untouched user message Content = %#v, want nil (the message was not rewritten)", last.Content)
-	}
-}
-
-// A persisted tool_result keeps its preview, and finding one must not stop the
-// scan of the rest of the message.
-func TestMaybeTimeBasedMicrocompact_SkipsPersistedAndKeepsScanning(t *testing.T) {
-	t.Parallel()
-	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: past the 60 min trigger
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: old, Content: []types.ContentBlock{
-			types.NewToolUseBlock("p1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p2", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p3", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p4", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p5", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p6", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("p7", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Timestamp: old, Content: []types.ContentBlock{
-			types.NewToolResultBlock("p1", json.RawMessage(`"<persisted-output>big</persisted-output>"`), false),
-			types.NewToolResultBlock("p2", json.RawMessage(`"plain two"`), false),
-			types.NewToolResultBlock("p3", json.RawMessage(`"plain three"`), false),
-			types.NewToolResultBlock("p4", json.RawMessage(`"plain four"`), false),
-			types.NewToolResultBlock("p5", json.RawMessage(`"plain five"`), false),
-			types.NewToolResultBlock("p6", json.RawMessage(`"plain six"`), false),
-			types.NewToolResultBlock("p7", json.RawMessage(`"plain seven"`), false),
-		}},
-	}
-	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
-	if res == nil {
-		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
-	}
-	got, ok := blockContentOf(res.Messages, "p1")
-	if !ok {
-		t.Fatal("p1 tool_result missing from the result")
-	}
-	if !strings.Contains(got, "persisted-output") {
-		t.Errorf("persisted p1 was cleared: %s", got)
-	}
-	got, _ = blockContentOf(res.Messages, "p2")
-	if got != `"`+TimeBasedMCClearedMessage+`"` {
-		t.Errorf("p2 = %s, want cleared (the scan must continue past the persisted block)", got)
-	}
-	for _, id := range []string{"p3", "p6", "p7"} {
-		got, _ := blockContentOf(res.Messages, id)
-		if got == `"`+TimeBasedMCClearedMessage+`"` {
-			t.Errorf("%s = cleared, want kept (within the recent window)", id)
-		}
-	}
-}
-
-// Only tool_result blocks inside the clear set are rewritten: a non-result
-// block carrying a cleared tool_use_id, and a result inside the keep window,
-// both stay verbatim.
-func TestMaybeTimeBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T) {
-	t.Parallel()
-	old := time.Now().Add(-61 * time.Minute) // REAL-TIME: past the 60 min trigger
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: old, Content: []types.ContentBlock{
-			types.NewToolUseBlock("c1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c2", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c3", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c4", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c5", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c6", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c7", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Timestamp: old, Content: []types.ContentBlock{
-			types.NewToolResultBlock("c1", json.RawMessage(`"result content number one"`), false),
-			{Type: types.ContentTypeText, ToolUseID: "c1", Content: json.RawMessage(`"text block sharing a cleared id"`)},
-			types.NewToolResultBlock("c2", json.RawMessage(`"result content number two"`), false),
-			types.NewToolResultBlock("c3", json.RawMessage(`"result content number three"`), false),
-			types.NewToolResultBlock("c4", json.RawMessage(`"result content number four"`), false),
-			types.NewToolResultBlock("c5", json.RawMessage(`"result content number five"`), false),
-			types.NewToolResultBlock("c6", json.RawMessage(`"result content number six"`), false),
-			types.NewToolResultBlock("c7", json.RawMessage(`"result content number seven"`), false),
-		}},
-	}
-	res := maybeTimeBasedMicrocompact(msgs, QuerySourceReplMainThread, nil)
-	if res == nil {
-		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
-	}
-	user := res.Messages[1]
-	if string(user.Content[1].Content) != `"text block sharing a cleared id"` {
-		t.Errorf("text block was rewritten to %s, want untouched (only tool_result blocks are cleared)", user.Content[1].Content)
-	}
-	got, _ := blockContentOf(res.Messages, "c1")
-	if got != `"`+TimeBasedMCClearedMessage+`"` {
-		t.Errorf("c1 = %s, want cleared", got)
-	}
-	for _, id := range []string{"c5", "c6", "c7"} {
-		got, _ := blockContentOf(res.Messages, id)
-		if got == `"`+TimeBasedMCClearedMessage+`"` {
-			t.Errorf("%s = cleared, want kept (within the recent window)", id)
-		}
-	}
-}
-
-// A time-based clear suppresses the "context left" warning for the turn.
-func TestMaybeTimeBasedMicrocompact_SuppressesCompactWarning(t *testing.T) {
-	clearCompactWarningSuppression()
-	t.Cleanup(clearCompactWarningSuppression)
-	if res := maybeTimeBasedMicrocompact(gapMessages(7), QuerySourceReplMainThread, nil); res == nil {
-		t.Fatal("maybeTimeBasedMicrocompact = nil, want clears")
-	}
-	if !compactWarningSuppressed.Load() {
-		t.Error("compactWarningSuppressed = false after a time-based clear")
-	}
-}
-
 // cacheDeletionApplied drives pkg/llm's break-detection state machine for
 // a tracked query source and reports whether the deletion notice was applied.
 // NotifyCacheDeletion only marks a tracked key; the marker surfaces as the
@@ -2170,19 +1343,6 @@ func cacheDeletionApplied(t *testing.T, querySource string, prev, curr int, noti
 		return attrInt(a["cacheReadPrev"]) == int64(prev) && attrInt(a["cacheReadCurr"]) == int64(curr)
 	})
 	return found
-}
-
-// The time-based clear must tell cache-break detection that the prompt lost
-// content, under this query source.
-func TestMaybeTimeBasedMicrocompact_NotifiesCacheDeletionForQuerySource(t *testing.T) {
-	const src = QuerySourceReplMainThread
-	if !cacheDeletionApplied(t, src, 4000, 3900, func() {
-		if r := maybeTimeBasedMicrocompact(gapMessages(7), src, nil); r == nil {
-			t.Error("time-based clear returned nil")
-		}
-	}) {
-		t.Error("no prompt_cache:deletion_applied record for the cleared query source")
-	}
 }
 
 // The token-based clear must notify cache-break detection under the query
@@ -2229,8 +1389,7 @@ func TestMaybeTokenBasedMicrocompact_UntouchedMessagesKeepTheirShape(t *testing.
 	}
 }
 
-// Same gate as the time-based path: only tool_result blocks in the clear set
-// are rewritten.
+// Only tool_result blocks in the clear set are rewritten.
 func TestMaybeTokenBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T) {
 	t.Parallel()
 	msgs := []types.Message{
@@ -2270,23 +1429,5 @@ func TestMaybeTokenBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T)
 		if got == `"`+TokenPrunedMessage+`"` {
 			t.Errorf("%s = cleared, want kept (within the recent window)", id)
 		}
-	}
-}
-
-// mcOptInProvider reports the microcompact chain as available.
-type mcOptInProvider struct {
-	mockProvider
-}
-
-func (m *mcOptInProvider) MicrocompactEnabled() bool { return true }
-
-// A provider that reports the chain on must keep it on: the capability's own
-// answer, not a constant, decides.
-func TestMicrocompactEnabled_FollowsProviderReportingOn(t *testing.T) {
-	t.Parallel()
-	eng := New(&Params{Provider: &mcOptInProvider{}, Model: "test-model"})
-	t.Cleanup(func() { eng.Close() })
-	if !eng.microcompactEnabled() {
-		t.Error("microcompactEnabled = false, want true for a provider reporting the chain on")
 	}
 }

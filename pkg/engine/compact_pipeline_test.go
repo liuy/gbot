@@ -97,27 +97,18 @@ func pipelineStreamEvents(model, text string) []llm.StreamEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Integration Test: Microcompact → Auto-compact pipeline
+// Integration Test: Auto-compact pipeline
 // ---------------------------------------------------------------------------
 
-// TestCompactPipeline_MicroThenAuto verifies the full compact pipeline:
-//  1. Messages accumulate with old tool_results (timestamp > 60 min ago)
-//  2. Microcompact triggers first → clears old tool_result content
-//  3. Token count still exceeds threshold → auto-compact triggers
-//  4. Mock LLM generates summary → compact boundary appears
-func TestCompactPipeline_MicroThenAuto(t *testing.T) {
+// TestCompactPipeline_OldToolResultsStillAutoCompact verifies the compact
+// pipeline:
+//  1. Messages accumulate with old tool_results (timestamps > 60 min old —
+//     historical shape only, nothing clears them)
+//  2. Token count exceeds threshold → auto-compact triggers
+//  3. Mock LLM generates summary → compact boundary appears
+func TestCompactPipeline_OldToolResultsStillAutoCompact(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig = MicrocompactConfig{
-			TimeBased: TimeBasedMCConfig{
-				Enabled:             true,
-				GapThresholdMinutes: 60,
-				KeepRecent:          3, // keep last 3 tool_use IDs
-			},
-		}
 
 		// Set up Store + AutoCompactor
 		tmpDir := t.TempDir()
@@ -150,13 +141,15 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 			Dispatcher: tc,
 		})
 
-		// Build messages: old tool_use + tool_result pairs, timestamp > 60 min ago.
+		// Build messages: old tool_use + tool_result pairs, timestamps > 60 min
+		// old (historical shape only; nothing clears them anymore).
 		// Each pair contributes ~400 chars of tool_result content (~100 tokens).
 		// Plus large text messages to push past auto-compact threshold.
 		oldTime := baseTime.Add(-61 * time.Minute)
 		var messages []types.Message
 
-		// 10 tool_use/result pairs with old timestamps → microcompact clears these
+		// 10 tool_use/result pairs with old timestamps (old tool results
+		// accumulate; auto-compact must still trigger on the token pressure).
 		bigResult := strings.Repeat("x", 400) // ~100 tokens each
 		for i := range 10 {
 			id := fmt.Sprintf("tool-%d", i)
@@ -176,8 +169,8 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 			})
 		}
 
-		// Add large text messages to ensure auto-compact still triggers
-		// even after microcompact clears tool_results.
+		// Add large text messages to ensure auto-compact still triggers on
+		// token pressure.
 		// 6 messages × 200 chars = ~1200 chars = ~300 tokens > 50% of 500
 		largeText := strings.Repeat("y", 2000)
 		for i := range 6 {
@@ -226,22 +219,12 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	})
 }
 
-// TestCompactPipeline_MicroOnlyNoAuto verifies that microcompact fires
-// when time gap is exceeded but auto-compact does NOT trigger because
-// token count stays below threshold after clearing.
-func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
+// TestCompactPipeline_IdleGapAloneClearsNothing pins that a 61-minute idle
+// gap clears nothing on its own: every old tool result stays intact and
+// auto-compact does not fire under a large window.
+func TestCompactPipeline_IdleGapAloneClearsNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		baseTime := time.Now()
-
-		origCfg := defaultMicrocompactConfig
-		defer func() { defaultMicrocompactConfig = origCfg }()
-		defaultMicrocompactConfig = MicrocompactConfig{
-			TimeBased: TimeBasedMCConfig{
-				Enabled:             true,
-				GapThresholdMinutes: 60,
-				KeepRecent:          1,
-			},
-		}
 
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "test.db")
@@ -257,7 +240,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 		}
 
 		p := &pipelineProvider{}
-		p.addStream(pipelineStreamEvents("test-model", "Response after microcompact only."), nil)
+		p.addStream(pipelineStreamEvents("test-model", "Response after idle gap."), nil)
 
 		compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 40000, provider: p})
 		eng := New(&Params{
@@ -272,11 +255,12 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 		tc := newEventCollector()
 		eng.dispatcher = tc
 
-		// Small messages with old tool_results → microcompact fires but auto-compact won't
+		// Small tool results timestamped past a 60-minute idle gap
+		// (historical shape: idle gaps no longer clear anything).
 		oldTime := baseTime.Add(-61 * time.Minute)
 		smallResult := strings.Repeat("z", 40) // ~10 tokens
 		var messages []types.Message
-		for i := range 3 {
+		for i := range 6 {
 			id := fmt.Sprintf("t-%d", i)
 			messages = append(messages, types.Message{
 				Role:      types.RoleAssistant,
@@ -304,21 +288,25 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 			t.Fatalf("unexpected error: %v", result.Error)
 		}
 
-		// Verify microcompact fired
-		foundCleared := false
+		// Every tool result must still carry its original content.
+		intact, cleared := 0, 0
 		for _, msg := range result.Messages {
 			for _, block := range msg.Content {
-				if block.Type == types.ContentTypeToolResult &&
-					string(block.Content) == `"`+TimeBasedMCClearedMessage+`"` {
-					foundCleared = true
+				if block.Type != types.ContentTypeToolResult {
+					continue
+				}
+				if string(block.Content) == `"[Old tool result content cleared]"` {
+					cleared++
+				} else if strings.Contains(string(block.Content), "zzz") {
+					intact++
 				}
 			}
 		}
-		if !foundCleared {
-			t.Error("expected microcompact to clear old tool_results")
+		if intact != 6 || cleared != 0 {
+			t.Errorf("tool results after an idle gap: intact = %d, cleared = %d, want 6/0", intact, cleared)
 		}
 
-		// Verify auto-compact did NOT fire
+		// Auto-compact must not fire either.
 		for _, msg := range result.Messages {
 			for _, block := range msg.Content {
 				if block.Type == types.ContentTypeText {

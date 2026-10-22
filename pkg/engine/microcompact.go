@@ -1,27 +1,24 @@
-// Package engine — microcompact: lightweight pre-request prompt shrinking.
+// Package engine — token-based tool result pruning plus token estimation
+// helpers.
 //
-// Source: src/services/compact/microCompact.ts (531 lines)
-// Source: src/services/compact/timeBasedMCConfig.ts (44 lines)
-// Source: src/services/compact/compactWarningState.ts (19 lines)
+// Source: src/services/compact/microCompact.ts (token prune + estimators)
+// Source: src/services/compact/tokens.ts (token estimators)
 //
-// Time-based microcompact clears old tool result content when the gap since the
-// last assistant message exceeds the configured threshold (default 60 minutes),
-// matching the server-side prompt cache TTL. This shrinks the prompt before the
-// API call, reducing rewrite cost when the cache has expired.
+// Token pruning is the gbot equivalent of TS Cached Microcompact (which uses
+// Anthropic cache_editing, not available for MiniMax): it clears old tool
+// result content only when the token count exceeds the budget and
+// auto-compact cannot help (all messages are "recent").
 //
 // cachedMicrocompact.ts is NOT ported — source is behind feature('CACHED_MICROCOMPACT')
-// and does not exist in the repository. All cachedMC exports are no-op stubs.
+// and does not exist in the repository.
 package engine
 
 import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"math"
 	"slices"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -30,14 +27,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Constants — source: microCompact.ts:36,38
+// Constants — source: microCompact.ts:38
 // ---------------------------------------------------------------------------
 
 const (
-	// TimeBasedMCClearedMessage replaces tool_result content when cleared.
-	// Source: microCompact.ts:36
-	TimeBasedMCClearedMessage = "[Old tool result content cleared]"
-
 	// ImageMaxTokenSize is the approximate token count for images/documents.
 	// Source: microCompact.ts:38
 	ImageMaxTokenSize = 2000
@@ -80,51 +73,8 @@ var compactableTools = map[string]bool{
 }
 
 // ---------------------------------------------------------------------------
-// Types — source: microCompact.ts:207-220, timeBasedMCConfig.ts:18-28
+// Types
 // ---------------------------------------------------------------------------
-
-// PendingCacheEdits carries cache edit metadata for cached microcompact.
-// Source: microCompact.ts:207-213
-type PendingCacheEdits struct {
-	Trigger                    string   `json:"trigger"` // always "auto"
-	DeletedToolIDs             []string `json:"deleted_tool_ids"`
-	BaselineCacheDeletedTokens int      `json:"baseline_cache_deleted_tokens"`
-}
-
-// MicrocompactResult is the return type for MicrocompactMessages.
-// Source: microCompact.ts:215-220
-type MicrocompactResult struct {
-	Messages       []types.Message
-	CompactionInfo *CompactionInfo
-}
-
-// CompactionInfo carries optional metadata about what was compacted.
-type CompactionInfo struct {
-	PendingCacheEdits *PendingCacheEdits
-}
-
-// TimeBasedTriggerResult is returned by EvaluateTimeBasedTrigger when the trigger fires.
-type TimeBasedTriggerResult struct {
-	GapMinutes float64
-	Config     TimeBasedMCConfig
-	// Evidence for the trigger: which message anchored the gap. A restored
-	// or round-tripped message can carry a stale Timestamp while its DB
-	// created_at is fresh — these fields make that visible in the log.
-	LastAssistantID string
-	LastAssistantTS time.Time
-}
-
-// ---------------------------------------------------------------------------
-// Config — source: timeBasedMCConfig.ts:18-43
-// ---------------------------------------------------------------------------
-
-// TimeBasedMCConfig controls time-based microcompact behavior.
-// Source: timeBasedMCConfig.ts:18-28
-type TimeBasedMCConfig struct {
-	Enabled             bool // master switch
-	GapThresholdMinutes int  // trigger when gap exceeds this (default 60)
-	KeepRecent          int  // keep this many most-recent compactable tool results (default 5)
-}
 
 // TokenPruneConfig controls token-based pruning behavior.
 // Token-based pruning clears old tool result content when token count
@@ -143,49 +93,18 @@ type TokenPruneResult struct {
 	Cleared     int // number of tool results cleared
 }
 
-// MicrocompactConfig holds all runtime microcompact settings.
-type MicrocompactConfig struct {
-	TimeBased  TimeBasedMCConfig
-	TokenBased TokenPruneConfig
-}
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
 
-var defaultMicrocompactConfig = MicrocompactConfig{
-	TimeBased: TimeBasedMCConfig{
-		Enabled:             true, // on by default in gbot (MiniMax supports cache)
-		GapThresholdMinutes: 60,
-		KeepRecent:          5,
-	},
-	TokenBased: TokenPruneConfig{
-		Enabled:    true,
-		KeepRecent: 5,
-	},
-}
-
-func getMicrocompactConfig() MicrocompactConfig {
-	return defaultMicrocompactConfig
+var defaultTokenPruneConfig = TokenPruneConfig{
+	Enabled:    true,
+	KeepRecent: 5,
 }
 
 func getTokenPruneConfig() TokenPruneConfig {
-	return getMicrocompactConfig().TokenBased
+	return defaultTokenPruneConfig
 }
-
-func getTimeBasedMCConfig() TimeBasedMCConfig {
-	return getMicrocompactConfig().TimeBased
-}
-
-// ---------------------------------------------------------------------------
-// compactWarningState — source: compactWarningState.ts:1-19
-// ---------------------------------------------------------------------------
-
-// compactWarningSuppressed tracks whether the "context left until autocompact"
-// warning should be suppressed. Source: compactWarningState.ts:8
-var compactWarningSuppressed atomic.Bool
-
-// Source: compactWarningState.ts:11
-func suppressCompactWarning() { compactWarningSuppressed.Store(true) }
-
-// Source: compactWarningState.ts:16
-func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 
 // ---------------------------------------------------------------------------
 // Token estimation uses utils.EstimateTokens (see pkg/utils/token.go).
@@ -420,156 +339,16 @@ func (e *Engine) tokenCountWithEstimationLocked(messages []types.Message) int {
 }
 
 // ---------------------------------------------------------------------------
-// EvaluateTimeBasedTrigger — source: microCompact.ts:422-444
-// ---------------------------------------------------------------------------
-
-// EvaluateTimeBasedTrigger checks if the time-based trigger should fire.
-// Returns gap info when triggered, nil when not.
-func EvaluateTimeBasedTrigger(messages []types.Message, querySource string) *TimeBasedTriggerResult {
-	config := getTimeBasedMCConfig()
-	// Source: microCompact.ts:431 — require explicit querySource for time-based
-	if !config.Enabled || querySource == "" || !isMainThreadSource(querySource) {
-		return nil
-	}
-
-	// Find last assistant message. Source: microCompact.ts:434
-	var lastAssistant *types.Message
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == types.RoleAssistant {
-			lastAssistant = &messages[i]
-			break
-		}
-	}
-	if lastAssistant == nil {
-		return nil
-	}
-
-	// Source: microCompact.ts:438-439
-	gapMinutes := time.Since(lastAssistant.Timestamp).Minutes()
-	if math.IsInf(gapMinutes, 0) || math.IsNaN(gapMinutes) || gapMinutes < float64(config.GapThresholdMinutes) {
-		return nil
-	}
-
-	return &TimeBasedTriggerResult{
-		GapMinutes:      gapMinutes,
-		Config:          config,
-		LastAssistantID: lastAssistant.ID,
-		LastAssistantTS: lastAssistant.Timestamp,
-	}
-}
-
-// ---------------------------------------------------------------------------
-// maybeTimeBasedMicrocompact — source: microCompact.ts:446-530
-// ---------------------------------------------------------------------------
-
-// maybeTimeBasedMicrocompact clears old tool result content when the time-based
-// trigger fires. Returns nil when no clearing happens.
-func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, logger *slog.Logger) *MicrocompactResult {
-	trigger := EvaluateTimeBasedTrigger(messages, querySource)
-	if trigger == nil {
-		return nil
-	}
-
-	compactableIds := collectCompactableToolIds(messages)
-
-	// Floor at 1: slice(-0) returns full array, clearing ALL results leaves
-	// zero working context. Source: microCompact.ts:461
-	keepRecent := max(trigger.Config.KeepRecent, 1)
-
-	// Build keep/clear sets
-	keepCount := min(keepRecent, len(compactableIds))
-	keepFrom := len(compactableIds) - keepCount
-	keepSet := make(map[string]bool, keepCount)
-	for _, id := range compactableIds[keepFrom:] {
-		keepSet[id] = true
-	}
-	// Set-difference: matches TS compactableIds.filter(id => !keepSet.has(id))
-	clearSet := make(map[string]bool)
-	for _, id := range compactableIds {
-		if !keepSet[id] {
-			clearSet[id] = true
-		}
-	}
-
-	if len(clearSet) == 0 {
-		return nil
-	}
-
-	// Walk messages and clear tool_result content.
-	// Source: microCompact.ts:470-492
-	tokensSaved := 0
-	result := make([]types.Message, len(messages))
-	for i := range messages {
-		result[i] = messages[i]
-		if messages[i].Role != types.RoleUser {
-			continue
-		}
-
-		touched := false
-		newContent := make([]types.ContentBlock, len(messages[i].Content))
-		for j, block := range messages[i].Content {
-			newContent[j] = block
-			if block.Type == types.ContentTypeToolResult &&
-				bytes.Contains(block.Content, toolresult.PersistedOutputTagBytes) {
-				// Skip already-persisted tool results — they contain compact
-				// previews that must not be cleared (TS alignment).
-				continue
-			}
-			if block.Type == types.ContentTypeToolResult &&
-				clearSet[block.ToolUseID] &&
-				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` &&
-				string(block.Content) != `"`+TokenPrunedMessage+`"` {
-				tokensSaved += calculateToolResultTokens(block.Content)
-				newContent[j].Content = json.RawMessage(`"` + TimeBasedMCClearedMessage + `"`)
-				touched = true
-			}
-		}
-
-		if touched {
-			result[i] = messages[i]
-			result[i].Content = newContent
-		}
-	}
-
-	if tokensSaved == 0 {
-		return nil
-	}
-
-	// Logging. Source: microCompact.ts:507-509
-	if logger != nil {
-		logger.Info("engine:time_based_mc",
-			"gap_min", int(trigger.GapMinutes),
-			"threshold_min", trigger.Config.GapThresholdMinutes,
-			"last_assistant_id", trigger.LastAssistantID,
-			"last_assistant_ts", trigger.LastAssistantTS.Format(time.RFC3339),
-			"cleared", len(clearSet),
-			"kept", len(keepSet),
-			"tokens_saved", tokensSaved,
-		)
-	}
-
-	suppressCompactWarning()
-
-	// Notify cache break detection. Source: microCompact.ts:525-527
-	llm.NotifyCacheDeletion(llm.PromptStateKey{
-		QuerySource: querySource,
-	})
-
-	return &MicrocompactResult{Messages: result}
-}
-
-// ---------------------------------------------------------------------------
-// Token-based microcompact — gbot equivalent of TS Cached Microcompact
+// Token-based pruning — gbot equivalent of TS Cached Microcompact
 // ---------------------------------------------------------------------------
 
 // TokenPrunedMessage replaces tool_result content when cleared by token pressure.
-// Distinct from TimeBasedMCClearedMessage so logs can distinguish the trigger.
 const TokenPrunedMessage = "[Old tool result content cleared]"
 
 // maybeTokenBasedMicrocompact clears old compactable tool result content when
-// the token count exceeds the budget. Unlike time-based microcompact (60 min gap),
-// this fires purely on token pressure, making it effective for sessions with many
-// recent large tool results where auto-compact cannot help.
+// the token count exceeds the budget. It fires purely on token pressure,
+// making it effective for sessions with many recent large tool results where
+// auto-compact cannot help.
 //
 // Returns nil when no clearing happens (under budget, wrong source, nothing to clear).
 func maybeTokenBasedMicrocompact(
@@ -590,7 +369,7 @@ func maybeTokenBasedMicrocompact(
 	compactableIds := collectCompactableToolIds(messages)
 	keepRecent := max(config.KeepRecent, 1) // Floor at 1 to avoid clearing everything
 
-	// Build keep/clear sets — same pattern as maybeTimeBasedMicrocompact
+	// Build keep/clear sets
 	keepCount := min(keepRecent, len(compactableIds))
 	keepFrom := len(compactableIds) - keepCount
 	keepSet := make(map[string]bool, keepCount)
@@ -629,7 +408,6 @@ func maybeTokenBasedMicrocompact(
 			}
 			if block.Type == types.ContentTypeToolResult &&
 				clearSet[block.ToolUseID] &&
-				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` &&
 				string(block.Content) != `"`+TokenPrunedMessage+`"` {
 				tokensSaved += calculateToolResultTokens(block.Content)
 				newContent[j].Content = json.RawMessage(`"` + TokenPrunedMessage + `"`)
@@ -658,8 +436,6 @@ func maybeTokenBasedMicrocompact(
 		)
 	}
 
-	suppressCompactWarning()
-
 	llm.NotifyCacheDeletion(llm.PromptStateKey{
 		QuerySource: querySource,
 	})
@@ -670,42 +446,3 @@ func maybeTokenBasedMicrocompact(
 		Cleared:     cleared,
 	}
 }
-
-// ---------------------------------------------------------------------------
-// MicrocompactMessages — source: microCompact.ts:253-293
-// ---------------------------------------------------------------------------
-
-// microcompactEnabled reports whether the active provider allows the
-// microcompact chain. The capability probe is optional so providers (and
-// test doubles) built without it keep the historical always-on behavior.
-// Riding the provider instance means runtime SetProvider switches (/model)
-// pick up the new provider's flag automatically.
-func (e *Engine) microcompactEnabled() bool {
-	if mp, ok := e.Provider().(llm.MicrocompactProvider); ok {
-		return mp.MicrocompactEnabled()
-	}
-	return true
-}
-
-// MicrocompactMessages is the main entry point for microcompact.
-// Source: microCompact.ts:253
-func MicrocompactMessages(messages []types.Message, querySource string, logger *slog.Logger) MicrocompactResult {
-	clearCompactWarningSuppression()
-
-	// Time-based first. Source: microCompact.ts:267
-	if result := maybeTimeBasedMicrocompact(messages, querySource, logger); result != nil {
-		return *result
-	}
-
-	// Cached MC: skip. Source: microCompact.ts:276-286
-	// TS: if feature('CACHED_MICROCOMPACT') { ... }
-	// gbot: the cachedMC module does not exist, equivalent to feature flag off
-
-	return MicrocompactResult{Messages: messages}
-}
-
-// ---------------------------------------------------------------------------
-// cachedMC no-op stubs — source: microCompact.ts:88-135
-// NOT IMPLEMENTED: cachedMicrocompact.ts source does not exist (feature gate).
-// These align with TS behavior when feature('CACHED_MICROCOMPACT') === false.
-// ---------------------------------------------------------------------------

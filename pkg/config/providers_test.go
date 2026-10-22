@@ -1,12 +1,17 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestCreateAllProviders_AnthropicAndOpenAI(t *testing.T) {
@@ -424,99 +429,125 @@ func modelsFromJSON(t *testing.T, s string) Models {
 	return m
 }
 
-// ---------------------------------------------------------------------------
-// Per-provider microcompact switch
-// ---------------------------------------------------------------------------
-
-func TestProviderMicrocompact_ParseAndResolve(t *testing.T) {
+// TestProviderMicrocompact_LegacyKeyIgnored pins settings.json compatibility
+// after the microcompact switch was removed: the legacy "microcompact" key
+// must not break loading, and the next save drops the key.
+func TestProviderMicrocompact_LegacyKeyIgnored(t *testing.T) {
 	t.Parallel()
 	raw := `{
 		"providers": [
-			{"name": "strata", "url": "http://localhost:9", "keys": ["k"], "models": {"m": {}}, "microcompact": false},
-			{"name": "zhipu", "url": "https://open.bigmodel.cn", "keys": ["k"], "models": {"m": {}}},
-			{"name": "glm", "url": "https://x.example", "keys": ["k"], "models": {"m": {}}, "microcompact": true}
+			{"name": "strata", "url": "http://localhost:9", "keys": ["k"], "models": {"m": {}}, "microcompact": false}
 		]
 	}`
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatalf("unmarshal legacy settings carrying the microcompact key: %v", err)
 	}
-	if len(cfg.Providers) != 3 {
-		t.Fatalf("len(Providers) = %d, want 3", len(cfg.Providers))
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("len(Providers) = %d, want 1", len(cfg.Providers))
 	}
-
-	strata := &cfg.Providers[0]
-	if strata.Microcompact == nil || *strata.Microcompact {
-		t.Errorf("strata.Microcompact = %v, want pointer to false", strata.Microcompact)
+	out, err := json.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	if strata.MicrocompactEnabled() {
-		t.Error("strata.MicrocompactEnabled() = true, want false")
-	}
-
-	zhipu := &cfg.Providers[1]
-	if zhipu.Microcompact != nil {
-		t.Errorf("zhipu.Microcompact = %v, want nil (field absent)", zhipu.Microcompact)
-	}
-	if !zhipu.MicrocompactEnabled() {
-		t.Error("zhipu.MicrocompactEnabled() = false, want true (absent defaults to enabled)")
-	}
-
-	glm := &cfg.Providers[2]
-	if glm.Microcompact == nil || !*glm.Microcompact {
-		t.Errorf("glm.Microcompact = %v, want pointer to true", glm.Microcompact)
-	}
-	if !glm.MicrocompactEnabled() {
-		t.Error("glm.MicrocompactEnabled() = false, want true")
+	if strings.Contains(string(out), "microcompact") {
+		t.Errorf("marshaled config still carries the microcompact key: %s", out)
 	}
 }
 
-// TestCreateAllProviders_MicrocompactPropagation checks the config → llm
-// provider hop: the tri-state flag must land on the provider instance so
-// every engine built from it (including runtime SetProvider switches) sees
-// the right value.
-func TestCreateAllProviders_MicrocompactPropagation(t *testing.T) {
-	t.Parallel()
-	off := false
-	on := true
-	cfg := &Config{
-		Providers: []Provider{
-			{
-				Name:         "mc-off",
-				URL:          "http://localhost:9",
-				Keys:         []string{"sk-key"},
-				Models:       NewModelsFromMap(map[string]ModelConfig{"m": {}}),
-				Type:         ProviderTypeOpenAI,
-				Microcompact: &off,
-			},
-			{
-				Name:   "mc-default",
-				URL:    "http://localhost:10",
-				Keys:   []string{"sk-key"},
-				Models: NewModelsFromMap(map[string]ModelConfig{"m": {}}),
-				Type:   ProviderTypeOpenAI,
-			},
-			{
-				Name:         "mc-on",
-				URL:          "http://localhost:11",
-				Keys:         []string{"sk-key"},
-				Models:       NewModelsFromMap(map[string]ModelConfig{"m": {}}),
-				Type:         ProviderTypeOpenAI,
-				Microcompact: &on,
-			},
-		},
-	}
+// wiredCapture records what one provider branch actually sent over the wire.
+type wiredCapture struct {
+	gotRequest bool
+	path       string
+	auth       string
+	apiKey     string
+	body       map[string]any
+}
 
-	m, err := CreateAllProviders(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestCreateAllProviders_WiresRequestEssentials pins the config → llm hop for
+// every provider branch through a real Complete call: the base URL, API key,
+// default model, and extra params from the Provider entry must reach the
+// outgoing HTTP request.
+func TestCreateAllProviders_WiresRequestEssentials(t *testing.T) {
+	t.Parallel()
+	const modelName = "wire-model"
+	responses := map[string]string{
+		ProviderTypeResponses: `{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+		ProviderTypeOpenAI:    `{"id":"chatcmpl-1","model":"` + modelName + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+		ProviderTypeAnthropic: `{"id":"msg_1","type":"message","role":"assistant","model":"` + modelName + `","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"content":[]}`,
 	}
-	for name, want := range map[string]bool{"mc-off": false, "mc-default": true, "mc-on": true} {
-		p, ok := m[name].(llm.MicrocompactProvider)
-		if !ok {
-			t.Fatalf("provider %s (%T) does not implement llm.MicrocompactProvider", name, m[name])
-		}
-		if got := p.MicrocompactEnabled(); got != want {
-			t.Errorf("%s MicrocompactEnabled() = %v, want %v", name, got, want)
-		}
+	wantPath := map[string]string{
+		ProviderTypeResponses: "/responses",
+		ProviderTypeOpenAI:    "/chat/completions",
+		ProviderTypeAnthropic: "/v1/messages",
+	}
+	for _, ptype := range []string{ProviderTypeResponses, ProviderTypeOpenAI, ProviderTypeAnthropic} {
+		t.Run(ptype, func(t *testing.T) {
+			t.Parallel()
+			var cap wiredCapture
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				cap.gotRequest = true
+				cap.path = r.URL.Path
+				cap.auth = r.Header.Get("Authorization")
+				cap.apiKey = r.Header.Get("x-api-key")
+				_ = json.NewDecoder(r.Body).Decode(&cap.body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, responses[ptype])
+			}))
+			defer srv.Close()
+
+			p := Provider{
+				Name:   "wire-" + ptype,
+				URL:    srv.URL,
+				Keys:   []string{"sk-wire"},
+				Type:   ptype,
+				Models: NewModelsFromMap(map[string]ModelConfig{modelName: {}}),
+				// ExtraParams ride the request body for the openai-compatible
+				// branches (the anthropic config has no such field).
+				ExtraParams: map[string]any{"wire_marker": true},
+			}
+			if ptype == ProviderTypeAnthropic {
+				p.ExtraParams = nil
+			}
+			m, err := CreateAllProviders(&Config{Providers: []Provider{p}})
+			if err != nil {
+				t.Fatalf("CreateAllProviders: %v", err)
+			}
+			prov, ok := m[p.Name]
+			if !ok {
+				t.Fatalf("missing provider %q", p.Name)
+			}
+			if prov.Name() != p.Name {
+				t.Errorf("Name() = %q, want %q", prov.Name(), p.Name)
+			}
+			// Empty Model forces the provider default wired from config.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := prov.Complete(ctx, &llm.Request{
+				MaxTokens: 10,
+				Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}},
+			}); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+
+			if !cap.gotRequest || cap.path != wantPath[ptype] {
+				t.Errorf("request landed at %q (hit=%v), want %s on the configured server", cap.path, cap.gotRequest, wantPath[ptype])
+			}
+			if ptype == ProviderTypeAnthropic {
+				if cap.apiKey != "sk-wire" {
+					t.Errorf("x-api-key = %q, want sk-wire", cap.apiKey)
+				}
+			} else {
+				if cap.auth != "Bearer sk-wire" {
+					t.Errorf("Authorization = %q, want Bearer sk-wire", cap.auth)
+				}
+				if cap.body["model"] != modelName {
+					t.Errorf("body model = %v, want %q (wired provider default)", cap.body["model"], modelName)
+				}
+				if cap.body["wire_marker"] != true {
+					t.Errorf("body wire_marker = %v, want true (extra params merged)", cap.body["wire_marker"])
+				}
+			}
+		})
 	}
 }

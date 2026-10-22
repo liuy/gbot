@@ -1223,8 +1223,8 @@ func TestSetMessages(t *testing.T) {
 }
 
 // TestQuery_ConcurrentSetMessagesDuringQuery guards the e.messages read
-// points a query hits while in flight (microcompact, executor history,
-// reminder context, API marshaling) against unlocked reads. A goroutine
+// points a query hits while in flight (executor history, reminder context,
+// API marshaling) against unlocked reads. A goroutine
 // hammers SetMessages for the whole query duration — the "caller rewrites
 // history mid-query" scenario. The first turn's tool blocks until released,
 // parking the query in ExecuteAll so the hammer's writes are guaranteed
@@ -8927,10 +8927,7 @@ func prunableHistory(t *testing.T) ([]types.Message, json.RawMessage) {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 	var msgs []types.Message
-	// The stamps must sit near the wall clock: runTurns evaluates the
-	// time-based trigger (time.Since of the last assistant) before the token
-	// prune, and stale stamps would let that trigger clear rounds first.
-	now := time.Now() // REAL-TIME: fresh stamps keep the time-based trigger off
+	now := time.Now() // REAL-TIME: fresh stamps; the prune orders by position, not by clock
 	for i := range 6 {
 		id := fmt.Sprintf("read-%d", i)
 		msgs = append(msgs, types.Message{Role: types.RoleAssistant, Timestamp: now, Content: []types.ContentBlock{
@@ -12077,43 +12074,6 @@ func TestRunTurns_TokenPrune_SubagentSkipped(t *testing.T) {
 	}
 }
 
-// mcOffProvider opts its engines out of the microcompact chain.
-type mcOffProvider struct{ *mockProvider }
-
-func (mcOffProvider) MicrocompactEnabled() bool { return false }
-
-// TestRunTurns_TokenPrune_ProviderOptOutSkipped pins the provider gate in the
-// engine-level prune guard: an oversized main-thread context is left alone when
-// the active provider opts out of microcompact. The paired positive control (the
-// same fixture with a provider that does not answer the probe) is what makes the
-// zero-record assertion mean "gated" rather than "fixture never prunes".
-func TestRunTurns_TokenPrune_ProviderOptOutSkipped(t *testing.T) {
-	t.Parallel()
-
-	lcOff := &engineLogCapture{}
-	off := New(&Params{
-		Provider: mcOffProvider{mockProvider: &mockProvider{}},
-		Model:    "test-model", Logger: slog.New(lcOff),
-	})
-	t.Cleanup(func() { off.Close() })
-	off.UpdateAutoCompactConfig(AutoCompactConfig{ContextWindow: 20_000})
-	off.SetContextTokens(1_000_000)
-	off.SetMessages(oversizedToolHistory(7))
-	_ = off.QuerySync(context.Background(), "q", "") // errors at callLLM by design
-	if n := lcOff.count("engine:token_prune"); n != 0 {
-		t.Errorf("token_prune log records = %d, want 0 (provider opted out of microcompact)", n)
-	}
-
-	lcOn := &engineLogCapture{}
-	on := prunableEngine(t, lcOn, 20_000)
-	on.SetContextTokens(1_000_000)
-	on.SetMessages(oversizedToolHistory(7))
-	_ = on.QuerySync(context.Background(), "q", "")
-	if n := lcOn.count("engine:token_prune"); n != 1 {
-		t.Errorf("token_prune log records = %d, want exactly 1 for the identical fixture without the opt-out", n)
-	}
-}
-
 // TestTerminalAPIError_StopFailureHookDoesNotBlockQueryEnd pins the
 // fire-and-forget contract: the query's own QueryEnd must be observable
 // while the StopFailure hook is still running. Run synchronously (a removed
@@ -12274,11 +12234,9 @@ type manualCompactCtxKey struct{}
 
 // TestManualCompact_EventCardAndCompactorContext pins the manual compact card:
 // the four events share one generated tool_use id (whose uuid slice width is
-// what pairs them), the compactor receives the caller's context, and the manual
-// path suppresses the "context left until auto-compact" warning.
+// what pairs them) and the compactor receives the caller's context.
 func TestManualCompact_EventCardAndCompactorContext(t *testing.T) {
-	// Not parallel: compactWarningSuppressed is process-global.
-	clearCompactWarningSuppression()
+	t.Parallel()
 	ec := newEventCollector()
 	mc := &recordingCompactor{result: compactFixture("manual summary", 9_000, 120)}
 	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger(), Dispatcher: ec})
@@ -12308,9 +12266,6 @@ func TestManualCompact_EventCardAndCompactorContext(t *testing.T) {
 		t.Fatalf("compactor calls = %d, want 1", len(ctxs))
 	} else if ctxs[0] == nil || ctxs[0].Value(manualCompactCtxKey{}) != "manual-compact" {
 		t.Errorf("compactor ctx = %v, want the caller's context carrying the sentinel", ctxs[0])
-	}
-	if !compactWarningSuppressed.Load() {
-		t.Error("compactWarningSuppressed = false after a manual compact — the manual path suppresses the context-left warning")
 	}
 }
 

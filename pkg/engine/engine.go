@@ -1967,20 +1967,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		}
 	}
 
-	// Microcompact: shrink prompt before the turn loop.
-	// Source: query.ts:413-419 — runs once per query, before autocompact.
-	// Sub-agents use agent-specific querySource so isMainThreadSource excludes them.
-	// Providers whose cache has no TTL keep the sequence verbatim: a clear
-	// there is a cache break plus a full re-read, not a saving.
-	if e.microcompactEnabled() {
-		mcQuerySource := e.querySource()
-		e.mu.RLock()
-		mcMsgs := e.messages
-		e.mu.RUnlock()
-		mcResult := MicrocompactMessages(mcMsgs, mcQuerySource, e.logger)
-		e.setMessages(mcResult.Messages)
-	}
-
 	reactiveCompactDone := false
 	contextWindowRecoveryDone := false
 	maxTokensRecoveryCount := 0
@@ -3542,7 +3528,7 @@ func (e *Engine) currentInputTokens() int {
 // Returns nil if pruning is not needed or not possible.
 func (e *Engine) maybeTokenPrune() *TokenPruneResult {
 	config := getTokenPruneConfig()
-	if !config.Enabled || !e.microcompactEnabled() {
+	if !config.Enabled {
 		return nil
 	}
 
@@ -3701,8 +3687,7 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 
 // ManualCompact compacts the conversation on user request (/compact command).
 // Unlike runCompact (auto-compact), it fires PreCompact/PostCompact hooks with
-// trigger="manual", passes custom instructions to the summarizer, and suppresses
-// the "context left until auto-compact" warning.
+// trigger="manual" and passes custom instructions to the summarizer.
 // TS align: commands/compact/compact.ts:call — manual path
 func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, customInstructions string) (*short.CompactResult, error) {
 	e.mu.RLock()
@@ -3797,7 +3782,6 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 		},
 	})
 
-	suppressCompactWarning()
 	e.fireCompactHooks(ctx, "manual", "post")
 	e.refreshContext()
 	e.emitEvent(types.QueryEvent{
@@ -5399,7 +5383,7 @@ func (a *taskListReaderAdapter) ListPending() ([]attachment.TaskItem, error) {
 	return items, nil
 }
 
-// querySource returns the query source identifier for prompt caching and microcompact.
+// querySource returns the query source identifier for prompt caching and token pruning.
 // Source: utils/promptCategory.ts:16-28 — getQuerySourceForAgent()
 func (e *Engine) querySource() string {
 	if !e.isSubagent {

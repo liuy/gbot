@@ -1796,3 +1796,19 @@ func TestOpenAIProvider_ThinkingWireMapping(t *testing.T) {
 		}
 	}
 }
+
+// TestNewOpenAIProvider_WiresConfig pins the ctor wiring of the fields the
+// config layer hands over: identity and provider-specific request params.
+func TestNewOpenAIProvider_WiresConfig(t *testing.T) {
+	t.Parallel()
+	p := NewOpenAIProvider(&OpenAIConfig{
+		Name:        "zhipu",
+		ExtraParams: map[string]any{"tool_stream": true},
+	})
+	if p.Name() != "zhipu" {
+		t.Errorf("Name() = %q, want zhipu", p.Name())
+	}
+	if v, ok := p.extraParams["tool_stream"]; !ok || v != true {
+		t.Errorf("extraParams = %v, want tool_stream=true", p.extraParams)
+	}
+}

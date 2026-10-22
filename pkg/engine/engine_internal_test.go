@@ -5079,7 +5079,7 @@ func safeEventType(events []types.QueryEvent, i int) string {
 }
 
 // ---------------------------------------------------------------------------
-// Previously 0% functions: setters/getters, MCPTool methods, microcompact no-ops
+// Previously 0% functions: setters/getters, MCPTool methods
 // ---------------------------------------------------------------------------
 
 func TestEngine_SetRecordWriter(t *testing.T) {
@@ -7348,9 +7348,8 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	// Setting ContextTokens=35000 triggers auto-compact.
 	// Compact fails -> token prune should clear old Read results -> tokens drop.
 	//
-	// Use recent timestamps so time-based microcompact does NOT fire (gap < 60 min).
-	// Only token-based prune should handle this case.
-	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	// Ordinary fresh timestamps; only the token-based prune can act here.
+	now := time.Now() // REAL-TIME: ordinary fresh stamps
 	for i := range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role: types.RoleAssistant,
@@ -7477,7 +7476,7 @@ func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
 	})
 
 	// 3 Read results — context well below prune threshold (31000).
-	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	now := time.Now() // REAL-TIME: ordinary fresh stamps
 	for i := range 3 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role: types.RoleAssistant,
@@ -7539,7 +7538,7 @@ func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
 	})
 
 	// 8 Read results with high context — would trigger prune on main thread.
-	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	now := time.Now() // REAL-TIME: ordinary fresh stamps
 	for i := range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role: types.RoleAssistant,

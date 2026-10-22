@@ -3347,3 +3347,11 @@ func TestAnthropicRequest_ToolChoiceOmittedWithoutTools(t *testing.T) {
 		t.Errorf("tool_choice = %v, want absent without tools", req["tool_choice"])
 	}
 }
+
+func TestNewAnthropicProvider_Name(t *testing.T) {
+	t.Parallel()
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{Name: "zhipu"})
+	if p.Name() != "zhipu" {
+		t.Errorf("Name() = %q, want zhipu", p.Name())
+	}
+}

@@ -66,13 +66,12 @@ type AnthropicProvider struct {
 
 // AnthropicConfig configures the Anthropic provider.
 type AnthropicConfig struct {
-	Name         string
-	APIKey       string
-	BaseURL      string
-	Model        string
-	Timeout      time.Duration
-	RetryConfig  *RetryConfig
-	Microcompact *bool // nil = enabled; see MicrocompactProvider
+	Name        string
+	APIKey      string
+	BaseURL     string
+	Model       string
+	Timeout     time.Duration
+	RetryConfig *RetryConfig
 }
 
 // NewAnthropicProvider creates a new Anthropic provider.
@@ -85,14 +84,13 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 	}
 
 	return &AnthropicProvider{
-		name:                cfg.Name,
-		httpClient:          newLLMHTTPClient(cfg.Timeout),
-		retryConfig:         cfg.RetryConfig,
-		idleTimeout:         DefaultSSETimeout,
-		microcompactEnabled: resolveMicrocompactEnabled(cfg.Microcompact),
-		apiKey:              cfg.APIKey,
-		baseURL:             strings.TrimRight(cfg.BaseURL, "/"),
-		model:               cfg.Model,
+		name:        cfg.Name,
+		httpClient:  newLLMHTTPClient(cfg.Timeout),
+		retryConfig: cfg.RetryConfig,
+		idleTimeout: DefaultSSETimeout,
+		apiKey:      cfg.APIKey,
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		model:       cfg.Model,
 	}
 }
 

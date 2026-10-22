@@ -95,21 +95,19 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 		switch p.ProviderType() {
 		case ProviderTypeResponses:
 			m[p.Name] = llm.NewResponsesProvider(&llm.ResponsesConfig{
-				Name:         p.Name,
-				APIKey:       apiKey,
-				BaseURL:      p.URL,
-				Model:        model,
-				ExtraParams:  p.ExtraParams,
-				Microcompact: p.Microcompact,
+				Name:        p.Name,
+				APIKey:      apiKey,
+				BaseURL:     p.URL,
+				Model:       model,
+				ExtraParams: p.ExtraParams,
 			})
 		case ProviderTypeOpenAI:
 			m[p.Name] = llm.NewOpenAIProvider(&llm.OpenAIConfig{
-				Name:         p.Name,
-				APIKey:       apiKey,
-				BaseURL:      p.URL,
-				Model:        model,
-				ExtraParams:  p.ExtraParams,
-				Microcompact: p.Microcompact,
+				Name:        p.Name,
+				APIKey:      apiKey,
+				BaseURL:     p.URL,
+				Model:       model,
+				ExtraParams: p.ExtraParams,
 			})
 		default: // anthropic
 			url := p.URL
@@ -117,11 +115,10 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 				url = "https://api.anthropic.com"
 			}
 			m[p.Name] = llm.NewAnthropicProvider(&llm.AnthropicConfig{
-				Name:         p.Name,
-				APIKey:       apiKey,
-				BaseURL:      url,
-				Model:        model,
-				Microcompact: p.Microcompact,
+				Name:    p.Name,
+				APIKey:  apiKey,
+				BaseURL: url,
+				Model:   model,
 			})
 		}
 	}

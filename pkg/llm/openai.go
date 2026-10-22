@@ -39,13 +39,12 @@ type OpenAIProvider struct {
 
 // OpenAIConfig configures the OpenAI provider.
 type OpenAIConfig struct {
-	Name         string
-	APIKey       string
-	BaseURL      string // defaults to https://api.openai.com/v1
-	Model        string
-	Timeout      time.Duration
-	ExtraParams  map[string]any // Provider-specific params merged into request body (e.g. {"tool_stream": true} for Zhipu GLM)
-	Microcompact *bool          // nil = enabled; see MicrocompactProvider
+	Name        string
+	APIKey      string
+	BaseURL     string // defaults to https://api.openai.com/v1
+	Model       string
+	Timeout     time.Duration
+	ExtraParams map[string]any // Provider-specific params merged into request body (e.g. {"tool_stream": true} for Zhipu GLM)
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -57,15 +56,14 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
 	return &OpenAIProvider{
-		name:                cfg.Name,
-		httpClient:          newLLMHTTPClient(cfg.Timeout),
-		retryConfig:         DefaultRetryConfig(),
-		idleTimeout:         DefaultSSETimeout,
-		microcompactEnabled: resolveMicrocompactEnabled(cfg.Microcompact),
-		apiKey:              cfg.APIKey,
-		baseURL:             strings.TrimRight(cfg.BaseURL, "/"),
-		model:               cfg.Model,
-		extraParams:         cfg.ExtraParams,
+		name:        cfg.Name,
+		httpClient:  newLLMHTTPClient(cfg.Timeout),
+		retryConfig: DefaultRetryConfig(),
+		idleTimeout: DefaultSSETimeout,
+		apiKey:      cfg.APIKey,
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		model:       cfg.Model,
+		extraParams: cfg.ExtraParams,
 	}
 }
 
