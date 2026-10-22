@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -1230,10 +1231,16 @@ func TestOpenAISSE_ToolArgumentsTooLarge(t *testing.T) {
 	p := newTestProvider()
 	ctx := context.Background()
 
+	// The reasoning delta opens the thinking block; the first tool chunk
+	// carries arguments WITHOUT a name, so the args-before-name path opens the
+	// tool block while thinking stays open — at the size-limit exit BOTH
+	// blocks dangle.
 	body := sseBody(
 		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
 		"",
-		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_big","type":"function","function":{"name":"bash","arguments":"start"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_big","type":"function","function":{"arguments":"start"}}]},"finish_reason":null}]}`,
 		"",
 		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}]},"finish_reason":null}]}`,
 		"",
@@ -1255,6 +1262,84 @@ func TestOpenAISSE_ToolArgumentsTooLarge(t *testing.T) {
 	}
 	if events[0].Type != "message_start" {
 		t.Errorf("first event = %q, want message_start", events[0].Type)
+	}
+	// The size-limit exit is an error exit: thinking (index 0) is closed,
+	// the tool block (index 1) is not — a tool stop would start execution
+	// of knowingly-truncated arguments.
+	stops := map[int]int{}
+	for _, e := range events {
+		if e.Type == "content_block_stop" {
+			stops[e.Index]++
+		}
+	}
+	if stops[0] != 1 {
+		t.Errorf("content_block_stop count for thinking index 0 = %d, want exactly 1", stops[0])
+	}
+	if stops[1] != 0 {
+		t.Errorf("content_block_stop count for tool index 1 = %d, want 0 (tool blocks stay open on error exits)", stops[1])
+	}
+}
+
+func TestOpenAISSE_ToolArgumentsTooLargeInterleavedText(t *testing.T) {
+	// NOT parallel — modifies package-level maxToolArgumentsSize
+
+	origCap := maxToolArgumentsSize
+	maxToolArgumentsSize = 10
+	t.Cleanup(func() { maxToolArgumentsSize = origCap })
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// Text reopens mid-tool-phase: a content delta interleaved after the
+	// tool chunk restarts the text block (the open-block logic has no
+	// tool-phase guard), so the size-limit exit must close it too.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_big","type":"function","function":{"name":"bash","arguments":"{}"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"more"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"xxxxxxxxxxxxxxxxxxxx"}}]},"finish_reason":null}]}`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking (index 0)
+		"content_block_delta", // thinking_delta
+		"content_block_stop",  // thinking closed at tool name arrival
+		"content_block_start", // tool_use (index 1)
+		"content_block_delta", // input_json_delta "{}"
+		"content_block_start", // text reopened by interleaved delta (index 2)
+		"content_block_delta", // text_delta "more"
+		"content_block_stop",  // reopened text closed at size-limit exit
+	)
+	if events[3].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[3].Index)
+	}
+	if events[8].Index != 2 {
+		t.Errorf("reopened text content_block_stop index = %d, want 2", events[8].Index)
+	}
+	// Error exit: no tool stop, no message_stop.
+	stops := map[int]int{}
+	for _, e := range events {
+		if e.Type == "content_block_stop" {
+			stops[e.Index]++
+		}
+		if e.Type == "message_stop" {
+			t.Error("parser should have returned early on oversized arguments, but got message_stop")
+		}
+	}
+	if stops[0] != 1 || stops[2] != 1 {
+		t.Errorf("content_block_stop counts: thinking[0]=%d want 1, text[2]=%d want 1", stops[0], stops[2])
+	}
+	if stops[1] != 0 {
+		t.Errorf("content_block_stop count for tool index 1 = %d, want 0 (tool blocks stay open on error exits)", stops[1])
 	}
 }
 
@@ -1353,6 +1438,416 @@ func TestOpenAISSE_ThinkingThenTextStillWorks(t *testing.T) {
 		"message_delta",
 		"message_stop",
 	)
+}
+
+// ---------------------------------------------------------------------------
+// Pure-reasoning EOS — production reproduction (2026-10-22 16:30, Strata
+// 429-recitation turn): reasoning_content deltas and EOS, nothing else.
+// ---------------------------------------------------------------------------
+
+// pureReasoningDeltas are the 7 real wire deltas of the production turn.
+var pureReasoningDeltas = []string{
+	"The",
+	" API Error",
+	" 429: 已达到 ",
+	"5 小时的使用上限。您的限额将在 ",
+	"2026-10-22",
+	" 16:42:3",
+	"3 重置。",
+}
+
+const pureReasoningText = "The API Error 429: 已达到 5 小时的使用上限。您的限额将在 2026-10-22 16:42:33 重置。"
+
+// pureReasoningBody builds the role chunk + the 7 reasoning deltas, then the
+// caller's tail (finish_reason chunk and/or [DONE] — or neither for raw EOF).
+func pureReasoningBody(t *testing.T, tail ...string) io.Reader {
+	t.Helper()
+	lines := []string{
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+	}
+	for _, d := range pureReasoningDeltas {
+		lines = append(lines,
+			`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"`+d+`"},"finish_reason":null}]}`,
+			``)
+	}
+	return sseBody(append(lines, tail...)...)
+}
+
+func TestOpenAISSE_PureReasoningEOS_ClosesThinkingAtFinishReason(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := pureReasoningBody(t,
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_stop", // thinking closed before message_delta
+		"message_delta",
+		"message_stop",
+	)
+
+	if cb := events[1].ContentBlock; cb == nil || cb.Type != types.ContentTypeThinking {
+		t.Errorf("content_block_start block = %+v, want thinking", events[1].ContentBlock)
+	}
+	if events[9].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[9].Index)
+	}
+	var got strings.Builder
+	for _, e := range events {
+		if e.Type == "content_block_delta" && e.Delta != nil && e.Delta.Type == "thinking_delta" {
+			got.WriteString(e.Delta.Thinking)
+		}
+	}
+	if got.String() != pureReasoningText {
+		t.Errorf("thinking text = %q, want %q", got.String(), pureReasoningText)
+	}
+}
+
+func TestOpenAISSE_PureReasoningEOS_ClosesThinkingAtEOF(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// No finish_reason chunk, no [DONE] — the stream just ends.
+	body := pureReasoningBody(t)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_stop",
+		"message_stop",
+	)
+
+	if events[9].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[9].Index)
+	}
+}
+
+func TestOpenAISSE_ScannerErrorClosesThinkingNotTools(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+
+	data := "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think.\"},\"finish_reason\":null}]}\n\n" +
+		// Arguments without a name take the args-before-name path: the tool
+		// block opens while thinking stays open, so both dangle at the error.
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"arguments\":\"start\"}}]},\"finish_reason\":null}]}\n\n"
+	body := &errAfterReader{data: []byte(data), err: errors.New("boom: connection reset")}
+
+	req := &Request{Model: "gpt-4", MaxTokens: 100}
+	ch := make(chan StreamEvent, 128)
+	err := p.parseOpenAISSE(context.Background(), req, body, nil, ch)
+	close(ch)
+	var events []StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("parseOpenAISSE error = %v, want scanner error containing boom", err)
+	}
+
+	// The args-before-name chunk must have opened the tool block (Index 1)
+	// and streamed its arguments — otherwise "no tool stop" below holds
+	// trivially.
+	hasToolStart, hasToolDelta := false, false
+	for _, e := range events {
+		if e.Type == "content_block_start" && e.Index == 1 {
+			if e.ContentBlock == nil || e.ContentBlock.Type != types.ContentTypeToolUse {
+				t.Errorf("tool content_block_start block = %+v, want tool_use", e.ContentBlock)
+			}
+			hasToolStart = true
+		}
+		if e.Type == "content_block_delta" && e.Index == 1 && e.Delta != nil && e.Delta.Type == "input_json_delta" {
+			if e.Delta.PartialJSON != "start" {
+				t.Errorf("tool args delta = %q, want start", e.Delta.PartialJSON)
+			}
+			hasToolDelta = true
+		}
+	}
+	if !hasToolStart || !hasToolDelta {
+		t.Fatalf("args-before-name chunk must open the tool block and stream args (start=%v delta=%v)", hasToolStart, hasToolDelta)
+	}
+
+	// Error exits close thinking/text but never tool blocks: a tool stop
+	// makes the engine execute the call, and the arguments are knowingly
+	// incomplete — the engine synthesizes tool_results for open tool blocks.
+	last := events[len(events)-1]
+	if last.Type != "content_block_stop" || last.Index != 0 {
+		t.Fatalf("last event = %q index %d, want content_block_stop for thinking index 0", last.Type, last.Index)
+	}
+	for _, e := range events {
+		if e.Type == "content_block_stop" && e.Index == 1 {
+			t.Error("tool block must not be closed on scanner error")
+		}
+		if e.Type == "message_stop" {
+			t.Error("scanner error must not emit message_stop")
+		}
+	}
+}
+
+func TestOpenAISSE_ScannerErrorClosesTextAtOwnIndex(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+
+	data := "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial answer\"},\"finish_reason\":null}]}\n\n"
+	body := &errAfterReader{data: []byte(data), err: errors.New("boom: connection reset")}
+
+	req := &Request{Model: "gpt-4", MaxTokens: 100}
+	ch := make(chan StreamEvent, 128)
+	err := p.parseOpenAISSE(context.Background(), req, body, nil, ch)
+	close(ch)
+	var events []StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("parseOpenAISSE error = %v, want scanner error containing boom", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking (index 0)
+		"content_block_delta",
+		"content_block_stop", // thinking closes when text starts
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop", // text (index 1) closed at the error exit
+	)
+	if events[6].Index != 1 {
+		t.Errorf("text content_block_stop index = %d, want 1 (thinking holds index 0)", events[6].Index)
+	}
+}
+
+func TestOpenAISSE_TextClosedWhenArgsBeforeName(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// Text still open when arguments arrive before the tool name: the
+	// args-before-name path must close text BEFORE starting the tool block.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"arguments":"start"}}]},"finish_reason":null}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // text (index 0)
+		"content_block_delta",
+		"content_block_stop", // text closed at args-before-name
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop", // tool swept by [DONE]
+		"message_stop",
+	)
+	if events[3].Index != 0 {
+		t.Errorf("text content_block_stop index = %d, want 0 (closed before tool start)", events[3].Index)
+	}
+	if events[6].Index != 1 {
+		t.Errorf("tool content_block_stop index = %d, want 1", events[6].Index)
+	}
+}
+
+func TestOpenAISSE_ToolBeforeThinking_StopUsesThinkingIndex(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// Tool first, thinking second: the thinking block holds content index 1,
+	// so every thinking stop must carry index 1 — never a hardcoded 0.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"ls"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"why ls?"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // tool_use (index 0)
+		"content_block_delta", // input_json_delta
+		"content_block_start", // thinking (index 1)
+		"content_block_delta", // thinking_delta
+		"content_block_stop",  // thinking at finish_reason
+		"message_delta",
+		"content_block_stop", // tool swept by [DONE]
+		"message_stop",
+	)
+	if events[5].Index != 1 {
+		t.Errorf("thinking content_block_stop index = %d, want 1", events[5].Index)
+	}
+	if events[7].Index != 0 {
+		t.Errorf("tool content_block_stop index = %d, want 0", events[7].Index)
+	}
+}
+
+func TestOpenAISSE_DataAfterDONEIgnored(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"late"},"finish_reason":null}]}`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	// [DONE] terminates the message: trailing data lines must not open blocks.
+	assertEventTypes(t, events, "message_start", "message_stop")
+}
+
+func TestOpenAISSE_UnstartedToolCallNoStopAtDONE(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// ID-only tool chunk: the accumulator exists but never started, so the
+	// [DONE] sweep must not emit a stop for it.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{}}]},"finish_reason":null}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events, "message_start", "message_stop")
+}
+
+func TestOpenAISSE_EmptyContentDoesNotCloseThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// An empty-string content delta (pointer non-nil, value "") must not
+	// close thinking: later reasoning deltas append to the SAME block.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"a"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"b"},"finish_reason":null}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta", // a
+		"content_block_delta", // b — same block, no reopen
+		"content_block_stop",
+		"message_stop",
+	)
+	if events[2].Index != 0 || events[3].Index != 0 {
+		t.Errorf("both thinking deltas must target index 0, got %d and %d", events[2].Index, events[3].Index)
+	}
+}
+
+func TestOpenAISSE_TextStopAfterMessageDeltaOnToolUseFinish(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	// finish_reason=tool_calls with text still open: the text block is NOT
+	// closed at finish_reason (more tool args may follow) — the [DONE] sweep
+	// closes it after message_delta.
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"message_delta",
+		"content_block_stop", // closed by the [DONE] sweep, after message_delta
+		"message_stop",
+	)
+	if events[3].DeltaMsg == nil || events[3].DeltaMsg.StopReason != "tool_use" {
+		t.Errorf("message_delta stop_reason = %+v, want tool_use", events[3].DeltaMsg)
+	}
+	if events[4].Index != 0 {
+		t.Errorf("text content_block_stop index = %d, want 0", events[4].Index)
+	}
 }
 
 // ---------------------------------------------------------------------------

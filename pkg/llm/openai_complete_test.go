@@ -801,6 +801,77 @@ func TestOpenAIStream_ReasoningContent(t *testing.T) {
 	}
 }
 
+// TestOpenAIStream_PureReasoningClosedThroughStream pins the full pipeline —
+// Stream() → HTTP → SSE parse → event channel — for a reasoning-only turn:
+// the thinking block must be closed at stream end. Production reproduction
+// (2026-10-22 16:30, Strata 429-recitation, 7 real deltas incl. UTF-8).
+func TestOpenAIStream_PureReasoningClosedThroughStream(t *testing.T) {
+	deltas := []string{
+		"The",
+		" API Error",
+		" 429: 已达到 ",
+		"5 小时的使用上限。您的限额将在 ",
+		"2026-10-22",
+		" 16:42:3",
+		"3 重置。",
+	}
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n")
+		for _, d := range deltas {
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-4\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"%s\"},\"finish_reason\":null}]}\n\n", d)
+		}
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ch, err := provider.Stream(context.Background(), &llm.Request{Model: "glm-4", MaxTokens: 100})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	var events []llm.StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	if last := events[len(events)-1]; last.Type != "message_stop" {
+		t.Fatalf("final event = %q, want message_stop", last.Type)
+	}
+	// The last content_block_stop is the thinking block (index 0) and sits
+	// before the message_delta/message_stop tail.
+	stopIdx, deltaIdx := -1, -1
+	for i, e := range events {
+		switch e.Type {
+		case "content_block_stop":
+			stopIdx = i
+		case "message_delta":
+			deltaIdx = i
+		}
+	}
+	if stopIdx == -1 {
+		t.Fatal("no content_block_stop for the open thinking block")
+	}
+	if events[stopIdx].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[stopIdx].Index)
+	}
+	if deltaIdx == -1 || stopIdx > deltaIdx {
+		t.Errorf("thinking stop at %d must precede message_delta at %d", stopIdx, deltaIdx)
+	}
+
+	var got strings.Builder
+	for _, e := range events {
+		if e.Delta != nil && e.Delta.Type == "thinking_delta" {
+			got.WriteString(e.Delta.Thinking)
+		}
+	}
+	if want := "The API Error 429: 已达到 5 小时的使用上限。您的限额将在 2026-10-22 16:42:33 重置。"; got.String() != want {
+		t.Errorf("thinking text = %q, want %q", got.String(), want)
+	}
+}
+
 // TestOpenAIStream_ToolCallArgsBeforeName tests the edge case where tool call
 // arguments arrive before the function name in the SSE stream.
 func TestOpenAIStream_ToolCallArgsBeforeName(t *testing.T) {

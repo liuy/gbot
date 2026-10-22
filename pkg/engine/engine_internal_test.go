@@ -4533,6 +4533,68 @@ func TestEngine_ThinkingSignature_Persisted(t *testing.T) {
 	}
 }
 
+// TestEngine_PureReasoningTurn_PersistsThinkingText pins the cross-layer
+// contract for pure-reasoning turns: a thinking block closed at stream end
+// must move the accumulated text into the persisted block and emit exactly
+// one EventThinkingEnd — without the parser's stop, history kept an empty
+// thinking shell.
+func TestEngine_PureReasoningTurn_PersistsThinkingText(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx := t.Context()
+
+	const want = "The API Error 429: 已达到 5 小时的使用上限。您的限额将在 2026-10-22 16:42:33 重置。"
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking}}
+		for _, d := range []string{"The", " API Error", " 429: 已达到 ", "5 小时的使用上限。您的限额将在 ", "2026-10-22", " 16:42:3", "3 重置。"} {
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: d}}
+		}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("QuerySync error: %v", result.Error)
+	}
+
+	if got := len(tc.FindEvents(types.EventThinkingEnd)); got != 1 {
+		t.Errorf("EventThinkingEnd count = %d, want exactly 1", got)
+	}
+
+	var assistant *types.Message
+	for i := range result.Messages {
+		if result.Messages[i].Role == types.RoleAssistant {
+			assistant = &result.Messages[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant message in result")
+	}
+	if len(assistant.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(assistant.Content))
+	}
+	cb := assistant.Content[0]
+	if cb.Type != types.ContentTypeThinking {
+		t.Fatalf("block type = %q, want thinking", cb.Type)
+	}
+	if cb.Thinking != want {
+		t.Errorf("Thinking = %q, want %q", cb.Thinking, want)
+	}
+}
+
 func TestEngine_SignatureDelta_OutOfRangeIndex(t *testing.T) {
 	t.Parallel()
 

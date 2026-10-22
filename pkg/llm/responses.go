@@ -957,6 +957,20 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 		}
 	}
 
+	// Error-exit sweep: thinking/text only. A stop for a tool_use block makes
+	// the engine execute it, and an errored call's arguments are incomplete —
+	// the engine's error path synthesizes tool_results for open tool blocks
+	// instead. The engine appends the partial message with whatever bytes the
+	// stop carried, so skipping it would persist an empty shell.
+	closeContentBlocks := func() {
+		for _, st := range order {
+			if st.open && st.kind != "tool_use" {
+				st.open = false
+				emit(StreamEvent{Type: "content_block_stop", Index: st.contentIndex})
+			}
+		}
+	}
+
 	// emitTerminalState closes dangling blocks and terminates the turn with
 	// stop_reason + usage — the shared tail of the completed/incomplete cases.
 	emitTerminalState := func(comp responsesCompleted) {
@@ -1163,6 +1177,7 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			if st.argsLen+len(evt.Delta) > maxToolArgumentsSize {
 				slog.Warn("responses sse: tool arguments exceed size limit",
 					"index", st.contentIndex, "size", st.argsLen)
+				closeContentBlocks()
 				return nil
 			}
 			st.argsLen += len(evt.Delta)
@@ -1270,6 +1285,7 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				if err != nil {
 					reason = err.Error()
 				}
+				closeContentBlocks()
 				emit(StreamEvent{Type: "error", Error: &APIError{
 					Type:    "api_error",
 					Message: "failed to parse ResponseCompleted: " + reason,
@@ -1291,8 +1307,7 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 				reason = comp.IncompleteDetails.Reason
 			}
 			if reason != "max_output_tokens" {
-				// No closeOpenBlocks here — the engine's error path finalizes
-				// open blocks itself, same as the failed path.
+				closeContentBlocks()
 				emit(StreamEvent{Type: "error", Error: incompleteResponseError(reason)})
 				return nil
 			}
@@ -1310,6 +1325,7 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			if apiErr == nil {
 				apiErr = &APIError{Type: "api_error", Message: truncateForLog(string(evt.Response), 200)}
 			}
+			closeContentBlocks()
 			emit(StreamEvent{Type: "error", Error: apiErr})
 			return nil
 
@@ -1329,12 +1345,14 @@ func (p *ResponsesProvider) parseResponsesSSE(ctx context.Context, req *Request,
 			if top.Error != nil {
 				we = top.Error
 			}
+			closeContentBlocks()
 			emit(StreamEvent{Type: "error", Error: responsesStreamAPIError(we, []byte(data))})
 			return nil
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		closeContentBlocks()
 		return err
 	}
 	// Clean EOF without completed: emit nothing further. The engine turns

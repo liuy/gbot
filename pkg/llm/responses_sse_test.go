@@ -1687,9 +1687,10 @@ func TestResponsesSSE_IncompleteOtherReasonIsError(t *testing.T) {
 		"message_start",
 		"content_block_start",
 		"content_block_delta",
+		"content_block_stop",
 		"error",
 	)
-	apiErr := events[3].Error
+	apiErr := events[4].Error
 	if apiErr == nil {
 		t.Fatal("error event has nil Error")
 	}
@@ -1698,6 +1699,293 @@ func TestResponsesSSE_IncompleteOtherReasonIsError(t *testing.T) {
 	}
 	if apiErr.Retryable {
 		t.Error("Retryable = true, want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 22. Error exits must close open thinking/text blocks — the engine's error
+// path persists the partial message with whatever bytes the stop carried.
+// Tool blocks deliberately stay open (engine synthesizes tool_results).
+// ---------------------------------------------------------------------------
+
+func TestResponsesSSE_FailedAfterReasoningDelta_ClosesThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_22"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"partial thought"}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"resp_22","error":{"code":"server_error","message":"died"}}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"error",
+	)
+	if events[3].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[3].Index)
+	}
+}
+
+func TestResponsesSSE_IOErrorAfterReasoningDelta_ClosesThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	data := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_23\"}}\n\n" +
+		"data: {\"type\":\"response.reasoning_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial\"}\n\n"
+	body := &errAfterReader{data: []byte(data), err: errors.New("boom: connection reset")}
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %v, want scanner error containing boom", err)
+	}
+
+	hasThinkingStop := false
+	for _, e := range events {
+		if e.Type == "content_block_stop" && e.Index == 0 {
+			hasThinkingStop = true
+		}
+		if e.Type == "message_stop" {
+			t.Error("scanner error must not emit message_stop")
+		}
+	}
+	if !hasThinkingStop {
+		t.Error("missing content_block_stop for the open thinking block (index 0)")
+	}
+}
+
+func TestResponsesSSE_FailedWithOpenToolCall_KeepsToolOpen(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_24"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"pondering"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"call_1","type":"function_call","call_id":"call_xyz","name":"bash"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"call_1","output_index":1,"delta":"{\"c"}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"resp_24","error":{"code":"server_error","message":"died"}}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking (index 0)
+		"content_block_delta", // thinking_delta
+		"content_block_start", // tool_use (index 1)
+		"content_block_delta", // input_json_delta
+		"content_block_stop",  // thinking only — the tool block stays open
+		"error",
+	)
+	if events[5].Index != 0 {
+		t.Errorf("content_block_stop index = %d, want 0 (thinking)", events[5].Index)
+	}
+}
+
+func TestResponsesSSE_ClosedBlockNotReClosedOnError(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_25"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"thought"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[]}}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"resp_25","error":{"code":"server_error","message":"died"}}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	// The item.done already closed thinking; the error-exit sweep must not
+	// emit a second stop for it.
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"error",
+	)
+}
+
+func TestResponsesSSE_FailedWithThinkingAndText_ClosesBothIndexes(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_26"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"thought"}`,
+		``,
+		`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"answer"}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"resp_26","error":{"code":"server_error","message":"died"}}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking (index 0)
+		"content_block_delta",
+		"content_block_start", // text (index 1)
+		"content_block_delta",
+		"content_block_stop", // thinking
+		"content_block_stop", // text
+		"error",
+	)
+	if events[5].Index != 0 {
+		t.Errorf("first content_block_stop index = %d, want 0 (thinking)", events[5].Index)
+	}
+	if events[6].Index != 1 {
+		t.Errorf("second content_block_stop index = %d, want 1 (text)", events[6].Index)
+	}
+}
+
+func TestResponsesSSE_ToolArgumentsTooLarge_ClosesThinkingNotTool(t *testing.T) {
+	// NOT parallel — modifies package-level maxToolArgumentsSize
+
+	origCap := maxToolArgumentsSize
+	maxToolArgumentsSize = 10 // 10 bytes for testing
+	t.Cleanup(func() { maxToolArgumentsSize = origCap })
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_27"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"thinking"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"call_1","type":"function_call","call_id":"call_xyz","name":"bash"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"call_1","output_index":1,"delta":"xxxxxxxxxxxxxxxxxxxx"}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	// The size-limit exit closes thinking (index 0) and returns without
+	// message_stop or an error event; the tool block (index 1) stays open.
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta",
+		"content_block_start", // tool_use
+		"content_block_stop",  // thinking
+	)
+	if events[4].Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", events[4].Index)
+	}
+}
+
+func TestResponsesSSE_CompletedParseFailure_ClosesThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	// id as a number fails to unmarshal into the string field — the
+	// completed-payload parse-failure path.
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_28"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"thought"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":123}}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"error",
+	)
+	apiErr := events[4].Error
+	if apiErr == nil {
+		t.Fatal("error event has nil Error")
+	}
+	if !strings.Contains(apiErr.Message, "failed to parse ResponseCompleted") {
+		t.Errorf("Message = %q, want failed to parse ResponseCompleted prefix", apiErr.Message)
+	}
+}
+
+func TestResponsesSSE_TopLevelError_ClosesThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	body := sseBody(
+		`data: {"type":"response.created","response":{"id":"resp_29"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"thought"}`,
+		``,
+		`data: {"type":"error","code":"rate_limit_exceeded","message":"slow down"}`,
+		``,
+	)
+
+	events, err := collectResponsesEvents(context.Background(), p, body)
+	if err != nil {
+		t.Fatalf("parseResponsesSSE error: %v", err)
+	}
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"error",
+	)
+	apiErr := events[4].Error
+	if apiErr == nil {
+		t.Fatal("error event has nil Error")
+	}
+	if apiErr.Message != "slow down" {
+		t.Errorf("Message = %q, want slow down", apiErr.Message)
+	}
+	if !apiErr.Retryable {
+		t.Error("Retryable = false, want true for rate_limit_exceeded")
 	}
 }
 

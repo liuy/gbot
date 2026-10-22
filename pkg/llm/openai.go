@@ -435,6 +435,34 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 	thinkingBlockOpen := false
 	thinkingContentIndex := 0
 
+	closeThinking := func() {
+		if thinkingBlockOpen {
+			send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: thinkingContentIndex})
+			thinkingBlockOpen = false
+		}
+	}
+	closeText := func() {
+		if textBlockOpen {
+			send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
+			textBlockOpen = false
+		}
+	}
+	// Normal-completion sweep: terminate every block this stream opened, so
+	// pure-reasoning turns still emit content_block_stop for thinking. Error
+	// exits call closeThinking/closeText only — a stop for a tool block makes
+	// the engine execute it, and an error turn's arguments are knowingly
+	// incomplete.
+	closeOpenBlocks := func() {
+		closeThinking()
+		closeText()
+		for _, acc := range accumulated {
+			if acc.started {
+				send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: acc.contentIndex})
+				acc.started = false
+			}
+		}
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -456,16 +484,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 
 		// [DONE] marker
 		if strings.TrimSpace(data) == "[DONE]" {
-			// Close text block if open
-			if textBlockOpen {
-				send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
-			}
-			// Drain pending content_block_stop for all tool calls
-			for _, acc := range accumulated {
-				if acc.started {
-					send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: acc.contentIndex})
-				}
-			}
+			closeOpenBlocks()
 			send(ctx, eventCh, StreamEvent{Type: "message_stop"})
 			return nil
 		}
@@ -499,9 +518,8 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 			}
 
 			// Close thinking block when actual content starts (GLM sends reasoning_content first, then content)
-			if delta.Content != nil && *delta.Content != "" && thinkingBlockOpen {
-				send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: thinkingContentIndex})
-				thinkingBlockOpen = false
+			if delta.Content != nil && *delta.Content != "" {
+				closeThinking()
 			}
 			// Process text content
 			if delta.Content != nil && *delta.Content != "" {
@@ -540,16 +558,8 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 
 				// Function name → emit content_block_start
 				if tc.Function.Name != "" {
-					// Close thinking block if still open
-					if thinkingBlockOpen {
-						send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: thinkingContentIndex})
-						thinkingBlockOpen = false
-					}
-					// Close text block if still open
-					if textBlockOpen {
-						send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
-						textBlockOpen = false
-					}
+					closeThinking()
+					closeText()
 					acc.name = tc.Function.Name
 					acc.started = true
 					// Disable idle timeout during tool input phase — the LLM may
@@ -573,10 +583,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					if !acc.started {
 						// Edge case: arguments arrived before name.
 						// Start the block now with whatever we have.
-						if textBlockOpen {
-							send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
-							textBlockOpen = false
-						}
+						closeText()
 						acc.started = true
 						send(ctx, eventCh, StreamEvent{
 							Type:  "content_block_start",
@@ -591,6 +598,13 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					if acc.arguments.Len()+len(tc.Function.Arguments) > maxToolArgumentsSize {
 						slog.Warn("openai sse: tool arguments exceed size limit",
 							"index", acc.contentIndex, "size", acc.arguments.Len())
+						// Both blocks can dangle here: thinking never closes on
+						// tool arguments without a name, and text can reopen after
+						// the tool block started — content deltas interleave with
+						// tool chunks and the text open-block logic has no
+						// tool-phase guard.
+						closeThinking()
+						closeText()
 						return nil
 					}
 					acc.arguments.WriteString(tc.Function.Arguments)
@@ -606,10 +620,11 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 			if choice.FinishReason != nil {
 				stopReason := mapFinishReason(*choice.FinishReason)
 
-				// Close text block if open
-				if textBlockOpen && stopReason != "tool_use" {
-					send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
-					textBlockOpen = false
+				// Pure-reasoning turns end here; Anthropic closes blocks
+				// before message_delta.
+				closeThinking()
+				if stopReason != "tool_use" {
+					closeText()
 				}
 
 				// Tool input phase is over — re-enable idle timeout. This
@@ -645,17 +660,12 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 
 	// Stream ended without [DONE]
 	if err := scanner.Err(); err != nil {
+		closeThinking()
+		closeText()
 		return err
 	}
 	// Clean EOF without [DONE] — close gracefully.
-	if textBlockOpen {
-		send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
-	}
-	for _, acc := range accumulated {
-		if acc.started {
-			send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: acc.contentIndex})
-		}
-	}
+	closeOpenBlocks()
 	send(ctx, eventCh, StreamEvent{Type: "message_stop"})
 	return nil
 }
