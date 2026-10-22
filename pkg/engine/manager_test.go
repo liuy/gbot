@@ -4,11 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
@@ -445,6 +447,14 @@ func TestEngineManager_Snapshot_ReflectsState(t *testing.T) {
 	if views[0].ID != "main" || views[1].ID != "e2" {
 		t.Errorf("order = %s, %s; want main, e2", views[0].ID, views[1].ID)
 	}
+	// Every rendered column comes from one field of the view state; a dropped
+	// field shows up as an empty picker row, so pin each one exactly.
+	if views[0].Name != "main" || views[0].ActiveSessionID != "s1" || views[0].Model != "sonnet" {
+		t.Errorf("main snapshot = %+v, want {Name:main ActiveSessionID:s1 Model:sonnet}", views[0])
+	}
+	if views[1].Name != "engine-2" || views[1].ActiveSessionID != "s2" || views[1].Model != "opus" {
+		t.Errorf("engine-2 snapshot = %+v, want {Name:engine-2 ActiveSessionID:s2 Model:opus}", views[1])
+	}
 	if !views[1].IsStreaming || views[1].CurrentToolName != "Edit" {
 		t.Errorf("engine-2 snapshot = %+v, want streaming=true tool=Edit", views[1])
 	}
@@ -535,6 +545,17 @@ func TestPersistMeta_SkipsSystemEngines(t *testing.T) {
 		Repl:            fakeRepl{},
 		System:          true,
 	})
+	// A non-system engine registered AFTER the system one: skipping must not
+	// end the walk, or everything created after dream silently loses its
+	// meta.json entry.
+	m.Add(&EngineViewState{
+		ID:              "e3",
+		Name:            "engine-3",
+		Model:           "opus",
+		ActiveSessionID: "sess-e3",
+		Thinking:        llm.EffortHigh,
+		Repl:            fakeRepl{},
+	})
 	if err := m.PersistMeta(dir); err != nil {
 		t.Fatalf("PersistMeta: %v", err)
 	}
@@ -542,11 +563,96 @@ func TestPersistMeta_SkipsSystemEngines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read meta: %v", err)
 	}
-	if len(meta.Engines) != 1 {
-		t.Fatalf("expected 1 engine in meta (dream excluded), got %d", len(meta.Engines))
+	if len(meta.Engines) != 2 {
+		t.Fatalf("expected 2 engines in meta (dream excluded), got %d", len(meta.Engines))
 	}
-	if meta.Engines[0].ID != "main" {
-		t.Errorf("engine[0].ID = %q, want main", meta.Engines[0].ID)
+	if meta.Engines[0].ID != "main" || meta.Engines[1].ID != "e3" {
+		t.Errorf("engine IDs = [%s, %s], want [main, e3]", meta.Engines[0].ID, meta.Engines[1].ID)
+	}
+	// Every EngineMeta column must survive the JSON round trip: a dropped one
+	// restores an engine with the wrong name, session, model or effort.
+	want := []short.EngineMeta{
+		{ID: "main", Name: "main", ActiveSessionID: "sess-main", Model: "sonnet"},
+		{ID: "e3", Name: "engine-3", ActiveSessionID: "sess-e3", Model: "opus", Thinking: "high"},
+	}
+	for i, w := range want {
+		if meta.Engines[i] != w {
+			t.Errorf("Engines[%d] = %+v, want %+v", i, meta.Engines[i], w)
+		}
+	}
+}
+
+func TestPersistMeta_ActiveEngineFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	m := NewEngineManager()
+	for _, id := range []string{"e1", "e2", "e3"} {
+		m.Add(&EngineViewState{
+			ID:              id,
+			Name:            "engine-" + id,
+			Model:           "sonnet",
+			ActiveSessionID: "sess-" + id,
+			Repl:            fakeRepl{},
+		})
+	}
+	if err := m.SetActive("e2"); err != nil {
+		t.Fatalf("SetActive(e2): %v", err)
+	}
+	before := time.Now() // REAL-TIME: PersistMeta stamps time.Now() into meta.json
+	if err := m.PersistMeta(dir); err != nil {
+		t.Fatalf("PersistMeta: %v", err)
+	}
+	meta, err := short.ReadWorkspaceMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if meta.ActiveEngineID != "e2" {
+		t.Errorf("ActiveEngineID = %q, want e2", meta.ActiveEngineID)
+	}
+	// The dual-write field carries the ACTIVE engine's session, not the last
+	// engine visited — an old binary reads only this one.
+	if meta.CurrentSessionID != "sess-e2" {
+		t.Errorf("CurrentSessionID = %q, want sess-e2 (the active engine's session)", meta.CurrentSessionID)
+	}
+	assertFreshStamp(t, "meta LastActiveAt", meta.LastActiveAt)
+	if meta.LastActiveAt.Before(before) {
+		t.Errorf("meta LastActiveAt = %v, want no earlier than the PersistMeta call (%v)", meta.LastActiveAt, before)
+	}
+}
+
+// probingRepl asks, from inside the read lock of Snapshot, whether the
+// manager mutex is still held. IsStreaming runs after the snapshot fields are
+// copied, so the RUnlock must still be pending at that moment.
+type probingRepl struct {
+	m      *EngineManager
+	probes int
+	held   bool
+}
+
+func (p *probingRepl) IsStreaming() bool {
+	if p.m.mu.TryLock() {
+		p.m.mu.Unlock()
+	} else {
+		p.held = true
+	}
+	p.probes++
+	return false
+}
+
+func (p *probingRepl) CurrentToolName() string { return "" }
+
+func TestEngineManager_Snapshot_HoldsReadLockWhileReadingRepl(t *testing.T) {
+	m := NewEngineManager()
+	pr := &probingRepl{m: m}
+	m.Add(&EngineViewState{ID: "main", Name: "main", Repl: pr})
+	views, activeID := m.Snapshot()
+	if activeID != "main" || len(views) != 1 || views[0].ID != "main" {
+		t.Fatalf("Snapshot = %+v (active %q), want one entry main", views, activeID)
+	}
+	if pr.probes != 1 {
+		t.Errorf("probe calls = %d, want exactly 1 (Snapshot reads each Repl once)", pr.probes)
+	}
+	if !pr.held {
+		t.Error("Snapshot's read lock was already released while the Repl adapter was read — the RUnlock must stay deferred")
 	}
 }
 
@@ -679,5 +785,402 @@ func TestEngineManager_AddBgTable_NilRegistryNoop(t *testing.T) {
 	}
 }
 
-// Ensure time is referenced (used by fakeRepl test setups above for future fields).
-var _ = time.Now
+// stampFloor is the lower bound for a time the manager stamped itself; the
+// upper bound is the clock read inside the helper.
+var stampFloor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// assertFreshStamp pins a time.Time that manager code wrote. The zero value
+// (an assignment the mutant dropped) and a stale copy both fall outside the
+// window.
+func assertFreshStamp(t *testing.T, label string, got time.Time) {
+	t.Helper()
+	now := time.Now() // REAL-TIME: the stamp under test is wall clock; no fake clock is in play
+	if got.Before(stampFloor) || got.After(now) {
+		t.Errorf("%s = %v, want a stamp inside [%v, %v]", label, got, stampFloor, now)
+	}
+}
+
+func TestEngineManager_Add_DefaultsZeroCreatedAt(t *testing.T) {
+	m := NewEngineManager()
+	restoredAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	fresh := &EngineViewState{ID: "main", Name: "main"}
+	restored := &EngineViewState{ID: "e2", Name: "engine-2", CreatedAt: restoredAt}
+	m.Add(fresh)
+	m.Add(restored)
+	assertFreshStamp(t, "Add left CreatedAt", fresh.CreatedAt)
+	if !fresh.LastActiveAt.Equal(fresh.CreatedAt) {
+		t.Errorf("fresh LastActiveAt = %v, want the CreatedAt Add just stamped (%v)", fresh.LastActiveAt, fresh.CreatedAt)
+	}
+	// The guard is IsZero, not "always": a restored meta.json's CreatedAt is
+	// the engine's real birth time and must survive re-registration.
+	if !restored.CreatedAt.Equal(restoredAt) {
+		t.Errorf("restored CreatedAt = %v, want %v", restored.CreatedAt, restoredAt)
+	}
+	if !restored.LastActiveAt.Equal(restoredAt) {
+		t.Errorf("restored LastActiveAt = %v, want %v", restored.LastActiveAt, restoredAt)
+	}
+}
+
+func TestEngineManager_SetActiveModel_WritesActiveEngineOnly(t *testing.T) {
+	m := NewEngineManager()
+	m.Add(&EngineViewState{ID: "main", Name: "main", Model: "sonnet"})
+	m.Add(&EngineViewState{ID: "e2", Name: "engine-2", Model: "opus"})
+	if err := m.SetActive("e2"); err != nil {
+		t.Fatalf("SetActive(e2): %v", err)
+	}
+	m.SetActiveModel("opus-4-1")
+	if got := m.Get("e2").Model; got != "opus-4-1" {
+		t.Errorf("active engine Model = %q, want opus-4-1", got)
+	}
+	if got := m.Get("main").Model; got != "sonnet" {
+		t.Errorf("inactive engine Model = %q, want sonnet (untouched)", got)
+	}
+	// No active engine: the lookup misses and the write is a no-op, not a
+	// write through a nil view state.
+	empty := NewEngineManager()
+	empty.SetActiveModel("ghost")
+	if got := empty.Count(); got != 0 {
+		t.Errorf("Count after SetActiveModel on an empty manager = %d, want 0", got)
+	}
+}
+
+func TestEngineManager_SetActiveThinking_WritesActiveEngineOnly(t *testing.T) {
+	m := NewEngineManager()
+	m.Add(&EngineViewState{ID: "main", Name: "main", Thinking: llm.EffortLow})
+	m.Add(&EngineViewState{ID: "e2", Name: "engine-2", Thinking: llm.EffortNone})
+	if err := m.SetActive("e2"); err != nil {
+		t.Fatalf("SetActive(e2): %v", err)
+	}
+	m.SetActiveThinking(llm.EffortMax)
+	if got := m.Get("e2").Thinking; got != llm.EffortMax {
+		t.Errorf("active engine Thinking = %q, want %q", got, llm.EffortMax)
+	}
+	if got := m.Get("main").Thinking; got != llm.EffortLow {
+		t.Errorf("inactive engine Thinking = %q, want %q (untouched)", got, llm.EffortLow)
+	}
+	empty := NewEngineManager()
+	empty.SetActiveThinking(llm.EffortHigh)
+	if got := empty.Count(); got != 0 {
+		t.Errorf("Count after SetActiveThinking on an empty manager = %d, want 0", got)
+	}
+}
+
+func TestEngineManager_SetActive_TouchesOnlyNewActiveEngine(t *testing.T) {
+	m := NewEngineManager()
+	createdAt := time.Date(2026, 2, 2, 2, 2, 2, 0, time.UTC)
+	m.Add(&EngineViewState{ID: "main", Name: "main", CreatedAt: createdAt})
+	m.Add(&EngineViewState{ID: "e2", Name: "engine-2", CreatedAt: createdAt})
+	if err := m.SetActive("e2"); err != nil {
+		t.Fatalf("SetActive(e2): %v", err)
+	}
+	got := m.Get("e2").LastActiveAt
+	assertFreshStamp(t, "e2 LastActiveAt", got)
+	if !got.After(createdAt) {
+		t.Errorf("e2 LastActiveAt = %v, want a stamp after its CreatedAt %v (SetActive re-stamps the newly active engine)", got, createdAt)
+	}
+	if stale := m.Get("main").LastActiveAt; !stale.Equal(createdAt) {
+		t.Errorf("main LastActiveAt = %v, want %v (only the newly active engine is stamped)", stale, createdAt)
+	}
+}
+
+// TestEngineManager_EngineBySession_EmptyAddressNeverMatches pins the empty
+// guard: an engine that has not started a session reports SessionID() == "",
+// so the guard — not the loop — is what keeps EngineBySession("") a miss.
+func TestEngineManager_EngineBySession_EmptyAddressNeverMatches(t *testing.T) {
+	eng := New(&Params{EngineID: "nosession", Logger: silentLogger()})
+	t.Cleanup(func() { eng.Close() })
+	if sid := eng.SessionID(); sid != "" {
+		t.Fatalf("fixture engine already has a session: %q", sid)
+	}
+	m := NewEngineManager()
+	m.Add(&EngineViewState{Engine: eng, ID: "nosession", Name: "nosession"})
+	if got := m.EngineBySession(""); got != nil {
+		t.Errorf("EngineBySession(\"\") = %v, want nil even with a session-less engine registered", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Critical-section scope. The manager's documented contract is "all methods
+// are safe for concurrent use", which holds only while each method's lock
+// covers its whole body. An Unlock that runs at the top of the method leaves
+// the body unsynchronized: sequentially identical, fatally wrong under
+// concurrency. These tests run each access path against engines-map churn, so
+// an unsynchronized body trips the runtime's map guard ("concurrent map read
+// and map write" / "concurrent map writes") instead of quietly returning
+// consistent state. That abort is the kill these tests are built to produce: a
+// run that dies with it has pinned a lock-scope regression, it is not
+// infrastructure flakiness.
+// ---------------------------------------------------------------------------
+
+// lockScopeChurn churns the engines map from writer goroutines while every
+// reader goroutine hammers probe. Seeds stay registered for the whole run, so
+// the probe's expectations (non-nil lookups, no error) hold while the table
+// grows and shrinks around them.
+func lockScopeChurn(t *testing.T, probe func(m *EngineManager, seeds []string)) {
+	t.Helper()
+	const (
+		seeds   = 64
+		writers = 4
+		readers = 2
+		rounds  = 1200
+	)
+	m := NewEngineManager()
+	ids := make([]string, 0, seeds)
+	for i := range seeds {
+		id := "seed-" + itoa(i)
+		m.Add(newTestView(id, id))
+		ids = append(ids, id)
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := range rounds {
+				id := "churn-" + itoa(w) + "-" + itoa(i)
+				m.Add(newTestView(id, id))
+				if err := m.Remove(id); err != nil {
+					t.Errorf("writer Remove(%q): %v", id, err)
+					return
+				}
+			}
+		}(w)
+	}
+	for range readers {
+		wg.Go(func() {
+			<-start
+			for range rounds {
+				probe(m, ids)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if got := m.Count(); got != seeds {
+		t.Errorf("Count after churn = %d, want %d (each churn engine must be removed again)", got, seeds)
+	}
+}
+
+func TestEngineManager_ReadPathsStaySerializedWithMapChurn(t *testing.T) {
+	metaDir := t.TempDir()
+	cases := []struct {
+		name  string
+		probe func(m *EngineManager, seeds []string)
+	}{
+		{"Get", func(m *EngineManager, seeds []string) {
+			for _, id := range seeds {
+				if vs := m.Get(id); vs == nil {
+					t.Errorf("Get(%q) = nil while churned engines come and go", id)
+					return
+				}
+			}
+		}},
+		{"Active", func(m *EngineManager, seeds []string) {
+			// One lookup per seed: the probe's unsynchronized window has to be
+			// comparable to the writers' map-write window, or the runtime
+			// guard never sees an overlap.
+			for range seeds {
+				if vs := m.Active(); vs == nil || vs.ID == "" {
+					t.Errorf("Active() = %v, want the seeded active engine", vs)
+					return
+				}
+			}
+		}},
+		{"ActiveID", func(m *EngineManager, _ []string) {
+			if id := m.ActiveID(); id == "" {
+				t.Error("ActiveID() = \"\" while a seeded engine is active")
+				return
+			}
+		}},
+		{"Count", func(m *EngineManager, seeds []string) {
+			if got := m.Count(); got < len(seeds) {
+				t.Errorf("Count() = %d, want at least %d (seeds are never removed)", got, len(seeds))
+				return
+			}
+		}},
+		{"List", func(m *EngineManager, seeds []string) {
+			list := m.List()
+			if len(list) < len(seeds) {
+				t.Errorf("len(List()) = %d, want at least %d", len(list), len(seeds))
+				return
+			}
+			for _, vs := range list {
+				if vs == nil {
+					t.Error("List() returned a nil view state")
+					return
+				}
+			}
+		}},
+		{"GetByName", func(m *EngineManager, _ []string) {
+			if vs := m.GetByName("probe-name"); vs != nil {
+				t.Errorf("GetByName(probe-name) = %v, want nil (no such engine)", vs)
+				return
+			}
+		}},
+		{"ValidateName", func(m *EngineManager, _ []string) {
+			if err := m.ValidateName("probe-name"); err != nil {
+				t.Errorf("ValidateName(probe-name) = %v, want nil", err)
+				return
+			}
+		}},
+		{"EngineBySession", func(m *EngineManager, _ []string) {
+			if eng := m.EngineBySession("no-such-session"); eng != nil {
+				t.Errorf("EngineBySession(unknown) = %v, want nil", eng)
+				return
+			}
+		}},
+		{"Snapshot", func(m *EngineManager, seeds []string) {
+			views, activeID := m.Snapshot()
+			if len(views) < len(seeds) || activeID == "" {
+				t.Errorf("Snapshot() = %d views (active %q), want at least %d views and a set active id",
+					len(views), activeID, len(seeds))
+				return
+			}
+		}},
+		{"BgAgent", func(m *EngineManager, _ []string) {
+			if st, ok := m.BgAgent("agent-1"); ok || st != nil {
+				t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", st, ok)
+				return
+			}
+		}},
+		// Only the fallback path is visible here: the loop that skips taken ids
+		// reads m.engines, which is what the map guard catches. With a minter
+		// injected NewEngineID returns from m.minter.Mint() without touching the
+		// map, so a lock hoisted out of that body can only show up as a race on
+		// m.minter — the minter case of FieldChurnStaysSerialized is what pins it.
+		{"NewEngineID", func(m *EngineManager, _ []string) {
+			if id := m.NewEngineID(); !strings.HasPrefix(id, "agent-") {
+				t.Errorf("NewEngineID() = %q, want an agent-N id", id)
+				return
+			}
+		}},
+		{"SetActiveModel", func(m *EngineManager, _ []string) {
+			m.SetActiveModel("churned-model")
+		}},
+		{"SetActiveThinking", func(m *EngineManager, _ []string) {
+			m.SetActiveThinking(llm.EffortMedium)
+		}},
+		{"SetActive", func(m *EngineManager, seeds []string) {
+			if err := m.SetActive(seeds[len(seeds)-1]); err != nil {
+				t.Errorf("SetActive(%q) = %v, want nil (seeds stay registered)", seeds[len(seeds)-1], err)
+				return
+			}
+		}},
+		{"PersistMeta", func(m *EngineManager, _ []string) {
+			if err := m.PersistMeta(metaDir); err != nil {
+				t.Errorf("PersistMeta: %v", err)
+				return
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lockScopeChurn(t, tc.probe)
+		})
+	}
+}
+
+// TestEngineManager_FieldChurnStaysSerialized covers the accesses the map guard
+// cannot see. activeID, bgTables and minter are a string field, a slice and a
+// pointer: none of them has a runtime consistency check, so a body hoisted out
+// of its critical section still returns the same values and stays green under a
+// plain go test. The pair has to be produced here — each probe call writes the
+// field it is about to read, so the two probe goroutines of lockScopeChurn form
+// the write/read race, and the kill signal is the race detector's DATA RACE
+// report rather than a failed assertion.
+func TestEngineManager_FieldChurnStaysSerialized(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe func(m *EngineManager, seeds []string)
+	}{
+		{"activeID", func(m *EngineManager, seeds []string) {
+			for _, id := range seeds {
+				if err := m.SetActive(id); err != nil {
+					t.Errorf("SetActive(%q) = %v, want nil (seeds stay registered)", id, err)
+					return
+				}
+			}
+			for range seeds {
+				if got := m.ActiveID(); !slices.Contains(seeds, got) {
+					t.Errorf("ActiveID() = %q, want one of the %d seeded ids", got, len(seeds))
+					return
+				}
+			}
+		}},
+		{"bgTables", func(m *EngineManager, _ []string) {
+			reg := agenttool.NewBackgroundAgentRegistry()
+			m.AddBgTable(reg)
+			m.RemoveBgTable(reg)
+			if st, ok := m.BgAgent("agent-1"); ok || st != nil {
+				t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", st, ok)
+				return
+			}
+		}},
+		{"minter", func(m *EngineManager, _ []string) {
+			// Both the injected and the fallback path must hand back an id;
+			// HasIDMinter is read, not asserted, because a churned minter is
+			// legitimately either present or absent.
+			m.SetIDMinter(agenttool.NewIDMinter())
+			m.SetIDMinter(nil)
+			m.HasIDMinter()
+			if id := m.NewEngineID(); id == "" {
+				t.Error(`NewEngineID() = "", want an id from the minter or the fallback counter`)
+				return
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lockScopeChurn(t, tc.probe)
+		})
+	}
+}
+
+// TestEngineManager_WritePathsStaySerializedWithEachOther is the write/write
+// half: Add and Remove racing each other on the same map with no lock between
+// them, with no reader to blame.
+func TestEngineManager_WritePathsStaySerializedWithEachOther(t *testing.T) {
+	const (
+		seeds   = 8
+		writers = 6
+		rounds  = 1500
+	)
+	m := NewEngineManager()
+	for i := range seeds {
+		id := "seed-" + itoa(i)
+		m.Add(newTestView(id, id))
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := range rounds {
+				id := "churn-" + itoa(w) + "-" + itoa(i)
+				m.Add(newTestView(id, id))
+				if err := m.Remove(id); err != nil {
+					t.Errorf("writer Remove(%q): %v", id, err)
+					return
+				}
+			}
+		}(w)
+	}
+	close(start)
+	wg.Wait()
+	list := m.List()
+	if len(list) != seeds {
+		t.Fatalf("len(List()) = %d, want %d (every churn engine must be gone)", len(list), seeds)
+	}
+	for _, vs := range list {
+		if strings.HasPrefix(vs.ID, "churn-") {
+			t.Errorf("%q survived Remove: still registered", vs.ID)
+		}
+	}
+	if got := m.Count(); got != seeds {
+		t.Errorf("Count = %d, want %d", got, seeds)
+	}
+}
