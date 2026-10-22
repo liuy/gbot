@@ -35,10 +35,7 @@ func seedRealSessions(t *testing.T, engineID string) (*short.Store, string, stri
 			Timestamp: time.Date(2026, 8, 25, 9, 0, i, 0, time.UTC),
 			Content:   []types.ContentBlock{types.NewTextBlock("hello from " + label)},
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore %s: %v", label, err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(ses.SessionID, ts[0]); err != nil {
 			t.Fatalf("AppendMessage %s: %v", label, err)
 		}

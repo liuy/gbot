@@ -21,9 +21,9 @@ import (
 // rows). Messages holding the other half of a degraded message's
 // tool_use/tool_result pair degrade too, because a surviving orphan half
 // makes replayed history invalid for the API.
-func EngineMessagesToStore(engineMsgs []types.Message) ([]*TranscriptMessage, error) {
+func EngineMessagesToStore(engineMsgs []types.Message) []*TranscriptMessage {
 	if len(engineMsgs) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	contents := make([][]byte, len(engineMsgs))
@@ -102,7 +102,7 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]*TranscriptMessage, er
 		})
 	}
 
-	return result, nil
+	return result
 }
 
 // toolCallIDs returns the tool-call ids a message participates in — tool_use

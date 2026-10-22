@@ -167,10 +167,7 @@ func TestEditReplay_FullRoundTrip(t *testing.T) {
 	ed, res, fp := executeRealEdit(t)
 	assistant, user := persistedToolTurn(t, ed, res, fp)
 
-	storeMsgs, err := short.EngineMessagesToStore([]types.Message{assistant, user})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	storeMsgs := short.EngineMessagesToStore([]types.Message{assistant, user})
 	loaded, err := short.StoreMessagesToEngine(storeMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)

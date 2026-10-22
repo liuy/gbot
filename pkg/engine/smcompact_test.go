@@ -239,10 +239,7 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 
 	// Create a minimal CompactResult with messages to keep
 	shortMsgs := makeLargeMessages(10, 100)
-	shortList, err := short.EngineMessagesToStore(shortMsgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortList := short.EngineMessagesToStore(shortMsgs)
 
 	// Use PartialCompact to get a real CompactResult
 	keepFrom := 3
@@ -290,10 +287,7 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 
 	// Create a CompactResult with nil boundary marker
 	shortMsgs := makeLargeMessages(10, 100)
-	shortList, err := short.EngineMessagesToStore(shortMsgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortList := short.EngineMessagesToStore(shortMsgs)
 	pcr, err := store.PartialCompact("test-session", shortList, 3, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact failed: %v", err)

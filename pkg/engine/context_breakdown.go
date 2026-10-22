@@ -240,11 +240,13 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	reserved := min(computeReservedTokens(contextWindow, maxTokens), max(freeTokens, 0))
 
 	// Compute expensive data once, shared by estimates and details.
-	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, memoryDir)
+	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot)
 	// The system prompt injects the typed-memory prompt (builder.go), not
 	// every memory file's contents — estimating the full file list here
-	// overstated this bucket ~4x and squeezed the message bucket. Only the
-	// legacy path (prompt empty) loads the files.
+	// overstated this bucket ~4x and squeezed the message bucket. No legacy
+	// fallback is needed: BuildMemoryPrompt returns "" exactly when
+	// IsAutoMemoryEnabled is false, and LoadMemoryFiles returns nil under
+	// that same gate, so the legacy path could only ever produce nil.
 	var memFiles []context.MemoryFile
 	if memPrompt := context.FormatMemoryPrompt(workingDir, memoryDir); memPrompt != "" {
 		memDir := memoryDir
@@ -255,8 +257,6 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 			Path:    filepath.Join(memDir, long.EntrypointName),
 			Content: memPrompt,
 		}}
-	} else {
-		memFiles = context.LoadMemoryFiles(workingDir, memoryDir)
 	}
 
 	estimates := e.estimateComponents(
@@ -356,6 +356,7 @@ func (e *Engine) estimateComponents(
 	est.Agents = e.estimateAgents(agentDefs)
 
 	// 6. Messages (breakdown + total).
+	attribution := newToolAttribution(messages)
 	total := 0
 	for i := range messages {
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
@@ -366,14 +367,15 @@ func (e *Engine) estimateComponents(
 			attTokens := e.EstimateTokensCalibrated(messages[i].Attachment.Prompt)
 			total += attTokens
 			est.MessagesByCategory.AttachmentTokens += attTokens
-			est.MessagesByCategory.upsertAttachment("file", attTokens)
+			est.MessagesByCategory.upsertAttachment(attachmentBucket(messages[i].Attachment), attTokens)
 		}
 		for _, block := range messages[i].Content {
 			t := e.tokenCountForBlock(block)
 			total += t
-			classifyMessageBlock(messages[i], block, t, est.MessagesByCategory)
+			classifyMessageBlock(messages[i], block, t, est.MessagesByCategory, attribution)
 		}
 	}
+	attribution.merge(est.MessagesByCategory)
 	// Pad by 4/3 to match EstimateMessagesTokens.
 	est.Messages = int(math.Ceil(float64(total) * 4.0 / 3.0))
 
@@ -387,19 +389,15 @@ func (e *Engine) estimateSystemPromptSections(
 	workingDir string,
 	skillListing string,
 	toolsSnapshot map[string]tool.Tool,
-	memoryDir string,
 ) sysPromptSections {
 	if systemPromptRaw == "" {
 		return sysPromptSections{}
 	}
 
-	// Reconstruct each section by calling the Builder's section methods
-	// against the same working dir. We use a fresh Builder to compute
-	// each section independently, then subtract the per-section estimate.
+	// The platform section needs the Builder's RuntimeInfo; every other
+	// section is estimated from its parameter directly (skill listing,
+	// tool prompts, memory files), so no other Builder state is set here.
 	builder := context.NewBuilder(workingDir)
-	builder.MemoryFiles = context.LoadMemoryFiles(workingDir, memoryDir)
-	builder.MemoryDirOverride = memoryDir
-	builder.SkillListing = skillListing
 
 	// Estimate base from the actual system prompt content. Using a fresh
 	// Builder here would miss runtime additions (SOUL.md, skills, agents,
@@ -529,20 +527,94 @@ func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
 	}
 }
 
+// toolAttribution resolves each tool_result block to the tool that produced it
+// and accumulates those tokens per tool name. TS keeps the two halves as
+// separate Maps — a tool_use_id→name pre-scan (:871-886) and toolResultsByType
+// (:777-778) — and merges the second into the first's buckets once the scan
+// ends (:1299-1314). Go maps iterate in random order, so the arrival order of
+// result buckets is tracked explicitly to reproduce a Map's insertion order in
+// the merged slice.
+type toolAttribution struct {
+	useNames map[string]string
+	results  map[string]int
+	order    []string
+}
+
+// newToolAttribution pre-scans the whole history for tool_use ids, so a result
+// resolves a call that sits later in the transcript (analyzeContext.ts:871-886).
+func newToolAttribution(messages []types.Message) *toolAttribution {
+	ta := &toolAttribution{useNames: map[string]string{}, results: map[string]int{}}
+	for _, m := range messages {
+		if m.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range m.Content {
+			// Only tool_use blocks seed the map, and an empty id is skipped
+			// (analyzeContext.ts:876-882) — that is what keeps a tool_result
+			// without a tool_use_id from resolving to some other block.
+			if b.Type == types.ContentTypeToolUse && b.ID != "" {
+				ta.useNames[b.ID] = blockToolName(b)
+			}
+		}
+	}
+	return ta
+}
+
+// blockToolName — analyzeContext.ts:793: block.name || 'unknown'. It feeds both
+// the call bucket and the id→name map, so an unnamed tool's call and result
+// merge into one bucket instead of splitting between "" and "unknown".
+func blockToolName(b types.ContentBlock) string {
+	if b.Name == "" {
+		return "unknown"
+	}
+	return b.Name
+}
+
+// resultToolName — analyzeContext.ts:825-827. A tool_result whose tool_use_id
+// matches nothing (missing field, or a call trimmed from the transcript) stays
+// in the "unknown" bucket instead of being dropped. TS guards the lookup twice
+// — `if (toolUseId)` on the way in (:879) and `toolUseId ? … : undefined` on
+// the way out (:826) — one guard is enough here because the prescan never keys
+// an empty id and a stored name is never empty, so a miss (including an empty
+// id) always reads as absent.
+func (ta *toolAttribution) resultToolName(b types.ContentBlock) string {
+	if name, ok := ta.useNames[b.ToolUseID]; ok {
+		return name
+	}
+	return "unknown"
+}
+
+func (ta *toolAttribution) addResult(name string, tokens int) {
+	if _, ok := ta.results[name]; !ok {
+		ta.order = append(ta.order, name)
+	}
+	ta.results[name] += tokens
+}
+
+// merge folds the accumulated result tokens into their call buckets
+// (analyzeContext.ts:1310-1314). Result-only buckets — an orphan, or a tool
+// whose call was trimmed from the transcript — are appended after every bucket
+// that has a call, which is where TS's two-Map merge puts them.
+func (ta *toolAttribution) merge(mb *MessageBreakdown) {
+	for _, name := range ta.order {
+		mb.upsertToolCall(name, 0, ta.results[name])
+	}
+}
+
 func classifyMessageBlock(
 	msg types.Message,
 	block types.ContentBlock,
 	tokens int,
 	mb *MessageBreakdown,
+	ta *toolAttribution,
 ) {
 	switch block.Type {
 	case types.ContentTypeToolUse:
 		mb.ToolCallTokens += tokens
-		mb.upsertToolCall(block.Name, tokens, 0)
+		mb.upsertToolCall(blockToolName(block), tokens, 0)
 	case types.ContentTypeToolResult:
 		mb.ToolResultTokens += tokens
-		// Tool result doesn't carry the tool name; classify via message
-		// structure later if needed. For now, attribute to "results".
+		ta.addResult(ta.resultToolName(block), tokens)
 	default:
 		// Compact summary is synthetic, not real user input.
 		if msg.HasFlag(types.FlagCompactSummary) {
@@ -592,6 +664,15 @@ func (mb *MessageBreakdown) upsertAttachment(name string, tokens int) {
 	mb.AttachmentsByType = append(mb.AttachmentsByType, AttachmentByType{
 		Name: name, Tokens: tokens,
 	})
+}
+
+// Bucket key — source: analyzeContext.ts:846 — msg.attachment.type || 'unknown'.
+// Empty type falls back so untyped attachments still get attributed.
+func attachmentBucket(att *types.Attachment) string {
+	if att.Type == "" {
+		return "unknown"
+	}
+	return string(att.Type)
 }
 
 // -----------------------------------------------------------------------
@@ -749,23 +830,8 @@ func BuildGrid(cats []ContextCategory, contextWindow int) [][]GridSquare {
 	totalSquares := TotalSquares(contextWindow)
 	width := GridWidth
 
-	// Compute non-reserved, non-free total for proportional share.
-	shareTotal := 0
-	for _, c := range cats {
-		if c.IsFree || c.IsReserved {
-			continue
-		}
-		shareTotal += c.Tokens
-	}
-
 	// Compute reserved squares first so content categories don't over-allocate.
 	reservedSquares := 0
-	reservedTokens := 0
-	for _, c := range cats {
-		if c.IsReserved {
-			reservedTokens += c.Tokens
-		}
-	}
 	// perSquare: tokens per grid square based on the total context window.
 	// All tokens (content + reserved + free) share totalSquares proportionally.
 	allTokens := 0
@@ -954,7 +1020,6 @@ func (e *Engine) buildDetails(
 	}
 
 	// System tools (per-tool) and deferred built-in tools.
-	seenDeferred := map[string]bool{}
 	for name, t := range toolsSnapshot {
 		if !t.IsEnabled() {
 			continue
@@ -964,13 +1029,10 @@ func (e *Engine) buildDetails(
 		}
 		if tool.IsDeferred(t) {
 			if toolSearchSnap != nil && !toolSearchSnap.IsDiscovered(name) {
-				if !seenDeferred[name] {
-					ds.deferredBuiltin = append(ds.deferredBuiltin, SystemToolDetail{
-						Name:   name,
-						Tokens: e.estimateSingleTool(t),
-					})
-					seenDeferred[name] = true
-				}
+				ds.deferredBuiltin = append(ds.deferredBuiltin, SystemToolDetail{
+					Name:   name,
+					Tokens: e.estimateSingleTool(t),
+				})
 			}
 			continue
 		}
@@ -1031,6 +1093,7 @@ func (e *Engine) buildDetails(
 	}
 
 	// Message breakdown.
+	attribution := newToolAttribution(messages)
 	for i := range messages {
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
 			continue
@@ -1038,28 +1101,26 @@ func (e *Engine) buildDetails(
 		if messages[i].Attachment != nil {
 			attTokens := e.EstimateTokensCalibrated(messages[i].Attachment.Prompt)
 			ds.messageBreakdown.AttachmentTokens += attTokens
-			ds.messageBreakdown.upsertAttachment("file", attTokens)
+			ds.messageBreakdown.upsertAttachment(
+				attachmentBucket(messages[i].Attachment), attTokens)
 		}
 		for _, block := range messages[i].Content {
 			t := e.tokenCountForBlock(block)
-			classifyMessageBlock(messages[i], block, t, ds.messageBreakdown)
+			classifyMessageBlock(messages[i], block, t, ds.messageBreakdown, attribution)
 		}
 	}
-	// Sort by call tokens desc, top 5.
-	sort.Slice(ds.messageBreakdown.ToolCallsByType, func(i, j int) bool {
-		return ds.messageBreakdown.ToolCallsByType[i].CallTokens >
-			ds.messageBreakdown.ToolCallsByType[j].CallTokens
+	attribution.merge(ds.messageBreakdown)
+	// Sort by call + result tokens desc; TS (:1316-1325) sorts without a top-N
+	// slice, and Array.prototype.sort is stable — ties keep insertion order.
+	sort.SliceStable(ds.messageBreakdown.ToolCallsByType, func(i, j int) bool {
+		a := ds.messageBreakdown.ToolCallsByType[i]
+		b := ds.messageBreakdown.ToolCallsByType[j]
+		return a.CallTokens+a.ResultTokens > b.CallTokens+b.ResultTokens
 	})
-	if len(ds.messageBreakdown.ToolCallsByType) > 5 {
-		ds.messageBreakdown.ToolCallsByType = ds.messageBreakdown.ToolCallsByType[:5]
-	}
-	sort.Slice(ds.messageBreakdown.AttachmentsByType, func(i, j int) bool {
+	sort.SliceStable(ds.messageBreakdown.AttachmentsByType, func(i, j int) bool {
 		return ds.messageBreakdown.AttachmentsByType[i].Tokens >
 			ds.messageBreakdown.AttachmentsByType[j].Tokens
 	})
-	if len(ds.messageBreakdown.AttachmentsByType) > 5 {
-		ds.messageBreakdown.AttachmentsByType = ds.messageBreakdown.AttachmentsByType[:5]
-	}
 
 	return ds
 }

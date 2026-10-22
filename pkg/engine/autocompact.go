@@ -108,10 +108,7 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Convert engine types → short types for store operations
-	shortMsgs, err := short.EngineMessagesToStore(messages)
-	if err != nil {
-		return nil, fmt.Errorf("convert messages: %w", err)
-	}
+	shortMsgs := short.EngineMessagesToStore(messages)
 
 	// Determine how many recent messages to keep. See rescaledKeepFrom for
 	// why the split is cut on a rescaled budget.

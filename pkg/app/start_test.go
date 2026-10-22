@@ -787,14 +787,11 @@ func TestRestoreEngines_GhostSessionSelfHeals(t *testing.T) {
 	}
 	// main's session has real history — that's what makes it "resumable"
 	// for the global ResumeOrInitSession fallback.
-	mainMsgs, err := short.EngineMessagesToStore([]types.Message{{
+	mainMsgs := short.EngineMessagesToStore([]types.Message{{
 		Role:      types.RoleUser,
 		Content:   []types.ContentBlock{types.NewTextBlock("hello from main")},
 		Timestamp: time.Now(), // REAL-TIME: fresh fixture timestamp, recency not under test
 	}})
-	if err != nil {
-		t.Fatalf("convert main message: %v", err)
-	}
 	if err := store.AppendMessages(mainSess.SessionID, mainMsgs); err != nil {
 		t.Fatalf("seed main messages: %v", err)
 	}

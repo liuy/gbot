@@ -50,10 +50,7 @@ func TestEngineMessagesToStore_TextOnlyPoisonDegrades(t *testing.T) {
 		Content: []types.ContentBlock{textBlockPoison()},
 	}}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 1 {
 		t.Fatalf("got %d store messages, want 1", len(result))
 	}
@@ -79,10 +76,7 @@ func TestEngineMessagesToStore_PairDegradeScansAllCallIDs(t *testing.T) {
 		}},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	text := degradedDumpText(t, result[1].Content)
 	if !strings.HasPrefix(text, "[storage fallback] ") {
 		t.Errorf("paired message not degraded: %q", text)
@@ -111,10 +105,7 @@ func TestEngineMessagesToStore_PairDegradeReasonIsFirstMatch(t *testing.T) {
 		}},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	text := degradedDumpText(t, result[2].Content)
 	if !strings.Contains(text, `paired tool call "tu-bad1" failed to serialize`) {
 		t.Errorf("reason does not name the first poisoned call: %q", text)
@@ -133,10 +124,7 @@ func TestEngineMessagesToStore_LogsDegradation(t *testing.T) {
 		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{textBlockPoison()},
 	}}
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 
 	want := fmt.Sprintf("msg=\"EngineMessagesToStore: degraded unserializable message to text dump\" message_uuid=%s role=assistant reason=\"marshal content blocks for storage: %s\"", result[0].UUID, marshalPoisonReason)
 	if !strings.Contains(logs.String(), want) {
@@ -156,10 +144,7 @@ func TestEngineMessagesToStore_PreservesTimestamp(t *testing.T) {
 		Timestamp: ts,
 	}}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if !result[0].CreatedAt.Equal(ts) {
 		t.Errorf("CreatedAt = %v, want %v", result[0].CreatedAt, ts)
 	}

@@ -1382,14 +1382,8 @@ func TestAppendMessage_AssignsStableUUID(t *testing.T) {
 		t.Fatalf("msgs[0].ID = %q, want a valid UUID v4", msgs[0].ID)
 	}
 
-	store1, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (1st): %v", err)
-	}
-	store2, err := short.EngineMessagesToStore(eng.Messages())
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
-	}
+	store1 := short.EngineMessagesToStore(msgs)
+	store2 := short.EngineMessagesToStore(eng.Messages())
 	if len(store1) != 1 || len(store2) != 1 {
 		t.Fatalf("store lengths = %d, %d, want 1, 1", len(store1), len(store2))
 	}
@@ -1445,14 +1439,8 @@ func TestSetMessages_AssignsStableUUID(t *testing.T) {
 		t.Errorf("IDs must be unique: %q, %q, %q", msgs[0].ID, msgs[1].ID, msgs[2].ID)
 	}
 
-	store1, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (1st): %v", err)
-	}
-	store2, err := short.EngineMessagesToStore(eng.Messages())
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
-	}
+	store1 := short.EngineMessagesToStore(msgs)
+	store2 := short.EngineMessagesToStore(eng.Messages())
 	for i := range store1 {
 		if store1[i].UUID != store2[i].UUID {
 			t.Errorf("store[%d] UUIDs differ: %q vs %q", i, store1[i].UUID, store2[i].UUID)
@@ -1529,14 +1517,8 @@ func TestRunCompact_BoundaryMessagesHaveStableUUID(t *testing.T) {
 		t.Error("msgs[0] should have FlagCompactSummary (boundary message)")
 	}
 
-	store1, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (1st): %v", err)
-	}
-	store2, err := short.EngineMessagesToStore(eng.Messages())
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore (2nd): %v", err)
-	}
+	store1 := short.EngineMessagesToStore(msgs)
+	store2 := short.EngineMessagesToStore(eng.Messages())
 	for i := range store1 {
 		if store1[i].UUID != store2[i].UUID {
 			t.Errorf("store[%d] UUIDs differ across calls: %q vs %q — re-persist after compact would create duplicate DB rows", i, store1[i].UUID, store2[i].UUID)

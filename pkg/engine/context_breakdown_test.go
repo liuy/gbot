@@ -906,7 +906,7 @@ func TestEstimateSystemTools_NilToolSearch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildDetails — attachment + top-5 truncation
+// buildDetails — attachment bucketing and by-type breakdowns
 // ---------------------------------------------------------------------------
 
 func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
@@ -914,18 +914,26 @@ func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
-	// Create 6 different attachment types to test truncation at top-5
+	// Six distinct attachment types: every one keeps its own bucket (TS neither
+	// collapses nor truncates attachmentsByType). Descending prompt sizes make
+	// the tokens-desc order deterministic.
+	prompts := []string{
+		strings.Repeat("alpha ", 60),
+		strings.Repeat("beta ", 45),
+		strings.Repeat("gamma ", 30),
+		strings.Repeat("delta ", 20),
+		strings.Repeat("eps ", 12),
+		"tiny",
+	}
+	names := []types.AttachmentType{"doc", "image", "video", "audio", "code", "patch"}
 	e.messages = []types.Message{}
-	for i := range 6 {
+	for i, p := range prompts {
 		e.messages = append(e.messages, types.Message{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{
 				{Type: types.ContentTypeText, Text: "msg"},
 			},
-			Attachment: &types.Attachment{
-				Type:   types.AttachmentTypeQueued,
-				Prompt: fmt.Sprintf("attachment %d with some content", i),
-			},
+			Attachment: &types.Attachment{Type: names[i], Prompt: p},
 		})
 	}
 	e.ContextTokens = 20_000
@@ -934,11 +942,23 @@ func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
 	if bd.MessageBreakdown == nil {
 		t.Fatal("MessageBreakdown is nil")
 	}
-	if len(bd.MessageBreakdown.AttachmentsByType) > 5 {
-		t.Errorf("AttachmentsByType should be truncated to 5, got %d", len(bd.MessageBreakdown.AttachmentsByType))
+	att := bd.MessageBreakdown.AttachmentsByType
+	if len(att) != len(prompts) {
+		t.Fatalf("AttachmentsByType = %d entries, want %d: %+v", len(att), len(prompts), att)
 	}
-	if bd.MessageBreakdown.AttachmentTokens == 0 {
-		t.Error("AttachmentTokens should be > 0")
+	wantSum := 0
+	for i, p := range prompts {
+		want := e.EstimateTokensCalibrated(p)
+		wantSum += want
+		if att[i].Name != string(names[i]) {
+			t.Errorf("bucket %d name = %q, want %q", i, att[i].Name, string(names[i]))
+		}
+		if att[i].Tokens != want {
+			t.Errorf("bucket %q tokens = %d, want %d", names[i], att[i].Tokens, want)
+		}
+	}
+	if bd.MessageBreakdown.AttachmentTokens != wantSum {
+		t.Errorf("AttachmentTokens = %d, want %d", bd.MessageBreakdown.AttachmentTokens, wantSum)
 	}
 }
 
@@ -966,24 +986,27 @@ func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
 	}
 }
 
-func TestContextBreakdown_BuildDetails_MultipleToolCallsTruncation(t *testing.T) {
+func TestContextBreakdown_BuildDetails_MultipleToolCallsAllKept(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("x")
-	// Create messages with 7 different tool call types to test top-5 truncation
+	// Seven tool calls with strictly increasing input sizes: every bucket
+	// must survive (no top-N slice) in descending call+result order.
 	var msgs []types.Message
 	for i := range 7 {
+		input := json.RawMessage(`{"p":"` + strings.Repeat("x", i*40) + `"}`)
+		id := fmt.Sprintf("tu-%d", i)
 		msgs = append(msgs,
 			types.Message{
 				Role: types.RoleAssistant,
 				Content: []types.ContentBlock{
-					{Name: fmt.Sprintf("Tool%d", i), Type: types.ContentTypeToolUse, Input: json.RawMessage(`{}`)},
+					{Name: fmt.Sprintf("Tool%d", i), ID: id, Type: types.ContentTypeToolUse, Input: input},
 				},
 			},
 			types.Message{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{
-					{Type: types.ContentTypeToolResult, Content: json.RawMessage(`"ok"`)},
+					{Type: types.ContentTypeToolResult, ToolUseID: id, Content: json.RawMessage(`"ok"`)},
 				},
 			},
 		)
@@ -995,8 +1018,13 @@ func TestContextBreakdown_BuildDetails_MultipleToolCallsTruncation(t *testing.T)
 	if bd.MessageBreakdown == nil {
 		t.Fatal("MessageBreakdown is nil")
 	}
-	if len(bd.MessageBreakdown.ToolCallsByType) > 5 {
-		t.Errorf("ToolCallsByType should be truncated to 5, got %d", len(bd.MessageBreakdown.ToolCallsByType))
+	got := make([]string, 0, len(bd.MessageBreakdown.ToolCallsByType))
+	for _, tc := range bd.MessageBreakdown.ToolCallsByType {
+		got = append(got, tc.Name)
+	}
+	want := []string{"Tool6", "Tool5", "Tool4", "Tool3", "Tool2", "Tool1", "Tool0"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ToolCallsByType = %v, want %v (all kept, sorted desc)", got, want)
 	}
 }
 
@@ -1004,7 +1032,7 @@ func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	raw := strings.Repeat("word ", 500) // ~500 tokens
-	sections := (&Engine{}).estimateSystemPromptSections(raw, tmpDir, "", nil, "")
+	sections := (&Engine{}).estimateSystemPromptSections(raw, tmpDir, "", nil)
 	if sections.base < 400 {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
@@ -1809,10 +1837,10 @@ func TestEstimateComponents_Exact(t *testing.T) {
 				Content:    []types.ContentBlock{types.NewTextBlock(userText)},
 				Attachment: &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: att1}},
 			{Role: types.RoleAssistant, Content: []types.ContentBlock{
-				{Type: types.ContentTypeToolUse, Name: "Bash", Input: json.RawMessage(toolIn)},
+				{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(toolIn)},
 			}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{
-				{Type: types.ContentTypeToolResult, Content: json.RawMessage(toolOut)},
+				{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(toolOut)},
 			}},
 			// A skipped role placed before the last message: dropping the
 			// filter or breaking out of the loop both lose the tail.
@@ -1862,10 +1890,10 @@ func TestEstimateComponents_Exact(t *testing.T) {
 	if mb.AssistantTextTokens != 0 {
 		t.Errorf("AssistantTextTokens = %d, want 0", mb.AssistantTextTokens)
 	}
-	if want := []AttachmentByType{{Name: "file", Tokens: a1 + a2}}; !slices.Equal(mb.AttachmentsByType, want) {
+	if want := []AttachmentByType{{Name: "queued_item", Tokens: a1 + a2}}; !slices.Equal(mb.AttachmentsByType, want) {
 		t.Errorf("AttachmentsByType = %v, want %v", mb.AttachmentsByType, want)
 	}
-	if want := []ToolCallByType{{Name: "Bash", CallTokens: call, ResultTokens: 0}}; !slices.Equal(mb.ToolCallsByType, want) {
+	if want := []ToolCallByType{{Name: "Bash", CallTokens: call, ResultTokens: result}}; !slices.Equal(mb.ToolCallsByType, want) {
 		t.Errorf("ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
 	}
 }
@@ -1890,7 +1918,7 @@ func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	}
 	skillListing := "- alpha: first skill\n- beta: second skill"
 	raw := "You are a test assistant with a long system prompt for estimation."
-	got := e.estimateSystemPromptSections(raw, dir, skillListing, tools, "")
+	got := e.estimateSystemPromptSections(raw, dir, skillListing, tools)
 
 	wantBase := e.EstimateTokensCalibrated(raw)
 	wantSkill := e.EstimateTokensCalibrated(skillListing)
@@ -1918,7 +1946,7 @@ func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 	t.Parallel()
 	got := (&Engine{}).estimateSystemPromptSections("", t.TempDir(), "- skill: x", map[string]tool.Tool{
 		"Bash": &stubTool{name: "Bash", prompt: "Run a shell command."},
-	}, "")
+	})
 	if got != (sysPromptSections{}) {
 		t.Errorf("sections = %+v, want the zero value when the raw prompt is empty", got)
 	}
@@ -1926,7 +1954,7 @@ func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 
 func TestEstimateSystemPromptSections_SkillListingEmpty(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("prompt text here", t.TempDir(), "", nil, "")
+	got := (&Engine{}).estimateSystemPromptSections("prompt text here", t.TempDir(), "", nil)
 	if got.skill != 0 {
 		t.Errorf("skill = %d, want 0 for an empty listing", got.skill)
 	}
@@ -2094,9 +2122,10 @@ func TestClassifyMessageBlock_Exact(t *testing.T) {
 	user := types.Message{Role: types.RoleUser}
 
 	mb := &MessageBreakdown{}
-	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Bash"}, 10, mb)
-	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Bash"}, 7, mb)
-	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Read"}, 5, mb)
+	ta := newToolAttribution(nil)
+	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Bash"}, 10, mb, ta)
+	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Bash"}, 7, mb, ta)
+	classifyMessageBlock(assistant, types.ContentBlock{Type: types.ContentTypeToolUse, Name: "Read"}, 5, mb, ta)
 	if mb.ToolCallTokens != 22 {
 		t.Errorf("ToolCallTokens = %d, want 22", mb.ToolCallTokens)
 	}
@@ -2106,29 +2135,42 @@ func TestClassifyMessageBlock_Exact(t *testing.T) {
 	}
 
 	mb = &MessageBreakdown{}
-	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeToolResult}, 12, mb)
-	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeToolResult}, 5, mb)
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeToolResult, ToolUseID: "tu-absent"}, 12, mb, ta)
+	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeToolResult}, 5, mb, ta)
+	ta.merge(mb)
 	if mb.ToolResultTokens != 17 {
 		t.Errorf("tool result ToolResultTokens = %d, want 17 (accumulated)", mb.ToolResultTokens)
 	}
-
-	mb = &MessageBreakdown{}
-	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagMeta}, types.NewTextBlock("x"), 9, mb)
-	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagMeta}, types.NewTextBlock("y"), 6, mb)
-	if mb.ToolResultTokens != 15 || mb.UserTextTokens != 0 {
-		t.Errorf("meta message: ToolResultTokens=%d UserTextTokens=%d, want 15/0", mb.ToolResultTokens, mb.UserTextTokens)
+	// The empty attribution map makes both results orphans: TS (:825-827)
+	// attributes them to "unknown", and the merge runs after the scan.
+	if want := []ToolCallByType{{Name: "unknown", CallTokens: 0, ResultTokens: 17}}; !slices.Equal(mb.ToolCallsByType, want) {
+		t.Errorf("orphan ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
 	}
 
 	mb = &MessageBreakdown{}
-	classifyMessageBlock(assistant, types.NewTextBlock("x"), 4, mb)
-	classifyMessageBlock(assistant, types.NewTextBlock("y"), 6, mb)
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagMeta}, types.NewTextBlock("x"), 9, mb, ta)
+	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagMeta}, types.NewTextBlock("y"), 6, mb, ta)
+	if mb.ToolResultTokens != 15 || mb.UserTextTokens != 0 {
+		t.Errorf("meta message: ToolResultTokens=%d UserTextTokens=%d, want 15/0", mb.ToolResultTokens, mb.UserTextTokens)
+	}
+	if len(mb.ToolCallsByType) != 0 {
+		t.Errorf("meta message buckets = %v, want none", mb.ToolCallsByType)
+	}
+
+	mb = &MessageBreakdown{}
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(assistant, types.NewTextBlock("x"), 4, mb, ta)
+	classifyMessageBlock(assistant, types.NewTextBlock("y"), 6, mb, ta)
 	if mb.AssistantTextTokens != 10 {
 		t.Errorf("AssistantTextTokens = %d, want 10 (accumulated)", mb.AssistantTextTokens)
 	}
 
 	mb = &MessageBreakdown{}
-	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeImage}, 6, mb)
-	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeVideo}, 3, mb)
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeImage}, 6, mb, ta)
+	classifyMessageBlock(user, types.ContentBlock{Type: types.ContentTypeVideo}, 3, mb, ta)
 	if mb.AttachmentTokens != 9 {
 		t.Errorf("AttachmentTokens = %d, want 9 (image+video)", mb.AttachmentTokens)
 	}
@@ -2137,13 +2179,15 @@ func TestClassifyMessageBlock_Exact(t *testing.T) {
 	}
 
 	mb = &MessageBreakdown{}
-	classifyMessageBlock(user, types.NewTextBlock("x"), 8, mb)
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(user, types.NewTextBlock("x"), 8, mb, ta)
 	if mb.UserTextTokens != 8 {
 		t.Errorf("UserTextTokens = %d, want 8", mb.UserTextTokens)
 	}
 
 	mb = &MessageBreakdown{}
-	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagCompactSummary}, types.NewTextBlock("x"), 11, mb)
+	ta = newToolAttribution(nil)
+	classifyMessageBlock(types.Message{Role: types.RoleUser, Flags: types.FlagCompactSummary}, types.NewTextBlock("x"), 11, mb, ta)
 	if mb.ToolCallTokens != 0 || mb.ToolResultTokens != 0 || mb.AttachmentTokens != 0 ||
 		mb.AssistantTextTokens != 0 || mb.UserTextTokens != 0 ||
 		len(mb.ToolCallsByType) != 0 || len(mb.AttachmentsByType) != 0 {
@@ -2415,7 +2459,7 @@ func TestBuildDetails_MessageBreakdownRoles(t *testing.T) {
 	if mb.AttachmentTokens != a1+a2 {
 		t.Errorf("AttachmentTokens = %d, want %d", mb.AttachmentTokens, a1+a2)
 	}
-	wantAttach := []AttachmentByType{{Name: "file", Tokens: a1 + a2}}
+	wantAttach := []AttachmentByType{{Name: "queued_item", Tokens: a1 + a2}}
 	if !slices.Equal(mb.AttachmentsByType, wantAttach) {
 		t.Errorf("AttachmentsByType = %v, want %v", mb.AttachmentsByType, wantAttach)
 	}
@@ -2433,13 +2477,13 @@ func TestBuildDetails_MessageBreakdownRoles(t *testing.T) {
 	}
 }
 
-func TestBuildDetails_ToolCallsSortedTopFive(t *testing.T) {
+func TestBuildDetails_ToolCallsSortedAllKept(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	// Seven tool calls with strictly increasing call tokens; the top five by
-	// call tokens must survive, in descending order.
+	// Seven tool calls with strictly increasing call tokens; all buckets must
+	// survive in descending order (TS sorts without a top-N slice).
 	var messages []types.Message
-	want := make([]string, 0, 5)
+	want := make([]string, 0, 7)
 	for i := range 7 {
 		input := json.RawMessage(`{"p":"` + strings.Repeat("x", i*40) + `"}`)
 		messages = append(messages, types.Message{
@@ -2454,7 +2498,7 @@ func TestBuildDetails_ToolCallsSortedTopFive(t *testing.T) {
 	for _, tc := range ds.messageBreakdown.ToolCallsByType {
 		got = append(got, tc.Name)
 	}
-	for i := 6; i >= 2; i-- {
+	for i := 6; i >= 0; i-- {
 		want = append(want, fmt.Sprintf("Tool%d", i))
 	}
 	if !slices.Equal(got, want) {
@@ -2823,11 +2867,38 @@ func TestBuildGrid_SingleTokenReservedKeepsSquare(t *testing.T) {
 	}
 }
 
-func TestBuildDetails_ToolCallsSixTruncateToFive(t *testing.T) {
+// TestBuildGrid_ReservedOvershootClampsNegativeShare pins the negative-share
+// clamp of the overflow rescale. Every reserved category keeps a minimum
+// square, so 101 of them overshoot the 100-square grid and the content cap
+// goes negative; the rescale then hands the content category a negative
+// share. It must land on zero and pick up the minimum square — a negative
+// count would silently delete the category from the grid.
+func TestBuildGrid_ReservedOvershootClampsNegativeShare(t *testing.T) {
+	t.Parallel()
+	cats := []ContextCategory{{Name: "Alpha", Tokens: 1_000, Color: "1"}}
+	for range 101 {
+		cats = append(cats, ContextCategory{
+			Name: "Autocompact buffer", Tokens: 1, Color: ColorReserved, IsReserved: true})
+	}
+	cats = append(cats, ContextCategory{Name: "Free space", Tokens: 1, Color: ColorFree, IsFree: true})
+	// perSquare = 1102/100 = 11.02 → Alpha 91 squares, reserved 101 squares,
+	// cap = 100-101 = -1 → rescale 91×(-1/91) = -1 → clamped to 0 → minimum
+	// square 1. Free space absorbs max(100-1-101, 0) = 0 squares.
+	want := []string{
+		"rows=5",
+		"Alpha|1|f0.011019999999999999|fillfalse|1",
+		"Autocompact buffer|" + ColorReserved + "|f1|filltrue|99",
+	}
+	if got := rleGrid(BuildGrid(cats, 200_000)); !slices.Equal(got, want) {
+		t.Errorf("grid = %v, want %v", got, want)
+	}
+}
+
+func TestBuildDetails_ToolCallsSixAllKept(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	// Six distinct call sizes: the truncation threshold is >5, so exactly one
-	// entry must be dropped.
+	// Six distinct call sizes: the TS source sorts by tokens without any
+	// top-N slice, so every bucket must survive in sorted order.
 	var messages []types.Message
 	for i := range 6 {
 		input := json.RawMessage(`{"p":"` + strings.Repeat("x", i*40) + `"}`)
@@ -2843,7 +2914,7 @@ func TestBuildDetails_ToolCallsSixTruncateToFive(t *testing.T) {
 	for _, tc := range ds.messageBreakdown.ToolCallsByType {
 		got = append(got, tc.Name)
 	}
-	want := []string{"Tool5", "Tool4", "Tool3", "Tool2", "Tool1"}
+	want := []string{"Tool5", "Tool4", "Tool3", "Tool2", "Tool1", "Tool0"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ToolCallsByType = %v, want %v", got, want)
 	}
@@ -2895,6 +2966,303 @@ func TestBuildDetails_EqualCallTokensKeepInsertionOrder(t *testing.T) {
 	want := []string{"ToolA", "ToolB"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ToolCallsByType order = %v, want %v", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tool_result attribution + call+result sort key (analyzeContext.ts:871-886,
+// :823-831, :1299-1325).
+// ---------------------------------------------------------------------------
+
+func TestBuildDetails_ToolResultAttribution(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		bashIn  = `{"command":"ls -la"}`
+		readIn  = `{"file_path":"/a/main.go"}`
+		bashOut = `"file1 file2 file3 file4 file5 file6"`
+		readOut = `"p"`
+	)
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(bashIn)},
+			{Type: types.ContentTypeToolUse, ID: "tu-2", Name: "Read", Input: json.RawMessage(readIn)},
+		}},
+		// Results arrive Read-first: that arrival order must neither open a new
+		// bucket nor move Read ahead of Bash.
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-2", Content: json.RawMessage(readOut)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(bashOut)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	mb := ds.messageBreakdown
+	bashCall := e.EstimateTokensCalibrated("Bash" + bashIn)
+	readCall := e.EstimateTokensCalibrated("Read" + readIn)
+	bashRes := e.EstimateTokensCalibrated(bashOut)
+	readRes := e.EstimateTokensCalibrated(readOut)
+	if !(bashCall+bashRes > readCall+readRes) {
+		t.Fatalf("fixture lost its point: sums out of order (bash %d+%d, read %d+%d)",
+			bashCall, bashRes, readCall, readRes)
+	}
+	want := []ToolCallByType{
+		{Name: "Bash", CallTokens: bashCall, ResultTokens: bashRes},
+		{Name: "Read", CallTokens: readCall, ResultTokens: readRes},
+	}
+	if !slices.Equal(mb.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
+	}
+	if mb.ToolCallTokens != bashCall+readCall {
+		t.Errorf("ToolCallTokens = %d, want %d", mb.ToolCallTokens, bashCall+readCall)
+	}
+	if mb.ToolResultTokens != bashRes+readRes {
+		t.Errorf("ToolResultTokens = %d, want %d", mb.ToolResultTokens, bashRes+readRes)
+	}
+}
+
+func TestBuildDetails_SortsToolBucketsByCallPlusResult(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	// HeavyCall has the larger call, LightCall the larger result. Sorting on
+	// call tokens alone would keep HeavyCall first; the TS key is the sum.
+	bigIn := json.RawMessage(`{"p":"` + strings.Repeat("x", 400) + `"}`)
+	smallIn := json.RawMessage(`{"p":"a"}`)
+	bigOut := `"ok"`
+	smallOut := `"` + strings.Repeat("y", 600) + `"`
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "HeavyCall", Input: bigIn},
+			{Type: types.ContentTypeToolUse, ID: "tu-2", Name: "LightCall", Input: smallIn},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(bigOut)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-2", Content: json.RawMessage(smallOut)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	heavyCall := e.EstimateTokensCalibrated("HeavyCall" + string(bigIn))
+	lightCall := e.EstimateTokensCalibrated("LightCall" + string(smallIn))
+	heavyRes := e.EstimateTokensCalibrated(bigOut)
+	lightRes := e.EstimateTokensCalibrated(smallOut)
+	if !(heavyCall > lightCall && lightCall+lightRes > heavyCall+heavyRes) {
+		t.Fatalf("fixture lost its point: heavy call %d+%d, light call %d+%d",
+			heavyCall, heavyRes, lightCall, lightRes)
+	}
+	want := []ToolCallByType{
+		{Name: "LightCall", CallTokens: lightCall, ResultTokens: lightRes},
+		{Name: "HeavyCall", CallTokens: heavyCall, ResultTokens: heavyRes},
+	}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v (sorted by call+result)", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestBuildDetails_OrphanToolResultBucketsAsUnknown(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		callIn  = `{"command":"ls -la"}`
+		orphanA = `"output whose tool_use_id matches no tool_use"`
+		orphanB = `"output with no tool_use_id field"`
+	)
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-missing", Content: json.RawMessage(orphanA)},
+			{Type: types.ContentTypeToolResult, Content: json.RawMessage(orphanB)},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(callIn)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	call := e.EstimateTokensCalibrated("Bash" + callIn)
+	orphan := e.EstimateTokensCalibrated(orphanA) + e.EstimateTokensCalibrated(orphanB)
+	// TS (:825-827) sends every unmatched tool_use_id — missing field or
+	// unknown id — to the "unknown" bucket; it is not dropped.
+	want := []ToolCallByType{
+		{Name: "unknown", CallTokens: 0, ResultTokens: orphan},
+		{Name: "Bash", CallTokens: call, ResultTokens: 0},
+	}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+	if ds.messageBreakdown.ToolResultTokens != orphan {
+		t.Errorf("ToolResultTokens = %d, want %d", ds.messageBreakdown.ToolResultTokens, orphan)
+	}
+}
+
+func TestBuildDetails_ToolResultIgnoresNonToolUseIDs(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const out = `"some tool output"`
+	// Only tool_use blocks seed the id→name map (analyzeContext.ts:876-882):
+	// a non-tool_use block that happens to carry the same ID must not become a
+	// mapping target, so the result stays an orphan.
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, ID: "tu-x", Name: "Ghost", Text: "prose"},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-x", Content: json.RawMessage(out)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	want := []ToolCallByType{{
+		Name:         "unknown",
+		CallTokens:   0,
+		ResultTokens: e.EstimateTokensCalibrated(out),
+	}}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestBuildDetails_PrescanSeedsFromAssistantMessagesOnly(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const out = `"tool output body"`
+	// The pre-scan walks assistant messages only (analyzeContext.ts:874). A
+	// tool_use parked in some other role seeds nothing, and the block is not
+	// counted either — the result stays an orphan.
+	messages := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(out)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	want := []ToolCallByType{{
+		Name:         "unknown",
+		CallTokens:   0,
+		ResultTokens: e.EstimateTokensCalibrated(out),
+	}}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestBuildDetails_ToolResultWithoutIDNeverMatchesEmptyID(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		callIn  = `{"command":"ls"}`
+		callOut = `"file1 file2"`
+	)
+	// A tool_use with no id never enters the map (analyzeContext.ts:879), so a
+	// tool_result with no tool_use_id cannot pair with it: the result stays an
+	// orphan even though it is the only candidate call in the transcript.
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, Name: "Bash", Input: json.RawMessage(callIn)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, Content: json.RawMessage(callOut)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	want := []ToolCallByType{
+		{Name: "Bash", CallTokens: e.EstimateTokensCalibrated("Bash" + callIn), ResultTokens: 0},
+		{Name: "unknown", CallTokens: 0, ResultTokens: e.EstimateTokensCalibrated(callOut)},
+	}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestBuildDetails_ToolResultResolvesToolUseLaterInHistory(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		callIn  = `{"file_path":"/a/new.go"}`
+		callOut = `"file written"`
+	)
+	// The id→name map is built by a pre-scan over the whole history
+	// (:871-886), so a result sitting before its own tool_use still resolves
+	// instead of falling into "unknown".
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-9", Content: json.RawMessage(callOut)},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-9", Name: "Write", Input: json.RawMessage(callIn)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	want := []ToolCallByType{{
+		Name:         "Write",
+		CallTokens:   e.EstimateTokensCalibrated("Write" + callIn),
+		ResultTokens: e.EstimateTokensCalibrated(callOut),
+	}}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestBuildDetails_ToolUseWithoutNameSharesUnknownBucket(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		callIn  = `{"command":"ls -la"}`
+		callOut = `"file1 file2"`
+	)
+	// block.name || 'unknown' (:793) feeds both the call bucket and the
+	// id→name map, so an unnamed call and its result merge into one "unknown"
+	// bucket instead of splitting between "" and "unknown".
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Input: json.RawMessage(callIn)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(callOut)},
+		}},
+	}
+	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	want := []ToolCallByType{{
+		Name:         "unknown",
+		CallTokens:   e.EstimateTokensCalibrated(callIn),
+		ResultTokens: e.EstimateTokensCalibrated(callOut),
+	}}
+	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
+		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
+	}
+}
+
+func TestEstimateComponents_ToolResultAttribution(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	const (
+		bashIn  = `{"command":"ls -la"}`
+		readIn  = `{"file_path":"/a/main.go"}`
+		bashOut = `"file1 file2 file3"`
+		readOut = `"p"`
+		orphan  = `"output whose tool_use_id matches nothing"`
+	)
+	messages := []types.Message{
+		// Results scanned before their calls: the estimate path emits buckets
+		// in TS map-merge order — every call bucket first, then result-only
+		// buckets — because results are merged after the scan.
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-2", Content: json.RawMessage(readOut)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-missing", Content: json.RawMessage(orphan)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(bashOut)},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(bashIn)},
+			{Type: types.ContentTypeToolUse, ID: "tu-2", Name: "Read", Input: json.RawMessage(readIn)},
+		}},
+	}
+	mb := e.estimateComponents(
+		sysPromptSections{}, nil, nil, nil, nil, messages, nil, 0,
+	).MessagesByCategory
+	want := []ToolCallByType{
+		{Name: "Bash", CallTokens: e.EstimateTokensCalibrated("Bash" + bashIn), ResultTokens: e.EstimateTokensCalibrated(bashOut)},
+		{Name: "Read", CallTokens: e.EstimateTokensCalibrated("Read" + readIn), ResultTokens: e.EstimateTokensCalibrated(readOut)},
+		{Name: "unknown", CallTokens: 0, ResultTokens: e.EstimateTokensCalibrated(orphan)},
+	}
+	if !slices.Equal(mb.ToolCallsByType, want) {
+		t.Errorf("estimate ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
 	}
 }
 
@@ -3048,19 +3416,32 @@ func TestCB_SystemToolsSkipsMCPWithoutStoppingTheLoop(t *testing.T) {
 	}
 }
 
-func TestCB_AttachmentBucketIsSingleFileEntry(t *testing.T) {
-	// Every attachment lands in one "file" bucket, so the AttachmentsByType sort
-	// and top-5 truncation in buildDetails can never see more than one entry.
+func TestCB_AttachmentBucketsByRealType(t *testing.T) {
+	// The bucket key is the attachment's real type; repeated types accumulate
+	// and an empty type falls back to "unknown" (TS: msg.attachment.type ||
+	// 'unknown'). Prompt sizes keep the tokens-desc order unambiguous.
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("x")
-	var msgs []types.Message
-	for i := range 8 {
-		msgs = append(msgs, types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock("msg")},
-			Attachment: &types.Attachment{Type: types.AttachmentTypeQueued,
-				Prompt: fmt.Sprintf("attachment %d with distinct content", i)},
-		})
+	const (
+		queued1 = "note alpha note beta note gamma note delta note eps note zeta"
+		queued2 = "note alpha note beta note gamma"
+		doc1    = "document body with a distinct length from the queued notes"
+		untyped = "no type set"
+	)
+	msgs := []types.Message{
+		{Role: types.RoleUser,
+			Content:    []types.ContentBlock{types.NewTextBlock("msg")},
+			Attachment: &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: queued1}},
+		{Role: types.RoleUser,
+			Content:    []types.ContentBlock{types.NewTextBlock("msg")},
+			Attachment: &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: queued2}},
+		{Role: types.RoleUser,
+			Content:    []types.ContentBlock{types.NewTextBlock("msg")},
+			Attachment: &types.Attachment{Type: "doc", Prompt: doc1}},
+		// Untyped attachment: the "unknown" fallback bucket.
+		{Role: types.RoleUser,
+			Content:    []types.ContentBlock{types.NewTextBlock("msg")},
+			Attachment: &types.Attachment{Prompt: untyped}},
 	}
 	e.messages = msgs
 	e.ContextTokens = 20_000
@@ -3070,16 +3451,93 @@ func TestCB_AttachmentBucketIsSingleFileEntry(t *testing.T) {
 		t.Fatal("MessageBreakdown is nil")
 	}
 	att := bd.MessageBreakdown.AttachmentsByType
-	if len(att) != 1 {
-		t.Fatalf("AttachmentsByType = %d entries, want 1: %+v", len(att), att)
+	want := []AttachmentByType{
+		{Name: "queued_item", Tokens: e.EstimateTokensCalibrated(queued1) + e.EstimateTokensCalibrated(queued2)},
+		{Name: "doc", Tokens: e.EstimateTokensCalibrated(doc1)},
+		{Name: "unknown", Tokens: e.EstimateTokensCalibrated(untyped)},
 	}
-	if att[0].Name != "file" {
-		t.Errorf("attachment bucket name = %q, want %q", att[0].Name, "file")
+	if !slices.Equal(att, want) {
+		t.Errorf("AttachmentsByType = %v, want %v", att, want)
 	}
-	if att[0].Tokens <= 0 {
-		t.Errorf("attachment bucket tokens = %d, want > 0", att[0].Tokens)
+	wantSum := want[0].Tokens + want[1].Tokens + want[2].Tokens
+	if bd.MessageBreakdown.AttachmentTokens != wantSum {
+		t.Errorf("AttachmentTokens = %d, want %d", bd.MessageBreakdown.AttachmentTokens, wantSum)
 	}
-	if bd.MessageBreakdown.AttachmentTokens <= 0 {
-		t.Errorf("AttachmentTokens = %d, want > 0", bd.MessageBreakdown.AttachmentTokens)
+}
+
+func TestCB_AttachmentDescendingRegardlessOfArrival(t *testing.T) {
+	// Buckets must come out tokens-desc even when arrival order is ascending:
+	// dropping the sort would leave the smallest bucket first.
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	const (
+		small = "tiny body"
+		big   = "much longer attachment body that clearly costs more tokens than the tiny one"
+	)
+	msgs := []types.Message{
+		{Role: types.RoleUser, Attachment: &types.Attachment{Type: "memo", Prompt: small}},
+		{Role: types.RoleUser, Attachment: &types.Attachment{Type: "doc", Prompt: big}},
+	}
+	e.messages = msgs
+	e.ContextTokens = 20_000
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	want := []AttachmentByType{
+		{Name: "doc", Tokens: e.EstimateTokensCalibrated(big)},
+		{Name: "memo", Tokens: e.EstimateTokensCalibrated(small)},
+	}
+	if got := bd.MessageBreakdown.AttachmentsByType; !slices.Equal(got, want) {
+		t.Errorf("AttachmentsByType = %v, want tokens-desc %v", got, want)
+	}
+}
+
+func TestCB_AttachmentTiesKeepInsertionOrder(t *testing.T) {
+	// TS Array.prototype.sort is stable; with equal bucket tokens the display
+	// order must follow message arrival, not sort internals.
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	const shared = "identical prompt body for both buckets"
+	msgs := []types.Message{
+		{Role: types.RoleUser, Attachment: &types.Attachment{Type: "zeta", Prompt: shared}},
+		{Role: types.RoleUser, Attachment: &types.Attachment{Type: "alpha", Prompt: shared}},
+	}
+	e.messages = msgs
+	e.ContextTokens = 20_000
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	tk := e.EstimateTokensCalibrated(shared)
+	want := []AttachmentByType{{Name: "zeta", Tokens: tk}, {Name: "alpha", Tokens: tk}}
+	if got := bd.MessageBreakdown.AttachmentsByType; !slices.Equal(got, want) {
+		t.Errorf("AttachmentsByType = %v, want tie order %v", got, want)
+	}
+}
+
+func TestEstimateComponents_AttachmentMultiType(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	const (
+		a1 = "queued attachment prompt body"
+		a2 = "document attachment prompt body longer"
+	)
+	mb := e.estimateComponents(
+		sysPromptSections{}, nil, nil, nil, nil,
+		[]types.Message{
+			{Role: types.RoleUser, Attachment: &types.Attachment{Type: "queued_item", Prompt: a1}},
+			{Role: types.RoleUser, Attachment: &types.Attachment{Type: "doc", Prompt: a2}},
+		},
+		nil, 0,
+	).MessagesByCategory
+	// The estimate path emits buckets in arrival order; only buildDetails
+	// sorts for display.
+	want := []AttachmentByType{
+		{Name: "queued_item", Tokens: e.EstimateTokensCalibrated(a1)},
+		{Name: "doc", Tokens: e.EstimateTokensCalibrated(a2)},
+	}
+	if !slices.Equal(mb.AttachmentsByType, want) {
+		t.Errorf("AttachmentsByType = %v, want %v", mb.AttachmentsByType, want)
 	}
 }

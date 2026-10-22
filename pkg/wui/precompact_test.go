@@ -42,10 +42,7 @@ func seedPreCompactStore(t *testing.T, sid string, pre int, injectSummary bool, 
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 			Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("pre-%d", i))},
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore pre %d: %v", i, err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(sid, ts[0]); err != nil {
 			t.Fatalf("AppendMessage pre %d: %v", i, err)
 		}
@@ -61,10 +58,7 @@ func seedPreCompactStore(t *testing.T, sid string, pre int, injectSummary bool, 
 			Content:   []types.ContentBlock{types.NewTextBlock("summary")},
 			Flags:     types.FlagCompactSummary,
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore summary: %v", err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(sid, ts[0]); err != nil {
 			t.Fatalf("AppendMessage summary: %v", err)
 		}
@@ -86,10 +80,7 @@ func seedPreCompactStore(t *testing.T, sid string, pre int, injectSummary bool, 
 			Timestamp: base.Add(time.Duration(pre+i+1) * time.Second),
 			Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("post-%d", i))},
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore post %d: %v", i, err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(sid, ts[0]); err != nil {
 			t.Fatalf("AppendMessage post %d: %v", i, err)
 		}
@@ -162,10 +153,7 @@ func TestPreCompactMessages_NoBoundary(t *testing.T) {
 		Role:    types.RoleUser,
 		Content: []types.ContentBlock{types.NewTextBlock("hi")},
 	}
-	ts, err := short.EngineMessagesToStore([]types.Message{em})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore lonely: %v", err)
-	}
+	ts := short.EngineMessagesToStore([]types.Message{em})
 	if err := store.AppendMessage(noBoundary, ts[0]); err != nil {
 		t.Fatalf("AppendMessage lonely: %v", err)
 	}
@@ -259,10 +247,7 @@ func seedMultiEpochStore(t *testing.T, sid string, epochMsgs []int, post int) *s
 				Timestamp: nextTime(),
 				Content:   []types.ContentBlock{types.NewTextBlock(id)},
 			}
-			ts, err := short.EngineMessagesToStore([]types.Message{em})
-			if err != nil {
-				t.Fatalf("EngineMessagesToStore %s: %v", id, err)
-			}
+			ts := short.EngineMessagesToStore([]types.Message{em})
 			if err := store.AppendMessage(sid, ts[0]); err != nil {
 				t.Fatalf("AppendMessage %s: %v", id, err)
 			}
@@ -285,10 +270,7 @@ func seedMultiEpochStore(t *testing.T, sid string, epochMsgs []int, post int) *s
 			Timestamp: nextTime(),
 			Content:   []types.ContentBlock{types.NewTextBlock(id)},
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore %s: %v", id, err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(sid, ts[0]); err != nil {
 			t.Fatalf("AppendMessage %s: %v", id, err)
 		}

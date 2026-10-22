@@ -152,10 +152,7 @@ func newManualCompactSMCase(t *testing.T) manualCompactCaseFixture {
 			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat(fmt.Sprintf("msg%d ", i), 600))},
 		})
 	}
-	storeMsgs, sErr := short.EngineMessagesToStore(msgs)
-	if sErr != nil {
-		t.Fatalf("convert messages: %v", sErr)
-	}
+	storeMsgs := short.EngineMessagesToStore(msgs)
 	for i, m := range storeMsgs {
 		if i > 0 {
 			m.ParentUUID = storeMsgs[i-1].UUID

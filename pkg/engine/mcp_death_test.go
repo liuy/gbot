@@ -357,17 +357,19 @@ func TestRemoteCallReconnectFailureSurfaces(t *testing.T) {
 		t.Errorf("error must surface dead connection + failed reconnect state, got: %v", err)
 	}
 	// The first failure alone can be a bare transport error that never entered
-	// the dead-connection branch. By now the dead connection has been evicted
-	// or replaced by a failed entry, so the registry lookup itself must route
-	// through reconnect — a bare dial error here would mean the eviction and
-	// reconnect bookkeeping never happened.
-	_, err2 := tool.Call(context.Background(), json.RawMessage(`{}`), nil)
-	if err2 == nil {
-		t.Fatal("second call against a permanently dead remote must fail")
+	// the dead-connection branch. The deterministic contract lives in registry
+	// state: after a confirmed dead connection the entry must no longer stand
+	// as connected — evicted or marked failed — which is what routes every
+	// later call through reconnect. Pinning the second call's error string
+	// instead is not deterministic: a background reconnect timer with jittered
+	// backoff may or may not have attempted a dial by then, so the second
+	// error legitimately surfaces either reconnect-shaped or fresh-dial
+	// refused.
+	conn, ok := reg.GetConnection("remote")
+	if ok && conn.ConnType() == "connected" {
+		t.Errorf("registry still marks the dead remote as connected after a failed call — eviction never ran")
 	}
-	if msg2 := err2.Error(); !strings.Contains(msg2, "reconnect") &&
-		!strings.Contains(msg2, "connection died") &&
-		!strings.Contains(msg2, "not connected") {
-		t.Errorf("second call must surface the reconnect path (evicted/failed registry entry), got: %v", err2)
+	if _, err2 := tool.Call(context.Background(), json.RawMessage(`{}`), nil); err2 == nil {
+		t.Fatal("second call against a permanently dead remote must fail")
 	}
 }

@@ -835,10 +835,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	}
 
 	// Persist messages and file history state
-	storeMsgs, err := short.EngineMessagesToStore(msgs1)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	storeMsgs := short.EngineMessagesToStore(msgs1)
 	for _, sm := range storeMsgs {
 		if err := store.AppendMessage(session.SessionID, sm); err != nil {
 			t.Fatalf("AppendMessage: %v", err)

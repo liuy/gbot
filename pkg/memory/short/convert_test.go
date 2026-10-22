@@ -13,10 +13,7 @@ func TestEngineMessagesToStore(t *testing.T) {
 	t.Parallel()
 
 	t.Run("empty input returns nil", func(t *testing.T) {
-		result, err := EngineMessagesToStore(nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		result := EngineMessagesToStore(nil)
 		if result != nil {
 			t.Errorf("expected nil, got %d items", len(result))
 		}
@@ -31,10 +28,7 @@ func TestEngineMessagesToStore(t *testing.T) {
 				Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			},
 		}
-		result, err := EngineMessagesToStore(msgs)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		result := EngineMessagesToStore(msgs)
 		if len(result) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(result))
 		}
@@ -53,10 +47,7 @@ func TestEngineMessagesToStore(t *testing.T) {
 		msgs := []types.Message{
 			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		}
-		result, err := EngineMessagesToStore(msgs)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		result := EngineMessagesToStore(msgs)
 		if result[0].UUID == "" {
 			t.Error("UUID should be auto-generated when empty")
 		}
@@ -78,10 +69,7 @@ func TestStoreMessageToEngine_ImageSourceRoundTrip(t *testing.T) {
 		Content: []types.ContentBlock{srcBlock},
 	}
 
-	storeMsgs, err := EngineMessagesToStore([]types.Message{engineMsg})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore error: %v", err)
-	}
+	storeMsgs := EngineMessagesToStore([]types.Message{engineMsg})
 	if len(storeMsgs) != 1 {
 		t.Fatalf("expected 1 store message, got %d", len(storeMsgs))
 	}
@@ -261,10 +249,7 @@ func TestEngineMessagesToStore_DegradesUnserializableMessage(t *testing.T) {
 		{ID: "a-ok", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore must never fail the batch: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 4 {
 		t.Fatalf("expected 4 store messages, got %d", len(result))
 	}
@@ -356,10 +341,7 @@ func TestEngineMessagesToStore_PairDegradationPropagatesThroughBatchedToolResult
 		},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore must never fail the batch: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 3 {
 		t.Fatalf("expected 3 store messages, got %d", len(result))
 	}
@@ -404,10 +386,7 @@ func TestEngineMessagesToStore_EmptyInputToolUsePersists(t *testing.T) {
 		},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 store messages, got %d", len(result))
 	}
@@ -468,10 +447,7 @@ func TestEngineMessagesToStore_TruncatedInputToolUsePersists(t *testing.T) {
 		},
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 store messages, got %d", len(result))
 	}
@@ -510,10 +486,7 @@ func TestEngineMessagesToStore_APIErrorMessageRoundTrip(t *testing.T) {
 		}(),
 	}
 
-	result, err := EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	result := EngineMessagesToStore(msgs)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 store messages, got %d", len(result))
 	}
@@ -549,10 +522,7 @@ func TestEngineMessagesToStore_PreservesDuration(t *testing.T) {
 		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 
-	storeMsgs, err := EngineMessagesToStore([]types.Message{em})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	storeMsgs := EngineMessagesToStore([]types.Message{em})
 	if len(storeMsgs) != 1 {
 		t.Fatalf("expected 1 store message, got %d", len(storeMsgs))
 	}

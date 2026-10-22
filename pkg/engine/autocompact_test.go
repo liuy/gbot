@@ -1204,10 +1204,7 @@ func newFindKeepFromHelper(t *testing.T, contextWindow int, msgs []types.Message
 	}
 	defer store.Close()
 	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: contextWindow, provider: &compactMockProvider{}})
-	shortMsgs, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		return 0
-	}
+	shortMsgs := short.EngineMessagesToStore(msgs)
 	return sc.findKeepFrom(shortMsgs)
 }
 
@@ -1351,10 +1348,7 @@ func TestEngineToShort_PreservesMetadata(t *testing.T) {
 	}
 
 	// Convert engine → short → back to engine (simulates compact round-trip)
-	shortMsgs, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortMsgs := short.EngineMessagesToStore(msgs)
 
 	// Verify short messages have metadata
 	for i, sm := range shortMsgs {
@@ -1392,10 +1386,7 @@ func TestEngineToShort_PreservesAttachmentFields(t *testing.T) {
 		Timestamp:   now,
 	}
 
-	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortMsgs := short.EngineMessagesToStore([]types.Message{msg})
 	if len(shortMsgs) != 1 {
 		t.Fatalf("expected 1 short message, got %d", len(shortMsgs))
 	}
@@ -1420,10 +1411,7 @@ func TestEngineToShort_PreservesFlagMeta(t *testing.T) {
 		Content: []types.ContentBlock{types.NewTextBlock("<command-message>skill</command-message>")},
 	}
 
-	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortMsgs := short.EngineMessagesToStore([]types.Message{msg})
 	sm := shortMsgs[0]
 	if sm.Metadata == "" {
 		t.Fatal("metadata lost after EngineMessagesToStore: FlagMeta not preserved")
@@ -2286,10 +2274,7 @@ func TestWholeTranscriptResultFields(t *testing.T) {
 	if !strings.Contains(res.Summary, "whole-transcript summary") {
 		t.Errorf("CompactResult.Summary = %q, want the LLM summary text", res.Summary)
 	}
-	shortMsgs, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortMsgs := short.EngineMessagesToStore(msgs)
 	wantPre := sc.estimateStoreTokens(shortMsgs)
 	if res.PreCompactTokens != wantPre {
 		t.Errorf("PreCompactTokens = %d, want %d (store-estimate basis)", res.PreCompactTokens, wantPre)
@@ -2481,10 +2466,7 @@ func TestRescaleOnlyWhenMeasuredExceedsBudget(t *testing.T) {
 	p := &ctxRecordingProvider{}
 	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-gate", contextWindow: 5 * before, provider: p})
 
-	shortMsgs, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	shortMsgs := short.EngineMessagesToStore(msgs)
 	if sc.estimateStoreTokens(shortMsgs) <= before {
 		t.Fatalf("fixture must estimate above the measured context for the split to matter")
 	}
@@ -2699,10 +2681,10 @@ func TestExtractTextToolResultSeparator(t *testing.T) {
 	}
 }
 
-// TestEngineMessagesToStoreNeverErrors pins the premise behind the dead
-// conversion-error branch in compact(): the converter degrades unserializable
-// messages instead of returning an error.
-func TestEngineMessagesToStoreNeverErrors(t *testing.T) {
+// TestEngineMessagesToStoreDegradesUnserializable pins the converter's
+// degrade-don't-fail contract (now enforced by its error-free signature):
+// messages with broken JSON still convert, degrading in place.
+func TestEngineMessagesToStoreDegradesUnserializable(t *testing.T) {
 	t.Parallel()
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -2712,10 +2694,7 @@ func TestEngineMessagesToStoreNeverErrors(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "t1", Content: json.RawMessage(`{"also":`)},
 		}},
 	}
-	stored, err := short.EngineMessagesToStore(msgs)
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore returned an error: %v", err)
-	}
+	stored := short.EngineMessagesToStore(msgs)
 	if len(stored) != 2 {
 		t.Fatalf("converted %d messages, want 2", len(stored))
 	}

@@ -8,7 +8,6 @@ package engine
 // Gracefully falls back to LLM compact when session memory is unavailable.
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
@@ -52,10 +51,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Determine how many recent messages to keep (reuse existing logic)
-	shortMsgs, err := short.EngineMessagesToStore(messages)
-	if err != nil {
-		return nil, fmt.Errorf("convert messages: %w", err)
-	}
+	shortMsgs := short.EngineMessagesToStore(messages)
 	keepFrom := c.rescaledKeepFrom(shortMsgs, beforeTokens)
 	if keepFrom >= len(shortMsgs) || keepFrom <= 1 {
 		return nil, nil

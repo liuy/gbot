@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1899,6 +1900,17 @@ func TestLoadMessages_ConvertError(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "convert messages: ") {
 		t.Errorf("LoadMessages error = %q, want prefix %q", err.Error(), "convert messages: ")
 	}
+	// The prefix and the role name are both still there with a %v verb, so only
+	// the unwrap chain pins the wrap. The cause must survive LoadMessages' %w
+	// layer so a classifier can reach the corrupt-record detail (which seq,
+	// which role) instead of re-parsing the joined context string.
+	cause := errors.Unwrap(err)
+	if cause == nil {
+		t.Fatalf("LoadMessages error = %v, want it to wrap the conversion cause", err)
+	}
+	if want := `unknown message role "bogus_role" in store message seq=1`; cause.Error() != want {
+		t.Errorf("unwrapped cause = %q, want %q", cause.Error(), want)
+	}
 	if msgs != nil {
 		t.Errorf("LoadMessages messages = %v, want nil on error", msgs)
 	}
@@ -1951,5 +1963,84 @@ func TestExtractUserTitle_TruncationBoundary(t *testing.T) {
 	if got := extractUserTitle([]types.Message{{Role: types.RoleUser,
 		Content: []types.ContentBlock{types.NewTextBlock(at201)}}}); got != want {
 		t.Errorf("extractUserTitle(201 chars) = %q len=%d, want 200 chars + ellipsis", got, len([]rune(got)))
+	}
+}
+
+// recordGate parks the goroutine emitting one matching record inside Handle,
+// letting a test inspect engine state at an exact mid-function point.
+type recordGate struct {
+	msg     string
+	arrived chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *recordGate) Enabled(context.Context, slog.Level) bool { return true }
+
+func (g *recordGate) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == g.msg {
+		g.once.Do(func() { close(g.arrived) })
+		<-g.release
+	}
+	return nil
+}
+
+func (g *recordGate) WithAttrs([]slog.Attr) slog.Handler { return g }
+func (g *recordGate) WithGroup(string) slog.Handler      { return g }
+
+// TestPersist_WriteLockHeldAcrossBody pins the mutual-exclusion contract of
+// PersistNewMessages: the write lock covers the entire body and is released
+// only at return. Turning the deferred Unlock into an immediate call would let
+// a concurrent SetMessages or rewind swap the message slice while the body is
+// still reading the uncommitted tail — a tear no single-threaded test can
+// observe, so the gate parks the persist goroutine on its final log record
+// (still under the lock) and probes the mutex from outside.
+func TestPersist_WriteLockHeldAcrossBody(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{CreateUserMessage("hello")})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	attachSlogCapture(t, &recordGate{
+		msg:     "PersistNewMessages: persisted messages",
+		arrived: arrived,
+		release: release,
+	})
+	openGate := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(openGate)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.PersistNewMessages()
+	}()
+
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("PersistNewMessages never emitted its final record — gate setup broken")
+	}
+
+	if eng.mu.TryLock() {
+		eng.mu.Unlock()
+		t.Fatal("write lock was free while PersistNewMessages was parked mid-body — Unlock must stay deferred to function exit")
+	}
+
+	openGate()
+	<-done
+
+	if got := eng.LastPersistedIdx(); got != 1 {
+		t.Errorf("lastPersistedIdx = %d, want 1 (parked persist completed)", got)
 	}
 }

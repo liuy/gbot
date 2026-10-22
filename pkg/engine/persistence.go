@@ -68,13 +68,10 @@ func (e *Engine) PersistNewMessages() {
 		// Non-prompt attachments (job notifications, reminders) stay ephemeral.
 	}
 
-	storeMsgs, err := short.EngineMessagesToStore(persistable)
-	if err != nil {
-		slog.Error("PersistNewMessages: convert messages", "error", err)
-		return
-	}
+	storeMsgs := short.EngineMessagesToStore(persistable)
 
 	// Use fork-aware persist when rewind has set a fork point
+	var err error
 	if e.forkParentUUID != "" {
 		err = e.store.AppendMessagesWithForkPoint(e.sessionID, storeMsgs, e.forkParentUUID)
 	} else {

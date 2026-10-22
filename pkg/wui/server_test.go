@@ -37,7 +37,7 @@ func makeTM(id string, role types.Role) *short.TranscriptMessage {
 		Timestamp: time.Unix(900, 0),
 		Content:   []types.ContentBlock{types.NewTextBlock(id)},
 	}
-	ts, _ := short.EngineMessagesToStore([]types.Message{em})
+	ts := short.EngineMessagesToStore([]types.Message{em})
 	return ts[0]
 }
 
@@ -492,7 +492,7 @@ func TestBuildHistory_PreCompactFinalPage(t *testing.T) {
 		if delivered != 0 {
 			t.Errorf("delivered = %d, want 0", delivered)
 		}
-		ts, _ := short.EngineMessagesToStore(preMsgs[:])
+		ts := short.EngineMessagesToStore(preMsgs[:])
 		return ts, 3, true
 	}
 
@@ -564,7 +564,7 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("pre-%d", i))},
 			})
 		}
-		ts, _ := short.EngineMessagesToStore(out)
+		ts := short.EngineMessagesToStore(out)
 		return ts, total, true
 	}
 
@@ -673,7 +673,7 @@ func TestBuildHistory_PreCompactMalformedCursor(t *testing.T) {
 		if delivered != 0 {
 			t.Errorf("delivered = %d, want 0 (malformed → 0)", delivered)
 		}
-		ts, _ := short.EngineMessagesToStore([]types.Message{
+		ts := short.EngineMessagesToStore([]types.Message{
 			{ID: "pre-0", Role: types.RoleUser, Timestamp: time.Unix(900, 0), Content: []types.ContentBlock{types.NewTextBlock("pre-0")}},
 		})
 		return ts, 1, true

@@ -3067,10 +3067,7 @@ func TestMutA2EngineAdapterManualCompactCtx(t *testing.T) {
 			Timestamp: time.Date(2026, 3, 1, 10, 0, i, 0, time.UTC),
 			Content:   []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 200*1024))},
 		}
-		ts, err := short.EngineMessagesToStore([]types.Message{em})
-		if err != nil {
-			t.Fatalf("EngineMessagesToStore: %v", err)
-		}
+		ts := short.EngineMessagesToStore([]types.Message{em})
 		if err := store.AppendMessage(ses.SessionID, ts[0]); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
 		}
@@ -3235,10 +3232,7 @@ func TestMutA2PreCompactMetaFlagDropped(t *testing.T) {
 		Flags:   types.FlagMeta,
 		Content: []types.ContentBlock{types.NewTextBlock("hidden")},
 	}
-	ts, err := short.EngineMessagesToStore([]types.Message{metaMsg})
-	if err != nil {
-		t.Fatalf("EngineMessagesToStore: %v", err)
-	}
+	ts := short.EngineMessagesToStore([]types.Message{metaMsg})
 	if err := store.AppendMessage(sid, ts[0]); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
