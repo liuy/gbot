@@ -981,7 +981,7 @@ export function createInputBar(initial: {
           ? 'queued-bubble mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit modal-enter cursor-pointer'
           : 'queued-bubble mb-2 mx-auto bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl px-4 py-2 flex items-center gap-2 w-fit cursor-pointer',
       )
-      bub.replaceChildren(renderIcon('dot', { size: 11, strokeWidth: 2.5, className: 'text-t3' }))
+      bub.replaceChildren()
       const label = createElement('span', 'text-[10px] text-t2 font-light italic truncate max-w-[240px]')
       label.textContent = m.text
       bub.appendChild(label)

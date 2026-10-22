@@ -25,7 +25,6 @@ export type IconName =
   | 'tai-chi'
   | 'user'
   | 'scroll-to-bottom'
-  | 'dot'
   | 'copy'
   | 'check'
   | 'share'
@@ -176,11 +175,6 @@ const ICONS: Record<IconName, IconDef> = {
     path: '<path d="M12 5v13M7 13l5 5 5-5"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
-  },
-  dot: {
-    path: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
-    variant: 'outline',
-    defaultStrokeWidth: 2.5,
   },
   copy: {
     path: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',

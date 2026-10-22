@@ -115,10 +115,6 @@ describe('renderIcon — outline variant', () => {
     expect(renderIcon('refresh').getAttribute('stroke-width')).toBe('2.5')
   })
 
-  it('dot strokeWidth defaults to 2.5', () => {
-    expect(renderIcon('dot').getAttribute('stroke-width')).toBe('2.5')
-  })
-
   it('moon strokeWidth defaults to 2', () => {
     expect(renderIcon('moon').getAttribute('stroke-width')).toBe('2')
   })
@@ -169,13 +165,6 @@ describe('renderIcon — outline variant', () => {
     expect(el.children.length).toBe(2)
     expect(el.children[0].tagName).toBe('path')
     expect(el.children[1].tagName).toBe('polyline')
-  })
-
-  it('dot packs circle + path in source order', () => {
-    const el = renderIcon('dot')
-    expect(el.children.length).toBe(2)
-    expect(el.children[0].tagName).toBe('circle')
-    expect(el.children[1].tagName).toBe('path')
   })
 })
 
