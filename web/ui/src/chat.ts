@@ -34,7 +34,6 @@ import {
   appendProgressBar,
   setToolSummary,
   setToolOutput,
-  setToolBodyVisible,
   setProgressBarUsage,
   refreshProgressBar,
   finalizeProgressBar,
@@ -1827,14 +1826,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const output = e.tool_result.display_output ?? ''
         const entry = toolEntries.get(targetId)
         if (entry) {
-          // First content-bearing delta expands the body so streaming output
-          // is visible while the tool runs (TUI parity). Visibility is set
-          // BEFORE the write — setToolOutput defers folded bodies — and only
-          // while the user has not touched the fold, so a mid-run collapse is
-          // never undone by a later delta.
-          if (output !== '' && !entry.handles.userTouched) {
-            setToolBodyVisible(entry.handles, true)
-          }
+          // Running output never expands the body (flicker: streaming output
+          // grew and shrank the block mid-run). setToolOutput buffers it into
+          // pendingOutput for a render-on-visible flush; Edit/Write expand on
+          // finish via finishTool.
           setToolOutput(entry.handles, output)
         }
         const pending = pendingToolByID.get(targetId)

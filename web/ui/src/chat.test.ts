@@ -306,7 +306,7 @@ describe('chat integration', () => {
     expect(sec).toBeLessThanOrEqual(elapsed + 2)
   })
 
-  it('main-stream tool_output_delta renders live into the running tool block', () => {
+  it('tool_output_delta keeps the running body folded; expand renders the live output', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('q')
@@ -318,11 +318,13 @@ describe('chat integration', () => {
     ])
     const toolRoot = document.querySelector('[data-tool-root]') as HTMLElement
     const body = toolRoot.children[1] as HTMLElement
-    expect(body.textContent).toContain('building 1/100')
+    expect(body.classList.contains('hidden')).toBe(true)
+    ;(toolRoot.querySelector('[data-tool-header]') as HTMLElement).click()
     expect(body.classList.contains('hidden')).toBe(false)
+    expect(body.textContent).toContain('building 1/100')
   })
 
-  it('tool_output_delta: empty delta inert, first content expands, morph patches in place', () => {
+  it('tool_output_delta: empty delta inert, content stays folded, morph patches in place', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('q')
@@ -333,22 +335,25 @@ describe('chat integration', () => {
     ])
     const toolRoot = document.querySelector('[data-tool-root]') as HTMLElement
     const body = toolRoot.children[1] as HTMLElement
-    // Segment 1 — empty delta must neither expand nor write (UI contract;
-    // the engine never dispatches empty payloads, this guards regressions).
+    // Segment 1 — empty delta must not touch the DOM (UI contract; the
+    // engine never dispatches empty payloads, this guards regressions).
     dispatchEvents([
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: '' } },
     ])
     expect(body.classList.contains('hidden')).toBe(true)
     expect(body.textContent).toBe('')
-    // Segment 2 — first content-bearing delta renders and expands.
+    // Segment 2 — the first content-bearing delta buffers into
+    // pendingOutput; the body stays folded (no running-time expand).
     dispatchEvents([
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: 'step 1' } },
     ])
+    expect(body.classList.contains('hidden')).toBe(true)
+    expect(body.textContent).toBe('')
+    ;(toolRoot.querySelector('[data-tool-header]') as HTMLElement).click()
     expect(body.textContent).toContain('step 1')
-    expect(body.classList.contains('hidden')).toBe(false)
     const pBefore = body.querySelector('p')
-    // Segment 3 — innerHTML replacement would swap in a fresh <p>;
-    // morph must patch the existing text node in place.
+    // Segment 3 — a delta while visible: innerHTML replacement would swap
+    // in a fresh <p>; morph must patch the existing text node in place.
     dispatchEvents([
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'live-bash-2', display_output: 'step 1\nstep 2' } },
     ])
@@ -356,9 +361,10 @@ describe('chat integration', () => {
     expect(body.querySelector('p')).toBe(pBefore)
   })
 
-  // ── Think-style fold trio: finish-time settle fold, render-on-visible,
-  // intent guard. Shared helpers below exercise the full event pipeline
-  // (tool_start → tool_output_delta → tool_end) like the tests above.
+  // ── Fold-policy trio: bodies stay folded while running (only Edit/Write
+  // auto-expand on finish), render-on-visible flushes the latest snapshot,
+  // and user gestures win over everything. Shared helpers below exercise
+  // the full event pipeline (tool_start → tool_output_delta → tool_end).
   function liveBashBody(): HTMLElement {
     const toolRoot = document.querySelector(`[data-tool-root][data-tool-name="Bash"]`) as HTMLElement
     expect(toolRoot).toBeTruthy()
@@ -371,7 +377,7 @@ describe('chat integration', () => {
     header.click()
   }
 
-  it('tool_end folds a system-expanded body; expand renders the final output', () => {
+  it('a running non-edit tool never expands; tool_end keeps it folded', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     setTextarea('run tests')
@@ -383,17 +389,14 @@ describe('chat integration', () => {
     ])
     const body = liveBashBody()
     const header = document.querySelector('[data-tool-root] [data-tool-header]') as HTMLElement
-    expect(body.classList.contains('hidden')).toBe(false)
-    // The system expand rotates the chevron with the body.
-    expect(header.querySelector('svg')?.getAttribute('class')).toContain('rotate-90')
+    // No first-delta expand: streaming output must not make the running
+    // block grow and shrink (screen flicker).
+    expect(body.classList.contains('hidden')).toBe(true)
+    expect(header.querySelector('svg')?.getAttribute('class')).not.toContain('rotate-90')
     dispatchEvents([
       { type: 'tool_end', tool_result: { tool_use_id: 'fold-1', display_output: 'building 100/100\nok' } },
     ])
-    // Think-style settle: the system expanded this body (first delta), the
-    // user never touched the fold → tool_end must fold it back.
     expect(body.classList.contains('hidden')).toBe(true)
-    // The settle fold un-rotates the chevron with the body.
-    expect(header.querySelector('svg')?.getAttribute('class')).not.toContain('rotate-90')
     // The final output is not lost: expanding renders it (render-on-visible).
     clickToolHeader()
     expect(body.classList.contains('hidden')).toBe(false)
@@ -411,8 +414,9 @@ describe('chat integration', () => {
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-2', display_output: 'step 1' } },
     ])
     const body = liveBashBody()
+    // The user expands, then folds mid-run.
+    clickToolHeader()
     expect(body.classList.contains('hidden')).toBe(false)
-    // The user folds mid-run.
     clickToolHeader()
     expect(body.classList.contains('hidden')).toBe(true)
     // A later delta must not re-expand the user's fold.
@@ -438,14 +442,13 @@ describe('chat integration', () => {
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-3', display_output: 'step 1' } },
     ])
     const body = liveBashBody()
-    // The user folds then re-expands: the last gesture is expand.
-    clickToolHeader()
+    // The user expands mid-run.
     clickToolHeader()
     expect(body.classList.contains('hidden')).toBe(false)
     dispatchEvents([
       { type: 'tool_end', tool_result: { tool_use_id: 'fold-3', display_output: 'done' } },
     ])
-    // User intent wins over the settle fold.
+    // User intent wins over the finish-time fold.
     expect(body.classList.contains('hidden')).toBe(false)
     expect(body.textContent).toContain('done')
   })
@@ -461,12 +464,10 @@ describe('chat integration', () => {
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1' } },
     ])
     const body = liveBashBody()
-    clickToolHeader()
-    expect(body.classList.contains('hidden')).toBe(true)
+    // The block is folded from the start — deltas must not touch the
+    // hidden DOM (no markdown, no morph — the payload is a replace
+    // window, intermediate frames carry no information).
     const frozen = body.innerHTML
-    // Deltas while folded must not touch the hidden DOM (no markdown, no
-    // morph — the payload is a replace window, intermediate frames carry no
-    // information).
     dispatchEvents([
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1\nstep 2' } },
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-4', display_output: 'step 1\nstep 2\nstep 3' } },
@@ -492,7 +493,6 @@ describe('chat integration', () => {
       { type: 'tool_output_delta', tool_result: { tool_use_id: 'fold-5', display_output: 'streaming…' } },
     ])
     const body = liveBashBody()
-    clickToolHeader()
     expect(body.classList.contains('hidden')).toBe(true)
     dispatchEvents([
       { type: 'tool_end', tool_result: { tool_use_id: 'fold-5', display_output: 'FINAL OUTPUT' } },
