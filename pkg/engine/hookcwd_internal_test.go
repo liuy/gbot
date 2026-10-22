@@ -125,10 +125,10 @@ func TestRunAgent_HookInputCwd_FollowsOverride(t *testing.T) {
 //     Case 2 and case 3 are each other's control: drop the tctx branch and case 2
 //     goes red, drop the empty return and case 3 does.
 //
-// The emit callback must answer the ask. A hook returning Decision "allow" does
-// not skip askUser (runTools.go continues the result loop only), so askUser still
-// blocks on ResponseCh — a no-op emit would hang all three cases until the go-test
-// timeout instead of failing.
+// The emit callback answers the ask as a backstop only: the PermissionRequest
+// allow decision skips askUser entirely (TS runHooks semantics), so the
+// callback is not expected to fire — if a regression reopens the dialog, it
+// gets answered instead of hanging the case until the go-test timeout.
 func TestExecutor_HookCwd_FallbacksAndPermission(t *testing.T) {
 	t.Parallel()
 

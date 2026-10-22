@@ -3088,6 +3088,30 @@ func TestSettersAssignTheirFields(t *testing.T) {
 	}
 }
 
+// TestHookDispatchCtxWrapsOnlyWithARunner pins both halves of the js-runner
+// pin. Without a runner the ctx must come back untouched: dispatch's
+// global-default fallback reads the same ctx key, so a wrapped nil runner is
+// indistinguishable downstream and the untouched ctx is the only thing a
+// caller can observe. With a runner it must travel on the ctx handed to the
+// tool, whose own hook dispatches run on exactly that ctx.
+func TestHookDispatchCtxWrapsOnlyWithARunner(t *testing.T) {
+	t.Parallel()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{}, nil, nil, context.Background())
+	base := t.Context()
+	if got := e.hookDispatchCtx(base); got != base {
+		t.Errorf("hookDispatchCtx without a runner returned %v, want the caller's ctx untouched", got)
+	}
+	runner := &countingJsRunner{}
+	e.SetJsRunner(runner)
+	got := e.hookDispatchCtx(base)
+	if got == base {
+		t.Fatal("hookDispatchCtx with a runner returned the bare ctx, want the runner pinned onto it")
+	}
+	if hooks.JsRunnerFrom(got) != runner {
+		t.Errorf("JsRunnerFrom(dispatch ctx) = %v, want the executor's runner", hooks.JsRunnerFrom(got))
+	}
+}
+
 // TestDiscardSetsFlagAndReleasesLock pins both halves of Discard: the
 // discarded flag must be set and the mutex must not be left held.
 func TestDiscardSetsFlagAndReleasesLock(t *testing.T) {
@@ -3245,6 +3269,12 @@ func TestExtractFilePathOnlyForEditWrite(t *testing.T) {
 	}
 	if got := extractFilePath("Edit", json.RawMessage(`not json`)); got != "" {
 		t.Errorf("extractFilePath(Edit, invalid json) = %q, want empty", got)
+	}
+	// Unmarshal keeps the value decoded before a later type error, so the
+	// guard is what stops a partially-decoded path from reaching conflict
+	// tracking for a call the tool itself is going to reject.
+	if got := extractFilePath("Edit", json.RawMessage(`{"file_path":"/tmp/a.go","file_path":123}`)); got != "" {
+		t.Errorf("extractFilePath(Edit, partial decode) = %q, want the partial path dropped", got)
 	}
 }
 
@@ -3523,6 +3553,11 @@ func TestExtractFilePathFromInput(t *testing.T) {
 	}
 	if got := extractFilePathFromInput(json.RawMessage(`{"file_path":123}`)); got != "" {
 		t.Errorf("extractFilePathFromInput(wrong type) = %q, want empty", got)
+	}
+	// The same input decoded twice (second value the wrong type) errors while
+	// leaving the first path in place; TrackEdit must not be keyed on it.
+	if got := extractFilePathFromInput(json.RawMessage(`{"file_path":"/tmp/x","file_path":[]}`)); got != "" {
+		t.Errorf("extractFilePathFromInput(partial decode) = %q, want the partial path dropped", got)
 	}
 }
 
@@ -3844,11 +3879,12 @@ func TestRuleDenyEventShape(t *testing.T) {
 	}
 }
 
-// TestPermissionRequestHookAsk pins the PermissionRequest hook phase:
-// the dispatch payload, that a result without a decision falls through to the
-// dialog, and — as written today — that an "allow" decision does NOT skip it
-// either (the allow branch only `continue`s the result loop; see the bug note
-// in the report).
+// TestPermissionRequestHookAsk pins the PermissionRequest hook phase for
+// non-decisive results: the dispatch payload, and that results without an
+// allow/deny/block decision fall through to the dialog. The decisive
+// decisions are pinned by the allow/deny/block/first-wins tests below
+// (TS PermissionContext.ts:233-259 — runHooks returns on the first decisive
+// result; only a null return opens the dialog).
 func TestPermissionRequestHookAsk(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -3856,8 +3892,9 @@ func TestPermissionRequestHookAsk(t *testing.T) {
 		outcome hooks.HookOutcome
 		output  *hooks.HookOutput
 	}{
-		{"no decision", hooks.HookOutcomeSuccess, nil},
-		{"allow", hooks.HookOutcomeSuccess, &hooks.HookOutput{Decision: "allow"}},
+		{"no output", hooks.HookOutcomeSuccess, nil},
+		{"no decision", hooks.HookOutcomeSuccess, &hooks.HookOutput{Reason: "noise"}},
+		{"unknown decision", hooks.HookOutcomeSuccess, &hooks.HookOutput{Decision: "ask"}},
 	}
 	for _, tc := range cases {
 		ran := false
@@ -3907,8 +3944,9 @@ func TestPermissionRequestHookAsk(t *testing.T) {
 	}
 }
 
-// TestPermissionRequestHookBlock pins that a later blocking result wins
-// over an earlier approval.
+// TestPermissionRequestHookBlock pins that the generic "block" decision
+// (gbot's shared decision vocabulary, not a TS PermissionRequest behavior)
+// denies the tool with the rule-deny message.
 func TestPermissionRequestHookBlock(t *testing.T) {
 	t.Parallel()
 	hexec := &integrationHookRecorder{}
@@ -3920,7 +3958,6 @@ func TestPermissionRequestHookBlock(t *testing.T) {
 	ev := &emitRecorder{}
 	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, ev.fn, context.Background())
 	e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec,
-		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
 		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "block"}},
 	), "sess-hook")
 	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk, Message: "ask"}})
@@ -3928,6 +3965,9 @@ func TestPermissionRequestHookBlock(t *testing.T) {
 	res := e.ExecuteAll([]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}})
 	if ran {
 		t.Error("a blocked tool ran")
+	}
+	if n := askEventCount(ev.all()); n != 0 {
+		t.Errorf("hook-block opened %d dialogs, want 0", n)
 	}
 	want := ruleDenyMessage("ptest_perm")
 	evt := ev.only(t, types.EventToolEnd)
@@ -3940,6 +3980,187 @@ func TestPermissionRequestHookBlock(t *testing.T) {
 	}
 	if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != want {
 		t.Errorf("hook-block result = %+v, want the rule-deny message", res.ToolResultBlocks)
+	}
+}
+
+// askEventCount counts emitted Ask events.
+func askEventCount(evs []types.QueryEvent) int {
+	n := 0
+	for _, evt := range evs {
+		if evt.Type == types.EventAsk {
+			n++
+		}
+	}
+	return n
+}
+
+// executeAllOrAsk runs ExecuteAll in the background and races it against the
+// ask channel: if the permission dialog opens, the ask is denied, the run is
+// drained, and the caller's askBranch callback reports it — so a regression
+// that reopens the dialog fails by assertion instead of hanging on ResponseCh.
+func executeAllOrAsk(t *testing.T, e *StreamingToolExecutor, blocks []types.ContentBlock, asks chan *types.AskEvent, askBranch func()) *ExecuteAllResult {
+	t.Helper()
+	done := make(chan *ExecuteAllResult, 1)
+	go func() { done <- e.ExecuteAll(blocks) }()
+	select {
+	case ask := <-asks:
+		ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+		res := <-done
+		askBranch()
+		return res
+	case res := <-done:
+		return res
+	}
+}
+
+// TestPermissionRequestHookAllowSkipsAsk pins TS PermissionContext.ts:233-239:
+// a hook "allow" decision resolves the permission request without the dialog,
+// and the tool runs.
+func TestPermissionRequestHookAllowSkipsAsk(t *testing.T) {
+	t.Parallel()
+	ran := false
+	toolx := &fakeTool{name: "ptest_perm", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+		ran = true
+		return &tool.ToolResult{Data: "ran"}, nil
+	}}
+	ev := &emitRecorder{}
+	asks, emit := ev.askTap()
+	e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, emit, context.Background())
+	hexec := &integrationHookRecorder{}
+	e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec,
+		hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
+	), "sess-allow")
+	e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk}})
+
+	res := executeAllOrAsk(t, e,
+		[]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}},
+		asks, func() { t.Fatal("the permission dialog opened despite the hook's allow decision") })
+	if !ran {
+		t.Fatal("the tool never ran after the hook's allow decision")
+	}
+	if n := askEventCount(ev.all()); n != 0 {
+		t.Errorf("hook-allow opened %d dialogs, want 0", n)
+	}
+	if len(res.ToolResultBlocks) != 1 || res.ToolResultBlocks[0].IsError {
+		t.Errorf("result after hook allow = %+v, want one non-error block", res.ToolResultBlocks)
+	}
+}
+
+// TestPermissionRequestHookDeny pins TS PermissionContext.ts:240-258: a hook
+// "deny" decision rejects the tool without the dialog, with the hook's reason
+// or the TS fallback message.
+func TestPermissionRequestHookDeny(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc   string
+		reason string
+		want   string
+	}{
+		{"hook reason", "blocked by policy", "blocked by policy"},
+		{"fallback", "", "Permission denied by hook"},
+	}
+	for _, tc := range cases {
+		ran := false
+		toolx := &fakeTool{name: "ptest_perm", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "ran"}, nil
+		}}
+		ev := &emitRecorder{}
+		asks, emit := ev.askTap()
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, emit, context.Background())
+		hexec := &integrationHookRecorder{}
+		e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec,
+			hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "deny", Reason: tc.reason}},
+		), "sess-deny")
+		e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk}})
+
+		res := executeAllOrAsk(t, e,
+			[]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}},
+			asks, func() { t.Fatalf("%s: the permission dialog opened despite the hook's deny decision", tc.desc) })
+		if ran {
+			t.Errorf("%s: a denied tool ran", tc.desc)
+		}
+		if n := askEventCount(ev.all()); n != 0 {
+			t.Errorf("%s: hook-deny opened %d dialogs, want 0", tc.desc, n)
+		}
+		tr := ev.only(t, types.EventToolEnd).ToolResult
+		if tr.ToolUseID != "tu_1" || !tr.IsError || tr.DisplayOutput != tc.want {
+			t.Errorf("%s: hook-deny event = %+v, want an error event with %q", tc.desc, tr, tc.want)
+		}
+		if got := toolResultText(t, types.ContentBlock{Content: tr.Output}); got != tc.want {
+			t.Errorf("%s: hook-deny Output = %q, want %q", tc.desc, got, tc.want)
+		}
+		if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != tc.want {
+			t.Errorf("%s: hook-deny result = %+v, want %q", tc.desc, res.ToolResultBlocks, tc.want)
+		}
+	}
+}
+
+// TestPermissionRequestHookFirstDecisiveWins pins the TS runHooks loop shape:
+// the first decisive result ends the loop, so an allow before a deny lets the
+// tool run, and a deny before an allow rejects it.
+func TestPermissionRequestHookFirstDecisiveWins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		desc    string
+		results []hooks.HookResult
+		wantRan bool
+		wantMsg string
+	}{
+		{"allow before deny", []hooks.HookResult{
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "deny"}},
+		}, true, ""},
+		{"deny before allow", []hooks.HookResult{
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "deny", Reason: "first wins"}},
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
+		}, false, "first wins"},
+		// A result without output is skipped, not terminal: the loop must keep
+		// draining later hooks, whose decision still resolves the request.
+		{"no output then allow", []hooks.HookResult{
+			{Outcome: hooks.HookOutcomeSuccess},
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "allow"}},
+		}, true, ""},
+		{"no output then deny", []hooks.HookResult{
+			{Outcome: hooks.HookOutcomeSuccess},
+			{Outcome: hooks.HookOutcomeSuccess, Output: &hooks.HookOutput{Decision: "deny", Reason: "late deny"}},
+		}, false, "late deny"},
+	}
+	for _, tc := range cases {
+		ran := false
+		toolx := &fakeTool{name: "ptest_perm", safe: true, callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			ran = true
+			return &tool.ToolResult{Data: "ran"}, nil
+		}}
+		ev := &emitRecorder{}
+		asks, emit := ev.askTap()
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"ptest_perm": toolx}, nil, emit, context.Background())
+		hexec := &integrationHookRecorder{}
+		e.SetHooks(hooksWith("PermissionRequest", "ptest_perm", hexec, tc.results...), "sess-order")
+		e.SetPermissionChecker(&scriptablePermChecker{decision: permission.Decision{Action: permission.ActionAsk}})
+
+		res := executeAllOrAsk(t, e,
+			[]types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "ptest_perm", Input: json.RawMessage(`{}`)}},
+			asks, func() { t.Fatalf("%s: the permission dialog opened", tc.desc) })
+		if ran != tc.wantRan {
+			t.Errorf("%s: tool ran = %v, want %v", tc.desc, ran, tc.wantRan)
+		}
+		if n := askEventCount(ev.all()); n != 0 {
+			t.Errorf("%s: opened %d dialogs, want 0", tc.desc, n)
+		}
+		tr := ev.only(t, types.EventToolEnd).ToolResult
+		if tc.wantRan {
+			if tr.IsError {
+				t.Errorf("%s: result = %+v, want the tool's non-error result", tc.desc, tr)
+			}
+			continue
+		}
+		if !tr.IsError || tr.DisplayOutput != tc.wantMsg {
+			t.Errorf("%s: result = %+v, want an error event with %q", tc.desc, tr, tc.wantMsg)
+		}
+		if len(res.ToolResultBlocks) != 1 || toolResultText(t, res.ToolResultBlocks[0]) != tc.wantMsg {
+			t.Errorf("%s: result blocks = %+v, want %q", tc.desc, res.ToolResultBlocks, tc.wantMsg)
+		}
 	}
 }
 
@@ -5174,7 +5395,9 @@ func TestPermissionRequestHookWithoutOutputFallsThroughToAsk(t *testing.T) {
 	}
 }
 
-// An "allow" PermissionRequest hook result must not be read as a block.
+// An "allow" PermissionRequest hook result must not be read as a block — and
+// under TS runHooks semantics it resolves the request itself: no dialog, the
+// tool still runs.
 func TestPermissionRequestAllowHookDoesNotBlockTheTool(t *testing.T) {
 	t.Parallel()
 	ex := &integrationHookRecorder{}
@@ -5192,15 +5415,18 @@ func TestPermissionRequestAllowHookDoesNotBlockTheTool(t *testing.T) {
 	e.AddTool(toolUseBlock("tu_1", "Bash", `{"command":"ls"}`), time.Time{})
 	select {
 	case ask := <-ev.ch:
-		ask.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no permission dialog after an allow hook result")
-	}
-	_ = e.ExecuteAll(nil)
-	select {
+		ask.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+		t.Fatal("the dialog opened despite the allow hook result")
 	case <-ran:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the tool never ran after an allow hook result")
+	}
+	_ = e.ExecuteAll(nil)
+	if got := ev.askCount(); got != 0 {
+		t.Errorf("the allow hook result opened %d dialogs, want 0", got)
+	}
+	if got := ex.CallCount(); got != 1 {
+		t.Errorf("PermissionRequest dispatches = %d, want exactly 1", got)
 	}
 }
 

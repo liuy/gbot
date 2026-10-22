@@ -839,6 +839,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		if decision.Action == permission.ActionAsk {
 			// Fire PermissionRequest hook — plugins can auto-allow/deny.
 			// Source: interactiveHandler.ts:412 — executePermissionRequestHooks
+			hookApproved := false
 			if e.hooks != nil {
 				hookInput := &hooks.HookInput{
 					HookEventName: "PermissionRequest",
@@ -852,12 +853,32 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				// the hook session mutex the outer hook holds. siblingCtx
 				// also keeps the WithCancelCause chain so the hook dies with
 				// the query instead of outliving it.
+				// TS runHooks (PermissionContext.ts:233-259) is
+				// first-decisive-wins: the first "allow" resolves the
+				// request without a dialog (handleHookAllow returns
+				// immediately), the first "deny" rejects it, and results
+				// with any other decision are skipped. "block" is gbot's
+				// generic decision vocabulary (not a TS PermissionRequest
+				// behavior), kept denying with the rule-deny message.
 				for _, r := range e.hooks.PermissionRequest(e.hookDispatchCtx(e.siblingCtx), hookInput) {
-					if r.Output != nil && r.Output.Decision == "allow" {
-						continue // hook approved, skip askUser — fall through to Phase 3
+					if r.Output == nil {
+						continue
 					}
-					if r.Output != nil && r.Output.Decision == "block" {
+					if r.Output.Decision == "allow" {
+						hookApproved = true
+						break
+					}
+					if r.Output.Decision == "deny" || r.Output.Decision == "block" {
+						// TS buildDeny: decision.message || 'Permission denied
+						// by hook'. The flat HookOutput carries that message
+						// in Reason; "block" keeps the rule-deny message.
 						errMsg := ruleDenyMessage(tt.Name)
+						if r.Output.Decision == "deny" {
+							errMsg = r.Output.Reason
+							if errMsg == "" {
+								errMsg = "Permission denied by hook"
+							}
+						}
 						errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 						e.doEmit(types.QueryEvent{
 							Type: types.EventToolEnd,
@@ -873,21 +894,23 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					}
 				}
 			}
-			userDecision := e.askUser(tt, decision, "")
-			if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
-				errMsg := e.userOrSubRejectMessage()
-				errBlock := CreateToolErrorBlock(tt.ID, errMsg)
-				e.doEmit(types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     tt.ID,
-						Output:        errBlock.Content,
-						DisplayOutput: errMsg,
-						IsError:       true,
-					},
-				})
-				tt.resultBlocks = []types.ContentBlock{errBlock}
-				return
+			if !hookApproved {
+				userDecision := e.askUser(tt, decision, "")
+				if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
+					errMsg := e.userOrSubRejectMessage()
+					errBlock := CreateToolErrorBlock(tt.ID, errMsg)
+					e.doEmit(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     tt.ID,
+							Output:        errBlock.Content,
+							DisplayOutput: errMsg,
+							IsError:       true,
+						},
+					})
+					tt.resultBlocks = []types.ContentBlock{errBlock}
+					return
+				}
 			}
 		}
 
@@ -969,6 +992,11 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// before Discard() sets the flag, then race to call t.Call().
 	// Only check discarded — other cancellation reasons are properly handled
 	// by getAbortReason (e.g., InterruptBlock tools must not be cancelled here).
+	// The doEmit below can never fire: discarded is only ever set (Discard,
+	// never cleared) and doEmit re-reads it under the same mutex, so the
+	// emission is always suppressed. The segment's real effects are the
+	// synthetic fallback result block and the early return that keeps the
+	// discarded tool from reaching t.Call().
 	e.mu.Lock()
 	if e.discarded {
 		e.mu.Unlock()
@@ -1050,11 +1078,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// unified abort message.
 	// InterruptBlock tools are excluded — they survive user interrupt,
 	// matching the pre-execution getAbortReason logic (line 584).
+	// siblingCtx is derived from rootCtx (WithCancelCause) and never
+	// reassigned, so a cancelled rootCtx always shows up here — a separate
+	// rootCtx check would be a byte-identical dead twin of this branch.
 	if t.InterruptBehavior() != tool.InterruptBlock {
-		if e.rootCtx.Err() != nil {
-			e.emitToolError(t, tt, context.Canceled)
-			return
-		}
 		if e.siblingCtx.Err() != nil {
 			e.emitToolError(t, tt, context.Canceled)
 			return
