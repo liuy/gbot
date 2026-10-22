@@ -117,7 +117,9 @@ body {
    Replaces the old leading ● heartbeat dot as the streaming liveness signal.
    Tail colors ride theme vars so both themes need no per-theme rule; only the
    peak core differs (near-white blue tint on dark, black on light). ── */
-.status-line .ch { display: inline-block; }
+/* pre: a span holding a lone space collapses to zero width under normal —
+   "0.0 t/s" would render as "0.0t/s" once split into inline-block chars. */
+.status-line .ch { display: inline-block; white-space: pre; }
 .status-line .ch.t1 { color: var(--color-blue); }
 .status-line .ch.t2 { color: color-mix(in srgb, var(--color-blue) 55%, var(--color-t3)); }
 .status-line .ch.p1 { transform: translateY(-1.5px); color: #eaf6ff; }

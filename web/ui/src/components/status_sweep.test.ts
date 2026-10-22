@@ -216,4 +216,19 @@ describe('status_sweep', () => {
     expect((s.children[2] as HTMLElement).classList.contains('p1')).toBe(true)
     expect((s.children[1] as HTMLElement).classList.contains('t1')).toBe(true)
   })
+
+  it('keeps spaces visible: swept chars must not collapse blanks', async () => {
+    // The per-char spans are inline-block; a span holding a lone space would
+    // collapse it to zero width under white-space:normal ("0.0 t/s" renders
+    // "0.0t/s"). jsdom does not load the stylesheet, so assert the CSS source.
+    const fs = await import('node:fs')
+    const css = fs.readFileSync('src/index.css', 'utf8')
+    const m = css.match(/\.status-line\s+\.ch\s*\{[^}]*\}/)
+    expect(m).not.toBeNull()
+    expect(m![0]).toMatch(/white-space:\s*pre/)
+    // And the engine itself must emit the space as a real char span.
+    const s = seg('0.0 t/s')
+    const texts = Array.from(s.children).map(c => c.textContent)
+    expect(texts).toContain(' ')
+  })
 })
