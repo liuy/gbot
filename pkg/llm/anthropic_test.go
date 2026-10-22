@@ -26,7 +26,6 @@ func TestNewAnthropicProvider_Defaults(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey: "test-key",
-		Model:  "claude-sonnet-4-20250514",
 	})
 
 	if p == nil {
@@ -50,7 +49,6 @@ func TestNewAnthropicProvider_Defaults(t *testing.T) {
 	// Override to local server to verify fields are used
 	p2 := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
-		Model:   "claude-sonnet-4-20250514",
 		BaseURL: server.URL,
 	})
 
@@ -86,7 +84,6 @@ func TestNewAnthropicProvider_CustomBaseURL(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 10 * time.Second,
 	})
 
@@ -94,7 +91,7 @@ func TestNewAnthropicProvider_CustomBaseURL(t *testing.T) {
 		t.Fatal("expected non-nil provider")
 	}
 
-	// Verify the custom BaseURL and Model are wired through by completing a request
+	// Verify the custom BaseURL is wired through by completing a request
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -130,7 +127,6 @@ func completeAndCapture(t *testing.T, effort llm.Effort) map[string]json.RawMess
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 3 * time.Second,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -202,7 +198,6 @@ func TestAnthropicStream_EffortWire(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 3 * time.Second,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -238,7 +233,7 @@ func TestAnthropicStream_EffortWire(t *testing.T) {
 func TestParseEvent_MessageStart(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25}}}`
 	event := p.ParseEvent("message_start", data, nil)
 
@@ -259,7 +254,7 @@ func TestParseEvent_MessageStart(t *testing.T) {
 func TestParseEvent_ContentBlockStart(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"content_block":{"type":"text","text":""}}`
 	event := p.ParseEvent("content_block_start", data, nil)
 
@@ -280,7 +275,7 @@ func TestParseEvent_ContentBlockStart(t *testing.T) {
 func TestParseEvent_ContentBlockStart_ToolUse(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"read_file","input":{}}}`
 	event := p.ParseEvent("content_block_start", data, nil)
 
@@ -298,7 +293,7 @@ func TestParseEvent_ContentBlockStart_ToolUse(t *testing.T) {
 func TestParseEvent_ContentBlockDelta_Text(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"text_delta","text":"Hello"}}`
 	event := p.ParseEvent("content_block_delta", data, nil)
 
@@ -313,7 +308,7 @@ func TestParseEvent_ContentBlockDelta_Text(t *testing.T) {
 func TestParseEvent_ContentBlockDelta_JSON(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`
 	event := p.ParseEvent("content_block_delta", data, nil)
 
@@ -328,7 +323,7 @@ func TestParseEvent_ContentBlockDelta_JSON(t *testing.T) {
 func TestParseEvent_ContentBlockStop(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0}`
 	event := p.ParseEvent("content_block_stop", data, nil)
 
@@ -340,7 +335,7 @@ func TestParseEvent_ContentBlockStop(t *testing.T) {
 func TestParseEvent_MessageDelta(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`
 	event := p.ParseEvent("message_delta", data, nil)
 
@@ -361,7 +356,7 @@ func TestParseEvent_MessageDelta(t *testing.T) {
 func TestParseEvent_MessageDelta_InputTokens(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":500,"output_tokens":42}}`
 	event := p.ParseEvent("message_delta", data, nil)
 
@@ -379,7 +374,7 @@ func TestParseEvent_MessageDelta_InputTokens(t *testing.T) {
 func TestParseEvent_MessageStop(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("message_stop", "{}", nil)
 
 	if event.Type != "message_stop" {
@@ -390,7 +385,7 @@ func TestParseEvent_MessageStop(t *testing.T) {
 func TestParseEvent_Ping(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("ping", "", nil)
 
 	if event.Type != "ping" {
@@ -401,7 +396,7 @@ func TestParseEvent_Ping(t *testing.T) {
 func TestParseEvent_Error(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"error":{"type":"overloaded_error","message":"Overloaded"}}`
 	event := p.ParseEvent("error", data, nil)
 
@@ -419,7 +414,7 @@ func TestParseEvent_Error(t *testing.T) {
 func TestParseEvent_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("message_start", "not valid json", nil)
 
 	if event.Message != nil {
@@ -430,7 +425,7 @@ func TestParseEvent_InvalidJSON(t *testing.T) {
 func TestParseEvent_UnknownEventType(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("custom_event", `{"data":"test"}`, nil)
 
 	if event.Type != "custom_event" {
@@ -759,7 +754,6 @@ func TestStream_Integration(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -815,7 +809,6 @@ func TestStream_NonRetryableError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -866,7 +859,6 @@ func TestStream_RetryOn5xx(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:      "test-key",
 		BaseURL:     server.URL,
-		Model:       "test-model",
 		Timeout:     5 * time.Second,
 		RetryConfig: &llm.RetryConfig{MaxRetries: 5, BaseBackoff: 50 * time.Millisecond, MaxBackoff: 200 * time.Millisecond},
 	})
@@ -929,7 +921,6 @@ func TestComplete_Integration(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -963,7 +954,6 @@ func TestComplete_Non200Response(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "bad-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -985,7 +975,7 @@ func TestComplete_Non200Response(t *testing.T) {
 }
 
 func TestParseAPIError_ValidJSON(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}`)
 
 	apiErr := p.ParseAPIError(body, 429)
@@ -1002,7 +992,7 @@ func TestParseAPIError_ValidJSON(t *testing.T) {
 }
 
 func TestParseAPIError_InvalidJSON(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := []byte(`not json at all`)
 
 	apiErr := p.ParseAPIError(body, 500)
@@ -1016,7 +1006,7 @@ func TestParseAPIError_InvalidJSON(t *testing.T) {
 }
 
 func TestParseAPIError_EmptyErrorMessage(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := []byte(`{"type":"error","error":{"type":""," "message":""}}`)
 
 	apiErr := p.ParseAPIError(body, 500)
@@ -1036,7 +1026,6 @@ func TestStream_ContextCancellation(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 10 * time.Second,
 	})
 
@@ -1064,7 +1053,7 @@ func TestStream_ContextCancellation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseSSE_TrailingEventWithoutEmptyLine(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// SSE data without trailing empty line
 	sseInput := "event: message_stop\ndata: {}\n"
@@ -1094,7 +1083,7 @@ func TestParseSSE_TrailingEventWithoutEmptyLine(t *testing.T) {
 }
 
 func TestParseSSE_CommentsIgnored(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	sseInput := ": this is a comment\nevent: message_stop\ndata: {}\n\n"
 
@@ -1120,7 +1109,7 @@ func TestParseSSE_CommentsIgnored(t *testing.T) {
 }
 
 func TestParseSSE_MultipleDataLines(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	sseInput := "event: message_start\ndata: {\"message\":\ndata: {\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n"
 
@@ -1156,7 +1145,6 @@ func TestStream_ConnectionError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:      "test-key",
 		BaseURL:     server.URL,
-		Model:       "test-model",
 		Timeout:     2 * time.Second,
 		RetryConfig: &llm.RetryConfig{MaxRetries: 2, BaseBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond},
 	})
@@ -1181,7 +1169,7 @@ func TestStream_ConnectionError(t *testing.T) {
 }
 
 func TestParseSSE_ContextCancellation(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// Two SSE events; ParseSSE will block sending the 2nd on an unbuffered channel.
 	sseInput := "event: message_start\ndata: {\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n" +
@@ -1228,7 +1216,6 @@ func TestStream_ToolUseContentBlock(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1289,7 +1276,6 @@ func TestComplete_SendRequestError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://127.0.0.1:0", // port 0 = connection refused
-		Model:   "test-model",
 		Timeout: 1 * time.Second,
 	})
 
@@ -1318,7 +1304,6 @@ func TestComplete_ContextCanceled(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://127.0.0.1:0",
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1360,7 +1345,6 @@ func TestComplete_ReadBodyError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1392,7 +1376,6 @@ func TestComplete_UnmarshalResponseError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1419,7 +1402,6 @@ func TestComplete_InvalidURL(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://\x00invalid", // invalid URL character
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1446,7 +1428,6 @@ func TestComplete_MarshalError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://127.0.0.1:0",
-		Model:   "test-model",
 		Timeout: 1 * time.Second,
 	})
 
@@ -1474,7 +1455,6 @@ func TestStream_MarshalError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://127.0.0.1:0",
-		Model:   "test-model",
 		Timeout: 1 * time.Second,
 	})
 
@@ -1506,7 +1486,6 @@ func TestStream_SendRequestNonConnectionError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://\x00invalid",
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -1534,7 +1513,6 @@ func TestStream_ConnectionRefusedRetry(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "http://127.0.0.1:0", // connection refused
-		Model:   "test-model",
 		Timeout: 1 * time.Second,
 		RetryConfig: &llm.RetryConfig{
 			MaxRetries:  2,
@@ -1576,7 +1554,6 @@ func TestStream_ContextCanceledDuringBackoff(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 		RetryConfig: &llm.RetryConfig{
 			MaxRetries:  10,
@@ -1616,7 +1593,6 @@ func TestStream_MaxRetriesExceeded(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 		RetryConfig: &llm.RetryConfig{
 			MaxRetries:  2,
@@ -1651,7 +1627,7 @@ func TestStream_MaxRetriesExceeded(t *testing.T) {
 func TestParseSSE_EmptyInput(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1677,7 +1653,7 @@ func TestParseSSE_EmptyInput(t *testing.T) {
 func TestParseSSE_OnlyEmptyLines(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1703,7 +1679,7 @@ func TestParseSSE_OnlyEmptyLines(t *testing.T) {
 func TestParseSSE_EventWithoutData(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// Event type but no data — should not emit
 	sseInput := "event: message_stop\n\n"
@@ -1733,7 +1709,7 @@ func TestParseSSE_EventWithoutData(t *testing.T) {
 func TestParseSSE_DataWithoutEventType(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// Data but no event type — should not emit
 	sseInput := "data: {}\n\n"
@@ -1760,7 +1736,7 @@ func TestParseSSE_DataWithoutEventType(t *testing.T) {
 }
 
 func TestParseSSE_FullChannelCancellation(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// Create many SSE events
 	var buf strings.Builder
@@ -1803,7 +1779,7 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 }
 
 func TestParseSSE_TrailingEventCancellation(t *testing.T) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	// SSE with no trailing empty line — tests the "last event" path
 	sseInput := "event: message_stop\ndata: {}\n"
@@ -1846,7 +1822,7 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 func TestParseAPIError_PromptTooLongMessage(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 137500 tokens > 135000 maximum"}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
 
@@ -1864,7 +1840,7 @@ func TestParseAPIError_PromptTooLongMessage(t *testing.T) {
 func TestParseAPIError_PromptTooLongCaseInsensitive(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	// Vertex returns capitalized "Prompt is too long"
 	body := `{"type":"error","error":{"type":"invalid_request_error","message":"Prompt is too long: 137500 tokens > 135000 maximum"}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
@@ -1877,7 +1853,7 @@ func TestParseAPIError_PromptTooLongCaseInsensitive(t *testing.T) {
 func TestParseAPIError_NonOverflowKeepsErrorCodeEmpty(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := `{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}`
 	apiErr := p.ParseAPIError([]byte(body), 429)
 
@@ -1889,7 +1865,7 @@ func TestParseAPIError_NonOverflowKeepsErrorCodeEmpty(t *testing.T) {
 func TestParseAPIError_ImageExceedsMaximum(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := `{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes"}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
 
@@ -1904,7 +1880,7 @@ func TestParseAPIError_ImageExceedsMaximum(t *testing.T) {
 func TestParseAPIError_ImageDimensionsManyImage(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := `{"type":"error","error":{"type":"invalid_request_error","message":"image dimensions exceed many-image limit"}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
 
@@ -1916,7 +1892,7 @@ func TestParseAPIError_ImageDimensionsManyImage(t *testing.T) {
 func TestParseAPIError_NonImageKeepsErrorCodeEmpty(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	// Contains "image" and "maximum" but NOT the exact "image exceeds" + "maximum" pairing.
 	body := `{"type":"error","error":{"type":"invalid_request_error","message":"some unrelated image problem maximum"}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
@@ -1959,7 +1935,7 @@ func TestRequestMarshal_ImageBlockPassthrough(t *testing.T) {
 func TestParseAPIError_EmptyBody(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	apiErr := p.ParseAPIError([]byte(""), 500)
 
 	if apiErr.Status != 500 {
@@ -1976,7 +1952,7 @@ func TestParseAPIError_EmptyBody(t *testing.T) {
 func TestParseAPIError_ValidJSONEmptyMessage(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	// JSON parses but error.message is empty — should fall back to string(body)
 	body := `{"type":"error","error":{"type":"bad_request","message":""}}`
 	apiErr := p.ParseAPIError([]byte(body), 400)
@@ -1992,7 +1968,7 @@ func TestParseAPIError_ValidJSONEmptyMessage(t *testing.T) {
 func TestParseAPIError_NonRetryableStatus(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := `{"type":"error","error":{"type":"auth_error","message":"Unauthorized"}}`
 	apiErr := p.ParseAPIError([]byte(body), 401)
 
@@ -2007,7 +1983,7 @@ func TestParseAPIError_NonRetryableStatus(t *testing.T) {
 func TestParseAPIError_NilBody(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	apiErr := p.ParseAPIError(nil, 502)
 
 	if apiErr.Status != 502 {
@@ -2027,7 +2003,6 @@ func TestNewAnthropicProvider_WithRetryConfig(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey: "test-key",
-		Model:  "test-model",
 		RetryConfig: &llm.RetryConfig{
 			MaxRetries:  3,
 			BaseBackoff: 100 * time.Millisecond,
@@ -2046,7 +2021,6 @@ func TestNewAnthropicProvider_TrailingSlashTrimmed(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: "https://api.example.com///",
-		Model:   "test-model",
 	})
 
 	if p == nil {
@@ -2061,7 +2035,7 @@ func TestNewAnthropicProvider_TrailingSlashTrimmed(t *testing.T) {
 func TestParseEvent_InvalidJSON_ContentBlockStart(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("content_block_start", "not valid json", nil)
 
 	if event.ContentBlock != nil {
@@ -2072,7 +2046,7 @@ func TestParseEvent_InvalidJSON_ContentBlockStart(t *testing.T) {
 func TestParseEvent_InvalidJSON_ContentBlockDelta(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("content_block_delta", "not valid json", nil)
 
 	if event.Delta != nil {
@@ -2083,7 +2057,7 @@ func TestParseEvent_InvalidJSON_ContentBlockDelta(t *testing.T) {
 func TestParseEvent_InvalidJSON_ContentBlockStop(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("content_block_stop", "not valid json", nil)
 
 	// Index should be 0 (default) when JSON fails
@@ -2095,7 +2069,7 @@ func TestParseEvent_InvalidJSON_ContentBlockStop(t *testing.T) {
 func TestParseEvent_InvalidJSON_MessageDelta(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("message_delta", "not valid json", nil)
 
 	if event.DeltaMsg != nil {
@@ -2109,7 +2083,7 @@ func TestParseEvent_InvalidJSON_MessageDelta(t *testing.T) {
 func TestParseEvent_InvalidJSON_Error(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	event := p.ParseEvent("error", "not valid json", nil)
 
 	if event.Error != nil {
@@ -2120,7 +2094,7 @@ func TestParseEvent_InvalidJSON_Error(t *testing.T) {
 func TestParseEvent_ThinkingDelta(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}`
 	event := p.ParseEvent("content_block_delta", data, nil)
 
@@ -2138,7 +2112,7 @@ func TestParseEvent_ThinkingDelta(t *testing.T) {
 func TestParseEvent_SignatureDelta(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"signature_delta","signature":"EqMAC..."}}`
 	event := p.ParseEvent("content_block_delta", data, nil)
 
@@ -2159,7 +2133,7 @@ func TestParseEvent_SignatureDelta(t *testing.T) {
 func TestParseEvent_SignatureDelta_EmptySignature(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"signature_delta","signature":""}}`
 	event := p.ParseEvent("content_block_delta", data, nil)
 
@@ -2212,7 +2186,6 @@ func TestSetHeaders(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "my-api-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2249,7 +2222,6 @@ func TestStream_BodyClosedOnError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2291,7 +2263,6 @@ func TestStream_RedirectTriggersGetBody(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: redirector.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2321,7 +2292,7 @@ func TestStream_RedirectTriggersGetBody(t *testing.T) {
 
 // Benchmark for SSE parsing
 func BenchmarkParseEvent(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25}}}`
 
 	b.ResetTimer()
@@ -2331,7 +2302,7 @@ func BenchmarkParseEvent(b *testing.B) {
 }
 
 func BenchmarkParseSSE(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	var buf strings.Builder
 	for range 100 {
@@ -2379,7 +2350,6 @@ func TestAnthropicRequest_CacheControlHeader(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2425,7 +2395,6 @@ func TestAnthropicRequest_NoBetaHeaderWithoutCacheControl(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2469,7 +2438,6 @@ func TestAnthropicRequest_SystemWithCacheControl(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2553,7 +2521,6 @@ func TestAnthropicComplete_CacheTokensParsed(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2614,7 +2581,6 @@ func TestAnthropicComplete_CacheBreakDetection(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "claude-sonnet-4-20250514",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2680,7 +2646,6 @@ func TestAnthropicStream_CacheTokensAccumulated(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2749,7 +2714,6 @@ func TestAnthropicComplete_NoCacheControl_SystemUnchanged(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -2809,7 +2773,6 @@ func TestAnthropicComplete_CacheBreakWithSystemBlocks(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "claude-sonnet-4-20250514",
 		Timeout: 5 * time.Second,
 	})
 
@@ -3079,7 +3042,7 @@ func (r *errorReader) Read(p []byte) (int, error) {
 func TestParseSSE_ScannerError(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3107,7 +3070,7 @@ func TestParseSSE_ScannerError(t *testing.T) {
 func TestParseSSE_ScannerErrorReturnValue(t *testing.T) {
 	t.Parallel()
 
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3155,7 +3118,6 @@ func TestStream_SSETransportError(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -3263,7 +3225,6 @@ func TestAnthropicRequest_ToolChoiceWithTools(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 
@@ -3324,7 +3285,6 @@ func TestAnthropicRequest_ToolChoiceOmittedWithoutTools(t *testing.T) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
 		BaseURL: server.URL,
-		Model:   "test-model",
 		Timeout: 5 * time.Second,
 	})
 

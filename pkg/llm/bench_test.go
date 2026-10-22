@@ -15,7 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func BenchmarkParseEvent_MessageStart(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"message":{"id":"msg_01ABCDEF","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":2500,"output_tokens":0,"cache_creation_input_tokens":500,"cache_read_input_tokens":200}}}`
 
 	b.ReportAllocs()
@@ -26,7 +26,7 @@ func BenchmarkParseEvent_MessageStart(b *testing.B) {
 }
 
 func BenchmarkParseEvent_ContentBlockStart(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"content_block":{"type":"text","text":""}}`
 
 	b.ReportAllocs()
@@ -37,7 +37,7 @@ func BenchmarkParseEvent_ContentBlockStart(b *testing.B) {
 }
 
 func BenchmarkParseEvent_ContentBlockStart_ToolUse(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":1,"content_block":{"type":"tool_use","id":"toolu_01ABCDEF","name":"bash","input":{}}}`
 
 	b.ReportAllocs()
@@ -48,7 +48,7 @@ func BenchmarkParseEvent_ContentBlockStart_ToolUse(b *testing.B) {
 }
 
 func BenchmarkParseEvent_ContentBlockDelta(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"text_delta","text":"The quick brown fox jumps over the lazy dog. This is a longer text delta to simulate realistic streaming content."}}`
 
 	b.ReportAllocs()
@@ -59,7 +59,7 @@ func BenchmarkParseEvent_ContentBlockDelta(b *testing.B) {
 }
 
 func BenchmarkParseEvent_ContentBlockDelta_JSON(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"go test -v -count=1 -timeout 120s ./pkg/engine/ ./pkg/llm/ ./pkg/types/\""}}`
 
 	b.ReportAllocs()
@@ -70,7 +70,7 @@ func BenchmarkParseEvent_ContentBlockDelta_JSON(b *testing.B) {
 }
 
 func BenchmarkParseEvent_MessageDelta(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`
 
 	b.ReportAllocs()
@@ -81,7 +81,7 @@ func BenchmarkParseEvent_MessageDelta(b *testing.B) {
 }
 
 func BenchmarkParseEvent_Error(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	data := `{"error":{"type":"overloaded_error","message":"The API is temporarily overloaded. Please retry after a brief wait."}}`
 
 	b.ReportAllocs()
@@ -137,7 +137,7 @@ func buildSSEStream(numDeltas int) string {
 }
 
 func BenchmarkParseSSE_SmallStream(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	sseInput := buildSSEStream(10)
 
 	b.ReportAllocs()
@@ -155,7 +155,7 @@ func BenchmarkParseSSE_SmallStream(b *testing.B) {
 }
 
 func BenchmarkParseSSE_MediumStream(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	sseInput := buildSSEStream(100)
 
 	b.ReportAllocs()
@@ -173,7 +173,7 @@ func BenchmarkParseSSE_MediumStream(b *testing.B) {
 }
 
 func BenchmarkParseSSE_LargeStream(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	sseInput := buildSSEStream(500)
 
 	b.ReportAllocs()
@@ -191,7 +191,7 @@ func BenchmarkParseSSE_LargeStream(b *testing.B) {
 }
 
 func BenchmarkParseSSE_ToolUseStream(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 
 	sseInput := "event: message_start\ndata: {\"message\":{\"id\":\"msg_bench\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":500}}}\n\n" +
 		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"bash\",\"input\":{}}}\n\n" +
@@ -308,7 +308,7 @@ func BenchmarkIsRetryableStatus(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkParseAPIError_ValidJSON(b *testing.B) {
-	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key"})
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests. Please retry after a brief wait."}}`)
 
 	b.ReportAllocs()

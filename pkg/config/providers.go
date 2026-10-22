@@ -118,7 +118,6 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 				Name:    p.Name,
 				APIKey:  apiKey,
 				BaseURL: url,
-				Model:   model,
 			})
 		}
 	}

@@ -61,7 +61,6 @@ func TestAnthropicToolInput_TimeoutDisabled(t *testing.T) {
 		idleTimeout: 50 * time.Millisecond,
 		apiKey:      "test-key",
 		baseURL:     srv.URL,
-		model:       "test-model",
 	}
 
 	req := &Request{
@@ -131,7 +130,6 @@ func TestAnthropicStream_IdleTimeoutRetryable(t *testing.T) {
 		idleTimeout: 50 * time.Millisecond,
 		apiKey:      "test-key",
 		baseURL:     srv.URL,
-		model:       "test-model",
 	}
 
 	req := &Request{

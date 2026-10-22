@@ -297,7 +297,7 @@ func TestProviderDefaultIdleTimeout(t *testing.T) {
 	if DefaultSSETimeout != 90*time.Second {
 		t.Errorf("DefaultSSETimeout = %v, want 90s", DefaultSSETimeout)
 	}
-	if got := NewAnthropicProvider(&AnthropicConfig{APIKey: "k", Model: "m"}).idleTimeout; got != DefaultSSETimeout {
+	if got := NewAnthropicProvider(&AnthropicConfig{APIKey: "k"}).idleTimeout; got != DefaultSSETimeout {
 		t.Errorf("anthropic idleTimeout = %v, want %v", got, DefaultSSETimeout)
 	}
 	if got := NewOpenAIProvider(&OpenAIConfig{APIKey: "k", Model: "m"}).idleTimeout; got != DefaultSSETimeout {

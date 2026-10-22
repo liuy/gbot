@@ -61,7 +61,6 @@ type AnthropicProvider struct {
 	BaseProvider
 	apiKey  string
 	baseURL string
-	model   string
 }
 
 // AnthropicConfig configures the Anthropic provider.
@@ -69,7 +68,6 @@ type AnthropicConfig struct {
 	Name        string
 	APIKey      string
 	BaseURL     string
-	Model       string
 	Timeout     time.Duration
 	RetryConfig *RetryConfig
 }
@@ -90,7 +88,6 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 		idleTimeout: DefaultSSETimeout,
 		apiKey:      cfg.APIKey,
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		model:       cfg.Model,
 	}
 }
 
