@@ -12609,11 +12609,34 @@ func messageRoles(msgs []types.Message) string {
 // TestRunTurns_PostToolAbortCarriesUsage pins the post-tool abort QueryEnd's
 // usage trailer: a cancel landing while tools execute still reports the
 // completed turn's accumulated usage on the terminal event.
+// usageGate wraps an eventCollector and closes ch the first time a usage
+// event flows through — a signal-driven way to wait for "the turn's billing
+// has landed" without polling the collector.
+type usageGate struct {
+	*eventCollector
+	ch   chan struct{}
+	once sync.Once
+}
+
+func (g *usageGate) Dispatch(event types.QueryEvent) {
+	g.eventCollector.Dispatch(event)
+	if event.Type == types.EventUsage {
+		g.once.Do(func() { close(g.ch) })
+	}
+}
+
 func TestRunTurns_PostToolAbortCarriesUsage(t *testing.T) {
 	t.Parallel()
 
 	release := make(chan struct{})
 	inTool := make(chan struct{})
+	// usageGate wraps the collector: usage lands on message_delta at the
+	// stream TAIL, while the streaming executor starts the tool mid-stream —
+	// so "tool in flight" does NOT imply "usage landed". Cancelling on
+	// inTool alone races the abort into the stream before message_delta,
+	// and the query_end then honestly trailers a zero usage. Gate the
+	// cancel on the usage event itself.
+	gate := &usageGate{eventCollector: newEventCollector(), ch: make(chan struct{})}
 	gatedRead := &mockTool{name: "Read", enabled: true}
 	gatedRead.callFn = func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		close(inTool)
@@ -12629,18 +12652,33 @@ func TestRunTurns_PostToolAbortCarriesUsage(t *testing.T) {
 		InputTokens: 11, OutputTokens: 7, CacheReadInputTokens: 5, CacheCreationInputTokens: 3,
 	}), nil)
 	eng := New(&Params{
-		Provider: mp, Model: "m", Dispatcher: newEventCollector(), Logger: silentLogger(),
+		Provider: mp, Model: "m", Dispatcher: gate, Logger: silentLogger(),
 		ToolsProvider: func() map[string]tool.Tool {
 			return map[string]tool.Tool{"Read": gatedRead}
 		},
 	})
 	t.Cleanup(func() { eng.Close() })
-	ec := eng.dispatcher.(*eventCollector)
+	ec := gate.eventCollector
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan QueryResult, 1)
 	go func() { done <- eng.QuerySync(ctx, "q", "") }()
-	<-inTool // turn 1 (usage landed) is complete; the tool is now in flight
+	<-inTool
+	// The tool started mid-stream; wait for the usage event (stream tail)
+	// before cancelling so the abort lands after the ledger. This NARROWS
+	// the race window ~an order of magnitude (the old window spanned
+	// executor spawn → tool wakeup → cancel; this one is only the
+	// [message_delta → message_stop) preemption gap before the ctx check
+	// in callLLM's loop) — it cannot close it: EventUsage is the last
+	// observable signal before message_stop, so a GC stop-the-world in
+	// that gap can still abort the stream with a zero ledger. If this
+	// recurs, the structural fix is an engine-observable stream-completion
+	// signal, which is a production change.
+	select {
+	case <-gate.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage event never arrived before timeout")
+	}
 	cancel()
 	close(release)
 	res := <-done
