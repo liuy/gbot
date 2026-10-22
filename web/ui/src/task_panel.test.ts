@@ -48,6 +48,39 @@ describe('taskPanel', () => {
     expect(panel.root.classList.contains('pulse')).toBe(false)
   })
 
+  it('keeps the exact fraction at 99 tasks and degrades at 100', () => {
+    const make = (n: number, done: number): TaskWireItem[] =>
+      Array.from({ length: n }, (_, i) => ({
+        id: String(i),
+        subject: `T${i}`,
+        status: i < done ? 'completed' : 'pending',
+      }))
+    // tasksActive requires a not-yet-done task; all-complete lists take the
+    // hidden branch and never reach the label.
+    const at99 = mount()
+    at99.setTasks(make(99, 98))
+    expect((at99.root.querySelector('.task-label') as SVGTextElement).textContent).toBe('98/99')
+    const at100 = mount()
+    at100.setTasks(make(100, 99))
+    expect((at100.root.querySelector('.task-label') as SVGTextElement).textContent).toBe('99+')
+  })
+
+  it('degrades to 99+ past a hundred tasks while the ring keeps the exact ratio', () => {
+    const panel = mount()
+    const tasks: TaskWireItem[] = Array.from({ length: 120 }, (_, i) => ({
+      id: String(i),
+      subject: `T${i}`,
+      status: i < 60 ? 'completed' : 'pending',
+    }))
+    panel.setTasks(tasks)
+    const label = panel.root.querySelector('.task-label') as SVGTextElement
+    expect(label.textContent).toBe('99+')
+    const ring = panel.root.querySelector('.task-ring') as SVGCircleElement
+    const circumference = 2 * Math.PI * 18
+    const offset = parseFloat(ring.getAttribute('stroke-dashoffset') ?? 'NaN')
+    expect(Math.abs(offset - circumference * 0.5)).toBeLessThan(0.01)
+  })
+
   it('hides panel when all tasks are completed', () => {
     const panel = mount()
     panel.setTasks([{ id: '1', subject: 'Only', status: 'completed' }])

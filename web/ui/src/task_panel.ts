@@ -184,9 +184,11 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     if (currentTasks.length > 0) {
       const done = currentTasks.filter(t => t.status === 'completed').length
       floatBtn.setProgress(done / currentTasks.length)
-      const totalStr = currentTasks.length > 99 ? '99+' : String(currentTasks.length)
-      const doneStr = done > 99 ? '99+' : String(done)
-      floatBtn.setLabel(`${doneStr}/${totalStr}`)
+      // done/total stays while both operands are exact. Past 99 both would
+      // render as approximations ("99+/99+") — a precise-looking fraction of
+      // fuzzy numbers — and the text overflows the ring, so the ring alone
+      // carries the ratio and the label degrades to the magnitude.
+      floatBtn.setLabel(currentTasks.length > 99 ? '99+' : `${done}/${currentTasks.length}`)
     } else {
       floatBtn.setProgress(0)
       floatBtn.setLabel(String(jobs.filter(j => j.status === 'running').length))
