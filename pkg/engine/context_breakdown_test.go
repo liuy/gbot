@@ -3001,7 +3001,7 @@ func TestBuildDetails_ToolResultAttribution(t *testing.T) {
 	readCall := e.EstimateTokensCalibrated("Read" + readIn)
 	bashRes := e.EstimateTokensCalibrated(bashOut)
 	readRes := e.EstimateTokensCalibrated(readOut)
-	if !(bashCall+bashRes > readCall+readRes) {
+	if bashCall+bashRes <= readCall+readRes {
 		t.Fatalf("fixture lost its point: sums out of order (bash %d+%d, read %d+%d)",
 			bashCall, bashRes, readCall, readRes)
 	}
@@ -3044,7 +3044,7 @@ func TestBuildDetails_SortsToolBucketsByCallPlusResult(t *testing.T) {
 	lightCall := e.EstimateTokensCalibrated("LightCall" + string(smallIn))
 	heavyRes := e.EstimateTokensCalibrated(bigOut)
 	lightRes := e.EstimateTokensCalibrated(smallOut)
-	if !(heavyCall > lightCall && lightCall+lightRes > heavyCall+heavyRes) {
+	if heavyCall <= lightCall || lightCall+lightRes <= heavyCall+heavyRes {
 		t.Fatalf("fixture lost its point: heavy call %d+%d, light call %d+%d",
 			heavyCall, heavyRes, lightCall, lightRes)
 	}
