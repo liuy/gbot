@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -51,6 +52,34 @@ var builtInAgents = map[string]*types.AgentDefinition{
 	},
 }
 
+// defOverrides holds test-injected definitions that GetAgentDefinition
+// resolves ahead of the global loader. The loader is process-global and reads
+// the host user's agent directories, so without this injection point a test
+// cannot hand sub-agent execution a definition carrying fields no built-in
+// definition has (inline mcpServers, preloaded skills, a pinned model) — those
+// RunAgent paths would be unreachable from any test.
+var (
+	defOverridesMu sync.RWMutex
+	defOverrides   = map[string]*types.AgentDefinition{}
+)
+
+// SetDefinitionOverrideForTest merges test-only definitions into the table
+// GetAgentDefinition consults ahead of the global loader; a nil value for a
+// key removes that key. Merging (not replacing) keeps parallel tests that
+// inject under distinct agent types from clearing each other's entries.
+// Production never injects, so an empty table behaves exactly as before.
+func SetDefinitionOverrideForTest(defs map[string]*types.AgentDefinition) {
+	defOverridesMu.Lock()
+	defer defOverridesMu.Unlock()
+	for agentType, def := range defs {
+		if def == nil {
+			delete(defOverrides, agentType)
+			continue
+		}
+		defOverrides[agentType] = def
+	}
+}
+
 // GetAgentDefinition returns the agent definition for the given type.
 // If a global loader is initialized, uses it (includes custom agents).
 // Otherwise falls back to built-in agents only.
@@ -59,6 +88,13 @@ var builtInAgents = map[string]*types.AgentDefinition{
 func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 	if agentType == "" {
 		agentType = "General"
+	}
+
+	defOverridesMu.RLock()
+	defOverride := defOverrides[agentType]
+	defOverridesMu.RUnlock()
+	if defOverride != nil {
+		return defOverride, nil
 	}
 
 	// Use global loader if initialized (includes custom agents + override resolution)

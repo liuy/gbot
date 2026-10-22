@@ -42,6 +42,91 @@ func TestGetAgentDefinition(t *testing.T) {
 	}
 }
 
+func TestSetDefinitionOverrideForTest(t *testing.T) {
+	probe := &types.AgentDefinition{AgentType: "SeamProbe", WhenToUse: "probe"}
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe": probe})
+	t.Cleanup(func() { SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe": nil}) })
+
+	def, err := GetAgentDefinition("SeamProbe")
+	if err != nil {
+		t.Fatalf("GetAgentDefinition with override: %v", err)
+	}
+	if def != probe {
+		t.Errorf("override lookup returned %p, want the injected definition %p", def, probe)
+	}
+
+	// The override must beat an initialized global loader too: the loader
+	// reads the host user's agent dirs, so a test that relies on it would
+	// depend on machine state.
+	prev := globalLoader
+	globalLoader = NewLoader(t.TempDir())
+	t.Cleanup(func() { globalLoader = prev })
+	def, err = GetAgentDefinition("SeamProbe")
+	if err != nil || def != probe {
+		t.Errorf("override must win over the global loader: def=%p err=%v, want %p nil", def, err, probe)
+	}
+
+	// Merge semantics: a second injection under a different key must not
+	// clobber the first — parallel tests inject concurrently.
+	other := &types.AgentDefinition{AgentType: "SeamProbe2", WhenToUse: "probe2"}
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe2": other})
+	t.Cleanup(func() { SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe2": nil}) })
+	if def, err = GetAgentDefinition("SeamProbe"); err != nil || def != probe {
+		t.Errorf("later injection clobbered the earlier key: def=%p err=%v, want %p nil", def, err, probe)
+	}
+	if def, err = GetAgentDefinition("SeamProbe2"); err != nil || def != other {
+		t.Errorf("merged key not resolvable: def=%p err=%v, want %p nil", def, err, other)
+	}
+
+	// Removing the key with a nil value must restore the normal lookup.
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe": nil})
+	if _, err = GetAgentDefinition("SeamProbe"); err == nil {
+		t.Error("removed override still resolved; a nil-valued key must restore the normal lookup")
+	}
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbe": probe})
+}
+
+// TestSetDefinitionOverrideForTest_NilRemovalProcessesEveryKey pins that one
+// merge call removes every nil-valued key: a loop that stops at the first
+// removal strands the other key in either map-iteration order, so the
+// per-key cleanup pattern stays sound when one call removes several keys.
+func TestSetDefinitionOverrideForTest_NilRemovalProcessesEveryKey(t *testing.T) {
+	first := &types.AgentDefinition{AgentType: "SeamProbeR1", WhenToUse: "r"}
+	second := &types.AgentDefinition{AgentType: "SeamProbeR2", WhenToUse: "r"}
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbeR1": first})
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"SeamProbeR2": second})
+	t.Cleanup(func() {
+		SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{
+			"SeamProbeR1": nil, "SeamProbeR2": nil,
+		})
+	})
+
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{
+		"SeamProbeR1": nil, "SeamProbeR2": nil,
+	})
+	for _, agentType := range []string{"SeamProbeR1", "SeamProbeR2"} {
+		if def, err := GetAgentDefinition(agentType); err == nil || def != nil {
+			t.Errorf("GetAgentDefinition(%q) after nil-removal = (%p, %v), want removal of every key in the call", agentType, def, err)
+		}
+	}
+}
+
+func TestSetDefinitionOverrideForTest_EmptyTypeUsesGeneralKey(t *testing.T) {
+	probe := &types.AgentDefinition{AgentType: "General", WhenToUse: "probe"}
+	SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"General": probe})
+	t.Cleanup(func() { SetDefinitionOverrideForTest(map[string]*types.AgentDefinition{"General": nil}) })
+
+	// The empty-string type is normalized to "General" before the override
+	// lookup, so an override keyed by "General" must catch it.
+	def, err := GetAgentDefinition("")
+	if err != nil {
+		t.Fatalf("GetAgentDefinition(\"\") with General override: %v", err)
+	}
+	if def != probe {
+		t.Error("empty agent type did not resolve through the General-keyed override")
+	}
+}
+
 func TestGetAgentDefinition_CaseInsensitive(t *testing.T) {
 	tests := []struct {
 		input   string
