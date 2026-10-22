@@ -177,9 +177,10 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 		selectedText := utils.FirstTextBlockContent(originalMsgs[idx])
 		a.input.SetValue(selectedText)
 		// TS align: tokenCountWithEstimation is lazy, status bar naturally shows
-		// reduced count. gbot stores it, so sync the status bar after rewind.
-		ctxTokens := engine.TokenCountWithEstimation(a.engine.Messages())
-		a.status.SetContext(ctxTokens, a.engine.ContextWindow())
+		// reduced count. gbot stores it, so sync the status bar after rewind —
+		// from the engine's ledger, which RewindToScoped just repriced with the
+		// calibrated estimator and the learned request-shape overhead.
+		a.status.SetContext(a.engine.GetContextTokens(), a.engine.ContextWindow())
 	}
 
 	a.markViewportDirty()

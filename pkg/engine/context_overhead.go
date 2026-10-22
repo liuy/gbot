@@ -41,17 +41,21 @@ func (e *Engine) recordContextOverhead(msg *types.Message) {
 }
 
 // seedContextOverhead fills the unlearned overhead from a transcript's usage
-// anchor, so the first compact after a restart (before any response has
-// landed in this engine instance) still bills the request-shape overhead in
-// AfterTokens. anchored = base + est(tail-after-anchor) and pure =
-// est(head-including-anchor) + est(tail); the tail cancels, so
-// anchored − pure = base − est(head) — the same residual recordContextOverhead
-// learns at response time, computed on the exact message range the anchor
-// bills. Only fills the unset state: a learned value (or a previous seed)
-// always wins, and a non-positive residual (estimator overshoot) leaves the
-// state unset. Takes calibMu only, never e.mu — callers pass a message
-// snapshot, preserving the global e.mu → calibMu order. Must not be called
-// while holding e.mu (calibratedEstimator re-acquires calibMu).
+// anchor, so an engine that has not seen a response yet (restart, /resume)
+// still bills the request-shape overhead on the estimate paths. anchored =
+// base + est(tail-after-anchor) and pure = est(head-including-anchor) +
+// est(tail); the tail cancels, so anchored − pure = base − est(head) — the same
+// residual recordContextOverhead learns at response time, computed on the exact
+// message range the anchor bills. Only fills the unset state: a learned value
+// (or a previous seed) always wins, and a non-positive residual (estimator
+// overshoot) leaves the state unset. Takes calibMu only, never e.mu — callers
+// pass a message snapshot, preserving the global e.mu → calibMu order. Must not
+// be called while holding e.mu (calibratedEstimator re-acquires calibMu).
+//
+// Seeding runs at the compact entry points, before any compactor path prices
+// AfterTokens; applyCompactResult strips STALE anchors (Usage that survived
+// an earlier compaction) from both the persisted rows and the live
+// transcript, so the seed only ever measures a live anchor's real request.
 func (e *Engine) seedContextOverhead(messages []types.Message) {
 	e.calibMu.Lock()
 	set := e.contextOverheadSet

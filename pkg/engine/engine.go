@@ -3612,6 +3612,55 @@ func (e *Engine) shouldAutoCompact() bool {
 	return tokens > threshold
 }
 
+// applyCompactResult persists and installs a compaction result: boundary rows
+// first, then the transcript swap and the context ledger.
+//
+// A real compact (BoundaryMarker set) invalidates every billed Usage anchor it
+// keeps. The tail assistant's Usage prices the PRE-compact request; leaving it
+// anchors lastAnchoredTokenCount — and the turn_start InputEstimate riding on
+// it — at the old request size (the "212k after compact" display defect). Both
+// the persisted rows and the live transcript are stripped: a row that keeps its
+// usage metadata hands the dead anchor straight back to the next process, since
+// RecordCompact INSERT OR REPLACEs the kept tail and SwitchSession/restart/fork
+// reload Usage through the message metadata. The anchor dies with the request
+// it billed; the next real usage event re-anchors truth.
+//
+// The seed runs before the compactor (at both entry points), not here: the
+// compactor's AfterTokens passes through the overhead-aware estimator, so a
+// resumed engine must have the live anchor's residual seeded before
+// compaction prices the shrunken transcript. The only poisonous seed is one
+// taken off a STALE anchor (a Usage that survived an earlier compaction);
+// the row strip below removes those before they persist, so a resumed engine
+// only ever seeds from live anchors.
+func (e *Engine) applyCompactResult(result *short.CompactResult) {
+	if result.BoundaryMarker != nil {
+		for _, kept := range result.MessagesToKeep {
+			var m types.Message
+			m.SetMetadataFromJSON(kept.Metadata)
+			m.Usage = nil
+			kept.Metadata = m.MetadataToJSON()
+		}
+		// Persist boundary to DB — single point for all compact strategies
+		if e.store != nil {
+			if err := e.store.RecordCompact(e.sessionID, result); err != nil {
+				e.logger.Warn("RecordCompact failed", "error", err)
+			}
+		}
+		for i := range result.Messages {
+			if result.Messages[i].Role == types.RoleAssistant {
+				result.Messages[i].Usage = nil
+			}
+		}
+	}
+
+	e.mu.Lock()
+	e.messages = result.Messages
+	e.ContextTokens = result.AfterTokens
+	e.markAllPersisted()
+	e.mu.Unlock()
+	e.persistContextTokens()
+}
+
 // runCompact runs the compactor and atomically applies the result (messages + ContextTokens).
 // Regardless of which compact strategy succeeds (SM-compact or LLM compact),
 // RecordCompact is called exactly once to persist the boundary to the DB.
@@ -3621,11 +3670,11 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	comp := e.compactor
 	e.mu.RUnlock()
 
-	// Seed the overhead from the pre-compact transcript's usage anchor before
-	// any compactor path prices AfterTokens — the full message set is intact
-	// here and no response has landed in a freshly restarted engine.
+	// Seed before ANY compactor path prices AfterTokens (SM and LLM both go
+	// through the overhead-aware estimator): a resumed engine with a live
+	// anchor and unlearned overhead must seed first or the post-compact
+	// ledger goes content-only (d07d29eb).
 	e.seedContextOverhead(e.Messages())
-
 	var result *short.CompactResult
 
 	// TS: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
@@ -3646,19 +3695,7 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 		}
 	}
 
-	// Persist boundary to DB — single point for all compact strategies
-	if result.BoundaryMarker != nil && e.store != nil {
-		if err := e.store.RecordCompact(e.sessionID, result); err != nil {
-			e.logger.Warn("RecordCompact failed", "error", err)
-		}
-	}
-
-	e.mu.Lock()
-	e.messages = result.Messages
-	e.ContextTokens = result.AfterTokens
-	e.markAllPersisted()
-	e.mu.Unlock()
-	e.persistContextTokens()
+	e.applyCompactResult(result)
 	return result, nil
 }
 
@@ -3698,8 +3735,10 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 
 	e.fireCompactHooks(ctx, "manual", "pre")
 
-	// Same seed as runCompact: manual /compact right after a restart must not
-	// bill AfterTokens content-only while the anchor sits in the transcript.
+	// Same seed as runCompact: before the compactor prices the shrunken
+	// transcript, a resumed engine must seed overhead from its live anchor
+	// (d07d29eb) — stale anchors are stripped by applyCompactResult, so this
+	// only ever measures the real request shape.
 	e.seedContextOverhead(e.Messages())
 
 	var result *short.CompactResult
@@ -3741,19 +3780,7 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 		}
 	}
 
-	// Persist boundary to DB — same as runCompact
-	if result.BoundaryMarker != nil && e.store != nil {
-		if err := e.store.RecordCompact(e.sessionID, result); err != nil {
-			e.logger.Warn("RecordCompact failed", "error", err)
-		}
-	}
-
-	e.mu.Lock()
-	e.messages = result.Messages
-	e.ContextTokens = result.AfterTokens
-	e.markAllPersisted()
-	e.mu.Unlock()
-	e.persistContextTokens()
+	e.applyCompactResult(result)
 
 	e.emitEvent(types.QueryEvent{
 		Type: types.EventToolParamDelta,

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/filehistory"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
@@ -1231,6 +1233,47 @@ func TestExecuteRewind_MiddlePoint_RedisplaysMessages(t *testing.T) {
 	// committedCount should be 0 so all messages are rendered (not hidden).
 	if a.repl.committedCount != 0 {
 		t.Errorf("committedCount = %d, want 0 (all messages should be rendered)", a.repl.committedCount)
+	}
+}
+
+// The status bar after a rewind must ride the engine's own context ledger.
+// RewindToScoped reprices ContextTokens with the engine's estimator (learned
+// request-shape overhead included); the free TokenCountWithEstimation ignores
+// that overhead, so a meter built from it under-reports by exactly that amount.
+func TestExecuteRewind_StatusBarShowsEngineContextTokens(t *testing.T) {
+	mp := &tuiMockProvider{}
+	mp.responses = append(mp.responses, tuiMockResponse{events: []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 20000}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "reply"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 30}},
+		{Type: "message_stop"},
+	}})
+	app := newTestApp(mp)
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("question")}, Timestamp: testTime},
+	})
+
+	if res := app.engine.QuerySync(context.Background(), "and again", ""); res.Error != nil {
+		t.Fatalf("QuerySync: %v", res.Error)
+	}
+
+	// Rewind past the answering assistant: the surviving transcript has no usage
+	// anchor, so its cost comes from the fallback estimate.
+	msgs := app.engine.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("engine messages after query = %d, want 3 (question, reply, and again)", len(msgs))
+	}
+	app.executeRewind(1, engine.RewindMessagesOnly, msgs)
+
+	want := app.engine.GetContextTokens()
+	free := engine.TokenCountWithEstimation(app.engine.Messages())
+	if want == free {
+		t.Fatalf("setup invalid: engine ContextTokens %d equals the unanchored free estimate %d — no learned overhead to discriminate", want, free)
+	}
+	if got := app.status.contextUsed; got != want {
+		t.Errorf("status bar context = %d, want the engine ledger %d — the meter was rebuilt from the free estimate %d", got, want, free)
 	}
 }
 
